@@ -20,3 +20,10 @@ wineo is a Wine environment manager written in Rust, organized as a Cargo worksp
 - One file per plan: `docs/plans/NNNN-short-name.md`, numbered in order.
 - Each plan starts with a status line: `Status: draft`, `Status: approved`, or `Status: done`.
 - Only the maintainer approves a plan. Work beyond an approved plan needs a new or amended plan.
+
+## Commands
+
+- `cargo fmt`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo test`
+- `cargo test -- --ignored` runs the tests that need wine installed. They create throwaway prefixes in temp dirs.
