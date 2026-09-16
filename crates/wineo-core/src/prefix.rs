@@ -74,7 +74,7 @@ fn last_wine_message(log: &Path) -> Option<String> {
     text.lines()
         .rev()
         .find_map(|line| line.strip_prefix("wine: "))
-        .map(|message| message.trim().to_owned())
+        .map(|message| message.trim().trim_end_matches('.').to_owned())
 }
 
 #[cfg(test)]
@@ -128,7 +128,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             last_wine_message(&log).as_deref(),
-            Some("WINEARCH is set to 'win32' but this is not supported in wow64 mode.")
+            Some("WINEARCH is set to 'win32' but this is not supported in wow64 mode")
         );
         fs::write(&log, "0054:fixme:ole:thing\n").unwrap();
         assert_eq!(last_wine_message(&log), None);

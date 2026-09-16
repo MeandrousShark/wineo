@@ -46,11 +46,13 @@ impl Environment {
     }
 
     /// Creates the prefix, or adopts an existing one, then writes the environment config.
+    /// `on_create_prefix` runs just before a new prefix is initialized, since that takes a while.
     pub fn create(
         paths: &Paths,
         global: &GlobalConfig,
         runner: &Runner,
         new: &NewEnvironment,
+        on_create_prefix: impl FnOnce(&Path),
     ) -> Result<Self> {
         check_name(&new.name)?;
         let path = paths.environment_config(&new.name);
@@ -69,6 +71,7 @@ impl Environment {
         } else {
             let arch = new.arch.unwrap_or(global.defaults.arch);
             created = prefix::prepare_dir(&dir)?;
+            on_create_prefix(&dir);
             let runtime = paths.runtime_dir(&new.name);
             let result = fs::create_dir_all(&runtime)
                 .context(|| format!("failed to create {}", runtime.display()))
@@ -181,6 +184,7 @@ mod tests {
             &GlobalConfig::default(),
             &Runner::fake("wine"),
             &new("thing", &prefix),
+            |_| {},
         )
         .unwrap();
         assert_eq!(env.config.prefix, "~/Apps/Thing");
@@ -197,7 +201,8 @@ mod tests {
                 &paths,
                 &GlobalConfig::default(),
                 &Runner::fake("wine"),
-                &new("thing", &prefix)
+                &new("thing", &prefix),
+                |_| {},
             ),
             Err(Error::EnvironmentExists(_))
         ));
@@ -217,7 +222,8 @@ mod tests {
                 &paths,
                 &GlobalConfig::default(),
                 &Runner::fake("wine"),
-                &options
+                &options,
+                |_| {},
             ),
             Err(Error::ArchMismatch { .. })
         ));
@@ -237,7 +243,8 @@ mod tests {
                 &paths,
                 &GlobalConfig::default(),
                 &Runner::fake("wine"),
-                &new("stuff", &dir)
+                &new("stuff", &dir),
+                |_| {},
             ),
             Err(Error::NotAPrefix(_))
         ));
@@ -270,6 +277,7 @@ mod tests {
             &GlobalConfig::default(),
             &Runner::resolve("wine").unwrap(),
             &new("real", &prefix),
+            |_| {},
         )
         .unwrap();
         assert!(prefix::is_prefix(&prefix));
@@ -290,6 +298,7 @@ mod tests {
             &GlobalConfig::default(),
             &Runner::resolve("wine").unwrap(),
             &options,
+            |_| {},
         )
         .unwrap_err();
         assert!(matches!(err, Error::PrefixCreation { .. }), "{err}");
