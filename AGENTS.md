@@ -10,6 +10,7 @@ wineo is a Wine environment manager written in Rust, organized as a Cargo worksp
 
 - Never use unicode dashes (em dash or en dash) in code, comments, docs, or commit messages. Use a plain hyphen (`-`).
 - Keep commit messages short. No co-author trailers or any other attribution.
+- Write commits after every logical change.
 - Keep code comments concise and only explain why, not what. Leave them out when the code speaks for itself.
 - Plan before implementing. Draft a plan in `docs/plans/` and get it approved by the project maintainer before writing any implementation code.
 - Design decisions belong to the maintainer. When something is ambiguous or unspecified, ask instead of guessing.
