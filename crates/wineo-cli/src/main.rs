@@ -18,6 +18,10 @@ enum Command {
     New(commands::new::Args),
     /// Print an environment's config, or the global config
     Config(commands::config::Args),
+    /// Run an environment attached to the terminal
+    Run(commands::run::Args),
+    /// Run another program inside an environment
+    Exec(commands::exec::Args),
 }
 
 fn main() -> ExitCode {
@@ -27,6 +31,8 @@ fn main() -> ExitCode {
         .and_then(|paths| match cli.command {
             Command::New(args) => commands::new::run(&paths, args),
             Command::Config(args) => commands::config::run(&paths, args),
+            Command::Run(args) => commands::run::run(&paths, args),
+            Command::Exec(args) => commands::exec::run(&paths, args),
         });
     match result {
         Ok(code) => code,

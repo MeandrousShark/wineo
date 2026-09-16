@@ -49,6 +49,34 @@ pub struct RunState {
     pub env: BTreeMap<String, String>,
 }
 
+impl RunState {
+    pub fn running(
+        mode: RunMode,
+        target: String,
+        pid: u32,
+        args: Vec<String>,
+        env: BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            status: RunStatus::Running,
+            mode,
+            target,
+            pid,
+            started_at: Timestamp::now(),
+            ended_at: None,
+            exit_code: None,
+            args,
+            env,
+        }
+    }
+
+    pub fn finish(&mut self, status: RunStatus, exit_code: Option<i32>) {
+        self.status = status;
+        self.ended_at = Some(Timestamp::now());
+        self.exit_code = exit_code;
+    }
+}
+
 /// The runtime state directory of one environment.
 #[derive(Debug, Clone)]
 pub struct Runtime {
@@ -91,6 +119,11 @@ impl Runtime {
                 Err(io::Error::from(err)).context(|| format!("failed to lock {}", path.display()))
             }
         }
+    }
+
+    /// A momentary check, so the answer can be stale by the time it is used.
+    pub fn is_running(&self) -> Result<bool> {
+        Ok(self.try_lock()?.is_none())
     }
 
     pub fn read_state(&self) -> Result<Option<RunState>> {
