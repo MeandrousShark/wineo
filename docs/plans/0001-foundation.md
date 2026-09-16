@@ -238,9 +238,12 @@ Proposed answers in parentheses.
 4. `list` and `rm` aren't in the initial verbs. `status` without a name covers listing for now. (add `rm` in a later plan)
 5. A `--json` output flag for scripting? (later, the GUI uses core directly)
 
-## To verify once wine is installed
+## Verified with wine 11.17
 
-- `wineboot --init` creates a fresh prefix and `wineserver -w` returns once it's done.
-- `wineserver -w` returns immediately when no wineserver is running for the prefix.
-- `wineboot --end-session` closes windows without force-killing processes.
-- A pure WoW64 wine rejects `WINEARCH=win32`.
+- `wine wineboot --init` exits after about 4s, but `system.reg` and the other registry files only appear once `wineserver -w` returns, about 7s later. Prefix detection has to wait for it.
+- `wineserver -w` returns immediately when no wineserver is running, and does not create a missing prefix dir.
+- `wine wineboot --end-session` closed notepad cleanly (exit code 0) in about 150ms. The prefix went idle about 3s later.
+- After `wineserver -k` the launched process also exits with code 0, so exit codes can't tell a kill from a normal exit. `stopped` has to come from the stop request.
+- `WINEARCH=win32` fails with `WINEARCH is set to 'win32' but this is not supported in wow64 mode.` and exit code 1, without creating the prefix dir.
+- A bare name like `notepad` runs through `start.exe /exec`, which waits for the program. A full path runs the program directly in the launched process. Console exit codes pass through.
+- SIGINT sent to `wine notepad` did not close it, so Ctrl+C in `run` has to go through the stop sequence.
