@@ -65,32 +65,32 @@ impl Environment {
         };
         let prefix_value = paths.contract(&dir)?;
 
-        let mut created = false;
         let arch = if prefix::is_prefix(&dir) {
             adopted_arch(&dir, new.arch.unwrap_or(global.defaults.arch), new.arch)?
         } else {
             let arch = new.arch.unwrap_or(global.defaults.arch);
-            created = prefix::prepare_dir(&dir)?;
+            let created = prefix::prepare_dir(&dir)?;
             on_create_prefix(&dir);
             let runtime = paths.runtime_dir(&new.name);
             let result = fs::create_dir_all(&runtime)
                 .context(|| format!("failed to create {}", runtime.display()))
                 .and_then(|()| prefix::create(runner, &dir, arch, &runtime.join("create.log")));
             if let Err(err) = result {
-                remove_if_created(created, &dir);
+                if created {
+                    // Best effort, the error that got us here matters more.
+                    let _ = fs::remove_dir_all(&dir);
+                }
                 return Err(err);
             }
             arch
         };
 
+        // A finished prefix is kept even if this write fails, so a retry adopts it.
         let mut doc = DocumentMut::new();
         doc["prefix"] = value(prefix_value);
         doc["runner"] = value(runner.name());
         doc["arch"] = value(arch.as_str());
-        if let Err(err) = write_new(&path, &doc.to_string()) {
-            remove_if_created(created, &dir);
-            return Err(err);
-        }
+        write_new(&path, &doc.to_string())?;
         Self::load(paths, &new.name)
     }
 
@@ -131,13 +131,6 @@ fn write_new(path: &Path, contents: &str) -> Result<()> {
         .open(path)
         .and_then(|mut file| file.write_all(contents.as_bytes()))
         .context(|| format!("failed to write {}", path.display()))
-}
-
-fn remove_if_created(created: bool, dir: &Path) {
-    if created {
-        // Best effort, the error that got us here matters more.
-        let _ = fs::remove_dir_all(dir);
-    }
 }
 
 #[cfg(test)]

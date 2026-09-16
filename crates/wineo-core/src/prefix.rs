@@ -32,8 +32,16 @@ pub fn prepare_dir(dir: &Path) -> Result<bool> {
             None => Ok(false),
         },
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir_all(dir).context(|| format!("failed to create {}", dir.display()))?;
-            Ok(true)
+            if let Some(parent) = dir.parent() {
+                fs::create_dir_all(parent)
+                    .context(|| format!("failed to create {}", parent.display()))?;
+            }
+            match fs::create_dir(dir) {
+                Ok(()) => Ok(true),
+                // Created by someone else in the meantime, so never ours to clean up.
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => prepare_dir(dir),
+                Err(err) => Err(err).context(|| format!("failed to create {}", dir.display())),
+            }
         }
         Err(err) => Err(err).context(|| format!("failed to read {}", dir.display())),
     }
