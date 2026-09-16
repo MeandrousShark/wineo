@@ -11,7 +11,7 @@ Set up the Cargo workspace and build enough of wineo-core and wineo-cli to creat
 Settled by the maintainer:
 
 - Rust with clap, serde, and toml. Crates: wineo-core (library), wineo-cli (the `wineo` binary), wineo-gui (later).
-- Verbs: `new`, `start`, `set`, `stop`, `restart`, `status`, `run`, `exec`, `logs`, `config`.
+- Verbs: `new`, `start`, `set`, `stop`, `restart`, `status`, `run`, `exec`, `logs`, `config`, plus `list` and `rm` in a later plan.
 - Process model: per-app supervisor. `start` spawns a small detached wineo process that owns the run. No daemon, no systemd dependency.
 - The environment is the unit that `start`, `stop`, `restart`, and `status` act on. `exec` runs extra programs inside it.
 - Templates are copied into an environment when it is created (later plan).
@@ -227,6 +227,7 @@ wineo exec notepad winecfg
 - Custom runners in `runners/`, Proton through umu-launcher, runner downloads (GE-Proton, Proton-CachyOS)
 - wineo-gui
 - Portable layout with the config stored inside the prefix
+- `list` and `rm` verbs, including how `list` relates to `status` without a name
 
 ## Open questions
 
@@ -235,7 +236,7 @@ Proposed answers in parentheses.
 1. Mono and Gecko install prompts during prefix creation: suppress them, or rely on distro packages like `wine-mono` and `wine-gecko`? (rely on packages)
 2. Apps that register Windows services, like Adobe's updater, can keep a prefix alive after their window closes, so `status` would stay `running`. Add a per-environment option to track only the launched process? (not now, revisit if it shows up)
 3. Arch's wine 11.17 is a pure WoW64 build and probably can't create win32 prefixes. Keep `--arch` and fail with a clear error when unsupported? (yes)
-4. `list` and `rm` aren't in the initial verbs. `status` without a name covers listing for now. (add `rm` in a later plan)
+4. `list` and `rm` aren't in the initial verbs. (decided: both are verbs, built in a later plan)
 5. A `--json` output flag for scripting? (later, the GUI uses core directly)
 
 ## Verified with wine 11.17
