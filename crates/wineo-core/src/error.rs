@@ -33,6 +33,13 @@ pub enum Error {
     #[error("invalid config {}: {message}", .path.display())]
     ConfigInvalid { path: PathBuf, message: String },
 
+    #[error("invalid state file {}", .path.display())]
+    StateSyntax {
+        path: PathBuf,
+        #[source]
+        source: Box<toml::de::Error>,
+    },
+
     #[error("environment `{0}` does not exist")]
     UnknownEnvironment(String),
 

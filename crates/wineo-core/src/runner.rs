@@ -64,10 +64,11 @@ impl Runner {
     }
 
     /// Asks running programs to close, like a Windows logoff.
-    pub fn end_session(&self, prefix: &Path) -> Result<std::process::Child> {
+    pub fn end_session(&self, prefix: &Path) -> Result<()> {
         quietly(self.wine(prefix).args(["wineboot", "--end-session"]))
-            .spawn()
-            .context(|| "failed to run wineboot --end-session".to_owned())
+            .status()
+            .context(|| "failed to run wineboot --end-session".to_owned())?;
+        Ok(())
     }
 
     /// Kills everything in the prefix without giving programs a chance to clean up.
