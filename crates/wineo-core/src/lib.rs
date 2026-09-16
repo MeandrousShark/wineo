@@ -3,6 +3,7 @@ pub mod edit;
 pub mod environment;
 pub mod error;
 mod files;
+pub mod launch;
 pub mod name;
 pub mod paths;
 pub mod prefix;

@@ -52,6 +52,35 @@ pub enum Error {
     #[error("`{0}` was not found on PATH")]
     ProgramNotFound(&'static str),
 
+    #[error("environment `{environment}` has no target `{target}`")]
+    UnknownTarget { environment: String, target: String },
+
+    #[error(
+        "environment `{0}` has no targets, add one with `wineo set {0} targets.<target>.exe=<path>`"
+    )]
+    NoTargets(String),
+
+    #[error(
+        "environment `{environment}` has several targets and none is the default, pick one with --target: {}",
+        .targets.join(", ")
+    )]
+    AmbiguousTarget {
+        environment: String,
+        targets: Vec<String>,
+    },
+
+    #[error("`{0}` does not exist")]
+    ExeNotFound(String),
+
+    #[error("working directory `{0}` does not exist")]
+    CwdNotFound(String),
+
+    #[error("expected KEY=VALUE, got `{0}`")]
+    InvalidEnvAssignment(String),
+
+    #[error("{0}")]
+    InvalidEnv(String),
+
     #[error("{} is not empty and is not a wine prefix", .0.display())]
     NotAPrefix(PathBuf),
 
