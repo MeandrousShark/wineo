@@ -172,7 +172,9 @@ fn resolve_program(
     let msi = exe.to_ascii_lowercase().ends_with(".msi");
 
     if winpath::is_windows_path(exe) {
-        let unix = winpath::to_unix(prefix, exe).ok_or_else(not_found)?;
+        let unix = winpath::to_unix(prefix, exe)
+            .filter(|unix| unix.is_file())
+            .ok_or_else(not_found)?;
         return Ok(Program {
             wine_args: program_args(exe.to_owned(), msi),
             dir: unix.parent().map(Path::to_owned),
@@ -339,6 +341,10 @@ mod tests {
                 r"C:\Program Files\App\missing.exe",
                 false
             ),
+            Err(Error::ExeNotFound(_))
+        ));
+        assert!(matches!(
+            resolve_program(&f.paths, &f.prefix, r"C:\Program Files\App", false),
             Err(Error::ExeNotFound(_))
         ));
     }
