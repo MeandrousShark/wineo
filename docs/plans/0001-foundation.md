@@ -222,21 +222,7 @@ wineo exec notepad winecfg
 
 ## Deferred to later plans
 
-- Guided `wineo new` wizard
-- Templates, gamemode, DXVK, vkd3d
-- Custom runners in `runners/`, Proton through umu-launcher, runner downloads (GE-Proton, Proton-CachyOS)
-- wineo-gui
-- Portable layout with the config stored inside the prefix
-- `list` and `rm` verbs, including how `list` relates to `status` without a name
-- `import` verb for importing existing prefixes, optionally moving them to the default prefix dir or staying as is.
-- During the guided setup for a new prefix, after install, detect and list installed executables and have the option to select default target
-- Maybe support importing with the `import` verb, from other launchers (e.g. lutris, heroic, bottles) without becoming tightly coupled. Information gained would be the default executable, runner info and prefix path. Only implement if complexity is minimal. 
-- Running winetricks with `wineo winetricks <prefix>`
-- shell completion for bash/fish/zsh
-- log management: default behavior, retention.
-- `clone` prefix
-- prefix snapshots/backups (way later plan)
-- config schema versioning?
+Tracked in [docs/features.md](../features.md).
 
 ## Open questions
 
