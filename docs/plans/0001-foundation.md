@@ -198,7 +198,7 @@ Only `runner = "wine"` works in this plan. Any other name errors with a note tha
 ## Phases
 
 1. Skeleton, paths, config, `new`, `set`, `config`, `run`, `exec`. Checkpoint: `wineo run notepad` opens notepad.
-2. Supervisor, `start`, `stop`, `restart`, `status`, `logs`, `--install-exe`.
+2. Supervisor, `start`, `stop`, `restart`, `status`, `logs`, `--install-exe`, and turning off wine's own menu entries (wineo will make its own, see `docs/features.md`).
 
 Each phase ends with tests, fmt, and clippy passing, then a commit and push.
 
