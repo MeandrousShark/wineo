@@ -155,13 +155,18 @@ fn set_target(root: &mut Table, key: &str, rest: &str, raw: &str) -> Result<(), 
 fn set_target_default(root: &mut Table, name: &str, key: &str, raw: &str) -> Result<(), EditError> {
     let is_default = parse_bool(key, raw)?;
     let error_key = format!("targets.{name}");
-    let targets = ensure_table(root, "targets", "targets", true)?;
-    let target = ensure_table(targets, name, &error_key, false)?;
 
     if !is_default {
-        target.remove("default");
+        // Clearing a flag shouldn't conjure up an empty target that then fails validation.
+        if let Some(targets) = existing_table(root, "targets", "targets")?
+            && let Some(target) = existing_table(targets, name, &error_key)?
+        {
+            target.remove("default");
+        }
         return Ok(());
     }
+    let targets = ensure_table(root, "targets", "targets", true)?;
+    let target = ensure_table(targets, name, &error_key, false)?;
     store_value(target, "default", Value::from(true));
 
     let others: Vec<String> = targets
@@ -643,6 +648,20 @@ mod tests {
             doc.to_string(),
             "[targets.a]\nexe = \"a.exe\"\n\n[targets.b]\nexe = \"b.exe\"\ndefault = true\n"
         );
+    }
+
+    #[test]
+    fn set_default_false_never_creates_targets() {
+        let mut doc = parse("[targets.a]\nexe = \"a.exe\"\ndefault = true\n");
+        set(&mut doc, Scope::Environment, "targets.a.default", "false").unwrap();
+        set(
+            &mut doc,
+            Scope::Environment,
+            "targets.ghost.default",
+            "false",
+        )
+        .unwrap();
+        assert_eq!(doc.to_string(), "[targets.a]\nexe = \"a.exe\"\n");
     }
 
     // -- unset --
