@@ -228,12 +228,21 @@ wineo exec notepad winecfg
 - wineo-gui
 - Portable layout with the config stored inside the prefix
 - `list` and `rm` verbs, including how `list` relates to `status` without a name
+- `import` verb for importing existing prefixes, optionally moving them to the default prefix dir or staying as is.
+- During the guided setup for a new prefix, after install, detect and list installed executables and have the option to select default target
+- Maybe support importing with the `import` verb, from other launchers (e.g. lutris, heroic, bottles) without becoming tightly coupled. Information gained would be the default executable, runner info and prefix path. Only implement if complexity is minimal. 
+- Running winetricks with `wineo winetricks <prefix>`
+- shell completion for bash/fish/zsh
+- log management: default behavior, retention.
+- `clone` prefix
+- prefix snapshots/backups (way later plan)
+- config schema versioning?
 
 ## Open questions
 
 Proposed answers in parentheses.
 
-1. Mono and Gecko install prompts during prefix creation: suppress them, or rely on distro packages like `wine-mono` and `wine-gecko`? (rely on packages)
+1. Mono and Gecko install prompts during prefix creation: suppress them, or rely on distro packages like `wine-mono` and `wine-gecko`? (supress by default, but use distro packages if installed. ability to bypass distro packages in config setting)
 2. Apps that register Windows services, like Adobe's updater, can keep a prefix alive after their window closes, so `status` would stay `running`. Add a per-environment option to track only the launched process? (not now, revisit if it shows up)
 3. Arch's wine 11.17 is a pure WoW64 build and probably can't create win32 prefixes. Keep `--arch` and fail with a clear error when unsupported? (yes)
 4. `list` and `rm` aren't in the initial verbs. (decided: both are verbs, built in a later plan)
