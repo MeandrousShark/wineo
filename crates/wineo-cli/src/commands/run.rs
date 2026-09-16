@@ -82,7 +82,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         overrides.args,
         overrides.env,
     );
-    runtime.write_state(&state)?;
+    // Wine is already running, so bailing out here would orphan it and free the lock.
+    if let Err(err) = runtime.write_state(&state) {
+        note(&format!("warning: {:#}", anyhow::Error::from(err)));
+    }
 
     let exit_events = events.clone();
     thread::spawn(move || {
