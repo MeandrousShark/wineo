@@ -123,6 +123,9 @@ impl Runtime {
 
     /// A momentary check, so the answer can be stale by the time it is used.
     pub fn is_running(&self) -> Result<bool> {
+        if !self.dir.join("lock").exists() {
+            return Ok(false);
+        }
         Ok(self.try_lock()?.is_none())
     }
 

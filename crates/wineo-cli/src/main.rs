@@ -16,6 +16,8 @@ struct Cli {
 enum Command {
     /// Create an environment
     New(commands::new::Args),
+    /// Change settings of an environment, or the global config
+    Set(commands::set::Args),
     /// Print an environment's config, or the global config
     Config(commands::config::Args),
     /// Run an environment attached to the terminal
@@ -30,6 +32,7 @@ fn main() -> ExitCode {
         .map_err(anyhow::Error::from)
         .and_then(|paths| match cli.command {
             Command::New(args) => commands::new::run(&paths, args),
+            Command::Set(args) => commands::set::run(&paths, args),
             Command::Config(args) => commands::config::run(&paths, args),
             Command::Run(args) => commands::run::run(&paths, args),
             Command::Exec(args) => commands::exec::run(&paths, args),

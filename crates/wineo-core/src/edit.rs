@@ -398,9 +398,10 @@ fn parse_arch_value(key: &str, raw: &str) -> Result<Value, EditError> {
 }
 
 fn parse_args_value(key: &str, raw: &str) -> Result<Value, EditError> {
-    let value: Value = raw.parse().map_err(|err| EditError::InvalidValue {
+    // The TOML parser's own message ("invalid float" and such) doesn't help here.
+    let value: Value = raw.parse().map_err(|_| EditError::InvalidValue {
         key: key.to_string(),
-        reason: format!("{err}"),
+        reason: r#"expected a list like ["-a", "-b"]"#.to_string(),
     })?;
     let Value::Array(array) = value else {
         return Err(EditError::InvalidValue {

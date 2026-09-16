@@ -30,6 +30,16 @@ pub enum Error {
         source: Box<toml::de::Error>,
     },
 
+    #[error("invalid config {}", .path.display())]
+    ConfigParse {
+        path: PathBuf,
+        #[source]
+        source: Box<toml_edit::TomlError>,
+    },
+
+    #[error(transparent)]
+    Edit(#[from] crate::edit::EditError),
+
     #[error("invalid config {}: {message}", .path.display())]
     ConfigInvalid { path: PathBuf, message: String },
 
