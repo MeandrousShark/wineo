@@ -27,12 +27,16 @@ enum Command {
     Stop(commands::stop::Args),
     /// Stop an environment if it's running, then start it again
     Restart(commands::restart::Args),
+    /// Show whether environments are running
+    Status(commands::status::Args),
+    /// List environments and their state
+    List(commands::list::Args),
+    /// Print the output of an environment's detached runs
+    Logs(commands::logs::Args),
     /// Run an environment attached to the terminal
     Run(commands::run::Args),
     /// Run another program inside an environment
     Exec(commands::exec::Args),
-    /// Print the output of an environment's detached runs
-    Logs(commands::logs::Args),
     /// Owns a detached run for `start`
     #[command(name = supervisor::SUPERVISE_COMMAND, hide = true)]
     Supervise,
@@ -49,9 +53,11 @@ fn main() -> ExitCode {
             Command::Start(args) => commands::start::run(&paths, args),
             Command::Stop(args) => commands::stop::run(&paths, args),
             Command::Restart(args) => commands::restart::run(&paths, args),
+            Command::Status(args) => commands::status::run(&paths, args),
+            Command::List(args) => commands::list::run(&paths, args),
+            Command::Logs(args) => commands::logs::run(&paths, args),
             Command::Run(args) => commands::run::run(&paths, args),
             Command::Exec(args) => commands::exec::run(&paths, args),
-            Command::Logs(args) => commands::logs::run(&paths, args),
             Command::Supervise => supervisor::serve()
                 .map(|()| ExitCode::SUCCESS)
                 .map_err(Into::into),

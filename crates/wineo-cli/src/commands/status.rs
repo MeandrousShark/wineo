@@ -1,0 +1,420 @@
+use std::process::ExitCode;
+
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
+use wineo_core::environment::Environment;
+use wineo_core::paths::Paths;
+use wineo_core::report::EnvironmentReport;
+use wineo_core::runtime::{RunMode, RunState, State};
+
+use super::table;
+use super::time::{absolute, relative};
+
+/// Width of the label column in `status <name>`'s detail lines, like `target`.
+const LABEL_WIDTH: usize = 6;
+/// Spaces before the label, and between the label and its value.
+const LABEL_INDENT: usize = 2;
+const LABEL_GAP: usize = 2;
+
+#[derive(clap::Args)]
+pub struct Args {
+    /// Environment to show, every running environment if left out
+    name: Option<String>,
+}
+
+pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
+    match args.name {
+        Some(name) => {
+            let environment = Environment::load(paths, &name)?;
+            let report = EnvironmentReport::load(paths, &environment)?;
+            print!("{}", render(&report, Timestamp::now(), &TimeZone::system()));
+            Ok(ExitCode::SUCCESS)
+        }
+        None => running(paths),
+    }
+}
+
+fn running(paths: &Paths) -> anyhow::Result<ExitCode> {
+    let now = Timestamp::now();
+    let tz = TimeZone::system();
+    let (rows, failed) = table::gather(paths, now, &tz, |status| status.state == State::Running)?;
+    if rows.is_empty() {
+        eprintln!("Nothing is running");
+    } else {
+        for line in table::render(&rows) {
+            println!("{line}");
+        }
+    }
+    Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// Renders the full `status <name>` block, including its trailing newline.
+fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
+    let mut lines = vec![header(report, now, tz)];
+    if let Some(run) = &report.status.run {
+        lines.push(label_line(
+            "target",
+            &target_value(run, report.target_exe.as_deref()),
+        ));
+    }
+    lines.push(label_line(
+        "runner",
+        &runner_value(&report.runner, report.runner_version.as_deref()),
+    ));
+    lines.push(label_line("prefix", &report.prefix));
+    if report.status.state == State::Running
+        && let Some(run) = &report.status.run
+    {
+        lines.extend(pid_lines(run, now));
+    }
+    lines.join("\n") + "\n"
+}
+
+fn header(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
+    let name = &report.name;
+    let status = &report.status;
+    match (status.state, &status.run) {
+        (State::Inactive, _) => format!("{name}: inactive"),
+        (State::Running, None) => format!("{name}: running"),
+        (State::Running, Some(run)) => {
+            let attached = if run.mode == RunMode::Attached {
+                " attached"
+            } else {
+                ""
+            };
+            format!(
+                "{name}: running{attached} since {} ({})",
+                absolute(run.started_at, tz),
+                relative(now, run.started_at)
+            )
+        }
+        (State::Failed, Some(run)) if status.lost => format!(
+            "{name}: failed, wineo lost track of the run started at {} ({})",
+            absolute(run.started_at, tz),
+            relative(now, run.started_at)
+        ),
+        (state, Some(run)) => {
+            let ended = run.ended_at.unwrap_or(run.started_at);
+            let verb = match state {
+                State::Exited => "exited",
+                State::Failed => "failed",
+                State::Stopped => "stopped",
+                State::Running | State::Inactive => unreachable!("handled above"),
+            };
+            // `stopped` never shows a code: it can carry one from a program that
+            // happened to exit right as the stop was requested.
+            let code = if state == State::Stopped {
+                String::new()
+            } else {
+                run.exit_code
+                    .map(|code| format!(" with code {code}"))
+                    .unwrap_or_default()
+            };
+            format!(
+                "{name}: {verb}{code} at {} ({})",
+                absolute(ended, tz),
+                relative(now, ended)
+            )
+        }
+        (_, None) => unreachable!("running and inactive are the only states without a run"),
+    }
+}
+
+fn target_value(run: &RunState, exe: Option<&str>) -> String {
+    match exe {
+        Some(exe) => format!("{} ({exe})", run.target),
+        None => run.target.clone(),
+    }
+}
+
+fn runner_value(name: &str, version: Option<&str>) -> String {
+    match version {
+        Some(version) => format!("{name} ({version})"),
+        None => name.to_owned(),
+    }
+}
+
+fn pid_lines(run: &RunState, now: Timestamp) -> Vec<String> {
+    match run.program_exited_at {
+        None => vec![label_line("pid", &run.pid.to_string())],
+        Some(exited_at) => {
+            let code = run
+                .exit_code
+                .map(|code| format!(" with code {code}"))
+                .unwrap_or_default();
+            vec![
+                label_line(
+                    "pid",
+                    &format!("{}, exited {}{code}", run.pid, relative(now, exited_at)),
+                ),
+                continuation_line("other processes are keeping the prefix running"),
+            ]
+        }
+    }
+}
+
+fn label_line(label: &str, value: &str) -> String {
+    format!(
+        "{}{:width$}{}{value}",
+        " ".repeat(LABEL_INDENT),
+        label,
+        " ".repeat(LABEL_GAP),
+        width = LABEL_WIDTH,
+    )
+}
+
+fn continuation_line(text: &str) -> String {
+    format!(
+        "{:width$}{text}",
+        "",
+        width = LABEL_INDENT + LABEL_WIDTH + LABEL_GAP
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use wineo_core::runtime::{RunStatus, Status};
+
+    use super::*;
+
+    fn ts(s: &str) -> Timestamp {
+        s.parse().unwrap()
+    }
+
+    fn run(status: RunStatus, mode: RunMode) -> RunState {
+        RunState {
+            status,
+            mode,
+            target: "notepad".to_owned(),
+            pid: 48213,
+            started_at: ts("2026-09-16T14:02:11Z"),
+            program_exited_at: None,
+            ended_at: None,
+            exit_code: None,
+            requested_target: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+        }
+    }
+
+    fn report(status: wineo_core::runtime::Status) -> EnvironmentReport {
+        EnvironmentReport {
+            name: "notepad".to_owned(),
+            status,
+            runner: "wine".to_owned(),
+            runner_version: Some("wine-11.17".to_owned()),
+            prefix: "~/.local/share/wineo/prefixes/notepad".to_owned(),
+            target_exe: Some("notepad".to_owned()),
+        }
+    }
+
+    fn now() -> Timestamp {
+        ts("2026-09-16T14:05:11Z")
+    }
+
+    #[test]
+    fn running_detached_shows_target_runner_prefix_and_pid() {
+        let status = Status {
+            state: State::Running,
+            run: Some(run(RunStatus::Running, RunMode::Detached)),
+            lost: false,
+        };
+        assert_eq!(
+            render(&report(status), now(), &TimeZone::UTC),
+            "notepad: running since 2026-09-16 14:02:11 (3 min ago)\n\
+             \x20\x20target  notepad (notepad)\n\
+             \x20\x20runner  wine (wine-11.17)\n\
+             \x20\x20prefix  ~/.local/share/wineo/prefixes/notepad\n\
+             \x20\x20pid     48213\n"
+        );
+    }
+
+    #[test]
+    fn running_attached_says_so_in_the_header() {
+        let status = Status {
+            state: State::Running,
+            run: Some(run(RunStatus::Running, RunMode::Attached)),
+            lost: false,
+        };
+        let text = render(&report(status), now(), &TimeZone::UTC);
+        assert!(
+            text.starts_with("notepad: running attached since 2026-09-16 14:02:11 (3 min ago)\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn running_without_a_run_yet_has_no_target_or_pid() {
+        let status = Status {
+            state: State::Running,
+            run: None,
+            lost: false,
+        };
+        assert_eq!(
+            render(&report(status), now(), &TimeZone::UTC),
+            "notepad: running\n\
+             \x20\x20runner  wine (wine-11.17)\n\
+             \x20\x20prefix  ~/.local/share/wineo/prefixes/notepad\n"
+        );
+    }
+
+    #[test]
+    fn program_exited_while_prefix_stays_up_shows_two_pid_lines() {
+        let mut run = run(RunStatus::Running, RunMode::Detached);
+        run.program_exited_at = Some(ts("2026-09-16T14:04:11Z"));
+        run.exit_code = Some(0);
+        let status = Status {
+            state: State::Running,
+            run: Some(run),
+            lost: false,
+        };
+        let text = render(&report(status), now(), &TimeZone::UTC);
+        assert!(
+            text.ends_with(
+                "  pid     48213, exited 1 min ago with code 0\n\
+                 \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20other processes are keeping the prefix running\n"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn exited_drops_the_pid_line_and_keeps_the_rest() {
+        let mut run = run(RunStatus::Exited, RunMode::Detached);
+        run.ended_at = Some(ts("2026-09-16T14:05:02Z"));
+        run.exit_code = Some(0);
+        let status = Status {
+            state: State::Exited,
+            run: Some(run),
+            lost: false,
+        };
+        assert_eq!(
+            render(&report(status), now(), &TimeZone::UTC),
+            "notepad: exited with code 0 at 2026-09-16 14:05:02 (9 s ago)\n\
+             \x20\x20target  notepad (notepad)\n\
+             \x20\x20runner  wine (wine-11.17)\n\
+             \x20\x20prefix  ~/.local/share/wineo/prefixes/notepad\n"
+        );
+    }
+
+    #[test]
+    fn failed_with_code() {
+        let mut run = run(RunStatus::Failed, RunMode::Detached);
+        run.ended_at = Some(ts("2026-09-16T14:05:02Z"));
+        run.exit_code = Some(3);
+        let status = Status {
+            state: State::Failed,
+            run: Some(run),
+            lost: false,
+        };
+        let text = render(&report(status), now(), &TimeZone::UTC);
+        assert!(
+            text.starts_with("notepad: failed with code 3 at 2026-09-16 14:05:02 (9 s ago)\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn failed_without_a_code() {
+        let mut run = run(RunStatus::Failed, RunMode::Detached);
+        run.ended_at = Some(ts("2026-09-16T14:05:02Z"));
+        let status = Status {
+            state: State::Failed,
+            run: Some(run),
+            lost: false,
+        };
+        let text = render(&report(status), now(), &TimeZone::UTC);
+        assert!(
+            text.starts_with("notepad: failed at 2026-09-16 14:05:02 (9 s ago)\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn stopped_never_shows_a_code() {
+        let mut run = run(RunStatus::Stopped, RunMode::Detached);
+        run.ended_at = Some(ts("2026-09-16T14:05:02Z"));
+        run.exit_code = Some(0);
+        let status = Status {
+            state: State::Stopped,
+            run: Some(run),
+            lost: false,
+        };
+        let text = render(&report(status), now(), &TimeZone::UTC);
+        assert!(
+            text.starts_with("notepad: stopped at 2026-09-16 14:05:02 (9 s ago)\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn lost_uses_started_at_and_never_shows_a_code() {
+        let mut run = run(RunStatus::Running, RunMode::Detached);
+        run.exit_code = Some(1);
+        let status = Status {
+            state: State::Failed,
+            run: Some(run),
+            lost: true,
+        };
+        let text = render(&report(status), now(), &TimeZone::UTC);
+        assert!(
+            text.starts_with(
+                "notepad: failed, wineo lost track of the run started at \
+                 2026-09-16 14:02:11 (3 min ago)\n"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn inactive_shows_only_runner_and_prefix() {
+        let status = Status {
+            state: State::Inactive,
+            run: None,
+            lost: false,
+        };
+        assert_eq!(
+            render(&report(status), now(), &TimeZone::UTC),
+            "notepad: inactive\n\
+             \x20\x20runner  wine (wine-11.17)\n\
+             \x20\x20prefix  ~/.local/share/wineo/prefixes/notepad\n"
+        );
+    }
+
+    #[test]
+    fn target_without_a_matching_exe_drops_the_parens() {
+        let status = Status {
+            state: State::Exited,
+            run: Some({
+                let mut run = run(RunStatus::Exited, RunMode::Detached);
+                run.ended_at = Some(ts("2026-09-16T14:05:02Z"));
+                run.exit_code = Some(0);
+                run
+            }),
+            lost: false,
+        };
+        let mut report = report(status);
+        report.target_exe = None;
+        let text = render(&report, now(), &TimeZone::UTC);
+        assert!(text.contains("\n  target  notepad\n"), "{text}");
+    }
+
+    #[test]
+    fn runner_without_a_version_drops_the_parens() {
+        let status = Status {
+            state: State::Inactive,
+            run: None,
+            lost: false,
+        };
+        let mut report = report(status);
+        report.runner_version = None;
+        let text = render(&report, now(), &TimeZone::UTC);
+        assert!(text.contains("\n  runner  wine\n"), "{text}");
+    }
+}

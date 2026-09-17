@@ -1,9 +1,13 @@
 pub mod config;
 pub mod exec;
+pub mod list;
 pub mod logs;
 pub mod new;
 pub mod restart;
 pub mod run;
 pub mod set;
 pub mod start;
+pub mod status;
 pub mod stop;
+mod table;
+mod time;

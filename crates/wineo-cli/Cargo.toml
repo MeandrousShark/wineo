@@ -12,6 +12,7 @@ path = "src/main.rs"
 wineo-core.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+jiff.workspace = true
 signal-hook.workspace = true
 
 [dev-dependencies]
