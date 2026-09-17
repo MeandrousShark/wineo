@@ -37,6 +37,10 @@ pub struct LaunchArgs {
 }
 
 impl LaunchArgs {
+    pub fn is_empty(&self) -> bool {
+        self.target.is_none() && self.env.is_empty() && self.args.is_empty()
+    }
+
     pub fn into_overrides(self) -> Overrides {
         Overrides {
             target: self.target,

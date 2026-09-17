@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use wineo_core::paths::Paths;
+use wineo_core::supervisor;
 
 #[derive(Parser)]
 #[command(name = "wineo", version, about = "Manage Wine environments")]
@@ -20,10 +21,19 @@ enum Command {
     Set(commands::set::Args),
     /// Print an environment's config, or the global config
     Config(commands::config::Args),
+    /// Start an environment in the background
+    Start(commands::start::Args),
+    /// Stop a running environment
+    Stop(commands::stop::Args),
+    /// Stop an environment if it's running, then start it again
+    Restart(commands::restart::Args),
     /// Run an environment attached to the terminal
     Run(commands::run::Args),
     /// Run another program inside an environment
     Exec(commands::exec::Args),
+    /// Owns a detached run for `start`
+    #[command(name = supervisor::SUPERVISE_COMMAND, hide = true)]
+    Supervise,
 }
 
 fn main() -> ExitCode {
@@ -34,8 +44,14 @@ fn main() -> ExitCode {
             Command::New(args) => commands::new::run(&paths, args),
             Command::Set(args) => commands::set::run(&paths, args),
             Command::Config(args) => commands::config::run(&paths, args),
+            Command::Start(args) => commands::start::run(&paths, args),
+            Command::Stop(args) => commands::stop::run(&paths, args),
+            Command::Restart(args) => commands::restart::run(&paths, args),
             Command::Run(args) => commands::run::run(&paths, args),
             Command::Exec(args) => commands::exec::run(&paths, args),
+            Command::Supervise => supervisor::serve()
+                .map(|()| ExitCode::SUCCESS)
+                .map_err(Into::into),
         });
     match result {
         Ok(code) => code,
