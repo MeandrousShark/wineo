@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -35,6 +35,30 @@ fn wait_for(what: &str, mut condition: impl FnMut() -> bool) {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Recursively finds files wine's menu builder would have created.
+fn find_wine_extension_files(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![dir.to_owned()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("wine-extension-"))
+            {
+                found.push(path);
+            }
+        }
+    }
+    found
 }
 
 #[test]
@@ -127,6 +151,14 @@ fn new_run_and_exec_with_real_wine() {
     let root = tempfile::tempdir().unwrap();
     let result = output(wineo(root.path()).args(["new", "-n", "notepad"]));
     assert!(result.status.success(), "{}", stderr(&result));
+
+    let user_reg = root.path().join("data/wineo/prefixes/notepad/user.reg");
+    let user_reg_text = fs::read_to_string(&user_reg).unwrap();
+    assert!(
+        user_reg_text.contains("\"winemenubuilder.exe\"=\"\""),
+        "{user_reg_text}"
+    );
+
     let result = output(wineo(root.path()).args(["set", "notepad", "targets.notepad.exe=notepad"]));
     assert!(result.status.success(), "{}", stderr(&result));
 
@@ -171,4 +203,7 @@ fn new_run_and_exec_with_real_wine() {
     assert!(result.status.success(), "{}", stderr(&result));
     let text = fs::read_to_string(&state).unwrap();
     assert!(text.contains("status = \"stopped\""), "{text}");
+
+    let menu_entries = find_wine_extension_files(&root.path().join("data"));
+    assert!(menu_entries.is_empty(), "{menu_entries:?}");
 }

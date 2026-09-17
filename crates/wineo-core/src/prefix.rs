@@ -1,4 +1,4 @@
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 use std::process::Stdio;
@@ -62,14 +62,61 @@ pub fn create(runner: &Runner, dir: &Path, arch: Arch, log: &Path) -> Result<()>
         .stderr(stderr)
         .status()
         .context(|| "failed to run wineboot".to_owned())?;
+
+    // A missing or failed prefix would make another wine command create a
+    // fresh one, so only write the override once wineboot has initialized it.
+    // Its own error is folded into the check below since wine is still
+    // running either way and must be allowed to shut down.
+    let menu_builder_disabled = status.success() && disable_menu_builder(runner, dir, log).is_ok();
+
     // Wine only writes the registry files once wineserver shuts down.
     runner.wait_idle(dir)?;
 
-    if status.success() && is_prefix(dir) {
+    if menu_builder_disabled && is_prefix(dir) {
         Ok(())
     } else {
         Err(Error::PrefixCreation {
             reason: last_wine_message(log),
+            log: log.to_owned(),
+        })
+    }
+}
+
+/// Writes `HKCU\Software\Wine\DllOverrides\winemenubuilder.exe=""`, so wine
+/// run outside wineo doesn't build menu entries in this prefix either.
+/// Shared by a freshly created prefix and one `new` adopts as is.
+pub fn disable_menu_builder(runner: &Runner, dir: &Path, log: &Path) -> Result<()> {
+    let output = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+        .context(|| format!("failed to open {}", log.display()))?;
+    let stderr = output
+        .try_clone()
+        .context(|| format!("failed to open {}", log.display()))?;
+    let status = runner
+        .wine(dir)
+        .args([
+            "reg",
+            "add",
+            r"HKCU\Software\Wine\DllOverrides",
+            "/v",
+            "winemenubuilder.exe",
+            "/t",
+            "REG_SZ",
+            "/d",
+            "",
+            "/f",
+        ])
+        .stdin(Stdio::null())
+        .stdout(output)
+        .stderr(stderr)
+        .status()
+        .context(|| "failed to run wine reg add".to_owned())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Error::MenuBuilderOverride {
             log: log.to_owned(),
         })
     }

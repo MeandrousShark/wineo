@@ -10,7 +10,7 @@ use crate::environment::Environment;
 use crate::error::{Error, Result};
 use crate::paths::Paths;
 use crate::prefix;
-use crate::runner::Runner;
+use crate::runner::{Runner, with_menu_builder_disabled};
 use crate::winpath;
 
 /// Command line overrides for launching a target.
@@ -249,6 +249,11 @@ fn merge_env(
     let mut env = global.env.clone();
     env.extend(environment.config.env.clone());
     env.extend(overrides.clone());
+    // Applied after Runner::wine, so a user-set value here would otherwise
+    // override the one it adds.
+    if let Some(value) = env.get_mut("WINEDLLOVERRIDES") {
+        *value = with_menu_builder_disabled(Some(value));
+    }
     Ok(env)
 }
 
@@ -426,6 +431,28 @@ mod tests {
         assert_eq!(merged["A"], "global");
         assert_eq!(merged["B"], "env");
         assert_eq!(merged["C"], "cli");
+    }
+
+    #[test]
+    fn merged_wine_dll_overrides_disables_the_menu_builder() {
+        let global = GlobalConfig::default();
+        let env = environment("[env]\nWINEDLLOVERRIDES = \"foo.dll=n\"\n");
+        let merged = merge_env(&global, &env, &BTreeMap::new()).unwrap();
+        assert_eq!(
+            merged["WINEDLLOVERRIDES"],
+            "foo.dll=n;winemenubuilder.exe=d"
+        );
+
+        let opted_in = BTreeMap::from([(
+            "WINEDLLOVERRIDES".to_owned(),
+            "winemenubuilder.exe=n".to_owned(),
+        )]);
+        let merged = merge_env(&global, &env, &opted_in).unwrap();
+        assert_eq!(merged["WINEDLLOVERRIDES"], "winemenubuilder.exe=n");
+
+        let none = environment("");
+        let merged = merge_env(&global, &none, &BTreeMap::new()).unwrap();
+        assert!(!merged.contains_key("WINEDLLOVERRIDES"));
     }
 
     #[test]

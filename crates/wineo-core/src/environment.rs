@@ -78,7 +78,14 @@ impl Environment {
         let prefix_value = paths.contract(&dir)?;
 
         let arch = if prefix::is_prefix(&dir) {
-            adopted_arch(&dir, new.arch.unwrap_or(global.defaults.arch), new.arch)?
+            let arch = adopted_arch(&dir, new.arch.unwrap_or(global.defaults.arch), new.arch)?;
+            // Wine outside wineo could still build menu entries in an adopted
+            // prefix otherwise. It might be in use, so this doesn't wait_idle.
+            let runtime = paths.runtime_dir(&new.name);
+            fs::create_dir_all(&runtime)
+                .context(|| format!("failed to create {}", runtime.display()))?;
+            prefix::disable_menu_builder(runner, &dir, &runtime.join("create.log"))?;
+            arch
         } else {
             let arch = new.arch.unwrap_or(global.defaults.arch);
             let created = prefix::prepare_dir(&dir)?;
@@ -226,6 +233,7 @@ mod tests {
             "prefix = \"~/Apps/Thing\"\nrunner = \"wine\"\narch = \"win64\"\n"
         );
         assert_eq!(env.prefix(&paths).unwrap(), prefix);
+        assert!(paths.runtime_dir("thing").join("create.log").exists());
 
         assert!(matches!(
             Environment::create(

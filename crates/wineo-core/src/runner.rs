@@ -29,13 +29,16 @@ impl Runner {
         })
     }
 
-    /// A runner whose binaries don't exist, for tests that never launch wine.
+    /// A runner whose `wine` and `wineserver` both resolve to `true` on PATH,
+    /// so tests can run real commands without wine installed.
     #[cfg(test)]
     pub(crate) fn fake(name: &str) -> Self {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let true_bin = find_in_path(&path, "true").expect("`true` must be on PATH");
         Self {
             name: name.to_owned(),
-            wine: PathBuf::from("/nonexistent/wine"),
-            wineserver: PathBuf::from("/nonexistent/wineserver"),
+            wine: true_bin.clone(),
+            wineserver: true_bin,
         }
     }
 
@@ -43,10 +46,15 @@ impl Runner {
         &self.name
     }
 
-    /// A `wine` invocation bound to `prefix`.
+    /// A `wine` invocation bound to `prefix`. Also blocks wine's own menu
+    /// builder, unless the inherited environment already opts back in.
     pub fn wine(&self, prefix: &Path) -> Command {
         let mut command = Command::new(&self.wine);
-        command.env("WINEPREFIX", prefix);
+        let overrides =
+            with_menu_builder_disabled(std::env::var("WINEDLLOVERRIDES").ok().as_deref());
+        command
+            .env("WINEPREFIX", prefix)
+            .env("WINEDLLOVERRIDES", overrides);
         command
     }
 
@@ -92,6 +100,29 @@ impl Runner {
         let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         (output.status.success() && !version.is_empty()).then_some(version)
     }
+}
+
+/// Adds `winemenubuilder.exe=d` to a `WINEDLLOVERRIDES` value, unless it
+/// already mentions winemenubuilder, so a user's own override always wins.
+pub fn with_menu_builder_disabled(current: Option<&str>) -> String {
+    const DISABLED: &str = "winemenubuilder.exe=d";
+    match current {
+        None | Some("") => DISABLED.to_owned(),
+        Some(current) if mentions_menu_builder(current) => current.to_owned(),
+        Some(current) => format!("{current};{DISABLED}"),
+    }
+}
+
+/// Wine's `WINEDLLOVERRIDES` syntax is `name1,name2=order;name3=order2`.
+fn mentions_menu_builder(overrides: &str) -> bool {
+    overrides.split(';').any(|entry| {
+        let names = entry.split_once('=').map_or(entry, |(names, _)| names);
+        names.split(',').any(|name| {
+            let name = name.trim();
+            name.eq_ignore_ascii_case("winemenubuilder")
+                || name.eq_ignore_ascii_case("winemenubuilder.exe")
+        })
+    })
 }
 
 fn quietly(command: &mut Command) -> &mut Command {
@@ -147,5 +178,47 @@ mod tests {
             Runner::resolve("proton-ge"),
             Err(Error::UnsupportedRunner(name)) if name == "proton-ge"
         ));
+    }
+
+    #[test]
+    fn menu_builder_is_disabled_when_overrides_are_unset() {
+        assert_eq!(with_menu_builder_disabled(None), "winemenubuilder.exe=d");
+        assert_eq!(
+            with_menu_builder_disabled(Some("")),
+            "winemenubuilder.exe=d"
+        );
+    }
+
+    #[test]
+    fn menu_builder_override_is_appended_to_existing_overrides() {
+        assert_eq!(
+            with_menu_builder_disabled(Some("foo.dll=n")),
+            "foo.dll=n;winemenubuilder.exe=d"
+        );
+    }
+
+    #[test]
+    fn existing_menu_builder_mentions_are_left_alone() {
+        for value in [
+            "winemenubuilder.exe=n",
+            "WineMenuBuilder=b",
+            "foo.dll=n;winemenubuilder.exe=n",
+            "foo,winemenubuilder.exe=n",
+            " winemenubuilder.exe =n",
+        ] {
+            assert_eq!(with_menu_builder_disabled(Some(value)), value, "{value}");
+        }
+    }
+
+    #[test]
+    fn substring_matches_do_not_count_as_a_mention() {
+        assert_eq!(
+            with_menu_builder_disabled(Some("winemenubuilderextra.exe=n")),
+            "winemenubuilderextra.exe=n;winemenubuilder.exe=d"
+        );
+        assert_eq!(
+            with_menu_builder_disabled(Some("extrawinemenubuilder.exe=n")),
+            "extrawinemenubuilder.exe=n;winemenubuilder.exe=d"
+        );
     }
 }

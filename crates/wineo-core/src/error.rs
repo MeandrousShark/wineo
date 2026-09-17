@@ -115,6 +115,9 @@ pub enum Error {
         reason: Option<String>,
         log: PathBuf,
     },
+
+    #[error("wine failed to write the menu builder override, full output in {}", .log.display())]
+    MenuBuilderOverride { log: PathBuf },
 }
 
 /// Formats an error followed by its sources, like anyhow's `{:#}`.
