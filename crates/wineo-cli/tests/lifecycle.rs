@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 use wineo_core::runtime::Runtime;
 
 /// A program named exit-N exits with N right away, a program named stubborn
-/// ignores requests to close, and any other program runs until
+/// ignores requests to close, a program named slow takes a moment before
+/// wineserver can see it, and any other program runs until
 /// `wineboot --end-session` or `wineserver -k` ends it.
 const FAKE_WINE: &str = r#"#!/bin/sh
 pids="$WINEPREFIX/fake-pids"
@@ -38,6 +39,9 @@ echo "fake wine: FAKE_VAR=${FAKE_VAR-}"
 case "$1" in
 exit-*)
     exit "${1#exit-}"
+    ;;
+slow)
+    sleep 0.5
     ;;
 esac
 sleep 60 &
@@ -374,6 +378,20 @@ fn force_stop_kills_right_away() {
     let log = f.log("app");
     assert!(!log.contains("wineo: stopping"), "{log}");
     assert!(log.contains("wineo: killing"), "{log}");
+    assert!(f.state("app").contains("status = \"stopped\""));
+}
+
+#[test]
+fn force_stop_catches_a_program_that_was_still_starting() {
+    let f = Fixture::new();
+    f.environment("app", "[targets.slow]\nexe = \"slow\"\n");
+    assert_success(&f.run(&["start", "app"]));
+
+    let began = Instant::now();
+    let stopped = f.run(&["stop", "--force", "app"]);
+    assert_success(&stopped);
+    assert!(began.elapsed() < Duration::from_secs(5));
+    assert!(!f.fake_program_running("app"));
     assert!(f.state("app").contains("status = \"stopped\""));
 }
 

@@ -23,6 +23,10 @@ use crate::runtime::{RunMode, RunState, RunStatus, Runtime, exit_code};
 /// The hidden command a detached supervisor runs as.
 pub const SUPERVISE_COMMAND: &str = "__supervise";
 
+/// How often a kill repeats until the run ends. A program that was still
+/// starting up can be invisible to wineserver the first time.
+const KILL_RETRY: Duration = Duration::from_secs(1);
+
 enum Event {
     Exited(io::Result<ExitStatus>),
     Idle,
@@ -97,11 +101,12 @@ impl Supervisor {
         });
 
         let mut stopping = false;
-        let mut deadline: Option<Instant> = None;
         let mut killed = false;
+        // When the clean stop gives up, or the next kill is due.
+        let mut deadline: Option<Instant> = None;
         loop {
             let event = match deadline {
-                Some(deadline) if !killed => match self
+                Some(deadline) => match self
                     .events
                     .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 {
@@ -109,7 +114,7 @@ impl Supervisor {
                     Err(RecvTimeoutError::Timeout) => Event::StopTimeout,
                     Err(RecvTimeoutError::Disconnected) => break,
                 },
-                _ => match self.events.recv() {
+                None => match self.events.recv() {
                     Ok(event) => event,
                     Err(_) => break,
                 },
@@ -139,15 +144,17 @@ impl Supervisor {
                         let _ = runner.end_session(&prefix);
                     });
                 }
-                Event::Stop | Event::Force | Event::StopTimeout if !killed => {
+                Event::Stop | Event::Force | Event::StopTimeout => {
                     stopping = true;
-                    killed = true;
-                    notify(Notice::Killing);
+                    if !killed {
+                        killed = true;
+                        notify(Notice::Killing);
+                    }
                     if let Err(err) = launch.runner.kill(&launch.prefix) {
                         notify(Notice::Warning(err));
                     }
+                    deadline = Some(Instant::now() + KILL_RETRY);
                 }
-                Event::Stop | Event::Force | Event::StopTimeout => {}
             }
         }
 
