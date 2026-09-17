@@ -470,6 +470,12 @@ fn stop_cleans_up_after_a_dead_supervisor() {
         stderr(&stopped)
     );
     assert!(!f.fake_program_running("app"));
+    assert!(f.state("app").contains("status = \"stopped\""));
+
+    // The cleanup happens once, so a later stop leaves the prefix alone.
+    let again = f.run(&["stop", "app"]);
+    assert_success(&again);
+    assert_eq!(stderr(&again), "app is not running\n");
 }
 
 #[test]

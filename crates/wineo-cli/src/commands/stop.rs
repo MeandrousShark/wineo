@@ -6,7 +6,7 @@ use wineo_core::config::{DEFAULT_STOP_TIMEOUT, GlobalConfig};
 use wineo_core::environment::Environment;
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
-use wineo_core::runtime::Runtime;
+use wineo_core::runtime::{RunStatus, Runtime};
 use wineo_core::supervisor;
 
 #[derive(clap::Args)]
@@ -55,18 +55,33 @@ pub fn stop(paths: &Paths, name: &str, force: bool) -> anyhow::Result<Outcome> {
     {
         return Ok(Outcome::Stopped);
     }
-    let lost = runtime.status().map_or_else(
-        |err| {
+    clean_up_lost_run(paths, name, &runtime)
+}
+
+/// Kills whatever a run left in the prefix when the process that owned it
+/// died, then records the run as stopped so this only happens once.
+fn clean_up_lost_run(paths: &Paths, name: &str, runtime: &Runtime) -> anyhow::Result<Outcome> {
+    match runtime.status() {
+        Ok(status) if status.lost => {}
+        Ok(_) => return Ok(Outcome::NotRunning),
+        Err(err) => {
             warn(err.into());
-            false
-        },
-        |status| status.lost,
-    );
-    if !lost {
-        return Ok(Outcome::NotRunning);
+            return Ok(Outcome::NotRunning);
+        }
     }
+    // Holding the lock keeps a new run from starting in the middle of this,
+    // and the state is read again in case one already came and went.
+    let Some(_lock) = runtime.try_lock()? else {
+        return Ok(Outcome::NotRunning);
+    };
+    let mut run = match runtime.read_state()? {
+        Some(run) if run.status == RunStatus::Running => run,
+        _ => return Ok(Outcome::NotRunning),
+    };
     let environment = Environment::load(paths, name)?;
     Runner::resolve(&environment.config.runner)?.kill(&environment.prefix(paths)?)?;
+    run.finish(RunStatus::Stopped);
+    runtime.write_state(&run)?;
     eprintln!("wineo lost track of {name}'s last run, so it killed anything left in the prefix");
     Ok(Outcome::CleanedUp)
 }
