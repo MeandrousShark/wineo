@@ -7,6 +7,7 @@ pub mod launch;
 pub mod name;
 pub mod paths;
 pub mod prefix;
+pub mod report;
 pub mod runner;
 pub mod runtime;
 pub mod settings;
