@@ -445,3 +445,33 @@ fn stop_cleans_up_after_a_dead_supervisor() {
     );
     assert!(!f.fake_program_running("app"));
 }
+
+#[test]
+fn following_logs_ends_with_the_run() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    assert_success(&f.run(&["start", "app"]));
+    wait_for("the program to start", || f.fake_program_running("app"));
+
+    let mut follow = f
+        .wineo()
+        .args(["logs", "app", "-f"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    thread::sleep(Duration::from_millis(300));
+    assert_success(&f.run(&["stop", "app"]));
+
+    wait_for("logs -f to exit", || {
+        matches!(follow.try_wait(), Ok(Some(_)))
+    });
+    let output = follow.wait_with_output().unwrap();
+    assert_success(&output);
+    let text = stdout(&output);
+    assert!(text.contains("fake wine: app"), "{text}");
+    assert!(
+        text.contains("wineo: stopping, asking programs to close"),
+        "{text}"
+    );
+}
