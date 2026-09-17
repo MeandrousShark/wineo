@@ -72,7 +72,8 @@ fn wait_for(what: &str, mut condition: impl FnMut() -> bool) {
     }
 }
 
-/// Recursively finds files wine's menu builder would have created.
+/// Recursively finds files wine's menu builder would have created. Symlinks
+/// aren't followed, since a prefix's `z:` drive links to the root directory.
 fn find_wine_extension_files(dir: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut pending = vec![dir.to_owned()];
@@ -82,7 +83,7 @@ fn find_wine_extension_files(dir: &Path) -> Vec<PathBuf> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 pending.push(path);
             } else if path
                 .file_name()
