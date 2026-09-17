@@ -3,10 +3,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::{Error, IoContext, Result};
 
 /// The wine build an environment runs with.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Runner {
     name: String,
     wine: PathBuf,

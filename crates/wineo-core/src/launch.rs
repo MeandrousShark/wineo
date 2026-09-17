@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::{Deserialize, Serialize};
+
 use crate::config::{GlobalConfig, Target, validate_env_var};
 use crate::environment::Environment;
 use crate::error::{Error, Result};
@@ -12,7 +14,7 @@ use crate::runner::Runner;
 use crate::winpath;
 
 /// Command line overrides for launching a target.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Overrides {
     pub target: Option<String>,
     pub env: BTreeMap<String, String>,
@@ -20,7 +22,7 @@ pub struct Overrides {
 }
 
 /// A fully resolved program launch inside an environment.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Launch {
     pub runner: Runner,
     pub prefix: PathBuf,

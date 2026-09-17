@@ -1,24 +1,28 @@
 use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
-use std::process::{ExitCode, ExitStatus, Stdio};
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::{ExitCode, Stdio};
+use std::time::Duration;
 
 use anyhow::{Context, bail};
-use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
-use signal_hook::iterator::Signals;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::launch::{Launch, Overrides, parse_env_assignment};
 use wineo_core::paths::Paths;
-use wineo_core::runtime::{RunMode, RunState, RunStatus, Runtime, exit_code};
+use wineo_core::runtime::{RunMode, RunState, Runtime};
+use wineo_core::supervisor::{Notice, Supervisor};
 
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to run
     name: String,
 
+    #[command(flatten)]
+    launch: LaunchArgs,
+}
+
+/// Options shared by the commands that launch a target.
+#[derive(clap::Args)]
+pub struct LaunchArgs {
     /// Target to launch instead of the default
     #[arg(short, long)]
     target: Option<String>,
@@ -32,44 +36,30 @@ pub struct Args {
     args: Vec<String>,
 }
 
-enum Event {
-    Exited(io::Result<ExitStatus>),
-    Idle,
-    Signal,
-    StopTimeout,
+impl LaunchArgs {
+    pub fn into_overrides(self) -> Overrides {
+        Overrides {
+            target: self.target,
+            env: self.env.into_iter().collect(),
+            args: self.args,
+        }
+    }
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, &args.name)?;
-    let overrides = Overrides {
-        target: args.target,
-        env: args.env.into_iter().collect(),
-        args: args.args,
-    };
+    let overrides = args.launch.into_overrides();
     let launch = Launch::target(paths, &global, &environment, &overrides)?;
     let runtime = Runtime::new(paths, &environment.name);
     let Some(_lock) = runtime.try_lock()? else {
         bail!("{} is already running", environment.name);
     };
 
-    // Registered before wine starts so an early Ctrl+C still stops it cleanly.
-    let mut signals =
-        Signals::new([SIGINT, SIGTERM, SIGHUP]).context("failed to set up signal handling")?;
-    let signal_handle = signals.handle();
-    let (events, receiver) = mpsc::channel();
-    let signal_events = events.clone();
-    let signal_thread = thread::spawn(move || {
-        for _ in signals.forever() {
-            if signal_events.send(Event::Signal).is_err() {
-                break;
-            }
-        }
-    });
-
+    let supervisor = Supervisor::listen()?;
     // A separate process group keeps the terminal's Ctrl+C away from wine, so
     // wineo can ask the app to close instead of it being cut off.
-    let mut child = launch
+    let child = launch
         .command()
         .stdin(Stdio::null())
         .process_group(0)
@@ -83,81 +73,27 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     );
     // Wine is already running, so bailing out here would orphan it and free the lock.
     if let Err(err) = runtime.write_state(&state) {
-        note(&format!("warning: {:#}", anyhow::Error::from(err)));
+        warn(err.into());
     }
 
-    let exit_events = events.clone();
-    thread::spawn(move || {
-        let _ = exit_events.send(Event::Exited(child.wait()));
-    });
-
-    let stop_timeout = Duration::from_secs(global.stop_timeout.into());
-    let mut code = None;
-    let mut deadline: Option<Instant> = None;
-    let mut killed = false;
-    loop {
-        let event = match deadline {
-            Some(deadline) if !killed => {
-                match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-                    Ok(event) => event,
-                    Err(RecvTimeoutError::Timeout) => Event::StopTimeout,
-                    Err(RecvTimeoutError::Disconnected) => break,
-                }
-            }
-            _ => match receiver.recv() {
-                Ok(event) => event,
-                Err(_) => break,
-            },
-        };
-        match event {
-            Event::Exited(status) => {
-                code = status.ok().map(exit_code);
-                state.program_exited(code);
-                if let Err(err) = runtime.write_state(&state) {
-                    note(&format!("warning: {:#}", anyhow::Error::from(err)));
-                }
-                // Launchers often hand off to another process and exit, so the
-                // run lasts until nothing is left running in the prefix.
-                let idle_events = events.clone();
-                let (runner, prefix) = (launch.runner.clone(), launch.prefix.clone());
-                thread::spawn(move || {
-                    let _ = runner.wait_idle(&prefix);
-                    let _ = idle_events.send(Event::Idle);
-                });
-            }
-            Event::Idle => break,
-            Event::Signal if deadline.is_none() => {
-                note(&format!(
-                    "Stopping {}, press Ctrl+C again to force it",
-                    environment.name
-                ));
-                deadline = Some(Instant::now() + stop_timeout);
-                let (runner, prefix) = (launch.runner.clone(), launch.prefix.clone());
-                thread::spawn(move || {
-                    let _ = runner.end_session(&prefix);
-                });
-            }
-            Event::Signal | Event::StopTimeout if !killed => {
-                killed = true;
-                if let Err(err) = launch.runner.kill(&launch.prefix) {
-                    note(&format!("error: {err:#}"));
-                }
-            }
-            Event::Signal | Event::StopTimeout => {}
-        }
-    }
-    signal_handle.close();
-    let _ = signal_thread.join();
-
-    let status = match (deadline, code) {
-        (Some(_), _) => RunStatus::Stopped,
-        (None, Some(0)) => RunStatus::Exited,
-        (None, _) => RunStatus::Failed,
-    };
-    state.finish(status);
-    runtime.write_state(&state)?;
+    let name = &environment.name;
+    supervisor.wait(
+        &runtime,
+        &launch,
+        child,
+        &mut state,
+        Duration::from_secs(global.stop_timeout.into()),
+        |notice| match notice {
+            Notice::Stopping => note(&format!("Stopping {name}, press Ctrl+C again to force it")),
+            Notice::Killing => {}
+            Notice::Warning(err) => warn(err.into()),
+        },
+    )?;
     Ok(ExitCode::from(
-        code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1),
+        state
+            .exit_code
+            .and_then(|code| u8::try_from(code).ok())
+            .unwrap_or(1),
     ))
 }
 
@@ -165,4 +101,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 /// not abort the shutdown.
 fn note(message: &str) {
     let _ = writeln!(io::stderr(), "{message}");
+}
+
+fn warn(err: anyhow::Error) {
+    note(&format!("warning: {err:#}"));
 }

@@ -573,6 +573,7 @@ dependencies = [
  "jiff",
  "rustix",
  "serde",
+ "signal-hook",
  "tempfile",
  "thiserror",
  "toml",

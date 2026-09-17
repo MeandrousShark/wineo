@@ -104,11 +104,29 @@ pub enum Error {
         requested: Arch,
     },
 
+    #[error("{0}")]
+    StartFailed(String),
+
+    #[error("still running after {0} seconds")]
+    StillRunning(u64),
+
     #[error("wine failed to create the prefix{}, full output in {}", .reason.as_deref().map(|r| format!(": {r}")).unwrap_or_default(), .log.display())]
     PrefixCreation {
         reason: Option<String>,
         log: PathBuf,
     },
+}
+
+/// Formats an error followed by its sources, like anyhow's `{:#}`.
+pub fn chain(err: &dyn std::error::Error) -> String {
+    let mut text = err.to_string();
+    let mut source = err.source();
+    while let Some(err) = source {
+        text.push_str(": ");
+        text.push_str(&err.to_string());
+        source = err.source();
+    }
+    text
 }
 
 pub(crate) trait IoContext<T> {

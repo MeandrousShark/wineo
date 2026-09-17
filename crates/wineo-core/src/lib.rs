@@ -10,6 +10,7 @@ pub mod prefix;
 pub mod runner;
 pub mod runtime;
 pub mod settings;
+pub mod supervisor;
 pub mod winpath;
 
 pub use error::{Error, Result};
