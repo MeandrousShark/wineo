@@ -1,5 +1,6 @@
 pub mod config;
 pub mod exec;
+pub mod logs;
 pub mod new;
 pub mod restart;
 pub mod run;

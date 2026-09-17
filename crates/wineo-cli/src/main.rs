@@ -31,6 +31,8 @@ enum Command {
     Run(commands::run::Args),
     /// Run another program inside an environment
     Exec(commands::exec::Args),
+    /// Print the output of an environment's detached runs
+    Logs(commands::logs::Args),
     /// Owns a detached run for `start`
     #[command(name = supervisor::SUPERVISE_COMMAND, hide = true)]
     Supervise,
@@ -49,6 +51,7 @@ fn main() -> ExitCode {
             Command::Restart(args) => commands::restart::run(&paths, args),
             Command::Run(args) => commands::run::run(&paths, args),
             Command::Exec(args) => commands::exec::run(&paths, args),
+            Command::Logs(args) => commands::logs::run(&paths, args),
             Command::Supervise => supervisor::serve()
                 .map(|()| ExitCode::SUCCESS)
                 .map_err(Into::into),
