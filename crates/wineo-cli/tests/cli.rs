@@ -5,7 +5,8 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use wineo_core::runtime::Runtime;
+use wineo_core::launch::Overrides;
+use wineo_core::runtime::{RunMode, RunState, RunStatus, Runtime};
 
 /// Points every XDG dir into `root` so tests never touch the real config.
 fn wineo(root: &Path) -> Command {
@@ -25,11 +26,27 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
 fn write_environment(root: &Path, name: &str, text: &str) -> std::path::PathBuf {
     let path = root.join(format!("config/wineo/environments/{name}.toml"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, text).unwrap();
     path
+}
+
+/// A minimal valid environment config with one target, named the same as the environment.
+fn env_toml(target: &str) -> String {
+    format!(
+        "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n\n[targets.{target}]\nexe = \"{target}\"\n"
+    )
+}
+
+/// The runtime dir `wineo(root)` uses for `name`.
+fn runtime(root: &Path, name: &str) -> Runtime {
+    Runtime::at(root.join(format!("state/wineo/{name}")))
 }
 
 /// A minimal environment config, enough for commands that don't need a target.
@@ -438,5 +455,209 @@ fn new_with_install_exe_runs_the_installer_and_prints_the_hint() {
         String::from_utf8_lossy(&result.stdout).contains("Add a target with"),
         "{}",
         String::from_utf8_lossy(&result.stdout)
+    );
+}
+
+#[test]
+fn list_shows_every_environment_regardless_of_state() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "notepad", &env_toml("notepad"));
+    write_environment(root.path(), "photoshop", &env_toml("photoshop"));
+    write_environment(root.path(), "winecfg", &env_toml("winecfg"));
+    // A broken config is still just a name to list: it isn't parsed.
+    write_environment(root.path(), "broken", "this is not toml");
+
+    let notepad = runtime(root.path(), "notepad");
+    let _lock = notepad.try_lock().unwrap().unwrap();
+    notepad
+        .write_state(&RunState::running(
+            RunMode::Detached,
+            "notepad".to_owned(),
+            111,
+            &Overrides::default(),
+        ))
+        .unwrap();
+
+    let mut finished = RunState::running(
+        RunMode::Detached,
+        "photoshop".to_owned(),
+        222,
+        &Overrides::default(),
+    );
+    finished.finish(RunStatus::Exited);
+    runtime(root.path(), "photoshop")
+        .write_state(&finished)
+        .unwrap();
+    // winecfg never ran, so it has no state.toml at all.
+
+    let result = output(wineo(root.path()).arg("list"));
+    assert!(result.status.success(), "{}", stderr(&result));
+    let text = stdout(&result);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    assert!(lines[0].starts_with("broken") && lines[0].contains("inactive"));
+    assert!(
+        lines[1].starts_with("notepad")
+            && lines[1].contains("running")
+            && lines[1].contains("since")
+    );
+    assert!(
+        lines[2].starts_with("photoshop")
+            && lines[2].contains("exited")
+            && lines[2].contains("ended")
+    );
+    assert!(lines[3].starts_with("winecfg") && lines[3].contains("inactive"));
+}
+
+#[test]
+fn list_reports_a_broken_state_file_but_keeps_going() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "notepad", &env_toml("notepad"));
+    write_environment(root.path(), "zzz", &env_toml("zzz"));
+
+    let dir = root.path().join("state/wineo/notepad");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("state.toml"), "not valid toml").unwrap();
+
+    let result = output(wineo(root.path()).arg("list"));
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("error:"), "{}", stderr(&result));
+    let text = stdout(&result);
+    assert!(text.contains("zzz") && text.contains("inactive"), "{text}");
+    assert!(!text.contains("notepad"), "{text}");
+}
+
+#[test]
+fn status_without_a_name_shows_only_whats_running() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "notepad", &env_toml("notepad"));
+
+    let result = output(wineo(root.path()).arg("status"));
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(stdout(&result).is_empty());
+    assert!(
+        stderr(&result).contains("Nothing is running"),
+        "{}",
+        stderr(&result)
+    );
+
+    let notepad = runtime(root.path(), "notepad");
+    let _lock = notepad.try_lock().unwrap().unwrap();
+    notepad
+        .write_state(&RunState::running(
+            RunMode::Detached,
+            "notepad".to_owned(),
+            111,
+            &Overrides::default(),
+        ))
+        .unwrap();
+
+    let result = output(wineo(root.path()).arg("status"));
+    assert!(result.status.success(), "{}", stderr(&result));
+    let text = stdout(&result);
+    assert!(
+        text.contains("notepad") && text.contains("running") && text.contains("since"),
+        "{text}"
+    );
+}
+
+#[test]
+fn status_name_running_shows_target_runner_prefix_and_pid() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "notepad", &env_toml("notepad"));
+    let notepad = runtime(root.path(), "notepad");
+    let _lock = notepad.try_lock().unwrap().unwrap();
+    notepad
+        .write_state(&RunState::running(
+            RunMode::Attached,
+            "notepad".to_owned(),
+            4242,
+            &Overrides::default(),
+        ))
+        .unwrap();
+
+    let result = output(wineo(root.path()).args(["status", "notepad"]));
+    assert!(result.status.success(), "{}", stderr(&result));
+    let text = stdout(&result);
+    assert!(
+        text.starts_with("notepad: running attached since "),
+        "{text}"
+    );
+    assert!(text.contains("\n  target  notepad (notepad)\n"), "{text}");
+    // Not asserting on the runner version: wine may not be installed here.
+    assert!(text.contains("\n  runner  wine"), "{text}");
+    assert!(text.contains("\n  prefix  /p\n"), "{text}");
+    assert!(text.contains("\n  pid     4242\n"), "{text}");
+}
+
+#[test]
+fn status_name_stopped_drops_the_pid_line() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "notepad", &env_toml("notepad"));
+    let notepad = runtime(root.path(), "notepad");
+    let mut state = RunState::running(
+        RunMode::Detached,
+        "notepad".to_owned(),
+        4242,
+        &Overrides::default(),
+    );
+    state.finish(RunStatus::Stopped);
+    notepad.write_state(&state).unwrap();
+
+    let result = output(wineo(root.path()).args(["status", "notepad"]));
+    assert!(result.status.success(), "{}", stderr(&result));
+    let text = stdout(&result);
+    assert!(text.starts_with("notepad: stopped at "), "{text}");
+    assert!(text.contains("\n  target  notepad (notepad)\n"), "{text}");
+    assert!(!text.contains("pid"), "{text}");
+}
+
+#[test]
+fn status_name_lost_blames_the_run_that_never_finished() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "notepad", &env_toml("notepad"));
+    // Recorded as running, but nothing holds the lock: the supervisor died.
+    runtime(root.path(), "notepad")
+        .write_state(&RunState::running(
+            RunMode::Detached,
+            "notepad".to_owned(),
+            4242,
+            &Overrides::default(),
+        ))
+        .unwrap();
+
+    let result = output(wineo(root.path()).args(["status", "notepad"]));
+    assert!(result.status.success(), "{}", stderr(&result));
+    let text = stdout(&result);
+    assert!(
+        text.starts_with("notepad: failed, wineo lost track of the run started at "),
+        "{text}"
+    );
+    assert!(!text.contains("pid"), "{text}");
+}
+
+#[test]
+fn status_name_inactive_shows_only_runner_and_prefix() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "notepad", &env_toml("notepad"));
+
+    let result = output(wineo(root.path()).args(["status", "notepad"]));
+    assert!(result.status.success(), "{}", stderr(&result));
+    let text = stdout(&result);
+    assert!(text.starts_with("notepad: inactive\n"), "{text}");
+    assert!(text.contains("\n  runner  wine"), "{text}");
+    assert!(text.contains("\n  prefix  /p\n"), "{text}");
+    assert!(!text.contains("target"), "{text}");
+}
+
+#[test]
+fn status_name_unknown_environment_errors() {
+    let root = tempfile::tempdir().unwrap();
+    let result = output(wineo(root.path()).args(["status", "nope"]));
+    assert!(!result.status.success());
+    assert!(
+        stderr(&result).contains("does not exist"),
+        "{}",
+        stderr(&result)
     );
 }
