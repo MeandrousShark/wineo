@@ -78,6 +78,18 @@ impl Runner {
             .context(|| "failed to run wineserver -k".to_owned())?;
         Ok(())
     }
+
+    /// The version wine reports, like `wine-11.17`.
+    pub fn version(&self) -> Option<String> {
+        let output = Command::new(&self.wine)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        (output.status.success() && !version.is_empty()).then_some(version)
+    }
 }
 
 fn quietly(command: &mut Command) -> &mut Command {

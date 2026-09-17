@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io;
+use std::os::unix::fs::FileExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -12,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
+use crate::launch::Overrides;
 use crate::paths::Paths;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,11 +41,18 @@ pub struct RunState {
     pub target: String,
     pub pid: u32,
     pub started_at: Timestamp,
+    /// The run lasts until the prefix goes idle, which can be well after the
+    /// launched program exits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_exited_at: Option<Timestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<Timestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
-    /// Command line overrides, kept so a restart can reuse them.
+    /// Command line overrides, kept so a restart can reuse them. The target is
+    /// only kept when `--target` was passed, so a restart picks up a changed default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_target: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -50,31 +60,81 @@ pub struct RunState {
 }
 
 impl RunState {
-    pub fn running(
-        mode: RunMode,
-        target: String,
-        pid: u32,
-        args: Vec<String>,
-        env: BTreeMap<String, String>,
-    ) -> Self {
+    pub fn running(mode: RunMode, target: String, pid: u32, overrides: &Overrides) -> Self {
         Self {
             status: RunStatus::Running,
             mode,
             target,
             pid,
             started_at: Timestamp::now(),
+            program_exited_at: None,
             ended_at: None,
             exit_code: None,
-            args,
-            env,
+            requested_target: overrides.target.clone(),
+            args: overrides.args.clone(),
+            env: overrides.env.clone(),
         }
     }
 
-    pub fn finish(&mut self, status: RunStatus, exit_code: Option<i32>) {
-        self.status = status;
-        self.ended_at = Some(Timestamp::now());
+    pub fn program_exited(&mut self, exit_code: Option<i32>) {
+        self.program_exited_at = Some(Timestamp::now());
         self.exit_code = exit_code;
     }
+
+    pub fn finish(&mut self, status: RunStatus) {
+        self.status = status;
+        self.ended_at = Some(Timestamp::now());
+    }
+
+    /// The command line overrides this run was started with.
+    pub fn overrides(&self) -> Overrides {
+        Overrides {
+            target: self.requested_target.clone(),
+            env: self.env.clone(),
+            args: self.args.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum State {
+    Running,
+    Exited,
+    Failed,
+    Stopped,
+    /// Never started.
+    Inactive,
+}
+
+impl State {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            State::Running => "running",
+            State::Exited => "exited",
+            State::Failed => "failed",
+            State::Stopped => "stopped",
+            State::Inactive => "inactive",
+        }
+    }
+}
+
+impl fmt::Display for State {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// An environment's state, derived from its run lock and `state.toml`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Status {
+    pub state: State,
+    /// The latest run. Missing if there never was one, or while a new run is
+    /// still starting up.
+    pub run: Option<RunState>,
+    /// `state.toml` says running but nothing holds the lock, so whatever owned
+    /// the run died before it could record how the run ended.
+    pub lost: bool,
 }
 
 /// The runtime state directory of one environment.
@@ -87,46 +147,98 @@ pub struct Runtime {
 /// the holder dies, so a crash can never leave a stale lock behind.
 #[derive(Debug)]
 pub struct RunLock {
-    _file: File,
+    file: File,
+}
+
+impl Drop for RunLock {
+    fn drop(&mut self) {
+        // Best effort. `stop` only trusts the pid while the lock is held, and
+        // a cleared file keeps it from ever reading a pid that was reused.
+        let _ = self.file.set_len(0);
+    }
 }
 
 impl Runtime {
     pub fn new(paths: &Paths, name: &str) -> Self {
-        Self {
-            dir: paths.runtime_dir(name),
-        }
+        Self::at(paths.runtime_dir(name))
+    }
+
+    pub fn at(dir: PathBuf) -> Self {
+        Self { dir }
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
     }
 
-    /// Takes the run lock without blocking. None means something else holds it.
+    /// Takes the run lock without blocking and records this process as its
+    /// holder. None means something else holds it.
     pub fn try_lock(&self) -> Result<Option<RunLock>> {
-        let path = self.dir.join("lock");
-        fs::create_dir_all(&self.dir)
-            .context(|| format!("failed to create {}", self.dir.display()))?;
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)
-            .context(|| format!("failed to open {}", path.display()))?;
-        match flock(&file, FlockOperation::NonBlockingLockExclusive) {
-            Ok(()) => Ok(Some(RunLock { _file: file })),
-            Err(Errno::WOULDBLOCK) => Ok(None),
-            Err(err) => {
-                Err(io::Error::from(err)).context(|| format!("failed to lock {}", path.display()))
-            }
+        let file = self.open_lock()?;
+        if !self.flock(&file)? {
+            return Ok(None);
         }
+        let path = self.lock_path();
+        file.set_len(0)
+            .and_then(|()| file.write_all_at(format!("{}\n", std::process::id()).as_bytes(), 0))
+            .context(|| format!("failed to write {}", path.display()))?;
+        Ok(Some(RunLock { file }))
     }
 
     /// A momentary check, so the answer can be stale by the time it is used.
     pub fn is_running(&self) -> Result<bool> {
-        if !self.dir.join("lock").exists() {
+        if !self.lock_path().exists() {
             return Ok(false);
         }
-        Ok(self.try_lock()?.is_none())
+        let file = self.open_lock()?;
+        Ok(!self.flock(&file)?)
+    }
+
+    /// The pid the lock holder recorded. None while a new holder is still
+    /// writing it, or when nothing ran yet.
+    pub fn holder_pid(&self) -> Result<Option<u32>> {
+        let path = self.lock_path();
+        match fs::read_to_string(&path) {
+            Ok(text) => Ok(text.trim().parse().ok()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err).context(|| format!("failed to read {}", path.display())),
+        }
+    }
+
+    pub fn status(&self) -> Result<Status> {
+        // State is read before the lock is checked, so a run that is just
+        // starting never shows up with the previous run's details.
+        let run = self.read_state()?;
+        if self.is_running()? {
+            return Ok(Status {
+                state: State::Running,
+                run: run.filter(|run| run.status == RunStatus::Running),
+                lost: false,
+            });
+        }
+        let run = match run {
+            // The run may have finished between reading the state and checking the lock.
+            Some(run) if run.status == RunStatus::Running => self.read_state()?,
+            run => run,
+        };
+        let Some(run) = run else {
+            return Ok(Status {
+                state: State::Inactive,
+                run: None,
+                lost: false,
+            });
+        };
+        let (state, lost) = match run.status {
+            RunStatus::Running => (State::Failed, true),
+            RunStatus::Exited => (State::Exited, false),
+            RunStatus::Failed => (State::Failed, false),
+            RunStatus::Stopped => (State::Stopped, false),
+        };
+        Ok(Status {
+            state,
+            run: Some(run),
+            lost,
+        })
     }
 
     pub fn read_state(&self) -> Result<Option<RunState>> {
@@ -149,6 +261,60 @@ impl Runtime {
         write_atomic(&self.state_path(), &text)
     }
 
+    /// Output of the latest detached run.
+    pub fn log_path(&self) -> PathBuf {
+        self.dir.join("output.log")
+    }
+
+    /// Output of the detached run before the latest one.
+    pub fn previous_log_path(&self) -> PathBuf {
+        self.dir.join("output.log.1")
+    }
+
+    /// Moves the latest log aside and opens a fresh one for a new run.
+    pub fn rotate_log(&self) -> Result<File> {
+        fs::create_dir_all(&self.dir)
+            .context(|| format!("failed to create {}", self.dir.display()))?;
+        let (log, previous) = (self.log_path(), self.previous_log_path());
+        match fs::rename(&log, &previous) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err).context(|| format!("failed to rotate {}", log.display())),
+        }
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .context(|| format!("failed to open {}", log.display()))
+    }
+
+    fn open_lock(&self) -> Result<File> {
+        let path = self.lock_path();
+        fs::create_dir_all(&self.dir)
+            .context(|| format!("failed to create {}", self.dir.display()))?;
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .context(|| format!("failed to open {}", path.display()))
+    }
+
+    /// Returns false if another open file holds the lock.
+    fn flock(&self, file: &File) -> Result<bool> {
+        match flock(file, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => Ok(true),
+            Err(Errno::WOULDBLOCK) => Ok(false),
+            Err(err) => Err(io::Error::from(err))
+                .context(|| format!("failed to lock {}", self.lock_path().display())),
+        }
+    }
+
+    fn lock_path(&self) -> PathBuf {
+        self.dir.join("lock")
+    }
+
     fn state_path(&self) -> PathBuf {
         self.dir.join("state.toml")
     }
@@ -164,6 +330,7 @@ pub fn exit_code(status: ExitStatus) -> i32 {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::io::Write;
 
     use super::*;
 
@@ -174,6 +341,22 @@ mod tests {
         })
         .unwrap();
         Runtime::new(&paths, "notepad")
+    }
+
+    fn run_state(status: RunStatus) -> RunState {
+        RunState {
+            status,
+            mode: RunMode::Detached,
+            target: "notepad".to_owned(),
+            pid: 4242,
+            started_at: "2026-09-16T21:02:11Z".parse().unwrap(),
+            program_exited_at: None,
+            ended_at: None,
+            exit_code: None,
+            requested_target: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+        }
     }
 
     #[test]
@@ -188,6 +371,24 @@ mod tests {
     }
 
     #[test]
+    fn lock_records_the_holder_pid_until_released() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime(root.path());
+        assert_eq!(runtime.holder_pid().unwrap(), None);
+        assert!(!runtime.is_running().unwrap());
+
+        let lock = runtime.try_lock().unwrap().unwrap();
+        assert_eq!(runtime.holder_pid().unwrap(), Some(std::process::id()));
+        assert!(runtime.is_running().unwrap());
+        // Probing must not disturb the holder's pid.
+        assert_eq!(runtime.holder_pid().unwrap(), Some(std::process::id()));
+
+        drop(lock);
+        assert_eq!(runtime.holder_pid().unwrap(), None);
+        assert!(!runtime.is_running().unwrap());
+    }
+
+    #[test]
     fn state_round_trips() {
         let root = tempfile::tempdir().unwrap();
         let runtime = runtime(root.path());
@@ -196,19 +397,112 @@ mod tests {
         let state = RunState {
             status: RunStatus::Stopped,
             mode: RunMode::Attached,
-            target: "notepad".to_owned(),
-            pid: 4242,
-            started_at: "2026-09-16T21:02:11Z".parse().unwrap(),
+            program_exited_at: Some("2026-09-16T21:04:59Z".parse().unwrap()),
             ended_at: Some("2026-09-16T21:05:00Z".parse().unwrap()),
             exit_code: Some(0),
+            requested_target: Some("notepad".to_owned()),
             args: vec!["-x".to_owned()],
             env: BTreeMap::from([("DXVK_HUD".to_owned(), "1".to_owned())]),
+            ..run_state(RunStatus::Running)
         };
         runtime.write_state(&state).unwrap();
         assert_eq!(runtime.read_state().unwrap(), Some(state));
         assert_eq!(
             runtime.dir(),
             root.path().join(".local/state/wineo/notepad")
+        );
+    }
+
+    #[test]
+    fn state_without_newer_fields_still_parses() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime(root.path());
+        fs::create_dir_all(runtime.dir()).unwrap();
+        fs::write(
+            runtime.dir().join("state.toml"),
+            "status = \"exited\"\nmode = \"attached\"\ntarget = \"notepad\"\npid = 1\nstarted_at = \"2026-09-16T21:02:11Z\"\n",
+        )
+        .unwrap();
+        let state = runtime.read_state().unwrap().unwrap();
+        assert_eq!(state.status, RunStatus::Exited);
+        assert_eq!(state.requested_target, None);
+    }
+
+    #[test]
+    fn overrides_round_trip_through_state() {
+        let overrides = Overrides {
+            target: Some("bridge".to_owned()),
+            env: BTreeMap::from([("A".to_owned(), "1".to_owned())]),
+            args: vec!["-nosplash".to_owned()],
+        };
+        let mut state = RunState::running(RunMode::Detached, "bridge".to_owned(), 7, &overrides);
+        assert_eq!(state.status, RunStatus::Running);
+        let kept = state.overrides();
+        assert_eq!(kept.target, overrides.target);
+        assert_eq!(kept.env, overrides.env);
+        assert_eq!(kept.args, overrides.args);
+
+        state.program_exited(Some(3));
+        assert!(state.program_exited_at.is_some());
+        assert_eq!(state.exit_code, Some(3));
+        assert_eq!(state.ended_at, None);
+        state.finish(RunStatus::Failed);
+        assert_eq!(state.status, RunStatus::Failed);
+        assert!(state.ended_at.is_some());
+    }
+
+    #[test]
+    fn status_follows_lock_and_state() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime(root.path());
+        let status = runtime.status().unwrap();
+        assert_eq!(
+            (status.state, status.run, status.lost),
+            (State::Inactive, None, false)
+        );
+
+        for (recorded, state) in [
+            (RunStatus::Exited, State::Exited),
+            (RunStatus::Failed, State::Failed),
+            (RunStatus::Stopped, State::Stopped),
+        ] {
+            runtime.write_state(&run_state(recorded)).unwrap();
+            let status = runtime.status().unwrap();
+            assert_eq!(status.state, state);
+            assert!(!status.lost);
+            assert_eq!(status.run.unwrap().status, recorded);
+        }
+
+        // A new run holds the lock before it writes its state.
+        let lock = runtime.try_lock().unwrap().unwrap();
+        let status = runtime.status().unwrap();
+        assert_eq!((status.state, status.run), (State::Running, None));
+
+        runtime.write_state(&run_state(RunStatus::Running)).unwrap();
+        let status = runtime.status().unwrap();
+        assert_eq!(status.state, State::Running);
+        assert!(status.run.is_some());
+
+        // The holder died without finishing its state.
+        drop(lock);
+        let status = runtime.status().unwrap();
+        assert_eq!(status.state, State::Failed);
+        assert!(status.lost);
+        assert!(status.run.is_some());
+    }
+
+    #[test]
+    fn rotating_keeps_one_previous_log() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime(root.path());
+        writeln!(runtime.rotate_log().unwrap(), "first").unwrap();
+        assert!(!runtime.previous_log_path().exists());
+        writeln!(runtime.rotate_log().unwrap(), "second").unwrap();
+        writeln!(runtime.rotate_log().unwrap(), "third").unwrap();
+        assert_eq!(fs::read_to_string(runtime.log_path()).unwrap(), "third\n");
+        assert_eq!(
+            fs::read_to_string(runtime.previous_log_path()).unwrap(),
+            "second\n"
         );
     }
 

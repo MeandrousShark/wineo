@@ -79,8 +79,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         RunMode::Attached,
         launch.target.clone().unwrap_or_default(),
         child.id(),
-        overrides.args,
-        overrides.env,
+        &overrides,
     );
     // Wine is already running, so bailing out here would orphan it and free the lock.
     if let Err(err) = runtime.write_state(&state) {
@@ -113,6 +112,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         match event {
             Event::Exited(status) => {
                 code = status.ok().map(exit_code);
+                state.program_exited(code);
+                if let Err(err) = runtime.write_state(&state) {
+                    note(&format!("warning: {:#}", anyhow::Error::from(err)));
+                }
                 // Launchers often hand off to another process and exit, so the
                 // run lasts until nothing is left running in the prefix.
                 let idle_events = events.clone();
@@ -151,7 +154,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         (None, Some(0)) => RunStatus::Exited,
         (None, _) => RunStatus::Failed,
     };
-    state.finish(status, code);
+    state.finish(status);
     runtime.write_state(&state)?;
     Ok(ExitCode::from(
         code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1),

@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -43,6 +44,17 @@ impl Environment {
             path,
             config,
         })
+    }
+
+    /// Checks that an environment exists without parsing its config, for
+    /// commands that shouldn't be blocked by a broken one.
+    pub fn ensure_exists(paths: &Paths, name: &str) -> Result<()> {
+        check_name(name)?;
+        if paths.environment_config(name).is_file() {
+            Ok(())
+        } else {
+            Err(Error::UnknownEnvironment(name.to_owned()))
+        }
     }
 
     /// Creates the prefix, or adopts an existing one, then writes the environment config.
@@ -97,6 +109,32 @@ impl Environment {
     pub fn prefix(&self, paths: &Paths) -> Result<PathBuf> {
         paths.absolute(&self.config.prefix)
     }
+}
+
+/// Names of all environments, sorted. Configs aren't parsed, so a broken one is still listed.
+pub fn names(paths: &Paths) -> Result<Vec<String>> {
+    let dir = paths.environments_dir();
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err).context(|| format!("failed to read {}", dir.display())),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let path = entry
+            .context(|| format!("failed to read {}", dir.display()))?
+            .path();
+        if path.extension() != Some(OsStr::new("toml")) || !path.is_file() {
+            continue;
+        }
+        if let Some(name) = path.file_stem().and_then(OsStr::to_str)
+            && name::is_valid(name)
+        {
+            names.push(name.to_owned());
+        }
+    }
+    names.sort();
+    Ok(names)
 }
 
 fn check_name(name: &str) -> Result<()> {
@@ -242,6 +280,30 @@ mod tests {
             Err(Error::NotAPrefix(_))
         ));
         assert!(dir.join("notes.txt").exists());
+    }
+
+    #[test]
+    fn names_lists_toml_files_with_valid_names() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        assert!(names(&paths).unwrap().is_empty());
+
+        let dir = paths.environments_dir();
+        fs::create_dir_all(dir.join("dir.toml")).unwrap();
+        for file in ["zed.toml", "broken.toml", "notes.txt", "bad name.toml"] {
+            fs::write(dir.join(file), "not even toml").unwrap();
+        }
+        assert_eq!(names(&paths).unwrap(), ["broken", "zed"]);
+
+        assert!(Environment::ensure_exists(&paths, "broken").is_ok());
+        assert!(matches!(
+            Environment::ensure_exists(&paths, "dir"),
+            Err(Error::UnknownEnvironment(_))
+        ));
+        assert!(matches!(
+            Environment::ensure_exists(&paths, "../zed"),
+            Err(Error::InvalidName(_))
+        ));
     }
 
     #[test]
