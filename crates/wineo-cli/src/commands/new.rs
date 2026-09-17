@@ -1,10 +1,14 @@
+use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 use anyhow::bail;
 use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::environment::{Environment, NewEnvironment};
+use wineo_core::launch::{self, Launch};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
+
+use super::exec;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -23,9 +27,17 @@ pub struct Args {
     /// Prefix architecture, win64 or win32
     #[arg(long, value_name = "ARCH")]
     arch: Option<Arch>,
+
+    /// Run an installer after creating the environment
+    #[arg(long, value_name = "PATH")]
+    install_exe: Option<String>,
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
+    // Checked up front so a typo fails before the prefix creation wait.
+    if let Some(installer) = &args.install_exe {
+        launch::check_program_path(paths, installer)?;
+    }
     let Some(name) = args.name else {
         bail!("guided creation isn't available yet, pass a name with -n");
     };
@@ -58,9 +70,32 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             environment.name, environment.config.prefix
         );
     }
+
+    let mut installer_exit = None;
+    if let Some(installer) = &args.install_exe {
+        let launch = Launch::exec(
+            paths,
+            &global,
+            &environment,
+            installer,
+            &[],
+            &BTreeMap::new(),
+        )?;
+        let code = exec::run_attached(&launch)?;
+        // Installers often hand off to another process and exit early.
+        launch.runner.wait_idle(&launch.prefix)?;
+        if code != 0 {
+            eprintln!("The installer exited with code {code}");
+            installer_exit = Some(code);
+        }
+    }
+
     println!(
         "Add a target with: wineo set {} targets.<target>.exe=<path>",
         environment.name
     );
-    Ok(ExitCode::SUCCESS)
+    Ok(match installer_exit {
+        Some(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+        None => ExitCode::SUCCESS,
+    })
 }

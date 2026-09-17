@@ -183,9 +183,7 @@ fn resolve_program(
         });
     }
 
-    let is_path =
-        exe.contains('/') || exe.starts_with('~') || (relative_to_cwd && Path::new(exe).is_file());
-    if !is_path {
+    if !is_path(exe, relative_to_cwd) {
         // Bare names like `notepad` or `winecfg` are looked up by wine itself.
         return Ok(Program {
             wine_args: program_args(exe.to_owned(), msi),
@@ -208,6 +206,25 @@ fn resolve_program(
         wine_args: program_args(arg, msi),
         dir: unix.parent().map(Path::to_owned),
     })
+}
+
+fn is_path(exe: &str, relative_to_cwd: bool) -> bool {
+    exe.contains('/') || exe.starts_with('~') || (relative_to_cwd && Path::new(exe).is_file())
+}
+
+/// Fails fast on an installer path that doesn't exist, before the prefix is
+/// created. Windows paths and bare names aren't resolvable yet, so they pass;
+/// `resolve_program` checks those for real once the prefix is open.
+pub fn check_program_path(paths: &Paths, program: &str) -> Result<()> {
+    if winpath::is_windows_path(program) || !is_path(program, true) {
+        return Ok(());
+    }
+    let unix = paths.absolute(program)?;
+    if unix.is_file() {
+        Ok(())
+    } else {
+        Err(Error::ExeNotFound(program.to_owned()))
+    }
 }
 
 fn program_args(program: String, msi: bool) -> Vec<String> {
@@ -399,6 +416,32 @@ mod tests {
 
         let bare = resolve_program(&f.paths, &f.prefix, "thing.MSI", false).unwrap();
         assert_eq!(bare.wine_args, ["msiexec", "/i", "thing.MSI"]);
+    }
+
+    #[test]
+    fn check_program_path_passes_bare_names_and_windows_paths() {
+        let f = fixture();
+        assert!(check_program_path(&f.paths, "notepad").is_ok());
+        assert!(check_program_path(&f.paths, r"C:\Program Files\App\missing.exe").is_ok());
+    }
+
+    #[test]
+    fn check_program_path_requires_existing_unix_paths() {
+        let f = fixture();
+        let home = f.prefix.parent().unwrap();
+        assert!(check_program_path(&f.paths, "~/setup.exe").is_ok());
+        assert!(matches!(
+            check_program_path(&f.paths, "~/nope.exe"),
+            Err(Error::ExeNotFound(_))
+        ));
+
+        let existing = home.join("setup.exe");
+        assert!(check_program_path(&f.paths, existing.to_str().unwrap()).is_ok());
+        let missing = home.join("nope.exe");
+        assert!(matches!(
+            check_program_path(&f.paths, missing.to_str().unwrap()),
+            Err(Error::ExeNotFound(_))
+        ));
     }
 
     #[test]

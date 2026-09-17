@@ -146,6 +146,31 @@ fn config_prints_stored_files_even_when_invalid() {
 }
 
 #[test]
+fn new_with_a_missing_installer_fails_before_creating_anything() {
+    let root = tempfile::tempdir().unwrap();
+    let result = output(wineo(root.path()).args([
+        "new",
+        "-n",
+        "app",
+        "--install-exe",
+        "/nonexistent/setup.exe",
+    ]));
+    assert!(!result.status.success());
+    assert!(
+        stderr(&result).contains("/nonexistent/setup.exe"),
+        "{}",
+        stderr(&result)
+    );
+    assert!(
+        !root
+            .path()
+            .join("config/wineo/environments/app.toml")
+            .exists()
+    );
+    assert!(!root.path().join("data/wineo/prefixes/app").exists());
+}
+
+#[test]
 #[ignore = "runs wine and opens notepad"]
 fn new_run_and_exec_with_real_wine() {
     let root = tempfile::tempdir().unwrap();
@@ -206,4 +231,23 @@ fn new_run_and_exec_with_real_wine() {
 
     let menu_entries = find_wine_extension_files(&root.path().join("data"));
     assert!(menu_entries.is_empty(), "{menu_entries:?}");
+}
+
+#[test]
+#[ignore = "runs wine"]
+fn new_with_install_exe_runs_the_installer_and_prints_the_hint() {
+    let root = tempfile::tempdir().unwrap();
+    let result = output(wineo(root.path()).args([
+        "new",
+        "-n",
+        "app",
+        "--install-exe",
+        "/usr/lib/wine/x86_64-windows/hostname.exe",
+    ]));
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(
+        String::from_utf8_lossy(&result.stdout).contains("Add a target with"),
+        "{}",
+        String::from_utf8_lossy(&result.stdout)
+    );
 }

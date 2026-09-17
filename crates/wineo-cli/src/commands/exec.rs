@@ -39,11 +39,16 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         &args.args,
         &env,
     )?;
+    let code = run_attached(&launch)?;
+    Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
+}
 
+/// Runs `launch` attached to the terminal. Shared with `new --install-exe`.
+pub(crate) fn run_attached(launch: &Launch) -> anyhow::Result<i32> {
     // The program shares our process group and gets Ctrl+C itself. wineo keeps
     // waiting instead of exiting out from under it.
     signal_hook::flag::register(SIGINT, Arc::new(AtomicBool::new(false)))
         .context("failed to set up signal handling")?;
     let status = launch.command().status().context("failed to start wine")?;
-    Ok(ExitCode::from(u8::try_from(exit_code(status)).unwrap_or(1)))
+    Ok(exit_code(status))
 }
