@@ -6,6 +6,8 @@ use std::os::unix::fs::FileExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::thread;
+use std::time::Duration;
 
 use jiff::Timestamp;
 use rustix::fs::{FlockOperation, flock};
@@ -137,6 +139,11 @@ pub struct Status {
     pub lost: bool,
 }
 
+/// A probe from `is_running` holds a shared lock for a moment, so taking the
+/// run lock retries for about this long before deciding another run holds it.
+const LOCK_ATTEMPTS: u32 = 20;
+const LOCK_RETRY: Duration = Duration::from_millis(5);
+
 /// The runtime state directory of one environment.
 #[derive(Debug, Clone)]
 pub struct Runtime {
@@ -175,8 +182,13 @@ impl Runtime {
     /// holder. None means something else holds it.
     pub fn try_lock(&self) -> Result<Option<RunLock>> {
         let file = self.open_lock()?;
-        if !self.flock(&file)? {
-            return Ok(None);
+        let mut attempts = 1;
+        while !self.flock(&file, FlockOperation::NonBlockingLockExclusive)? {
+            if attempts == LOCK_ATTEMPTS {
+                return Ok(None);
+            }
+            attempts += 1;
+            thread::sleep(LOCK_RETRY);
         }
         let path = self.lock_path();
         file.set_len(0)
@@ -191,7 +203,8 @@ impl Runtime {
             return Ok(false);
         }
         let file = self.open_lock()?;
-        Ok(!self.flock(&file)?)
+        // Shared, so probes running at the same time never see each other as a run.
+        Ok(!self.flock(&file, FlockOperation::NonBlockingLockShared)?)
     }
 
     /// The pid the lock holder recorded. None while a new holder is still
@@ -301,9 +314,9 @@ impl Runtime {
             .context(|| format!("failed to open {}", path.display()))
     }
 
-    /// Returns false if another open file holds the lock.
-    fn flock(&self, file: &File) -> Result<bool> {
-        match flock(file, FlockOperation::NonBlockingLockExclusive) {
+    /// Returns false if another open file holds a conflicting lock.
+    fn flock(&self, file: &File, operation: FlockOperation) -> Result<bool> {
+        match flock(file, operation) {
             Ok(()) => Ok(true),
             Err(Errno::WOULDBLOCK) => Ok(false),
             Err(err) => Err(io::Error::from(err))
@@ -331,6 +344,9 @@ pub fn exit_code(status: ExitStatus) -> i32 {
 mod tests {
     use std::ffi::OsString;
     use std::io::Write;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
 
     use super::*;
 
@@ -368,6 +384,51 @@ mod tests {
         assert!(runtime.try_lock().unwrap().is_none());
         drop(first);
         assert!(runtime.try_lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn probes_never_mistake_each_other_for_a_run() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime(root.path());
+        drop(runtime.try_lock().unwrap());
+        let until = Instant::now() + Duration::from_millis(300);
+        let probers: Vec<_> = (0..4)
+            .map(|_| {
+                let runtime = runtime.clone();
+                thread::spawn(move || {
+                    let mut seen_running = false;
+                    while Instant::now() < until {
+                        seen_running |= runtime.is_running().unwrap();
+                    }
+                    seen_running
+                })
+            })
+            .collect();
+        for prober in probers {
+            assert!(!prober.join().unwrap());
+        }
+    }
+
+    #[test]
+    fn a_new_run_gets_the_lock_while_something_probes() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime(root.path());
+        drop(runtime.try_lock().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let prober = {
+            let (runtime, stop) = (runtime.clone(), stop.clone());
+            thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    runtime.is_running().unwrap();
+                    thread::sleep(Duration::from_millis(1));
+                }
+            })
+        };
+        for _ in 0..50 {
+            assert!(runtime.try_lock().unwrap().is_some());
+        }
+        stop.store(true, Ordering::Relaxed);
+        prober.join().unwrap();
     }
 
     #[test]
