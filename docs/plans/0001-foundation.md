@@ -1,6 +1,6 @@
 # 0001: Foundation and first run
 
-Status: approved
+Status: done
 
 ## Goal
 
