@@ -5,7 +5,7 @@ use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::launch::{Launch, Overrides};
 use wineo_core::paths::Paths;
-use wineo_core::runtime::{Runtime, State};
+use wineo_core::runtime::{RunStatus, Runtime};
 use wineo_core::supervisor::{self, Spec, Started};
 
 use crate::commands::run::LaunchArgs;
@@ -34,9 +34,15 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
     let launch = Launch::target(paths, &global, &environment, &overrides)?;
     let runtime = Runtime::new(paths, name);
 
-    let status = runtime.status()?;
-    if status.state == State::Running {
-        if let Some(run) = &status.run
+    if runtime.is_running()? {
+        // The previous run's state doesn't matter for a new one, so an
+        // unreadable state file only skips the target check.
+        let running = runtime
+            .read_state()
+            .ok()
+            .flatten()
+            .filter(|run| run.status == RunStatus::Running);
+        if let Some(run) = &running
             && Some(run.target.as_str()) != launch.target.as_deref()
         {
             bail!(

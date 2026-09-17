@@ -59,9 +59,11 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     };
 
     // Attached runs aren't logged, so this log is from an earlier detached run.
-    let status = runtime.status()?;
-    let attached = status.state == State::Running
-        && status.run.is_some_and(|run| run.mode == RunMode::Attached);
+    // An unreadable state file just means there's no note.
+    let attached = runtime.status().is_ok_and(|status| {
+        status.state == State::Running
+            && status.run.is_some_and(|run| run.mode == RunMode::Attached)
+    });
     if attached {
         eprintln!(
             "{} is running attached, so its output is in that terminal",

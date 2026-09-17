@@ -473,6 +473,53 @@ fn stop_cleans_up_after_a_dead_supervisor() {
 }
 
 #[test]
+fn a_corrupt_state_file_does_not_block_start_stop_or_logs() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    let state = f.runtime("app").dir().join("state.toml");
+    fs::create_dir_all(state.parent().unwrap()).unwrap();
+    fs::write(&state, "").unwrap();
+    fs::write(f.runtime("app").log_path(), "old output\n").unwrap();
+
+    let logs = f.run(&["logs", "app"]);
+    assert_success(&logs);
+    assert_eq!(stdout(&logs), "old output\n");
+    let stopped = f.run(&["stop", "app"]);
+    assert_success(&stopped);
+    assert!(
+        stderr(&stopped).contains("invalid state file"),
+        "{}",
+        stderr(&stopped)
+    );
+
+    assert_success(&f.run(&["start", "app"]));
+    wait_for("the program to start", || f.fake_program_running("app"));
+    fs::write(&state, "").unwrap();
+    let stopped = f.run(&["stop", "app"]);
+    assert_success(&stopped);
+    assert_eq!(stdout(&stopped), "Stopped app\n");
+}
+
+#[test]
+fn a_broken_global_config_does_not_block_stop() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    assert_success(&f.run(&["start", "app"]));
+    wait_for("the program to start", || f.fake_program_running("app"));
+    fs::write(f.config_dir().join("config.toml"), "typo_key = 1\n").unwrap();
+
+    let stopped = f.run(&["stop", "app"]);
+    assert_success(&stopped);
+    assert_eq!(stdout(&stopped), "Stopped app\n");
+    assert!(
+        stderr(&stopped).contains("warning: invalid config"),
+        "{}",
+        stderr(&stopped)
+    );
+    assert!(!f.fake_program_running("app"));
+}
+
+#[test]
 fn following_logs_ends_with_the_run() {
     let f = Fixture::new();
     f.environment("app", APP);
