@@ -92,6 +92,14 @@ impl Fixture {
         Self { root, path_var }
     }
 
+    /// Uses the wine installed on the system instead of the fakes.
+    fn real() -> Self {
+        Self {
+            root: tempfile::tempdir().unwrap(),
+            path_var: std::env::var_os("PATH").unwrap_or_default(),
+        }
+    }
+
     fn wineo(&self) -> Command {
         let root = self.root.path();
         let mut command = Command::new(env!("CARGO_BIN_EXE_wineo"));
@@ -474,4 +482,64 @@ fn following_logs_ends_with_the_run() {
         text.contains("wineo: stopping, asking programs to close"),
         "{text}"
     );
+}
+
+#[test]
+#[ignore = "runs wine and opens notepad"]
+fn start_status_logs_restart_and_stop_with_real_wine() {
+    let f = Fixture::real();
+    assert_success(&f.run(&["new", "-n", "notepad"]));
+    assert_success(&f.run(&["set", "notepad", "targets.notepad.exe=notepad"]));
+
+    let started = f.run(&["start", "notepad"]);
+    assert_success(&started);
+    assert_eq!(stdout(&started), "Started notepad\n");
+    // Let notepad open its window, so it can be asked to close.
+    thread::sleep(Duration::from_secs(3));
+
+    let status = f.run(&["status"]);
+    assert_success(&status);
+    assert!(
+        stdout(&status).starts_with("notepad "),
+        "{}",
+        stdout(&status)
+    );
+    let status = stdout(&f.run(&["status", "notepad"]));
+    assert!(status.starts_with("notepad: running since "), "{status}");
+    assert!(status.contains("  runner  wine (wine-"), "{status}");
+    let list = stdout(&f.run(&["list"]));
+    assert!(list.contains("running"), "{list}");
+    assert_success(&f.run(&["logs", "notepad", "-n", "5"]));
+
+    let restarted = f.run(&["restart", "notepad"]);
+    assert_success(&restarted);
+    assert_eq!(stdout(&restarted), "Restarted notepad\n");
+    let previous = fs::read_to_string(f.runtime("notepad").previous_log_path()).unwrap();
+    assert!(previous.contains("wineo: stopping"), "{previous}");
+    thread::sleep(Duration::from_secs(3));
+
+    let stopped = f.run(&["stop", "notepad"]);
+    assert_success(&stopped);
+    assert_eq!(stdout(&stopped), "Stopped notepad\n");
+    let status = stdout(&f.run(&["status", "notepad"]));
+    assert!(status.starts_with("notepad: stopped at "), "{status}");
+
+    assert_success(&f.run(&["start", "notepad"]));
+    thread::sleep(Duration::from_secs(3));
+    let closed = f.run(&["exec", "notepad", "taskkill", "/im", "notepad.exe"]);
+    assert_success(&closed);
+    wait_for("notepad's run to end", || {
+        !f.runtime("notepad").is_running().unwrap()
+    });
+    let status = stdout(&f.run(&["status", "notepad"]));
+    assert!(
+        status.starts_with("notepad: exited with code 0 at "),
+        "{status}"
+    );
+
+    let applications = f.root.path().join("data/applications");
+    let entries: Vec<_> = fs::read_dir(&applications)
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    assert!(entries.is_empty(), "{entries:?}");
 }
