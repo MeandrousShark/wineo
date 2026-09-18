@@ -1,9 +1,11 @@
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1658,4 +1660,122 @@ fn lock_files_outlive_the_environment_they_coordinate() {
     assert!(!runtime_dir(root.path(), "notepad").exists());
     let lock = root.path().join("state/wineo/.locks/name-notepad.lock");
     assert!(lock.is_file(), "{} is missing", lock.display());
+}
+
+const RESET_NOTE: &str = "wineo: the log passed 1 MB; all output before this reset was dropped";
+
+/// Reads a child's stdout line by line on its own thread, so a test waits for
+/// what the follower actually printed instead of guessing a delay.
+struct Lines {
+    lines: std::sync::mpsc::Receiver<String>,
+}
+
+impl Lines {
+    fn from(stdout: std::process::ChildStdout) -> Self {
+        let (sender, lines) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self { lines }
+    }
+
+    fn next(&self, what: &str) -> String {
+        self.lines
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap_or_else(|err| panic!("waiting for {what}: {err}"))
+    }
+}
+
+fn open_log(path: &Path) -> fs::File {
+    fs::OpenOptions::new().append(true).open(path).unwrap()
+}
+
+#[test]
+fn logs_follow_starts_over_when_the_log_is_cleared() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "notepad", MINIMAL_ENVIRONMENT);
+    let path = write_log(root.path(), "notepad", "output.log", "first\n");
+    let log = wineo_core::log::Log::new(path.clone());
+    let lock = Runtime::at(runtime_dir(root.path(), "notepad"))
+        .try_lock()
+        .unwrap()
+        .unwrap();
+
+    let mut child = wineo(root.path())
+        .args(["logs", "notepad", "-f"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let lines = Lines::from(child.stdout.take().unwrap());
+    assert_eq!(lines.next("the first line"), "first");
+
+    // The follower is six bytes in. Clearing and regrowing past that offset
+    // must not leave it reading from the middle of the new output.
+    let mut file = open_log(&path);
+    for round in ["second", "third"] {
+        log.clear(&file, RESET_NOTE).unwrap();
+        writeln!(file, "{round}").unwrap();
+        assert_eq!(lines.next("the reset note"), RESET_NOTE);
+        assert_eq!(lines.next("output after the reset"), round);
+    }
+
+    // A reset as the run ends is still delivered.
+    log.clear(&file, RESET_NOTE).unwrap();
+    writeln!(file, "last").unwrap();
+    drop(file);
+    drop(lock);
+
+    assert_eq!(lines.next("the final reset note"), RESET_NOTE);
+    assert_eq!(lines.next("the final line"), "last");
+    wait_for("wineo logs to notice the run ended", || {
+        matches!(child.try_wait(), Ok(Some(_)))
+    });
+    assert!(child.wait_with_output().unwrap().status.success());
+}
+
+#[test]
+fn logs_n_tolerates_a_reset_while_it_reads() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "notepad", MINIMAL_ENVIRONMENT);
+    let path = write_log(root.path(), "notepad", "output.log", "");
+    let log = wineo_core::log::Log::new(path.clone());
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let churn = {
+        let (stop, path) = (stop.clone(), path.clone());
+        thread::spawn(move || {
+            let mut file = open_log(&path);
+            while !stop.load(Ordering::Relaxed) {
+                for line in 0..200 {
+                    writeln!(file, "line {line}").unwrap();
+                }
+                log.clear(&file, RESET_NOTE).unwrap();
+            }
+        })
+    };
+
+    for _ in 0..20 {
+        let out = output(wineo(root.path()).args(["logs", "notepad", "-n", "5"]));
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
+    stop.store(true, Ordering::Relaxed);
+    churn.join().unwrap();
+}
+
+#[test]
+fn logs_previous_is_never_treated_as_resettable() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "notepad", MINIMAL_ENVIRONMENT);
+    write_log(root.path(), "notepad", "output.log.1", "older run\n");
+    // A counter left over from the run that wrote it must not be consulted.
+    write_log(root.path(), "notepad", "output.log.reset", "7\n");
+
+    let out = output(wineo(root.path()).args(["logs", "notepad", "--previous"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "older run\n");
 }

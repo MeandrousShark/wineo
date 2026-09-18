@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use wineo_core::environment::Environment;
+use wineo_core::log::Log;
 use wineo_core::paths::Paths;
 use wineo_core::runtime::{RunMode, Runtime, State};
 
@@ -42,7 +43,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     } else {
         runtime.log_path()
     };
-    let mut file = match File::open(&path) {
+    let file = match File::open(&path) {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             if args.previous {
@@ -71,39 +72,109 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         );
     }
 
+    // Only the current log is ever cleared, so only that one needs coordination.
+    let session = (!args.previous).then(|| Log::new(runtime.log_path()));
+    let mut reader = Reader::new(file, session);
     if let Some(lines) = args.lines {
-        let offset = tail_offset(&mut file, lines, CHUNK_SIZE)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        file.seek(SeekFrom::Start(offset))
-            .with_context(|| format!("failed to read {}", path.display()))?;
+        reader.seek_to_last_lines(lines)?;
     }
 
     let mut stdout = io::stdout().lock();
-    let open = stream(&mut file, &mut stdout)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let open = reader.stream(&mut stdout)?;
 
     // Attached mode has no active detached run to follow, and this log is history.
     if open && args.follow && !attached && runtime.is_running()? {
-        follow(&runtime, &path, &mut file, &mut stdout)
-            .with_context(|| format!("failed to read {}", path.display()))?;
+        follow(&runtime, &path, &mut reader, &mut stdout)?;
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Reads a log, noticing when the supervisor clears it. Every read is bounded
+/// and rechecks the reset counter under the same hold, so a log that was
+/// cleared and has already grown past the last read position is still picked up
+/// from the start of its new contents rather than from the middle.
+struct Reader {
+    file: File,
+    session: Option<Log>,
+    seen: u64,
+    buf: Vec<u8>,
+}
+
+impl Reader {
+    fn new(file: File, session: Option<Log>) -> Self {
+        Self {
+            file,
+            session,
+            seen: 0,
+            buf: vec![0u8; CHUNK_SIZE],
+        }
+    }
+
+    fn seek_to_last_lines(&mut self, lines: u64) -> anyhow::Result<()> {
+        let Self {
+            file,
+            session,
+            seen,
+            ..
+        } = self;
+        guarded(session.as_ref(), |count| {
+            *seen = count;
+            let offset = tail_offset(file, lines, CHUNK_SIZE)?;
+            file.seek(SeekFrom::Start(offset))?;
+            Ok(())
+        })
+    }
+
+    /// Copies everything up to the log's current end. `Ok(false)` means the
+    /// writer closed its end, like `wineo logs x | head`.
+    fn stream(&mut self, writer: &mut impl Write) -> anyhow::Result<bool> {
+        loop {
+            let Self {
+                file,
+                session,
+                seen,
+                buf,
+            } = self;
+            let read = guarded(session.as_ref(), |count| {
+                if count != *seen {
+                    *seen = count;
+                    // Cleared since the last read, so the new output starts at zero.
+                    file.seek(SeekFrom::Start(0))?;
+                }
+                file.read(buf)
+            })?;
+            if read == 0 {
+                return Ok(flush(writer)?);
+            }
+            if !write_all(writer, &self.buf[..read])? {
+                return Ok(false);
+            }
+        }
+    }
+}
+
+/// Runs `read` with the log held against a reset, when there is one to hold.
+fn guarded<T>(session: Option<&Log>, read: impl FnOnce(u64) -> io::Result<T>) -> anyhow::Result<T> {
+    match session {
+        Some(log) => Ok(log.read_guarded(read)?),
+        None => Ok(read(0)?),
+    }
 }
 
 fn follow(
     runtime: &Runtime,
     path: &Path,
-    file: &mut File,
+    reader: &mut Reader,
     stdout: &mut impl Write,
 ) -> anyhow::Result<()> {
     loop {
         thread::sleep(POLL_INTERVAL);
-        if !stream(file, stdout)? {
+        if !reader.stream(stdout)? {
             return Ok(());
         }
-        if run_is_over(runtime, path, file)? {
+        if run_is_over(runtime, path, &reader.file)? {
             // Whatever was written between the last read and the run ending.
-            stream(file, stdout)?;
+            reader.stream(stdout)?;
             return Ok(());
         }
     }
@@ -116,21 +187,6 @@ fn run_is_over(runtime: &Runtime, path: &Path, file: &File) -> anyhow::Result<bo
     }
     let ino = file.metadata()?.ino();
     Ok(!fs::metadata(path).is_ok_and(|meta| meta.ino() == ino))
-}
-
-/// Copies `reader` to `writer` until EOF. `Ok(false)` means `writer` closed
-/// its end, like `wineo logs x | head`, so the caller should stop quietly.
-fn stream(reader: &mut impl Read, writer: &mut impl Write) -> io::Result<bool> {
-    let mut buf = [0u8; CHUNK_SIZE];
-    loop {
-        let read = reader.read(&mut buf)?;
-        if read == 0 {
-            return flush(writer);
-        }
-        if !write_all(writer, &buf[..read])? {
-            return Ok(false);
-        }
-    }
 }
 
 fn write_all(writer: &mut impl Write, buf: &[u8]) -> io::Result<bool> {
