@@ -15,6 +15,7 @@ Settled by the maintainer:
 - Only wineo's own runners root is scanned. Discovering runners already installed by Steam, Lutris, or Heroic is a separate features.md row.
 - For a Proton environment, the `prefix` in an environment config is the compatdata directory, the way Heroic and Steam use it. The real wine prefix is `pfx/` inside it, and wineo appends that itself wherever it needs a wine prefix. Recorded here so the Proton plan does not reopen it.
 - `gamemode` is configurable globally, per environment, and per target, with the most specific setting winning.
+- A launch with gamemode on and no `gamemoderun` on `PATH` is an error, not a warning. Wineo does not quietly start a game without something the config explicitly asked for.
 
 ## Details
 
@@ -85,7 +86,8 @@ gamemode = false
 - A boolean at three levels. The target's value wins over the environment's, which wins over the global one. Unset at every level means off.
 - `wineo set --global gamemode=true`, `wineo set hades gamemode=true`, and `wineo set hades targets.launcher.gamemode=false` all work, and all three keys can be unset.
 - When it is on, the launch command becomes `gamemoderun <runner wine> <args...>`. Nothing else about the launch changes.
-- `gamemoderun` missing from `PATH` while gamemode is on is an error: `` `gamemoderun` was not found on PATH ``. Starting a game without the thing that was explicitly asked for is worse than refusing, and the error is the same shape as the existing `winetricks` one.
+- `gamemoderun` missing from `PATH` while gamemode is on refuses the launch: `` gamemode is on for `hades`, but `gamemoderun` was not found on PATH ``. It names the setting as well as the binary, since `gamemoderun` ships in the `gamemode` package and the two names do not match. Nothing is started.
+- The check happens where the launch is resolved, so `start` reports it before handing anything to a supervisor, and a detached run never fails half-spawned.
 - gamemode applies only to launching a target, so `run`, `start`, and `restart`. `exec`, `winetricks`, and prefix creation are not games and never take it, whatever the config says.
 - `status <name>` shows a `gamemode` line only when it is on for that environment's last run.
 
@@ -97,7 +99,8 @@ gamemode = false
 - `defaults.runner_root` moves where runners are found.
 - `new --runner` validates before creating a prefix, so a typo leaves nothing behind. `set runner=` is refused while running and while another operation holds the environment, and prints the prefix-compatibility note.
 - Lifecycle against a custom runner: the existing fake wine and wineserver scripts, installed as `runners/fake/bin/{wine,wineserver}` instead of on `PATH`, drive a full start, status, logs, stop cycle. This proves resolution reaches the supervisor and that nothing still assumes `PATH`.
-- gamemode: merging across all three levels including a target turning it off, a fake `gamemoderun` on `PATH` that records its arguments and then executes them, the missing-gamemoderun error, and that `exec` and `winetricks` never wrap.
+- gamemode: merging across all three levels including a target turning it off, a fake `gamemoderun` on `PATH` that records its arguments and then executes them, and that `exec` and `winetricks` never wrap.
+- The missing-gamemoderun error, with `PATH` pointing somewhere without it: `run` and `start` both refuse, the message names the environment and the binary, and nothing is left running or recorded afterwards.
 - Ignored real wine tests: none. This plan adds nothing that needs a real wine that the existing ignored tests do not already cover.
 
 ## Phases
@@ -128,6 +131,5 @@ wineo stop hades
 Proposed details above are for review. These are the calls worth making explicitly:
 
 1. Should a Proton runner be detected and refuse to launch, or be invisible until the Proton plan lands? (proposed: detected and refusing, so a dropped-in GE-Proton gives a useful error and its prefix is still serviceable with `exec` and `winetricks`)
-2. Should `gamemoderun` missing from `PATH` be an error, or a warning that launches anyway? (proposed: an error, since silently dropping a requested setting is worse than refusing)
-3. Should runner names allow dots, unlike environment names? (proposed: yes, so upstream builds extract and work without renaming)
-4. `features.md` loses the custom runners and gamemode rows once implementation is approved, and the rows depending on custom runners point at 0003. (proposed: yes)
+2. Should runner names allow dots, unlike environment names? (proposed: yes, so upstream builds extract and work without renaming)
+3. `features.md` loses the custom runners and gamemode rows once implementation is approved, and the rows depending on custom runners point at 0003. (proposed: yes)
