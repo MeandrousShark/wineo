@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0002: Everyday management
 
@@ -15,11 +15,11 @@ Settled by the maintainer:
 - `rm` keeps the prefix unless `--delete-prefix` is passed, and refuses while the environment is running or a conflicting operation is active.
 - `winetricks` refuses to run while the environment is running, since several winetricks verbs wait for every wine process in the prefix to exit. It holds exclusive access for the operation so another wineo command can't start using or remove the prefix during installation.
 - `wineo completions <shell>` prints the completion script, and the user saves it where their shell looks.
+- After Ctrl+C interrupts winetricks, wineo waits for the prefix to go idle before releasing exclusion, using the existing graceful-stop timeout and forced wine cleanup. A repeated Ctrl+C forces cleanup.
+- Log reset detection uses a per-run reset counter stored in its own file next to the log, not a field in the runtime state file.
 - The log limit is global only and is a soft threshold, checked periodically. When a detached run's log passes it, wineo empties the file and notes that output was dropped. This discards all accumulated output, including the most recent lines before the reset; subsequent output starts a fresh log in the same file.
 
-## Proposed details
-
-Everything in this section is a proposal for review.
+## Details
 
 ### Operation coordination
 
@@ -59,7 +59,7 @@ Everything in this section is a proposal for review.
 - `winetricks` missing from PATH is an error: `` `winetricks` was not found on PATH ``.
 - Holds operation exclusion until winetricks exits and its prefix is idle, including after cancellation. Another winetricks invocation and conflicting starts, execs, removals, or prefix changes are refused while it is active.
 - Does not overwrite the previous app run's state or restart options. `status` and `list` identify the environment as busy with winetricks. `stop` and `restart` report that winetricks must be finished or canceled in its terminal instead of treating it as an app run.
-- Ctrl+C cancels the attached command. Define and test child-process cleanup so exclusivity is not released while its Wine children remain active; the proposed cancellation policy is listed under Open questions.
+- Ctrl+C cancels the attached command. Exclusivity is held until the prefix is idle: wineo applies the existing graceful-stop timeout and then forced Wine cleanup, so exclusion is never released while its Wine children remain active. A repeated Ctrl+C forces cleanup immediately. The wrapper returns the cancellation exit code.
 - The command's exit code passes through, including the same signal-to-exit-code mapping used by `exec`.
 
 ### `wineo completions <shell>`
@@ -84,7 +84,7 @@ log_limit_mb = 50        # 0 turns the cap off
 - Once the file is over the threshold, the supervisor empties it and writes `wineo: the log passed 50 MB; all output before this reset was dropped`. Wine keeps writing straight to the same file in append mode. This clears the entire log; it does not retain the last 50 MB.
 - This is a soft threshold, not a hard disk-usage bound. Bursts can exceed it between checks, and a supervisor crash can prevent a pending or final check.
 - `output.log.1` still keeps the previous run's log. That file may have been written with a larger limit or with the limit disabled, so total log usage is not bounded by twice the current setting.
-- `wineo logs -f` must detect a reset even if the file has already grown past its old read position. A size-shrink check alone is insufficient. The proposed reset detection mechanism is listed under Open questions.
+- `wineo logs -f` must detect a reset even if the file has already grown past its old read position. A size-shrink check alone is insufficient. Detection uses a per-run reset counter in its own file next to the log. The supervisor bumps it with short coordination around truncation so the counter change and the truncation are observed consistently. A follower that sees the counter change seeks to the beginning of the file; follower reads stay bounded so rapid regrowth cannot stall it.
 - Following continues from the beginning of the current reset's output. Bytes discarded before the follower reads them cannot be recovered. `logs -n` must tolerate a concurrent reset instead of failing on a short read.
 - Attached runs aren't logged, so the cap doesn't apply to them.
 
@@ -128,10 +128,3 @@ wineo rm notepad --delete-prefix           # prefix is gone
 
 `wineo rm a b` is always rejected before changing either environment. While a winetricks command is active, `status` reports it as busy and conflicting operations are refused.
 
-## Open questions
-
-The review changes are approved for this draft. Implementation approval is still pending, including these proposed details:
-
-1. Winetricks cancellation: after Ctrl+C interrupts winetricks, should wineo use the existing graceful-stop timeout and forced Wine cleanup to ensure the prefix goes idle before releasing exclusion? (proposed: yes; repeated Ctrl+C forces cleanup, and the wrapper returns the cancellation exit code)
-2. Reliable log reset detection: use a per-run reset counter stored outside the log, with short coordination around truncation, counter updates, and bounded follower reads? (proposed: yes; a counter change makes the follower seek to the beginning, even after rapid regrowth; counter updates and truncation must be observed consistently)
-3. `features.md` loses the four rows this plan covers once implementation is approved, and the dynamic completion row points at 0002. (proposed: yes; bulk removal is not added to the backlog)
