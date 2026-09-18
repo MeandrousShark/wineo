@@ -13,6 +13,8 @@ use crate::paths::Paths;
 
 pub const DEFAULT_RUNNER: &str = "wine";
 pub const DEFAULT_STOP_TIMEOUT: u32 = 10;
+/// Megabytes of session log kept before it is cleared. 0 turns the cap off.
+pub const DEFAULT_LOG_LIMIT_MB: u32 = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -55,6 +57,8 @@ impl FromStr for Arch {
 pub struct GlobalConfig {
     #[serde(default = "default_stop_timeout")]
     pub stop_timeout: u32,
+    #[serde(default = "default_log_limit_mb")]
+    pub log_limit_mb: u32,
     #[serde(default)]
     pub defaults: Defaults,
     #[serde(default)]
@@ -99,6 +103,10 @@ fn default_stop_timeout() -> u32 {
     DEFAULT_STOP_TIMEOUT
 }
 
+fn default_log_limit_mb() -> u32 {
+    DEFAULT_LOG_LIMIT_MB
+}
+
 fn default_runner() -> String {
     DEFAULT_RUNNER.to_owned()
 }
@@ -107,6 +115,7 @@ impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
             stop_timeout: DEFAULT_STOP_TIMEOUT,
+            log_limit_mb: DEFAULT_LOG_LIMIT_MB,
             defaults: Defaults::default(),
             env: BTreeMap::new(),
         }

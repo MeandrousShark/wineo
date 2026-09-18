@@ -18,6 +18,7 @@ use signal_hook::iterator::{Handle, Signals};
 
 use crate::error::{self, Error, IoContext, Result};
 use crate::launch::{Launch, Overrides};
+use crate::log::{Cap, Log};
 use crate::operation::{Locks, Operation};
 use crate::prefix;
 use crate::runtime::{RunMode, RunState, RunStatus, Runtime, exit_code};
@@ -188,6 +189,7 @@ pub struct Spec {
     pub claim: Claim,
     pub runtime_dir: PathBuf,
     pub stop_timeout: u32,
+    pub log_limit_mb: u32,
     pub launch: Launch,
     pub overrides: Overrides,
 }
@@ -329,6 +331,10 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
     };
     let supervisor = Supervisor::listen()?;
     let log = runtime.rotate_log()?;
+    let session = Log::new(runtime.log_path());
+    if let Err(err) = session.begin() {
+        log_notice(&log, Notice::Warning(err));
+    }
     // Anything wineo itself prints from here on, even a panic, lands in the log.
     let _ = rustix::stdio::dup2_stderr(&log);
 
@@ -356,6 +362,11 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
     }
     reporter.send(Report::Started(child.id()));
 
+    // Started once wine is up, so an oversized log is cleared throughout the
+    // run, including while background processes keep writing after the program
+    // itself has exited.
+    let cap = Cap::start(&session, clone_log()?, spec.log_limit_mb);
+
     let stop_timeout = Duration::from_secs(spec.stop_timeout.into());
     let result = supervisor.wait(
         &runtime,
@@ -365,6 +376,9 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         stop_timeout,
         |notice| log_notice(&log, notice),
     );
+    // One final check before the run lock goes, so whoever is following the
+    // log can still see the last reset.
+    drop(cap);
     drop(lock);
     result
 }
@@ -480,6 +494,7 @@ mod tests {
             },
             runtime_dir: PathBuf::from("/state/wineo/app"),
             stop_timeout: 10,
+            log_limit_mb: 50,
             launch: Launch {
                 runner: Runner::fake("wine"),
                 prefix: PathBuf::from("/prefixes/app"),

@@ -78,9 +78,9 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
 
 fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
     match key {
-        "stop_timeout" => {
-            let value = parse_stop_timeout_value(key, raw)?;
-            store_value(root, "stop_timeout", value);
+        "stop_timeout" | "log_limit_mb" => {
+            let value = parse_count_value(key, raw)?;
+            store_value(root, key, value);
             Ok(())
         }
         "defaults.runner" => {
@@ -201,7 +201,7 @@ fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
 
 fn unset_global(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
-        "stop_timeout" => Ok(root.remove(key).is_some()),
+        "stop_timeout" | "log_limit_mb" => Ok(root.remove(key).is_some()),
         "defaults.runner" => unset_field(root, "defaults", "defaults", "runner"),
         "defaults.arch" => unset_field(root, "defaults", "defaults", "arch"),
         "defaults.prefix_root" => unset_field(root, "defaults", "defaults", "prefix_root"),
@@ -384,7 +384,7 @@ fn parse_bool(key: &str, raw: &str) -> Result<bool, EditError> {
     }
 }
 
-fn parse_stop_timeout_value(key: &str, raw: &str) -> Result<Value, EditError> {
+fn parse_count_value(key: &str, raw: &str) -> Result<Value, EditError> {
     let seconds: u32 = raw.parse().map_err(|_| EditError::InvalidValue {
         key: key.to_string(),
         reason: format!("expected a non-negative integer, got `{raw}`"),

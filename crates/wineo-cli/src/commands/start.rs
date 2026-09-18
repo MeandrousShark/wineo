@@ -68,6 +68,8 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
         },
         runtime_dir: runtime.dir().to_owned(),
         stop_timeout: global.stop_timeout,
+        // Read now, so a changed limit applies from the next start.
+        log_limit_mb: global.log_limit_mb,
         launch,
         overrides,
     };

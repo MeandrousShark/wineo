@@ -4,6 +4,7 @@ pub mod environment;
 pub mod error;
 mod files;
 pub mod launch;
+pub mod log;
 pub mod name;
 pub mod operation;
 pub mod paths;

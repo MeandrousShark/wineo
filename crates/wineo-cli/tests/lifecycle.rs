@@ -13,10 +13,19 @@ use wineo_core::runtime::Runtime;
 
 /// A program named exit-N exits with N right away, a program named stubborn
 /// ignores requests to close, a program named slow takes a moment before
-/// wineserver can see it, and any other program runs until
+/// wineserver can see it, noisy writes megabytes in bursts, noisy-exit leaves
+/// a background writer behind, and any other program runs until
 /// `wineboot --end-session` or `wineserver -k` ends it.
 const FAKE_WINE: &str = r#"#!/bin/sh
 pids="$WINEPREFIX/fake-pids"
+burst() {
+    line=$(printf 'x%.0s' $(seq 1023))
+    i=0
+    while [ "$i" -lt 2048 ]; do
+        echo "$line"
+        i=$((i + 1))
+    done
+}
 case "$1" in
 --version)
     echo wine-fake
@@ -42,6 +51,19 @@ exit-*)
     ;;
 slow)
     sleep 0.5
+    ;;
+noisy)
+    # Two megabytes, a pause long enough for the size check to run, then two
+    # more, so the log is cleared while the program is still going.
+    burst
+    sleep 2
+    burst
+    ;;
+noisy-exit)
+    # Exits right away, leaving something in the prefix still writing.
+    (sleep 0.5; burst; burst; rm -f "$pids") &
+    echo "$! $!" >"$pids"
+    exit 0
     ;;
 esac
 sleep 60 &
@@ -211,6 +233,7 @@ fn wait_for(what: &str, mut condition: impl FnMut() -> bool) {
 }
 
 const APP: &str = "[targets.app]\nexe = \"app\"\n";
+const NOISY: &str = "[targets.noisy]\nexe = \"noisy\"\n";
 
 #[test]
 fn start_then_stop() {
@@ -613,4 +636,152 @@ fn start_status_logs_restart_and_stop_with_real_wine() {
         .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
         .unwrap_or_default();
     assert!(entries.is_empty(), "{entries:?}");
+}
+
+impl Fixture {
+    fn global_config(&self, text: &str) {
+        let path = self.config_dir().join("config.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+
+    fn resets(&self, name: &str) -> u64 {
+        let mut path = self.runtime(name).log_path().into_os_string();
+        path.push(".reset");
+        fs::read_to_string(PathBuf::from(path))
+            .unwrap_or_default()
+            .trim()
+            .parse()
+            .unwrap_or(0)
+    }
+}
+
+#[test]
+fn an_oversized_log_is_cleared_while_the_run_goes_on() {
+    let f = Fixture::new();
+    f.global_config("log_limit_mb = 1\n");
+    f.environment("noisy", NOISY);
+    assert_success(&f.run(&["start", "noisy"]));
+
+    wait_for("the log to be cleared", || f.resets("noisy") > 0);
+    assert_success(&f.run(&["stop", "noisy"]));
+
+    let text = f.log("noisy");
+    assert!(
+        text.contains("wineo: the log passed 1 MB; all output before this reset was dropped"),
+        "{}",
+        &text[..text.len().min(400)]
+    );
+    // Far less than the four megabytes the program wrote. Not a hard bound:
+    // output between two checks can push it past the limit for a while.
+    assert!(text.len() < 4 * 1024 * 1024, "{} bytes kept", text.len());
+    // The second burst was written after the first reset, so the cap kept going.
+    assert!(f.resets("noisy") >= 2, "only {} resets", f.resets("noisy"));
+}
+
+#[test]
+fn a_disabled_log_limit_keeps_everything() {
+    let f = Fixture::new();
+    f.global_config("log_limit_mb = 0\n");
+    f.environment("noisy", NOISY);
+    assert_success(&f.run(&["start", "noisy"]));
+
+    // Waits for the whole second burst, so a cap would have had every chance.
+    wait_for("both bursts to be written", || {
+        f.log("noisy").len() > 4 * 1024 * 1024
+    });
+    assert_success(&f.run(&["stop", "noisy"]));
+
+    assert_eq!(f.resets("noisy"), 0);
+    assert!(!f.log("noisy").contains("all output before this reset"));
+}
+
+#[test]
+fn a_previous_log_is_left_at_whatever_size_it_was() {
+    let f = Fixture::new();
+    f.global_config("log_limit_mb = 0\n");
+    f.environment("noisy", NOISY);
+    assert_success(&f.run(&["start", "noisy"]));
+    wait_for("both bursts to be written", || {
+        f.log("noisy").len() > 4 * 1024 * 1024
+    });
+    assert_success(&f.run(&["stop", "noisy"]));
+
+    // The next run's cap has nothing to say about the log before it.
+    f.global_config("log_limit_mb = 1\n");
+    f.environment("app", APP);
+    assert_success(&f.run(&["start", "noisy"]));
+    wait_for("the new log to be cleared", || f.resets("noisy") > 0);
+    assert_success(&f.run(&["stop", "noisy"]));
+
+    let previous = fs::read_to_string(f.runtime("noisy").previous_log_path()).unwrap();
+    assert!(previous.len() > 4 * 1024 * 1024, "{} bytes", previous.len());
+    assert!(!previous.contains("all output before this reset"));
+    // And each run counts its own resets.
+    assert!(f.resets("noisy") >= 1);
+}
+
+#[test]
+#[ignore = "runs wine and opens notepad"]
+fn an_oversized_real_wine_log_is_cleared() {
+    let f = Fixture::real();
+    f.global_config("log_limit_mb = 1\n");
+    assert_success(&f.run(&["new", "-n", "notepad"]));
+    assert_success(&f.run(&["set", "notepad", "targets.notepad.exe=notepad"]));
+    assert_success(&f.run(&["start", "notepad", "-e", "WINEDEBUG=+all"]));
+
+    wait_for("wine's debug output to pass the limit", || {
+        f.resets("notepad") > 0
+    });
+    assert_success(&f.run(&["stop", "notepad"]));
+    assert!(
+        f.log("notepad")
+            .contains("wineo: the log passed 1 MB; all output before this reset was dropped")
+    );
+}
+
+#[test]
+fn the_cap_keeps_going_while_background_processes_write() {
+    let f = Fixture::new();
+    f.global_config("log_limit_mb = 1\n");
+    f.environment("bg", "[targets.bg]\nexe = \"noisy-exit\"\n");
+    assert_success(&f.run(&["start", "bg"]));
+
+    // The program is gone before any of this is written, so everything that
+    // passes the limit comes from what it left running in the prefix.
+    wait_for("the program to exit", || {
+        f.state("bg").contains("program_exited_at")
+    });
+    wait_for("the log to be cleared", || f.resets("bg") > 0);
+
+    f.run(&["stop", "bg"]);
+    assert!(
+        f.log("bg")
+            .contains("wineo: the log passed 1 MB; all output before this reset was dropped")
+    );
+}
+
+#[test]
+fn the_log_limit_is_a_global_setting() {
+    let f = Fixture::new();
+    assert_success(&f.run(&["set", "--global", "log_limit_mb=100"]));
+    assert!(
+        fs::read_to_string(f.config_dir().join("config.toml"))
+            .unwrap()
+            .contains("log_limit_mb = 100")
+    );
+    // It parses back, so the next start picks it up rather than erroring.
+    let shown = f.run(&["config"]);
+    assert_success(&shown);
+    assert!(
+        stdout(&shown).contains("log_limit_mb = 100"),
+        "{}",
+        stdout(&shown)
+    );
+    assert_success(&f.run(&["set", "--global", "--unset", "log_limit_mb"]));
+    assert!(
+        !fs::read_to_string(f.config_dir().join("config.toml"))
+            .unwrap()
+            .contains("log_limit_mb")
+    );
 }
