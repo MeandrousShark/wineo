@@ -103,6 +103,19 @@ echo "gamemoderun wrapped: $1"
 exec "$@"
 "#;
 
+/// Stands in for umu-launcher: it records what it was asked to do, and makes
+/// `pfx/` under the compatdata directory when handed an empty program, which is
+/// how umu creates a prefix.
+const FAKE_UMU: &str = r#"#!/bin/sh
+echo "umu-run: $*"
+echo "umu-run: WINEPREFIX=$WINEPREFIX PROTONPATH=$PROTONPATH"
+if [ -z "$1" ]; then
+    mkdir -p "$WINEPREFIX/pfx/drive_c"
+    printf 'WINE REGISTRY Version 2\n\n#arch=win64\n' >"$WINEPREFIX/pfx/system.reg"
+fi
+exit 0
+"#;
+
 struct Fixture {
     root: tempfile::TempDir,
     path_var: OsString,
@@ -126,7 +139,12 @@ impl Fixture {
         let wine = [("wine", FAKE_WINE), ("wineserver", FAKE_WINESERVER)];
         let bin = write_bin(
             "bin",
-            &[wine[0], wine[1], ("gamemoderun", FAKE_GAMEMODERUN)],
+            &[
+                wine[0],
+                wine[1],
+                ("gamemoderun", FAKE_GAMEMODERUN),
+                ("umu-run", FAKE_UMU),
+            ],
         );
         let sandbox = write_bin("bin-sandbox", &wine);
         // The machine running these tests may well have gamemode installed, so
@@ -195,6 +213,17 @@ impl Fixture {
             fs::write(&path, script).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         }
+    }
+
+    /// A Proton runner: umu only needs the `proton` script to be there, and
+    /// wineo reads the name out of the `version` file beside it.
+    fn install_proton(&self, name: &str) {
+        let dir = self.root.path().join("data/wineo/runners").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        let proton = dir.join("proton");
+        fs::write(&proton, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&proton, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(dir.join("version"), format!("1717451631 {name}\n")).unwrap();
     }
 
     /// wineo with the fakes off PATH entirely, so anything that still reaches
@@ -1128,4 +1157,119 @@ fn gamemode_can_be_set_and_unset_at_every_level() {
             .unwrap()
             .contains("gamemode")
     );
+}
+
+#[test]
+fn runners_tells_wine_and_proton_apart() {
+    let f = Fixture::new();
+    f.install_runner("wine-tkg");
+    f.install_proton("GE-Proton9-20");
+
+    let listed = f.run(&["runners"]);
+    assert_success(&listed);
+    let text = stdout(&listed);
+    let row = |name: &str| {
+        text.lines()
+            .find(|line| line.starts_with(name))
+            .unwrap_or_else(|| panic!("no row for {name} in:\n{text}"))
+            .to_owned()
+    };
+    assert!(row("wine-tkg").contains("wine"), "{text}");
+    let proton = row("GE-Proton9-20");
+    assert!(proton.contains("proton"), "{text}");
+    // The version comes from Proton's own file, not from running anything.
+    assert!(proton.contains("GE-Proton9-20"), "{text}");
+}
+
+#[test]
+fn new_creates_a_proton_prefix_through_umu() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+
+    let created = f.run(&["new", "-n", "hades", "--runner", "GE-Proton9-20"]);
+    assert_success(&created);
+    assert!(
+        stderr(&created).contains("Steam Linux Runtime"),
+        "{}",
+        stderr(&created)
+    );
+
+    // The configured prefix is the compatdata dir, with the wine prefix inside.
+    let prefix = f.root.path().join("data/wineo/prefixes/hades");
+    assert!(prefix.join("pfx/system.reg").is_file());
+    assert!(!prefix.join("system.reg").exists());
+
+    let config = fs::read_to_string(f.config_dir().join("environments/hades.toml")).unwrap();
+    assert!(config.contains("runner = \"GE-Proton9-20\""), "{config}");
+
+    // umu was handed the compatdata dir and the runner root, not pfx/.
+    let log = fs::read_to_string(f.runtime("hades").dir().join("create.log")).unwrap();
+    assert!(
+        log.contains(&format!("WINEPREFIX={}", prefix.display())),
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!(
+            "PROTONPATH={}",
+            f.root
+                .path()
+                .join("data/wineo/runners/GE-Proton9-20")
+                .display()
+        )),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_proton_prefix_is_removed_whole() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    assert_success(&f.run(&["new", "-n", "hades", "--runner", "GE-Proton9-20"]));
+
+    let prefix = f.root.path().join("data/wineo/prefixes/hades");
+    let removed = f.run(&["rm", "hades", "--delete-prefix"]);
+    assert_success(&removed);
+    assert!(!prefix.exists());
+    assert!(!f.config_dir().join("environments/hades.toml").exists());
+}
+
+#[test]
+fn proton_prefixes_are_always_win64() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    let refused = f.run(&[
+        "new",
+        "-n",
+        "hades",
+        "--runner",
+        "GE-Proton9-20",
+        "--arch",
+        "win32",
+    ]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("win64"), "{}", stderr(&refused));
+    assert!(!f.config_dir().join("environments/hades.toml").exists());
+}
+
+#[test]
+fn running_programs_on_proton_is_not_implemented_yet() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    assert_success(&f.run(&["new", "-n", "hades", "--runner", "GE-Proton9-20"]));
+    assert_success(&f.run(&["set", "hades", "targets.hades.exe=hades"]));
+
+    for args in [
+        vec!["start", "hades"],
+        vec!["run", "hades"],
+        vec!["exec", "hades", "winecfg"],
+        vec!["winetricks", "hades", "dxvk"],
+    ] {
+        let refused = f.run(&args);
+        assert!(!refused.status.success(), "{args:?} was allowed");
+        assert!(
+            stderr(&refused).contains("isn't implemented yet"),
+            "{args:?}: {}",
+            stderr(&refused)
+        );
+    }
 }

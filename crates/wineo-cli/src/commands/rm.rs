@@ -114,7 +114,8 @@ fn delete_prefix(paths: &Paths, name: &str, prefix: &Path) -> anyhow::Result<()>
             }
         );
     }
-    if !prefix::is_prefix(prefix) {
+    // The runner may be gone or the config broken, so either layout counts.
+    if !prefix::holds_prefix(prefix) {
         bail!(
             "{shown} is not a wine prefix, so it was not deleted. Look at what is there, clean it up yourself if it's what's left of a partly deleted prefix, then run `wineo rm {name}` to remove the registration"
         );

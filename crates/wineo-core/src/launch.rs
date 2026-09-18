@@ -111,7 +111,8 @@ impl Launch {
     pub fn command(&self) -> Command {
         let mut command = self
             .runner
-            .wine_through(&self.prefix, self.gamemode.as_deref());
+            .command(&self.prefix, self.gamemode.as_deref())
+            .expect("the runner was resolved when this launch was built");
         command
             .args(&self.args)
             .current_dir(&self.cwd)
@@ -154,11 +155,14 @@ fn open(
     environment: &Environment,
 ) -> Result<(Runner, PathBuf)> {
     let prefix = environment.prefix(paths)?;
+    let runner = Runners::new(paths, global)?.resolve(&environment.config.runner)?;
     // Wine would silently create a fresh prefix here otherwise.
-    if !prefix::is_prefix(&prefix) {
+    if !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
         return Err(Error::MissingPrefix(prefix));
     }
-    let runner = Runners::new(paths, global)?.resolve(&environment.config.runner)?;
+    if runner.is_proton() {
+        return Err(Error::ProtonNotImplemented(environment.name.clone()));
+    }
     Ok((runner, prefix))
 }
 

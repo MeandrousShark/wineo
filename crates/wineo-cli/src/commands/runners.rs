@@ -12,6 +12,15 @@ pub struct Args {
     all: bool,
 }
 
+/// One line: what it's called, what it is, what version, and where. Only the
+/// system wine fills the path column, since the rest live in the runners root.
+struct Row {
+    name: String,
+    kind: String,
+    detail: String,
+    path: String,
+}
+
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let runners = Runners::new(paths, &global)?;
@@ -19,40 +28,54 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 
     // The system wine leads, since that is what every config starts out using.
     let mut rows = vec![match Runner::system() {
-        Ok(runner) => (
-            Runner::SYSTEM.to_owned(),
-            version(&runner),
-            runner.wine_path().display().to_string(),
-        ),
-        Err(err) => (Runner::SYSTEM.to_owned(), err.to_string(), String::new()),
+        Ok(runner) => Row {
+            name: Runner::SYSTEM.to_owned(),
+            kind: runner.kind_name().to_owned(),
+            detail: version(&runner),
+            path: runner
+                .wine_path()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+        },
+        Err(err) => Row {
+            name: Runner::SYSTEM.to_owned(),
+            kind: String::new(),
+            detail: err.to_string(),
+            path: String::new(),
+        },
     }];
-    rows.extend(
-        listing
-            .runners
-            .iter()
-            .map(|runner| (runner.name().to_owned(), version(runner), String::new())),
-    );
+    rows.extend(listing.runners.iter().map(|runner| Row {
+        name: runner.name().to_owned(),
+        kind: runner.kind_name().to_owned(),
+        detail: version(runner),
+        path: String::new(),
+    }));
     if args.all {
-        rows.extend(listing.skipped.iter().map(|(name, reason)| {
-            (
-                name.clone(),
-                format!("skipped, {}", reason.as_str()),
-                String::new(),
-            )
+        rows.extend(listing.skipped.iter().map(|(name, reason)| Row {
+            name: name.clone(),
+            kind: String::new(),
+            detail: format!("skipped, {}", reason.as_str()),
+            path: String::new(),
         }));
     }
 
-    let name_width = rows.iter().map(|(name, ..)| name.len()).max().unwrap_or(0);
-    let detail_width = rows
-        .iter()
-        .map(|(_, detail, _)| detail.len())
-        .max()
-        .unwrap_or(0);
-    for (name, detail, path) in &rows {
-        println!(
-            "{}",
-            format!("{name:name_width$}  {detail:detail_width$}  {path}").trim_end()
+    let width = |column: fn(&Row) -> &str| {
+        rows.iter()
+            .map(|row| column(row).len())
+            .max()
+            .unwrap_or_default()
+    };
+    let (names, kinds, details) = (
+        width(|row| &row.name),
+        width(|row| &row.kind),
+        width(|row| &row.detail),
+    );
+    for row in &rows {
+        let line = format!(
+            "{:names$}  {:kinds$}  {:details$}  {}",
+            row.name, row.kind, row.detail, row.path
         );
+        println!("{}", line.trim_end());
     }
 
     if listing.runners.is_empty() {

@@ -47,6 +47,13 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let runner = Runners::new(paths, &global)?
         .resolve(args.runner.as_deref().unwrap_or(&global.defaults.runner))?;
 
+    if runner.is_proton() && args.arch == Some(Arch::Win32) {
+        bail!(
+            "Proton prefixes are always win64, so --arch win32 can't be used with `{}`",
+            runner.name()
+        );
+    }
+
     let new = NewEnvironment {
         name,
         dir: args.dir,
@@ -63,7 +70,13 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         let dir = paths
             .contract(dir)
             .unwrap_or_else(|_| dir.display().to_string());
-        eprintln!("Creating a wine prefix in {dir}, this takes a few seconds");
+        if runner.is_proton() {
+            eprintln!(
+                "Creating a Proton prefix in {dir}. The first umu run also downloads the Steam Linux Runtime, which takes a while"
+            );
+        } else {
+            eprintln!("Creating a wine prefix in {dir}, this takes a few seconds");
+        }
     })?;
     if created_prefix {
         println!("Created environment {}", environment.name);

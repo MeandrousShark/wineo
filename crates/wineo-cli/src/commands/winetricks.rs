@@ -72,6 +72,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, name)?;
     let runner = Runners::new(paths, &global)?.resolve(&environment.config.runner)?;
+    // umu runs winetricks itself, which is what a Proton environment will use.
+    let (Some(wine), Some(wineserver)) = (runner.wine_path(), runner.wineserver_path()) else {
+        return Err(Error::ProtonNotImplemented(name.to_owned()).into());
+    };
     let winetricks =
         runner::find_on_path("winetricks").ok_or(Error::ProgramNotFound("winetricks"))?;
 
@@ -87,7 +91,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // verbs wait for every wine process to exit, so nothing else may start one.
     let _guard = locks.acquire(Operation::Winetricks, name, &[&prefix])?;
     Environment::ensure_exists(paths, name)?;
-    if !prefix::is_prefix(&prefix) {
+    if !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
         return Err(Error::MissingPrefix(prefix).into());
     }
 
@@ -110,8 +114,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         )
         .envs(&env)
         .env("WINEPREFIX", &prefix)
-        .env("WINE", runner.wine_path())
-        .env("WINESERVER", runner.wineserver_path());
+        .env("WINE", wine)
+        .env("WINESERVER", wineserver);
 
     // Counted rather than flagged, so a second Ctrl+C can force the cleanup.
     let interrupts = Arc::new(AtomicUsize::new(0));

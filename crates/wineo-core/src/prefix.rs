@@ -11,6 +11,12 @@ pub fn is_prefix(dir: &Path) -> bool {
     dir.join("system.reg").is_file()
 }
 
+/// True when `dir` holds a wine prefix directly, or a Proton one in `pfx/`.
+/// Used where the runner isn't known, such as removing a broken environment.
+pub fn holds_prefix(dir: &Path) -> bool {
+    is_prefix(dir) || is_prefix(&dir.join("pfx"))
+}
+
 /// Reads the arch wine records in the registry header, e.g. `#arch=win64`.
 pub fn detect_arch(dir: &Path) -> Result<Option<Arch>> {
     let path = dir.join("system.reg");
@@ -53,10 +59,17 @@ pub fn create(runner: &Runner, dir: &Path, arch: Arch, log: &Path) -> Result<()>
     let stderr = output
         .try_clone()
         .context(|| format!("failed to open {}", log.display()))?;
-    let status = runner
-        .wine(dir)
-        .env("WINEARCH", arch.as_str())
-        .args(["wineboot", "--init"])
+    // umu creates the prefix when it is handed an empty program, and waits for
+    // it. Proton prefixes are always win64, so WINEARCH means nothing there.
+    let mut command = runner.command(dir, None)?;
+    if runner.is_proton() {
+        command.arg("");
+    } else {
+        command
+            .env("WINEARCH", arch.as_str())
+            .args(["wineboot", "--init"]);
+    }
+    let status = command
         .stdin(Stdio::null())
         .stdout(output)
         .stderr(stderr)
@@ -72,7 +85,7 @@ pub fn create(runner: &Runner, dir: &Path, arch: Arch, log: &Path) -> Result<()>
     // Wine only writes the registry files once wineserver shuts down.
     runner.wait_idle(dir)?;
 
-    if menu_builder_disabled && is_prefix(dir) {
+    if menu_builder_disabled && is_prefix(&runner.wine_prefix(dir)) {
         Ok(())
     } else {
         Err(Error::PrefixCreation {
@@ -95,7 +108,7 @@ pub fn disable_menu_builder(runner: &Runner, dir: &Path, log: &Path) -> Result<(
         .try_clone()
         .context(|| format!("failed to open {}", log.display()))?;
     let status = runner
-        .wine(dir)
+        .command(dir, None)?
         .args([
             "reg",
             "add",

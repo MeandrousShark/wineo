@@ -85,8 +85,14 @@ impl Environment {
         let dir = new.prefix_dir(paths, global)?;
         let prefix_value = paths.contract(&dir)?;
 
-        let arch = if prefix::is_prefix(&dir) {
-            let arch = adopted_arch(&dir, new.arch.unwrap_or(global.defaults.arch), new.arch)?;
+        // Proton keeps its prefix in `pfx/` under the directory it is given.
+        let wine_prefix = runner.wine_prefix(&dir);
+        let arch = if prefix::is_prefix(&wine_prefix) {
+            let arch = adopted_arch(
+                &wine_prefix,
+                new.arch.unwrap_or(global.defaults.arch),
+                new.arch,
+            )?;
             // Wine outside wineo could still build menu entries in an adopted
             // prefix otherwise. It might be in use, so this doesn't wait_idle.
             let runtime = paths.runtime_dir(&new.name);
