@@ -27,6 +27,8 @@ enum Command {
     Stop(commands::stop::Args),
     /// Stop an environment if it's running, then start it again
     Restart(commands::restart::Args),
+    /// Remove an environment
+    Rm(commands::rm::Args),
     /// Show whether environments are running
     Status(commands::status::Args),
     /// List environments and their state
@@ -72,6 +74,7 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Start(args) => commands::start::run(&paths, args),
         Command::Stop(args) => commands::stop::run(&paths, args),
         Command::Restart(args) => commands::restart::run(&paths, args),
+        Command::Rm(args) => commands::rm::run(&paths, args),
         Command::Status(args) => commands::status::run(&paths, args),
         Command::List(args) => commands::list::run(&paths, args),
         Command::Logs(args) => commands::logs::run(&paths, args),

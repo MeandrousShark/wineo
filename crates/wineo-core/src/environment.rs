@@ -152,6 +152,40 @@ pub fn names(paths: &Paths) -> Result<Vec<String>> {
     Ok(names)
 }
 
+/// What else refers to a prefix. An environment whose config can't be read
+/// could refer to it too, so those are reported instead of assumed harmless.
+#[derive(Debug, Default, PartialEq)]
+pub struct Sharing {
+    pub names: Vec<String>,
+    pub unreadable: Vec<String>,
+}
+
+impl Sharing {
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty() && self.unreadable.is_empty()
+    }
+}
+
+/// Environments other than `name` that use `prefix`. Paths are compared
+/// resolved, so two spellings of one directory are recognized as the same.
+pub fn sharing_prefix(paths: &Paths, name: &str, prefix: &Path) -> Result<Sharing> {
+    let wanted = crate::paths::resolve(prefix);
+    let mut sharing = Sharing::default();
+    for other in names(paths)? {
+        if other == name {
+            continue;
+        }
+        match Environment::load(paths, &other).and_then(|env| env.prefix(paths)) {
+            Ok(other_prefix) if crate::paths::resolve(&other_prefix) == wanted => {
+                sharing.names.push(other);
+            }
+            Ok(_) => {}
+            Err(_) => sharing.unreadable.push(other),
+        }
+    }
+    Ok(sharing)
+}
+
 fn check_name(name: &str) -> Result<()> {
     if name::is_valid(name) {
         Ok(())

@@ -684,11 +684,12 @@ fn completions_cover_every_visible_command_and_flag() {
             "logs",
             "run",
             "exec",
+            "rm",
             "completions",
         ] {
             assert!(script.contains(command), "{shell} is missing {command}");
         }
-        for flag in ["target", "global", "follow", "previous"] {
+        for flag in ["target", "global", "follow", "previous", "delete-prefix"] {
             // fish spells long options `-l name`, every other generator uses `--name`.
             let needle = if shell == "fish" {
                 format!("-l {flag}")
@@ -729,4 +730,368 @@ fn completions_rejects_an_unknown_shell() {
     let out = output(wineo(root.path()).args(["completions", "csh"]));
     assert!(!out.status.success());
     assert!(stderr(&out).contains("csh"), "{}", stderr(&out));
+}
+
+/// A directory wine would recognize as a prefix, with a symlink out of it like
+/// the `z:` drive has.
+fn fake_prefix(dir: &Path, links_to: &Path) {
+    fs::create_dir_all(dir.join("dosdevices")).unwrap();
+    fs::write(
+        dir.join("system.reg"),
+        "WINE REGISTRY Version 2\n\n#arch=win64\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(links_to, dir.join("dosdevices/z:")).unwrap();
+}
+
+fn environment_with_prefix(root: &Path, name: &str, prefix: &Path) {
+    write_environment(
+        root,
+        name,
+        &format!(
+            "prefix = \"{}\"\nrunner = \"wine\"\narch = \"win64\"\n",
+            prefix.display()
+        ),
+    );
+}
+
+fn locks(root: &Path) -> wineo_core::operation::Locks {
+    wineo_core::operation::Locks::at(root.join("state/wineo/.locks"))
+}
+
+#[test]
+fn rm_removes_the_config_and_runtime_state_but_keeps_the_prefix() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/notepad");
+    fake_prefix(&prefix, root.path());
+    environment_with_prefix(root.path(), "notepad", &prefix);
+    write_log(root.path(), "notepad", "output.log", "old output\n");
+
+    let out = output(wineo(root.path()).args(["rm", "notepad"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("its prefix is still at"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        !root
+            .path()
+            .join("config/wineo/environments/notepad.toml")
+            .exists()
+    );
+    assert!(!runtime_dir(root.path(), "notepad").exists());
+    assert!(prefix.join("system.reg").exists());
+}
+
+#[test]
+fn rm_removes_an_environment_with_a_broken_config() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "broken", "this is not toml");
+    let out = output(wineo(root.path()).args(["rm", "broken"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("its prefix was left untouched"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        !root
+            .path()
+            .join("config/wineo/environments/broken.toml")
+            .exists()
+    );
+}
+
+#[test]
+fn rm_needs_exactly_one_name_and_removes_nothing_otherwise() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "one", MINIMAL_ENVIRONMENT);
+    write_environment(root.path(), "two", MINIMAL_ENVIRONMENT);
+
+    let out = output(wineo(root.path()).args(["rm", "one", "two"]));
+    assert!(!out.status.success());
+    assert!(
+        root.path()
+            .join("config/wineo/environments/one.toml")
+            .exists()
+    );
+    assert!(
+        root.path()
+            .join("config/wineo/environments/two.toml")
+            .exists()
+    );
+
+    let out = output(wineo(root.path()).arg("rm"));
+    assert!(!out.status.success());
+    assert!(
+        root.path()
+            .join("config/wineo/environments/one.toml")
+            .exists()
+    );
+}
+
+#[test]
+fn rm_delete_prefix_deletes_the_prefix_without_following_its_symlinks() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = root.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("keep.txt"), "keep me").unwrap();
+
+    let prefix = root.path().join("prefixes/notepad");
+    fake_prefix(&prefix, &outside);
+    environment_with_prefix(root.path(), "notepad", &prefix);
+
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("and its prefix"), "{}", stdout(&out));
+    assert!(!prefix.exists());
+    assert!(
+        outside.join("keep.txt").exists(),
+        "the link target was followed"
+    );
+}
+
+#[test]
+fn rm_delete_prefix_notes_a_prefix_that_is_already_gone() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/notepad");
+    environment_with_prefix(root.path(), "notepad", &prefix);
+
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains("already gone"), "{}", stderr(&out));
+    assert!(
+        !root
+            .path()
+            .join("config/wineo/environments/notepad.toml")
+            .exists()
+    );
+}
+
+#[test]
+fn rm_delete_prefix_refuses_a_directory_that_is_not_a_prefix() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/notepad");
+    fs::create_dir_all(&prefix).unwrap();
+    fs::write(prefix.join("notes.txt"), "not a prefix").unwrap();
+    environment_with_prefix(root.path(), "notepad", &prefix);
+
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    assert!(!out.status.success());
+    let message = stderr(&out);
+    assert!(message.contains("is not a wine prefix"), "{message}");
+    assert!(message.contains("wineo rm notepad"), "{message}");
+    assert!(prefix.join("notes.txt").exists());
+    assert!(
+        root.path()
+            .join("config/wineo/environments/notepad.toml")
+            .exists()
+    );
+}
+
+#[test]
+fn rm_delete_prefix_refuses_a_prefix_another_environment_uses() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/shared");
+    fake_prefix(&prefix, root.path());
+    environment_with_prefix(root.path(), "notepad", &prefix);
+    // A different spelling of the same directory must still be recognized.
+    environment_with_prefix(
+        root.path(),
+        "other",
+        &root.path().join("prefixes/../prefixes/shared"),
+    );
+
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("also used by other"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(prefix.join("system.reg").exists());
+    assert!(
+        root.path()
+            .join("config/wineo/environments/notepad.toml")
+            .exists()
+    );
+}
+
+#[test]
+fn rm_delete_prefix_refuses_while_another_config_cannot_be_read() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/notepad");
+    fake_prefix(&prefix, root.path());
+    environment_with_prefix(root.path(), "notepad", &prefix);
+    write_environment(root.path(), "broken", "this is not toml");
+
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("broken can't be read"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(prefix.join("system.reg").exists());
+
+    // Without the flag the unreadable neighbour is irrelevant.
+    let out = output(wineo(root.path()).args(["rm", "notepad"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn rm_refuses_while_an_operation_holds_the_environment() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/notepad");
+    fake_prefix(&prefix, root.path());
+    environment_with_prefix(root.path(), "notepad", &prefix);
+
+    let held = locks(root.path())
+        .acquire(
+            wineo_core::operation::Operation::Winetricks,
+            "notepad",
+            &[&prefix],
+        )
+        .unwrap();
+    let out = output(wineo(root.path()).args(["rm", "notepad"]));
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("winetricks is running"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        root.path()
+            .join("config/wineo/environments/notepad.toml")
+            .exists()
+    );
+
+    drop(held);
+    assert!(
+        output(wineo(root.path()).args(["rm", "notepad"]))
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn rm_refuses_a_running_environment() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "notepad", MINIMAL_ENVIRONMENT);
+    let notepad = runtime(root.path(), "notepad");
+    let _lock = notepad.try_lock().unwrap().unwrap();
+
+    let out = output(wineo(root.path()).args(["rm", "notepad"]));
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("is running, stop it first"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        root.path()
+            .join("config/wineo/environments/notepad.toml")
+            .exists()
+    );
+}
+
+#[test]
+fn rm_refuses_a_lost_run() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "notepad", MINIMAL_ENVIRONMENT);
+    // Recorded as running with nothing holding the lock, so wine may still be up.
+    runtime(root.path(), "notepad")
+        .write_state(&RunState::running(
+            RunMode::Detached,
+            "notepad".to_owned(),
+            111,
+            &Overrides::default(),
+        ))
+        .unwrap();
+
+    let out = output(wineo(root.path()).args(["rm", "notepad"]));
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("wineo stop notepad"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        root.path()
+            .join("config/wineo/environments/notepad.toml")
+            .exists()
+    );
+}
+
+#[test]
+fn rm_delete_prefix_refuses_unreadable_run_state() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/notepad");
+    fake_prefix(&prefix, root.path());
+    environment_with_prefix(root.path(), "notepad", &prefix);
+    write_log(root.path(), "notepad", "state.toml", "not = valid = toml\n");
+
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("wineo stop notepad"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(prefix.join("system.reg").exists());
+
+    // Broken state alone doesn't block removing the registration.
+    let out = output(wineo(root.path()).args(["rm", "notepad"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn a_partly_deleted_prefix_keeps_the_config_and_explains_the_cleanup() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/notepad");
+    fake_prefix(&prefix, root.path());
+    environment_with_prefix(root.path(), "notepad", &prefix);
+
+    // What is left when a delete failed after removing system.reg.
+    fs::remove_file(prefix.join("system.reg")).unwrap();
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    assert!(!out.status.success());
+    let message = stderr(&out);
+    assert!(message.contains("is not a wine prefix"), "{message}");
+    assert!(message.contains("wineo rm notepad"), "{message}");
+    assert!(
+        root.path()
+            .join("config/wineo/environments/notepad.toml")
+            .exists()
+    );
+
+    // The registration still comes off once the leftovers are dealt with.
+    fs::remove_dir_all(&prefix).unwrap();
+    let out = output(wineo(root.path()).args(["rm", "notepad"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn rm_delete_prefix_refuses_a_prefix_path_that_is_a_symlink() {
+    let root = tempfile::tempdir().unwrap();
+    let real = root.path().join("prefixes/real");
+    fake_prefix(&real, root.path());
+    let link = root.path().join("prefixes/link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    environment_with_prefix(root.path(), "notepad", &link);
+
+    let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("is a symlink"), "{}", stderr(&out));
+    assert!(real.join("system.reg").exists());
+    assert!(link.exists());
+}
+
+#[test]
+fn rm_errors_for_an_unknown_environment() {
+    let root = tempfile::tempdir().unwrap();
+    let out = output(wineo(root.path()).args(["rm", "nope"]));
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("does not exist"), "{}", stderr(&out));
 }

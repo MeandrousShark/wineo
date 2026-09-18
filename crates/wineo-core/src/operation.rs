@@ -5,7 +5,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
@@ -13,7 +13,7 @@ use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
 
 use crate::error::{Error, IoContext, Result};
-use crate::paths::Paths;
+use crate::paths::{self, Paths};
 
 /// A probe holds a shared lock for a moment, so taking one retries for about
 /// this long before deciding another command really holds it.
@@ -194,7 +194,7 @@ impl Locks {
     }
 
     fn prefix_path(&self, prefix: &Path) -> PathBuf {
-        let resolved = resolve(prefix);
+        let resolved = paths::resolve(prefix);
         let label = resolved
             .file_name()
             .and_then(|name| name.to_str())
@@ -253,32 +253,6 @@ fn record(file: &File, path: &Path, operation: Operation) -> Result<()> {
     file.set_len(0)
         .and_then(|()| file.write_all_at(line.as_bytes(), 0))
         .context(|| format!("failed to write {}", path.display()))
-}
-
-/// Canonicalizes as much of `path` as exists, so two names for the same prefix
-/// land on the same lock even when the prefix hasn't been created yet.
-fn resolve(path: &Path) -> PathBuf {
-    let components: Vec<Component> = path.components().collect();
-    for split in (0..=components.len()).rev() {
-        let head: PathBuf = components[..split].iter().collect();
-        let Ok(base) = fs::canonicalize(&head) else {
-            continue;
-        };
-        // Nothing past the longest existing ancestor exists, so none of it can
-        // be a symlink and `..` is safe to fold in without touching the disk.
-        let mut resolved = base;
-        for component in &components[split..] {
-            match component {
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    resolved.pop();
-                }
-                other => resolved.push(other),
-            }
-        }
-        return resolved;
-    }
-    path.to_owned()
 }
 
 /// A readable hint in the lock's file name. The hash is what makes it unique.

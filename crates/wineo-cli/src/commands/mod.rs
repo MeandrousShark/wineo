@@ -5,6 +5,7 @@ pub mod list;
 pub mod logs;
 pub mod new;
 pub mod restart;
+pub mod rm;
 pub mod run;
 pub mod set;
 pub mod start;

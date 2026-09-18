@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::error::{Error, IoContext, Result};
 
@@ -96,6 +96,32 @@ impl Paths {
             Err(_) => text(path),
         }
     }
+}
+
+/// Canonicalizes as much of `path` as exists, so two spellings of the same
+/// directory compare equal even before it is created.
+pub fn resolve(path: &Path) -> PathBuf {
+    let components: Vec<Component> = path.components().collect();
+    for split in (0..=components.len()).rev() {
+        let head: PathBuf = components[..split].iter().collect();
+        let Ok(base) = std::fs::canonicalize(&head) else {
+            continue;
+        };
+        // Nothing past the longest existing ancestor exists, so none of it can
+        // be a symlink and `..` is safe to fold in without touching the disk.
+        let mut resolved = base;
+        for component in &components[split..] {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    resolved.pop();
+                }
+                other => resolved.push(other),
+            }
+        }
+        return resolved;
+    }
+    path.to_owned()
 }
 
 #[cfg(test)]
