@@ -50,6 +50,12 @@ pub enum Error {
         source: Box<toml::de::Error>,
     },
 
+    #[error("{subject} is busy: {holder}")]
+    Busy {
+        subject: String,
+        holder: &'static str,
+    },
+
     #[error("environment `{0}` does not exist")]
     UnknownEnvironment(String),
 

@@ -5,6 +5,7 @@ pub mod error;
 mod files;
 pub mod launch;
 pub mod name;
+pub mod operation;
 pub mod paths;
 pub mod prefix;
 pub mod report;

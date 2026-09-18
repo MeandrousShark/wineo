@@ -56,6 +56,12 @@ impl Paths {
         self.data.join("prefixes")
     }
 
+    /// Operation lock files. Dotted, so it can never collide with the runtime
+    /// dir of an environment, and stable, so removing one leaves it alone.
+    pub fn locks_dir(&self) -> PathBuf {
+        self.state.join(".locks")
+    }
+
     pub fn runtime_dir(&self, name: &str) -> PathBuf {
         self.state.join(name)
     }
