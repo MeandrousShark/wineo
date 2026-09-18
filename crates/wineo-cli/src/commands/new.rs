@@ -5,6 +5,7 @@ use anyhow::bail;
 use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::environment::{Environment, NewEnvironment};
 use wineo_core::launch::{self, Launch};
+use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 
@@ -44,24 +45,24 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let runner = Runner::resolve(args.runner.as_deref().unwrap_or(&global.defaults.runner))?;
 
+    let new = NewEnvironment {
+        name,
+        dir: args.dir,
+        arch: args.arch,
+    };
+    // Held through the installer too, so nothing touches the prefix while it runs.
+    let locks = Locks::new(paths);
+    let prefix = new.prefix_dir(paths, &global)?;
+    let _guard = locks.acquire(Operation::Create, &new.name, &[&prefix])?;
+
     let mut created_prefix = false;
-    let environment = Environment::create(
-        paths,
-        &global,
-        &runner,
-        &NewEnvironment {
-            name,
-            dir: args.dir,
-            arch: args.arch,
-        },
-        |dir| {
-            created_prefix = true;
-            let dir = paths
-                .contract(dir)
-                .unwrap_or_else(|_| dir.display().to_string());
-            eprintln!("Creating a wine prefix in {dir}, this takes a few seconds");
-        },
-    )?;
+    let environment = Environment::create(paths, &global, &runner, &new, |dir| {
+        created_prefix = true;
+        let dir = paths
+            .contract(dir)
+            .unwrap_or_else(|_| dir.display().to_string());
+        eprintln!("Creating a wine prefix in {dir}, this takes a few seconds");
+    })?;
     if created_prefix {
         println!("Created environment {}", environment.name);
     } else {

@@ -7,6 +7,7 @@ use anyhow::{Context, bail};
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::launch::{Launch, Overrides, parse_env_assignment};
+use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::{RunMode, RunState, Runtime};
 use wineo_core::supervisor::{Notice, Supervisor};
@@ -55,6 +56,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let environment = Environment::load(paths, &args.name)?;
     let overrides = args.launch.into_overrides();
     let launch = Launch::target(paths, &global, &environment, &overrides)?;
+    let locks = Locks::new(paths);
+    let _guard = locks.acquire(Operation::Launch, &environment.name, &[&launch.prefix])?;
+    Environment::ensure_exists(paths, &environment.name)?;
+
     let runtime = Runtime::new(paths, &environment.name);
     let Some(_lock) = runtime.try_lock()? else {
         bail!("{} is already running", environment.name);

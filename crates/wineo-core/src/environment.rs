@@ -27,6 +27,17 @@ pub struct NewEnvironment {
     pub arch: Option<Arch>,
 }
 
+impl NewEnvironment {
+    /// Where the prefix will be. Needed before creation, so the prefix can be
+    /// locked against another command claiming it at the same time.
+    pub fn prefix_dir(&self, paths: &Paths, global: &GlobalConfig) -> Result<PathBuf> {
+        match &self.dir {
+            Some(dir) => paths.absolute(dir),
+            None => Ok(global.prefix_root(paths)?.join(&self.name)),
+        }
+    }
+}
+
 impl Environment {
     pub fn load(paths: &Paths, name: &str) -> Result<Self> {
         check_name(name)?;
@@ -71,10 +82,7 @@ impl Environment {
         if path.exists() {
             return Err(Error::EnvironmentExists(new.name.clone()));
         }
-        let dir = match &new.dir {
-            Some(dir) => paths.absolute(dir)?,
-            None => global.prefix_root(paths)?.join(&new.name),
-        };
+        let dir = new.prefix_dir(paths, global)?;
         let prefix_value = paths.contract(&dir)?;
 
         let arch = if prefix::is_prefix(&dir) {

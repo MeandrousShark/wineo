@@ -7,6 +7,7 @@ use signal_hook::consts::SIGINT;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::launch::{Launch, parse_env_assignment};
+use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::exit_code;
 
@@ -39,6 +40,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         &args.args,
         &env,
     )?;
+    let locks = Locks::new(paths);
+    let _guard = locks.acquire(Operation::Launch, &environment.name, &[&launch.prefix])?;
+    Environment::ensure_exists(paths, &environment.name)?;
+
     let code = run_attached(&launch)?;
     Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
 }

@@ -18,6 +18,8 @@ use signal_hook::iterator::{Handle, Signals};
 
 use crate::error::{self, Error, IoContext, Result};
 use crate::launch::{Launch, Overrides};
+use crate::operation::{Locks, Operation};
+use crate::prefix;
 use crate::runtime::{RunMode, RunState, RunStatus, Runtime, exit_code};
 
 /// The hidden command a detached supervisor runs as.
@@ -183,10 +185,20 @@ impl Drop for Supervisor {
 /// config problems are reported there.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Spec {
+    pub claim: Claim,
     pub runtime_dir: PathBuf,
     pub stop_timeout: u32,
     pub launch: Launch,
     pub overrides: Overrides,
+}
+
+/// What a detached supervisor needs to hold its own operation lock and confirm
+/// the environment is still there once it has it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Claim {
+    pub name: String,
+    pub locks_dir: PathBuf,
+    pub config: PathBuf,
 }
 
 /// How handing a run to a new supervisor went.
@@ -297,6 +309,18 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         .context(|| "failed to read the run spec".to_owned())?;
     let spec: Spec = toml::from_str(&text)
         .map_err(|err| Error::StartFailed(format!("invalid run spec: {err}")))?;
+
+    // `start` holds a lock of its own until this one is taken, but it lets go
+    // when it exits, so the run keeps its protection here instead.
+    let locks = Locks::at(spec.claim.locks_dir.clone());
+    let _claim = locks.acquire(Operation::Launch, &spec.claim.name, &[&spec.launch.prefix])?;
+    // The spec was prepared before the lock, so it can be stale by now.
+    if !spec.claim.config.is_file() {
+        return Err(Error::UnknownEnvironment(spec.claim.name.clone()));
+    }
+    if !prefix::is_prefix(&spec.launch.prefix) {
+        return Err(Error::MissingPrefix(spec.launch.prefix.clone()));
+    }
 
     let runtime = Runtime::at(spec.runtime_dir.clone());
     let Some(lock) = runtime.try_lock()? else {
@@ -449,6 +473,11 @@ mod tests {
     #[test]
     fn spec_round_trips_through_toml() {
         let spec = Spec {
+            claim: Claim {
+                name: "app".to_owned(),
+                locks_dir: PathBuf::from("/state/wineo/.locks"),
+                config: PathBuf::from("/config/wineo/environments/app.toml"),
+            },
             runtime_dir: PathBuf::from("/state/wineo/app"),
             stop_timeout: 10,
             launch: Launch {

@@ -4,9 +4,10 @@ use anyhow::{Context, bail};
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::launch::{Launch, Overrides};
+use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::{RunStatus, Runtime};
-use wineo_core::supervisor::{self, Spec, Started};
+use wineo_core::supervisor::{self, Claim, Spec, Started};
 
 use crate::commands::run::LaunchArgs;
 
@@ -32,6 +33,10 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, name)?;
     let launch = Launch::target(paths, &global, &environment, &overrides)?;
+    let locks = Locks::new(paths);
+    let _guard = locks.acquire(Operation::Launch, name, &[&launch.prefix])?;
+    // The config was read before the lock, so it could already be gone.
+    Environment::ensure_exists(paths, name)?;
     let runtime = Runtime::new(paths, name);
 
     if runtime.is_running()? {
@@ -56,6 +61,11 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
     }
 
     let spec = Spec {
+        claim: Claim {
+            name: name.to_owned(),
+            locks_dir: paths.locks_dir(),
+            config: environment.path.clone(),
+        },
         runtime_dir: runtime.dir().to_owned(),
         stop_timeout: global.stop_timeout,
         launch,
