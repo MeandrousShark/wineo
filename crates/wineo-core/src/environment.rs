@@ -380,7 +380,7 @@ mod tests {
         let env = Environment::create(
             &paths,
             &GlobalConfig::default(),
-            &Runner::resolve("wine").unwrap(),
+            &Runner::system().unwrap(),
             &new("real", &prefix),
             |_| {},
         )
@@ -401,7 +401,7 @@ mod tests {
         let err = Environment::create(
             &paths,
             &GlobalConfig::default(),
-            &Runner::resolve("wine").unwrap(),
+            &Runner::system().unwrap(),
             &options,
             |_| {},
         )

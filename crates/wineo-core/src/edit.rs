@@ -95,10 +95,11 @@ fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
             store_value(table, "arch", value);
             Ok(())
         }
-        "defaults.prefix_root" => {
+        "defaults.prefix_root" | "defaults.runner_root" => {
             let value = parse_string_value(key, raw)?;
+            let field = key.strip_prefix("defaults.").expect("checked above");
             let table = ensure_table(root, "defaults", "defaults", false)?;
-            store_value(table, "prefix_root", value);
+            store_value(table, field, value);
             Ok(())
         }
         _ => {
@@ -205,6 +206,7 @@ fn unset_global(root: &mut Table, key: &str) -> Result<bool, EditError> {
         "defaults.runner" => unset_field(root, "defaults", "defaults", "runner"),
         "defaults.arch" => unset_field(root, "defaults", "defaults", "arch"),
         "defaults.prefix_root" => unset_field(root, "defaults", "defaults", "prefix_root"),
+        "defaults.runner_root" => unset_field(root, "defaults", "defaults", "runner_root"),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
                 let var = validate_env_var(key, var)?;

@@ -1,10 +1,11 @@
 use serde::Serialize;
 
+use crate::config::GlobalConfig;
 use crate::environment::Environment;
 use crate::error::Result;
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
-use crate::runner::Runner;
+use crate::runners::Runners;
 use crate::runtime::{Runtime, Status};
 
 /// Everything `wineo status <name>` shows, gathered here so `--json` stays
@@ -25,9 +26,11 @@ pub struct EnvironmentReport {
 }
 
 impl EnvironmentReport {
-    pub fn load(paths: &Paths, environment: &Environment) -> Result<Self> {
+    pub fn load(paths: &Paths, global: &GlobalConfig, environment: &Environment) -> Result<Self> {
         let status = Runtime::new(paths, &environment.name).status()?;
-        let runner_version = Runner::resolve(&environment.config.runner)
+        // An unresolvable runner is worth showing the rest of the status for.
+        let runner_version = Runners::new(paths, global)
+            .and_then(|runners| runners.resolve(&environment.config.runner))
             .ok()
             .and_then(|runner| runner.version());
         let target_exe = status
@@ -82,7 +85,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
         let env = environment("");
-        let report = EnvironmentReport::load(&paths, &env).unwrap();
+        let report = EnvironmentReport::load(&paths, &GlobalConfig::default(), &env).unwrap();
         assert_eq!(report.runner, "proton-ge");
         assert_eq!(report.runner_version, None);
         assert_eq!(report.prefix, "~/prefix");
@@ -96,7 +99,7 @@ mod tests {
         let runtime = Runtime::new(&paths, &env.name);
 
         // No run yet: no target to report.
-        let report = EnvironmentReport::load(&paths, &env).unwrap();
+        let report = EnvironmentReport::load(&paths, &GlobalConfig::default(), &env).unwrap();
         assert_eq!(report.target_exe, None);
 
         let state = RunState::running(
@@ -106,13 +109,13 @@ mod tests {
             &Default::default(),
         );
         runtime.write_state(&state).unwrap();
-        let report = EnvironmentReport::load(&paths, &env).unwrap();
+        let report = EnvironmentReport::load(&paths, &GlobalConfig::default(), &env).unwrap();
         assert_eq!(report.target_exe.as_deref(), Some("notepad"));
 
         let mut state = state;
         state.target = "gone".to_owned();
         runtime.write_state(&state).unwrap();
-        let report = EnvironmentReport::load(&paths, &env).unwrap();
+        let report = EnvironmentReport::load(&paths, &GlobalConfig::default(), &env).unwrap();
         assert_eq!(report.target_exe, None);
     }
 }

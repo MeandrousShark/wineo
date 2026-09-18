@@ -62,8 +62,25 @@ pub enum Error {
     #[error("environment `{0}` already exists")]
     EnvironmentExists(String),
 
-    #[error("runner `{0}` isn't supported yet, only `wine` (the system wine) works for now")]
-    UnsupportedRunner(String),
+    #[error("invalid runner name `{0}`: use letters, digits, `-`, `_`, and `.`")]
+    InvalidRunnerName(String),
+
+    #[error(
+        "runner `{name}` is not installed{}",
+        if .installed.is_empty() {
+            format!(", and nothing is installed in {}", .root.display())
+        } else {
+            format!(", installed runners are: {}", .installed.join(", "))
+        }
+    )]
+    UnknownRunner {
+        name: String,
+        installed: Vec<String>,
+        root: PathBuf,
+    },
+
+    #[error("`{name}` is not a wine build: {reason}")]
+    NotARunner { name: String, reason: &'static str },
 
     #[error("`{0}` was not found on PATH")]
     ProgramNotFound(&'static str),

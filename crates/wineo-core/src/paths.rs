@@ -56,6 +56,10 @@ impl Paths {
         self.data.join("prefixes")
     }
 
+    pub fn default_runner_root(&self) -> PathBuf {
+        self.data.join("runners")
+    }
+
     /// Operation lock files. Dotted, so it can never collide with the runtime
     /// dir of an environment, and stable, so removing one leaves it alone.
     pub fn locks_dir(&self) -> PathBuf {

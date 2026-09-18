@@ -74,6 +74,7 @@ pub struct Defaults {
     #[serde(default)]
     pub arch: Arch,
     pub prefix_root: Option<String>,
+    pub runner_root: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,6 +129,7 @@ impl Default for Defaults {
             runner: default_runner(),
             arch: Arch::default(),
             prefix_root: None,
+            runner_root: None,
         }
     }
 }
@@ -154,6 +156,13 @@ impl GlobalConfig {
         match &self.defaults.prefix_root {
             Some(root) => paths.absolute(root),
             None => Ok(paths.default_prefix_root()),
+        }
+    }
+
+    pub fn runner_root(&self, paths: &Paths) -> Result<std::path::PathBuf> {
+        match &self.defaults.runner_root {
+            Some(root) => paths.absolute(root),
+            None => Ok(paths.default_runner_root()),
         }
     }
 }

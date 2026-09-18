@@ -11,6 +11,7 @@ use crate::error::{Error, Result};
 use crate::paths::Paths;
 use crate::prefix;
 use crate::runner::{Runner, with_menu_builder_disabled};
+use crate::runners::Runners;
 use crate::winpath;
 
 /// Command line overrides for launching a target.
@@ -42,7 +43,7 @@ impl Launch {
         overrides: &Overrides,
     ) -> Result<Self> {
         let (name, target) = resolve_target(environment, overrides.target.as_deref())?;
-        let (runner, prefix) = open(paths, environment)?;
+        let (runner, prefix) = open(paths, global, environment)?;
         let program = resolve_program(paths, &prefix, &target.exe, false)?;
         let cwd = match &target.cwd {
             Some(cwd) => resolve_cwd(paths, &prefix, cwd)?,
@@ -71,7 +72,7 @@ impl Launch {
         args: &[String],
         env: &BTreeMap<String, String>,
     ) -> Result<Self> {
-        let (runner, prefix) = open(paths, environment)?;
+        let (runner, prefix) = open(paths, global, environment)?;
         let program = resolve_program(paths, &prefix, program, true)?;
         let cwd = program.default_cwd(&prefix);
         let mut wine_args = program.wine_args;
@@ -114,13 +115,18 @@ fn check_override(key: &str, value: &str) -> Result<()> {
     validate_env_var(key, value).map_err(Error::InvalidEnv)
 }
 
-fn open(paths: &Paths, environment: &Environment) -> Result<(Runner, PathBuf)> {
+fn open(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+) -> Result<(Runner, PathBuf)> {
     let prefix = environment.prefix(paths)?;
     // Wine would silently create a fresh prefix here otherwise.
     if !prefix::is_prefix(&prefix) {
         return Err(Error::MissingPrefix(prefix));
     }
-    Ok((Runner::resolve(&environment.config.runner)?, prefix))
+    let runner = Runners::new(paths, global)?.resolve(&environment.config.runner)?;
+    Ok((runner, prefix))
 }
 
 fn resolve_target<'a>(

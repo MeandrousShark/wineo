@@ -11,6 +11,7 @@ pub mod paths;
 pub mod prefix;
 pub mod report;
 pub mod runner;
+pub mod runners;
 pub mod runtime;
 pub mod settings;
 pub mod supervisor;

@@ -16,17 +16,27 @@ pub struct Runner {
 }
 
 impl Runner {
-    pub fn resolve(name: &str) -> Result<Self> {
-        if name != "wine" {
-            return Err(Error::UnsupportedRunner(name.to_owned()));
-        }
+    /// The reserved name meaning whatever wine is on `PATH`.
+    pub const SYSTEM: &'static str = "wine";
+
+    /// The system wine, found on `PATH`.
+    pub fn system() -> Result<Self> {
         let path = std::env::var_os("PATH").unwrap_or_default();
         Ok(Self {
-            name: name.to_owned(),
+            name: Self::SYSTEM.to_owned(),
             wine: find_in_path(&path, "wine").ok_or(Error::ProgramNotFound("wine"))?,
             wineserver: find_in_path(&path, "wineserver")
                 .ok_or(Error::ProgramNotFound("wineserver"))?,
         })
+    }
+
+    /// An installed build, with its executables already located.
+    pub(crate) fn at(name: String, wine: PathBuf, wineserver: PathBuf) -> Self {
+        Self {
+            name,
+            wine,
+            wineserver,
+        }
     }
 
     /// A runner whose `wine` and `wineserver` both resolve to `true` on PATH,
@@ -154,7 +164,7 @@ fn find_in_path(path_var: &OsStr, program: &str) -> Option<PathBuf> {
         .find(|candidate| is_executable(candidate))
 }
 
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     path.metadata()
         .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
@@ -185,14 +195,6 @@ mod tests {
         assert_eq!(find_in_path(&path_var, "wine"), Some(wine));
         assert_eq!(find_in_path(&path_var, "wineserver"), None);
         assert_eq!(find_in_path(&OsString::new(), "wine"), None);
-    }
-
-    #[test]
-    fn other_runners_are_not_supported_yet() {
-        assert!(matches!(
-            Runner::resolve("proton-ge"),
-            Err(Error::UnsupportedRunner(name)) if name == "proton-ge"
-        ));
     }
 
     #[test]
