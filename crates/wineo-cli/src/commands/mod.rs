@@ -7,6 +7,7 @@ pub mod new;
 pub mod restart;
 pub mod rm;
 pub mod run;
+pub mod runners;
 pub mod set;
 pub mod start;
 pub mod status;

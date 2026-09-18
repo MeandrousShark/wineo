@@ -145,8 +145,44 @@ impl Fixture {
             .expect("wineo should start")
     }
 
+    /// Installs the same fakes as a drop-in runner instead of putting them on
+    /// PATH, so a test can prove resolution reaches the supervisor.
+    fn install_runner(&self, name: &str) {
+        let bin = self
+            .root
+            .path()
+            .join("data/wineo/runners")
+            .join(name)
+            .join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        for (file, script) in [("wine", FAKE_WINE), ("wineserver", FAKE_WINESERVER)] {
+            let path = bin.join(file);
+            fs::write(&path, script).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    /// wineo with the fakes off PATH entirely, so anything that still reaches
+    /// for the system wine fails loudly instead of quietly working.
+    fn wineo_without_fakes(&self) -> Command {
+        let mut command = self.wineo();
+        command.env("PATH", std::env::var_os("PATH").unwrap_or_default());
+        command
+    }
+
+    fn run_without_fakes(&self, args: &[&str]) -> Output {
+        self.wineo_without_fakes()
+            .args(args)
+            .output()
+            .expect("wineo should start")
+    }
+
     /// Writes an environment config with a fake prefix.
     fn environment(&self, name: &str, targets: &str) {
+        self.environment_with_runner(name, "wine", targets);
+    }
+
+    fn environment_with_runner(&self, name: &str, runner: &str, targets: &str) {
         let prefix = self.root.path().join("prefixes").join(name);
         fs::create_dir_all(prefix.join("drive_c")).unwrap();
         fs::write(
@@ -159,7 +195,7 @@ impl Fixture {
         fs::write(
             config,
             format!(
-                "prefix = \"{}\"\nrunner = \"wine\"\narch = \"win64\"\n\n{targets}",
+                "prefix = \"{}\"\nrunner = \"{runner}\"\narch = \"win64\"\n\n{targets}",
                 prefix.display()
             ),
         )
@@ -784,4 +820,141 @@ fn the_log_limit_is_a_global_setting() {
             .unwrap()
             .contains("log_limit_mb")
     );
+}
+
+#[test]
+fn a_custom_runner_drives_a_whole_run() {
+    let f = Fixture::new();
+    f.install_runner("wine-tkg");
+    f.environment_with_runner("app", "wine-tkg", APP);
+
+    // No fakes on PATH, so only the runners root can supply wine.
+    assert_success(&f.run_without_fakes(&["start", "app"]));
+    wait_for("the program to start", || f.fake_program_running("app"));
+
+    let listed = f.run_without_fakes(&["runners"]);
+    assert_success(&listed);
+    assert!(stdout(&listed).contains("wine-tkg"), "{}", stdout(&listed));
+
+    let shown = f.run_without_fakes(&["status", "app"]);
+    assert_success(&shown);
+    assert!(stdout(&shown).contains("wine-tkg"), "{}", stdout(&shown));
+
+    assert_success(&f.run_without_fakes(&["stop", "app"]));
+    assert!(!f.fake_program_running("app"));
+    // The fake wine says so in the log, so this could not have been system wine.
+    assert!(f.log("app").contains("fake wine: app"), "{}", f.log("app"));
+}
+
+#[test]
+fn runners_lists_the_system_wine_and_what_is_installed() {
+    let f = Fixture::new();
+    let listed = f.run(&["runners"]);
+    assert_success(&listed);
+    // Nothing installed yet, so it says where to put one.
+    assert!(stderr(&listed).contains("runners"), "{}", stderr(&listed));
+    assert!(stdout(&listed).starts_with("wine"), "{}", stdout(&listed));
+
+    f.install_runner("wine-tkg");
+    fs::create_dir_all(f.root.path().join("data/wineo/runners/broken/bin")).unwrap();
+
+    let listed = f.run(&["runners"]);
+    assert_success(&listed);
+    assert!(stdout(&listed).contains("wine-tkg"), "{}", stdout(&listed));
+    assert!(!stdout(&listed).contains("broken"), "{}", stdout(&listed));
+
+    let all = f.run(&["runners", "--all"]);
+    assert_success(&all);
+    assert!(stdout(&all).contains("broken"), "{}", stdout(&all));
+    assert!(stdout(&all).contains("no bin/wine"), "{}", stdout(&all));
+}
+
+#[test]
+fn new_checks_the_runner_before_creating_anything() {
+    let f = Fixture::new();
+    let created = f.run(&["new", "-n", "app", "--runner", "nope"]);
+    assert!(!created.status.success());
+    assert!(
+        stderr(&created).contains("is not installed"),
+        "{}",
+        stderr(&created)
+    );
+    assert!(!f.config_dir().join("environments/app.toml").exists());
+    assert!(!f.root.path().join("data/wineo/prefixes/app").exists());
+}
+
+#[test]
+fn set_runner_checks_the_name_and_warns_about_the_prefix() {
+    let f = Fixture::new();
+    f.install_runner("wine-tkg");
+    f.environment("app", APP);
+
+    let bad = f.run(&["set", "app", "runner=nope"]);
+    assert!(!bad.status.success());
+    assert!(
+        stderr(&bad).contains("is not installed"),
+        "{}",
+        stderr(&bad)
+    );
+    assert!(
+        fs::read_to_string(f.config_dir().join("environments/app.toml"))
+            .unwrap()
+            .contains("runner = \"wine\"")
+    );
+
+    let changed = f.run(&["set", "app", "runner=wine-tkg"]);
+    assert_success(&changed);
+    assert!(
+        stderr(&changed).contains("was not migrated"),
+        "{}",
+        stderr(&changed)
+    );
+    assert!(
+        fs::read_to_string(f.config_dir().join("environments/app.toml"))
+            .unwrap()
+            .contains("runner = \"wine-tkg\"")
+    );
+}
+
+#[test]
+fn set_runner_is_refused_while_the_environment_runs() {
+    let f = Fixture::new();
+    f.install_runner("wine-tkg");
+    f.environment("app", APP);
+    assert_success(&f.run(&["start", "app"]));
+    wait_for("the program to start", || f.fake_program_running("app"));
+
+    let refused = f.run(&["set", "app", "runner=wine-tkg"]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("is busy"), "{}", stderr(&refused));
+    assert!(
+        fs::read_to_string(f.config_dir().join("environments/app.toml"))
+            .unwrap()
+            .contains("runner = \"wine\"")
+    );
+
+    assert_success(&f.run(&["stop", "app"]));
+    assert_success(&f.run(&["set", "app", "runner=wine-tkg"]));
+}
+
+#[test]
+fn the_runner_root_can_be_moved() {
+    let f = Fixture::new();
+    let elsewhere = f.root.path().join("my-runners");
+    let bin = elsewhere.join("wine-tkg/bin");
+    fs::create_dir_all(&bin).unwrap();
+    for (file, script) in [("wine", FAKE_WINE), ("wineserver", FAKE_WINESERVER)] {
+        let path = bin.join(file);
+        fs::write(&path, script).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // Not in the default root, so it is invisible until the setting moves.
+    assert!(!stdout(&f.run(&["runners"])).contains("wine-tkg"));
+    assert_success(&f.run(&[
+        "set",
+        "--global",
+        &format!("defaults.runner_root={}", elsewhere.display()),
+    ]));
+    assert!(stdout(&f.run(&["runners"])).contains("wine-tkg"));
 }

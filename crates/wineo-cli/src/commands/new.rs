@@ -7,7 +7,7 @@ use wineo_core::environment::{Environment, NewEnvironment};
 use wineo_core::launch::{self, Launch};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
-use wineo_core::runner::Runner;
+use wineo_core::runners::Runners;
 
 use super::exec;
 
@@ -43,7 +43,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         bail!("guided creation isn't available yet, pass a name with -n");
     };
     let global = GlobalConfig::load(paths)?;
-    let runner = Runner::resolve(args.runner.as_deref().unwrap_or(&global.defaults.runner))?;
+    // Resolved before anything is created, so a typo never leaves a prefix behind.
+    let runner = Runners::new(paths, &global)?
+        .resolve(args.runner.as_deref().unwrap_or(&global.defaults.runner))?;
 
     let new = NewEnvironment {
         name,

@@ -689,12 +689,20 @@ fn completions_cover_every_visible_command_and_flag() {
             "run",
             "exec",
             "rm",
+            "runners",
             "winetricks",
             "completions",
         ] {
             assert!(script.contains(command), "{shell} is missing {command}");
         }
-        for flag in ["target", "global", "follow", "previous", "delete-prefix"] {
+        for flag in [
+            "target",
+            "global",
+            "follow",
+            "previous",
+            "delete-prefix",
+            "all",
+        ] {
             // fish spells long options `-l name`, every other generator uses `--name`.
             let needle = if shell == "fish" {
                 format!("-l {flag}")

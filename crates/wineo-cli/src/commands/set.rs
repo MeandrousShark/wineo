@@ -2,29 +2,46 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::bail;
+use wineo_core::config::GlobalConfig;
 use wineo_core::edit;
 use wineo_core::environment::Environment;
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
+use wineo_core::runners::Runners;
 use wineo_core::runtime::Runtime;
 use wineo_core::settings::{self, ConfigFile};
 
-fn changes_prefix(pairs: &[(&str, &str)], unset: &[&str]) -> bool {
-    pairs.iter().any(|(key, _)| *key == "prefix") || unset.contains(&"prefix")
+/// Settings that decide what the next launch runs, and against what. Both have
+/// to exclude whatever is using the environment, so nothing launches halfway
+/// between the old setting and the new one.
+fn changes_the_launch(pairs: &[(&str, &str)], unset: &[&str]) -> bool {
+    ["prefix", "runner"]
+        .iter()
+        .any(|key| pairs.iter().any(|(set, _)| set == key) || unset.contains(key))
 }
 
-/// Where a `prefix=` setting would point. Quoting is optional on the command
-/// line, so both spellings resolve to the same directory.
-fn new_prefix(paths: &Paths, raw: &str) -> Option<PathBuf> {
-    let unquoted = raw
-        .strip_prefix('"')
+fn changed_runner<'a>(pairs: &[(&'a str, &'a str)]) -> Option<&'a str> {
+    pairs
+        .iter()
+        .rev()
+        .find(|(key, _)| *key == "runner")
+        .map(|(_, raw)| unquote(raw))
+}
+
+/// Quoting is optional on the command line, so both spellings mean the same.
+fn unquote(raw: &str) -> &str {
+    raw.strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))
         .or_else(|| {
             raw.strip_prefix('\'')
                 .and_then(|rest| rest.strip_suffix('\''))
         })
-        .unwrap_or(raw);
-    paths.absolute(unquoted).ok()
+        .unwrap_or(raw)
+}
+
+/// Where a `prefix=` setting would point.
+fn new_prefix(paths: &Paths, raw: &str) -> Option<PathBuf> {
+    paths.absolute(unquote(raw)).ok()
 }
 
 #[derive(clap::Args)]
@@ -69,9 +86,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let unset: Vec<&str> = args.unset.iter().map(String::as_str).collect();
 
     // Pointing an environment somewhere else has to exclude whatever is using
-    // either prefix, so a removal can't delete one this is about to adopt.
+    // either prefix, so a removal can't delete one this is about to adopt. A
+    // running environment holds the same lock, so this refuses that too.
     let _guard = match file {
-        ConfigFile::Environment(name) if changes_prefix(&pairs, &unset) => {
+        ConfigFile::Environment(name) if changes_the_launch(&pairs, &unset) => {
             let mut prefixes = Vec::new();
             if let Ok(environment) = Environment::load(paths, name)
                 && let Ok(prefix) = environment.prefix(paths)
@@ -87,8 +105,25 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         _ => None,
     };
 
+    // Checked under the lock, so a typo never gets written and the runner
+    // cannot be removed between the check and the write.
+    if let ConfigFile::Environment(_) = file
+        && let Some(runner) = changed_runner(&pairs)
+    {
+        let global = GlobalConfig::load(paths).unwrap_or_default();
+        Runners::new(paths, &global)?.resolve(runner)?;
+    }
+
     for key in settings::update(paths, file, &pairs, &unset)? {
         eprintln!("`{key}` was not set");
+    }
+
+    // Wine writes its version into a prefix, so an older build can choke on a
+    // prefix a newer one set up. Wineo does not try to detect that.
+    if let Some(runner) = changed_runner(&pairs) {
+        eprintln!(
+            "The prefix was not migrated. If it was set up by a newer wine than `{runner}`, it may not work"
+        );
     }
 
     if let ConfigFile::Environment(name) = file

@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
+use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::paths::Paths;
 use wineo_core::report::EnvironmentReport;
@@ -26,7 +27,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     match args.name {
         Some(name) => {
             let environment = Environment::load(paths, &name)?;
-            let report = EnvironmentReport::load(paths, &environment)?;
+            // A broken global config only costs the runner version line.
+            let global = GlobalConfig::load(paths).unwrap_or_default();
+            let report = EnvironmentReport::load(paths, &global, &environment)?;
             print!("{}", render(&report, Timestamp::now(), &TimeZone::system()));
             Ok(ExitCode::SUCCESS)
         }

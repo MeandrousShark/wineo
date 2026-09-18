@@ -18,6 +18,7 @@ use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::prefix;
 use wineo_core::runner::{self, Runner, with_menu_builder_disabled};
+use wineo_core::runners::Runners;
 use wineo_core::runtime::{Runtime, exit_code};
 
 /// Variables wineo sets itself, so winetricks always drives the environment's
@@ -70,7 +71,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let (name, forwarded) = args.split();
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, name)?;
-    let runner = Runner::resolve(&environment.config.runner)?;
+    let runner = Runners::new(paths, &global)?.resolve(&environment.config.runner)?;
     let winetricks =
         runner::find_on_path("winetricks").ok_or(Error::ProgramNotFound("winetricks"))?;
 
