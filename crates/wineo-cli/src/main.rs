@@ -2,7 +2,7 @@ mod commands;
 
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use wineo_core::paths::Paths;
 use wineo_core::supervisor;
 
@@ -37,36 +37,46 @@ enum Command {
     Run(commands::run::Args),
     /// Run another program inside an environment
     Exec(commands::exec::Args),
-    /// Owns a detached run for `start`
-    #[command(name = supervisor::SUPERVISE_COMMAND, hide = true)]
-    Supervise,
+    /// Print a shell completion script
+    Completions(commands::completions::Args),
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let result = Paths::from_env()
-        .map_err(anyhow::Error::from)
-        .and_then(|paths| match cli.command {
-            Command::New(args) => commands::new::run(&paths, args),
-            Command::Set(args) => commands::set::run(&paths, args),
-            Command::Config(args) => commands::config::run(&paths, args),
-            Command::Start(args) => commands::start::run(&paths, args),
-            Command::Stop(args) => commands::stop::run(&paths, args),
-            Command::Restart(args) => commands::restart::run(&paths, args),
-            Command::Status(args) => commands::status::run(&paths, args),
-            Command::List(args) => commands::list::run(&paths, args),
-            Command::Logs(args) => commands::logs::run(&paths, args),
-            Command::Run(args) => commands::run::run(&paths, args),
-            Command::Exec(args) => commands::exec::run(&paths, args),
-            Command::Supervise => supervisor::serve()
-                .map(|()| ExitCode::SUCCESS)
-                .map_err(Into::into),
-        });
-    match result {
+    match run() {
         Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err:#}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn run() -> anyhow::Result<ExitCode> {
+    // Owns a detached run for `start`. Deliberately not a clap subcommand, so
+    // it stays out of help and generated completion scripts.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == supervisor::SUPERVISE_COMMAND)
+    {
+        return supervisor::serve()
+            .map(|()| ExitCode::SUCCESS)
+            .map_err(Into::into);
+    }
+
+    let cli = Cli::parse();
+    let paths = Paths::from_env()?;
+    match cli.command {
+        Command::New(args) => commands::new::run(&paths, args),
+        Command::Set(args) => commands::set::run(&paths, args),
+        Command::Config(args) => commands::config::run(&paths, args),
+        Command::Start(args) => commands::start::run(&paths, args),
+        Command::Stop(args) => commands::stop::run(&paths, args),
+        Command::Restart(args) => commands::restart::run(&paths, args),
+        Command::Status(args) => commands::status::run(&paths, args),
+        Command::List(args) => commands::list::run(&paths, args),
+        Command::Logs(args) => commands::logs::run(&paths, args),
+        Command::Run(args) => commands::run::run(&paths, args),
+        Command::Exec(args) => commands::exec::run(&paths, args),
+        Command::Completions(args) => commands::completions::run(&mut Cli::command(), args),
     }
 }

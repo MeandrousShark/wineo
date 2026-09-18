@@ -662,3 +662,71 @@ fn status_name_unknown_environment_errors() {
         stderr(&result)
     );
 }
+
+const SHELLS: [&str; 5] = ["bash", "elvish", "fish", "powershell", "zsh"];
+
+#[test]
+fn completions_cover_every_visible_command_and_flag() {
+    let root = tempfile::tempdir().unwrap();
+    for shell in SHELLS {
+        let out = output(wineo(root.path()).args(["completions", shell]));
+        assert!(out.status.success(), "{shell}: {}", stderr(&out));
+        let script = stdout(&out);
+        for command in [
+            "new",
+            "set",
+            "config",
+            "start",
+            "stop",
+            "restart",
+            "status",
+            "list",
+            "logs",
+            "run",
+            "exec",
+            "completions",
+        ] {
+            assert!(script.contains(command), "{shell} is missing {command}");
+        }
+        for flag in ["target", "global", "follow", "previous"] {
+            // fish spells long options `-l name`, every other generator uses `--name`.
+            let needle = if shell == "fish" {
+                format!("-l {flag}")
+            } else {
+                format!("--{flag}")
+            };
+            assert!(script.contains(&needle), "{shell} is missing {needle}");
+        }
+        // clap_complete only expands a positional's possible values for bash and zsh.
+        if shell == "bash" || shell == "zsh" {
+            for value in SHELLS {
+                assert!(
+                    script.contains(value),
+                    "{shell} is missing the {value} choice"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn completions_leave_out_the_supervisor() {
+    let root = tempfile::tempdir().unwrap();
+    for shell in SHELLS {
+        let script = stdout(&output(wineo(root.path()).args(["completions", shell])));
+        assert!(
+            !script.contains("__supervise"),
+            "{shell} offers __supervise"
+        );
+    }
+    let help = stdout(&output(wineo(root.path()).arg("--help")));
+    assert!(!help.contains("__supervise"));
+}
+
+#[test]
+fn completions_rejects_an_unknown_shell() {
+    let root = tempfile::tempdir().unwrap();
+    let out = output(wineo(root.path()).args(["completions", "csh"]));
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("csh"), "{}", stderr(&out));
+}
