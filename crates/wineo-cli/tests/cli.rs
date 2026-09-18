@@ -739,6 +739,7 @@ fn completions_rejects_an_unknown_shell() {
 /// the `z:` drive has.
 fn fake_prefix(dir: &Path, links_to: &Path) {
     fs::create_dir_all(dir.join("dosdevices")).unwrap();
+    fs::create_dir_all(dir.join("drive_c")).unwrap();
     fs::write(
         dir.join("system.reg"),
         "WINE REGISTRY Version 2\n\n#arch=win64\n",
@@ -1523,4 +1524,138 @@ fn winetricks_runs_against_a_real_prefix() {
             .status
             .success()
     );
+}
+
+#[test]
+fn an_operation_blocks_starting_running_and_exec() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/notepad");
+    fake_prefix(&prefix, root.path());
+    write_environment(
+        root.path(),
+        "notepad",
+        &format!(
+            "prefix = \"{}\"\nrunner = \"wine\"\narch = \"win64\"\n\n[targets.notepad]\nexe = \"notepad\"\n",
+            prefix.display()
+        ),
+    );
+    let bin = fake_tools(root.path(), Some(REPORTING_WINETRICKS));
+
+    let held = locks(root.path())
+        .acquire(
+            wineo_core::operation::Operation::Winetricks,
+            "notepad",
+            &[&prefix],
+        )
+        .unwrap();
+    for passed in [
+        vec!["start", "notepad"],
+        vec!["run", "notepad"],
+        vec!["exec", "notepad", "winecfg"],
+    ] {
+        let out = output(
+            wineo(root.path())
+                .env("PATH", path_ahead_of_system(&bin))
+                .args(&passed),
+        );
+        assert!(!out.status.success(), "{passed:?} was allowed");
+        assert!(
+            stderr(&out).contains("winetricks is running"),
+            "{passed:?}: {}",
+            stderr(&out)
+        );
+    }
+    drop(held);
+}
+
+#[test]
+fn an_exec_can_share_an_environment_with_a_run() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/notepad");
+    fake_prefix(&prefix, root.path());
+    environment_with_prefix(root.path(), "notepad", &prefix);
+    let bin = fake_tools(root.path(), Some(REPORTING_WINETRICKS));
+
+    // What a run holds while its app is up.
+    let running = locks(root.path())
+        .acquire(
+            wineo_core::operation::Operation::Launch,
+            "notepad",
+            &[&prefix],
+        )
+        .unwrap();
+    let out = output(
+        wineo(root.path())
+            .env("PATH", path_ahead_of_system(&bin))
+            .args(["exec", "notepad", "winecfg"]),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    drop(running);
+}
+
+#[test]
+fn a_removal_blocks_adopting_or_pointing_at_the_same_prefix() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/shared");
+    fake_prefix(&prefix, root.path());
+    environment_with_prefix(root.path(), "notepad", &prefix);
+    environment_with_prefix(root.path(), "other", &root.path().join("prefixes/other"));
+    let bin = fake_tools(root.path(), Some(REPORTING_WINETRICKS));
+
+    let held = locks(root.path())
+        .acquire(
+            wineo_core::operation::Operation::Remove,
+            "notepad",
+            &[&prefix],
+        )
+        .unwrap();
+
+    // Adopting it under a new name, and pointing an existing one at it, both
+    // have to wait: the removal may be about to delete it.
+    let adopt = output(
+        wineo(root.path())
+            .env("PATH", path_ahead_of_system(&bin))
+            .args(["new", "-n", "adopted", "--dir", prefix.to_str().unwrap()]),
+    );
+    assert!(!adopt.status.success());
+    assert!(
+        stderr(&adopt).contains("being removed"),
+        "{}",
+        stderr(&adopt)
+    );
+    assert!(
+        !root
+            .path()
+            .join("config/wineo/environments/adopted.toml")
+            .exists()
+    );
+
+    let repoint =
+        output(wineo(root.path()).args(["set", "other", &format!("prefix={}", prefix.display())]));
+    assert!(!repoint.status.success());
+    assert!(
+        stderr(&repoint).contains("being removed"),
+        "{}",
+        stderr(&repoint)
+    );
+    drop(held);
+}
+
+#[test]
+fn lock_files_outlive_the_environment_they_coordinate() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/notepad");
+    fake_prefix(&prefix, root.path());
+    environment_with_prefix(root.path(), "notepad", &prefix);
+    write_log(root.path(), "notepad", "output.log", "old output\n");
+
+    assert!(
+        output(wineo(root.path()).args(["rm", "notepad"]))
+            .status
+            .success()
+    );
+    // The runtime dir is gone, but the locks it never owned are still there.
+    assert!(!runtime_dir(root.path(), "notepad").exists());
+    let lock = root.path().join("state/wineo/.locks/name-notepad.lock");
+    assert!(lock.is_file(), "{} is missing", lock.display());
 }
