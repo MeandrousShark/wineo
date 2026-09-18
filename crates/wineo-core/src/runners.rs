@@ -26,9 +26,9 @@ impl Skipped {
         match self {
             Skipped::Reserved => "`wine` is reserved for the system wine",
             Skipped::InvalidName => "not a usable name: use letters, digits, `-`, `_`, and `.`",
-            Skipped::NoWine => "no bin/wine",
+            Skipped::NoWine => "no bin/wine and no proton script",
             Skipped::NoWineserver => "no bin/wineserver",
-            Skipped::NotExecutable => "bin/wine and bin/wineserver are not both executable",
+            Skipped::NotExecutable => "its wine or proton program is not executable",
         }
     }
 }
@@ -135,10 +135,26 @@ impl Runners {
     }
 }
 
-/// A directory is a runner when it has both executables. Every lifecycle
-/// command needs wineserver as well as wine, so one without the other is not
-/// usable at all.
+/// What kind of runner a directory holds, if any. Proton is checked first,
+/// because a Proton tree carries wine binaries under `files/bin` as well.
 fn check(dir: &Path) -> std::result::Result<Runner, Skipped> {
+    let name = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_owned();
+
+    // The `proton` script is exactly what PROTONPATH has to point at.
+    let proton = dir.join("proton");
+    if proton.exists() {
+        return if crate::runner::is_executable(&proton) {
+            Ok(Runner::proton(name, dir.to_owned()))
+        } else {
+            Err(Skipped::NotExecutable)
+        };
+    }
+
+    // A wine build needs both: every lifecycle command uses wineserver too.
     let (wine, wineserver) = (dir.join("bin/wine"), dir.join("bin/wineserver"));
     if !wine.exists() {
         return Err(Skipped::NoWine);
@@ -149,12 +165,7 @@ fn check(dir: &Path) -> std::result::Result<Runner, Skipped> {
     if !crate::runner::is_executable(&wine) || !crate::runner::is_executable(&wineserver) {
         return Err(Skipped::NotExecutable);
     }
-    let name = dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_owned();
-    Ok(Runner::at(name, wine, wineserver))
+    Ok(Runner::wine_build(name, wine, wineserver))
 }
 
 #[cfg(test)]
@@ -238,20 +249,97 @@ mod tests {
         assert_eq!(skipped(&listing, "bad name"), Some(Skipped::InvalidName));
     }
 
+    fn proton_build(root: &Path, name: &str, version: &str) {
+        install(
+            root,
+            name,
+            &[
+                ("proton", true),
+                ("files/bin/wine", true),
+                ("version", false),
+            ],
+        );
+        fs::write(
+            root.join("runners").join(name).join("version"),
+            format!("1717451631 {version}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_proton_tree_is_recognized_by_its_proton_script() {
+        let root = tempfile::tempdir().unwrap();
+        proton_build(root.path(), "GE-Proton9-20", "GE-Proton9-20");
+        let runner = runners(root.path()).resolve("GE-Proton9-20").unwrap();
+
+        assert_eq!(runner.kind_name(), "proton");
+        assert!(runner.is_proton());
+        // Nothing reaches for Proton's own wine: umu runs everything.
+        assert_eq!(runner.wine_path(), None);
+        assert_eq!(runner.wineserver_path(), None);
+        // Proton keeps its prefix under the compatdata directory it is given.
+        assert_eq!(
+            runner.wine_prefix(Path::new("/games/hades")),
+            Path::new("/games/hades/pfx")
+        );
+        assert_eq!(runner.version().as_deref(), Some("GE-Proton9-20"));
+    }
+
+    #[test]
+    fn proton_wins_over_the_wine_binaries_in_the_same_tree() {
+        let root = tempfile::tempdir().unwrap();
+        // A real Proton tree has bin/wine too, and must not read as a wine build.
+        proton_build(root.path(), "GE-Proton9-20", "GE-Proton9-20");
+        install(
+            root.path(),
+            "GE-Proton9-20",
+            &[("bin/wine", true), ("bin/wineserver", true)],
+        );
+        let runner = runners(root.path()).resolve("GE-Proton9-20").unwrap();
+        assert_eq!(runner.kind_name(), "proton");
+    }
+
+    #[test]
+    fn a_proton_script_that_cannot_run_is_skipped() {
+        let root = tempfile::tempdir().unwrap();
+        install(root.path(), "half-proton", &[("proton", false)]);
+        let listing = runners(root.path()).list().unwrap();
+        assert!(listing.runners.is_empty());
+        assert_eq!(
+            skipped(&listing, "half-proton"),
+            Some(Skipped::NotExecutable)
+        );
+    }
+
+    #[test]
+    fn a_proton_build_without_a_version_file_just_has_no_version() {
+        let root = tempfile::tempdir().unwrap();
+        install(root.path(), "nameless", &[("proton", true)]);
+        let runner = runners(root.path()).resolve("nameless").unwrap();
+        assert_eq!(runner.version(), None);
+    }
+
     #[test]
     fn resolving_finds_the_absolute_binaries() {
         let root = tempfile::tempdir().unwrap();
         wine_build(root.path(), "wine-tkg");
         let runner = runners(root.path()).resolve("wine-tkg").unwrap();
         assert_eq!(runner.name(), "wine-tkg");
+        assert_eq!(runner.kind_name(), "wine");
         assert_eq!(
             runner.wine_path(),
-            root.path().join("runners/wine-tkg/bin/wine")
+            Some(root.path().join("runners/wine-tkg/bin/wine").as_path())
         );
         assert_eq!(
             runner.wineserver_path(),
-            root.path().join("runners/wine-tkg/bin/wineserver")
+            Some(
+                root.path()
+                    .join("runners/wine-tkg/bin/wineserver")
+                    .as_path()
+            )
         );
+        // A wine prefix is the configured directory itself.
+        assert_eq!(runner.wine_prefix(Path::new("/p")), Path::new("/p"));
     }
 
     #[test]
@@ -261,7 +349,10 @@ mod tests {
         wine_build(root.path(), "wine");
         let resolved = runners(root.path()).resolve("wine");
         match Runner::system() {
-            Ok(system) => assert_eq!(resolved.unwrap().wine_path(), system.wine_path()),
+            Ok(system) => assert_eq!(
+                resolved.unwrap().wine_path().map(Path::to_owned),
+                system.wine_path().map(Path::to_owned)
+            ),
             // No wine on this machine, so it fails the same way either way.
             Err(_) => assert!(resolved.is_err()),
         }

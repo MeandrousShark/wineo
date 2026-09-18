@@ -62,6 +62,9 @@ pub enum Error {
     #[error("environment `{0}` already exists")]
     EnvironmentExists(String),
 
+    #[error("`{0}` uses a Proton runner, and running programs on Proton isn't implemented yet")]
+    ProtonNotImplemented(String),
+
     #[error("invalid runner name `{0}`: use letters, digits, `-`, `_`, and `.`")]
     InvalidRunnerName(String),
 
