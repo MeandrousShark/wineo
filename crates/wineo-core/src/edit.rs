@@ -59,6 +59,10 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
             store_value(root, "runner", value);
             Ok(())
         }
+        "gamemode" => {
+            store_value(root, "gamemode", Value::from(parse_bool(key, raw)?));
+            Ok(())
+        }
         "arch" => Err(read_only_arch()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
@@ -93,6 +97,10 @@ fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
             let value = parse_arch_value(key, raw)?;
             let table = ensure_table(root, "defaults", "defaults", false)?;
             store_value(table, "arch", value);
+            Ok(())
+        }
+        "gamemode" => {
+            store_value(root, "gamemode", Value::from(parse_bool(key, raw)?));
             Ok(())
         }
         "defaults.prefix_root" | "defaults.runner_root" => {
@@ -141,6 +149,7 @@ fn set_target(root: &mut Table, key: &str, rest: &str, raw: &str) -> Result<(), 
     let value = match field {
         "exe" | "cwd" => parse_string_value(key, raw)?,
         "args" => parse_args_value(key, raw)?,
+        "gamemode" => Value::from(parse_bool(key, raw)?),
         _ => return Err(EditError::UnknownKey(key.to_string())),
     };
 
@@ -185,7 +194,7 @@ fn set_target_default(root: &mut Table, name: &str, key: &str, raw: &str) -> Res
 
 fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
-        "prefix" | "runner" => Ok(root.remove(key).is_some()),
+        "prefix" | "runner" | "gamemode" => Ok(root.remove(key).is_some()),
         "arch" => Err(read_only_arch()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
@@ -202,7 +211,7 @@ fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
 
 fn unset_global(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
-        "stop_timeout" | "log_limit_mb" => Ok(root.remove(key).is_some()),
+        "stop_timeout" | "log_limit_mb" | "gamemode" => Ok(root.remove(key).is_some()),
         "defaults.runner" => unset_field(root, "defaults", "defaults", "runner"),
         "defaults.arch" => unset_field(root, "defaults", "defaults", "arch"),
         "defaults.prefix_root" => unset_field(root, "defaults", "defaults", "prefix_root"),
@@ -246,7 +255,7 @@ fn unset_target(root: &mut Table, key: &str, rest: &str) -> Result<bool, EditErr
         });
     }
     if let Some(field) = field
-        && !matches!(field, "exe" | "args" | "cwd" | "default")
+        && !matches!(field, "exe" | "args" | "cwd" | "default" | "gamemode")
     {
         return Err(EditError::UnknownKey(key.to_string()));
     }

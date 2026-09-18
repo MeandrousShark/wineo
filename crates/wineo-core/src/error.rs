@@ -85,6 +85,11 @@ pub enum Error {
     #[error("`{0}` was not found on PATH")]
     ProgramNotFound(&'static str),
 
+    #[error(
+        "gamemode is on for `{0}`, but it was not found or is not installed.\nInstall gamemode, or turn it off with `wineo set {0} gamemode=false`"
+    )]
+    GamemodeMissing(String),
+
     #[error("environment `{environment}` has no target `{target}`")]
     UnknownTarget { environment: String, target: String },
 

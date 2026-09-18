@@ -6,11 +6,14 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{GlobalConfig, Target, validate_env_var};
+
+/// The binary gamemode ships, which is not what the setting is called.
+const GAMEMODE: &str = "gamemoderun";
 use crate::environment::Environment;
 use crate::error::{Error, Result};
 use crate::paths::Paths;
 use crate::prefix;
-use crate::runner::{Runner, with_menu_builder_disabled};
+use crate::runner::{self, Runner, with_menu_builder_disabled};
 use crate::runners::Runners;
 use crate::winpath;
 
@@ -33,6 +36,11 @@ pub struct Launch {
     pub cwd: PathBuf,
     /// Merged from the global config, the environment, and the overrides.
     pub env: BTreeMap<String, String>,
+    /// The resolved `gamemoderun`, when this launch asked for gamemode. The
+    /// path is kept rather than the flag, so a detached run cannot end up
+    /// resolving a different one from a different PATH.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gamemode: Option<PathBuf>,
 }
 
 impl Launch {
@@ -52,6 +60,16 @@ impl Launch {
         let mut args = program.wine_args;
         args.extend(target.args.iter().cloned());
         args.extend(overrides.args.iter().cloned());
+        // Resolved here rather than at spawn time, so `start` refuses before it
+        // hands anything to a supervisor.
+        let gamemode = if gamemode(global, environment, Some(target)) {
+            Some(
+                runner::find_on_path(GAMEMODE)
+                    .ok_or_else(|| Error::GamemodeMissing(environment.name.clone()))?,
+            )
+        } else {
+            None
+        };
         Ok(Self {
             env: merge_env(global, environment, &overrides.env)?,
             runner,
@@ -59,6 +77,7 @@ impl Launch {
             target: Some(name.to_owned()),
             args,
             cwd,
+            gamemode,
         })
     }
 
@@ -84,17 +103,31 @@ impl Launch {
             target: None,
             args: wine_args,
             cwd,
+            // Running a tool in the prefix is not playing a game.
+            gamemode: None,
         })
     }
 
     pub fn command(&self) -> Command {
-        let mut command = self.runner.wine(&self.prefix);
+        let mut command = self
+            .runner
+            .wine_through(&self.prefix, self.gamemode.as_deref());
         command
             .args(&self.args)
             .current_dir(&self.cwd)
             .envs(&self.env);
         command
     }
+}
+
+/// Whether a launch runs under gamemode: the target's setting wins over the
+/// environment's, which wins over the global one, and unset everywhere is off.
+pub fn gamemode(global: &GlobalConfig, environment: &Environment, target: Option<&Target>) -> bool {
+    target
+        .and_then(|target| target.gamemode)
+        .or(environment.config.gamemode)
+        .or(global.gamemode)
+        .unwrap_or(false)
 }
 
 /// Parses a `-e KEY=VALUE` flag.
@@ -328,6 +361,32 @@ mod tests {
             path: PathBuf::from("/app.toml"),
             config: EnvironmentConfig::parse(Path::new("/app.toml"), &text).unwrap(),
         }
+    }
+
+    #[test]
+    fn gamemode_takes_the_most_specific_setting() {
+        let off = GlobalConfig::default();
+        let on = GlobalConfig {
+            gamemode: Some(true),
+            ..GlobalConfig::default()
+        };
+        let quiet = environment("[targets.app]\nexe = \"app\"\n");
+        let loud = environment("gamemode = true\n\n[targets.app]\nexe = \"app\"\n");
+        let mixed =
+            environment("gamemode = true\n\n[targets.app]\nexe = \"app\"\ngamemode = false\n");
+        let target = |env: &Environment| env.config.targets.get("app").cloned();
+
+        // Unset everywhere is off.
+        assert!(!gamemode(&off, &quiet, target(&quiet).as_ref()));
+        // Each level turns it on for the one below.
+        assert!(gamemode(&on, &quiet, target(&quiet).as_ref()));
+        assert!(gamemode(&off, &loud, target(&loud).as_ref()));
+        // And the more specific level can turn it back off.
+        assert!(!gamemode(&on, &mixed, target(&mixed).as_ref()));
+        assert!(!gamemode(&off, &mixed, target(&mixed).as_ref()));
+        // With no target in play, the environment decides.
+        assert!(gamemode(&off, &mixed, None));
+        assert!(!gamemode(&off, &quiet, None));
     }
 
     #[test]

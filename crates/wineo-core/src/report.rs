@@ -23,6 +23,8 @@ pub struct EnvironmentReport {
     pub target_exe: Option<String>,
     /// An operation holding the environment right now, like a winetricks install.
     pub busy: Option<Operation>,
+    /// Whether the last run's target, or the environment itself, asks for gamemode.
+    pub gamemode: bool,
 }
 
 impl EnvironmentReport {
@@ -33,13 +35,14 @@ impl EnvironmentReport {
             .and_then(|runners| runners.resolve(&environment.config.runner))
             .ok()
             .and_then(|runner| runner.version());
-        let target_exe = status
+        let target = status
             .run
             .as_ref()
-            .and_then(|run| environment.config.targets.get(&run.target))
-            .map(|target| target.exe.clone());
+            .and_then(|run| environment.config.targets.get(&run.target));
+        let target_exe = target.map(|target| target.exe.clone());
         Ok(Self {
             busy: Locks::new(paths).busy_with(&environment.name)?,
+            gamemode: crate::launch::gamemode(global, environment, target),
             name: environment.name.clone(),
             runner: environment.config.runner.clone(),
             runner_version,

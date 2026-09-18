@@ -75,6 +75,9 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
         &runner_value(&report.runner, report.runner_version.as_deref()),
     ));
     lines.push(label_line("prefix", &report.prefix));
+    if report.gamemode {
+        lines.push(label_line("gamemode", "on"));
+    }
     if report.status.state == State::Running
         && let Some(run) = &report.status.run
     {
@@ -221,6 +224,7 @@ mod tests {
             prefix: "~/.local/share/wineo/prefixes/notepad".to_owned(),
             target_exe: Some("notepad".to_owned()),
             busy: None,
+            gamemode: false,
         }
     }
 

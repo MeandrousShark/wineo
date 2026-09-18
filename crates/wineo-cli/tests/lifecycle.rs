@@ -96,33 +96,68 @@ esac
 exit 0
 "#;
 
+/// Announces itself into the run's output, then becomes what it was asked to
+/// wrap, so a test can see both that it ran and that the program still did.
+const FAKE_GAMEMODERUN: &str = r#"#!/bin/sh
+echo "gamemoderun wrapped: $1"
+exec "$@"
+"#;
+
 struct Fixture {
     root: tempfile::TempDir,
     path_var: OsString,
+    /// A PATH with the fake wine and no gamemoderun anywhere on it.
+    without_gamemode: OsString,
 }
 
 impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
-        let bin = root.path().join("bin");
-        fs::create_dir_all(&bin).unwrap();
-        for (name, script) in [("wine", FAKE_WINE), ("wineserver", FAKE_WINESERVER)] {
-            let path = bin.join(name);
-            fs::write(&path, script).unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let write_bin = |dir: &str, scripts: &[(&str, &str)]| {
+            let bin = root.path().join(dir);
+            fs::create_dir_all(&bin).unwrap();
+            for (name, script) in scripts {
+                let path = bin.join(name);
+                fs::write(&path, script).unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            bin
+        };
+        let wine = [("wine", FAKE_WINE), ("wineserver", FAKE_WINESERVER)];
+        let bin = write_bin(
+            "bin",
+            &[wine[0], wine[1], ("gamemoderun", FAKE_GAMEMODERUN)],
+        );
+        let sandbox = write_bin("bin-sandbox", &wine);
+        // The machine running these tests may well have gamemode installed, so
+        // the sandbox cannot inherit the real PATH. It gets links to the few
+        // tools the fake scripts reach for instead.
+        for tool in [
+            "sh", "sleep", "rm", "kill", "printf", "seq", "touch", "head", "tr",
+        ] {
+            if let Some(real) = find_on_path(tool) {
+                std::os::unix::fs::symlink(real, sandbox.join(tool)).unwrap();
+            }
         }
+
         let inherited = std::env::var_os("PATH").unwrap_or_default();
-        let path_var =
-            std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&inherited)))
-                .unwrap();
-        Self { root, path_var }
+        Self {
+            path_var: std::env::join_paths(
+                std::iter::once(bin).chain(std::env::split_paths(&inherited)),
+            )
+            .unwrap(),
+            without_gamemode: sandbox.into_os_string(),
+            root,
+        }
     }
 
     /// Uses the wine installed on the system instead of the fakes.
     fn real() -> Self {
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
         Self {
             root: tempfile::tempdir().unwrap(),
-            path_var: std::env::var_os("PATH").unwrap_or_default(),
+            path_var: inherited.clone(),
+            without_gamemode: inherited,
         }
     }
 
@@ -168,6 +203,15 @@ impl Fixture {
         let mut command = self.wineo();
         command.env("PATH", std::env::var_os("PATH").unwrap_or_default());
         command
+    }
+
+    /// wineo with the fake wine still on PATH, but no gamemoderun anywhere.
+    fn run_without_gamemode(&self, args: &[&str]) -> Output {
+        self.wineo()
+            .env("PATH", &self.without_gamemode)
+            .args(args)
+            .output()
+            .expect("wineo should start")
     }
 
     fn run_without_fakes(&self, args: &[&str]) -> Output {
@@ -245,6 +289,12 @@ impl Drop for Fixture {
             }
         }
     }
+}
+
+fn find_on_path(program: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
 }
 
 fn stdout(output: &Output) -> String {
@@ -957,4 +1007,125 @@ fn the_runner_root_can_be_moved() {
         &format!("defaults.runner_root={}", elsewhere.display()),
     ]));
     assert!(stdout(&f.run(&["runners"])).contains("wine-tkg"));
+}
+
+#[test]
+fn gamemode_wraps_a_started_game() {
+    let f = Fixture::new();
+    f.global_config("gamemode = true\n");
+    f.environment("app", APP);
+
+    assert_success(&f.run(&["start", "app"]));
+    wait_for("the program to start", || f.fake_program_running("app"));
+
+    let shown = f.run(&["status", "app"]);
+    assert_success(&shown);
+    assert!(stdout(&shown).contains("gamemode"), "{}", stdout(&shown));
+
+    assert_success(&f.run(&["stop", "app"]));
+    let log = f.log("app");
+    // Wrapped, and the program underneath still ran.
+    assert!(log.contains("gamemoderun wrapped:"), "{log}");
+    assert!(log.contains("fake wine: app"), "{log}");
+}
+
+#[test]
+fn a_target_can_opt_out_of_gamemode() {
+    let f = Fixture::new();
+    f.environment(
+        "app",
+        "[targets.app]\nexe = \"app\"\n\n[targets.launcher]\nexe = \"launcher\"\ngamemode = false\n",
+    );
+    assert_success(&f.run(&["set", "app", "gamemode=true"]));
+
+    assert_success(&f.run(&["start", "app", "--target", "launcher"]));
+    wait_for("the launcher to start", || f.fake_program_running("app"));
+    assert_success(&f.run(&["stop", "app"]));
+    let log = f.log("app");
+    assert!(!log.contains("gamemoderun"), "{log}");
+    assert!(log.contains("fake wine: launcher"), "{log}");
+
+    // The other target still takes the environment's setting.
+    assert_success(&f.run(&["start", "app", "--target", "app"]));
+    wait_for("the game to start", || f.fake_program_running("app"));
+    assert_success(&f.run(&["stop", "app"]));
+    assert!(
+        f.log("app").contains("gamemoderun wrapped:"),
+        "{}",
+        f.log("app")
+    );
+}
+
+#[test]
+fn gamemode_never_wraps_tools_in_the_prefix() {
+    let f = Fixture::new();
+    f.global_config("gamemode = true\n");
+    f.environment("app", APP);
+
+    // Running a program in the prefix is not playing a game.
+    let ran = f.run(&["exec", "app", "exit-0"]);
+    assert_success(&ran);
+    assert!(!stdout(&ran).contains("gamemoderun"), "{}", stdout(&ran));
+}
+
+#[test]
+fn a_launch_is_refused_when_gamemode_is_not_installed() {
+    let f = Fixture::new();
+    f.global_config("gamemode = true\n");
+    f.environment("app", APP);
+
+    for verb in ["start", "run"] {
+        let refused = f.run_without_gamemode(&[verb, "app"]);
+        assert!(!refused.status.success(), "{verb} was allowed");
+        let message = stderr(&refused);
+        assert!(
+            message.contains("gamemode is on for `app`"),
+            "{verb}: {message}"
+        );
+        assert!(
+            message.contains("wineo set app gamemode=false"),
+            "{verb}: {message}"
+        );
+        // Nothing was started, and nothing was recorded as a run.
+        assert!(!f.fake_program_running("app"), "{verb} left wine running");
+        assert!(f.state("app").is_empty(), "{verb} recorded a run");
+    }
+
+    // Turning the setting off is enough to launch again.
+    assert_success(&f.run_without_gamemode(&["set", "app", "gamemode=false"]));
+    assert_success(&f.run_without_gamemode(&["start", "app"]));
+    wait_for("the program to start", || f.fake_program_running("app"));
+    assert_success(&f.run_without_gamemode(&["stop", "app"]));
+}
+
+#[test]
+fn gamemode_can_be_set_and_unset_at_every_level() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+
+    assert_success(&f.run(&["set", "--global", "gamemode=true"]));
+    assert_success(&f.run(&["set", "app", "gamemode=false"]));
+    assert_success(&f.run(&["set", "app", "targets.app.gamemode=true"]));
+
+    let config = fs::read_to_string(f.config_dir().join("environments/app.toml")).unwrap();
+    assert!(config.contains("gamemode = false"), "{config}");
+    assert!(config.contains("gamemode = true"), "{config}");
+
+    for args in [
+        vec!["set", "--global", "--unset", "gamemode"],
+        vec!["set", "app", "--unset", "gamemode"],
+        vec!["set", "app", "--unset", "targets.app.gamemode"],
+    ] {
+        assert_success(&f.run(&args));
+    }
+    assert!(
+        !fs::read_to_string(f.config_dir().join("config.toml"))
+            .unwrap()
+            .contains("gamemode")
+    );
+    assert!(
+        !fs::read_to_string(f.config_dir().join("environments/app.toml"))
+            .unwrap()
+            .contains("gamemode")
+    );
 }

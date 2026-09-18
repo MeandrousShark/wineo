@@ -502,6 +502,7 @@ mod tests {
                 args: vec![r"C:\Program Files\App\app.exe".to_owned(), "-x".to_owned()],
                 cwd: PathBuf::from("/prefixes/app/drive_c"),
                 env: BTreeMap::from([("DXVK_HUD".to_owned(), "fps".to_owned())]),
+                gamemode: Some(PathBuf::from("/usr/bin/gamemoderun")),
             },
             overrides: Overrides {
                 target: None,

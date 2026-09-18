@@ -69,7 +69,19 @@ impl Runner {
     /// A `wine` invocation bound to `prefix`. Also blocks wine's own menu
     /// builder, unless the inherited environment already opts back in.
     pub fn wine(&self, prefix: &Path) -> Command {
-        let mut command = Command::new(&self.wine);
+        self.wine_through(prefix, None)
+    }
+
+    /// The same, run through `wrapper` when there is one, like gamemoderun.
+    pub fn wine_through(&self, prefix: &Path, wrapper: Option<&Path>) -> Command {
+        let mut command = match wrapper {
+            Some(wrapper) => {
+                let mut command = Command::new(wrapper);
+                command.arg(&self.wine);
+                command
+            }
+            None => Command::new(&self.wine),
+        };
         let overrides =
             with_menu_builder_disabled(std::env::var("WINEDLLOVERRIDES").ok().as_deref());
         command

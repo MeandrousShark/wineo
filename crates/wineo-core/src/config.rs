@@ -59,6 +59,8 @@ pub struct GlobalConfig {
     pub stop_timeout: u32,
     #[serde(default = "default_log_limit_mb")]
     pub log_limit_mb: u32,
+    /// Unset everywhere means off, so this stays an option all the way down.
+    pub gamemode: Option<bool>,
     #[serde(default)]
     pub defaults: Defaults,
     #[serde(default)]
@@ -83,13 +85,14 @@ pub struct EnvironmentConfig {
     pub prefix: String,
     pub runner: String,
     pub arch: Arch,
+    pub gamemode: Option<bool>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub targets: BTreeMap<String, Target>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
     pub exe: String,
@@ -98,6 +101,7 @@ pub struct Target {
     pub cwd: Option<String>,
     #[serde(default)]
     pub default: bool,
+    pub gamemode: Option<bool>,
 }
 
 fn default_stop_timeout() -> u32 {
@@ -117,6 +121,7 @@ impl Default for GlobalConfig {
         Self {
             stop_timeout: DEFAULT_STOP_TIMEOUT,
             log_limit_mb: DEFAULT_LOG_LIMIT_MB,
+            gamemode: None,
             defaults: Defaults::default(),
             env: BTreeMap::new(),
         }
