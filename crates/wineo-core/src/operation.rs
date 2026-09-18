@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
+use serde::Serialize;
 
 use crate::error::{Error, IoContext, Result};
 use crate::paths::{self, Paths};
@@ -21,7 +22,8 @@ const LOCK_ATTEMPTS: u32 = 20;
 const LOCK_RETRY: Duration = Duration::from_millis(5);
 
 /// What a command is doing with an environment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Operation {
     /// Creating or adopting a prefix.
     Create,
@@ -36,7 +38,7 @@ pub enum Operation {
 }
 
 impl Operation {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Operation::Create => "create",
             Operation::Remove => "remove",

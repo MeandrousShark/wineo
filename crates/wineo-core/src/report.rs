@@ -2,6 +2,7 @@ use serde::Serialize;
 
 use crate::environment::Environment;
 use crate::error::Result;
+use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::runner::Runner;
 use crate::runtime::{Runtime, Status};
@@ -19,6 +20,8 @@ pub struct EnvironmentReport {
     /// The exe of the run's target in the current config. None if there's no
     /// run, or its target was removed from the config since.
     pub target_exe: Option<String>,
+    /// An operation holding the environment right now, like a winetricks install.
+    pub busy: Option<Operation>,
 }
 
 impl EnvironmentReport {
@@ -33,6 +36,7 @@ impl EnvironmentReport {
             .and_then(|run| environment.config.targets.get(&run.target))
             .map(|target| target.exe.clone());
         Ok(Self {
+            busy: Locks::new(paths).busy_with(&environment.name)?,
             name: environment.name.clone(),
             runner: environment.config.runner.clone(),
             runner_version,

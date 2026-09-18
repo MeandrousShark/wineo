@@ -37,7 +37,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 fn running(paths: &Paths) -> anyhow::Result<ExitCode> {
     let now = Timestamp::now();
     let tz = TimeZone::system();
-    let (rows, failed) = table::gather(paths, now, &tz, |status| status.state == State::Running)?;
+    // Something holding an environment is happening now too, so it shows up here.
+    let (rows, failed) = table::gather(paths, now, &tz, |status, busy| {
+        status.state == State::Running || busy.is_some()
+    })?;
     if rows.is_empty() {
         eprintln!("Nothing is running");
     } else {
@@ -55,6 +58,9 @@ fn running(paths: &Paths) -> anyhow::Result<ExitCode> {
 /// Renders the full `status <name>` block, including its trailing newline.
 fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
     let mut lines = vec![header(report, now, tz)];
+    if let Some(operation) = report.busy {
+        lines.push(label_line("busy", operation.describe()));
+    }
     if let Some(run) = &report.status.run {
         lines.push(label_line(
             "target",
@@ -211,6 +217,7 @@ mod tests {
             runner_version: Some("wine-11.17".to_owned()),
             prefix: "~/.local/share/wineo/prefixes/notepad".to_owned(),
             target_exe: Some("notepad".to_owned()),
+            busy: None,
         }
     }
 

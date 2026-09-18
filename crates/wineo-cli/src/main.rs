@@ -39,6 +39,8 @@ enum Command {
     Run(commands::run::Args),
     /// Run another program inside an environment
     Exec(commands::exec::Args),
+    /// Run winetricks in an environment
+    Winetricks(commands::winetricks::Args),
     /// Print a shell completion script
     Completions(commands::completions::Args),
 }
@@ -80,6 +82,7 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Logs(args) => commands::logs::run(&paths, args),
         Command::Run(args) => commands::run::run(&paths, args),
         Command::Exec(args) => commands::exec::run(&paths, args),
+        Command::Winetricks(args) => commands::winetricks::run(&paths, args),
         Command::Completions(args) => commands::completions::run(&mut Cli::command(), args),
     }
 }

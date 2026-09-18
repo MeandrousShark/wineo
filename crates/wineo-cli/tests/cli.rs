@@ -1,5 +1,7 @@
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -685,6 +687,7 @@ fn completions_cover_every_visible_command_and_flag() {
             "run",
             "exec",
             "rm",
+            "winetricks",
             "completions",
         ] {
             assert!(script.contains(command), "{shell} is missing {command}");
@@ -741,7 +744,10 @@ fn fake_prefix(dir: &Path, links_to: &Path) {
         "WINE REGISTRY Version 2\n\n#arch=win64\n",
     )
     .unwrap();
-    std::os::unix::fs::symlink(links_to, dir.join("dosdevices/z:")).unwrap();
+    let link = dir.join("dosdevices/z:");
+    if !link.exists() {
+        std::os::unix::fs::symlink(links_to, &link).unwrap();
+    }
 }
 
 fn environment_with_prefix(root: &Path, name: &str, prefix: &Path) {
@@ -1094,4 +1100,427 @@ fn rm_errors_for_an_unknown_environment() {
     let out = output(wineo(root.path()).args(["rm", "nope"]));
     assert!(!out.status.success());
     assert!(stderr(&out).contains("does not exist"), "{}", stderr(&out));
+}
+
+/// Prints everything wineo is supposed to hand winetricks, then exits.
+const REPORTING_WINETRICKS: &str = r#"#!/bin/sh
+echo "args: $*"
+echo "WINEPREFIX=$WINEPREFIX"
+echo "WINE=$WINE"
+echo "WINESERVER=$WINESERVER"
+echo "WINEDLLOVERRIDES=$WINEDLLOVERRIDES"
+"#;
+
+fn write_script(path: &Path, text: &str) {
+    fs::write(path, text).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A PATH with fake wine, wineserver, and winetricks, so these tests don't
+/// need any of them installed.
+fn fake_tools(root: &Path, winetricks: Option<&str>) -> PathBuf {
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    for name in ["wine", "wineserver"] {
+        write_script(&bin.join(name), "#!/bin/sh\nexit 0\n");
+    }
+    if let Some(script) = winetricks {
+        write_script(&bin.join("winetricks"), script);
+    }
+    bin
+}
+
+/// An environment with a usable prefix and a PATH holding the fake tools.
+fn winetricks_fixture(root: &Path, config: &str, script: Option<&str>) -> Command {
+    let prefix = root.join("prefixes/notepad");
+    fake_prefix(&prefix, root);
+    write_environment(
+        root,
+        "notepad",
+        &format!(
+            "prefix = \"{}\"\nrunner = \"wine\"\narch = \"win64\"\n{config}",
+            prefix.display()
+        ),
+    );
+    let bin = fake_tools(root, script);
+    let mut command = wineo(root);
+    // Ahead of the real PATH, so the fakes win but the scripts can still reach
+    // ordinary tools like `touch` and `sleep`.
+    command.env("PATH", path_ahead_of_system(&bin));
+    command
+}
+
+fn path_ahead_of_system(bin: &Path) -> std::ffi::OsString {
+    let system = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(std::iter::once(bin.to_owned()).chain(std::env::split_paths(&system)))
+        .unwrap()
+}
+
+#[test]
+fn winetricks_runs_with_the_environments_prefix_and_runner() {
+    let root = tempfile::tempdir().unwrap();
+    let out = output(
+        winetricks_fixture(root.path(), "", Some(REPORTING_WINETRICKS)).args([
+            "winetricks",
+            "notepad",
+            "-q",
+            "dotnet48",
+        ]),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let printed = stdout(&out);
+    assert!(printed.contains("args: -q dotnet48"), "{printed}");
+    assert!(
+        printed.contains(&format!(
+            "WINEPREFIX={}",
+            root.path().join("prefixes/notepad").display()
+        )),
+        "{printed}"
+    );
+    // Absolute, so a different PATH can't swap the runner out from under wine.
+    assert!(
+        printed.contains(&format!("WINE={}", root.path().join("bin/wine").display())),
+        "{printed}"
+    );
+    assert!(
+        printed.contains(&format!(
+            "WINESERVER={}",
+            root.path().join("bin/wineserver").display()
+        )),
+        "{printed}"
+    );
+    assert!(printed.contains("winemenubuilder.exe=d"), "{printed}");
+}
+
+#[test]
+fn winetricks_replaces_inherited_managed_variables() {
+    let root = tempfile::tempdir().unwrap();
+    let out = output(
+        winetricks_fixture(root.path(), "", Some(REPORTING_WINETRICKS))
+            .env("WINEPREFIX", "/inherited/prefix")
+            .env("WINE", "/inherited/wine")
+            .env("WINESERVER", "/inherited/wineserver")
+            .args(["winetricks", "notepad"]),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let printed = stdout(&out);
+    assert!(!printed.contains("/inherited/"), "{printed}");
+}
+
+#[test]
+fn winetricks_rejects_explicitly_set_managed_variables() {
+    let root = tempfile::tempdir().unwrap();
+    for key in ["WINE", "WINESERVER"] {
+        let out = output(
+            winetricks_fixture(root.path(), "", Some(REPORTING_WINETRICKS)).args([
+                "winetricks",
+                "-e",
+                &format!("{key}=/somewhere/else"),
+                "notepad",
+            ]),
+        );
+        assert!(!out.status.success(), "{key} was accepted");
+        assert!(
+            stderr(&out).contains("managed by wineo"),
+            "{}",
+            stderr(&out)
+        );
+    }
+    // WINEPREFIX is refused everywhere, so it fails while the flag is parsed.
+    let out = output(
+        winetricks_fixture(root.path(), "", Some(REPORTING_WINETRICKS)).args([
+            "winetricks",
+            "-e",
+            "WINEPREFIX=/somewhere/else",
+            "notepad",
+        ]),
+    );
+    assert!(!out.status.success());
+
+    let root = tempfile::tempdir().unwrap();
+    let out = output(
+        winetricks_fixture(
+            root.path(),
+            "\n[env]\nWINE = \"/somewhere/else\"\n",
+            Some(REPORTING_WINETRICKS),
+        )
+        .args(["winetricks", "notepad"]),
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("managed by wineo"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn winetricks_keeps_configured_and_command_line_dll_overrides() {
+    let root = tempfile::tempdir().unwrap();
+    let out = output(
+        winetricks_fixture(
+            root.path(),
+            "\n[env]\nWINEDLLOVERRIDES = \"foo.dll=n\"\n",
+            Some(REPORTING_WINETRICKS),
+        )
+        .args(["winetricks", "notepad"]),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("WINEDLLOVERRIDES=foo.dll=n;winemenubuilder.exe=d"),
+        "{}",
+        stdout(&out)
+    );
+
+    let root = tempfile::tempdir().unwrap();
+    let out = output(
+        winetricks_fixture(root.path(), "", Some(REPORTING_WINETRICKS)).args([
+            "winetricks",
+            "-e",
+            "WINEDLLOVERRIDES=bar.dll=n",
+            "notepad",
+        ]),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("WINEDLLOVERRIDES=bar.dll=n;winemenubuilder.exe=d"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn winetricks_forwards_everything_after_the_name() {
+    let root = tempfile::tempdir().unwrap();
+    for (passed, expected) in [
+        (vec!["winetricks", "notepad"], "args: "),
+        (vec!["winetricks", "notepad", "-h"], "args: -h"),
+        (vec!["winetricks", "notepad", "--", "-h"], "args: -h"),
+        (
+            vec!["winetricks", "notepad", "-q", "--force", "dotnet48"],
+            "args: -q --force dotnet48",
+        ),
+        // wineo's own -e goes before the name, winetricks' own goes after.
+        (
+            vec!["winetricks", "-e", "A=1", "notepad", "-e", "shell32"],
+            "args: -e shell32",
+        ),
+    ] {
+        let out =
+            output(winetricks_fixture(root.path(), "", Some(REPORTING_WINETRICKS)).args(&passed));
+        assert!(out.status.success(), "{passed:?}: {}", stderr(&out));
+        let first = stdout(&out).lines().next().unwrap_or_default().to_owned();
+        assert_eq!(first.trim_end(), expected.trim_end(), "{passed:?}");
+    }
+}
+
+#[test]
+fn winetricks_help_describes_the_wrapper() {
+    let root = tempfile::tempdir().unwrap();
+    let out = output(
+        winetricks_fixture(root.path(), "", Some(REPORTING_WINETRICKS))
+            .args(["winetricks", "--help"]),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let printed = stdout(&out);
+    assert!(!printed.contains("args:"), "{printed}");
+    assert!(printed.contains("--env"), "{printed}");
+}
+
+#[test]
+fn winetricks_passes_its_exit_code_through() {
+    let root = tempfile::tempdir().unwrap();
+    let out = output(
+        winetricks_fixture(root.path(), "", Some("#!/bin/sh\nexit 3\n"))
+            .args(["winetricks", "notepad"]),
+    );
+    assert_eq!(out.status.code(), Some(3));
+
+    let root = tempfile::tempdir().unwrap();
+    let out = output(
+        winetricks_fixture(root.path(), "", Some("#!/bin/sh\nkill -TERM $$\n"))
+            .args(["winetricks", "notepad"]),
+    );
+    assert_eq!(out.status.code(), Some(143), "{}", stderr(&out));
+}
+
+#[test]
+fn winetricks_needs_winetricks_on_path() {
+    let root = tempfile::tempdir().unwrap();
+    let out = output(
+        winetricks_fixture(root.path(), "", None)
+            .env("PATH", root.path().join("bin"))
+            .args(["winetricks", "notepad"]),
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("`winetricks` was not found on PATH"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn winetricks_refuses_a_missing_prefix() {
+    let root = tempfile::tempdir().unwrap();
+    let bin = fake_tools(root.path(), Some(REPORTING_WINETRICKS));
+    write_environment(
+        root.path(),
+        "notepad",
+        &format!(
+            "prefix = \"{}\"\nrunner = \"wine\"\narch = \"win64\"\n",
+            root.path().join("gone").display()
+        ),
+    );
+    let out = output(
+        wineo(root.path())
+            .env("PATH", path_ahead_of_system(&bin))
+            .args(["winetricks", "notepad"]),
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("is not a wine prefix"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn winetricks_refuses_a_running_environment() {
+    let root = tempfile::tempdir().unwrap();
+    let mut command = winetricks_fixture(root.path(), "", Some(REPORTING_WINETRICKS));
+    let _lock = runtime(root.path(), "notepad").try_lock().unwrap().unwrap();
+    let out = output(command.args(["winetricks", "notepad"]));
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("stop it before running winetricks"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn a_held_environment_is_reported_as_busy_everywhere() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/notepad");
+    fake_prefix(&prefix, root.path());
+    environment_with_prefix(root.path(), "notepad", &prefix);
+
+    let held = locks(root.path())
+        .acquire(
+            wineo_core::operation::Operation::Winetricks,
+            "notepad",
+            &[&prefix],
+        )
+        .unwrap();
+
+    let listed = stdout(&output(wineo(root.path()).arg("list")));
+    assert!(listed.contains("winetricks"), "{listed}");
+
+    let running = stdout(&output(wineo(root.path()).arg("status")));
+    assert!(running.contains("winetricks"), "{running}");
+
+    let detail = stdout(&output(wineo(root.path()).args(["status", "notepad"])));
+    assert!(detail.contains("busy"), "{detail}");
+    assert!(detail.contains("winetricks is running"), "{detail}");
+
+    let out = output(wineo(root.path()).args(["stop", "notepad"]));
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("Finish or cancel it in its terminal"),
+        "{}",
+        stderr(&out)
+    );
+    drop(held);
+}
+
+#[test]
+fn winetricks_holds_the_environment_until_it_finishes() {
+    let root = tempfile::tempdir().unwrap();
+    let marker = root.path().join("started");
+    let release = root.path().join("release");
+    let script = "#!/bin/sh\ntouch \"$MARKER\"\nwhile [ ! -e \"$RELEASE\" ]; do sleep 0.05; done\n";
+
+    let mut child = winetricks_fixture(root.path(), "", Some(script))
+        .env("MARKER", &marker)
+        .env("RELEASE", &release)
+        .args(["winetricks", "notepad"])
+        .spawn()
+        .unwrap();
+    wait_for("winetricks to start", || marker.exists());
+
+    let out = output(wineo(root.path()).args(["rm", "notepad"]));
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("winetricks is running"),
+        "{}",
+        stderr(&out)
+    );
+
+    fs::write(&release, "").unwrap();
+    assert!(child.wait().unwrap().success());
+    // The lock is gone once it has exited and the prefix is idle.
+    assert!(
+        output(wineo(root.path()).args(["rm", "notepad"]))
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn canceling_winetricks_cleans_up_before_letting_go() {
+    let root = tempfile::tempdir().unwrap();
+    let marker = root.path().join("started");
+    let script = "#!/bin/sh\ntouch \"$MARKER\"\nwhile true; do sleep 0.05; done\n";
+
+    // Its own process group, so the interrupt reaches wineo and winetricks
+    // together, the way Ctrl+C in a terminal would.
+    let child = winetricks_fixture(root.path(), "", Some(script))
+        .env("MARKER", &marker)
+        .args(["winetricks", "notepad"])
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    wait_for("winetricks to start", || marker.exists());
+
+    let group = format!("-{}", child.id());
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &group])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(130), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("Canceling winetricks"),
+        "{}",
+        stderr(&out)
+    );
+    // Exclusivity is only released once the prefix has settled.
+    assert!(
+        output(wineo(root.path()).args(["rm", "notepad"]))
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "runs wine and winetricks"]
+fn winetricks_runs_against_a_real_prefix() {
+    let root = tempfile::tempdir().unwrap();
+    let created = output(wineo(root.path()).args(["new", "-n", "notepad"]));
+    assert!(created.status.success(), "{}", stderr(&created));
+
+    let out = output(wineo(root.path()).args(["winetricks", "notepad", "list-installed"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    // Nothing is left holding it once winetricks has finished.
+    assert!(
+        output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]))
+            .status
+            .success()
+    );
 }

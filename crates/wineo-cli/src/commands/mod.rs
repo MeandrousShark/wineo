@@ -13,3 +13,4 @@ pub mod status;
 pub mod stop;
 mod table;
 mod time;
+pub mod winetricks;

@@ -1,6 +1,7 @@
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use wineo_core::environment;
+use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::{Runtime, State, Status};
 
@@ -15,10 +16,19 @@ pub struct Row {
 }
 
 impl Row {
-    fn new(name: &str, status: &Status, now: Timestamp, tz: &TimeZone) -> Self {
+    fn new(
+        name: &str,
+        status: &Status,
+        busy: Option<Operation>,
+        now: Timestamp,
+        tz: &TimeZone,
+    ) -> Self {
         Self {
             name: name.to_owned(),
-            state: status.state.as_str().to_owned(),
+            state: busy.map_or_else(
+                || status.state.as_str().to_owned(),
+                |operation| operation.as_str().to_owned(),
+            ),
             target: status
                 .run
                 .as_ref()
@@ -56,13 +66,17 @@ pub fn gather(
     paths: &Paths,
     now: Timestamp,
     tz: &TimeZone,
-    mut keep: impl FnMut(&Status) -> bool,
+    mut keep: impl FnMut(&Status, Option<Operation>) -> bool,
 ) -> anyhow::Result<(Vec<Row>, bool)> {
+    let locks = Locks::new(paths);
     let mut rows = Vec::new();
     let mut failed = false;
     for name in environment::names(paths)? {
+        let busy = locks.busy_with(&name).unwrap_or(None);
         match Runtime::new(paths, &name).status() {
-            Ok(status) if keep(&status) => rows.push(Row::new(&name, &status, now, tz)),
+            Ok(status) if keep(&status, busy) => {
+                rows.push(Row::new(&name, &status, busy, now, tz));
+            }
             Ok(_) => {}
             Err(err) => {
                 failed = true;

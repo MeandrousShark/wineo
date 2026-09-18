@@ -255,7 +255,9 @@ fn resolve_cwd(paths: &Paths, prefix: &Path, cwd: &str) -> Result<PathBuf> {
         .ok_or_else(|| Error::CwdNotFound(cwd.to_owned()))
 }
 
-fn merge_env(
+/// The environment a program runs with: the global and environment `[env]`
+/// tables, then the command line overrides.
+pub fn merge_env(
     global: &GlobalConfig,
     environment: &Environment,
     overrides: &BTreeMap<String, String>,

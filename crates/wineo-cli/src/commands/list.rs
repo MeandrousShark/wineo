@@ -10,7 +10,7 @@ use super::table;
 pub struct Args;
 
 pub fn run(paths: &Paths, _args: Args) -> anyhow::Result<ExitCode> {
-    let (rows, failed) = table::gather(paths, Timestamp::now(), &TimeZone::system(), |_| true)?;
+    let (rows, failed) = table::gather(paths, Timestamp::now(), &TimeZone::system(), |_, _| true)?;
     for line in table::render(&rows) {
         println!("{line}");
     }

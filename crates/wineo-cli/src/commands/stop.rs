@@ -1,9 +1,10 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use wineo_core::config::{DEFAULT_STOP_TIMEOUT, GlobalConfig};
 use wineo_core::environment::Environment;
+use wineo_core::operation::Locks;
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runtime::{RunStatus, Runtime};
@@ -38,6 +39,13 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 /// Stops an environment and waits until its run has ended.
 pub fn stop(paths: &Paths, name: &str, force: bool) -> anyhow::Result<Outcome> {
     Environment::ensure_exists(paths, name)?;
+    // An operation is not an app run, so it is never something to signal.
+    if let Some(operation) = Locks::new(paths).busy_with(name)? {
+        bail!(
+            "{name} is busy: {}, so there is no run to stop. Finish or cancel it in its terminal",
+            operation.describe()
+        );
+    }
     // A broken global config must not keep a running environment from stopping.
     let stop_timeout = GlobalConfig::load(paths).map_or_else(
         |err| {

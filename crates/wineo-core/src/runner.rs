@@ -46,6 +46,16 @@ impl Runner {
         &self.name
     }
 
+    /// The resolved executables, for handing to a program that runs wine
+    /// itself. Absolute, so a different PATH can't select another build.
+    pub fn wine_path(&self) -> &Path {
+        &self.wine
+    }
+
+    pub fn wineserver_path(&self) -> &Path {
+        &self.wineserver
+    }
+
     /// A `wine` invocation bound to `prefix`. Also blocks wine's own menu
     /// builder, unless the inherited environment already opts back in.
     pub fn wine(&self, prefix: &Path) -> Command {
@@ -130,6 +140,11 @@ fn quietly(command: &mut Command) -> &mut Command {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+}
+
+/// Looks `program` up on the current PATH.
+pub fn find_on_path(program: &str) -> Option<PathBuf> {
+    find_in_path(&std::env::var_os("PATH").unwrap_or_default(), program)
 }
 
 fn find_in_path(path_var: &OsStr, program: &str) -> Option<PathBuf> {
