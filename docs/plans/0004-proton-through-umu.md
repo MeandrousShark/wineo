@@ -15,6 +15,8 @@ Settled by the maintainer:
 - `exec` and `winetricks` go through umu too: `umu-run <program>` and `umu-run winetricks <verbs>`. Tools then run in the same container and Proton build as the game, so what winetricks installs is what the game sees.
 - Proton comes only from wineo's runners root, and `PROTONPATH` is always an absolute path wineo resolved. umu never downloads a Proton build during a launch. Runner downloads stay their own `features.md` row.
 - An environment can set `gameid` and `store`, unset by default, so umu applies protonfixes when asked to.
+- The Steam Linux Runtime stays on umu's own update schedule. Wineo does not set `UMU_RUNTIME_UPDATE`, and `wineo new` says the first run downloads the runtime.
+- A detached run records the process group it started, next to the pid it already records, so a lost Proton run can still be cleaned up once its supervisor is gone.
 
 ## Details
 
@@ -68,6 +70,7 @@ enum Kind {
   - `STORE` set from the environment's `store`, left unset otherwise.
   - The merged `[env]` tables and `-e` values, exactly as now.
 - `PROTON_VERB` is left at umu's default, `waitforexitandrun`, so `umu-run` does not return until the game does.
+- `UMU_RUNTIME_UPDATE` is left alone, so umu keeps the Steam Linux Runtime current on its own terms. A launch can therefore reach the network; anyone who wants it not to can set the variable in the environment's `[env]` table.
 - Wineo owns `WINEPREFIX`, `PROTONPATH`, `GAMEID`, and `STORE` for a Proton launch. Explicit `[env]` or `-e` assignments to them are rejected, the same way `wineo winetricks` already rejects its managed variables.
 - gamemode still wraps the launch when it is on, so the command becomes `gamemoderun umu-run <program>`.
 - A target's `exe` resolves the same way it does for wine. Windows paths are resolved against `pfx/`.
@@ -78,7 +81,7 @@ enum Kind {
 - The run ends when `umu-run` exits. There is no separate wait for the prefix to go idle, because there is no wineserver wineo can reach.
 - `stop` sends SIGTERM to the process group, then SIGKILL once `stop_timeout` passes. `stop --force` goes straight to SIGKILL. The existing `Stopping` and `Killing` notices still describe it.
 - `status` reports the program's exit and the run's end at the same moment for a Proton run, since they are the same event. The separate `program_exited_at` from 0001 stays null.
-- A lost Proton run cannot be cleaned up with `wineserver -k`. `stop` kills the recorded process group instead, and says so when the group is already gone.
+- A lost Proton run cannot be cleaned up with `wineserver -k`, so the run state records the process group alongside the pid. `stop` kills that group, and says so when it is already gone. The field is written for every detached run, not just Proton ones, so the state file has one shape.
 
 ### `exec` and `winetricks`
 
@@ -112,7 +115,8 @@ store = "gog"
 - A fake `umu-run` on `PATH`, mirroring the existing fake wine: it records its arguments and the managed variables, creates `pfx/system.reg` when given an empty program, exits with a chosen code, and can be made to ignore SIGTERM so the force path is covered. No umu or Proton installed is needed.
 - Creation: `new --runner <proton>` creates `pfx/` under the configured prefix, writes the config, and leaves nothing behind when umu fails. Adoption of a directory that already has a `pfx/`.
 - Launching: the fake umu records `WINEPREFIX`, `PROTONPATH`, `GAMEID`, and `STORE`, and that `GAMEID` and `STORE` are absent when unset. Explicit assignments to any managed variable are rejected. gamemode still wraps.
-- Lifecycle: start, status, logs, stop against the fake umu; a program exiting on its own; `stop` on something ignoring SIGTERM reaching the force path; `stop --force`; and a lost run whose process group is already gone.
+- Lifecycle: start, status, logs, stop against the fake umu; a program exiting on its own; `stop` on something ignoring SIGTERM reaching the force path; `stop --force`; a lost run cleaned up through its recorded process group; and a lost run whose group is already gone.
+- Run state written before this plan has no process group recorded, so it still parses and `stop` falls back to reporting that it cannot clean it up.
 - `exec` and `winetricks` both reach the fake umu with the right arguments, and `winetricks` works with no `winetricks` binary on `PATH` at all.
 - `gameid` and `store` round-trip through `set` and `--unset`, are rejected on a wine environment, and show up in `status`.
 - `set runner=` refuses a cross-kind change in both directions, and still allows a change within a kind.
@@ -144,11 +148,3 @@ wineo rm hades --delete-prefix
 ```
 
 `wineo set hades runner=wine` is refused, naming the incompatible prefix layouts.
-
-## Open questions
-
-Proposed details above are for review. These are the calls worth making explicitly:
-
-1. Should wineo set `UMU_RUNTIME_UPDATE=0` so a launch never reaches the network, or leave umu's default of keeping the Steam Linux Runtime up to date? (proposed: leave umu's default, and say in `wineo new` that the first run downloads it)
-2. Should a lost Proton run record its process group id, so `stop` can clean one up after the supervisor dies? (proposed: yes, stored next to the pid in the run state, since there is no wineserver to fall back on)
-3. `features.md` loses the Proton through umu-launcher row once implementation is approved, and the rows depending on umu point at 0004. (proposed: yes)
