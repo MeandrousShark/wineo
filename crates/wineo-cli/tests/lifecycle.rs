@@ -1318,6 +1318,202 @@ fn proton_prefixes_are_always_win64() {
 }
 
 #[test]
+fn protonfixes_settings_reach_umu_on_a_launch_only() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment("hades", "GE-Proton9-20", HADES);
+    assert_success(&f.run(&["set", "hades", "gameid=umu-hades", "store=gog"]));
+
+    assert_success(&f.run(&["start", "hades"]));
+    wait_for("the program to start", || f.fake_program_running("hades"));
+    assert_success(&f.run(&["stop", "hades"]));
+    assert!(
+        f.log("hades").contains("GAMEID=umu-hades STORE=gog"),
+        "{}",
+        f.log("hades")
+    );
+
+    // A tool has no business triggering a game's fix script, which can install
+    // things, so umu falls back to umu-default for those.
+    for args in [
+        vec!["exec", "hades", "winecfg"],
+        vec!["winetricks", "hades", "dxvk"],
+    ] {
+        let printed = stdout(&f.run(&args));
+        assert!(
+            printed.contains("GAMEID=unset STORE=unset"),
+            "{args:?}: {printed}"
+        );
+    }
+}
+
+#[test]
+fn a_proton_launch_refuses_to_have_the_protonfixes_variables_set() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment("hades", "GE-Proton9-20", HADES);
+
+    for key in ["GAMEID", "STORE"] {
+        let refused = f.run(&["start", "hades", "-e", &format!("{key}=x")]);
+        assert!(!refused.status.success(), "{key} was allowed");
+        assert!(
+            stderr(&refused).contains(&format!("{key} is managed by wineo")),
+            "{key}: {}",
+            stderr(&refused)
+        );
+    }
+}
+
+#[test]
+fn gameid_and_store_round_trip_and_show_in_status() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment("hades", "GE-Proton9-20", HADES);
+    let config = f.config_dir().join("environments/hades.toml");
+
+    assert_success(&f.run(&["set", "hades", "gameid=umu-hades", "store=gog"]));
+    let text = fs::read_to_string(&config).unwrap();
+    assert!(text.contains("gameid = \"umu-hades\""), "{text}");
+    assert!(text.contains("store = \"gog\""), "{text}");
+
+    let shown = stdout(&f.run(&["status", "hades"]));
+    assert!(shown.contains("gameid  umu-hades"), "{shown}");
+    assert!(shown.contains("store   gog"), "{shown}");
+
+    assert_success(&f.run(&["set", "hades", "--unset", "gameid", "--unset", "store"]));
+    let text = fs::read_to_string(&config).unwrap();
+    assert!(!text.contains("gameid"), "{text}");
+    assert!(!text.contains("store"), "{text}");
+    assert!(!stdout(&f.run(&["status", "hades"])).contains("gameid"));
+}
+
+#[test]
+fn protonfixes_settings_are_refused_on_a_wine_environment() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+
+    for key in ["gameid", "store"] {
+        let refused = f.run(&["set", "app", &format!("{key}=x")]);
+        assert!(!refused.status.success(), "{key} was allowed");
+        assert!(
+            stderr(&refused).contains("only means something to Proton"),
+            "{key}: {}",
+            stderr(&refused)
+        );
+    }
+    assert!(
+        !fs::read_to_string(f.config_dir().join("environments/app.toml"))
+            .unwrap()
+            .contains("gameid")
+    );
+}
+
+#[test]
+fn set_runner_refuses_a_change_across_kinds() {
+    let f = Fixture::new();
+    f.install_runner("wine-tkg");
+    f.install_proton("GE-Proton9-20");
+    f.environment("app", APP);
+    f.proton_environment("hades", "GE-Proton9-20", HADES);
+
+    let to_proton = f.run(&["set", "app", "runner=GE-Proton9-20"]);
+    assert!(!to_proton.status.success());
+    assert!(
+        stderr(&to_proton).contains("prefix layouts are not compatible"),
+        "{}",
+        stderr(&to_proton)
+    );
+    let to_wine = f.run(&["set", "hades", "runner=wine-tkg"]);
+    assert!(!to_wine.status.success());
+    assert!(
+        stderr(&to_wine).contains("prefix layouts are not compatible"),
+        "{}",
+        stderr(&to_wine)
+    );
+
+    // Neither config was touched, and a change within a kind still works.
+    assert!(
+        fs::read_to_string(f.config_dir().join("environments/hades.toml"))
+            .unwrap()
+            .contains("runner = \"GE-Proton9-20\"")
+    );
+    assert_success(&f.run(&["set", "app", "runner=wine-tkg"]));
+}
+
+#[test]
+fn rm_refuses_a_compatdata_dir_that_holds_no_prefix() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment("hades", "GE-Proton9-20", HADES);
+    // Whatever is in there, it is not a prefix wineo made.
+    let prefix = f.root.path().join("prefixes/hades");
+    fs::remove_file(prefix.join("pfx/system.reg")).unwrap();
+
+    let refused = f.run(&["rm", "hades", "--delete-prefix"]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("is not a wine prefix"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(prefix.exists());
+    assert!(f.config_dir().join("environments/hades.toml").exists());
+}
+
+/// Installs the Proton build `WINEO_TEST_PROTON` names into the fixture's
+/// runners root and returns its name. For the ignored tests only, which say
+/// what to set rather than passing quietly when it is missing.
+fn real_proton(f: &Fixture) -> String {
+    let source = PathBuf::from(std::env::var("WINEO_TEST_PROTON").expect(
+        "set WINEO_TEST_PROTON to a Proton build directory, the one holding its `proton` script",
+    ));
+    assert!(
+        source.join("proton").is_file(),
+        "{} has no `proton` script",
+        source.display()
+    );
+    let name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("a Proton build directory has a name")
+        .to_owned();
+    let runners = f.root.path().join("data/wineo/runners");
+    fs::create_dir_all(&runners).unwrap();
+    symlink(&source, runners.join(&name)).unwrap();
+    name
+}
+
+#[test]
+#[ignore = "runs umu, which downloads the Steam Linux Runtime on first use"]
+fn a_real_proton_environment_is_created_used_and_removed() {
+    let f = Fixture::real();
+    let runner = real_proton(&f);
+    assert!(stdout(&f.run(&["runners"])).contains("proton"));
+
+    assert_success(&f.run(&["new", "-n", "hades", "--runner", &runner]));
+    let prefix = f.root.path().join("data/wineo/prefixes/hades");
+    assert!(prefix.join("pfx/system.reg").is_file());
+
+    // umu ships its own winetricks, so this needs none installed.
+    assert_success(&f.run(&["winetricks", "hades", "list-installed"]));
+
+    assert_success(&f.run(&["set", "hades", "gameid=umu-default"]));
+    assert_success(&f.run(&["set", "hades", "targets.notepad.exe=notepad"]));
+    assert_success(&f.run(&["start", "hades"]));
+    // Let the runtime come up and notepad open its window.
+    thread::sleep(Duration::from_secs(10));
+    let status = stdout(&f.run(&["status", "hades"]));
+    assert!(status.starts_with("hades: running"), "{status}");
+    assert!(status.contains("gameid  umu-default"), "{status}");
+
+    assert_success(&f.run(&["stop", "hades"]));
+    assert!(f.state("hades").contains("status = \"stopped\""));
+
+    assert_success(&f.run(&["rm", "hades", "--delete-prefix"]));
+    assert!(!prefix.exists());
+}
+
+#[test]
 fn tools_on_proton_run_inside_umu() {
     let f = Fixture::new();
     f.install_proton("GE-Proton9-20");
