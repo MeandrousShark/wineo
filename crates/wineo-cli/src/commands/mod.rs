@@ -1,5 +1,6 @@
 pub mod builds;
 pub mod completions;
+pub mod components;
 pub mod config;
 pub mod exec;
 pub mod list;

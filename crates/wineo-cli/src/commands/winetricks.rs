@@ -95,6 +95,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     if !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
         return Err(Error::MissingPrefix(prefix).into());
     }
+    crate::commands::components::reconcile_config(paths, &global, &environment, &runner, &prefix)?;
 
     let runtime = Runtime::new(paths, name);
     if runtime.is_running()? {

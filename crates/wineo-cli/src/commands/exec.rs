@@ -11,6 +11,8 @@ use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::exit_code;
 
+use crate::commands::components;
+
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to run the program in
@@ -43,6 +45,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let locks = Locks::new(paths);
     let _guard = locks.acquire(Operation::Launch, &environment.name, &[&launch.prefix])?;
     Environment::ensure_exists(paths, &environment.name)?;
+    components::reconcile_config(paths, &global, &environment, &launch.runner, &launch.prefix)?;
 
     let code = run_attached(&launch)?;
     Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))

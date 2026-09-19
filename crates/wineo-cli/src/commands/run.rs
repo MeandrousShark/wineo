@@ -12,6 +12,8 @@ use wineo_core::paths::Paths;
 use wineo_core::runtime::{RunMode, RunState, Runtime};
 use wineo_core::supervisor::{Notice, Supervisor};
 
+use crate::commands::components;
+
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to run
@@ -59,6 +61,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let locks = Locks::new(paths);
     let _guard = locks.acquire(Operation::Launch, &environment.name, &[&launch.prefix])?;
     Environment::ensure_exists(paths, &environment.name)?;
+    components::reconcile_config(paths, &global, &environment, &launch.runner, &launch.prefix)?;
 
     let runtime = Runtime::new(paths, &environment.name);
     let Some(_lock) = runtime.try_lock()? else {

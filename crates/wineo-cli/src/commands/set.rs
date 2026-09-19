@@ -5,19 +5,87 @@ use anyhow::bail;
 use wineo_core::config::GlobalConfig;
 use wineo_core::edit;
 use wineo_core::environment::Environment;
+use wineo_core::install::{self, Wanted};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
+use wineo_core::prefix;
+use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 use wineo_core::runtime::Runtime;
 use wineo_core::settings::{self, ConfigFile};
 
-/// Settings that decide what the next launch runs, and against what. Both have
-/// to exclude whatever is using the environment, so nothing launches halfway
-/// between the old setting and the new one.
+use crate::commands::components;
+
+/// Settings that decide what the next launch runs, and against what. They all
+/// have to exclude whatever is using the environment, so nothing launches
+/// halfway between the old setting and the new one, and `dxvk` and `vkd3d`
+/// additionally write into the prefix while they are applied.
 fn changes_the_launch(pairs: &[(&str, &str)], unset: &[&str]) -> bool {
-    ["prefix", "runner"]
+    ["prefix", "runner", "dxvk", "vkd3d"]
         .iter()
         .any(|key| pairs.iter().any(|(set, _)| set == key) || unset.contains(key))
+}
+
+/// The value a key will hold once this set is written, so a check can look at
+/// the result rather than at the change.
+fn value_after(
+    current: Option<&str>,
+    pairs: &[(&str, &str)],
+    unset: &[&str],
+    key: &str,
+) -> Option<String> {
+    if unset.contains(&key) {
+        return None;
+    }
+    pairs
+        .iter()
+        .rev()
+        .find(|(set, _)| *set == key)
+        .map(|(_, raw)| unquote(raw).to_owned())
+        .or_else(|| current.map(str::to_owned))
+}
+
+/// Applies `dxvk` and `vkd3d` before the config is written, so a failed
+/// install leaves the config saying what the prefix actually has.
+fn apply_components(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    runner: Option<&Runner>,
+    pairs: &[(&str, &str)],
+    unset: &[&str],
+) -> anyhow::Result<()> {
+    let environment = Environment::load(paths, name).ok();
+    let config = environment.as_ref().map(|env| &env.config);
+    let wanted = Wanted {
+        dxvk: value_after(
+            config.and_then(|config| config.dxvk.as_deref()),
+            pairs,
+            unset,
+            "dxvk",
+        ),
+        vkd3d: value_after(
+            config.and_then(|config| config.vkd3d.as_deref()),
+            pairs,
+            unset,
+            "vkd3d",
+        ),
+    };
+    // Nothing resolvable to check against, so leave it to the next launch.
+    let Some(runner) = runner else {
+        return Ok(());
+    };
+    // Refused whether or not there is a prefix to install into yet.
+    install::check(name, runner, &wanted)?;
+    let Some(prefix) = environment.as_ref().and_then(|env| env.prefix(paths).ok()) else {
+        return Ok(());
+    };
+    // A prefix that does not exist yet is left to the next launch, which
+    // reconciles anyway.
+    if !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
+        return Ok(());
+    }
+    components::reconcile(paths, global, name, runner, &prefix, &wanted)
 }
 
 fn changed_runner<'a>(pairs: &[(&'a str, &'a str)]) -> Option<&'a str> {
@@ -44,15 +112,14 @@ const PROTON_ONLY: [&str; 2] = ["gameid", "store"];
 
 /// Resolves a new runner and refuses the settings that would not survive it:
 /// a change across kinds, or protonfixes on something that is not Proton.
-fn check_runner(paths: &Paths, name: &str, pairs: &[(&str, &str)]) -> anyhow::Result<()> {
-    let proton_only = pairs.iter().any(|(key, _)| PROTON_ONLY.contains(key));
+fn check_runner(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    pairs: &[(&str, &str)],
+) -> anyhow::Result<Option<Runner>> {
     let changed = changed_runner(pairs);
-    if changed.is_none() && !proton_only {
-        return Ok(());
-    }
-
-    let global = GlobalConfig::load(paths).unwrap_or_default();
-    let runners = Runners::new(paths, &global)?;
+    let runners = Runners::new(paths, global)?;
     let current = Environment::load(paths, name)
         .ok()
         .and_then(|environment| runners.resolve(&environment.config.runner).ok());
@@ -78,9 +145,10 @@ fn check_runner(paths: &Paths, name: &str, pairs: &[(&str, &str)]) -> anyhow::Re
         // TOML, so this is not the place to complain.
         None => match current {
             Some(current) => current,
-            None => return Ok(()),
+            None => return Ok(None),
         },
     };
+    let proton_only = pairs.iter().any(|(key, _)| PROTON_ONLY.contains(key));
 
     if proton_only && !runner.is_proton() {
         let key = pairs
@@ -92,7 +160,7 @@ fn check_runner(paths: &Paths, name: &str, pairs: &[(&str, &str)]) -> anyhow::Re
             runner.name()
         );
     }
-    Ok(())
+    Ok(Some(runner))
 }
 
 /// Where a `prefix=` setting would point.
@@ -164,7 +232,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // Checked under the lock, so a typo never gets written and the runner
     // cannot be removed between the check and the write.
     if let ConfigFile::Environment(name) = file {
-        check_runner(paths, name, &pairs)?;
+        let global = GlobalConfig::load(paths).unwrap_or_default();
+        let runner = check_runner(paths, &global, name, &pairs)?;
+        apply_components(paths, &global, name, runner.as_ref(), &pairs, &unset)?;
     }
 
     for key in settings::update(paths, file, &pairs, &unset)? {

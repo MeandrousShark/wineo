@@ -5,7 +5,7 @@ use jiff::tz::TimeZone;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::paths::Paths;
-use wineo_core::report::EnvironmentReport;
+use wineo_core::report::{self, EnvironmentReport};
 use wineo_core::runtime::{RunMode, RunState, State};
 
 use super::table;
@@ -83,6 +83,11 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
     }
     if let Some(store) = &report.store {
         lines.push(label_line("store", store));
+    }
+    for (label, component) in [("dxvk", &report.dxvk), ("vkd3d", &report.vkd3d)] {
+        if let Some(component) = component {
+            lines.push(label_line(label, &report::component_value(component)));
+        }
     }
     if report.status.state == State::Running
         && let Some(run) = &report.status.run
@@ -234,6 +239,8 @@ mod tests {
             gamemode: false,
             gameid: None,
             store: None,
+            dxvk: None,
+            vkd3d: None,
         }
     }
 

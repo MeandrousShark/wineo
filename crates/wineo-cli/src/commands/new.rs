@@ -9,7 +9,7 @@ use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 
-use super::exec;
+use super::{components, exec};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -86,6 +86,14 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             environment.name, environment.config.prefix
         );
     }
+
+    components::reconcile_config(
+        paths,
+        &global,
+        &environment,
+        &runner,
+        &environment.prefix(paths)?,
+    )?;
 
     let mut installer_exit = None;
     if let Some(installer) = &args.install_exe {
