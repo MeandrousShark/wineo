@@ -40,6 +40,25 @@ impl Component {
         }
     }
 
+    /// How the component is written in a message, as opposed to the config
+    /// spelling `as_str` gives.
+    pub fn label(self) -> &'static str {
+        match self {
+            Component::Dxvk => "DXVK",
+            Component::Vkd3d => "vkd3d-proton",
+        }
+    }
+
+    /// The DLLs wineo points at the build with a native override. Fixed,
+    /// unlike the files it copies, because these are what the component is
+    /// meant to take over.
+    pub fn overrides(self) -> &'static [&'static str] {
+        match self {
+            Component::Dxvk => &["d3d8", "d3d9", "d3d10core", "d3d11", "dxgi"],
+            Component::Vkd3d => &["d3d12", "d3d12core"],
+        }
+    }
+
     /// A DLL that has to be there for a directory to be this component.
     fn marker(self) -> &'static str {
         match self {

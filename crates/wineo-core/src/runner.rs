@@ -83,6 +83,12 @@ impl Runner {
         Self::wine_build(name.to_owned(), true_bin.clone(), true_bin)
     }
 
+    /// A Proton runner pointing nowhere, for tests that only need its kind.
+    #[cfg(test)]
+    pub(crate) fn fake_proton(name: &str) -> Self {
+        Self::proton(name.to_owned(), PathBuf::from("/nonexistent"))
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }

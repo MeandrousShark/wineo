@@ -1,8 +1,10 @@
 use serde::Serialize;
 
+use crate::components::{Builds, Component, LATEST};
 use crate::config::GlobalConfig;
 use crate::environment::Environment;
 use crate::error::Result;
+use crate::install::{self, Wanted};
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::runners::Runners;
@@ -29,6 +31,22 @@ pub struct EnvironmentReport {
     /// for them.
     pub gameid: Option<String>,
     pub store: Option<String>,
+    /// The Direct3D builds this environment asks for, when it asks for any.
+    pub dxvk: Option<ComponentReport>,
+    pub vkd3d: Option<ComponentReport>,
+}
+
+/// What a config asks for against what its prefix actually has.
+#[derive(Debug, Clone, Serialize)]
+pub struct ComponentReport {
+    /// The config value, which may be `latest`.
+    pub wanted: String,
+    /// What `wanted` names right now. None when nothing is installed to pick.
+    pub resolved: Option<String>,
+    /// What the prefix's manifest records.
+    pub installed: Option<String>,
+    /// Whether the prefix already has what the config asks for.
+    pub current: bool,
 }
 
 impl EnvironmentReport {
@@ -44,7 +62,10 @@ impl EnvironmentReport {
             .as_ref()
             .and_then(|run| environment.config.targets.get(&run.target));
         let target_exe = target.map(|target| target.exe.clone());
+        let components = components(paths, global, environment);
         Ok(Self {
+            dxvk: components.0,
+            vkd3d: components.1,
             busy: Locks::new(paths).busy_with(&environment.name)?,
             gamemode: crate::launch::gamemode(global, environment, target),
             name: environment.name.clone(),
@@ -57,6 +78,59 @@ impl EnvironmentReport {
             status,
         })
     }
+}
+
+/// Reading the manifest needs the runner and the prefix, and neither is
+/// worth failing a whole status over, so an unreadable one reports nothing.
+fn components(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+) -> (Option<ComponentReport>, Option<ComponentReport>) {
+    let wanted = Wanted::from_config(&environment.config);
+    let resolved = Runners::new(paths, global)
+        .and_then(|runners| runners.resolve(&environment.config.runner))
+        .ok()
+        .zip(environment.prefix(paths).ok());
+
+    let report = |component: Component| {
+        let asked = wanted.get(component)?.to_owned();
+        let build = Builds::new(paths, global, component)
+            .and_then(|builds| builds.resolve(&asked))
+            .ok()
+            .map(|build| build.name().to_owned());
+        let installed = resolved
+            .as_ref()
+            .and_then(|(runner, prefix)| install::installed(runner, prefix, component).ok())
+            .flatten();
+        // A pinned build whose directory was removed still counts as current,
+        // since its DLLs are in the prefix either way.
+        let current = installed.as_deref() == build.as_deref()
+            || installed.as_deref() == Some(asked.as_str());
+        Some(ComponentReport {
+            wanted: asked,
+            resolved: build,
+            installed,
+            current,
+        })
+    };
+    (report(Component::Dxvk), report(Component::Vkd3d))
+}
+
+/// The spelling `status` uses for a component line.
+pub fn component_value(report: &ComponentReport) -> String {
+    let mut value = if report.wanted == LATEST {
+        match &report.resolved {
+            Some(resolved) => format!("{LATEST} ({resolved})"),
+            None => format!("{LATEST} (nothing installed)"),
+        }
+    } else {
+        report.wanted.clone()
+    };
+    if !report.current {
+        value.push_str(", will be installed on the next launch");
+    }
+    value
 }
 
 #[cfg(test)]

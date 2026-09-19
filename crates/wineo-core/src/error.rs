@@ -183,6 +183,23 @@ pub enum Error {
 
     #[error("wine failed to write the menu builder override, full output in {}", .log.display())]
     MenuBuilderOverride { log: PathBuf },
+
+    #[error("wine failed to set the `{0}` DLL override")]
+    DllOverride(String),
+
+    #[error(
+        "`{component}` only means something to wine, and `{environment}` runs on {runner}, which bundles its own"
+    )]
+    ComponentOnProton {
+        component: &'static str,
+        environment: String,
+        runner: String,
+    },
+
+    #[error(
+        "vkd3d-proton uses DXVK's DXGI rather than shipping its own, so `vkd3d` needs `dxvk` set as well. Set one with `wineo set {0} dxvk=latest`"
+    )]
+    Vkd3dNeedsDxvk(String),
 }
 
 /// Formats an error followed by its sources, like anyhow's `{:#}`.

@@ -92,6 +92,10 @@ pub struct EnvironmentConfig {
     pub gameid: Option<String>,
     /// The store the game came from, which some protonfixes branch on.
     pub store: Option<String>,
+    /// The DXVK and vkd3d builds this prefix should have. `latest` means the
+    /// newest installed, resolved on use rather than written back.
+    pub dxvk: Option<String>,
+    pub vkd3d: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
