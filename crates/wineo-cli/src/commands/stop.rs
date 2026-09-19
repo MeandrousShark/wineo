@@ -6,6 +6,7 @@ use wineo_core::config::{DEFAULT_STOP_TIMEOUT, GlobalConfig};
 use wineo_core::environment::Environment;
 use wineo_core::operation::Locks;
 use wineo_core::paths::Paths;
+use wineo_core::runner::Killed;
 use wineo_core::runners::Runners;
 use wineo_core::runtime::{RunStatus, Runtime};
 use wineo_core::supervisor;
@@ -88,12 +89,19 @@ fn clean_up_lost_run(paths: &Paths, name: &str, runtime: &Runtime) -> anyhow::Re
     };
     let environment = Environment::load(paths, name)?;
     let global = GlobalConfig::load(paths).unwrap_or_default();
-    Runners::new(paths, &global)?
+    let killed = Runners::new(paths, &global)?
         .resolve(&environment.config.runner)?
-        .kill(&environment.prefix(paths)?)?;
+        .kill(&environment.prefix(paths)?, run.group)?;
     run.finish(RunStatus::Stopped);
     runtime.write_state(&run)?;
-    eprintln!("wineo lost track of {name}'s last run, so it killed anything left in the prefix");
+    let outcome = match killed {
+        Killed::Done => "so it killed anything left behind",
+        Killed::Gone => "and what it started had already exited",
+        Killed::Untracked => {
+            "and the run is too old to record what to kill, so check the prefix yourself"
+        }
+    };
+    eprintln!("wineo lost track of {name}'s last run, {outcome}");
     Ok(Outcome::CleanedUp)
 }
 

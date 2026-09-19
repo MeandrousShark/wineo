@@ -1,14 +1,28 @@
 use std::ffi::OsStr;
+use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use rustix::io::Errno;
+use rustix::process::{Pid, Signal, kill_process_group};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, IoContext, Result};
 
 /// umu-launcher, which runs Proton the way Steam does.
 const UMU: &str = "umu-run";
+
+/// What ending a lost run found to kill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Killed {
+    /// Whatever the run left behind has been killed.
+    Done,
+    /// The run's process group was already gone.
+    Gone,
+    /// The run recorded no process group, so there is nothing to signal.
+    Untracked,
+}
 
 /// The wine build an environment runs with.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +98,13 @@ impl Runner {
         matches!(self.kind, Kind::Proton { .. })
     }
 
+    /// Whether other processes can outlive the launched program. Wine keeps a
+    /// prefix alive after a launcher hands off; a Proton run is over when umu
+    /// returns, because everything else is inside its container.
+    pub fn outlives_program(&self) -> bool {
+        !self.is_proton()
+    }
+
     /// The resolved executables, for handing to a program that runs wine
     /// itself. Absolute, so a different PATH can't select another build.
     /// None for Proton, which has no wine wineo is meant to run directly.
@@ -155,9 +176,11 @@ impl Runner {
         Ok(())
     }
 
-    /// Asks running programs to close, like a Windows logoff.
-    pub fn end_session(&self, prefix: &Path) -> Result<()> {
+    /// Asks running programs to close: a Windows logoff for wine, SIGTERM to
+    /// umu's process group for Proton, which has no wineserver to talk to.
+    pub fn end_session(&self, prefix: &Path, group: Option<u32>) -> Result<()> {
         if self.is_proton() {
+            signal_group(group, Signal::TERM)?;
             return Ok(());
         }
         quietly(
@@ -169,15 +192,15 @@ impl Runner {
         Ok(())
     }
 
-    /// Kills everything in the prefix without giving programs a chance to clean up.
-    pub fn kill(&self, prefix: &Path) -> Result<()> {
+    /// Kills whatever is left without giving programs a chance to clean up.
+    pub fn kill(&self, prefix: &Path, group: Option<u32>) -> Result<Killed> {
         let Some(mut command) = self.wineserver(prefix) else {
-            return Ok(());
+            return signal_group(group, Signal::KILL);
         };
         quietly(command.arg("-k"))
             .status()
             .context(|| "failed to run wineserver -k".to_owned())?;
-        Ok(())
+        Ok(Killed::Done)
     }
 
     /// The version this runner reports: what wine prints, or what Proton
@@ -200,6 +223,24 @@ impl Runner {
                 let version = text.split_whitespace().next_back()?.to_owned();
                 (!version.is_empty()).then_some(version)
             }
+        }
+    }
+}
+
+/// Signals a whole process group, so umu's container and everything under it
+/// go together. A run recorded before wineo kept the group has none.
+fn signal_group(group: Option<u32>, signal: Signal) -> Result<Killed> {
+    let Some(pid) = group
+        .and_then(|group| i32::try_from(group).ok())
+        .and_then(Pid::from_raw)
+    else {
+        return Ok(Killed::Untracked);
+    };
+    match kill_process_group(pid, signal) {
+        Ok(()) => Ok(Killed::Done),
+        Err(Errno::SRCH) => Ok(Killed::Gone),
+        Err(err) => {
+            Err(io::Error::from(err)).context(|| format!("failed to signal process group {pid:?}"))
         }
     }
 }

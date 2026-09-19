@@ -90,8 +90,13 @@ impl RunState {
         }
     }
 
-    pub fn program_exited(&mut self, exit_code: Option<i32>) {
-        self.program_exited_at = Some(Timestamp::now());
+    /// The launched program is gone. The timestamp is only recorded when the
+    /// run can outlive it, since otherwise the program's exit and the run's end
+    /// are the same moment and `ended_at` already says when.
+    pub fn program_exited(&mut self, exit_code: Option<i32>, lingering: bool) {
+        if lingering {
+            self.program_exited_at = Some(Timestamp::now());
+        }
         self.exit_code = exit_code;
     }
 
@@ -523,7 +528,7 @@ mod tests {
         assert_eq!(kept.env, overrides.env);
         assert_eq!(kept.args, overrides.args);
 
-        state.program_exited(Some(3));
+        state.program_exited(Some(3), true);
         assert!(state.program_exited_at.is_some());
         assert_eq!(state.exit_code, Some(3));
         assert_eq!(state.ended_at, None);

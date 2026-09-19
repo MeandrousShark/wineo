@@ -155,7 +155,8 @@ fn settle(
     };
 
     eprintln!("Canceling winetricks, press Ctrl+C again to force it");
-    if let Err(err) = runner.end_session(prefix) {
+    // Wine only, so the prefix is what gets signalled and no group is needed.
+    if let Err(err) = runner.end_session(prefix, None) {
         eprintln!("warning: {err}");
     }
 
@@ -179,6 +180,6 @@ fn settle(
     }
 
     eprintln!("Killing everything left in the prefix");
-    runner.kill(prefix)?;
+    runner.kill(prefix, None)?;
     Ok(runner.wait_idle(prefix)?)
 }

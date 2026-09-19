@@ -125,7 +125,10 @@ impl Supervisor {
             };
             match event {
                 Event::Exited(status) => {
-                    state.program_exited(status.ok().map(exit_code));
+                    state.program_exited(
+                        status.ok().map(exit_code),
+                        launch.runner.outlives_program(),
+                    );
                     if let Err(err) = runtime.write_state(state) {
                         notify(Notice::Warning(err));
                     }
@@ -144,8 +147,9 @@ impl Supervisor {
                     deadline = Some(Instant::now() + stop_timeout);
                     notify(Notice::Stopping);
                     let (runner, prefix) = (launch.runner.clone(), launch.prefix.clone());
+                    let group = state.group;
                     thread::spawn(move || {
-                        let _ = runner.end_session(&prefix);
+                        let _ = runner.end_session(&prefix, group);
                     });
                 }
                 Event::Stop | Event::Force | Event::StopTimeout => {
@@ -154,7 +158,7 @@ impl Supervisor {
                         killed = true;
                         notify(Notice::Killing);
                     }
-                    if let Err(err) = launch.runner.kill(&launch.prefix) {
+                    if let Err(err) = launch.runner.kill(&launch.prefix, state.group) {
                         notify(Notice::Warning(err));
                     }
                     deadline = Some(Instant::now() + KILL_RETRY);
