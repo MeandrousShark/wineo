@@ -4,6 +4,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -343,18 +344,22 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         log.try_clone()
             .context(|| format!("failed to open {}", log_path.display()))
     };
+    // Its own process group, so the whole tree can be signalled as one and a
+    // signal to it never reaches this supervisor.
     let child = spec
         .launch
         .command()
         .stdin(Stdio::null())
         .stdout(clone_log()?)
         .stderr(clone_log()?)
+        .process_group(0)
         .spawn()
         .context(|| "failed to start wine".to_owned())?;
     let mut state = RunState::running(
         RunMode::Detached,
         spec.launch.target.clone().unwrap_or_default(),
         child.id(),
+        Some(child.id()),
         &spec.overrides,
     );
     if let Err(err) = runtime.write_state(&state) {

@@ -67,7 +67,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 
     let supervisor = Supervisor::listen()?;
     // A separate process group keeps the terminal's Ctrl+C away from wine, so
-    // wineo can ask the app to close instead of it being cut off.
+    // wineo can ask the app to close instead of it being cut off. It is also
+    // what a Proton run is signalled through, so it is recorded with the pid.
     let child = launch
         .command()
         .stdin(Stdio::null())
@@ -78,6 +79,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         RunMode::Attached,
         launch.target.clone().unwrap_or_default(),
         child.id(),
+        Some(child.id()),
         &overrides,
     );
     // Wine is already running, so bailing out here would orphan it and free the lock.

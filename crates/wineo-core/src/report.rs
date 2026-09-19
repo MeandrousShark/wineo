@@ -109,6 +109,7 @@ mod tests {
             RunMode::Detached,
             "notepad".to_owned(),
             1,
+            Some(1),
             &Default::default(),
         );
         runtime.write_state(&state).unwrap();

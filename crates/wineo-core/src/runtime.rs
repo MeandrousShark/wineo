@@ -42,6 +42,11 @@ pub struct RunState {
     pub mode: RunMode,
     pub target: String,
     pub pid: u32,
+    /// The process group the run was spawned into, so what it left behind can
+    /// still be killed once whatever owned it is gone. Missing in a state file
+    /// written before wineo recorded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<u32>,
     pub started_at: Timestamp,
     /// The run lasts until the prefix goes idle, which can be well after the
     /// launched program exits.
@@ -62,12 +67,19 @@ pub struct RunState {
 }
 
 impl RunState {
-    pub fn running(mode: RunMode, target: String, pid: u32, overrides: &Overrides) -> Self {
+    pub fn running(
+        mode: RunMode,
+        target: String,
+        pid: u32,
+        group: Option<u32>,
+        overrides: &Overrides,
+    ) -> Self {
         Self {
             status: RunStatus::Running,
             mode,
             target,
             pid,
+            group,
             started_at: Timestamp::now(),
             program_exited_at: None,
             ended_at: None,
@@ -365,6 +377,7 @@ mod tests {
             mode: RunMode::Detached,
             target: "notepad".to_owned(),
             pid: 4242,
+            group: Some(4242),
             started_at: "2026-09-16T21:02:11Z".parse().unwrap(),
             program_exited_at: None,
             ended_at: None,
@@ -487,6 +500,7 @@ mod tests {
         let state = runtime.read_state().unwrap().unwrap();
         assert_eq!(state.status, RunStatus::Exited);
         assert_eq!(state.requested_target, None);
+        assert_eq!(state.group, None);
     }
 
     #[test]
@@ -496,7 +510,13 @@ mod tests {
             env: BTreeMap::from([("A".to_owned(), "1".to_owned())]),
             args: vec!["-nosplash".to_owned()],
         };
-        let mut state = RunState::running(RunMode::Detached, "bridge".to_owned(), 7, &overrides);
+        let mut state = RunState::running(
+            RunMode::Detached,
+            "bridge".to_owned(),
+            7,
+            Some(7),
+            &overrides,
+        );
         assert_eq!(state.status, RunStatus::Running);
         let kept = state.overrides();
         assert_eq!(kept.target, overrides.target);

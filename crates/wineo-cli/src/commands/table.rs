@@ -123,6 +123,7 @@ mod tests {
             mode: RunMode::Detached,
             target: target.to_owned(),
             pid: 1,
+            group: Some(1),
             started_at: ts("2026-09-16T14:02:00Z"),
             program_exited_at: None,
             ended_at: None,

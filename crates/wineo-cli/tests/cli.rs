@@ -479,6 +479,7 @@ fn list_shows_every_environment_regardless_of_state() {
             RunMode::Detached,
             "notepad".to_owned(),
             111,
+            Some(111),
             &Overrides::default(),
         ))
         .unwrap();
@@ -487,6 +488,7 @@ fn list_shows_every_environment_regardless_of_state() {
         RunMode::Detached,
         "photoshop".to_owned(),
         222,
+        Some(222),
         &Overrides::default(),
     );
     finished.finish(RunStatus::Exited);
@@ -553,6 +555,7 @@ fn status_without_a_name_shows_only_whats_running() {
             RunMode::Detached,
             "notepad".to_owned(),
             111,
+            Some(111),
             &Overrides::default(),
         ))
         .unwrap();
@@ -577,6 +580,7 @@ fn status_name_running_shows_target_runner_prefix_and_pid() {
             RunMode::Attached,
             "notepad".to_owned(),
             4242,
+            Some(4242),
             &Overrides::default(),
         ))
         .unwrap();
@@ -604,6 +608,7 @@ fn status_name_stopped_drops_the_pid_line() {
         RunMode::Detached,
         "notepad".to_owned(),
         4242,
+        Some(4242),
         &Overrides::default(),
     );
     state.finish(RunStatus::Stopped);
@@ -627,6 +632,7 @@ fn status_name_lost_blames_the_run_that_never_finished() {
             RunMode::Detached,
             "notepad".to_owned(),
             4242,
+            Some(4242),
             &Overrides::default(),
         ))
         .unwrap();
@@ -1023,6 +1029,7 @@ fn rm_refuses_a_lost_run() {
             RunMode::Detached,
             "notepad".to_owned(),
             111,
+            Some(111),
             &Overrides::default(),
         ))
         .unwrap();
