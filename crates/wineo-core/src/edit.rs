@@ -103,7 +103,10 @@ fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
             store_value(root, "gamemode", Value::from(parse_bool(key, raw)?));
             Ok(())
         }
-        "defaults.prefix_root" | "defaults.runner_root" => {
+        "defaults.prefix_root"
+        | "defaults.runner_root"
+        | "defaults.dxvk_root"
+        | "defaults.vkd3d_root" => {
             let value = parse_string_value(key, raw)?;
             let field = key.strip_prefix("defaults.").expect("checked above");
             let table = ensure_table(root, "defaults", "defaults", false)?;
@@ -216,6 +219,8 @@ fn unset_global(root: &mut Table, key: &str) -> Result<bool, EditError> {
         "defaults.arch" => unset_field(root, "defaults", "defaults", "arch"),
         "defaults.prefix_root" => unset_field(root, "defaults", "defaults", "prefix_root"),
         "defaults.runner_root" => unset_field(root, "defaults", "defaults", "runner_root"),
+        "defaults.dxvk_root" => unset_field(root, "defaults", "defaults", "dxvk_root"),
+        "defaults.vkd3d_root" => unset_field(root, "defaults", "defaults", "vkd3d_root"),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
                 let var = validate_env_var(key, var)?;

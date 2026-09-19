@@ -77,6 +77,8 @@ pub struct Defaults {
     pub arch: Arch,
     pub prefix_root: Option<String>,
     pub runner_root: Option<String>,
+    pub dxvk_root: Option<String>,
+    pub vkd3d_root: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,6 +141,8 @@ impl Default for Defaults {
             arch: Arch::default(),
             prefix_root: None,
             runner_root: None,
+            dxvk_root: None,
+            vkd3d_root: None,
         }
     }
 }

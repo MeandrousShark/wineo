@@ -82,6 +82,43 @@ pub enum Error {
     #[error("`{name}` is not a wine build: {reason}")]
     NotARunner { name: String, reason: &'static str },
 
+    #[error("invalid {component} name `{name}`: use letters, digits, `-`, `_`, and `.`")]
+    InvalidBuildName {
+        component: &'static str,
+        name: String,
+    },
+
+    #[error(
+        "{component} build `{name}` is not installed{}",
+        if .installed.is_empty() {
+            format!(", and nothing is installed in {}", .root.display())
+        } else {
+            format!(", installed builds are: {}", .installed.join(", "))
+        }
+    )]
+    UnknownBuild {
+        component: &'static str,
+        name: String,
+        installed: Vec<String>,
+        root: PathBuf,
+    },
+
+    #[error("`{name}` is not a {component} build: {reason}")]
+    NotABuild {
+        component: &'static str,
+        name: String,
+        reason: String,
+    },
+
+    #[error(
+        "no {component} builds are installed, so `latest` has nothing to pick. Extract one into {}",
+        .root.display()
+    )]
+    NoBuilds {
+        component: &'static str,
+        root: PathBuf,
+    },
+
     #[error("`{0}` was not found on PATH")]
     ProgramNotFound(&'static str),
 

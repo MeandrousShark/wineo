@@ -60,6 +60,14 @@ impl Paths {
         self.data.join("runners")
     }
 
+    pub fn default_dxvk_root(&self) -> PathBuf {
+        self.data.join("dxvk")
+    }
+
+    pub fn default_vkd3d_root(&self) -> PathBuf {
+        self.data.join("vkd3d")
+    }
+
     /// Operation lock files. Dotted, so it can never collide with the runtime
     /// dir of an environment, and stable, so removing one leaves it alone.
     pub fn locks_dir(&self) -> PathBuf {
