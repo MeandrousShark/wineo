@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0005: DXVK, vkd3d, and templates
 
