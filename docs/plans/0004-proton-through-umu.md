@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0004: Proton through umu-launcher
 
