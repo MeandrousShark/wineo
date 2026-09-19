@@ -266,6 +266,17 @@ impl Fixture {
         }
     }
 
+    fn write_template(&self, name: &str, text: &str) {
+        let dir = self.config_dir().join("templates");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{name}.toml")), text).unwrap();
+    }
+
+    fn created_config(&self, name: &str) -> String {
+        fs::read_to_string(self.config_dir().join(format!("environments/{name}.toml")))
+            .unwrap_or_default()
+    }
+
     fn system32(&self, name: &str) -> PathBuf {
         self.root
             .path()
@@ -2157,4 +2168,158 @@ fn a_real_dxvk_build_installs_and_comes_back_out() {
     assert_eq!(fs::read(system32.join("d3d11.dll")).unwrap(), before);
     assert!(!system32.join("d3d11.dll.wineo-orig").exists());
     assert!(!prefix.join(".wineo-components.toml").exists());
+}
+
+#[test]
+fn the_built_in_gaming_template_sets_up_a_whole_environment() {
+    let f = Fixture::new();
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    f.install_build("vkd3d", "2.14", &["x64", "x86"]);
+
+    let listed = stdout(&f.run(&["templates"]));
+    assert!(listed.contains("gaming"), "{listed}");
+    assert!(listed.contains("built-in"), "{listed}");
+
+    let created = f.run(&["new", "-n", "hades", "--template", "gaming"]);
+    assert_success(&created);
+    assert!(
+        stderr(&created).contains("Installed DXVK dxvk-2.7 into hades"),
+        "{}",
+        stderr(&created)
+    );
+
+    let config = f.created_config("hades");
+    assert!(config.contains("gamemode = true"), "{config}");
+    // The config keeps `latest` rather than the version it resolved to.
+    assert!(config.contains("dxvk = \"latest\""), "{config}");
+    assert!(config.contains("vkd3d = \"latest\""), "{config}");
+
+    let prefix = f.root.path().join("data/wineo/prefixes/hades");
+    assert!(prefix.join("drive_c/windows/system32/dxgi.dll").is_file());
+    assert!(prefix.join("drive_c/windows/system32/d3d12.dll").is_file());
+    let shown = stdout(&f.run(&["status", "hades"]));
+    assert!(shown.contains("dxvk    latest (dxvk-2.7)"), "{shown}");
+}
+
+#[test]
+fn the_built_in_fails_clearly_with_no_builds_installed() {
+    let f = Fixture::new();
+    let refused = f.run(&["new", "-n", "hades", "--template", "gaming"]);
+    assert!(!refused.status.success());
+    let message = stderr(&refused);
+    assert!(
+        message.contains("`latest` has nothing to pick"),
+        "{message}"
+    );
+    assert!(message.contains("dxvk"), "{message}");
+    // Nothing was created, so a retry after extracting a build is clean.
+    assert!(!f.config_dir().join("environments/hades.toml").exists());
+    assert!(!f.root.path().join("data/wineo/prefixes/hades").exists());
+}
+
+#[test]
+fn a_template_sets_every_value_it_names() {
+    let f = Fixture::new();
+    f.install_runner("wine-tkg");
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    f.write_template(
+        "mine",
+        "runner = \"wine-tkg\"\narch = \"win32\"\ndxvk = \"dxvk-2.7\"\ngamemode = true\n\n[env]\nDXVK_HUD = \"fps\"\n",
+    );
+
+    assert_success(&f.run(&["new", "-n", "app", "--template", "mine"]));
+    let config = f.created_config("app");
+    assert!(config.contains("runner = \"wine-tkg\""), "{config}");
+    assert!(config.contains("arch = \"win32\""), "{config}");
+    assert!(config.contains("dxvk = \"dxvk-2.7\""), "{config}");
+    assert!(config.contains("gamemode = true"), "{config}");
+    assert!(config.contains("DXVK_HUD = \"fps\""), "{config}");
+}
+
+#[test]
+fn explicit_flags_win_over_the_template() {
+    let f = Fixture::new();
+    f.install_runner("wine-tkg");
+    f.write_template("mine", "runner = \"wine-tkg\"\narch = \"win32\"\n");
+
+    assert_success(&f.run(&[
+        "new",
+        "-n",
+        "app",
+        "--template",
+        "mine",
+        "--runner",
+        "wine",
+        "--arch",
+        "win64",
+    ]));
+    let config = f.created_config("app");
+    assert!(config.contains("runner = \"wine\""), "{config}");
+    assert!(config.contains("arch = \"win64\""), "{config}");
+}
+
+#[test]
+fn a_user_template_shadows_the_built_in() {
+    let f = Fixture::new();
+    f.write_template("gaming", "gamemode = false\n");
+
+    let listed = stdout(&f.run(&["templates"]));
+    assert!(listed.contains("gaming"), "{listed}");
+    assert!(!listed.contains("built-in"), "{listed}");
+
+    // No builds are installed, and it still works: the shadow asks for none.
+    assert_success(&f.run(&["new", "-n", "app", "--template", "gaming"]));
+    let config = f.created_config("app");
+    assert!(config.contains("gamemode = false"), "{config}");
+    assert!(!config.contains("dxvk"), "{config}");
+}
+
+#[test]
+fn a_template_that_cannot_be_used_fails_before_anything_is_created() {
+    let f = Fixture::new();
+    f.write_template("no-runner", "runner = \"nope\"\n");
+    f.write_template("no-build", "dxvk = \"nope\"\n");
+    f.write_template("has-prefix", "prefix = \"/p\"\n");
+    f.write_template("has-targets", "[targets.app]\nexe = \"a\"\n");
+
+    for (template, expected) in [
+        ("nope", "there is no template"),
+        ("no-runner", "is not installed"),
+        ("no-build", "is not installed"),
+        ("has-prefix", "belongs to an environment"),
+        ("has-targets", "belongs to an environment"),
+    ] {
+        let refused = f.run(&["new", "-n", "app", "--template", template]);
+        assert!(!refused.status.success(), "{template} was allowed");
+        assert!(
+            stderr(&refused).contains(expected),
+            "{template}: {}",
+            stderr(&refused)
+        );
+        assert!(
+            !f.config_dir().join("environments/app.toml").exists(),
+            "{template} left a config behind"
+        );
+        assert!(
+            !f.root.path().join("data/wineo/prefixes/app").exists(),
+            "{template} left a prefix behind"
+        );
+    }
+}
+
+#[test]
+fn a_template_naming_proton_and_dxvk_is_refused() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    f.write_template("mixed", "runner = \"GE-Proton9-20\"\ndxvk = \"dxvk-2.7\"\n");
+
+    let refused = f.run(&["new", "-n", "hades", "--template", "mixed"]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("bundles its own"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(!f.config_dir().join("environments/hades.toml").exists());
 }
