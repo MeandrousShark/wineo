@@ -592,11 +592,11 @@ fn status_name_running_shows_target_runner_prefix_and_pid() {
         text.starts_with("notepad: running attached since "),
         "{text}"
     );
-    assert!(text.contains("\n  target  notepad (notepad)\n"), "{text}");
+    assert!(text.contains("\n  target    notepad (notepad)\n"), "{text}");
     // Not asserting on the runner version: wine may not be installed here.
-    assert!(text.contains("\n  runner  wine"), "{text}");
-    assert!(text.contains("\n  prefix  /p\n"), "{text}");
-    assert!(text.contains("\n  pid     4242\n"), "{text}");
+    assert!(text.contains("\n  runner    wine"), "{text}");
+    assert!(text.contains("\n  prefix    /p\n"), "{text}");
+    assert!(text.contains("\n  pid       4242\n"), "{text}");
 }
 
 #[test]
@@ -618,7 +618,7 @@ fn status_name_stopped_drops_the_pid_line() {
     assert!(result.status.success(), "{}", stderr(&result));
     let text = stdout(&result);
     assert!(text.starts_with("notepad: stopped at "), "{text}");
-    assert!(text.contains("\n  target  notepad (notepad)\n"), "{text}");
+    assert!(text.contains("\n  target    notepad (notepad)\n"), "{text}");
     assert!(!text.contains("pid"), "{text}");
 }
 
@@ -656,8 +656,8 @@ fn status_name_inactive_shows_only_runner_and_prefix() {
     assert!(result.status.success(), "{}", stderr(&result));
     let text = stdout(&result);
     assert!(text.starts_with("notepad: inactive\n"), "{text}");
-    assert!(text.contains("\n  runner  wine"), "{text}");
-    assert!(text.contains("\n  prefix  /p\n"), "{text}");
+    assert!(text.contains("\n  runner    wine"), "{text}");
+    assert!(text.contains("\n  prefix    /p\n"), "{text}");
     assert!(!text.contains("target"), "{text}");
 }
 
