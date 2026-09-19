@@ -40,6 +40,7 @@ wineboot)
     exit 0
     ;;
 reg)
+    echo "$*" >>"$WINEPREFIX/reg.log"
     exit 0
     ;;
 esac
@@ -241,6 +242,54 @@ impl Fixture {
         }
     }
 
+    /// A DXVK or vkd3d build of stub DLLs, extracted into its drop-in root.
+    /// The DLL bodies name where they came from, so a test can tell an
+    /// installed file from what it replaced.
+    fn install_build(&self, component: &str, name: &str, dirs: &[&str]) {
+        let marker = if component == "dxvk" {
+            "dxgi.dll"
+        } else {
+            "d3d12.dll"
+        };
+        let dir = self
+            .root
+            .path()
+            .join("data/wineo")
+            .join(component)
+            .join(name);
+        for arch in dirs {
+            let arch = dir.join(arch);
+            fs::create_dir_all(&arch).unwrap();
+            for dll in [marker, "d3d11.dll"] {
+                fs::write(arch.join(dll), format!("{name}/{arch:?}")).unwrap();
+            }
+        }
+    }
+
+    fn system32(&self, name: &str) -> PathBuf {
+        self.root
+            .path()
+            .join("prefixes")
+            .join(name)
+            .join("drive_c/windows/system32")
+    }
+
+    fn manifest(&self, name: &str) -> String {
+        fs::read_to_string(
+            self.root
+                .path()
+                .join("prefixes")
+                .join(name)
+                .join(".wineo-components.toml"),
+        )
+        .unwrap_or_default()
+    }
+
+    fn reg_log(&self, name: &str) -> String {
+        fs::read_to_string(self.root.path().join("prefixes").join(name).join("reg.log"))
+            .unwrap_or_default()
+    }
+
     /// A Proton runner: umu only needs the `proton` script to be there, and
     /// wineo reads the name out of the `version` file beside it.
     fn install_proton(&self, name: &str) {
@@ -289,6 +338,9 @@ impl Fixture {
     fn environment_with_runner(&self, name: &str, runner: &str, targets: &str) {
         let prefix = self.root.path().join("prefixes").join(name);
         fs::create_dir_all(prefix.join("drive_c")).unwrap();
+        // A win64 prefix, so both architectures have somewhere to go.
+        fs::create_dir_all(prefix.join("drive_c/windows/system32")).unwrap();
+        fs::create_dir_all(prefix.join("drive_c/windows/syswow64")).unwrap();
         fs::write(
             prefix.join("system.reg"),
             "WINE REGISTRY Version 2\n\n#arch=win64\n",
@@ -1787,4 +1839,322 @@ fn a_lost_run_that_recorded_no_group_says_it_cant_be_cleaned_up() {
         stderr(&stopped)
     );
     assert!(f.state("hades").contains("status = \"stopped\""));
+}
+
+#[test]
+fn dxvk_is_installed_backed_up_and_restored() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    // A wine build that ships its own d3d11, and one that ships no dxgi at all.
+    let original = f.system32("app").join("d3d11.dll");
+    fs::write(&original, "wine").unwrap();
+
+    let installed = f.run(&["set", "app", "dxvk=dxvk-2.7"]);
+    assert_success(&installed);
+    assert!(
+        stderr(&installed).contains("Installed DXVK dxvk-2.7 into app"),
+        "{}",
+        stderr(&installed)
+    );
+
+    // Both architectures, and the original moved aside rather than lost.
+    for dir in ["system32", "syswow64"] {
+        let dir = f.system32("app").with_file_name(dir);
+        assert!(dir.join("dxgi.dll").is_file(), "{dir:?}");
+        assert!(dir.join("d3d11.dll").is_file(), "{dir:?}");
+    }
+    assert_ne!(fs::read_to_string(&original).unwrap(), "wine");
+    let backup = f.system32("app").join("d3d11.dll.wineo-orig");
+    assert_eq!(fs::read_to_string(&backup).unwrap(), "wine");
+    // dxgi had no original, so nothing was backed up for it.
+    assert!(!f.system32("app").join("dxgi.dll.wineo-orig").exists());
+
+    let manifest = f.manifest("app");
+    assert!(manifest.contains("build = \"dxvk-2.7\""), "{manifest}");
+    assert!(manifest.contains("system32/dxgi.dll"), "{manifest}");
+    assert!(manifest.contains("syswow64/dxgi.dll"), "{manifest}");
+
+    // The overrides point wine at what was just copied in.
+    let reg = f.reg_log("app");
+    for dll in ["d3d8", "d3d9", "d3d10core", "d3d11", "dxgi"] {
+        assert!(
+            reg.contains(&format!(
+                "add HKCU\\Software\\Wine\\DllOverrides /v {dll} /t REG_SZ /d native /f"
+            )),
+            "{dll} override missing from:\n{reg}"
+        );
+    }
+
+    let removed = f.run(&["set", "app", "--unset", "dxvk"]);
+    assert_success(&removed);
+    assert!(
+        stderr(&removed).contains("Removed DXVK dxvk-2.7 from app"),
+        "{}",
+        stderr(&removed)
+    );
+    // The original is back, what wineo added is gone, and so is the backup.
+    assert_eq!(fs::read_to_string(&original).unwrap(), "wine");
+    assert!(!backup.exists());
+    assert!(!f.system32("app").join("dxgi.dll").exists());
+    assert!(f.manifest("app").is_empty());
+    assert!(
+        f.reg_log("app")
+            .contains("delete HKCU\\Software\\Wine\\DllOverrides /v dxgi /f")
+    );
+}
+
+#[test]
+fn swapping_a_build_removes_the_old_files_first() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    f.install_build("dxvk", "dxvk-2.10", &["x64", "x32"]);
+    // A DLL only the old build ships, so a leftover would be visible.
+    fs::write(
+        f.root
+            .path()
+            .join("data/wineo/dxvk/dxvk-2.7/x64/d3d10core.dll"),
+        "old",
+    )
+    .unwrap();
+
+    assert_success(&f.run(&["set", "app", "dxvk=dxvk-2.7"]));
+    assert!(f.system32("app").join("d3d10core.dll").is_file());
+
+    let swapped = f.run(&["set", "app", "dxvk=dxvk-2.10"]);
+    assert_success(&swapped);
+    assert!(
+        stderr(&swapped).contains("Replaced DXVK dxvk-2.7 with dxvk-2.10 in app"),
+        "{}",
+        stderr(&swapped)
+    );
+    assert!(!f.system32("app").join("d3d10core.dll").exists());
+    let dxgi = fs::read_to_string(f.system32("app").join("dxgi.dll")).unwrap();
+    assert!(dxgi.contains("dxvk-2.10"), "{dxgi}");
+    assert!(f.manifest("app").contains("dxvk-2.10"));
+}
+
+#[test]
+fn latest_picks_up_a_build_dropped_in_later() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    assert_success(&f.run(&["set", "app", "dxvk=latest"]));
+    assert!(f.manifest("app").contains("dxvk-2.7"));
+
+    // The config still says `latest`, not the version it resolved to.
+    let config = fs::read_to_string(f.config_dir().join("environments/app.toml")).unwrap();
+    assert!(config.contains("dxvk = \"latest\""), "{config}");
+    let shown = stdout(&f.run(&["status", "app"]));
+    assert!(shown.contains("dxvk    latest (dxvk-2.7)"), "{shown}");
+
+    // Extracting a newer one moves the prefix to it on the next launch, with
+    // no `wineo set` in between.
+    f.install_build("dxvk", "dxvk-2.10", &["x64", "x32"]);
+    assert_success(&f.run(&["start", "app"]));
+    wait_for("the program to start", || f.fake_program_running("app"));
+    assert_success(&f.run(&["stop", "app"]));
+    assert!(
+        f.manifest("app").contains("dxvk-2.10"),
+        "{}",
+        f.manifest("app")
+    );
+}
+
+#[test]
+fn a_config_edited_by_hand_is_applied_at_the_next_launch() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+
+    let config = f.config_dir().join("environments/app.toml");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(&config, format!("dxvk = \"dxvk-2.7\"\n{text}")).unwrap();
+    assert!(f.manifest("app").is_empty());
+    let shown = stdout(&f.run(&["status", "app"]));
+    assert!(
+        shown.contains("will be installed on the next launch"),
+        "{shown}"
+    );
+
+    let started = f.run(&["start", "app"]);
+    assert_success(&started);
+    assert!(
+        stderr(&started).contains("Installed DXVK dxvk-2.7 into app"),
+        "{}",
+        stderr(&started)
+    );
+    wait_for("the program to start", || f.fake_program_running("app"));
+    assert_success(&f.run(&["stop", "app"]));
+    assert!(f.manifest("app").contains("dxvk-2.7"));
+    assert!(!stdout(&f.run(&["status", "app"])).contains("will be installed"));
+}
+
+#[test]
+fn a_prefix_that_already_matches_is_left_alone() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    assert_success(&f.run(&["set", "app", "dxvk=dxvk-2.7"]));
+
+    // Removing the build it came from changes nothing: the DLLs were copied,
+    // not linked, so the prefix still has what the config asks for.
+    fs::remove_dir_all(f.root.path().join("data/wineo/dxvk/dxvk-2.7")).unwrap();
+    let started = f.run(&["start", "app"]);
+    assert_success(&started);
+    assert!(
+        !stderr(&started).contains("Installed"),
+        "{}",
+        stderr(&started)
+    );
+    wait_for("the program to start", || f.fake_program_running("app"));
+    assert_success(&f.run(&["stop", "app"]));
+    assert!(f.system32("app").join("dxgi.dll").is_file());
+}
+
+#[test]
+fn a_launch_is_refused_when_the_build_is_not_installed() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    let config = f.config_dir().join("environments/app.toml");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(&config, format!("dxvk = \"nope\"\n{text}")).unwrap();
+
+    let refused = f.run(&["start", "app"]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("is not installed"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(!f.system32("app").join("dxgi.dll").exists());
+}
+
+#[test]
+fn dxvk_and_vkd3d_are_refused_on_a_proton_environment() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment("hades", "GE-Proton9-20", HADES);
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    f.install_build("vkd3d", "2.14", &["x64", "x86"]);
+
+    for key in ["dxvk=dxvk-2.7", "vkd3d=2.14"] {
+        let refused = f.run(&["set", "hades", key]);
+        assert!(!refused.status.success(), "{key} was allowed");
+        assert!(
+            stderr(&refused).contains("bundles its own"),
+            "{key}: {}",
+            stderr(&refused)
+        );
+    }
+    assert!(
+        !fs::read_to_string(f.config_dir().join("environments/hades.toml"))
+            .unwrap()
+            .contains("dxvk")
+    );
+}
+
+#[test]
+fn vkd3d_needs_dxvk_beside_it() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    f.install_build("vkd3d", "2.14", &["x64", "x86"]);
+
+    let refused = f.run(&["set", "app", "vkd3d=2.14"]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("DXGI"), "{}", stderr(&refused));
+    assert!(f.manifest("app").is_empty());
+
+    // Together they are fine, and both show in status.
+    assert_success(&f.run(&["set", "app", "dxvk=dxvk-2.7", "vkd3d=2.14"]));
+    let shown = stdout(&f.run(&["status", "app"]));
+    assert!(shown.contains("dxvk    dxvk-2.7"), "{shown}");
+    assert!(shown.contains("vkd3d   2.14"), "{shown}");
+    assert!(f.system32("app").join("d3d12.dll").is_file());
+
+    // Dropping DXVK alone would leave vkd3d without a DXGI, so it is refused.
+    let orphaned = f.run(&["set", "app", "--unset", "dxvk"]);
+    assert!(!orphaned.status.success());
+    assert!(f.system32("app").join("dxgi.dll").is_file());
+}
+
+#[test]
+fn installing_is_refused_while_the_environment_runs() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    assert_success(&f.run(&["start", "app"]));
+    wait_for("the program to start", || f.fake_program_running("app"));
+
+    let refused = f.run(&["set", "app", "dxvk=dxvk-2.7"]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("is busy"), "{}", stderr(&refused));
+    assert!(!f.system32("app").join("dxgi.dll").exists());
+
+    assert_success(&f.run(&["stop", "app"]));
+    assert_success(&f.run(&["set", "app", "dxvk=dxvk-2.7"]));
+}
+
+#[test]
+fn a_win32_prefix_takes_only_its_32_bit_dlls() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    // A win32 prefix has no syswow64 at all.
+    let prefix = f.root.path().join("prefixes/app");
+    fs::remove_dir_all(prefix.join("drive_c/windows/syswow64")).unwrap();
+
+    assert_success(&f.run(&["set", "app", "dxvk=dxvk-2.7"]));
+    let dxgi = fs::read_to_string(f.system32("app").join("dxgi.dll")).unwrap();
+    assert!(dxgi.contains("x32"), "{dxgi}");
+    assert!(!prefix.join("drive_c/windows/syswow64").exists());
+    let manifest = f.manifest("app");
+    assert!(!manifest.contains("syswow64"), "{manifest}");
+}
+
+#[test]
+#[ignore = "runs wine against a real DXVK build"]
+fn a_real_dxvk_build_installs_and_comes_back_out() {
+    let f = Fixture::real();
+    let source = PathBuf::from(std::env::var("WINEO_TEST_DXVK").expect(
+        "set WINEO_TEST_DXVK to an extracted DXVK release, the directory holding x64 and x32",
+    ));
+    assert!(
+        source.join("x64/dxgi.dll").is_file(),
+        "{} has no x64/dxgi.dll",
+        source.display()
+    );
+    let root = f.root.path().join("data/wineo/dxvk");
+    fs::create_dir_all(&root).unwrap();
+    symlink(&source, root.join("under-test")).unwrap();
+
+    assert_success(&f.run(&["new", "-n", "d3d"]));
+    let prefix = f.root.path().join("data/wineo/prefixes/d3d");
+    let system32 = prefix.join("drive_c/windows/system32");
+    let before = fs::read(system32.join("d3d11.dll")).unwrap();
+
+    assert_success(&f.run(&["set", "d3d", "dxvk=under-test"]));
+    assert_eq!(
+        fs::read(system32.join("d3d11.dll")).unwrap(),
+        fs::read(source.join("x64/d3d11.dll")).unwrap()
+    );
+    // Wine itself agrees the override is in the prefix, not just wineo.
+    let query = f.run(&[
+        "exec",
+        "d3d",
+        "reg",
+        "query",
+        r"HKCU\Software\Wine\DllOverrides",
+        "/v",
+        "d3d11",
+    ]);
+    assert_success(&query);
+    assert!(stdout(&query).contains("native"), "{}", stdout(&query));
+
+    assert_success(&f.run(&["set", "d3d", "--unset", "dxvk"]));
+    assert_eq!(fs::read(system32.join("d3d11.dll")).unwrap(), before);
+    assert!(!system32.join("d3d11.dll.wineo-orig").exists());
+    assert!(!prefix.join(".wineo-components.toml").exists());
 }
