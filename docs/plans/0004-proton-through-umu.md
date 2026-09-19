@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0004: Proton through umu-launcher
 
