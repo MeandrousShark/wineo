@@ -39,6 +39,33 @@ fn unquote(raw: &str) -> &str {
         .unwrap_or(raw)
 }
 
+/// Resolves a new runner and refuses a change that would leave the environment
+/// pointing at a prefix the new runner cannot use.
+fn check_runner(paths: &Paths, name: &str, pairs: &[(&str, &str)]) -> anyhow::Result<()> {
+    let Some(changed) = changed_runner(pairs) else {
+        return Ok(());
+    };
+    let global = GlobalConfig::load(paths).unwrap_or_default();
+    let runners = Runners::new(paths, &global)?;
+    let new = runners.resolve(changed)?;
+    let current = Environment::load(paths, name)
+        .ok()
+        .and_then(|environment| runners.resolve(&environment.config.runner).ok());
+
+    // A wine prefix has no `pfx/`, and a Proton one keeps nothing where a plain
+    // wine looks for it, so crossing kinds is worse than not migrating.
+    if let Some(current) = &current
+        && current.is_proton() != new.is_proton()
+    {
+        bail!(
+            "`{name}` runs on {} and `{changed}` is a {} runner. Their prefix layouts are not compatible, so make a new environment with `wineo new --runner {changed}` instead",
+            current.name(),
+            new.kind_name()
+        );
+    }
+    Ok(())
+}
+
 /// Where a `prefix=` setting would point.
 fn new_prefix(paths: &Paths, raw: &str) -> Option<PathBuf> {
     paths.absolute(unquote(raw)).ok()
@@ -107,11 +134,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 
     // Checked under the lock, so a typo never gets written and the runner
     // cannot be removed between the check and the write.
-    if let ConfigFile::Environment(_) = file
-        && let Some(runner) = changed_runner(&pairs)
-    {
-        let global = GlobalConfig::load(paths).unwrap_or_default();
-        Runners::new(paths, &global)?.resolve(runner)?;
+    if let ConfigFile::Environment(name) = file {
+        check_runner(paths, name, &pairs)?;
     }
 
     for key in settings::update(paths, file, &pairs, &unset)? {
