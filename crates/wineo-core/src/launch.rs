@@ -6,9 +6,6 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{GlobalConfig, Target, validate_env_var};
-
-/// The binary gamemode ships, which is not what the setting is called.
-const GAMEMODE: &str = "gamemoderun";
 use crate::environment::Environment;
 use crate::error::{Error, Result};
 use crate::paths::Paths;
@@ -16,6 +13,11 @@ use crate::prefix;
 use crate::runner::{self, Runner, with_menu_builder_disabled};
 use crate::runners::Runners;
 use crate::winpath;
+
+/// The binary gamemode ships, which is not what the setting is called.
+const GAMEMODE: &str = "gamemoderun";
+/// The Proton build umu runs, which wineo resolves itself.
+const PROTONPATH: &str = "PROTONPATH";
 
 /// Command line overrides for launching a target.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -52,10 +54,13 @@ impl Launch {
     ) -> Result<Self> {
         let (name, target) = resolve_target(environment, overrides.target.as_deref())?;
         let (runner, prefix) = open(paths, global, environment)?;
-        let program = resolve_program(paths, &prefix, &target.exe, false)?;
+        // Windows paths and drive_c live in the wine prefix, which is `pfx/`
+        // under a Proton environment's configured one.
+        let wine_prefix = runner.wine_prefix(&prefix);
+        let program = resolve_program(paths, &wine_prefix, &target.exe, false)?;
         let cwd = match &target.cwd {
-            Some(cwd) => resolve_cwd(paths, &prefix, cwd)?,
-            None => program.default_cwd(&prefix),
+            Some(cwd) => resolve_cwd(paths, &wine_prefix, cwd)?,
+            None => program.default_cwd(&wine_prefix),
         };
         let mut args = program.wine_args;
         args.extend(target.args.iter().cloned());
@@ -71,7 +76,7 @@ impl Launch {
             None
         };
         Ok(Self {
-            env: merge_env(global, environment, &overrides.env)?,
+            env: merge_env(&runner, global, environment, &overrides.env)?,
             runner,
             prefix,
             target: Some(name.to_owned()),
@@ -92,12 +97,17 @@ impl Launch {
         env: &BTreeMap<String, String>,
     ) -> Result<Self> {
         let (runner, prefix) = open(paths, global, environment)?;
-        let program = resolve_program(paths, &prefix, program, true)?;
-        let cwd = program.default_cwd(&prefix);
+        // umu runs tools in its container too, which `exec` doesn't do yet.
+        if runner.is_proton() {
+            return Err(Error::ProtonNotImplemented(environment.name.clone()));
+        }
+        let wine_prefix = runner.wine_prefix(&prefix);
+        let program = resolve_program(paths, &wine_prefix, program, true)?;
+        let cwd = program.default_cwd(&wine_prefix);
         let mut wine_args = program.wine_args;
         wine_args.extend(args.iter().cloned());
         Ok(Self {
-            env: merge_env(global, environment, env)?,
+            env: merge_env(&runner, global, environment, env)?,
             runner,
             prefix,
             target: None,
@@ -142,11 +152,13 @@ pub fn parse_env_assignment(assignment: &str) -> Result<(String, String)> {
 
 fn check_override(key: &str, value: &str) -> Result<()> {
     if key == "WINEPREFIX" {
-        return Err(Error::InvalidEnv(
-            "WINEPREFIX is managed by wineo and can't be overridden".to_owned(),
-        ));
+        return Err(managed(key));
     }
     validate_env_var(key, value).map_err(Error::InvalidEnv)
+}
+
+fn managed(key: &str) -> Error {
+    Error::InvalidEnv(format!("{key} is managed by wineo and can't be overridden"))
 }
 
 fn open(
@@ -159,9 +171,6 @@ fn open(
     // Wine would silently create a fresh prefix here otherwise.
     if !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
         return Err(Error::MissingPrefix(prefix));
-    }
-    if runner.is_proton() {
-        return Err(Error::ProtonNotImplemented(environment.name.clone()));
     }
     Ok((runner, prefix))
 }
@@ -301,6 +310,7 @@ fn resolve_cwd(paths: &Paths, prefix: &Path, cwd: &str) -> Result<PathBuf> {
 /// The environment a program runs with: the global and environment `[env]`
 /// tables, then the command line overrides.
 pub fn merge_env(
+    runner: &Runner,
     global: &GlobalConfig,
     environment: &Environment,
     overrides: &BTreeMap<String, String>,
@@ -311,6 +321,10 @@ pub fn merge_env(
     let mut env = global.env.clone();
     env.extend(environment.config.env.clone());
     env.extend(overrides.clone());
+    // Only Proton has one, and wineo always resolves it from the runners root.
+    if runner.is_proton() && env.contains_key(PROTONPATH) {
+        return Err(managed(PROTONPATH));
+    }
     // Applied after Runner::wine, so a user-set value here would otherwise
     // override the one it adds.
     if let Some(value) = env.get_mut("WINEDLLOVERRIDES") {
@@ -541,7 +555,7 @@ mod tests {
         .unwrap();
         let env = environment("[env]\nB = \"env\"\nC = \"env\"\n");
         let overrides = BTreeMap::from([("C".to_owned(), "cli".to_owned())]);
-        let merged = merge_env(&global, &env, &overrides).unwrap();
+        let merged = merge_env(&Runner::fake("wine"), &global, &env, &overrides).unwrap();
         assert_eq!(merged["A"], "global");
         assert_eq!(merged["B"], "env");
         assert_eq!(merged["C"], "cli");
@@ -551,7 +565,7 @@ mod tests {
     fn merged_wine_dll_overrides_disables_the_menu_builder() {
         let global = GlobalConfig::default();
         let env = environment("[env]\nWINEDLLOVERRIDES = \"foo.dll=n\"\n");
-        let merged = merge_env(&global, &env, &BTreeMap::new()).unwrap();
+        let merged = merge_env(&Runner::fake("wine"), &global, &env, &BTreeMap::new()).unwrap();
         assert_eq!(
             merged["WINEDLLOVERRIDES"],
             "foo.dll=n;winemenubuilder.exe=d"
@@ -561,11 +575,11 @@ mod tests {
             "WINEDLLOVERRIDES".to_owned(),
             "winemenubuilder.exe=n".to_owned(),
         )]);
-        let merged = merge_env(&global, &env, &opted_in).unwrap();
+        let merged = merge_env(&Runner::fake("wine"), &global, &env, &opted_in).unwrap();
         assert_eq!(merged["WINEDLLOVERRIDES"], "winemenubuilder.exe=n");
 
         let none = environment("");
-        let merged = merge_env(&global, &none, &BTreeMap::new()).unwrap();
+        let merged = merge_env(&Runner::fake("wine"), &global, &none, &BTreeMap::new()).unwrap();
         assert!(!merged.contains_key("WINEDLLOVERRIDES"));
     }
 

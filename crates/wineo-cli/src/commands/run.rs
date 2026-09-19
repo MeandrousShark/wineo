@@ -74,7 +74,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         .stdin(Stdio::null())
         .process_group(0)
         .spawn()
-        .context("failed to start wine")?;
+        .with_context(|| format!("failed to start {}", launch.runner.launcher()))?;
     let mut state = RunState::running(
         RunMode::Attached,
         launch.target.clone().unwrap_or_default(),

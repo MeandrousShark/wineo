@@ -98,6 +98,14 @@ impl Runner {
         matches!(self.kind, Kind::Proton { .. })
     }
 
+    /// What wineo actually spawns, for naming it in an error.
+    pub fn launcher(&self) -> &'static str {
+        match self.kind {
+            Kind::Wine { .. } => "wine",
+            Kind::Proton { .. } => UMU,
+        }
+    }
+
     /// Whether other processes can outlive the launched program. Wine keeps a
     /// prefix alive after a launcher hands off; a Proton run is over when umu
     /// returns, because everything else is inside its container.

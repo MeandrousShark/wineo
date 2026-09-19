@@ -80,7 +80,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         runner::find_on_path("winetricks").ok_or(Error::ProgramNotFound("winetricks"))?;
 
     let overrides: BTreeMap<String, String> = args.env.iter().cloned().collect();
-    let env = merge_env(&global, &environment, &overrides)?;
+    let env = merge_env(&runner, &global, &environment, &overrides)?;
     if let Some(key) = MANAGED.iter().find(|key| env.contains_key(**key)) {
         bail!("{key} is managed by wineo for this command and can't be overridden");
     }

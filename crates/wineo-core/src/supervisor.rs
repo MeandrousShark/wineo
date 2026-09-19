@@ -325,7 +325,8 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
     if !spec.claim.config.is_file() {
         return Err(Error::UnknownEnvironment(spec.claim.name.clone()));
     }
-    if !prefix::is_prefix(&spec.launch.prefix) {
+    let wine_prefix = spec.launch.runner.wine_prefix(&spec.launch.prefix);
+    if !prefix::is_prefix(&wine_prefix) {
         return Err(Error::MissingPrefix(spec.launch.prefix.clone()));
     }
 
@@ -358,7 +359,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         .stderr(clone_log()?)
         .process_group(0)
         .spawn()
-        .context(|| "failed to start wine".to_owned())?;
+        .context(|| format!("failed to start {}", spec.launch.runner.launcher()))?;
     let mut state = RunState::running(
         RunMode::Detached,
         spec.launch.target.clone().unwrap_or_default(),
