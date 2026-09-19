@@ -22,8 +22,10 @@ use wineo_core::runners::Runners;
 use wineo_core::runtime::{Runtime, exit_code};
 
 /// Variables wineo sets itself, so winetricks always drives the environment's
-/// own runner and prefix whatever the caller's shell has exported.
+/// own runner and prefix whatever the caller's shell has exported. umu runs
+/// its own winetricks against Proton, so it is never told which wine to use.
 const MANAGED: [&str; 3] = ["WINEPREFIX", "WINE", "WINESERVER"];
+const MANAGED_PROTON: [&str; 1] = ["WINEPREFIX"];
 
 /// How often the cancellation wait checks for another Ctrl+C.
 const POLL: Duration = Duration::from_millis(100);
@@ -72,16 +74,15 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, name)?;
     let runner = Runners::new(paths, &global)?.resolve(&environment.config.runner)?;
-    // umu runs winetricks itself, which is what a Proton environment will use.
-    let (Some(wine), Some(wineserver)) = (runner.wine_path(), runner.wineserver_path()) else {
-        return Err(Error::ProtonNotImplemented(name.to_owned()).into());
-    };
-    let winetricks =
-        runner::find_on_path("winetricks").ok_or(Error::ProgramNotFound("winetricks"))?;
 
     let overrides: BTreeMap<String, String> = args.env.iter().cloned().collect();
     let env = merge_env(&runner, &global, &environment, &overrides)?;
-    if let Some(key) = MANAGED.iter().find(|key| env.contains_key(**key)) {
+    let managed: &[&str] = if runner.is_proton() {
+        &MANAGED_PROTON
+    } else {
+        &MANAGED
+    };
+    if let Some(key) = managed.iter().find(|key| env.contains_key(**key)) {
         bail!("{key} is managed by wineo for this command and can't be overridden");
     }
 
@@ -105,17 +106,34 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         );
     }
 
-    let mut command = Command::new(&winetricks);
+    // umu ships winetricks and runs it inside the container, so a Proton
+    // environment needs no winetricks on PATH and no WINE to point at.
+    let mut command = if runner.is_proton() {
+        let mut command = runner.command(&prefix, None)?;
+        command.arg("winetricks");
+        command
+    } else {
+        let winetricks =
+            runner::find_on_path("winetricks").ok_or(Error::ProgramNotFound("winetricks"))?;
+        let mut command = Command::new(&winetricks);
+        command
+            .env(
+                "WINEDLLOVERRIDES",
+                with_menu_builder_disabled(std::env::var("WINEDLLOVERRIDES").ok().as_deref()),
+            )
+            .env("WINE", runner.wine_path().expect("a wine runner has one"))
+            .env(
+                "WINESERVER",
+                runner.wineserver_path().expect("a wine runner has one"),
+            );
+        command
+    };
+    // The prefix is reapplied last: for Proton it is the compatdata directory
+    // umu makes `pfx/` under, which is the same path the config names.
     command
         .args(forwarded)
-        .env(
-            "WINEDLLOVERRIDES",
-            with_menu_builder_disabled(std::env::var("WINEDLLOVERRIDES").ok().as_deref()),
-        )
         .envs(&env)
-        .env("WINEPREFIX", &prefix)
-        .env("WINE", wine)
-        .env("WINESERVER", wineserver);
+        .env("WINEPREFIX", &prefix);
 
     // Counted rather than flagged, so a second Ctrl+C can force the cleanup.
     let interrupts = Arc::new(AtomicUsize::new(0));
@@ -150,6 +168,11 @@ fn settle(
     prefix: &Path,
     canceled: Option<(&Arc<AtomicUsize>, u32)>,
 ) -> anyhow::Result<()> {
+    // umu shares this process group, so a Ctrl+C already reached it, and once
+    // it returns its container is gone. There is nothing left to settle.
+    if runner.is_proton() {
+        return Ok(());
+    }
     let Some((interrupts, stop_timeout)) = canceled else {
         return Ok(runner.wait_idle(prefix)?);
     };

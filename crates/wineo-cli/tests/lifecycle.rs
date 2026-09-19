@@ -119,7 +119,7 @@ fi
 echo "umu-run: FAKE_VAR=${FAKE_VAR-}"
 pids="$WINEPREFIX/fake-pids"
 case "$1" in
-reg)
+reg | winetricks | winecfg)
     exit 0
     ;;
 exit-*)
@@ -143,8 +143,10 @@ rm -f "$pids"
 struct Fixture {
     root: tempfile::TempDir,
     path_var: OsString,
-    /// A PATH with the fake wine and no gamemoderun anywhere on it.
-    without_gamemode: OsString,
+    /// A PATH holding only the fakes and the handful of real tools they call.
+    /// Nothing else is on it, so neither gamemoderun nor winetricks can be
+    /// found however the machine running the tests is set up.
+    sandbox: OsString,
 }
 
 impl Fixture {
@@ -170,7 +172,7 @@ impl Fixture {
                 ("umu-run", FAKE_UMU),
             ],
         );
-        let sandbox = write_bin("bin-sandbox", &wine);
+        let sandbox = write_bin("bin-sandbox", &[wine[0], wine[1], ("umu-run", FAKE_UMU)]);
         // The machine running these tests may well have gamemode installed, so
         // the sandbox cannot inherit the real PATH. It gets links to the few
         // tools the fake scripts reach for instead.
@@ -188,7 +190,7 @@ impl Fixture {
                 std::iter::once(bin).chain(std::env::split_paths(&inherited)),
             )
             .unwrap(),
-            without_gamemode: sandbox.into_os_string(),
+            sandbox: sandbox.into_os_string(),
             root,
         }
     }
@@ -199,7 +201,7 @@ impl Fixture {
         Self {
             root: tempfile::tempdir().unwrap(),
             path_var: inherited.clone(),
-            without_gamemode: inherited,
+            sandbox: inherited,
         }
     }
 
@@ -258,13 +260,18 @@ impl Fixture {
         command
     }
 
-    /// wineo with the fake wine still on PATH, but no gamemoderun anywhere.
-    fn run_without_gamemode(&self, args: &[&str]) -> Output {
+    /// wineo with the fakes on PATH but nothing else, so a test can prove a
+    /// command does not need gamemoderun or winetricks installed.
+    fn run_sandboxed(&self, args: &[&str]) -> Output {
         self.wineo()
-            .env("PATH", &self.without_gamemode)
+            .env("PATH", &self.sandbox)
             .args(args)
             .output()
             .expect("wineo should start")
+    }
+
+    fn run_without_gamemode(&self, args: &[&str]) -> Output {
+        self.run_sandboxed(args)
     }
 
     fn run_without_fakes(&self, args: &[&str]) -> Output {
@@ -1311,21 +1318,33 @@ fn proton_prefixes_are_always_win64() {
 }
 
 #[test]
-fn tools_on_proton_are_not_implemented_yet() {
+fn tools_on_proton_run_inside_umu() {
     let f = Fixture::new();
     f.install_proton("GE-Proton9-20");
-    assert_success(&f.run(&["new", "-n", "hades", "--runner", "GE-Proton9-20"]));
+    f.proton_environment("hades", "GE-Proton9-20", HADES);
+    let prefix = f.root.path().join("prefixes/hades");
+    let proton = f.root.path().join("data/wineo/runners/GE-Proton9-20");
 
-    for args in [
-        vec!["exec", "hades", "winecfg"],
-        vec!["winetricks", "hades", "dxvk"],
+    // Sandboxed, so neither tool can be reaching a winetricks or a wine that
+    // happens to be installed on the machine running this.
+    for (args, expected) in [
+        (vec!["exec", "hades", "winecfg"], "umu-run: winecfg"),
+        (
+            vec!["winetricks", "hades", "dxvk"],
+            "umu-run: winetricks dxvk",
+        ),
     ] {
-        let refused = f.run(&args);
-        assert!(!refused.status.success(), "{args:?} was allowed");
+        let out = f.run_sandboxed(&args);
+        assert_success(&out);
+        let printed = stdout(&out);
+        assert!(printed.contains(expected), "{args:?}: {printed}");
         assert!(
-            stderr(&refused).contains("isn't implemented yet"),
-            "{args:?}: {}",
-            stderr(&refused)
+            printed.contains(&format!("WINEPREFIX={}", prefix.display())),
+            "{args:?}: {printed}"
+        );
+        assert!(
+            printed.contains(&format!("PROTONPATH={}", proton.display())),
+            "{args:?}: {printed}"
         );
     }
 }

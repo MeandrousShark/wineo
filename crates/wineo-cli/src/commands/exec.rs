@@ -54,6 +54,9 @@ pub(crate) fn run_attached(launch: &Launch) -> anyhow::Result<i32> {
     // waiting instead of exiting out from under it.
     signal_hook::flag::register(SIGINT, Arc::new(AtomicBool::new(false)))
         .context("failed to set up signal handling")?;
-    let status = launch.command().status().context("failed to start wine")?;
+    let status = launch
+        .command()
+        .status()
+        .with_context(|| format!("failed to start {}", launch.runner.launcher()))?;
     Ok(exit_code(status))
 }

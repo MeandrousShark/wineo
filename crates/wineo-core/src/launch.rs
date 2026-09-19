@@ -97,10 +97,6 @@ impl Launch {
         env: &BTreeMap<String, String>,
     ) -> Result<Self> {
         let (runner, prefix) = open(paths, global, environment)?;
-        // umu runs tools in its container too, which `exec` doesn't do yet.
-        if runner.is_proton() {
-            return Err(Error::ProtonNotImplemented(environment.name.clone()));
-        }
         let wine_prefix = runner.wine_prefix(&prefix);
         let program = resolve_program(paths, &wine_prefix, program, true)?;
         let cwd = program.default_cwd(&wine_prefix);
