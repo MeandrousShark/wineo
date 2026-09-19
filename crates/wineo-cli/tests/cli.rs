@@ -1794,3 +1794,107 @@ fn logs_previous_is_never_treated_as_resettable() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stdout(&out), "older run\n");
 }
+
+/// A DXVK or vkd3d build of stub DLLs, extracted into its drop-in root.
+fn install_build(root: &Path, component: &str, name: &str, dirs: &[&str]) {
+    let marker = if component == "dxvk" {
+        "dxgi.dll"
+    } else {
+        "d3d12.dll"
+    };
+    let dir = root.join("data/wineo").join(component).join(name);
+    fs::create_dir_all(&dir).unwrap();
+    for arch in dirs {
+        let arch = dir.join(arch);
+        fs::create_dir_all(&arch).unwrap();
+        fs::write(arch.join(marker), "").unwrap();
+    }
+}
+
+#[test]
+fn dxvk_and_vkd3d_list_what_is_installed() {
+    let root = tempfile::tempdir().unwrap();
+
+    // Nothing installed says where to extract to, and lists nothing.
+    for component in ["dxvk", "vkd3d"] {
+        let out = output(wineo(root.path()).arg(component));
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(stdout(&out), "");
+        let message = stderr(&out);
+        assert!(
+            message.contains(&format!("No {component} builds")),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("data/wineo/{component}")),
+            "{message}"
+        );
+    }
+
+    install_build(root.path(), "dxvk", "dxvk-2.7", &["x64", "x32"]);
+    install_build(root.path(), "dxvk", "dxvk-2.10", &["x64", "x32"]);
+    install_build(root.path(), "vkd3d", "2.14", &["x64", "x86"]);
+
+    let listed = stdout(&output(wineo(root.path()).arg("dxvk")));
+    assert_eq!(listed, "dxvk-2.10\ndxvk-2.7\n");
+    assert_eq!(stdout(&output(wineo(root.path()).arg("vkd3d"))), "2.14\n");
+    // Each root is its own: a DXVK build is not a vkd3d one.
+    assert!(!stdout(&output(wineo(root.path()).arg("vkd3d"))).contains("dxvk"));
+}
+
+#[test]
+fn dxvk_all_says_why_a_directory_was_skipped() {
+    let root = tempfile::tempdir().unwrap();
+    install_build(root.path(), "dxvk", "2.7", &["x64", "x32"]);
+    install_build(root.path(), "dxvk", "half", &["x64"]);
+    install_build(root.path(), "dxvk", "latest", &["x64", "x32"]);
+    install_build(root.path(), "dxvk", "bad name", &["x64", "x32"]);
+
+    let plain = stdout(&output(wineo(root.path()).arg("dxvk")));
+    assert_eq!(plain, "2.7\n");
+
+    let all = stdout(&output(wineo(root.path()).args(["dxvk", "--all"])));
+    assert!(all.contains("half"), "{all}");
+    assert!(all.contains("x32/dxgi.dll"), "{all}");
+    assert!(all.contains("latest"), "{all}");
+    assert!(all.contains("reserved"), "{all}");
+    assert!(all.contains("bad name"), "{all}");
+    assert!(all.contains("not a usable name"), "{all}");
+}
+
+#[test]
+fn the_component_roots_can_be_moved() {
+    let root = tempfile::tempdir().unwrap();
+    let elsewhere = root.path().join("my-dxvk");
+    fs::create_dir_all(elsewhere.join("2.7/x64")).unwrap();
+    fs::create_dir_all(elsewhere.join("2.7/x32")).unwrap();
+    for arch in ["x64", "x32"] {
+        fs::write(elsewhere.join("2.7").join(arch).join("dxgi.dll"), "").unwrap();
+    }
+
+    // Not in the default root, so it is invisible until the setting moves.
+    assert_eq!(stdout(&output(wineo(root.path()).arg("dxvk"))), "");
+    let set = output(wineo(root.path()).args([
+        "set",
+        "--global",
+        &format!("defaults.dxvk_root={}", elsewhere.display()),
+    ]));
+    assert!(set.status.success(), "{}", stderr(&set));
+    assert_eq!(stdout(&output(wineo(root.path()).arg("dxvk"))), "2.7\n");
+
+    // vkd3d has its own root and is unaffected.
+    let vkd3d = output(wineo(root.path()).arg("vkd3d"));
+    assert_eq!(stdout(&vkd3d), "");
+    assert!(
+        stderr(&vkd3d).contains("data/wineo/vkd3d"),
+        "{}",
+        stderr(&vkd3d)
+    );
+
+    assert!(
+        output(wineo(root.path()).args(["set", "--global", "--unset", "defaults.dxvk_root"]))
+            .status
+            .success()
+    );
+    assert_eq!(stdout(&output(wineo(root.path()).arg("dxvk"))), "");
+}
