@@ -1,3 +1,4 @@
+pub mod builds;
 pub mod completions;
 pub mod config;
 pub mod exec;

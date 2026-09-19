@@ -3,6 +3,7 @@ mod commands;
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
+use wineo_core::components::Component;
 use wineo_core::paths::Paths;
 use wineo_core::supervisor;
 
@@ -29,6 +30,10 @@ enum Command {
     Restart(commands::restart::Args),
     /// List installed wine runners
     Runners(commands::runners::Args),
+    /// List installed DXVK builds
+    Dxvk(commands::builds::Args),
+    /// List installed vkd3d-proton builds
+    Vkd3d(commands::builds::Args),
     /// Remove an environment
     Rm(commands::rm::Args),
     /// Show whether environments are running
@@ -79,6 +84,8 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Stop(args) => commands::stop::run(&paths, args),
         Command::Restart(args) => commands::restart::run(&paths, args),
         Command::Runners(args) => commands::runners::run(&paths, args),
+        Command::Dxvk(args) => commands::builds::run(&paths, Component::Dxvk, args),
+        Command::Vkd3d(args) => commands::builds::run(&paths, Component::Vkd3d, args),
         Command::Rm(args) => commands::rm::run(&paths, args),
         Command::Status(args) => commands::status::run(&paths, args),
         Command::List(args) => commands::list::run(&paths, args),
