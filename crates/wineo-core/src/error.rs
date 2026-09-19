@@ -62,6 +62,20 @@ pub enum Error {
     #[error("environment `{0}` already exists")]
     EnvironmentExists(String),
 
+    #[error(
+        "there is no template `{name}`{}",
+        if .available.is_empty() {
+            format!(", and none are installed in {}", .dir.display())
+        } else {
+            format!(", the templates are: {}", .available.join(", "))
+        }
+    )]
+    UnknownTemplate {
+        name: String,
+        available: Vec<String>,
+        dir: PathBuf,
+    },
+
     #[error("invalid runner name `{0}`: use letters, digits, `-`, `_`, and `.`")]
     InvalidRunnerName(String),
 

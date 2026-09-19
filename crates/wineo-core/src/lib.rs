@@ -17,6 +17,7 @@ pub mod runners;
 pub mod runtime;
 pub mod settings;
 pub mod supervisor;
+pub mod templates;
 pub mod winpath;
 
 pub use error::{Error, Result};

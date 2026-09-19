@@ -11,6 +11,7 @@ use crate::name;
 use crate::paths::Paths;
 use crate::prefix;
 use crate::runner::Runner;
+use crate::templates::Template;
 
 #[derive(Debug)]
 pub struct Environment {
@@ -25,6 +26,8 @@ pub struct NewEnvironment {
     pub name: String,
     pub dir: Option<String>,
     pub arch: Option<Arch>,
+    /// What `--template` named, already merged with the explicit flags.
+    pub template: Option<Template>,
 }
 
 impl NewEnvironment {
@@ -123,6 +126,9 @@ impl Environment {
         doc["prefix"] = value(prefix_value);
         doc["runner"] = value(runner.name());
         doc["arch"] = value(arch.as_str());
+        if let Some(template) = &new.template {
+            template.apply(&mut doc);
+        }
         write_new(&path, &doc.to_string())?;
         Self::load(paths, &new.name)
     }

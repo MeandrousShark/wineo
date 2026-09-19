@@ -217,6 +217,24 @@ pub fn check(name: &str, runner: &Runner, wanted: &Wanted) -> Result<()> {
     Ok(())
 }
 
+/// Resolves everything a config asks for without touching a prefix, so a
+/// creation can refuse before it makes one.
+pub fn check_available(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    runner: &Runner,
+    wanted: &Wanted,
+) -> Result<()> {
+    check(name, runner, wanted)?;
+    for component in Component::ALL {
+        if let Some(asked) = wanted.get(component) {
+            Builds::new(paths, global, component)?.resolve(asked)?;
+        }
+    }
+    Ok(())
+}
+
 /// Whether the prefix already matches, without resolving or writing anything.
 /// `latest` still has to be resolved, so it is reported as a difference and
 /// `reconcile` decides.

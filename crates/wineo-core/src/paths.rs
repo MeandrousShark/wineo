@@ -48,6 +48,12 @@ impl Paths {
         self.config.join("environments")
     }
 
+    /// A template is configuration, not data, so it sits beside the configs
+    /// rather than beside the builds it names.
+    pub fn templates_dir(&self) -> PathBuf {
+        self.config.join("templates")
+    }
+
     pub fn environment_config(&self, name: &str) -> PathBuf {
         self.environments_dir().join(format!("{name}.toml"))
     }
