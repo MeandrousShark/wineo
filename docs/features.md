@@ -17,11 +17,10 @@ Planned features that aren't scheduled yet. When one gets picked up, it gets its
 - 3 = later: useful expansion or polish
 - 4 = someday: explicitly nonessential or large scope
 
-**Depends on** lists what has to be built first. `0001 phase 2` is the unfinished half of the foundation plan.
+**Depends on** lists what has to be built first. `0001 phase 2` is the second half of the foundation plan, which has landed, so the rows naming it are unblocked.
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| Per-environment process tracking mode | Core | **1** | 0001 phase 2 | Directly affects correctness of `run/start/status/stop` semantics | 0001's phase 2 records when the app exits separately from when the prefix goes idle, and `status` reports leftover background processes. That may make a per-environment option unnecessary. |
 | `--json` output for scripting | Automation | **2** | 0001 phase 2 | Additive, so it doesn't get harder later as long as output is built from structured data | Build `status` output from a struct in 0001's phase 2 so this stays nearly free. |
 | `import` existing prefixes | Compatibility | **2** | 0004 | Important for actually migrating your existing setup | `new --dir` already adopts a prefix in place, so this is mostly about moving it into the default prefix dir. Proton prefixes (like Steam's) have their own layout and get updated when a different wine runs them, so importing those waits for umu. |
 | Guided `wineo new` wizard | UX | **2** | Detect installed executables, 0005 | Great once the underlying manual workflow is stable | Picking a template is one of its steps. |
