@@ -3,7 +3,7 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -103,17 +103,41 @@ echo "gamemoderun wrapped: $1"
 exec "$@"
 "#;
 
-/// Stands in for umu-launcher: it records what it was asked to do, and makes
-/// `pfx/` under the compatdata directory when handed an empty program, which is
-/// how umu creates a prefix.
+/// Stands in for umu-launcher: it records what it was asked to do, makes `pfx/`
+/// under the compatdata directory when handed an empty program, which is how umu
+/// creates a prefix, and otherwise runs like the fake wine so the same programs
+/// work under both kinds.
 const FAKE_UMU: &str = r#"#!/bin/sh
 echo "umu-run: $*"
 echo "umu-run: WINEPREFIX=$WINEPREFIX PROTONPATH=$PROTONPATH"
+echo "umu-run: GAMEID=${GAMEID-unset} STORE=${STORE-unset}"
 if [ -z "$1" ]; then
     mkdir -p "$WINEPREFIX/pfx/drive_c"
     printf 'WINE REGISTRY Version 2\n\n#arch=win64\n' >"$WINEPREFIX/pfx/system.reg"
+    exit 0
 fi
-exit 0
+echo "umu-run: FAKE_VAR=${FAKE_VAR-}"
+pids="$WINEPREFIX/fake-pids"
+case "$1" in
+reg)
+    exit 0
+    ;;
+exit-*)
+    exit "${1#exit-}"
+    ;;
+stubborn)
+    # Nothing outside the container can ask it to close, so only SIGKILL to
+    # the process group ends this.
+    trap '' TERM
+    echo "$$ $$" >"$pids"
+    while :; do sleep 0.1; done
+    ;;
+esac
+sleep 60 &
+trap 'kill "$!" 2>/dev/null; rm -f "$pids"; exit 0' TERM
+echo "$$ $!" >"$pids"
+wait
+rm -f "$pids"
 "#;
 
 struct Fixture {
@@ -275,6 +299,31 @@ impl Fixture {
         .unwrap();
     }
 
+    /// A Proton environment: its configured prefix is the compatdata directory
+    /// and the wine prefix sits in `pfx/` inside it.
+    fn proton_environment(&self, name: &str, runner: &str, targets: &str) {
+        let prefix = self.root.path().join("prefixes").join(name);
+        let pfx = prefix.join("pfx");
+        fs::create_dir_all(pfx.join("drive_c")).unwrap();
+        fs::create_dir_all(pfx.join("dosdevices")).unwrap();
+        symlink("../drive_c", pfx.join("dosdevices/c:")).unwrap();
+        fs::write(
+            pfx.join("system.reg"),
+            "WINE REGISTRY Version 2\n\n#arch=win64\n",
+        )
+        .unwrap();
+        let config = self.config_dir().join(format!("environments/{name}.toml"));
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        fs::write(
+            config,
+            format!(
+                "prefix = \"{}\"\nrunner = \"{runner}\"\narch = \"win64\"\n\n{targets}",
+                prefix.display()
+            ),
+        )
+        .unwrap();
+    }
+
     fn config_dir(&self) -> PathBuf {
         self.root.path().join("config/wineo")
     }
@@ -298,6 +347,16 @@ impl Fixture {
             .join(name)
             .join("fake-pids")
             .exists()
+    }
+
+    /// Whether the process group the last run recorded still exists. The only
+    /// way to tell for a program killed outright, which leaves no pid file.
+    fn run_group_alive(&self, name: &str) -> bool {
+        self.state(name)
+            .lines()
+            .find_map(|line| line.strip_prefix("group = "))
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .is_some_and(|group| PathBuf::from(format!("/proc/{group}")).exists())
     }
 }
 
@@ -1252,15 +1311,12 @@ fn proton_prefixes_are_always_win64() {
 }
 
 #[test]
-fn running_programs_on_proton_is_not_implemented_yet() {
+fn tools_on_proton_are_not_implemented_yet() {
     let f = Fixture::new();
     f.install_proton("GE-Proton9-20");
     assert_success(&f.run(&["new", "-n", "hades", "--runner", "GE-Proton9-20"]));
-    assert_success(&f.run(&["set", "hades", "targets.hades.exe=hades"]));
 
     for args in [
-        vec!["start", "hades"],
-        vec!["run", "hades"],
         vec!["exec", "hades", "winecfg"],
         vec!["winetricks", "hades", "dxvk"],
     ] {
@@ -1272,4 +1328,248 @@ fn running_programs_on_proton_is_not_implemented_yet() {
             stderr(&refused)
         );
     }
+}
+
+const HADES: &str = "[targets.hades]\nexe = \"hades\"\n";
+
+#[test]
+fn a_proton_target_launches_through_umu() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment("hades", "GE-Proton9-20", HADES);
+
+    assert_success(&f.run(&["start", "hades"]));
+    wait_for("the program to start", || f.fake_program_running("hades"));
+
+    let log = f.log("hades");
+    assert!(log.contains("umu-run: hades"), "{log}");
+    // The compatdata directory, not the wine prefix inside it.
+    let prefix = f.root.path().join("prefixes/hades");
+    assert!(
+        log.contains(&format!("WINEPREFIX={}", prefix.display())),
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!(
+            "PROTONPATH={}",
+            f.root
+                .path()
+                .join("data/wineo/runners/GE-Proton9-20")
+                .display()
+        )),
+        "{log}"
+    );
+    // Nothing sets these until an environment can ask for protonfixes.
+    assert!(log.contains("GAMEID=unset STORE=unset"), "{log}");
+
+    let shown = stdout(&f.run(&["status", "hades"]));
+    assert!(shown.contains("running"), "{shown}");
+    assert!(shown.contains("GE-Proton9-20"), "{shown}");
+
+    assert_success(&f.run(&["stop", "hades"]));
+    assert!(!f.fake_program_running("hades"));
+    assert!(f.state("hades").contains("status = \"stopped\""));
+}
+
+#[test]
+fn a_proton_launch_resolves_windows_paths_inside_pfx() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment(
+        "hades",
+        "GE-Proton9-20",
+        "[targets.hades]\nexe = 'C:\\Games\\hades.exe'\n",
+    );
+    let games = f.root.path().join("prefixes/hades/pfx/drive_c/Games");
+    fs::create_dir_all(&games).unwrap();
+    fs::write(games.join("hades.exe"), "").unwrap();
+
+    assert_success(&f.run(&["start", "hades"]));
+    wait_for("the program's output in the log", || {
+        f.log("hades").contains("umu-run:")
+    });
+    assert!(
+        f.log("hades").contains(r"umu-run: C:\Games\hades.exe"),
+        "{}",
+        f.log("hades")
+    );
+    assert_success(&f.run(&["stop", "--force", "hades"]));
+}
+
+#[test]
+fn gamemode_wraps_a_proton_launch() {
+    let f = Fixture::new();
+    f.global_config("gamemode = true\n");
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment("hades", "GE-Proton9-20", HADES);
+
+    assert_success(&f.run(&["start", "hades"]));
+    wait_for("the program to start", || f.fake_program_running("hades"));
+    assert_success(&f.run(&["stop", "hades"]));
+
+    let log = f.log("hades");
+    assert!(log.contains("gamemoderun wrapped:"), "{log}");
+    assert!(log.contains("umu-run: hades"), "{log}");
+}
+
+#[test]
+fn a_proton_launch_refuses_to_have_protonpath_set() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment("hades", "GE-Proton9-20", HADES);
+
+    let refused = f.run(&["start", "hades", "-e", "PROTONPATH=/elsewhere"]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("PROTONPATH is managed by wineo"),
+        "{}",
+        stderr(&refused)
+    );
+
+    assert_success(&f.run(&["set", "hades", "env.PROTONPATH=/elsewhere"]));
+    let refused = f.run(&["start", "hades"]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("PROTONPATH is managed by wineo"),
+        "{}",
+        stderr(&refused)
+    );
+
+    // A wine environment has no PROTONPATH of wineo's to clash with.
+    f.environment("app", APP);
+    assert_success(&f.run(&["start", "app", "-e", "PROTONPATH=/elsewhere"]));
+}
+
+#[test]
+fn a_proton_run_ends_when_umu_exits() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment(
+        "hades",
+        "GE-Proton9-20",
+        "[targets.hades]\nexe = \"exit-3\"\n",
+    );
+
+    assert_success(&f.run(&["start", "hades"]));
+    wait_for("the run to end", || {
+        f.state("hades").contains("status = \"failed\"")
+    });
+    let state = f.state("hades");
+    assert!(state.contains("exit_code = 3"), "{state}");
+    // umu waits for the game, so its exit is the end of the run. Nothing can
+    // still be running in a container that is gone.
+    assert!(!state.contains("program_exited_at"), "{state}");
+
+    let shown = stdout(&f.run(&["status", "hades"]));
+    assert!(shown.contains("failed with code 3"), "{shown}");
+}
+
+#[test]
+fn stop_forces_a_proton_run_that_ignores_sigterm() {
+    let f = Fixture::new();
+    f.global_config("stop_timeout = 1\n");
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment(
+        "hades",
+        "GE-Proton9-20",
+        "[targets.hades]\nexe = \"stubborn\"\n",
+    );
+
+    assert_success(&f.run(&["start", "hades"]));
+    wait_for("the program to start", || f.fake_program_running("hades"));
+
+    let began = Instant::now();
+    assert_success(&f.run(&["stop", "hades"]));
+    assert!(began.elapsed() >= Duration::from_secs(1));
+    assert!(!f.run_group_alive("hades"));
+    let log = f.log("hades");
+    assert!(log.contains("wineo: stopping"), "{log}");
+    assert!(log.contains("wineo: killing"), "{log}");
+    assert!(f.state("hades").contains("status = \"stopped\""));
+}
+
+#[test]
+fn force_stop_kills_a_proton_run_right_away() {
+    let f = Fixture::new();
+    f.global_config("stop_timeout = 30\n");
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment(
+        "hades",
+        "GE-Proton9-20",
+        "[targets.hades]\nexe = \"stubborn\"\n",
+    );
+
+    assert_success(&f.run(&["start", "hades"]));
+    wait_for("the program to start", || f.fake_program_running("hades"));
+
+    let began = Instant::now();
+    assert_success(&f.run(&["stop", "--force", "hades"]));
+    assert!(began.elapsed() < Duration::from_secs(10));
+    assert!(!f.run_group_alive("hades"));
+    let log = f.log("hades");
+    assert!(!log.contains("wineo: stopping"), "{log}");
+    assert!(log.contains("wineo: killing"), "{log}");
+}
+
+#[test]
+fn stop_cleans_up_a_lost_proton_run_through_its_group() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment("hades", "GE-Proton9-20", HADES);
+    assert_success(&f.run(&["start", "hades"]));
+    wait_for("the program to start", || f.fake_program_running("hades"));
+
+    let supervisor = f.runtime("hades").holder_pid().unwrap().unwrap();
+    assert!(
+        Command::new("kill")
+            .args(["-KILL", &supervisor.to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    wait_for("the lock to be released", || {
+        !f.runtime("hades").is_running().unwrap()
+    });
+    assert!(f.runtime("hades").status().unwrap().lost);
+    assert!(f.run_group_alive("hades"));
+
+    let stopped = f.run(&["stop", "hades"]);
+    assert_success(&stopped);
+    assert!(
+        stderr(&stopped).contains("killed anything left behind"),
+        "{}",
+        stderr(&stopped)
+    );
+    wait_for("the process group to go", || !f.run_group_alive("hades"));
+    assert!(f.state("hades").contains("status = \"stopped\""));
+
+    // Cleaning up happens once, so a later stop has nothing to say.
+    let again = f.run(&["stop", "hades"]);
+    assert_success(&again);
+    assert_eq!(stderr(&again), "hades is not running\n");
+}
+
+#[test]
+fn a_lost_run_that_recorded_no_group_says_it_cant_be_cleaned_up() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment("hades", "GE-Proton9-20", HADES);
+    // A state file from before wineo recorded the process group.
+    let runtime = f.runtime("hades");
+    fs::create_dir_all(runtime.dir()).unwrap();
+    fs::write(
+        runtime.dir().join("state.toml"),
+        "status = \"running\"\nmode = \"detached\"\ntarget = \"hades\"\npid = 1\nstarted_at = \"2026-09-16T21:02:11Z\"\n",
+    )
+    .unwrap();
+    assert!(runtime.status().unwrap().lost);
+
+    let stopped = f.run(&["stop", "hades"]);
+    assert_success(&stopped);
+    assert!(
+        stderr(&stopped).contains("too old to record what to kill"),
+        "{}",
+        stderr(&stopped)
+    );
+    assert!(f.state("hades").contains("status = \"stopped\""));
 }
