@@ -4,10 +4,12 @@ use std::process::ExitCode;
 use anyhow::bail;
 use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::environment::{Environment, NewEnvironment};
+use wineo_core::install::{self, Wanted};
 use wineo_core::launch::{self, Launch};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
+use wineo_core::templates::{Template, Templates};
 
 use super::{components, exec};
 
@@ -24,6 +26,10 @@ pub struct Args {
     /// Runner to create the prefix with, defaults to wine
     #[arg(long, value_name = "NAME")]
     runner: Option<String>,
+
+    /// Template to take settings from, like gaming
+    #[arg(long, value_name = "NAME")]
+    template: Option<String>,
 
     /// Prefix architecture, win64 or win32
     #[arg(long, value_name = "ARCH")]
@@ -43,21 +49,50 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         bail!("guided creation isn't available yet, pass a name with -n");
     };
     let global = GlobalConfig::load(paths)?;
+    let template = match &args.template {
+        Some(name) => Some(Templates::new(paths).resolve(name)?),
+        None => None,
+    };
+    let from_template = |pick: fn(&Template) -> Option<String>| template.as_ref().and_then(pick);
+    // An explicit flag wins over what the template says.
+    let runner_name = args
+        .runner
+        .clone()
+        .or_else(|| from_template(|template| template.runner.clone()))
+        .unwrap_or_else(|| global.defaults.runner.clone());
+    let arch = args
+        .arch
+        .or_else(|| template.as_ref().and_then(|template| template.arch));
     // Resolved before anything is created, so a typo never leaves a prefix behind.
-    let runner = Runners::new(paths, &global)?
-        .resolve(args.runner.as_deref().unwrap_or(&global.defaults.runner))?;
+    let runner = Runners::new(paths, &global)?.resolve(&runner_name)?;
 
-    if runner.is_proton() && args.arch == Some(Arch::Win32) {
+    if runner.is_proton() && arch == Some(Arch::Win32) {
         bail!(
             "Proton prefixes are always win64, so --arch win32 can't be used with `{}`",
             runner.name()
         );
     }
 
+    // A build the template names has to be there before a prefix is made,
+    // the same way its runner does.
+    if let Some(template) = &template {
+        install::check_available(
+            paths,
+            &global,
+            &name,
+            &runner,
+            &Wanted {
+                dxvk: template.dxvk.clone(),
+                vkd3d: template.vkd3d.clone(),
+            },
+        )?;
+    }
+
     let new = NewEnvironment {
         name,
         dir: args.dir,
-        arch: args.arch,
+        arch,
+        template,
     };
     // Held through the installer too, so nothing touches the prefix while it runs.
     let locks = Locks::new(paths);

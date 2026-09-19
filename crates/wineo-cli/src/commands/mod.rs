@@ -15,5 +15,6 @@ pub mod start;
 pub mod status;
 pub mod stop;
 mod table;
+pub mod templates;
 mod time;
 pub mod winetricks;
