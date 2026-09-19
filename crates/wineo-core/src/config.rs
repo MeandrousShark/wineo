@@ -86,6 +86,10 @@ pub struct EnvironmentConfig {
     pub runner: String,
     pub arch: Arch,
     pub gamemode: Option<bool>,
+    /// The umu id umu looks protonfixes up by. Unset means no fixes.
+    pub gameid: Option<String>,
+    /// The store the game came from, which some protonfixes branch on.
+    pub store: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]

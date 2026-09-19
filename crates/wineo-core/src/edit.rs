@@ -54,9 +54,9 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
             store_value(root, "prefix", value);
             Ok(())
         }
-        "runner" => {
+        "runner" | "gameid" | "store" => {
             let value = parse_string_value(key, raw)?;
-            store_value(root, "runner", value);
+            store_value(root, key, value);
             Ok(())
         }
         "gamemode" => {
@@ -194,7 +194,7 @@ fn set_target_default(root: &mut Table, name: &str, key: &str, raw: &str) -> Res
 
 fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
-        "prefix" | "runner" | "gamemode" => Ok(root.remove(key).is_some()),
+        "prefix" | "runner" | "gamemode" | "gameid" | "store" => Ok(root.remove(key).is_some()),
         "arch" => Err(read_only_arch()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {

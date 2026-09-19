@@ -25,6 +25,10 @@ pub struct EnvironmentReport {
     pub busy: Option<Operation>,
     /// Whether the last run's target, or the environment itself, asks for gamemode.
     pub gamemode: bool,
+    /// What umu is told to look protonfixes up by, when this environment asked
+    /// for them.
+    pub gameid: Option<String>,
+    pub store: Option<String>,
 }
 
 impl EnvironmentReport {
@@ -47,6 +51,8 @@ impl EnvironmentReport {
             runner: environment.config.runner.clone(),
             runner_version,
             prefix: environment.config.prefix.clone(),
+            gameid: environment.config.gameid.clone(),
+            store: environment.config.store.clone(),
             target_exe,
             status,
         })

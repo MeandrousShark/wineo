@@ -16,8 +16,9 @@ use crate::winpath;
 
 /// The binary gamemode ships, which is not what the setting is called.
 const GAMEMODE: &str = "gamemoderun";
-/// The Proton build umu runs, which wineo resolves itself.
-const PROTONPATH: &str = "PROTONPATH";
+/// What wineo hands umu itself on a Proton launch, so none of it can be
+/// overridden from a config or the command line.
+const MANAGED: [&str; 3] = ["PROTONPATH", "GAMEID", "STORE"];
 
 /// Command line overrides for launching a target.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -43,6 +44,13 @@ pub struct Launch {
     /// resolving a different one from a different PATH.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gamemode: Option<PathBuf>,
+    /// What umu looks protonfixes up by. Only a game launch carries these: a
+    /// tool has no reason to trigger a game's fix script, which can install
+    /// things. Heroic draws the same line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gameid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<String>,
 }
 
 impl Launch {
@@ -77,6 +85,14 @@ impl Launch {
         };
         Ok(Self {
             env: merge_env(&runner, global, environment, &overrides.env)?,
+            gameid: runner
+                .is_proton()
+                .then(|| environment.config.gameid.clone())
+                .flatten(),
+            store: runner
+                .is_proton()
+                .then(|| environment.config.store.clone())
+                .flatten(),
             runner,
             prefix,
             target: Some(name.to_owned()),
@@ -109,8 +125,11 @@ impl Launch {
             target: None,
             args: wine_args,
             cwd,
-            // Running a tool in the prefix is not playing a game.
+            // Running a tool in the prefix is not playing a game, so neither
+            // gamemode nor the game's protonfixes apply.
             gamemode: None,
+            gameid: None,
+            store: None,
         })
     }
 
@@ -123,6 +142,14 @@ impl Launch {
             .args(&self.args)
             .current_dir(&self.cwd)
             .envs(&self.env);
+        // Left unset when this launch has none, so umu falls back to
+        // `umu-default` and applies no fixes.
+        if let Some(gameid) = &self.gameid {
+            command.env("GAMEID", gameid);
+        }
+        if let Some(store) = &self.store {
+            command.env("STORE", store);
+        }
         command
     }
 }
@@ -317,9 +344,12 @@ pub fn merge_env(
     let mut env = global.env.clone();
     env.extend(environment.config.env.clone());
     env.extend(overrides.clone());
-    // Only Proton has one, and wineo always resolves it from the runners root.
-    if runner.is_proton() && env.contains_key(PROTONPATH) {
-        return Err(managed(PROTONPATH));
+    // Only a Proton launch has these, and wineo decides all of them: the
+    // runner root it resolved, and the environment's own protonfixes settings.
+    if runner.is_proton()
+        && let Some(key) = MANAGED.iter().find(|key| env.contains_key(**key))
+    {
+        return Err(managed(key));
     }
     // Applied after Runner::wine, so a user-set value here would otherwise
     // override the one it adds.

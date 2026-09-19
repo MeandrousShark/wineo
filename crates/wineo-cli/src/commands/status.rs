@@ -78,6 +78,12 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
     if report.gamemode {
         lines.push(label_line("gamemode", "on"));
     }
+    if let Some(gameid) = &report.gameid {
+        lines.push(label_line("gameid", gameid));
+    }
+    if let Some(store) = &report.store {
+        lines.push(label_line("store", store));
+    }
     if report.status.state == State::Running
         && let Some(run) = &report.status.run
     {
@@ -226,6 +232,8 @@ mod tests {
             target_exe: Some("notepad".to_owned()),
             busy: None,
             gamemode: false,
+            gameid: None,
+            store: None,
         }
     }
 

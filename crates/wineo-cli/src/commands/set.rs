@@ -39,28 +39,57 @@ fn unquote(raw: &str) -> &str {
         .unwrap_or(raw)
 }
 
-/// Resolves a new runner and refuses a change that would leave the environment
-/// pointing at a prefix the new runner cannot use.
+/// Settings only a Proton environment has anything to do with.
+const PROTON_ONLY: [&str; 2] = ["gameid", "store"];
+
+/// Resolves a new runner and refuses the settings that would not survive it:
+/// a change across kinds, or protonfixes on something that is not Proton.
 fn check_runner(paths: &Paths, name: &str, pairs: &[(&str, &str)]) -> anyhow::Result<()> {
-    let Some(changed) = changed_runner(pairs) else {
+    let proton_only = pairs.iter().any(|(key, _)| PROTON_ONLY.contains(key));
+    let changed = changed_runner(pairs);
+    if changed.is_none() && !proton_only {
         return Ok(());
-    };
+    }
+
     let global = GlobalConfig::load(paths).unwrap_or_default();
     let runners = Runners::new(paths, &global)?;
-    let new = runners.resolve(changed)?;
     let current = Environment::load(paths, name)
         .ok()
         .and_then(|environment| runners.resolve(&environment.config.runner).ok());
 
-    // A wine prefix has no `pfx/`, and a Proton one keeps nothing where a plain
-    // wine looks for it, so crossing kinds is worse than not migrating.
-    if let Some(current) = &current
-        && current.is_proton() != new.is_proton()
-    {
+    let runner = match changed {
+        Some(changed) => {
+            let new = runners.resolve(changed)?;
+            // A wine prefix has no `pfx/`, and a Proton one keeps nothing where
+            // a plain wine looks for it, so crossing kinds is worse than not
+            // migrating.
+            if let Some(current) = &current
+                && current.is_proton() != new.is_proton()
+            {
+                bail!(
+                    "`{name}` runs on {} and `{changed}` is a {} runner. Their prefix layouts are not compatible, so make a new environment with `wineo new --runner {changed}` instead",
+                    current.name(),
+                    new.kind_name()
+                );
+            }
+            new
+        }
+        // Nothing resolvable to check against, and the write is still valid
+        // TOML, so this is not the place to complain.
+        None => match current {
+            Some(current) => current,
+            None => return Ok(()),
+        },
+    };
+
+    if proton_only && !runner.is_proton() {
+        let key = pairs
+            .iter()
+            .find_map(|(key, _)| PROTON_ONLY.contains(key).then_some(*key))
+            .expect("checked above");
         bail!(
-            "`{name}` runs on {} and `{changed}` is a {} runner. Their prefix layouts are not compatible, so make a new environment with `wineo new --runner {changed}` instead",
-            current.name(),
-            new.kind_name()
+            "`{key}` only means something to Proton, and `{name}` runs on {}",
+            runner.name()
         );
     }
     Ok(())
