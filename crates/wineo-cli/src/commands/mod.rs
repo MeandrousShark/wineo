@@ -6,6 +6,7 @@ pub mod exec;
 pub mod list;
 pub mod logs;
 pub mod new;
+pub mod programs;
 pub mod restart;
 pub mod rm;
 pub mod run;

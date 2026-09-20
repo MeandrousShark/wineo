@@ -1,6 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::config::Arch;
@@ -14,7 +14,21 @@ pub fn is_prefix(dir: &Path) -> bool {
 /// True when `dir` holds a wine prefix directly, or a Proton one in `pfx/`.
 /// Used where the runner isn't known, such as removing a broken environment.
 pub fn holds_prefix(dir: &Path) -> bool {
-    is_prefix(dir) || is_prefix(&dir.join("pfx"))
+    wine_prefix_in(dir).is_some()
+}
+
+/// The wine prefix inside a configured prefix directory, worked out from the
+/// layout rather than from the runner, so a verb that only reads still works
+/// when the configured runner has gone missing.
+pub fn wine_prefix_in(dir: &Path) -> Option<PathBuf> {
+    let proton = dir.join("pfx");
+    if is_prefix(dir) {
+        Some(dir.to_owned())
+    } else if is_prefix(&proton) {
+        Some(proton)
+    } else {
+        None
+    }
 }
 
 /// Reads the arch wine records in the registry header, e.g. `#arch=win64`.

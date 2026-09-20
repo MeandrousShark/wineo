@@ -1898,3 +1898,172 @@ fn the_component_roots_can_be_moved() {
     );
     assert_eq!(stdout(&output(wineo(root.path()).arg("dxvk"))), "");
 }
+
+/// A prefix with a `c:` drive, so `wineo programs` can resolve Windows paths.
+fn scannable_prefix(dir: &Path) {
+    fake_prefix(dir, dir);
+    std::os::unix::fs::symlink("../drive_c", dir.join("dosdevices/c:")).unwrap();
+}
+
+fn put(dir: &Path, path: &str, contents: &[u8]) {
+    let path = dir.join(path);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, contents).unwrap();
+}
+
+/// A `.lnk` pointing at `target`, with the one field a scan reads.
+fn lnk(target: &str) -> Vec<u8> {
+    fn set(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    let mut info = vec![0u8; 0x1C];
+    let base_at = u32::try_from(info.len()).unwrap();
+    info.extend(target.bytes());
+    info.push(0);
+    let suffix_at = u32::try_from(info.len()).unwrap();
+    info.push(0);
+    let size = u32::try_from(info.len()).unwrap();
+    set(&mut info, 0, size);
+    set(&mut info, 4, 0x1C);
+    set(&mut info, 8, 1);
+    set(&mut info, 16, base_at);
+    set(&mut info, 24, suffix_at);
+
+    let mut out = vec![0u8; 0x4C];
+    set(&mut out, 0, 0x4C);
+    out[4..20].copy_from_slice(&[
+        0x01, 0x14, 0x02, 0, 0, 0, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46,
+    ]);
+    set(&mut out, 20, 2);
+    out.extend(info);
+    out
+}
+
+const START_MENU: &str = "drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs";
+
+#[test]
+fn programs_lists_shortcuts_and_executables() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/hades");
+    scannable_prefix(&prefix);
+    environment_with_prefix(root.path(), "hades", &prefix);
+    put(
+        &prefix,
+        &format!("{START_MENU}/Hades.lnk"),
+        &lnk(r"C:\Program Files\Hades\Hades.exe"),
+    );
+    put(&prefix, "drive_c/Program Files/Hades/Hades.exe", b"");
+    put(&prefix, "drive_c/Program Files/Hades/Helper.exe", b"");
+    put(&prefix, "drive_c/Program Files/Hades/unins000.exe", b"");
+
+    let out = output(wineo(root.path()).args(["programs", "hades"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        concat!(
+            "shortcut  Hades   C:\\Program Files\\Hades\\Hades.exe\n",
+            "exe       Helper  C:\\Program Files\\Hades\\Helper.exe\n",
+        )
+    );
+    // The uninstaller is held back, and the hint names a real program.
+    assert!(
+        stderr(&out).contains("1 executable looked like noise"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains(r"targets.<target>.exe='C:\Program Files\Hades\Hades.exe'"),
+        "{}",
+        stderr(&out)
+    );
+
+    let all = output(wineo(root.path()).args(["programs", "hades", "--all"]));
+    assert!(stdout(&all).contains("unins000"), "{}", stdout(&all));
+    assert!(
+        !stderr(&all).contains("looked like noise"),
+        "{}",
+        stderr(&all)
+    );
+}
+
+#[test]
+fn programs_says_when_nothing_is_installed() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/empty");
+    scannable_prefix(&prefix);
+    environment_with_prefix(root.path(), "empty", &prefix);
+
+    let out = output(wineo(root.path()).args(["programs", "empty"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "");
+    assert!(
+        stderr(&out).contains("Nothing is installed in empty"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn programs_explains_a_shortcut_it_cannot_read() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/hades");
+    scannable_prefix(&prefix);
+    environment_with_prefix(root.path(), "hades", &prefix);
+    put(&prefix, &format!("{START_MENU}/Broken.lnk"), b"junk");
+
+    let out = output(wineo(root.path()).args(["programs", "hades"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("Skipped the shortcut Broken: not a shortcut"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn programs_needs_an_environment_with_a_prefix() {
+    let root = tempfile::tempdir().unwrap();
+    let missing = output(wineo(root.path()).args(["programs", "nope"]));
+    assert!(!missing.status.success());
+    assert!(
+        stderr(&missing).contains("environment `nope` does not exist"),
+        "{}",
+        stderr(&missing)
+    );
+
+    // A config pointing at a directory that is not a prefix.
+    environment_with_prefix(root.path(), "gone", &root.path().join("nowhere"));
+    let gone = output(wineo(root.path()).args(["programs", "gone"]));
+    assert!(!gone.status.success());
+    assert!(
+        stderr(&gone).contains("is missing or is not a wine prefix"),
+        "{}",
+        stderr(&gone)
+    );
+}
+
+/// A Proton environment keeps its prefix in `pfx/`, and the scan has to find it
+/// without resolving the runner, which may not be installed any more.
+#[test]
+fn programs_finds_a_proton_prefix() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/game");
+    scannable_prefix(&prefix.join("pfx"));
+    write_environment(
+        root.path(),
+        "game",
+        &format!(
+            "prefix = \"{}\"\nrunner = \"GE-Proton\"\narch = \"win64\"\n",
+            prefix.display()
+        ),
+    );
+    put(
+        &prefix.join("pfx"),
+        &format!("{START_MENU}/Game.lnk"),
+        &lnk(r"C:\Game\game.exe"),
+    );
+
+    let out = output(wineo(root.path()).args(["programs", "game"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "shortcut  Game  C:\\Game\\game.exe\n");
+}

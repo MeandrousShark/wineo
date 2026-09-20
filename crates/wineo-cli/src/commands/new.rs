@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::bail;
@@ -8,10 +9,12 @@ use wineo_core::install::{self, Wanted};
 use wineo_core::launch::{self, Launch};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
+use wineo_core::prefix;
+use wineo_core::programs::Listing;
 use wineo_core::runners::Runners;
 use wineo_core::templates::{Template, Templates};
 
-use super::{components, exec};
+use super::{components, exec, programs};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -149,12 +152,25 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
     }
 
-    println!(
-        "Add a target with: wineo set {} targets.<target>.exe=<path>",
-        environment.name
-    );
+    match installed(&prefix, args.install_exe.is_some()) {
+        Some(listing) => programs::report(&environment.name, &listing, false),
+        None => println!(
+            "Add a target with: wineo set {} targets.<target>.exe=<path>",
+            environment.name
+        ),
+    }
     Ok(match installer_exit {
         Some(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         None => ExitCode::SUCCESS,
     })
+}
+
+/// What an installer left behind. A scan that fails is not worth failing `new`
+/// over, since the environment is already made either way.
+fn installed(prefix: &Path, ran_installer: bool) -> Option<Listing> {
+    if !ran_installer {
+        return None;
+    }
+    let wine_prefix = prefix::wine_prefix_in(prefix)?;
+    wineo_core::programs::scan(&wine_prefix).ok()
 }

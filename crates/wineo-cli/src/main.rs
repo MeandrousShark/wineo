@@ -36,6 +36,8 @@ enum Command {
     Vkd3d(commands::builds::Args),
     /// List the templates `wineo new` can start from
     Templates(commands::templates::Args),
+    /// List the programs installed in an environment
+    Programs(commands::programs::Args),
     /// Remove an environment
     Rm(commands::rm::Args),
     /// Show whether environments are running
@@ -89,6 +91,7 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Dxvk(args) => commands::builds::run(&paths, Component::Dxvk, args),
         Command::Vkd3d(args) => commands::builds::run(&paths, Component::Vkd3d, args),
         Command::Templates(args) => commands::templates::run(&paths, args),
+        Command::Programs(args) => commands::programs::run(&paths, args),
         Command::Rm(args) => commands::rm::run(&paths, args),
         Command::Status(args) => commands::status::run(&paths, args),
         Command::List(args) => commands::list::run(&paths, args),
