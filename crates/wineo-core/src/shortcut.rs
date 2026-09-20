@@ -8,7 +8,7 @@
 use std::fmt;
 
 /// Why a `.lnk` yielded no usable target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Unreadable {
     NotAShortcut,
     Truncated,

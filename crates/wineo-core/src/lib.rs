@@ -11,6 +11,7 @@ pub mod name;
 pub mod operation;
 pub mod paths;
 pub mod prefix;
+pub mod programs;
 pub mod report;
 pub mod runner;
 pub mod runners;
