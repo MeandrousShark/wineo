@@ -38,10 +38,10 @@ Settled by the maintainer:
 - A target's `name` is read only by the desktop entry. `status` and `list`
   keep showing the target name, so what is displayed is what `--target` takes.
 - The scan reads the whole prefix rather than diffing against a snapshot taken
-  before an installer runs. Verified that a fresh prefix has no executables and
-  no shortcuts outside `drive_c/windows`, so anything the scan finds was
-  installed by definition, there is no state to keep, and the standalone verb
-  behaves the same on an adopted prefix.
+  before an installer runs. A fresh prefix has no shortcuts at all, and the
+  only executables outside `drive_c/windows` are a fixed six that wine ships,
+  so what wineo has to ignore is known ahead of time. There is no state to
+  keep, and the standalone verb behaves the same on an adopted prefix.
 
 ## Proposed details
 
@@ -49,10 +49,16 @@ Everything in this section is a proposal for review.
 
 ### What counts as an installed program
 
-Verified on a fresh win64 prefix: 244 `.exe` files, every one of them under
-`drive_c/windows`. Nothing installed puts anything there, so wineo does not
-need a before and after diff. It scans `drive_c` and ignores
-`drive_c/windows` entirely.
+Verified on a fresh win64 prefix built by wine 11.17: 244 `.exe` files, 238 of
+them under `drive_c/windows` and six that wine puts in Program Files, being
+Internet Explorer, Windows Media Player, and WordPad, each in both
+`Program Files` and `Program Files (x86)`. The same six, and only those six,
+are in a long-lived `~/.wine` as well.
+
+Both sets are known up front, so wineo still needs no before and after diff.
+It scans `drive_c`, ignores `drive_c/windows` entirely, and treats the six as
+noise, which is where anything wine ships rather than something installed
+belongs.
 
 Two signals, listed separately because they are worth different amounts:
 
@@ -103,7 +109,7 @@ adopted with `new --dir`.
 $ wineo programs hades
 shortcut  Hades         C:\Program Files\Hades\Hades.exe
 shortcut  Hades Config  C:\Program Files\Hades\HadesConfig.exe
-exe       Hades         C:\Program Files\Hades\unins000.exe
+exe       HadesHelper   C:\Program Files\Hades\HadesHelper.exe
 ```
 
 - Same padded column style as `wineo runners`, no header row.
