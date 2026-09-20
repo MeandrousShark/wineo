@@ -19,6 +19,29 @@ Settled by the maintainer:
   `features.md`. 0001's phase 2 already reports the program's exit separately
   from the prefix going idle, which was the real problem. Revisit only if a
   real app forces it.
+- A desktop entry is a declarative per-target setting wineo reconciles, the
+  same model 0005 settled for `dxvk`, not something a verb creates. A config
+  carries whether its targets have entries, so it survives being copied to
+  another machine, and a hand-edited config needs no command afterwards.
+  `wineo desktop` is a list verb only.
+- wineo reads the `.lnk` subset it needs by hand rather than adding a crate.
+  The only fields it needs are a length prefix and one path.
+- Icons come from wine. wineo runs `winemenubuilder` for the one shortcut with
+  that override re-enabled for the single call, keeps the icon it writes, and
+  deletes the `.desktop` it wrote alongside. No icon is the fallback.
+- `wineo programs` is read-only. Turning a program into a target stays one
+  path, and picking from a list belongs to the guided wizard.
+- `Categories` is `Game;` when the environment runs Proton or asks for
+  gamemode, and `Utility;Software;` otherwise. `Software` is not a registered
+  XDG category, so the registered `Utility;` leads to keep the entry out of a
+  catch-all menu group. No config key for it until someone wants one.
+- A target's `name` is read only by the desktop entry. `status` and `list`
+  keep showing the target name, so what is displayed is what `--target` takes.
+- The scan reads the whole prefix rather than diffing against a snapshot taken
+  before an installer runs. Verified that a fresh prefix has no executables and
+  no shortcuts outside `drive_c/windows`, so anything the scan finds was
+  installed by definition, there is no state to keep, and the standalone verb
+  behaves the same on an adopted prefix.
 
 ## Proposed details
 
@@ -56,10 +79,6 @@ wineo parses the subset it needs by hand: the header's flags, skipping
 preferring the `LocalBasePathUnicode` field when the optional offsets are
 present. A shortcut it cannot read is skipped with its reason available, the
 same way a directory that is not a runner is skipped in 0003.
-
-Alternatives, in case the maintainer prefers one (see open question 1): a crate
-like `parselnk`, or not parsing at all and storing the `.lnk` path as the
-target's exe, since `wine start` launches shortcuts.
 
 ### Filtering
 
@@ -145,6 +164,8 @@ X-Wineo-Target=hades
   suggest a name from the shortcut it found, which is where a pretty one like
   `Hades` comes from.
 - `Path` is left out. wineo already resolves the working directory.
+- `Categories` is `Game;` here because this environment is a game. A plain
+  wine environment with no gamemode gets `Utility;Software;`.
 - `StartupWMClass` is the exe's base name, which is what wine reports, so the
   launcher matches the window to the entry instead of showing a second icon.
 - The `X-Wineo-*` keys are how reconciliation finds entries wineo owns,
@@ -162,7 +183,7 @@ the `.desktop` wine wrote alongside.
 This reuses wine's own extraction instead of adding a PE and ICO reader, at the
 cost of one odd call that deliberately turns back on the thing 0001 turns off.
 Targets with no shortcut, and any failure, fall back to no `Icon=` key, which
-gets the generic application icon. See open question 3.
+gets the generic application icon.
 
 ### `wineo desktop`
 
@@ -220,27 +241,3 @@ wineo rm hades                                                # any entries go w
 
 The entry appears in the desktop's launcher with an icon, clicking it starts
 the app, and the launcher shows one icon for it rather than two.
-
-## Open questions
-
-Proposed answers in parentheses.
-
-1. How to read a `.lnk`: parse the subset by hand, add a crate like
-   `parselnk`, or skip parsing and store the shortcut path as the target exe?
-   (parse it by hand, roughly 150 lines and no new dependency, since the only
-   fields needed are a length prefix and one path)
-2. Should `wineo programs` be able to add a target from a pick, like
-   `--add 1`, or stay read-only until the wizard? (stay read-only, so there is
-   one place that turns a program into a target)
-3. Icons: drive wine's `winemenubuilder` for the extraction, add a PE and ICO
-   reader to wineo, or ship without icons for now? (drive winemenubuilder, and
-   fall back to no icon)
-4. `Categories`: always `Game;`, or `Game;` only when the environment is
-   Proton or asks for gamemode and something else otherwise? (`Game;` for
-   those, `Utility;` otherwise, with no config key until someone wants one)
-5. Should a target's `name` also be used anywhere else, such as `status` and
-   `list` output? (no, keep it to the entry for now)
-6. Does the scan need a way to see what a `--install-exe` run added
-   specifically, rather than everything in the prefix? (no, since the scan
-   outside `drive_c/windows` is empty in a fresh prefix, which makes
-   everything it finds installed by definition)
