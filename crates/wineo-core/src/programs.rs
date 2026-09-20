@@ -57,6 +57,9 @@ pub struct Program {
     pub name: String,
     /// The Windows path, which is what a target's `exe` holds.
     pub exe: String,
+    /// The shortcut this came from, as a Windows path, when it came from one.
+    /// Wine's menu builder needs it to pull out an icon.
+    pub lnk: Option<String>,
 }
 
 /// Everything a scan turned up.
@@ -94,7 +97,7 @@ pub fn scan(wine_prefix: &Path) -> Result<Listing> {
 
     let mut listing = Listing::default();
     for dir in start_menus(wine_prefix) {
-        collect_shortcuts(&dir, &mut listing);
+        collect_shortcuts(&drive_c, &dir, &mut listing);
     }
     tidy(&mut listing.programs);
     listing.unreadable.sort();
@@ -133,14 +136,14 @@ fn start_menus(wine_prefix: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-fn collect_shortcuts(dir: &Path, listing: &mut Listing) {
+fn collect_shortcuts(drive_c: &Path, dir: &Path, listing: &mut Listing) {
     for entry in read_dir_sorted(dir) {
         let path = entry.path();
         let Ok(kind) = entry.file_type() else {
             continue;
         };
         if kind.is_dir() {
-            collect_shortcuts(&path, listing);
+            collect_shortcuts(drive_c, &path, listing);
             continue;
         }
         if !has_extension(&entry.file_name().to_string_lossy(), "lnk") {
@@ -152,6 +155,7 @@ fn collect_shortcuts(dir: &Path, listing: &mut Listing) {
                 source: Source::Shortcut,
                 name,
                 exe,
+                lnk: relative_windows_path(drive_c, &path),
             }),
             Ok(Err(reason)) => listing.unreadable.push((name, reason)),
             Err(_) => listing.unreadable.push((name, Unreadable::NotAShortcut)),
@@ -174,6 +178,7 @@ fn collect_executables(drive_c: &Path, advertised: &BTreeSet<String>, listing: &
                 .map(|name| stem(Path::new(name)))
                 .unwrap_or_default(),
             exe,
+            lnk: None,
         };
         if is_noise(relative) {
             &mut filtered
@@ -274,6 +279,20 @@ fn is_noise(relative: &[String]) -> bool {
         }
         _ => false,
     }
+}
+
+/// A path somewhere under `drive_c`, as a Windows path. None when it is not
+/// below it, which a symlinked Start Menu could manage.
+fn relative_windows_path(drive_c: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(drive_c).ok()?;
+    let parts: Option<Vec<String>> = relative
+        .components()
+        .map(|part| match part {
+            std::path::Component::Normal(part) => Some(part.to_str()?.to_owned()),
+            _ => None,
+        })
+        .collect();
+    Some(windows_path(&parts?))
 }
 
 /// Components under `drive_c`, as the Windows path a config holds.

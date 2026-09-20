@@ -58,6 +58,30 @@ impl Paths {
         self.environments_dir().join(format!("{name}.toml"))
     }
 
+    /// The XDG applications directory. Desktop entries have to sit in the
+    /// standard location, not under wineo's own data dir, or nothing reads them.
+    pub fn applications_dir(&self) -> PathBuf {
+        self.xdg_data().join("applications")
+    }
+
+    /// Where wine is pointed while an icon is extracted, so the icon theme it
+    /// insists on writing never lands in the real one.
+    pub fn icon_scratch_dir(&self) -> PathBuf {
+        self.state.join(".icons")
+    }
+
+    /// The XDG icon theme root, for the same reason.
+    pub fn icons_dir(&self) -> PathBuf {
+        self.xdg_data().join("icons")
+    }
+
+    /// `$XDG_DATA_HOME` itself, which every wineo data path hangs off.
+    fn xdg_data(&self) -> &Path {
+        self.data
+            .parent()
+            .expect("the data dir is always `<xdg data home>/wineo`")
+    }
+
     pub fn default_prefix_root(&self) -> PathBuf {
         self.data.join("prefixes")
     }

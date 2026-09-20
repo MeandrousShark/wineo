@@ -150,9 +150,9 @@ fn set_target(root: &mut Table, key: &str, rest: &str, raw: &str) -> Result<(), 
     // Parse and validate before creating any table, so a rejected value
     // never leaves an empty `[targets]` or `[targets.<name>]` behind.
     let value = match field {
-        "exe" | "cwd" => parse_string_value(key, raw)?,
+        "exe" | "cwd" | "name" => parse_string_value(key, raw)?,
         "args" => parse_args_value(key, raw)?,
-        "gamemode" => Value::from(parse_bool(key, raw)?),
+        "gamemode" | "desktop" => Value::from(parse_bool(key, raw)?),
         _ => return Err(EditError::UnknownKey(key.to_string())),
     };
 
@@ -262,7 +262,10 @@ fn unset_target(root: &mut Table, key: &str, rest: &str) -> Result<bool, EditErr
         });
     }
     if let Some(field) = field
-        && !matches!(field, "exe" | "args" | "cwd" | "default" | "gamemode")
+        && !matches!(
+            field,
+            "exe" | "args" | "cwd" | "default" | "gamemode" | "desktop" | "name"
+        )
     {
         return Err(EditError::UnknownKey(key.to_string()));
     }

@@ -1,5 +1,6 @@
 pub mod components;
 pub mod config;
+pub mod desktop;
 pub mod edit;
 pub mod environment;
 pub mod error;

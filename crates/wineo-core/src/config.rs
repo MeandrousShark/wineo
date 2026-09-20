@@ -112,6 +112,12 @@ pub struct Target {
     #[serde(default)]
     pub default: bool,
     pub gamemode: Option<bool>,
+    /// Whether this target has a desktop entry. Reconciled, so setting it
+    /// writes the entry and clearing it takes the entry away.
+    #[serde(default)]
+    pub desktop: bool,
+    /// What the desktop entry is called. Defaults to the target's own name.
+    pub name: Option<String>,
 }
 
 fn default_stop_timeout() -> u32 {
