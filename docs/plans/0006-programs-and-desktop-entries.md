@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0006: Installed programs and desktop entries
 
