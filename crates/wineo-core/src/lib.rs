@@ -16,6 +16,7 @@ pub mod runner;
 pub mod runners;
 pub mod runtime;
 pub mod settings;
+pub mod shortcut;
 pub mod supervisor;
 pub mod templates;
 pub mod winpath;
