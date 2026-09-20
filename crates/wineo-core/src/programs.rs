@@ -1,9 +1,10 @@
 //! What is installed in a prefix.
 //!
-//! A fresh prefix has no shortcuts and no executables outside
-//! `drive_c/windows`, so anything found elsewhere was installed into it. That
-//! is why nothing here compares against a snapshot taken beforehand, and why
-//! the scan works the same on a prefix wineo adopted.
+//! A fresh prefix has no shortcuts, and the only executables it has outside
+//! `drive_c/windows` are the fixed handful wine puts in Program Files. Both
+//! are known up front, so anything else was installed. That is why nothing
+//! here compares against a snapshot taken beforehand, and why the scan works
+//! the same on a prefix wineo adopted as on one it created.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -17,8 +18,15 @@ use crate::winpath;
 const MACHINE_START_MENU: &str = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs";
 /// The same thing inside a user profile, which is where most installers write.
 const USER_START_MENU: &str = r"AppData\Roaming\Microsoft\Windows\Start Menu\Programs";
-/// Wine's own directory, holding every executable a fresh prefix has.
+/// Wine's own directory, holding all but six of a fresh prefix's executables.
 const WINE_DIR: &str = "windows";
+/// The rest of what wine ships, under either Program Files. Verified against
+/// wine 11.17: a fresh prefix has these and nothing else installed.
+const WINE_PROGRAMS: [&str; 3] = [
+    r"internet explorer\iexplore.exe",
+    r"windows media player\wmplayer.exe",
+    r"windows nt\accessories\wordpad.exe",
+];
 /// How deep the executable walk goes. Installed trees are nowhere near this,
 /// and the cap means a strange prefix cannot recurse without end.
 const MAX_DEPTH: usize = 24;
@@ -64,6 +72,14 @@ pub struct Listing {
 impl Listing {
     pub fn is_empty(&self) -> bool {
         self.programs.is_empty()
+    }
+
+    /// Every program found, the noise included, in one list.
+    pub fn all(&self) -> Vec<Program> {
+        let mut all = self.programs.clone();
+        all.extend(self.filtered.iter().cloned());
+        tidy(&mut all);
+        all
     }
 }
 
@@ -238,9 +254,26 @@ fn is_noise(relative: &[String]) -> bool {
     // Redistributables ship here, and a Start Menu StartUp entry is a stub
     // rather than the app.
     let dirs: Vec<String> = dirs.iter().map(|dir| dir.to_ascii_lowercase()).collect();
-    dirs.windows(2)
+    if dirs
+        .windows(2)
         .any(|pair| pair[0].starts_with("program files") && pair[1] == "common files")
         || (dirs.iter().any(|dir| dir == "start menu") && dirs.iter().any(|dir| dir == "startup"))
+    {
+        return true;
+    }
+    // Wine's own Program Files entries, which no one installed.
+    match dirs.split_first() {
+        Some((root, rest)) if root.starts_with("program files") => {
+            let tail = rest
+                .iter()
+                .map(String::as_str)
+                .chain([file.as_str()])
+                .collect::<Vec<_>>()
+                .join("\\");
+            WINE_PROGRAMS.contains(&tail.as_str())
+        }
+        _ => false,
+    }
 }
 
 /// Components under `drive_c`, as the Windows path a config holds.
@@ -319,6 +352,20 @@ mod tests {
             symlink("../drive_c", fake.0.path().join("dosdevices/c:")).unwrap();
             fake.file("drive_c/windows/notepad.exe", b"");
             fake.file("drive_c/windows/system32/winecfg.exe", b"");
+            for root in ["Program Files", "Program Files (x86)"] {
+                fake.file(
+                    &format!("drive_c/{root}/Internet Explorer/iexplore.exe"),
+                    b"",
+                );
+                fake.file(
+                    &format!("drive_c/{root}/Windows Media Player/wmplayer.exe"),
+                    b"",
+                );
+                fake.file(
+                    &format!("drive_c/{root}/Windows NT/Accessories/wordpad.exe"),
+                    b"",
+                );
+            }
             fake
         }
 
@@ -360,14 +407,27 @@ mod tests {
     const MACHINE: &str = "drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs";
     const USER: &str = "drive_c/users/me/AppData/Roaming/Microsoft/Windows/Start Menu/Programs";
 
+    // The premise the whole scan rests on: with nothing installed, it finds
+    // nothing, so it never needs a snapshot to compare against.
     #[test]
     fn a_fresh_prefix_has_nothing_installed() {
         let fake = Fake::new();
         fs::create_dir_all(fake.0.path().join(MACHINE).join("StartUp")).unwrap();
         let listing = fake.scan();
         assert!(listing.is_empty(), "{listing:?}");
-        assert!(listing.filtered.is_empty());
         assert!(listing.unreadable.is_empty());
+        // Wine's own Program Files entries are there, just held back.
+        assert_eq!(
+            rows(&listing.filtered),
+            [
+                r"exe iexplore C:\Program Files (x86)\Internet Explorer\iexplore.exe",
+                r"exe iexplore C:\Program Files\Internet Explorer\iexplore.exe",
+                r"exe wmplayer C:\Program Files (x86)\Windows Media Player\wmplayer.exe",
+                r"exe wmplayer C:\Program Files\Windows Media Player\wmplayer.exe",
+                r"exe wordpad C:\Program Files (x86)\Windows NT\Accessories\wordpad.exe",
+                r"exe wordpad C:\Program Files\Windows NT\Accessories\wordpad.exe",
+            ]
+        );
     }
 
     #[test]
@@ -444,16 +504,20 @@ mod tests {
                 r"exe UnrealCEFSubProcess C:\Program Files\Hades\UnrealCEFSubProcess.exe",
             ]
         );
-        assert_eq!(
-            rows(&listing.filtered),
-            [
-                r"exe autorun C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\autorun.exe",
-                r"exe DXSETUP C:\Program Files\Common Files\vendor\DXSETUP.exe",
-                r"exe HadesCrashHandler C:\Program Files\Hades\HadesCrashHandler.exe",
-                r"exe helper C:\Program Files (x86)\Common Files\helper.exe",
-                r"exe unins000 C:\Program Files\Hades\unins000.exe",
-            ]
-        );
+        // Compared by membership rather than as a whole list, since wine's own
+        // Program Files entries are in here too.
+        for path in [
+            r"C:\Program Files\Hades\unins000.exe",
+            r"C:\Program Files\Hades\HadesCrashHandler.exe",
+            r"C:\Program Files\Common Files\vendor\DXSETUP.exe",
+            r"C:\Program Files (x86)\Common Files\helper.exe",
+            r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\autorun.exe",
+        ] {
+            assert!(
+                listing.filtered.iter().any(|program| program.exe == path),
+                "{path} was not held back"
+            );
+        }
     }
 
     // An uninstaller shortcut is still shown, because the installer chose to
