@@ -3,6 +3,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
+use wineo_core::desktop;
 use wineo_core::environment::{self, Environment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
@@ -66,6 +67,17 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     }
     let config = paths.environment_config(name);
     fs::remove_file(&config).with_context(|| format!("failed to remove {}", config.display()))?;
+
+    // After the config, so a failure here cannot leave an environment that is
+    // half removed. A leftover entry is listed by `wineo desktop` as a stray.
+    let removed = desktop::remove_all(paths, name)?;
+    if !removed.is_empty() {
+        eprintln!(
+            "Removed {} desktop entr{}",
+            removed.len(),
+            if removed.len() == 1 { "y" } else { "ies" }
+        );
+    }
 
     match (&environment, args.delete_prefix) {
         (_, true) => println!("Removed environment {name} and its prefix"),

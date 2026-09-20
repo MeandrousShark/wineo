@@ -14,7 +14,7 @@ use wineo_core::programs::Listing;
 use wineo_core::runners::Runners;
 use wineo_core::templates::{Template, Templates};
 
-use super::{components, exec, programs};
+use super::{components, desktop, exec, programs};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -132,6 +132,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         &runner,
         &environment.prefix(paths)?,
     )?;
+    desktop::reconcile(paths, &global, &environment, Some(&runner), &prefix)?;
 
     let mut installer_exit = None;
     if let Some(installer) = &args.install_exe {

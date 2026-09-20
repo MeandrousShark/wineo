@@ -2,6 +2,7 @@ pub mod builds;
 pub mod completions;
 pub mod components;
 pub mod config;
+pub mod desktop;
 pub mod exec;
 pub mod list;
 pub mod logs;

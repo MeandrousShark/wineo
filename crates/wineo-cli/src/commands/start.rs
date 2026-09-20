@@ -10,6 +10,7 @@ use wineo_core::runtime::{RunStatus, Runtime};
 use wineo_core::supervisor::{self, Claim, Spec, Started};
 
 use crate::commands::components;
+use crate::commands::desktop;
 use crate::commands::run::LaunchArgs;
 
 #[derive(clap::Args)]
@@ -39,6 +40,13 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
     // The config was read before the lock, so it could already be gone.
     Environment::ensure_exists(paths, name)?;
     components::reconcile_config(paths, &global, &environment, &launch.runner, &launch.prefix)?;
+    desktop::reconcile(
+        paths,
+        &global,
+        &environment,
+        Some(&launch.runner),
+        &launch.prefix,
+    )?;
     let runtime = Runtime::new(paths, name);
 
     if runtime.is_running()? {

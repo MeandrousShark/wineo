@@ -90,6 +90,9 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
             lines.push(label_line(label, &report::component_value(component)));
         }
     }
+    if !report.desktop.is_empty() {
+        lines.push(label_line("desktop", &report.desktop.join(", ")));
+    }
     if report.status.state == State::Running
         && let Some(run) = &report.status.run
     {
@@ -242,6 +245,7 @@ mod tests {
             store: None,
             dxvk: None,
             vkd3d: None,
+            desktop: Vec::new(),
         }
     }
 

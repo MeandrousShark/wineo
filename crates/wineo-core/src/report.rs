@@ -2,6 +2,7 @@ use serde::Serialize;
 
 use crate::components::{Builds, Component, LATEST};
 use crate::config::GlobalConfig;
+use crate::desktop;
 use crate::environment::Environment;
 use crate::error::Result;
 use crate::install::{self, Wanted};
@@ -34,6 +35,8 @@ pub struct EnvironmentReport {
     /// The Direct3D builds this environment asks for, when it asks for any.
     pub dxvk: Option<ComponentReport>,
     pub vkd3d: Option<ComponentReport>,
+    /// Targets that have a desktop entry on disk right now.
+    pub desktop: Vec<String>,
 }
 
 /// What a config asks for against what its prefix actually has.
@@ -76,6 +79,12 @@ impl EnvironmentReport {
             store: environment.config.store.clone(),
             target_exe,
             status,
+            desktop: desktop::list(paths)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|entry| entry.environment == environment.name)
+                .map(|entry| entry.target)
+                .collect(),
         })
     }
 }

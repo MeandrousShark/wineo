@@ -14,7 +14,7 @@ use wineo_core::runners::Runners;
 use wineo_core::runtime::Runtime;
 use wineo_core::settings::{self, ConfigFile};
 
-use crate::commands::components;
+use crate::commands::{components, desktop};
 
 /// Settings that decide what the next launch runs, and against what. They all
 /// have to exclude whatever is using the environment, so nothing launches
@@ -86,6 +86,71 @@ fn apply_components(
         return Ok(());
     }
     components::reconcile(paths, global, name, runner, &prefix, &wanted)
+}
+
+/// The targets a set turns a desktop entry on for.
+fn enabled_desktops(pairs: &[(&str, &str)]) -> Vec<String> {
+    pairs
+        .iter()
+        .filter_map(|(key, raw)| {
+            let (target, field) = key.strip_prefix("targets.")?.split_once('.')?;
+            (field == "desktop" && unquote(raw) == "true").then(|| target.to_owned())
+        })
+        .collect()
+}
+
+/// Refuses a `desktop = true` whose target points at something that is not
+/// there, before anything is written, so a typo never leaves a config asking
+/// for an entry that could not be made. A target with no `exe` at all is left
+/// to the schema, which requires one.
+fn check_desktop(
+    paths: &Paths,
+    name: &str,
+    pairs: &[(&str, &str)],
+    unset: &[&str],
+) -> anyhow::Result<()> {
+    let enabled = enabled_desktops(pairs);
+    if enabled.is_empty() {
+        return Ok(());
+    }
+    let environment = Environment::load(paths, name).ok();
+    let Some(prefix) = environment.as_ref().and_then(|env| env.prefix(paths).ok()) else {
+        return Ok(());
+    };
+    // No prefix yet means nothing to resolve against, so the next launch,
+    // which reconciles anyway, is where this gets checked.
+    if !prefix::holds_prefix(&prefix) {
+        return Ok(());
+    }
+    for target in enabled {
+        let current = environment
+            .as_ref()
+            .and_then(|env| env.config.targets.get(&target))
+            .map(|target| target.exe.as_str());
+        if let Some(exe) = value_after(current, pairs, unset, &format!("targets.{target}.exe")) {
+            wineo_core::desktop::check(paths, &prefix, &exe)?;
+        }
+    }
+    Ok(())
+}
+
+/// Writes the entries a config now asks for. Run after the write, so an entry
+/// is built from the config as it ends up rather than as it was.
+fn apply_desktop(paths: &Paths, name: &str) -> anyhow::Result<()> {
+    let Ok(environment) = Environment::load(paths, name) else {
+        return Ok(());
+    };
+    let Ok(prefix) = environment.prefix(paths) else {
+        return Ok(());
+    };
+    if !prefix::holds_prefix(&prefix) {
+        return Ok(());
+    }
+    let global = GlobalConfig::load(paths).unwrap_or_default();
+    let runner = Runners::new(paths, &global)
+        .ok()
+        .and_then(|runners| runners.resolve(&environment.config.runner).ok());
+    desktop::reconcile(paths, &global, &environment, runner.as_ref(), &prefix)
 }
 
 fn changed_runner<'a>(pairs: &[(&'a str, &'a str)]) -> Option<&'a str> {
@@ -234,11 +299,16 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     if let ConfigFile::Environment(name) = file {
         let global = GlobalConfig::load(paths).unwrap_or_default();
         let runner = check_runner(paths, &global, name, &pairs)?;
+        check_desktop(paths, name, &pairs, &unset)?;
         apply_components(paths, &global, name, runner.as_ref(), &pairs, &unset)?;
     }
 
     for key in settings::update(paths, file, &pairs, &unset)? {
         eprintln!("`{key}` was not set");
+    }
+
+    if let ConfigFile::Environment(name) = file {
+        apply_desktop(paths, name)?;
     }
 
     // Wine writes its version into a prefix, so an older build can choke on a

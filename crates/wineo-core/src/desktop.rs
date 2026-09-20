@@ -35,9 +35,23 @@ const FILE_PREFIX: &str = "wineo-";
 /// What reconciliation did, for the caller to report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
-    Wrote { target: String, icon: bool },
-    Updated { target: String },
-    Removed { target: String },
+    Wrote {
+        target: String,
+        icon: bool,
+    },
+    Updated {
+        target: String,
+    },
+    Removed {
+        target: String,
+    },
+    /// A target asked for an entry that cannot be made. Reported rather than
+    /// returned as an error, because one broken target must not stop a launch
+    /// of a different one. `wineo set` refuses it up front instead.
+    Skipped {
+        target: String,
+        reason: String,
+    },
 }
 
 /// An entry on disk that wineo wrote.
@@ -69,7 +83,7 @@ pub fn reconcile(
             continue;
         }
         wanted.insert(target_name.clone());
-        if let Some(change) = write(
+        match write(
             paths,
             global,
             environment,
@@ -77,8 +91,13 @@ pub fn reconcile(
             prefix,
             target_name,
             target,
-        )? {
-            changes.push(change);
+        ) {
+            Ok(Some(change)) => changes.push(change),
+            Ok(None) => {}
+            Err(reason) => changes.push(Change::Skipped {
+                target: target_name.clone(),
+                reason: reason.to_string(),
+            }),
         }
     }
 
@@ -159,11 +178,7 @@ fn write(
     target_name: &str,
     target: &Target,
 ) -> Result<Option<Change>> {
-    // Worked out from the layout rather than the runner, which may be gone.
-    let wine_prefix = crate::prefix::wine_prefix_in(prefix).unwrap_or_else(|| prefix.to_owned());
-    if !exe_exists(paths, &wine_prefix, &target.exe) {
-        return Err(Error::ExeNotFound(target.exe.clone()));
-    }
+    check(paths, prefix, &target.exe)?;
 
     let path = entry_path(paths, &environment.name, target_name);
     let existing = fs::read_to_string(&path).ok();
@@ -339,17 +354,25 @@ fn remove_icons(paths: &Paths, environment: &str, target: &str) -> Result<()> {
     Ok(())
 }
 
-/// Whether a target's executable is really there, so a typo never becomes an
+/// Refuses an executable that is not really there, so a typo never becomes an
 /// entry that fails the moment it is clicked. A bare name like `notepad` is
-/// left alone, since wine is the one that looks those up.
-fn exe_exists(paths: &Paths, prefix: &Path, exe: &str) -> bool {
-    if winpath::is_windows_path(exe) {
-        return winpath::to_unix(prefix, exe).is_some_and(|unix| unix.is_file());
+/// left alone, since wine is the one that looks those up. `prefix` is the
+/// configured directory, and the wine prefix inside it is worked out from the
+/// layout rather than the runner, which may be gone.
+pub fn check(paths: &Paths, prefix: &Path, exe: &str) -> Result<()> {
+    let wine_prefix = crate::prefix::wine_prefix_in(prefix).unwrap_or_else(|| prefix.to_owned());
+    let found = if winpath::is_windows_path(exe) {
+        winpath::to_unix(&wine_prefix, exe).is_some_and(|unix| unix.is_file())
+    } else if exe.contains('/') {
+        paths.absolute(exe).is_ok_and(|unix| unix.is_file())
+    } else {
+        true
+    };
+    if found {
+        Ok(())
+    } else {
+        Err(Error::ExeNotFound(exe.to_owned()))
     }
-    if exe.contains('/') {
-        return paths.absolute(exe).is_ok_and(|unix| unix.is_file());
-    }
-    true
 }
 
 /// Pulls the executable's icon out with wine's own menu builder, the one 0001
@@ -669,21 +692,41 @@ mod tests {
         );
     }
 
+    // One target with a bad exe must not stop the others, since reconciliation
+    // runs on every launch and a launch of `good` has nothing to do with it.
     #[test]
-    fn refuses_a_target_whose_exe_is_not_there() {
+    fn skips_a_target_whose_exe_is_not_there() {
         let fixture = Fixture::new();
-        let environment =
-            fixture.environment("\n[targets.hades]\nexe = 'C:\\Hades\\Typo.exe'\ndesktop = true\n");
-        let err = reconcile(
-            &fixture.paths,
-            &GlobalConfig::default(),
-            &environment,
-            None,
-            &fixture.prefix,
-        )
-        .unwrap_err();
+        let environment = fixture.environment(concat!(
+            "\n[targets.typo]\nexe = 'C:\\Hades\\Typo.exe'\ndesktop = true\n",
+            "\n[targets.good]\nexe = 'C:\\Hades\\Hades.exe'\ndesktop = true\n",
+        ));
+        let changes = fixture.reconcile(&environment);
+        assert_eq!(
+            changes,
+            [
+                Change::Wrote {
+                    target: "good".to_owned(),
+                    icon: false,
+                },
+                Change::Skipped {
+                    target: "typo".to_owned(),
+                    reason: r"`C:\Hades\Typo.exe` does not exist".to_owned(),
+                },
+            ],
+            "{changes:?}"
+        );
+        assert!(fixture.entry("good").is_some());
+        assert_eq!(fixture.entry("typo"), None);
+    }
+
+    #[test]
+    fn check_refuses_an_exe_that_is_not_there() {
+        let fixture = Fixture::new();
+        assert!(check(&fixture.paths, &fixture.prefix, r"C:\Hades\Hades.exe").is_ok());
+        assert!(check(&fixture.paths, &fixture.prefix, "notepad").is_ok());
+        let err = check(&fixture.paths, &fixture.prefix, r"C:\Hades\Typo.exe").unwrap_err();
         assert!(matches!(err, Error::ExeNotFound(_)), "{err}");
-        assert_eq!(fixture.entry("hades"), None);
     }
 
     // A bare name is wine's to look up, so there is nothing to check it against.
