@@ -446,7 +446,7 @@ fn new_run_and_exec_with_real_wine() {
 
 #[test]
 #[ignore = "runs wine"]
-fn new_with_install_exe_runs_the_installer_and_prints_the_hint() {
+fn new_with_install_exe_runs_the_installer_and_reports_what_it_left() {
     let root = tempfile::tempdir().unwrap();
     let result = output(wineo(root.path()).args([
         "new",
@@ -456,10 +456,17 @@ fn new_with_install_exe_runs_the_installer_and_prints_the_hint() {
         "/usr/lib/wine/x86_64-windows/hostname.exe",
     ]));
     assert!(result.status.success(), "{}", stderr(&result));
+    // This installer installs nothing, so the scan reporting an empty prefix is
+    // what proves it ran at all, against a prefix wine really created.
     assert!(
-        String::from_utf8_lossy(&result.stdout).contains("Add a target with"),
+        stderr(&result).contains("Nothing is installed in app"),
         "{}",
-        String::from_utf8_lossy(&result.stdout)
+        stderr(&result)
+    );
+    assert!(
+        !stdout(&result).contains("Add a target with"),
+        "the generic hint is only for a `new` with no installer: {}",
+        stdout(&result)
     );
 }
 
