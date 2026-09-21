@@ -692,6 +692,7 @@ fn completions_cover_every_visible_command_and_flag() {
         for command in [
             "new",
             "set",
+            "setup",
             "config",
             "start",
             "stop",
@@ -734,6 +735,26 @@ fn completions_cover_every_visible_command_and_flag() {
             }
         }
     }
+}
+
+#[test]
+fn setup_is_in_the_help() {
+    let root = tempfile::tempdir().unwrap();
+    let help = output(wineo(root.path()).arg("--help"));
+    assert!(
+        stdout(&help)
+            .lines()
+            .any(|line| line.trim_start().starts_with("setup ")
+                && line.contains("Pick, edit, and remove an environment's targets")),
+        "{}",
+        stdout(&help)
+    );
+    let help = output(wineo(root.path()).args(["setup", "--help"]));
+    assert!(
+        stdout(&help).contains("Environment to set up"),
+        "{}",
+        stdout(&help)
+    );
 }
 
 #[test]

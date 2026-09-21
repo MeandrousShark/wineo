@@ -1999,7 +1999,9 @@ fn ctrl_c_cancels_an_installer_and_keeps_the_environment() {
         "{text}"
     );
     assert!(
-        text.contains("The installer was canceled. game and its prefix were kept"),
+        text.contains(
+            "The installer was canceled. game and its prefix were kept, continue with `wineo setup game`"
+        ),
         "{text}"
     );
     assert!(!f.fake_program_running("game"));

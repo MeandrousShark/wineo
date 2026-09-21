@@ -171,7 +171,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             let code = exit_code.unwrap_or(1);
             match exit_code {
                 Some(0) => {}
-                Some(code) => eprintln!("The installer exited with code {code}"),
+                Some(code) => eprintln!(
+                    "The installer exited with code {code}. {name} and its prefix were kept, continue with `wineo setup {name}`"
+                ),
                 None => eprintln!("The installer's exit code could not be collected"),
             }
             match installed(&prefix) {
@@ -182,7 +184,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
         Outcome::Canceled { .. } => {
             note(&format!(
-                "The installer was canceled. {name} and its prefix were kept"
+                "The installer was canceled. {name} and its prefix were kept, continue with `wineo setup {name}`"
             ));
             Ok(ExitCode::from(CANCELED))
         }
@@ -201,7 +203,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 None => {}
             }
             note(&format!(
-                "{name} and its prefix were kept. Clean up whatever may still be running with `wineo stop {name}`"
+                "{name} and its prefix were kept. Clean up whatever may still be running with `wineo stop {name}` or `wineo setup {name}`"
             ));
             Ok(ExitCode::FAILURE)
         }

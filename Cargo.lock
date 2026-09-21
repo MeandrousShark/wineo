@@ -572,6 +572,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "jiff",
+ "rustix",
  "signal-hook",
  "tempfile",
  "wineo-core",

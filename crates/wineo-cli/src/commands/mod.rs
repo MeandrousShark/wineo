@@ -13,6 +13,7 @@ pub mod rm;
 pub mod run;
 pub mod runners;
 pub mod set;
+pub mod setup;
 pub mod start;
 pub mod status;
 pub mod stop;

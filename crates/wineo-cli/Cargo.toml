@@ -17,6 +17,7 @@ jiff.workspace = true
 signal-hook.workspace = true
 
 [dev-dependencies]
+rustix = { workspace = true, features = ["pty"] }
 tempfile.workspace = true
 
 [lints]

@@ -1,4 +1,6 @@
 mod commands;
+mod picker;
+mod prompt;
 
 use std::process::ExitCode;
 
@@ -20,6 +22,8 @@ enum Command {
     New(commands::new::Args),
     /// Change settings of an environment, or the global config
     Set(commands::set::Args),
+    /// Pick, edit, and remove an environment's targets, or run an installer in it
+    Setup(commands::setup::Args),
     /// Print an environment's config, or the global config
     Config(commands::config::Args),
     /// Start an environment in the background
@@ -85,6 +89,7 @@ fn run() -> anyhow::Result<ExitCode> {
     match cli.command {
         Command::New(args) => commands::new::run(&paths, args),
         Command::Set(args) => commands::set::run(&paths, args),
+        Command::Setup(args) => commands::setup::run(&paths, args),
         Command::Config(args) => commands::config::run(&paths, args),
         Command::Start(args) => commands::start::run(&paths, args),
         Command::Stop(args) => commands::stop::run(&paths, args),
