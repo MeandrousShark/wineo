@@ -54,6 +54,22 @@ pub fn name_problem(answer: &str) -> Option<String> {
     Some(problem)
 }
 
+/// A path as typed or pasted, which may come wrapped in quotes or with the
+/// backslash a shell puts before a space. A Windows path keeps its
+/// backslashes, since those are its separators.
+pub fn clean_path(answer: &str) -> String {
+    let answer = answer.trim();
+    let unquoted = ['"', '\'']
+        .iter()
+        .find_map(|quote| answer.strip_prefix(*quote)?.strip_suffix(*quote))
+        .unwrap_or(answer);
+    if winpath::is_windows_path(unquoted) {
+        unquoted.to_owned()
+    } else {
+        unquoted.replace("\\ ", " ")
+    }
+}
+
 /// Where targets are picked from.
 pub struct Place<'a> {
     pub paths: &'a Paths,
@@ -633,6 +649,7 @@ pub fn review(batch: &Batch) -> Vec<String> {
 /// Unix path inside `drive_c` as its `C:` path, and any other Unix path
 /// made absolute, with the home directory as `~`.
 fn resolve_exe(place: &Place, answer: &str) -> Result<String, String> {
+    let answer = &clean_path(answer);
     if answer.is_empty() {
         return Err("Enter the path to the program".to_owned());
     }
@@ -655,6 +672,7 @@ fn resolve_exe(place: &Place, answer: &str) -> Result<String, String> {
 }
 
 fn resolve_cwd(place: &Place, answer: &str) -> Result<Option<String>, String> {
+    let answer = &clean_path(answer);
     if answer.is_empty() {
         return Ok(None);
     }
@@ -963,6 +981,25 @@ mod tests {
         );
         assert!(problem.ends_with("Try `Hades-II`"), "{problem}");
         assert!(!name_problem("游戏").unwrap().contains("Try"));
+    }
+
+    #[test]
+    fn a_pasted_path_loses_its_quotes_and_escapes() {
+        assert_eq!(
+            clean_path(r#" "~/Games/Stellar Blade/SB.exe" "#),
+            "~/Games/Stellar Blade/SB.exe"
+        );
+        assert_eq!(clean_path("'/games/My Game/g.exe'"), "/games/My Game/g.exe");
+        assert_eq!(
+            clean_path(r"~/Games/Stellar\ Blade/SB.exe"),
+            "~/Games/Stellar Blade/SB.exe"
+        );
+        // A Windows path's backslashes are its separators.
+        assert_eq!(
+            clean_path(r#""C:\Games\ SB\SB.exe""#),
+            r"C:\Games\ SB\SB.exe"
+        );
+        assert_eq!(clean_path(r#""unbalanced"#), r#""unbalanced"#);
     }
 
     #[test]

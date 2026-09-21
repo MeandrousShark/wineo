@@ -366,11 +366,12 @@ fn install<I: Input, W: Write>(
         "Installer or updater, as a Unix path or a Windows one",
         None,
         |answer| {
+            let answer = picker::clean_path(answer);
             if answer.is_empty() {
                 Err("Enter the path to the installer".to_owned())
             } else {
-                wineo_core::launch::check_program_path(paths, answer)
-                    .map(|()| answer.to_owned())
+                wineo_core::launch::check_program_path(paths, &answer)
+                    .map(|()| answer)
                     .map_err(|err| format!("{err}"))
             }
         },

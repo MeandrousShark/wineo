@@ -76,7 +76,7 @@ impl Pty {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             {
-                let seen = self.seen.lock().unwrap();
+                let seen = strip_escapes(&self.seen.lock().unwrap());
                 if let Some(at) = seen[self.cursor..].find(text) {
                     self.cursor += at + text.len();
                     return;
@@ -91,10 +91,13 @@ impl Pty {
         }
     }
 
+    /// Types `line` and presses Enter, which a terminal sends as `\r`.
     fn send(&mut self, line: &str) {
-        self.master
-            .write_all(format!("{line}\n").as_bytes())
-            .unwrap();
+        self.type_keys(&format!("{line}\r"));
+    }
+
+    fn type_keys(&mut self, keys: &str) {
+        self.master.write_all(keys.as_bytes()).unwrap();
     }
 
     /// Ctrl+D at the start of a line, which the terminal turns into EOF.
@@ -102,6 +105,13 @@ impl Pty {
         self.master.write_all(b"\x04").unwrap();
     }
 
+    /// Ctrl+C typed at a question, which the line editor reads as a key.
+    fn ctrl_c(&mut self) {
+        self.type_keys("\x03");
+    }
+
+    /// SIGINT from outside, the way Ctrl+C reaches wineo while no question
+    /// is being asked, like during an installer.
     fn interrupt(&self) {
         let sent = Command::new("kill")
             .args(["-INT", &self.child.id().to_string()])
@@ -115,9 +125,32 @@ impl Pty {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
-        let seen = self.seen.lock().unwrap().clone();
+        let seen = strip_escapes(&self.seen.lock().unwrap());
         (status, seen)
     }
+}
+
+/// The output without the escape sequences a line editor redraws with.
+fn strip_escapes(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(char) = chars.next() {
+        if char != '\x1b' {
+            plain.push(char);
+            continue;
+        }
+        if chars.next_if_eq(&'[').is_some() {
+            // Parameters, then one final byte from `@` to `~`.
+            for char in chars.by_ref() {
+                if ('@'..='~').contains(&char) {
+                    break;
+                }
+            }
+        } else {
+            chars.next();
+        }
+    }
+    plain
 }
 
 impl Fixture {
@@ -273,7 +306,7 @@ fn ctrl_c_at_a_question_cancels_without_saving() {
     pty.send("5");
     pty.expect("Save these changes?");
     pty.expect("Choice [1]: ");
-    pty.interrupt();
+    pty.ctrl_c();
     pty.expect("Canceled, and anything not yet saved was left out");
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
@@ -402,7 +435,7 @@ fn staged_changes_are_saved_before_an_installer_runs() {
     // Going back from the installer keeps what was saved.
     pty.send("<");
     pty.expect("Choice [5]: ");
-    pty.interrupt();
+    pty.ctrl_c();
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
     assert!(f.config("app").contains("[targets.hades]"));
@@ -709,8 +742,7 @@ fn a_name_that_cant_be_used_says_why_and_suggests_one() {
     pty.expect("`Stellar Blade` has a space.");
     pty.expect("Try `Stellar-Blade`");
     pty.expect("Install name, or < to go back: ");
-    pty.send("q");
-    pty.interrupt();
+    pty.ctrl_c();
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
 }
@@ -743,4 +775,23 @@ fn a_proton_runner_leaves_the_templates_dxvk_and_vkd3d_out() {
     assert!(config.contains("gamemode = true"), "{config}");
     assert!(!config.contains("dxvk"), "{config}");
     assert!(!config.contains("vkd3d"), "{config}");
+}
+
+#[test]
+fn the_arrow_keys_and_word_deletion_edit_an_answer() {
+    let f = Fixture::new();
+    let mut pty = f.new_guided(&[]);
+    pty.expect("Template [1]: ");
+    pty.send("1");
+    pty.expect("Install name, or < to go back: ");
+    // `game Xx`, then Ctrl+W deletes `Xx`, and Left twice lands before the
+    // `e` for an insert.
+    pty.type_keys("game Xx");
+    pty.type_keys("\x17");
+    pty.type_keys("\x1b[D\x1b[D-2\r");
+    pty.expect("Prefix location, or < to go back [");
+    pty.expect("/prefixes/gam-2e]: ");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
 }

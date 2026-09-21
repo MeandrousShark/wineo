@@ -7,6 +7,9 @@ use std::io::{self, IsTerminal, Write};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
+use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
+use rustyline::error::ReadlineError;
+use rustyline::{Cmd, DefaultEditor, EventHandler, KeyCode, KeyEvent, Modifiers, Movement, Word};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::{Handle, Signals};
 
@@ -48,7 +51,14 @@ pub enum Line {
 }
 
 pub trait Input {
-    fn line(&mut self) -> io::Result<Line>;
+    /// The next line, asked for with `prompt`.
+    fn line(&mut self, prompt: &str) -> io::Result<Line>;
+
+    /// Whether `line` shows the prompt itself, as a line editor has to so it
+    /// can redraw the line. Otherwise the prompt is printed first.
+    fn shows_prompt(&self) -> bool {
+        false
+    }
 
     /// Drops interrupts something else already acted on, like a Ctrl+C that
     /// canceled an installer, so they don't cancel the next question too.
@@ -218,9 +228,7 @@ impl<I: Input, W: Write> Prompt<I, W> {
     pub fn confirm(&mut self, label: &str, default: bool) -> anyhow::Result<Reply<bool>> {
         let shown = if default { "Y/n" } else { "y/N" };
         loop {
-            write!(self.out, "{label} [{shown}], or < to go back: ")?;
-            self.out.flush()?;
-            let answer = self.read()?;
+            let answer = self.read(&format!("{label} [{shown}], or < to go back: "))?;
             match answer.to_ascii_lowercase().as_str() {
                 "" => return Ok(Reply::Value(default)),
                 "y" | "yes" => return Ok(Reply::Value(true)),
@@ -235,9 +243,7 @@ impl<I: Input, W: Write> Prompt<I, W> {
     pub fn list(&mut self, item: &str) -> anyhow::Result<Reply<Vec<String>>> {
         let mut values = Vec::new();
         loop {
-            write!(self.out, "  {item} {}: ", values.len() + 1)?;
-            self.out.flush()?;
-            let answer = self.read_raw()?;
+            let answer = self.read_raw(&format!("  {item} {}: ", values.len() + 1))?;
             if values.is_empty() && answer.trim() == "<" {
                 return Ok(Reply::Back);
             }
@@ -272,25 +278,28 @@ impl<I: Input, W: Write> Prompt<I, W> {
     /// Asks with the default shown, and returns the trimmed answer, or the
     /// default for an empty one.
     fn ask(&mut self, label: &str, default: Option<&str>) -> anyhow::Result<String> {
-        match default {
-            Some(default) => write!(self.out, "{label} [{default}]: ")?,
-            None => write!(self.out, "{label}: ")?,
-        }
-        self.out.flush()?;
-        let answer = self.read()?;
+        let question = match default {
+            Some(default) => format!("{label} [{default}]: "),
+            None => format!("{label}: "),
+        };
+        let answer = self.read(&question)?;
         Ok(match (answer.is_empty(), default) {
             (true, Some(default)) => default.to_owned(),
             _ => answer,
         })
     }
 
-    fn read(&mut self) -> anyhow::Result<String> {
-        Ok(self.read_raw()?.trim().to_owned())
+    fn read(&mut self, prompt: &str) -> anyhow::Result<String> {
+        Ok(self.read_raw(prompt)?.trim().to_owned())
     }
 
     /// A line as typed, without its newline. The end of input cancels.
-    fn read_raw(&mut self) -> anyhow::Result<String> {
-        match self.input.line()? {
+    fn read_raw(&mut self, prompt: &str) -> anyhow::Result<String> {
+        if !self.input.shows_prompt() {
+            write!(self.out, "{prompt}")?;
+            self.out.flush()?;
+        }
+        match self.input.line(prompt)? {
             Line::Text(text) => Ok(text),
             Line::End => {
                 // The cursor is still on the question.
@@ -340,16 +349,20 @@ fn parse_numbers(answer: &str, count: usize) -> Result<Vec<usize>, String> {
     Ok(picked)
 }
 
-/// The terminal, read a line at a time on request. Ctrl+C at a question ends
-/// the input, and so do SIGTERM and SIGHUP, rather than killing wineo on the
-/// spot, so a flow can say what it leaves behind.
+/// The terminal, read a line at a time on request through a line editor, so
+/// the arrow keys and word deletion work. Ctrl+C at a question ends the input,
+/// and so do SIGTERM and SIGHUP, rather than killing wineo on the spot, so a
+/// flow can say what it leaves behind.
 pub struct Terminal {
     events: Receiver<Event>,
-    requests: Sender<()>,
+    requests: Sender<String>,
     /// A read still under way from a question an interrupt cut short.
     pending: bool,
     stash: Option<io::Result<Option<String>>>,
     signals: Handle,
+    /// The terminal's settings before any question, put back when this goes,
+    /// so leaving in the middle of one never leaves it in raw mode.
+    saved: Option<Termios>,
 }
 
 enum Event {
@@ -359,6 +372,7 @@ enum Event {
 
 impl Terminal {
     pub fn open() -> anyhow::Result<Self> {
+        let saved = tcgetattr(io::stdin()).ok();
         let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP])?;
         let handle = signals.handle();
         let (sender, events) = mpsc::channel();
@@ -370,14 +384,35 @@ impl Terminal {
                 }
             }
         });
-        let (requests, asked) = mpsc::channel::<()>();
+        let (requests, asked) = mpsc::channel::<String>();
         thread::spawn(move || {
-            while asked.recv().is_ok() {
-                let mut line = String::new();
-                let read = io::stdin()
-                    .read_line(&mut line)
-                    .map(|read| (read > 0).then_some(line));
-                if sender.send(Event::Line(read)).is_err() {
+            let mut editor = line_editor().ok();
+            while let Ok(prompt) = asked.recv() {
+                let event = match editor.as_mut() {
+                    Some(editor) => match editor.readline(&prompt) {
+                        Ok(line) => {
+                            let _ = editor.add_history_entry(line.as_str());
+                            Event::Line(Ok(Some(line)))
+                        }
+                        // In raw mode Ctrl+C is a key, not a signal.
+                        Err(ReadlineError::Interrupted | ReadlineError::Signal(_)) => {
+                            Event::Interrupt
+                        }
+                        Err(ReadlineError::Eof) => Event::Line(Ok(None)),
+                        Err(err) => Event::Line(Err(io::Error::other(err))),
+                    },
+                    None => {
+                        print!("{prompt}");
+                        let _ = io::stdout().flush();
+                        let mut line = String::new();
+                        Event::Line(
+                            io::stdin()
+                                .read_line(&mut line)
+                                .map(|read| (read > 0).then_some(line)),
+                        )
+                    }
+                };
+                if sender.send(event).is_err() {
                     break;
                 }
             }
@@ -388,17 +423,30 @@ impl Terminal {
             pending: false,
             stash: None,
             signals: handle,
+            saved,
         })
     }
 }
 
+/// Emacs-style editing, with Ctrl+Backspace deleting a word where the
+/// terminal sends it as its own key. One that sends plain `^H` can't be told
+/// apart from Backspace, and Alt+Backspace or Ctrl+W deletes a word instead.
+fn line_editor() -> rustyline::Result<DefaultEditor> {
+    let mut editor = DefaultEditor::new()?;
+    editor.bind_sequence(
+        KeyEvent(KeyCode::Backspace, Modifiers::CTRL),
+        EventHandler::Simple(Cmd::Kill(Movement::BackwardWord(1, Word::Emacs))),
+    );
+    Ok(editor)
+}
+
 impl Input for Terminal {
-    fn line(&mut self) -> io::Result<Line> {
+    fn line(&mut self, prompt: &str) -> io::Result<Line> {
         let read = match self.stash.take() {
             Some(read) => read,
             None => {
                 if !self.pending {
-                    let _ = self.requests.send(());
+                    let _ = self.requests.send(prompt.to_owned());
                     self.pending = true;
                 }
                 match self.events.recv() {
@@ -422,6 +470,10 @@ impl Input for Terminal {
         })
     }
 
+    fn shows_prompt(&self) -> bool {
+        true
+    }
+
     fn forget_interrupts(&mut self) {
         self.interrupted();
     }
@@ -441,6 +493,9 @@ impl Input for Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         self.signals.close();
+        if let Some(saved) = &self.saved {
+            let _ = tcsetattr(io::stdin(), OptionalActions::Now, saved);
+        }
     }
 }
 
@@ -457,7 +512,7 @@ impl Script {
 
 #[cfg(test)]
 impl Input for Script {
-    fn line(&mut self) -> io::Result<Line> {
+    fn line(&mut self, _prompt: &str) -> io::Result<Line> {
         Ok(self.0.pop_front().map_or(Line::End, Line::Text))
     }
 }

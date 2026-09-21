@@ -331,6 +331,7 @@ fn ask_location<I: Input, W: Write>(
         }
     };
     let reply = prompt.text("Prefix location", Some(&suggested), |answer| {
+        let answer = &picker::clean_path(answer);
         let dir = paths.absolute(answer).map_err(|err| err.to_string())?;
         match fs::read_dir(&dir).map(|mut entries| entries.next().is_some()) {
             Ok(true) if !prefix::holds_prefix(&dir) => Err(format!(
@@ -613,7 +614,8 @@ fn ask_how<I: Input, W: Write>(
                 };
                 prompt
                     .text("Installer", current, |answer| {
-                        local_file(paths, wine_prefix.as_deref(), answer).map(|_| answer.to_owned())
+                        let answer = picker::clean_path(answer);
+                        local_file(paths, wine_prefix.as_deref(), &answer).map(|_| answer)
                     })?
                     .map(How::Installer)
             }
@@ -624,9 +626,10 @@ fn ask_how<I: Input, W: Write>(
                 };
                 prompt
                     .text("Executable", current, |answer| {
-                        let unix = local_file(paths, wine_prefix.as_deref(), answer)?;
-                        Ok(if winpath::is_windows_path(answer) {
-                            answer.to_owned()
+                        let answer = picker::clean_path(answer);
+                        let unix = local_file(paths, wine_prefix.as_deref(), &answer)?;
+                        Ok(if winpath::is_windows_path(&answer) {
+                            answer
                         } else {
                             wine_prefix
                                 .as_deref()
