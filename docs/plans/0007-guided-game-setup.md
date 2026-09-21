@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0007: Guided game setup
 
@@ -31,7 +31,7 @@ Settled by the maintainer:
   settings in 0007. Revisit managed copying and organization with `wineo import`
   after trying the basic flow with a new portable application.
 
-The remaining details below are proposals for approval.
+The maintainer has approved the scope and details below.
 
 ## Existing foundation
 
@@ -282,5 +282,5 @@ commands remain enough to perform the same operations without the wizard.
    usage documentation, and complete isolated real-game acceptance.
 
 Commit each logical change separately. Each phase ends with tests, fmt, and
-clippy passing, then a push. Amend the draft before implementation if review
-changes the command contract or scope. Only the maintainer approves this plan.
+clippy passing, then a push. Changes to the approved command contract or scope
+need an amended plan and maintainer approval before implementation.

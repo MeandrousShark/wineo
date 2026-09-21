@@ -2,7 +2,7 @@
 
 Planned features that aren't scheduled yet. When one gets picked up, it gets its own numbered plan in `docs/plans/`.
 
-Drafted next: [0007: Guided game setup](plans/0007-guided-game-setup.md).
+Approved next: [0007: Guided game setup](plans/0007-guided-game-setup.md).
 Standalone game setup and maintenance come before library migration.
 
 **Category**
