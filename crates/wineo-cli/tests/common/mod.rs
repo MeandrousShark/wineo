@@ -19,7 +19,8 @@ use wineo_core::runtime::Runtime;
 /// wineserver can see it, noisy writes megabytes in bursts, noisy-exit leaves
 /// a background writer behind, handoff exits and leaves something running for
 /// a couple of seconds the way an installer hands off to its child,
-/// break-wineserver deletes the wineserver beside it, and any other program
+/// break-wineserver deletes the wineserver beside it, a program whose name ends
+/// in install-game.exe installs a game into the prefix, and any other program
 /// runs until `wineboot --end-session` or `wineserver -k` ends it.
 pub const FAKE_WINE: &str = r#"#!/bin/sh
 pids="$WINEPREFIX/fake-pids"
@@ -83,6 +84,11 @@ handoff)
     ;;
 break-wineserver)
     rm -f "${0%/*}/wineserver"
+    exit 0
+    ;;
+*install-game.exe)
+    mkdir -p "$WINEPREFIX/drive_c/Games/Game"
+    : >"$WINEPREFIX/drive_c/Games/Game/Game.exe"
     exit 0
     ;;
 esac
@@ -416,6 +422,12 @@ impl Fixture {
             ),
         )
         .unwrap();
+    }
+
+    pub fn global_config(&self, text: &str) {
+        let path = self.config_dir().join("config.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
     }
 
     pub fn config_dir(&self) -> PathBuf {

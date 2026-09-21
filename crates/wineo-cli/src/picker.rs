@@ -107,7 +107,7 @@ pub fn pick<I: Input, W: Write>(
             Reply::Value(Picked::One(Pick::Program(program))) => vec![program],
         };
         for program in picked {
-            added |= add(prompt, place, batch, &program)?;
+            added |= add_program(prompt, place, batch, &program)?;
         }
     }
 }
@@ -156,7 +156,7 @@ fn ask_path<I: Input, W: Write>(
 
 /// Stages one program as a new target, after its card is accepted. Returns
 /// whether it was added.
-fn add<I: Input, W: Write>(
+pub fn add_program<I: Input, W: Write>(
     prompt: &mut Prompt<I, W>,
     place: &Place,
     batch: &mut Batch,

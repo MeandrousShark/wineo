@@ -59,8 +59,8 @@ enum Action {
     Finish,
 }
 
-/// How running an installer from the menu went.
-enum Ran {
+/// How running an installer went.
+pub(crate) enum Ran {
     /// It finished, so the targets can be picked from what it installed.
     Finished,
     /// Nothing ran, and the menu comes back.
@@ -90,7 +90,26 @@ pub(crate) fn setup<I: Input, W: Write>(
     if place.wine_prefix.is_none() {
         prompt.say("Its prefix is missing, so there is nothing installed to pick from.")?;
     }
-    let mut batch = Batch::new(environment.config.targets);
+    menu(
+        paths,
+        global,
+        name,
+        prompt,
+        &place,
+        Batch::new(environment.config.targets),
+    )
+}
+
+/// The setup menu, from a batch that may already hold changes, like the
+/// targets guided `new` just picked.
+pub(crate) fn menu<I: Input, W: Write>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    prompt: &mut Prompt<I, W>,
+    place: &Place,
+    mut batch: Batch,
+) -> anyhow::Result<ExitCode> {
     let mut shown = None;
     loop {
         let targets = batch.targets();
@@ -113,13 +132,13 @@ pub(crate) fn setup<I: Input, W: Write>(
         };
         match action {
             Action::Add => {
-                picker::pick(prompt, &place, &mut batch)?;
+                picker::pick(prompt, place, &mut batch)?;
             }
             Action::Edit => {
-                picker::edit(prompt, &place, &mut batch)?;
+                picker::edit(prompt, place, &mut batch)?;
             }
             Action::Remove => {
-                picker::remove(prompt, &place, &mut batch)?;
+                picker::remove(prompt, place, &mut batch)?;
             }
             Action::Install => {
                 if !batch.is_empty() {
@@ -142,7 +161,7 @@ pub(crate) fn setup<I: Input, W: Write>(
                     Ran::Finished => {
                         // Picked against the config as it is now.
                         batch = Batch::new(Environment::load(paths, name)?.config.targets);
-                        picker::pick(prompt, &place, &mut batch)?;
+                        picker::pick(prompt, place, &mut batch)?;
                     }
                 }
             }
@@ -152,17 +171,28 @@ pub(crate) fn setup<I: Input, W: Write>(
                 {
                     continue;
                 }
-                // Also what retries entries a previous setup failed to write.
-                let reconciled = reconcile(paths, global, name, prompt);
-                next_steps(prompt, name, &batch)?;
-                return Ok(if reconciled {
-                    ExitCode::SUCCESS
-                } else {
-                    ExitCode::FAILURE
-                });
+                return finish(paths, global, name, prompt, &batch);
             }
         }
     }
+}
+
+/// The last step of a flow once everything is saved: the desktop entries,
+/// which this also retries after an earlier failure, then what comes next.
+pub(crate) fn finish<I: Input, W: Write>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    prompt: &mut Prompt<I, W>,
+    batch: &Batch,
+) -> anyhow::Result<ExitCode> {
+    let reconciled = reconcile(paths, global, name, prompt);
+    next_steps(prompt, name, batch)?;
+    Ok(if reconciled {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 /// Offers to stop what an installer left running when it could not confirm
@@ -242,7 +272,7 @@ fn list<I: Input, W: Write>(prompt: &mut Prompt<I, W>, batch: &Batch) -> anyhow:
 
 /// Reviews and writes the batch. Several targets need a default, so one is
 /// asked for first when none is marked. Back means keep editing.
-fn save<I: Input, W: Write>(
+pub(crate) fn save<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
     name: &str,
@@ -348,8 +378,7 @@ fn install<I: Input, W: Write>(
     let Reply::Value(program) = reply else {
         return Ok(Ran::Back);
     };
-    let runtime = Runtime::new(paths, name);
-    let log = runtime.install_log_path();
+    let log = Runtime::new(paths, name).install_log_path();
     let shown_log = paths
         .contract(&log)
         .unwrap_or_else(|_| log.display().to_string());
@@ -369,6 +398,22 @@ fn install<I: Input, W: Write>(
             return Ok(Ran::Back);
         }
     };
+    run_installer(paths, global, name, prompt, installer)
+}
+
+/// Runs a prepared installer with its output in `install.log`, and says how
+/// it went. Anything but a clean finish ends the flow.
+pub(crate) fn run_installer<I: Input, W: Write>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    prompt: &mut Prompt<I, W>,
+    installer: Installer,
+) -> anyhow::Result<Ran> {
+    let log = Runtime::new(paths, name).install_log_path();
+    let shown_log = paths
+        .contract(&log)
+        .unwrap_or_else(|_| log.display().to_string());
     // Read under the installer's lock, which settings that change the prefix
     // have to wait for, so this matches what the installer runs against.
     let environment = Environment::load(paths, name)?;

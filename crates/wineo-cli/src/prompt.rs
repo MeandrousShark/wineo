@@ -31,6 +31,15 @@ pub enum Reply<T> {
     Back,
 }
 
+impl<T> Reply<T> {
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Reply<U> {
+        match self {
+            Reply::Value(value) => Reply::Value(f(value)),
+            Reply::Back => Reply::Back,
+        }
+    }
+}
+
 /// A line the user typed, or the end of input: EOF or an interrupt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Line {
@@ -44,6 +53,12 @@ pub trait Input {
     /// Drops interrupts something else already acted on, like a Ctrl+C that
     /// canceled an installer, so they don't cancel the next question too.
     fn forget_interrupts(&mut self) {}
+
+    /// Whether an interrupt came in since the last question, which tells a
+    /// failure it caused, like a prefix creation cut short, from any other.
+    fn interrupted(&mut self) -> bool {
+        false
+    }
 }
 
 /// Whether both ends are a terminal, which every guided flow needs.
@@ -408,11 +423,18 @@ impl Input for Terminal {
     }
 
     fn forget_interrupts(&mut self) {
+        self.interrupted();
+    }
+
+    fn interrupted(&mut self) -> bool {
+        let mut interrupted = false;
         while let Ok(event) = self.events.try_recv() {
-            if let Event::Line(read) = event {
-                self.stash = Some(read);
+            match event {
+                Event::Line(read) => self.stash = Some(read),
+                Event::Interrupt => interrupted = true,
             }
         }
+        interrupted
     }
 }
 

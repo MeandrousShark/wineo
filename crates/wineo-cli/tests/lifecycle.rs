@@ -450,12 +450,6 @@ fn start_status_logs_restart_and_stop_with_real_wine() {
 }
 
 impl Fixture {
-    fn global_config(&self, text: &str) {
-        let path = self.config_dir().join("config.toml");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, text).unwrap();
-    }
-
     fn resets(&self, name: &str) -> u64 {
         let mut path = self.runtime(name).log_path().into_os_string();
         path.push(".reset");

@@ -18,15 +18,21 @@ use wineo_core::supervisor::{Notice, Watched};
 use wineo_core::templates::{Template, Templates};
 
 use super::{components, desktop, programs};
+use crate::prompt::{self, Canceled, Prompt, Terminal};
+use crate::wizard::{self, Guided, Prefill};
 
 /// The shell's code for a command ended by Ctrl+C.
 const CANCELED: u8 = 130;
 
 #[derive(clap::Args)]
 pub struct Args {
-    /// Name of the environment
+    /// Name of the environment. Without one, wineo asks for everything
     #[arg(short, long)]
     name: Option<String>,
+
+    /// Ask for everything even with a name, starting from the flags given
+    #[arg(long)]
+    interactive: bool,
 
     /// Prefix directory, defaults to ~/.local/share/wineo/prefixes/<name>
     #[arg(long, value_name = "PATH")]
@@ -37,7 +43,7 @@ pub struct Args {
     runner: Option<String>,
 
     /// Template to take settings from, like gaming
-    #[arg(long, value_name = "NAME")]
+    #[arg(short, long, value_name = "NAME")]
     template: Option<String>,
 
     /// Prefix architecture, win64 or win32
@@ -50,13 +56,14 @@ pub struct Args {
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
+    let name = match args.name.clone() {
+        Some(name) if !args.interactive => name,
+        _ => return guided(paths, args),
+    };
     // Checked up front so a typo fails before the prefix creation wait.
     if let Some(installer) = &args.install_exe {
         launch::check_program_path(paths, installer)?;
     }
-    let Some(name) = args.name else {
-        bail!("guided creation isn't available yet, pass a name with -n");
-    };
     let global = GlobalConfig::load(paths)?;
     let template = match &args.template {
         Some(name) => Some(Templates::new(paths).resolve(name)?),
@@ -207,6 +214,38 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             ));
             Ok(ExitCode::FAILURE)
         }
+    }
+}
+
+/// Asks for everything, starting from whatever flags were given.
+fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
+    if !prompt::interactive() {
+        bail!(
+            "wineo new asks questions unless it is given a name, so it needs a terminal. Without one, pass what it needs: wineo new -n <name> [--template <template>] [--install-exe <path>]"
+        );
+    }
+    let global = GlobalConfig::load(paths)?;
+    let prefill = Prefill {
+        name: args.name,
+        dir: args.dir,
+        runner: args.runner,
+        template: args.template,
+        arch: args.arch,
+        install_exe: args.install_exe,
+    };
+    let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
+    let mut guided = Guided { registered: None };
+    match wizard::run(paths, &global, &prefill, &mut prompt, &mut guided) {
+        Err(err) if err.is::<Canceled>() => {
+            match guided.registered {
+                Some(name) => eprintln!(
+                    "Canceled. {name} and its prefix were kept, continue with `wineo setup {name}`"
+                ),
+                None => eprintln!("Canceled, and nothing was created"),
+            }
+            Ok(ExitCode::from(CANCELED))
+        }
+        other => other,
     }
 }
 

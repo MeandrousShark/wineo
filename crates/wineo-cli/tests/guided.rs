@@ -5,7 +5,7 @@ mod common;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, symlink};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -144,6 +144,36 @@ impl Fixture {
     fn config(&self, name: &str) -> String {
         fs::read_to_string(self.config_dir().join(format!("environments/{name}.toml"))).unwrap()
     }
+
+    fn new_guided(&self, args: &[&str]) -> Pty {
+        let mut command = self.wineo();
+        command.arg("new").args(args);
+        Pty::spawn(command)
+    }
+
+    fn registered(&self, name: &str) -> bool {
+        self.config_dir()
+            .join(format!("environments/{name}.toml"))
+            .exists()
+    }
+}
+
+/// Answers the questions up to the review for an environment called `name`
+/// with no template, the suggested location and settings, and `how`.
+fn plain_answers(pty: &mut Pty, name: &str, how: &str) {
+    pty.expect("Start from a template?");
+    pty.expect("Template [1]: ");
+    pty.send("1");
+    pty.expect("Environment name, or < to go back: ");
+    pty.send(name);
+    pty.expect("Prefix location, or < to go back [");
+    pty.send("");
+    pty.expect(&format!("Settings for {name}:"));
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect(&format!("How does {name} get its program?"));
+    pty.expect("Choice [1]: ");
+    pty.send(how);
 }
 
 #[test]
@@ -418,4 +448,251 @@ fn setup_offers_to_clean_up_after_an_unresolved_installer() {
     let (status, output) = pty.finish();
     assert!(status.success(), "{output}");
     assert!(!record.exists());
+}
+
+#[test]
+fn guided_new_needs_a_terminal() {
+    let f = Fixture::new();
+    let output = f.wineo().arg("new").stdin(Stdio::piped()).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("wineo new -n <name>"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!f.config_dir().join("environments").exists());
+}
+
+#[test]
+fn guided_new_makes_an_empty_environment_with_nothing_switched_on() {
+    let f = Fixture::new();
+    let mut pty = f.new_guided(&[]);
+    plain_answers(&mut pty, "game", "3");
+    pty.expect("Ready to create game:");
+    pty.expect("  template  none");
+    pty.expect("  program   none for now");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Created game.");
+    pty.expect("Add a target later with: wineo setup game");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    let config = f.config("game");
+    assert!(config.contains("runner = \"wine\""), "{config}");
+    for key in ["dxvk", "vkd3d", "gamemode", "gameid", "[targets"] {
+        assert!(!config.contains(key), "{key} in {config}");
+    }
+    assert!(
+        f.root
+            .path()
+            .join("data/wineo/prefixes/game/system.reg")
+            .exists()
+    );
+}
+
+#[test]
+fn a_template_from_either_flag_is_prefilled_and_shown() {
+    let f = Fixture::new();
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    f.install_build("vkd3d", "vkd3d-2.14", &["x64", "x86"]);
+    for (flag, name) in [("-t", "short"), ("--template", "long")] {
+        let mut pty = f.new_guided(&[flag, "gaming"]);
+        // The template came from the command line, so it isn't asked about.
+        pty.expect("Environment name, or < to go back: ");
+        pty.send(name);
+        pty.expect("Prefix location, or < to go back [");
+        pty.send("");
+        pty.expect("  template  gaming (DXVK latest, vkd3d-proton latest, gamemode on)");
+        pty.expect("Choice [1]: ");
+        pty.send("1");
+        pty.expect("Choice [1]: ");
+        pty.send("3");
+        pty.expect("Ready to create");
+        pty.expect("Choice [1]: ");
+        pty.send("1");
+        pty.expect("Add a target later with");
+        let (status, output) = pty.finish();
+        assert!(status.success(), "{output}");
+        let config = f.config(name);
+        assert!(config.contains("dxvk = \"latest\""), "{config}");
+        assert!(config.contains("vkd3d = \"latest\""), "{config}");
+        assert!(config.contains("gamemode = true"), "{config}");
+    }
+}
+
+#[test]
+fn a_missing_build_is_explained_with_a_way_back() {
+    let f = Fixture::new();
+    let mut pty = f.new_guided(&["-t", "gaming"]);
+    pty.expect("Environment name, or < to go back: ");
+    pty.send("game");
+    pty.expect("Prefix location, or < to go back [");
+    pty.send("");
+    pty.expect("The gaming template can't be used with this: no dxvk builds are installed");
+    // Nothing that can't work is offered, but going back is.
+    pty.expect("  1) Change the runner");
+    pty.expect("Choice [1]: ");
+    pty.send("b");
+    pty.expect("Start from a template?");
+    pty.expect("Template [2]: ");
+    pty.send("q");
+    pty.expect("Canceled, and nothing was created");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(!f.registered("game"));
+    assert!(!f.root.path().join("data/wineo/prefixes/game").exists());
+}
+
+#[test]
+fn explicit_flags_win_over_the_template() {
+    let f = Fixture::new();
+    f.install_runner("custom");
+    f.write_template("mine", "runner = \"custom\"\n");
+    let mut pty = f.new_guided(&[
+        "--interactive",
+        "-n",
+        "game",
+        "-t",
+        "mine",
+        "--runner",
+        "wine",
+    ]);
+    pty.expect("Environment name, or < to go back [game]: ");
+    pty.send("");
+    pty.expect("Prefix location, or < to go back [");
+    pty.send("");
+    pty.expect("  runner    wine (wine-fake)");
+    pty.expect("Choice [1]: ");
+    pty.send("q");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+}
+
+#[test]
+fn enter_takes_the_global_suggestions() {
+    let f = Fixture::new();
+    f.install_runner("custom");
+    f.global_config("[defaults]\nrunner = \"custom\"\n");
+    let mut pty = f.new_guided(&[]);
+    pty.expect("Template [1]: ");
+    pty.send("");
+    pty.expect("Environment name, or < to go back: ");
+    pty.send("game");
+    pty.expect("Prefix location, or < to go back [");
+    pty.send("");
+    pty.expect("  runner    custom (wine-fake)");
+    pty.expect("  arch      win64");
+    pty.expect("Choice [1]: ");
+    pty.send("");
+    pty.expect("Choice [1]: ");
+    pty.send("3");
+    pty.expect("Choice [1]: ");
+    pty.send("");
+    pty.expect("Add a target later with");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(f.config("game").contains("runner = \"custom\""));
+}
+
+#[test]
+fn guided_new_runs_the_installer_then_picks_what_it_installed() {
+    let f = Fixture::new();
+    let installer = f.root.path().join("Downloads/My Games/install-game.exe");
+    fs::create_dir_all(installer.parent().unwrap()).unwrap();
+    fs::write(&installer, b"").unwrap();
+    let mut pty = f.new_guided(&[]);
+    plain_answers(&mut pty, "game", "1");
+    pty.expect("Installer, or < to go back: ");
+    pty.send(installer.to_str().unwrap());
+    pty.expect("  program   run the installer ");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Created game.");
+    pty.expect("The installer finished and the prefix is idle.");
+    pty.expect("  1) Game");
+    pty.expect("Add which, like 1 3: ");
+    pty.send("1");
+    pty.expect("Adding \"Game\":");
+    pty.expect("Choice [1]: ");
+    pty.send("");
+    pty.expect("Add which, like 1 3: ");
+    pty.send("s");
+    pty.expect("  + game  C:\\Games\\Game\\Game.exe, desktop entry \"Game\"");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Saved game.");
+    pty.expect("Start it:        wineo start game");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(f.config("game").contains(r"exe = 'C:\Games\Game\Game.exe'"));
+    let log = fs::read_to_string(f.runtime("game").install_log_path()).unwrap();
+    assert!(log.contains("install-game.exe"), "{log}");
+}
+
+#[test]
+fn canceling_after_creation_keeps_the_environment() {
+    let f = Fixture::new();
+    let installer = f.root.path().join("install-game.exe");
+    fs::write(&installer, b"").unwrap();
+    let mut pty = f.new_guided(&[]);
+    plain_answers(&mut pty, "game", "1");
+    pty.expect("Installer, or < to go back: ");
+    pty.send(installer.to_str().unwrap());
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Add which, like 1 3: ");
+    pty.send("q");
+    pty.expect("Canceled. game and its prefix were kept, continue with `wineo setup game`");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(f.registered("game"));
+}
+
+#[test]
+fn a_registered_name_offers_setup_instead() {
+    let f = Fixture::new();
+    f.games("app", "");
+    let before = f.config("app");
+    let mut pty = f.new_guided(&[]);
+    pty.expect("Template [1]: ");
+    pty.send("1");
+    pty.expect("Environment name, or < to go back: ");
+    pty.send("app");
+    pty.expect("app already exists, and wineo new never replaces one.");
+    pty.expect("  1) Set up app instead");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("What next?");
+    pty.expect("Choice [1]: ");
+    pty.send("5");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert_eq!(f.config("app"), before);
+}
+
+#[test]
+fn a_failed_creation_says_nothing_was_registered() {
+    let f = Fixture::new();
+    let bin = f.root.path().join("data/wineo/runners/broken/bin");
+    fs::create_dir_all(&bin).unwrap();
+    for (file, script) in [
+        (
+            "wine",
+            "#!/bin/sh\necho 'wine: could not load kernel32.dll' >&2\nexit 1\n",
+        ),
+        ("wineserver", "#!/bin/sh\nexit 0\n"),
+    ] {
+        fs::write(bin.join(file), script).unwrap();
+        fs::set_permissions(bin.join(file), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut pty = f.new_guided(&["--runner", "broken"]);
+    plain_answers(&mut pty, "game", "3");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("error: wine failed to create the prefix: could not load kernel32.dll");
+    pty.expect("game was not created, and nothing was registered");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(1), "{output}");
+    assert!(!f.registered("game"));
+    assert!(!f.root.path().join("data/wineo/prefixes/game").exists());
 }
