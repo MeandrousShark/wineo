@@ -282,7 +282,10 @@ pub fn clean_up(
     let Some(target) = cleanup_target(paths, global, name, &runtime)? else {
         return Ok(None);
     };
-    let cleaned = if !target.group_is_ours() {
+    // Wine is stopped through the prefix's own wineserver, which is always
+    // safe. Proton is stopped through the process group, which has to still
+    // be the installer's.
+    let cleaned = if target.runner.is_proton() && !target.group_is_ours() {
         Cleaned::Gone
     } else {
         match target.runner.kill(&target.prefix, target.group)? {
