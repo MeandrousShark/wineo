@@ -140,7 +140,10 @@ echo "umu-run: GAMEID=${GAMEID-unset} STORE=${STORE-unset}"
 if [ -z "$1" ]; then
     mkdir -p "$WINEPREFIX/pfx/drive_c"
     printf 'WINE REGISTRY Version 2\n\n#arch=win64\n' >"$WINEPREFIX/pfx/system.reg"
-    exit 0
+    # Like the real one, which makes the prefix and then fails to run the
+    # empty program.
+    echo "ShellExecuteEx failed: File not found."
+    exit 1
 fi
 echo "umu-run: FAKE_VAR=${FAKE_VAR-}"
 pids="$WINEPREFIX/fake-pids"

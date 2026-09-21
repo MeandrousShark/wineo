@@ -93,8 +93,11 @@ pub fn create(runner: &Runner, dir: &Path, arch: Arch, log: &Path) -> Result<()>
     // A missing or failed prefix would make another wine command create a
     // fresh one, so only write the override once wineboot has initialized it.
     // Its own error is folded into the check below since wine is still
-    // running either way and must be allowed to shut down.
-    let menu_builder_disabled = status.success() && disable_menu_builder(runner, dir, log).is_ok();
+    // running either way and must be allowed to shut down. umu makes the
+    // prefix and then fails to run the empty program, so its exit code says
+    // nothing and the prefix itself is checked instead.
+    let initialized = runner.is_proton() || status.success();
+    let menu_builder_disabled = initialized && disable_menu_builder(runner, dir, log).is_ok();
 
     // Wine only writes the registry files once wineserver shuts down.
     runner.wait_idle(dir)?;
