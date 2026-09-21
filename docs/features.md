@@ -2,6 +2,9 @@
 
 Planned features that aren't scheduled yet. When one gets picked up, it gets its own numbered plan in `docs/plans/`.
 
+Drafted next: [0007: Guided game setup](plans/0007-guided-game-setup.md).
+Standalone game setup and maintenance come before library migration.
+
 **Category**
 
 - Core: makes Wineo meaningfully better at managing environments
@@ -22,8 +25,7 @@ Planned features that aren't scheduled yet. When one gets picked up, it gets its
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
 | `--json` output for scripting | Automation | **2** | 0001 phase 2 | Additive, so it doesn't get harder later as long as output is built from structured data | Build `status` output from a struct in 0001's phase 2 so this stays nearly free. |
-| `import` existing prefixes | Compatibility | **2** | 0004 | Important for actually migrating your existing setup | `new --dir` already adopts a prefix in place, so this is mostly about moving it into the default prefix dir. Proton prefixes (like Steam's) have their own layout and get updated when a different wine runs them, so importing those waits for umu. |
-| Guided `wineo new` wizard | UX | **2** | 0005, 0006 | Great once the underlying manual workflow is stable | Picking a template is one of its steps. |
+| `import` existing prefixes | Compatibility | **2** | 0004, 0007 | Useful once standalone game management is comfortable | `new --dir` already adopts a prefix in place, so this is mostly about moving it into the default prefix dir. Establish the setup and maintenance workflow before adding migration. |
 | Shell completion for environment and target names | UX | **3** | 0002 | Polish on top of static completion | Needs dynamic completion, which is more work than static completions. |
 | Runner, DXVK, and vkd3d downloads | Compatibility | **3** | 0003, 0004, 0005 | Convenience on top of the drop-in directories | Covers GE-Proton and Proton-CachyOS alongside DXVK and vkd3d-proton, which 0005 leaves as drop-ins. Checksums and extraction get built once here for all of them. |
 | `clone` a prefix | Portability/Data | **3** | | Useful but not fundamental | Use reflink copies where the filesystem supports them, and a normal copy everywhere else. |
