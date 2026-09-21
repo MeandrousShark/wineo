@@ -17,6 +17,11 @@ an interrupted setup without hand-editing TOML or recreating the environment.
 Settled by the maintainer:
 
 - Use simple terminal prompts and numbered choices.
+- `-t` is an alias for `--template`. A selected template prefills its settings;
+  missing values fall back to global settings as visible Enter-to-accept
+  suggestions. Explicit flags take precedence over both.
+- Bare guided `new` does not select a template or assume a gaming preset.
+  It asks for choices, showing global settings as suggestions where available.
 - `wineo setup <name>` is the entry point for an existing environment.
 - Guided creation, a reusable program picker, and recovery from partial setup
   belong together. Existing commands remain useful independently.
@@ -50,6 +55,7 @@ The remaining details below are proposals for approval.
 | Invocation | Behavior |
 |---|---|
 | `wineo new` | Start guided creation on a terminal. |
+| `wineo new -t gaming` | Guide creation with template values and global fallbacks prefilled. |
 | `wineo new -n hades ...` | Preserve today's noninteractive behavior. |
 | `wineo new --interactive -n hades ...` | Guide creation with explicit flags prefilled. |
 | `wineo setup hades` | Continue setup or manage launch targets in an existing environment. |
@@ -72,10 +78,13 @@ paths containing spaces without requiring shell escaping or TOML syntax.
 
 ## Guided creation
 
-1. Choose the environment name and prefix location. Default to the configured
+1. Choose an optional template first, unless supplied with `-t`/`--template`.
+   Then choose the environment name and prefix location. Suggest the configured
    prefix root. An existing prefix is adopted in place through the current
    `new --dir` behavior; no copying, moving, or library import is added.
-2. Choose an installed runner and an optional template, including no template.
+2. Review the runner and creation settings from the selected template, or
+   choose them with global settings offered as suggestions when no template
+   was selected. Always allow returning to the template choice.
    Preserve current flag/template/global precedence and display the effective
    settings. Show unavailable runners and incompatible templates with a
    reason instead of selecting a combination that cannot work.
@@ -207,6 +216,19 @@ general diagnostics command. Dynamic shell completion stays a later polish
 item. Bugs that prevent the lifecycle below belong here; unrelated hardening
 gets a separate plan.
 
+## Open design: portable applications
+
+The maintainer wants to consider an organized setup flow for already extracted
+Windows applications. Currently, targets can reference external executables
+and launch from their containing directory, but there is no managed copy flow.
+
+Discuss offering both use-in-place and copying a complete application folder
+into the environment's Wine drive. Selecting a folder could feed a bounded
+executable picker, followed by the normal target setup. This is not yet an
+approved extension to the no-copy behavior above. Settle storage location,
+working-directory defaults, copy failures/collisions, and removal semantics
+before making it part of the implementation scope.
+
 ## Testing and acceptance
 
 - Unit tests for choices, validation, target-name collisions, argument
@@ -221,7 +243,8 @@ gets a separate plan.
   child, Proton completion/cancellation, and config edits made while a prompt
   waits. Keep other environments usable and untouched.
 - CLI tests for TTY detection, PTY interaction, help/completion registration,
-  and unchanged flag-only/noninteractive behavior.
+  `-t`/`--template` equivalence, Enter accepting template/global suggestions,
+  explicit-flag precedence, and unchanged flag-only/noninteractive behavior.
 - Run fmt, clippy, and the normal suite. Real Wine GUI tests use throwaway
   prefixes and XDG roots plus a dedicated display/session. Never fall back to
   opening test windows on the maintainer's gaming desktop.
