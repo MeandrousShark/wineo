@@ -20,6 +20,9 @@ use crate::paths::{self, Paths};
 /// this long before deciding another command really holds it.
 const LOCK_ATTEMPTS: u32 = 20;
 const LOCK_RETRY: Duration = Duration::from_millis(5);
+/// A config write only holds its lock while it reads, checks, and replaces one
+/// small file, so another one is waited for, up to about five seconds.
+const CONFIG_ATTEMPTS: u32 = 1000;
 
 /// What a command is doing with an environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -106,6 +109,13 @@ impl Drop for Guard {
     }
 }
 
+/// Held while one config file is read, changed, and written back, so two
+/// commands changing it at once can't overwrite each other's change.
+#[derive(Debug)]
+pub struct ConfigGuard {
+    _file: File,
+}
+
 /// One lock to take, and how a message would name what it protects.
 struct Target {
     path: PathBuf,
@@ -143,7 +153,7 @@ impl Locks {
         let mut files = Vec::with_capacity(targets.len());
         for target in &targets {
             let file = open(&target.path)?;
-            if !take(&file, &target.path, operation.is_shared())? {
+            if !take(&file, &target.path, operation.is_shared(), LOCK_ATTEMPTS)? {
                 return Err(self.busy(target)?);
             }
             if !operation.is_shared() {
@@ -155,6 +165,28 @@ impl Locks {
             files,
             exclusive: !operation.is_shared(),
         })
+    }
+
+    /// Serializes creating, changing, and removing the config file at `path`.
+    /// Independent of the operation locks, so a target setting can still change
+    /// while a game runs. Take any operation locks first, then this one, and
+    /// read the file again once it is held.
+    pub fn config(&self, path: &Path) -> Result<ConfigGuard> {
+        self.config_lock(path, CONFIG_ATTEMPTS)
+    }
+
+    fn config_lock(&self, path: &Path, attempts: u32) -> Result<ConfigGuard> {
+        fs::create_dir_all(&self.dir)
+            .context(|| format!("failed to create {}", self.dir.display()))?;
+        let lock = self.config_path(path);
+        let file = open(&lock)?;
+        if !take(&file, &lock, false, attempts)? {
+            return Err(Error::Busy {
+                subject: format!("config {}", path.display()),
+                holder: "another wineo command is changing it",
+            });
+        }
+        Ok(ConfigGuard { _file: file })
     }
 
     /// The operation holding `name` exclusively, for `status` and `list`. A
@@ -196,14 +228,22 @@ impl Locks {
     }
 
     fn prefix_path(&self, prefix: &Path) -> PathBuf {
-        let resolved = paths::resolve(prefix);
+        self.keyed_path("prefix", prefix)
+    }
+
+    fn config_path(&self, config: &Path) -> PathBuf {
+        self.keyed_path("config", config)
+    }
+
+    fn keyed_path(&self, kind: &str, path: &Path) -> PathBuf {
+        let resolved = paths::resolve(path);
         let label = resolved
             .file_name()
             .and_then(|name| name.to_str())
             .map(label)
             .unwrap_or_default();
         let hash = fnv1a(resolved.as_os_str().as_bytes());
-        self.dir.join(format!("prefix-{label}-{hash:016x}.lock"))
+        self.dir.join(format!("{kind}-{label}-{hash:016x}.lock"))
     }
 }
 
@@ -217,18 +257,18 @@ fn open(path: &Path) -> Result<File> {
         .context(|| format!("failed to open {}", path.display()))
 }
 
-fn take(file: &File, path: &Path, shared: bool) -> Result<bool> {
+fn take(file: &File, path: &Path, shared: bool, attempts: u32) -> Result<bool> {
     let operation = if shared {
         FlockOperation::NonBlockingLockShared
     } else {
         FlockOperation::NonBlockingLockExclusive
     };
-    let mut attempts = 1;
+    let mut attempt = 1;
     while !try_flock(file, path, operation)? {
-        if attempts == LOCK_ATTEMPTS {
+        if attempt >= attempts {
             return Ok(false);
         }
-        attempts += 1;
+        attempt += 1;
         thread::sleep(LOCK_RETRY);
     }
     Ok(true)
@@ -437,6 +477,57 @@ mod tests {
                 .is_err()
         );
         drop(locks.acquire(Operation::Remove, "notepad", &[]).unwrap());
+        drop(held);
+    }
+
+    #[test]
+    fn a_config_lock_excludes_another_writer_of_the_same_file() {
+        let root = tempfile::tempdir().unwrap();
+        let locks = locks(root.path());
+        let config = root.path().join("environments/notepad.toml");
+        let held = locks.config(&config).unwrap();
+        let err = locks.config_lock(&config, 2).unwrap_err();
+        assert!(
+            matches!(&err, Error::Busy { subject, .. } if subject.starts_with("config ")),
+            "{err}"
+        );
+        // Another file has a lock of its own.
+        drop(
+            locks
+                .config(&root.path().join("environments/other.toml"))
+                .unwrap(),
+        );
+        drop(held);
+        drop(locks.config(&config).unwrap());
+    }
+
+    #[test]
+    fn a_config_write_waits_for_the_one_before_it() {
+        let root = tempfile::tempdir().unwrap();
+        let locks = locks(root.path());
+        let config = root.path().join("config.toml");
+        let held = locks.config(&config).unwrap();
+        let waiter = {
+            let (locks, config) = (locks.clone(), config.clone());
+            thread::spawn(move || locks.config(&config).map(drop))
+        };
+        thread::sleep(Duration::from_millis(50));
+        drop(held);
+        waiter.join().unwrap().unwrap();
+    }
+
+    // `set` has to be able to change a target while a game runs, which holds
+    // the environment's operation lock the whole time.
+    #[test]
+    fn config_locks_are_independent_of_operation_locks() {
+        let root = tempfile::tempdir().unwrap();
+        let locks = locks(root.path());
+        let prefix = root.path().join("p");
+        let config = root.path().join("environments/notepad.toml");
+        let held = locks
+            .acquire(Operation::Winetricks, "notepad", &[&prefix])
+            .unwrap();
+        drop(locks.config(&config).unwrap());
         drop(held);
     }
 

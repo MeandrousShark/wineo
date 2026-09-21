@@ -9,6 +9,7 @@ use crate::edit::{self, Scope};
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
 use crate::name;
+use crate::operation::Locks;
 use crate::paths::Paths;
 
 /// Which config file `update` edits.
@@ -27,12 +28,18 @@ pub fn update(
     set: &[(&str, &str)],
     unset: &[&str],
 ) -> Result<Vec<String>> {
-    let (scope, path) = locate(paths, file)?;
+    let (scope, path) = config_path(paths, file)?;
+    // Read under the lock, so a change or a removal that lands in the meantime
+    // is built on or refused rather than overwritten.
+    let _guard = Locks::new(paths).config(&path)?;
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound && scope == Scope::Global => {
-            String::new()
-        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => match file {
+            ConfigFile::Global => String::new(),
+            ConfigFile::Environment(env) => {
+                return Err(Error::UnknownEnvironment(env.to_owned()));
+            }
+        },
         Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
     };
     let mut doc: DocumentMut = text.parse().map_err(|source| Error::ConfigParse {
@@ -72,18 +79,14 @@ pub fn update(
     Ok(missing)
 }
 
-fn locate(paths: &Paths, file: ConfigFile) -> Result<(Scope, PathBuf)> {
+fn config_path(paths: &Paths, file: ConfigFile) -> Result<(Scope, PathBuf)> {
     match file {
         ConfigFile::Global => Ok((Scope::Global, paths.global_config())),
         ConfigFile::Environment(env) => {
             if !name::is_valid(env) {
                 return Err(Error::InvalidName(env.to_owned()));
             }
-            let path = paths.environment_config(env);
-            if !path.exists() {
-                return Err(Error::UnknownEnvironment(env.to_owned()));
-            }
-            Ok((Scope::Environment, path))
+            Ok((Scope::Environment, paths.environment_config(env)))
         }
     }
 }
@@ -177,6 +180,35 @@ mod tests {
         update(&paths, ConfigFile::Global, &[("stop_timeout", "30")], &[]).unwrap();
         let config = GlobalConfig::load(&paths).unwrap();
         assert_eq!(config.stop_timeout, 30);
+    }
+
+    // Without the lock, a removal between the read and the write would have the
+    // write bring the config back.
+    #[test]
+    fn a_change_waits_for_a_removal_and_does_not_bring_the_config_back() {
+        let (_root, paths) = setup();
+        write_env(&paths, NOTEPAD);
+        let config = paths.environment_config("notepad");
+        let held = Locks::new(&paths).config(&config).unwrap();
+        let change = {
+            let paths = paths.clone();
+            std::thread::spawn(move || {
+                update(
+                    &paths,
+                    ConfigFile::Environment("notepad"),
+                    &[("runner", "wine")],
+                    &[],
+                )
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::remove_file(&config).unwrap();
+        drop(held);
+        assert!(matches!(
+            change.join().unwrap(),
+            Err(Error::UnknownEnvironment(_))
+        ));
+        assert!(!config.exists());
     }
 
     #[test]

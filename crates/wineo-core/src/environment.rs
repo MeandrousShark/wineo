@@ -8,6 +8,7 @@ use toml_edit::{DocumentMut, value};
 use crate::config::{Arch, EnvironmentConfig, GlobalConfig};
 use crate::error::{Error, IoContext, Result};
 use crate::name;
+use crate::operation::Locks;
 use crate::paths::Paths;
 use crate::prefix;
 use crate::runner::Runner;
@@ -129,6 +130,7 @@ impl Environment {
         if let Some(template) = &new.template {
             template.apply(&mut doc);
         }
+        let _guard = Locks::new(paths).config(&path)?;
         write_new(&path, &doc.to_string())?;
         Self::load(paths, &new.name)
     }

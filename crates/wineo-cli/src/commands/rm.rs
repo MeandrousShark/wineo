@@ -66,7 +66,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             .with_context(|| format!("failed to remove {}, {name} was kept", dir.display()))?;
     }
     let config = paths.environment_config(name);
+    let config_guard = locks.config(&config)?;
     fs::remove_file(&config).with_context(|| format!("failed to remove {}", config.display()))?;
+    drop(config_guard);
 
     // After the config, so a failure here cannot leave an environment that is
     // half removed. A leftover entry is listed by `wineo desktop` as a stray.
