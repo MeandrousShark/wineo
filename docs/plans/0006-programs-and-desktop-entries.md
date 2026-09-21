@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0006: Installed programs and desktop entries
 
@@ -247,3 +247,26 @@ wineo rm hades                                                # any entries go w
 
 The entry appears in the desktop's launcher with an icon, clicking it starts
 the app, and the launcher shows one icon for it rather than two.
+
+## Completion
+
+Both phases are implemented. Desktop settings reconcile from `set`, `new`,
+`start`, `run`, `exec`, and `winetricks`. Unsetting a target's entry also cleans
+it up when its prefix has disappeared, and ownership keys identify entries
+regardless of their filename.
+
+Wine may refresh file associations alongside the requested shortcut. Icon
+selection ignores those association entries, and both Wine's data and menu
+configuration outputs are confined to the temporary extraction directory.
+
+Validation covers the core scanner and renderer, CLI set/unset and target
+removal, stray listing, status, removal, and hand-edited configuration applied
+on start. The ignored `desktop_wine` integration test creates a Start Menu
+shortcut for Wine's bundled Notepad in a throwaway prefix, verifies extracted
+PNG icons, executes the generated launch command, confirms Notepad is running,
+and checks entry and icon cleanup. It requires Wine and a graphical session,
+with no downloaded installer or compiler dependency.
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`,
+and `cargo test -p wineo-cli --test desktop_wine -- --ignored` pass. Desktop
+shell-specific visual grouping is not asserted by the automated test.
