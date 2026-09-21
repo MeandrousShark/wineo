@@ -1869,20 +1869,50 @@ fn a_template_that_cannot_be_used_fails_before_anything_is_created() {
 }
 
 #[test]
-fn a_template_naming_proton_and_dxvk_is_refused() {
+fn a_template_naming_proton_and_dxvk_leaves_dxvk_out() {
     let f = Fixture::new();
     f.install_proton("GE-Proton9-20");
     f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
-    f.write_template("mixed", "runner = \"GE-Proton9-20\"\ndxvk = \"dxvk-2.7\"\n");
-
-    let refused = f.run(&["new", "-n", "hades", "--template", "mixed"]);
-    assert!(!refused.status.success());
-    assert!(
-        stderr(&refused).contains("bundles its own"),
-        "{}",
-        stderr(&refused)
+    f.write_template(
+        "mixed",
+        "runner = \"GE-Proton9-20\"\ndxvk = \"dxvk-2.7\"\ngamemode = true\n",
     );
-    assert!(!f.config_dir().join("environments/hades.toml").exists());
+
+    let created = f.run(&["new", "-n", "hades", "--template", "mixed"]);
+    assert_success(&created);
+    assert!(
+        stderr(&created).contains("GE-Proton9-20 bundles its own DXVK and vkd3d-proton"),
+        "{}",
+        stderr(&created)
+    );
+    let config = f.created_config("hades");
+    assert!(config.contains("runner = \"GE-Proton9-20\""), "{config}");
+    assert!(config.contains("gamemode = true"), "{config}");
+    assert!(!config.contains("dxvk"), "{config}");
+}
+
+#[test]
+fn gaming_runs_on_the_newest_proton_unless_told_otherwise() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.install_proton("GE-Proton11-7-x86_64");
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    f.install_build("vkd3d", "vkd3d-2.14", &["x64", "x86"]);
+
+    assert_success(&f.run(&["new", "-n", "hades", "-t", "gaming"]));
+    let config = f.created_config("hades");
+    assert!(
+        config.contains("runner = \"GE-Proton11-7-x86_64\""),
+        "{config}"
+    );
+    assert!(config.contains("gamemode = true"), "{config}");
+    assert!(!config.contains("dxvk"), "{config}");
+
+    // A runner given on the command line still wins, and wine gets the builds.
+    assert_success(&f.run(&["new", "-n", "wined", "-t", "gaming", "--runner", "wine"]));
+    let config = f.created_config("wined");
+    assert!(config.contains("runner = \"wine\""), "{config}");
+    assert!(config.contains("dxvk = \"latest\""), "{config}");
 }
 
 impl Fixture {

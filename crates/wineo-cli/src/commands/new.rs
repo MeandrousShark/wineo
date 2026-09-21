@@ -15,7 +15,7 @@ use wineo_core::prefix;
 use wineo_core::programs::Listing;
 use wineo_core::runners::Runners;
 use wineo_core::supervisor::{Notice, Watched};
-use wineo_core::templates::{Template, Templates};
+use wineo_core::templates::Templates;
 
 use super::{components, desktop, programs};
 use crate::prompt::{self, Canceled, Prompt, Terminal};
@@ -69,18 +69,20 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         Some(name) => Some(Templates::new(paths).resolve(name)?),
         None => None,
     };
-    let from_template = |pick: fn(&Template) -> Option<String>| template.as_ref().and_then(pick);
+    let runners = Runners::new(paths, &global)?;
     // An explicit flag wins over what the template says.
-    let runner_name = args
-        .runner
-        .clone()
-        .or_else(|| from_template(|template| template.runner.clone()))
-        .unwrap_or_else(|| global.defaults.runner.clone());
+    let runner_name = match (&args.runner, &template) {
+        (Some(runner), _) => runner.clone(),
+        (None, Some(template)) => template
+            .runner_name(&runners, &global.defaults.runner)?
+            .unwrap_or_else(|| global.defaults.runner.clone()),
+        (None, None) => global.defaults.runner.clone(),
+    };
     let arch = args
         .arch
         .or_else(|| template.as_ref().and_then(|template| template.arch));
     // Resolved before anything is created, so a typo never leaves a prefix behind.
-    let runner = Runners::new(paths, &global)?.resolve(&runner_name)?;
+    let runner = runners.resolve(&runner_name)?;
 
     if runner.is_proton() && arch == Some(Arch::Win32) {
         bail!(
@@ -89,6 +91,16 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         );
     }
 
+    let template = template.map(|template| {
+        let (fitted, left_out) = template.for_runner(&runner);
+        if left_out {
+            eprintln!(
+                "{} bundles its own DXVK and vkd3d-proton, so the template's are left out",
+                runner.name()
+            );
+        }
+        fitted
+    });
     // A build the template names has to be there before a prefix is made,
     // the same way its runner does.
     if let Some(template) = &template {

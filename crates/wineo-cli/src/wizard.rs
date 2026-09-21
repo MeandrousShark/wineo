@@ -18,7 +18,7 @@ use wineo_core::programs::{Program, Source};
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 use wineo_core::targets::Batch;
-use wineo_core::templates::{Template, Templates};
+use wineo_core::templates::{NEWEST_PROTON, Template, Templates};
 use wineo_core::winpath;
 
 use crate::commands::setup::{self, Ran};
@@ -161,7 +161,7 @@ pub fn run<I: Input, W: Write>(
     let how = answers.how.clone().expect("chosen before the review");
     let template = answers
         .template
-        .map(|(_, template)| fit_template(&template, &runner).0);
+        .map(|(_, template)| template.for_runner(&runner).0);
     create(
         paths,
         global,
@@ -221,24 +221,17 @@ fn ask_template<I: Input, W: Write>(
     )
 }
 
-/// The template as it applies with `runner`: Proton bundles its own DXVK and
-/// vkd3d-proton, so a template's picks of those are left out for it.
-fn fit_template(template: &Template, runner: &Runner) -> (Template, bool) {
-    let mut fitted = template.clone();
-    if runner.is_proton() && (fitted.dxvk.is_some() || fitted.vkd3d.is_some()) {
-        fitted.dxvk = None;
-        fitted.vkd3d = None;
-        return (fitted, true);
-    }
-    (fitted, false)
-}
-
 /// A template line for a card, with what was left out for the runner.
 fn shown_template(template: Option<&(String, Template)>, runner: Option<&Runner>) -> String {
     let Some((name, template)) = template else {
         return "none".to_owned();
     };
-    match runner.map(|runner| fit_template(template, runner)) {
+    // The runner has its own line on a card.
+    let template = &Template {
+        runner: None,
+        ..template.clone()
+    };
+    match runner.map(|runner| template.for_runner(runner)) {
         Some((fitted, true)) => format!(
             "{name} ({}; DXVK and vkd3d-proton left out, since Proton bundles its own)",
             describe_template(&fitted)
@@ -250,8 +243,10 @@ fn shown_template(template: Option<&(String, Template)>, runner: Option<&Runner>
 /// What a template sets, as a short list.
 fn describe_template(template: &Template) -> String {
     let mut parts = Vec::new();
-    if let Some(runner) = &template.runner {
-        parts.push(format!("runner {runner}"));
+    match template.runner.as_deref() {
+        Some(NEWEST_PROTON) => parts.push("Proton when installed".to_owned()),
+        Some(runner) => parts.push(format!("runner {runner}")),
+        None => {}
     }
     if let Some(arch) = template.arch {
         parts.push(arch.to_string());
@@ -369,10 +364,14 @@ fn settings<I: Input, W: Write>(
     let dir = paths.absolute(answers.dir.as_deref().expect("placed before this"))?;
     loop {
         let template = answers.template.as_ref().map(|(_, template)| template);
+        let from_template = match template {
+            Some(template) => template.runner_name(&runners, &global.defaults.runner)?,
+            None => None,
+        };
         let runner_name = answers
             .runner
             .clone()
-            .or_else(|| template.and_then(|template| template.runner.clone()))
+            .or(from_template)
             .unwrap_or_else(|| global.defaults.runner.clone());
         let arch = answers
             .arch
@@ -491,7 +490,7 @@ fn combination_problem(
         ));
     }
     if let Some((template_name, template)) = &answers.template {
-        let (template, _) = fit_template(template, runner);
+        let (template, _) = template.for_runner(runner);
         let wanted = Wanted {
             dxvk: template.dxvk.clone(),
             vkd3d: template.vkd3d.clone(),

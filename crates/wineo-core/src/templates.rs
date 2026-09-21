@@ -15,14 +15,21 @@ use crate::config::Arch;
 use crate::error::{Error, Result};
 use crate::name;
 use crate::paths::Paths;
+use crate::runner::Runner;
+use crate::runners::Runners;
 
 /// Shipped templates, used when no file of the same name is installed. `latest`
-/// is what lets one exist at all: naming a version nobody has would make it
-/// fail on every fresh machine.
+/// and `proton` are what let one exist at all: naming a version nobody has
+/// would make it fail on every fresh machine. With a Proton build installed,
+/// gaming runs on it and its DXVK and vkd3d picks drop out.
 const BUILT_IN: [(&str, &str); 1] = [(
     "gaming",
-    "dxvk = \"latest\"\nvkd3d = \"latest\"\ngamemode = true\n",
+    "runner = \"proton\"\ndxvk = \"latest\"\nvkd3d = \"latest\"\ngamemode = true\n",
 )];
+
+/// What a template's `runner` can be besides a runner's name: the newest
+/// Proton build installed, or the default runner when there is none.
+pub const NEWEST_PROTON: &str = "proton";
 
 /// Everything a template may set.
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
@@ -40,6 +47,32 @@ pub struct Template {
 }
 
 impl Template {
+    /// The runner this template asks for, by name, with `proton` resolved to
+    /// the newest Proton build installed or `fallback` when there is none.
+    /// None when it asks for no runner at all.
+    pub fn runner_name(&self, runners: &Runners, fallback: &str) -> Result<Option<String>> {
+        match self.runner.as_deref() {
+            Some(NEWEST_PROTON) => Ok(Some(match runners.newest_proton()? {
+                Some(runner) => runner.name().to_owned(),
+                None => fallback.to_owned(),
+            })),
+            other => Ok(other.map(str::to_owned)),
+        }
+    }
+
+    /// The template as it applies on `runner`. Proton bundles its own DXVK
+    /// and vkd3d-proton, so a template's picks of those are left out for it.
+    /// The flag says whether anything was.
+    pub fn for_runner(&self, runner: &Runner) -> (Template, bool) {
+        let mut fitted = self.clone();
+        if runner.is_proton() && (fitted.dxvk.is_some() || fitted.vkd3d.is_some()) {
+            fitted.dxvk = None;
+            fitted.vkd3d = None;
+            return (fitted, true);
+        }
+        (fitted, false)
+    }
+
     /// Adds everything the template sets to a new environment's config.
     /// `runner` and `arch` are left out: the caller resolves those before the
     /// prefix is created, so they are already written.
@@ -207,7 +240,7 @@ mod tests {
         assert_eq!(gaming.dxvk.as_deref(), Some("latest"));
         assert_eq!(gaming.vkd3d.as_deref(), Some("latest"));
         assert_eq!(gaming.gamemode, Some(true));
-        assert_eq!(gaming.runner, None);
+        assert_eq!(gaming.runner.as_deref(), Some(NEWEST_PROTON));
     }
 
     #[test]

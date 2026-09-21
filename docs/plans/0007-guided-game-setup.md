@@ -47,9 +47,12 @@ Settled by the maintainer during implementation:
 - Running an installer from `setup` while target changes are staged reviews
   and saves those changes first, so a failed or canceled installer can't lose
   them.
-- In guided `new`, choosing a Proton runner leaves out a template's DXVK and
-  vkd3d settings, since Proton bundles its own, and says so. Noninteractive
-  `new` still refuses that combination.
+- A Proton runner leaves out a template's DXVK and vkd3d settings, since
+  Proton bundles its own, and says so, in guided and noninteractive `new`.
+- The built-in `gaming` template runs on the newest installed Proton, going by
+  the version numbers in runner names. With none installed it falls back to the
+  default runner with DXVK and vkd3d. A template's `runner = "proton"` asks for
+  this, and `--runner` still wins.
 - The guided name question is called the install name and says what it is for.
   A name that can't be used says which characters are the problem and suggests
   one that works.

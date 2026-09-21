@@ -125,6 +125,17 @@ impl Runners {
         Ok(listing)
     }
 
+    /// The newest Proton build installed, going by the version numbers in
+    /// their names, so `GE-Proton11-7` is newer than `GE-Proton9-20`.
+    pub fn newest_proton(&self) -> Result<Option<Runner>> {
+        Ok(self
+            .list()?
+            .runners
+            .into_iter()
+            .filter(Runner::is_proton)
+            .max_by(|a, b| version_order(a.name(), b.name())))
+    }
+
     fn installed(&self) -> Result<Vec<String>> {
         Ok(self
             .list()?
@@ -133,6 +144,37 @@ impl Runners {
             .map(|runner| runner.name().to_owned())
             .collect())
     }
+}
+
+/// Compares names chunk by chunk, numbers by value and the rest as text.
+fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
+    fn chunks(name: &str) -> Vec<(bool, &str)> {
+        let mut chunks = Vec::new();
+        let mut start = 0;
+        let bytes = name.as_bytes();
+        for index in 1..=bytes.len() {
+            if index == bytes.len()
+                || bytes[index].is_ascii_digit() != bytes[index - 1].is_ascii_digit()
+            {
+                chunks.push((bytes[start].is_ascii_digit(), &name[start..index]));
+                start = index;
+            }
+        }
+        chunks
+    }
+    for (left, right) in chunks(a).into_iter().zip(chunks(b)) {
+        let order = match (left, right) {
+            ((true, l), (true, r)) => l
+                .parse::<u64>()
+                .unwrap_or(0)
+                .cmp(&r.parse::<u64>().unwrap_or(0)),
+            ((_, l), (_, r)) => l.cmp(r),
+        };
+        if order.is_ne() {
+            return order;
+        }
+    }
+    a.len().cmp(&b.len())
 }
 
 /// What kind of runner a directory holds, if any. Proton is checked first,
@@ -416,5 +458,16 @@ mod tests {
         global.defaults.runner_root = Some(root.path().join("elsewhere").display().to_string());
         let moved = Runners::new(&paths, &global).unwrap();
         assert_eq!(moved.root(), root.path().join("elsewhere"));
+    }
+
+    #[test]
+    fn the_newest_proton_goes_by_version_numbers() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(runners(root.path()).newest_proton().unwrap().is_none());
+        for name in ["GE-Proton9-20", "GE-Proton11-7-x86_64", "GE-Proton10-3"] {
+            proton_build(root.path(), name, name);
+        }
+        let newest = runners(root.path()).newest_proton().unwrap().unwrap();
+        assert_eq!(newest.name(), "GE-Proton11-7-x86_64");
     }
 }
