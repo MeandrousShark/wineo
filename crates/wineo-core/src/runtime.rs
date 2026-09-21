@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
 use crate::launch::Overrides;
+use crate::operation::Operation;
 use crate::paths::Paths;
+use crate::runner::Runner;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -113,6 +115,28 @@ impl RunState {
             args: self.args.clone(),
         }
     }
+}
+
+/// What `operation.toml` records while an operation runs programs in the
+/// prefix, so what it started can still be found and stopped if wineo dies
+/// first. It stays until everything has stopped, which is what keeps other
+/// work refused until then.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperationState {
+    pub operation: Operation,
+    /// What was run, for messages.
+    pub program: String,
+    /// Resolved when the operation started, so a cleanup reaches the same
+    /// wineserver even if the environment's runner has changed since.
+    pub runner: Runner,
+    /// The configured prefix, which is what `Runner` methods take.
+    pub prefix: PathBuf,
+    /// Missing until the program is running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<u32>,
+    pub started_at: Timestamp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -291,6 +315,64 @@ impl Runtime {
         write_atomic(&self.state_path(), &text)
     }
 
+    /// The operation `operation.toml` records. To a caller holding an operation
+    /// lock on the environment, one being there means whatever wrote it is gone
+    /// without having confirmed that everything it started has stopped.
+    pub fn read_operation(&self) -> Result<Option<OperationState>> {
+        let path = self.operation_path();
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
+        };
+        toml::from_str(&text)
+            .map(Some)
+            .map_err(|source| Error::StateSyntax {
+                path,
+                source: Box::new(source),
+            })
+    }
+
+    pub fn write_operation(&self, state: &OperationState) -> Result<()> {
+        let text = toml::to_string(state).expect("operation state always serializes");
+        write_atomic(&self.operation_path(), &text)
+    }
+
+    pub fn clear_operation(&self) -> Result<()> {
+        let path = self.operation_path();
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err).context(|| format!("failed to remove {}", path.display())),
+        }
+    }
+
+    /// Refuses work that needs the prefix to itself: a run going on, a run
+    /// whose owner died, or an operation that never confirmed it was done.
+    /// Only meaningful under an exclusive operation lock.
+    pub fn check_quiet(&self, name: &str) -> Result<()> {
+        if self.is_running()? {
+            return Err(Error::Running(name.to_owned()));
+        }
+        // An unreadable state file says nothing either way, and must not keep
+        // the prefix from being used.
+        if self.status().is_ok_and(|status| status.lost) {
+            return Err(Error::LostRun(name.to_owned()));
+        }
+        self.check_resolved(name)
+    }
+
+    /// Refuses anything that would use the prefix while an operation that
+    /// never confirmed it was done may still have programs running in it.
+    pub fn check_resolved(&self, name: &str) -> Result<()> {
+        match self.read_operation() {
+            Ok(None) => Ok(()),
+            // An unreadable record still says something was left unresolved.
+            Ok(Some(_)) | Err(Error::StateSyntax { .. }) => Err(Error::Unresolved(name.to_owned())),
+            Err(err) => Err(err),
+        }
+    }
+
     /// Output of the latest detached run.
     pub fn log_path(&self) -> PathBuf {
         self.dir.join("output.log")
@@ -347,6 +429,15 @@ impl Runtime {
 
     fn state_path(&self) -> PathBuf {
         self.dir.join("state.toml")
+    }
+
+    fn operation_path(&self) -> PathBuf {
+        self.dir.join("operation.toml")
+    }
+
+    /// Where an installer's output goes when it is not shown on the terminal.
+    pub fn install_log_path(&self) -> PathBuf {
+        self.dir.join("install.log")
     }
 }
 

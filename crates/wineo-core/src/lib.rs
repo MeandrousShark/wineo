@@ -6,6 +6,7 @@ pub mod environment;
 pub mod error;
 mod files;
 pub mod install;
+pub mod installer;
 pub mod launch;
 pub mod log;
 pub mod name;

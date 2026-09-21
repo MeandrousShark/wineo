@@ -183,11 +183,28 @@ pub enum Error {
         requested: Arch,
     },
 
+    #[error("{0} is running, stop it first")]
+    Running(String),
+
+    #[error(
+        "{0}'s last run was lost, so wine may still be running in its prefix. Clean it up with `wineo stop {0}` first"
+    )]
+    LostRun(String),
+
+    #[error(
+        "{0}'s last installer did not finish cleanly, so wine may still be running in its prefix. Clean it up with `wineo stop {0}` first"
+    )]
+    Unresolved(String),
+
     #[error("{0}")]
     StartFailed(String),
 
     #[error("still running after {0} seconds")]
     StillRunning(u64),
+
+    /// Whatever was waited on could not be confirmed to have stopped.
+    #[error("{0}")]
+    Unsettled(String),
 
     #[error("wine failed to create the prefix{}, full output in {}", .reason.as_deref().map(|r| format!(": {r}")).unwrap_or_default(), .log.display())]
     PrefixCreation {

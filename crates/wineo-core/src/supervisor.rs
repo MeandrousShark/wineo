@@ -22,6 +22,7 @@ use crate::launch::{Launch, Overrides};
 use crate::log::{Cap, Log};
 use crate::operation::{Locks, Operation};
 use crate::prefix;
+use crate::runner::Runner;
 use crate::runtime::{RunMode, RunState, RunStatus, Runtime, exit_code};
 
 /// The hidden command a detached supervisor runs as.
@@ -33,7 +34,7 @@ const KILL_RETRY: Duration = Duration::from_secs(1);
 
 enum Event {
     Exited(io::Result<ExitStatus>),
-    Idle,
+    Idle(Result<()>),
     Stop,
     Force,
     StopTimeout,
@@ -48,6 +49,35 @@ pub enum Notice {
     Killing,
     /// Something failed without ending the run.
     Warning(Error),
+}
+
+/// What watching a program reports along the way.
+#[derive(Debug)]
+pub enum Watched {
+    /// The program exited, with its code when it could be collected. What it
+    /// started may still be running, and is waited for next.
+    Exited(Option<i32>),
+    Notice(Notice),
+}
+
+/// How a watch knows that everything the program started has stopped.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Settle {
+    /// Once wineserver goes idle. A Proton run is over when umu returns.
+    Idle,
+    /// Only once that is confirmed, including that nothing is left in a Proton
+    /// program's process group.
+    Confirmed,
+}
+
+/// How a watched program and everything it started came to an end.
+#[derive(Debug)]
+pub(crate) struct Ending {
+    pub exit_code: Option<i32>,
+    /// A stop was requested, so an exit code can't tell a kill apart.
+    pub stopped: bool,
+    /// Err when it could not be confirmed that nothing is left running.
+    pub settled: Result<()>,
 }
 
 /// Owns a run until it ends.
@@ -94,21 +124,73 @@ impl Supervisor {
         self,
         runtime: &Runtime,
         launch: &Launch,
-        mut child: Child,
+        child: Child,
         state: &mut RunState,
         stop_timeout: Duration,
         mut notify: impl FnMut(Notice),
     ) -> Result<()> {
+        let group = state.group;
+        let outlives = launch.runner.outlives_program();
+        // A run is over once the prefix looks idle, whether or not that could
+        // be confirmed, so `settled` is not looked at.
+        let ending = self.watch(
+            &launch.runner,
+            &launch.prefix,
+            group,
+            child,
+            stop_timeout,
+            Settle::Idle,
+            None,
+            |watched| match watched {
+                Watched::Exited(code) => {
+                    state.program_exited(code, outlives);
+                    if let Err(err) = runtime.write_state(state) {
+                        notify(Notice::Warning(err));
+                    }
+                }
+                Watched::Notice(notice) => notify(notice),
+            },
+        );
+
+        // Exit codes can't tell a kill from a normal exit, so a stop is only
+        // known from the request.
+        let status = match (ending.stopped, state.exit_code) {
+            (true, _) => RunStatus::Stopped,
+            (false, Some(0)) => RunStatus::Exited,
+            (false, _) => RunStatus::Failed,
+        };
+        state.finish(status);
+        runtime.write_state(state)
+    }
+
+    /// Waits for `child` and then for everything it started, asking programs
+    /// to close on the first stop request and killing them on the next one or
+    /// once `stop_timeout` passes. Kills repeat until the prefix is idle, or
+    /// until `give_up` has passed since the first one, when a caller has to
+    /// report rather than wait on for good.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn watch(
+        &self,
+        runner: &Runner,
+        prefix: &Path,
+        group: Option<u32>,
+        mut child: Child,
+        stop_timeout: Duration,
+        settle: Settle,
+        give_up: Option<Duration>,
+        mut watched: impl FnMut(Watched),
+    ) -> Ending {
         let sender = self.sender.clone();
         thread::spawn(move || {
             let _ = sender.send(Event::Exited(child.wait()));
         });
 
+        let mut exit = None;
         let mut stopping = false;
-        let mut killed = false;
+        let mut killing_since: Option<Instant> = None;
         // When the clean stop gives up, or the next kill is due.
         let mut deadline: Option<Instant> = None;
-        loop {
+        let settled = loop {
             let event = match deadline {
                 Some(deadline) => match self
                     .events
@@ -116,65 +198,62 @@ impl Supervisor {
                 {
                     Ok(event) => event,
                     Err(RecvTimeoutError::Timeout) => Event::StopTimeout,
-                    Err(RecvTimeoutError::Disconnected) => break,
+                    Err(RecvTimeoutError::Disconnected) => break Ok(()),
                 },
                 None => match self.events.recv() {
                     Ok(event) => event,
-                    Err(_) => break,
+                    Err(_) => break Ok(()),
                 },
             };
             match event {
                 Event::Exited(status) => {
-                    state.program_exited(
-                        status.ok().map(exit_code),
-                        launch.runner.outlives_program(),
-                    );
-                    if let Err(err) = runtime.write_state(state) {
-                        notify(Notice::Warning(err));
-                    }
-                    // Launchers often hand off to another process and exit, so the
-                    // run lasts until nothing is left running in the prefix.
+                    exit = status.ok().map(exit_code);
+                    watched(Watched::Exited(exit));
+                    // Launchers often hand off to another process and exit, so
+                    // this lasts until nothing is left running in the prefix.
                     let sender = self.sender.clone();
-                    let (runner, prefix) = (launch.runner.clone(), launch.prefix.clone());
+                    let (runner, prefix) = (runner.clone(), prefix.to_owned());
                     thread::spawn(move || {
-                        let _ = runner.wait_idle(&prefix);
-                        let _ = sender.send(Event::Idle);
+                        let result = match settle {
+                            Settle::Idle => runner.wait_idle(&prefix),
+                            Settle::Confirmed => runner.wait_settled(&prefix, group),
+                        };
+                        let _ = sender.send(Event::Idle(result));
                     });
                 }
-                Event::Idle => break,
+                Event::Idle(result) => break result,
                 Event::Stop if !stopping => {
                     stopping = true;
                     deadline = Some(Instant::now() + stop_timeout);
-                    notify(Notice::Stopping);
-                    let (runner, prefix) = (launch.runner.clone(), launch.prefix.clone());
-                    let group = state.group;
+                    watched(Watched::Notice(Notice::Stopping));
+                    let (runner, prefix) = (runner.clone(), prefix.to_owned());
                     thread::spawn(move || {
                         let _ = runner.end_session(&prefix, group);
                     });
                 }
                 Event::Stop | Event::Force | Event::StopTimeout => {
                     stopping = true;
-                    if !killed {
-                        killed = true;
-                        notify(Notice::Killing);
+                    let since = *killing_since.get_or_insert_with(|| {
+                        watched(Watched::Notice(Notice::Killing));
+                        Instant::now()
+                    });
+                    if let Some(limit) = give_up
+                        && since.elapsed() >= limit
+                    {
+                        break Err(Error::StillRunning((stop_timeout + limit).as_secs().max(1)));
                     }
-                    if let Err(err) = launch.runner.kill(&launch.prefix, state.group) {
-                        notify(Notice::Warning(err));
+                    if let Err(err) = runner.kill(prefix, group) {
+                        watched(Watched::Notice(Notice::Warning(err)));
                     }
                     deadline = Some(Instant::now() + KILL_RETRY);
                 }
             }
-        }
-
-        // Exit codes can't tell a kill from a normal exit, so a stop is only
-        // known from the request.
-        let status = match (stopping, state.exit_code) {
-            (true, _) => RunStatus::Stopped,
-            (false, Some(0)) => RunStatus::Exited,
-            (false, _) => RunStatus::Failed,
         };
-        state.finish(status);
-        runtime.write_state(state)
+        Ending {
+            exit_code: exit,
+            stopped: stopping,
+            settled,
+        }
     }
 }
 
@@ -471,7 +550,6 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::runner::Runner;
 
     #[test]
     fn reports_round_trip_as_single_lines() {

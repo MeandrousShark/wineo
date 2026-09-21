@@ -3,15 +3,18 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use rustix::io::Errno;
-use rustix::process::{Pid, Signal, kill_process_group};
+use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, IoContext, Result};
 
 /// umu-launcher, which runs Proton the way Steam does.
 const UMU: &str = "umu-run";
+/// How often `wait_settled` checks whether a Proton process group is gone.
+const GROUP_POLL: Duration = Duration::from_millis(100);
 
 /// What ending a lost run found to kill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +193,23 @@ impl Runner {
         Ok(())
     }
 
+    /// Like `wait_idle`, but only returns Ok once it is confirmed that nothing
+    /// is left: wineserver has to report the prefix idle, and a Proton
+    /// program's whole process group has to be gone.
+    pub fn wait_settled(&self, prefix: &Path, group: Option<u32>) -> Result<()> {
+        let Some(mut command) = self.wineserver(prefix) else {
+            return wait_for_group(group);
+        };
+        let status = quietly(command.arg("-w"))
+            .status()
+            .context(|| "failed to run wineserver -w".to_owned())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(Error::Unsettled(format!("wineserver -w failed ({status})")))
+        }
+    }
+
     /// Asks running programs to close: a Windows logoff for wine, SIGTERM to
     /// umu's process group for Proton, which has no wineserver to talk to.
     pub fn end_session(&self, prefix: &Path, group: Option<u32>) -> Result<()> {
@@ -255,6 +275,31 @@ fn signal_group(group: Option<u32>, signal: Signal) -> Result<Killed> {
         Err(Errno::SRCH) => Ok(Killed::Gone),
         Err(err) => {
             Err(io::Error::from(err)).context(|| format!("failed to signal process group {pid:?}"))
+        }
+    }
+}
+
+/// Polls until nothing is left in a process group. umu reaps what its
+/// container starts before it exits, so this is normally over at once.
+fn wait_for_group(group: Option<u32>) -> Result<()> {
+    let Some(pid) = group
+        .and_then(|group| i32::try_from(group).ok())
+        .and_then(Pid::from_raw)
+    else {
+        return Err(Error::Unsettled(
+            "no process group was recorded to check".to_owned(),
+        ));
+    };
+    loop {
+        match test_kill_process_group(pid) {
+            Err(Errno::SRCH) => return Ok(()),
+            // Something in the group belongs to someone else, which still
+            // means the group is not gone.
+            Ok(()) | Err(Errno::PERM) => std::thread::sleep(GROUP_POLL),
+            Err(err) => {
+                return Err(io::Error::from(err))
+                    .context(|| format!("failed to check process group {pid:?}"));
+            }
         }
     }
 }

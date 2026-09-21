@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, IoContext, Result};
 use crate::paths::{self, Paths};
@@ -25,7 +25,7 @@ const LOCK_RETRY: Duration = Duration::from_millis(5);
 const CONFIG_ATTEMPTS: u32 = 1000;
 
 /// What a command is doing with an environment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
     /// Creating or adopting a prefix.
@@ -38,6 +38,10 @@ pub enum Operation {
     Configure,
     /// Running a program in the prefix.
     Launch,
+    /// Running an installer or updater, until everything it started exits.
+    Install,
+    /// Stopping what an installer left running when it could not finish.
+    Cleanup,
 }
 
 impl Operation {
@@ -48,6 +52,8 @@ impl Operation {
             Operation::Winetricks => "winetricks",
             Operation::Configure => "configure",
             Operation::Launch => "launch",
+            Operation::Install => "install",
+            Operation::Cleanup => "cleanup",
         }
     }
 
@@ -58,6 +64,8 @@ impl Operation {
             Operation::Winetricks,
             Operation::Configure,
             Operation::Launch,
+            Operation::Install,
+            Operation::Cleanup,
         ]
         .into_iter()
         .find(|operation| operation.as_str() == word)
@@ -77,6 +85,8 @@ impl Operation {
             Operation::Winetricks => "winetricks is running",
             Operation::Configure => "its prefix is being changed",
             Operation::Launch => "a program is running in it",
+            Operation::Install => "an installer is running in it",
+            Operation::Cleanup => "what an installer left running is being stopped",
         }
     }
 }
@@ -93,8 +103,24 @@ pub struct Locks {
 /// when the holder dies, so a crash can never leave a stale lock behind.
 #[derive(Debug)]
 pub struct Guard {
-    files: Vec<File>,
+    files: Vec<(File, PathBuf)>,
     exclusive: bool,
+}
+
+impl Guard {
+    /// Hands exclusive locks on to another exclusive operation without letting
+    /// go of them, so nothing can slip in between. `new` does this to run an
+    /// installer in the prefix it has just made.
+    pub fn relabel(&mut self, operation: Operation) -> Result<()> {
+        assert!(
+            self.exclusive && !operation.is_shared(),
+            "only an exclusive operation can take over exclusive locks"
+        );
+        for (file, path) in &self.files {
+            record(file, path, operation)?;
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Guard {
@@ -102,7 +128,7 @@ impl Drop for Guard {
         // Best effort, and only for locks nobody else can be writing. A cleared
         // file keeps a later probe from reporting an operation that is over.
         if self.exclusive {
-            for file in &self.files {
+            for (file, _) in &self.files {
                 let _ = file.set_len(0);
             }
         }
@@ -159,7 +185,7 @@ impl Locks {
             if !operation.is_shared() {
                 record(&file, &target.path, operation)?;
             }
-            files.push(file);
+            files.push((file, target.path.clone()));
         }
         Ok(Guard {
             files,
@@ -478,6 +504,30 @@ mod tests {
         );
         drop(locks.acquire(Operation::Remove, "notepad", &[]).unwrap());
         drop(held);
+    }
+
+    #[test]
+    fn relabeling_keeps_the_locks_and_changes_what_others_see() {
+        let root = tempfile::tempdir().unwrap();
+        let locks = locks(root.path());
+        let prefix = root.path().join("p");
+        let mut held = locks
+            .acquire(Operation::Create, "notepad", &[&prefix])
+            .unwrap();
+        held.relabel(Operation::Install).unwrap();
+        assert_eq!(
+            locks.busy_with("notepad").unwrap(),
+            Some(Operation::Install)
+        );
+        let err = locks
+            .acquire(Operation::Launch, "notepad", &[&prefix])
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Busy { holder, .. } if *holder == Operation::Install.describe()),
+            "{err}"
+        );
+        drop(held);
+        assert_eq!(locks.busy_with("notepad").unwrap(), None);
     }
 
     #[test]
