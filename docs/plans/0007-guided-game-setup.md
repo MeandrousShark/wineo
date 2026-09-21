@@ -31,6 +31,16 @@ Settled by the maintainer:
   settings in 0007. Revisit managed copying and organization with `wineo import`
   after trying the basic flow with a new portable application.
 
+Settled by the maintainer during implementation:
+
+- `wineo stop <name>` cleans up after an installer whose cleanup could not be
+  confirmed, the same way it cleans up a lost run. `setup` also offers that
+  cleanup before its menu, and other commands refuse until it is done.
+- Noninteractive `new --install-exe` uses the shared installer operation, so
+  Ctrl+C cancels it cleanly and exits 130. Its output still goes to the terminal.
+- In guided `new` and `setup`, installer output goes to `install.log` in the
+  environment's runtime directory, replaced on each run, and its path is printed.
+
 The maintainer has approved the scope and details below.
 
 ## Existing foundation
