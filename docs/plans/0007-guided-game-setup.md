@@ -40,6 +40,13 @@ Settled by the maintainer during implementation:
   Ctrl+C cancels it cleanly and exits 130. Its output still goes to the terminal.
 - In guided `new` and `setup`, installer output goes to `install.log` in the
   environment's runtime directory, replaced on each run, and its path is printed.
+- Menus keep stable numbers and end with `b) back   q) cancel`. Text prompts go
+  back with `<`. Ctrl+C and Ctrl+D cancel anywhere.
+- A picked or edited target is shown as a review card with its suggestions
+  filled in, accepted as is or changed one field at a time.
+- Running an installer from `setup` while target changes are staged reviews
+  and saves those changes first, so a failed or canceled installer can't lose
+  them.
 
 The maintainer has approved the scope and details below.
 
