@@ -102,7 +102,7 @@ pub struct EnvironmentConfig {
     pub targets: BTreeMap<String, Target>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
     pub exe: String,

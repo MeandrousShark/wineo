@@ -22,6 +22,7 @@ pub mod runtime;
 pub mod settings;
 pub mod shortcut;
 pub mod supervisor;
+pub mod targets;
 pub mod templates;
 pub mod winpath;
 

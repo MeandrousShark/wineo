@@ -41,6 +41,24 @@ pub fn to_unix(prefix: &Path, windows_path: &str) -> Option<PathBuf> {
     Some(current)
 }
 
+/// The `C:` path of a Unix path inside the prefix's `drive_c`, which is how a
+/// config names what a shortcut would. None for anything outside it, which a
+/// Unix path already reaches through wine's `Z:` drive.
+pub fn from_unix(prefix: &Path, unix: &Path) -> Option<String> {
+    let drive_root = std::fs::canonicalize(prefix.join("dosdevices/c:")).ok()?;
+    let relative = std::fs::canonicalize(unix).ok()?;
+    let relative = relative.strip_prefix(&drive_root).ok()?;
+    let mut path = String::from("C:");
+    for part in relative.components() {
+        path.push('\\');
+        path.push_str(part.as_os_str().to_str()?);
+    }
+    if path.len() == 2 {
+        path.push('\\');
+    }
+    Some(path)
+}
+
 // Windows names are case-insensitive: try the exact name first, then fall
 // back to scanning the directory. Sorting keeps ties deterministic.
 fn resolve_component(dir: &Path, name: &str) -> Option<PathBuf> {
@@ -207,6 +225,26 @@ mod tests {
     fn missing_component_returns_none() {
         let (root, _canonical_root, _z, _canonical_z) = setup();
         assert_eq!(to_unix(root.path(), r"C:\Program Files\Nonexistent"), None);
+    }
+
+    #[test]
+    fn a_unix_path_in_drive_c_becomes_a_c_path() {
+        let (root, canonical_root, _z, canonical_z) = setup();
+        let photoshop = canonical_root.join("drive_c/Program Files/Adobe/Photoshop.exe");
+        assert_eq!(
+            from_unix(root.path(), &photoshop).as_deref(),
+            Some(r"C:\Program Files\Adobe\Photoshop.exe")
+        );
+        assert_eq!(
+            from_unix(root.path(), &canonical_root.join("drive_c")).as_deref(),
+            Some(r"C:\")
+        );
+        // Anything else is reached through Z:, as a Unix path.
+        assert_eq!(from_unix(root.path(), &canonical_z.join("file.txt")), None);
+        assert_eq!(
+            from_unix(root.path(), &canonical_root.join("nope.exe")),
+            None
+        );
     }
 
     #[test]

@@ -316,7 +316,7 @@ fn split_dotted(s: &str) -> (&str, Option<&str>) {
 
 /// Stores `value` under `field`. If `field` already holds a value, this
 /// keeps its position and copies over its decor (spacing, inline comments).
-fn store_value(table: &mut Table, field: &str, mut value: Value) {
+pub(crate) fn store_value(table: &mut Table, field: &str, mut value: Value) {
     match table.entry(field) {
         Entry::Occupied(mut entry) => {
             if let Item::Value(old) = entry.get() {
@@ -332,7 +332,7 @@ fn store_value(table: &mut Table, field: &str, mut value: Value) {
 
 /// Gets `name` as a table, creating an empty one (appended at the end) if
 /// it's missing. Fails if `name` exists but isn't a table.
-fn ensure_table<'a>(
+pub(crate) fn ensure_table<'a>(
     parent: &'a mut Table,
     name: &str,
     error_key: &str,
@@ -355,7 +355,7 @@ fn ensure_table<'a>(
 }
 
 /// Like `ensure_table`, but never creates the table: `Ok(None)` if missing.
-fn existing_table<'a>(
+pub(crate) fn existing_table<'a>(
     parent: &'a mut Table,
     name: &str,
     error_key: &str,
