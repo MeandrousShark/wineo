@@ -2537,6 +2537,7 @@ fn a_second_ctrl_c_kills_an_installer_right_away() {
 #[test]
 fn a_crashed_installer_is_refused_until_stop_cleans_up() {
     let f = Fixture::new();
+    f.environment("other", APP);
     // The fake program would hold a piped output open for a minute.
     let mut child = f
         .new_with_installer("game", &[], "setup")
@@ -2580,6 +2581,13 @@ fn a_crashed_installer_is_refused_until_stop_cleans_up() {
         "{}",
         stdout(&listed)
     );
+    // Nothing about it reaches another environment.
+    assert!(
+        stdout(&listed).contains("other  inactive"),
+        "{}",
+        stdout(&listed)
+    );
+    assert_success(&f.run(&["exec", "other", "exit-0"]));
 
     let stopped = f.run(&["stop", "game"]);
     assert_success(&stopped);

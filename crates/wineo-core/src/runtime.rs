@@ -669,6 +669,48 @@ mod tests {
     }
 
     #[test]
+    fn check_quiet_refuses_runs_lost_runs_and_unresolved_operations() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime(root.path());
+        runtime.check_quiet("notepad").unwrap();
+
+        let lock = runtime.try_lock().unwrap().unwrap();
+        assert!(matches!(
+            runtime.check_quiet("notepad"),
+            Err(Error::Running(_))
+        ));
+        runtime.write_state(&run_state(RunStatus::Running)).unwrap();
+        drop(lock);
+        assert!(matches!(
+            runtime.check_quiet("notepad"),
+            Err(Error::LostRun(_))
+        ));
+
+        runtime.write_state(&run_state(RunStatus::Stopped)).unwrap();
+        runtime
+            .write_operation(&OperationState {
+                operation: Operation::Install,
+                program: "setup.exe".to_owned(),
+                runner: Runner::fake("wine"),
+                prefix: root.path().join("prefix"),
+                pid: None,
+                group: None,
+                started_at: Timestamp::now(),
+            })
+            .unwrap();
+        assert!(matches!(
+            runtime.check_quiet("notepad"),
+            Err(Error::Unresolved(_))
+        ));
+        runtime.clear_operation().unwrap();
+        runtime.check_quiet("notepad").unwrap();
+
+        // A state file nothing can read says nothing about a lost run.
+        fs::write(runtime.dir().join("state.toml"), "garbage [").unwrap();
+        runtime.check_quiet("notepad").unwrap();
+    }
+
+    #[test]
     fn rotating_keeps_one_previous_log() {
         let root = tempfile::tempdir().unwrap();
         let runtime = runtime(root.path());
