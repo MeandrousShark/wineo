@@ -62,6 +62,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let locks = Locks::new(paths);
     let _guard = locks.acquire(Operation::Launch, &environment.name, &[&launch.prefix])?;
     Environment::ensure_exists(paths, &environment.name)?;
+    let runtime = Runtime::new(paths, &environment.name);
+    runtime.check_resolved(&environment.name)?;
     components::reconcile_config(paths, &global, &environment, &launch.runner, &launch.prefix)?;
     desktop::reconcile(
         paths,
@@ -71,7 +73,6 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         &launch.prefix,
     )?;
 
-    let runtime = Runtime::new(paths, &environment.name);
     let Some(_lock) = runtime.try_lock()? else {
         bail!("{} is already running", environment.name);
     };

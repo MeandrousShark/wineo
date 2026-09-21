@@ -41,9 +41,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 fn running(paths: &Paths) -> anyhow::Result<ExitCode> {
     let now = Timestamp::now();
     let tz = TimeZone::system();
-    // Something holding an environment is happening now too, so it shows up here.
-    let (rows, failed) = table::gather(paths, now, &tz, |status, busy| {
-        status.state == State::Running || busy.is_some()
+    // Something holding an environment is happening now too, and so may be
+    // whatever an unresolved installer left, so both show up here.
+    let (rows, failed) = table::gather(paths, now, &tz, |status, held| {
+        status.state == State::Running || held
     })?;
     if rows.is_empty() {
         eprintln!("Nothing is running");
@@ -64,6 +65,14 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
     let mut lines = vec![header(report, now, tz)];
     if let Some(operation) = report.busy {
         lines.push(label_line("busy", operation.describe()));
+    } else if report.unresolved {
+        lines.push(label_line(
+            "busy",
+            &format!(
+                "an installer did not finish cleanly, clean it up with `wineo stop {}`",
+                report.name
+            ),
+        ));
     }
     if let Some(run) = &report.status.run {
         lines.push(label_line(
@@ -240,6 +249,7 @@ mod tests {
             prefix: "~/.local/share/wineo/prefixes/notepad".to_owned(),
             target_exe: Some("notepad".to_owned()),
             busy: None,
+            unresolved: false,
             gamemode: false,
             gameid: None,
             store: None,

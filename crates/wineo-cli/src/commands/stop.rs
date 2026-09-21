@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use wineo_core::config::{DEFAULT_STOP_TIMEOUT, GlobalConfig};
 use wineo_core::environment::Environment;
+use wineo_core::installer::{self, Cleaned};
 use wineo_core::operation::Locks;
 use wineo_core::paths::Paths;
 use wineo_core::runner::Killed;
@@ -24,7 +25,8 @@ pub struct Args {
 pub enum Outcome {
     Stopped,
     NotRunning,
-    /// The supervisor had died, so what the run left behind was killed directly.
+    /// The supervisor or an installer had died, so what it left behind was
+    /// killed directly.
     CleanedUp,
 }
 
@@ -64,7 +66,27 @@ pub fn stop(paths: &Paths, name: &str, force: bool) -> anyhow::Result<Outcome> {
     {
         return Ok(Outcome::Stopped);
     }
+    if clean_up_installer(paths, name, timeout)? {
+        return Ok(Outcome::CleanedUp);
+    }
     clean_up_lost_run(paths, name, &runtime)
+}
+
+/// Stops whatever an installer left running when wineo could not confirm it
+/// was done, which is what other commands are refused over until then.
+fn clean_up_installer(paths: &Paths, name: &str, timeout: Duration) -> anyhow::Result<bool> {
+    let Some(cleaned) = installer::clean_up(paths, name, timeout)
+        .with_context(|| format!("failed to clean up after {name}'s last installer"))?
+    else {
+        return Ok(false);
+    };
+    let outcome = match cleaned {
+        Cleaned::Stopped => "so it stopped anything left behind",
+        Cleaned::Gone => "and what it started had already exited",
+        Cleaned::Untracked => "and it recorded nothing to stop, so check the prefix yourself",
+    };
+    eprintln!("wineo could not confirm that {name}'s last installer had finished, {outcome}");
+    Ok(true)
 }
 
 /// Kills whatever a run left in the prefix when the process that owned it

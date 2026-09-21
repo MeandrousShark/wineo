@@ -3,6 +3,7 @@ use jiff::tz::TimeZone;
 use wineo_core::environment;
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
+use wineo_core::report;
 use wineo_core::runtime::{Runtime, State, Status};
 
 use super::time::{clock, relative};
@@ -20,15 +21,18 @@ impl Row {
         name: &str,
         status: &Status,
         busy: Option<Operation>,
+        unresolved: bool,
         now: Timestamp,
         tz: &TimeZone,
     ) -> Self {
+        let state = match busy {
+            Some(operation) => operation.as_str(),
+            None if unresolved => "unresolved",
+            None => status.state.as_str(),
+        };
         Self {
             name: name.to_owned(),
-            state: busy.map_or_else(
-                || status.state.as_str().to_owned(),
-                |operation| operation.as_str().to_owned(),
-            ),
+            state: state.to_owned(),
             target: status
                 .run
                 .as_ref()
@@ -59,23 +63,25 @@ fn time_column(status: &Status, now: Timestamp, tz: &TimeZone) -> String {
 }
 
 /// Gathers a row for every environment name, keeping only the ones `keep`
-/// accepts. Errors reading one environment's status are printed and skipped
-/// rather than stopping the rest, and are reported back so the caller can
-/// exit with an error after showing what it could.
+/// accepts, which is also told whether an operation holds the environment or
+/// an installer left it unresolved. Errors reading one environment's status
+/// are printed and skipped rather than stopping the rest, and are reported
+/// back so the caller can exit with an error after showing what it could.
 pub fn gather(
     paths: &Paths,
     now: Timestamp,
     tz: &TimeZone,
-    mut keep: impl FnMut(&Status, Option<Operation>) -> bool,
+    mut keep: impl FnMut(&Status, bool) -> bool,
 ) -> anyhow::Result<(Vec<Row>, bool)> {
     let locks = Locks::new(paths);
     let mut rows = Vec::new();
     let mut failed = false;
     for name in environment::names(paths)? {
         let busy = locks.busy_with(&name).unwrap_or(None);
+        let unresolved = busy.is_none() && report::unresolved(paths, &name);
         match Runtime::new(paths, &name).status() {
-            Ok(status) if keep(&status, busy) => {
-                rows.push(Row::new(&name, &status, busy, now, tz));
+            Ok(status) if keep(&status, busy.is_some() || unresolved) => {
+                rows.push(Row::new(&name, &status, busy, unresolved, now, tz));
             }
             Ok(_) => {}
             Err(err) => {

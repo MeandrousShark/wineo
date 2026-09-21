@@ -26,6 +26,9 @@ pub struct EnvironmentReport {
     pub target_exe: Option<String>,
     /// An operation holding the environment right now, like a winetricks install.
     pub busy: Option<Operation>,
+    /// An installer never confirmed that everything it started had stopped,
+    /// so other work is refused until `wineo stop` cleans up.
+    pub unresolved: bool,
     /// Whether the last run's target, or the environment itself, asks for gamemode.
     pub gamemode: bool,
     /// What umu is told to look protonfixes up by, when this environment asked
@@ -66,10 +69,12 @@ impl EnvironmentReport {
             .and_then(|run| environment.config.targets.get(&run.target));
         let target_exe = target.map(|target| target.exe.clone());
         let components = components(paths, global, environment);
+        let busy = Locks::new(paths).busy_with(&environment.name)?;
         Ok(Self {
             dxvk: components.0,
             vkd3d: components.1,
-            busy: Locks::new(paths).busy_with(&environment.name)?,
+            unresolved: busy.is_none() && unresolved(paths, &environment.name),
+            busy,
             gamemode: crate::launch::gamemode(global, environment, target),
             name: environment.name.clone(),
             runner: environment.config.runner.clone(),
@@ -87,6 +92,12 @@ impl EnvironmentReport {
                 .collect(),
         })
     }
+}
+
+/// Whether an installer left a record behind without anything holding the
+/// environment. Only a momentary answer, like `busy`.
+pub fn unresolved(paths: &Paths, name: &str) -> bool {
+    Runtime::new(paths, name).check_resolved(name).is_err()
 }
 
 /// Reading the manifest needs the runner and the prefix, and neither is

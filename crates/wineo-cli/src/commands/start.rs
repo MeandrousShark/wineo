@@ -39,6 +39,8 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
     let _guard = locks.acquire(Operation::Launch, name, &[&launch.prefix])?;
     // The config was read before the lock, so it could already be gone.
     Environment::ensure_exists(paths, name)?;
+    let runtime = Runtime::new(paths, name);
+    runtime.check_resolved(name)?;
     components::reconcile_config(paths, &global, &environment, &launch.runner, &launch.prefix)?;
     desktop::reconcile(
         paths,
@@ -47,7 +49,6 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
         Some(&launch.runner),
         &launch.prefix,
     )?;
-    let runtime = Runtime::new(paths, name);
 
     if runtime.is_running()? {
         // The previous run's state doesn't matter for a new one, so an

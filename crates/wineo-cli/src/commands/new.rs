@@ -1,20 +1,26 @@
-use std::collections::BTreeMap;
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::bail;
 use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::environment::{Environment, NewEnvironment};
 use wineo_core::install::{self, Wanted};
-use wineo_core::launch::{self, Launch};
+use wineo_core::installer::{Installer, Outcome, Output};
+use wineo_core::launch;
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::prefix;
 use wineo_core::programs::Listing;
 use wineo_core::runners::Runners;
+use wineo_core::supervisor::{Notice, Watched};
 use wineo_core::templates::{Template, Templates};
 
-use super::{components, desktop, exec, programs};
+use super::{components, desktop, programs};
+
+/// The shell's code for a command ended by Ctrl+C.
+const CANCELED: u8 = 130;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -100,7 +106,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // Held through the installer too, so nothing touches the prefix while it runs.
     let locks = Locks::new(paths);
     let prefix = new.prefix_dir(paths, &global)?;
-    let _guard = locks.acquire(Operation::Create, &new.name, &[&prefix])?;
+    let guard = locks.acquire(Operation::Create, &new.name, &[&prefix])?;
 
     let mut created_prefix = false;
     let environment = Environment::create(paths, &global, &runner, &new, |dir| {
@@ -134,44 +140,82 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     )?;
     desktop::reconcile(paths, &global, &environment, Some(&runner), &prefix)?;
 
-    let mut installer_exit = None;
-    if let Some(installer) = &args.install_exe {
-        let launch = Launch::exec(
-            paths,
-            &global,
-            &environment,
-            installer,
-            &[],
-            &BTreeMap::new(),
-        )?;
-        let code = exec::run_attached(&launch)?;
-        // Installers often hand off to another process and exit early.
-        launch.runner.wait_idle(&launch.prefix)?;
-        if code != 0 {
-            eprintln!("The installer exited with code {code}");
-            installer_exit = Some(code);
-        }
-    }
-
-    match installed(&prefix, args.install_exe.is_some()) {
-        Some(listing) => programs::report(&environment.name, &listing, false),
-        None => println!(
+    let Some(program) = &args.install_exe else {
+        println!(
             "Add a target with: wineo set {} targets.<target>.exe=<path>",
             environment.name
-        ),
+        );
+        return Ok(ExitCode::SUCCESS);
+    };
+    let installer = Installer::prepare_with(guard, paths, &global, &environment, program)?;
+    let name = &environment.name;
+    let outcome = installer.run(
+        Duration::from_secs(global.stop_timeout.into()),
+        Output::Inherit,
+        |watched| match watched {
+            Watched::Notice(Notice::Stopping) => {
+                note("Canceling the installer, press Ctrl+C again to force it");
+            }
+            Watched::Notice(Notice::Killing) => {
+                note("Killing everything the installer left running");
+            }
+            Watched::Notice(Notice::Warning(err)) => {
+                note(&format!("warning: {:#}", anyhow::Error::from(err)));
+            }
+            Watched::Exited(_) => {}
+        },
+    )?;
+
+    match outcome {
+        Outcome::Finished { exit_code } => {
+            let code = exit_code.unwrap_or(1);
+            match exit_code {
+                Some(0) => {}
+                Some(code) => eprintln!("The installer exited with code {code}"),
+                None => eprintln!("The installer's exit code could not be collected"),
+            }
+            if let Some(listing) = installed(&prefix) {
+                programs::report(name, &listing, false);
+            }
+            Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
+        }
+        Outcome::Canceled { .. } => {
+            note(&format!(
+                "The installer was canceled. {name} and its prefix were kept"
+            ));
+            Ok(ExitCode::from(CANCELED))
+        }
+        Outcome::Unresolved {
+            exit_code, error, ..
+        } => {
+            // Both failures are reported, but the one that leaves something
+            // possibly still running decides what to do next.
+            note(&format!(
+                "error: wineo could not confirm that everything the installer started has stopped: {:#}",
+                anyhow::Error::from(error)
+            ));
+            match exit_code {
+                Some(0) => note("The installer itself finished"),
+                Some(code) => note(&format!("The installer exited with code {code}")),
+                None => {}
+            }
+            note(&format!(
+                "{name} and its prefix were kept. Clean up whatever may still be running with `wineo stop {name}`"
+            ));
+            Ok(ExitCode::FAILURE)
+        }
     }
-    Ok(match installer_exit {
-        Some(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
-        None => ExitCode::SUCCESS,
-    })
+}
+
+/// The terminal may already be gone after a SIGHUP, and a failed write must
+/// not abort what is left to report.
+fn note(message: &str) {
+    let _ = writeln!(io::stderr(), "{message}");
 }
 
 /// What an installer left behind. A scan that fails is not worth failing `new`
 /// over, since the environment is already made either way.
-fn installed(prefix: &Path, ran_installer: bool) -> Option<Listing> {
-    if !ran_installer {
-        return None;
-    }
+fn installed(prefix: &Path) -> Option<Listing> {
     let wine_prefix = prefix::wine_prefix_in(prefix)?;
     wineo_core::programs::scan(&wine_prefix).ok()
 }

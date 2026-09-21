@@ -106,6 +106,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             "{name}'s last run was lost, so wine may still be running in its prefix. Clean it up with `wineo stop {name}` first"
         );
     }
+    runtime.check_resolved(name)?;
 
     crate::commands::desktop::reconcile(paths, &global, &environment, Some(&runner), &prefix)?;
 

@@ -49,6 +49,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         ),
         _ => {}
     }
+    runtime.check_resolved(name)?;
 
     if args.delete_prefix {
         let Some(prefix) = &prefix else {

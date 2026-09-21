@@ -286,7 +286,11 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 (*key == "prefix").then(|| new_prefix(paths, raw)).flatten()
             }));
             let borrowed: Vec<&std::path::Path> = prefixes.iter().map(PathBuf::as_path).collect();
-            Some(Locks::new(paths).acquire(Operation::Configure, name, &borrowed)?)
+            let guard = Locks::new(paths).acquire(Operation::Configure, name, &borrowed)?;
+            // An installer that never confirmed it was done may still have
+            // programs running in the prefix these settings reach into.
+            Runtime::new(paths, name).check_resolved(name)?;
+            Some(guard)
         }
         _ => None,
     };

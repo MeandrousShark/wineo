@@ -14,8 +14,10 @@ use wineo_core::runtime::Runtime;
 /// A program named exit-N exits with N right away, a program named stubborn
 /// ignores requests to close, a program named slow takes a moment before
 /// wineserver can see it, noisy writes megabytes in bursts, noisy-exit leaves
-/// a background writer behind, and any other program runs until
-/// `wineboot --end-session` or `wineserver -k` ends it.
+/// a background writer behind, handoff exits and leaves something running for
+/// a couple of seconds the way an installer hands off to its child,
+/// break-wineserver deletes the wineserver beside it, and any other program
+/// runs until `wineboot --end-session` or `wineserver -k` ends it.
 const FAKE_WINE: &str = r#"#!/bin/sh
 pids="$WINEPREFIX/fake-pids"
 burst() {
@@ -33,6 +35,7 @@ case "$1" in
     ;;
 wineboot)
     if [ "$2" = --init ]; then
+        mkdir -p "$WINEPREFIX/drive_c"
         printf 'WINE REGISTRY Version 2\n\n#arch=win64\n' >"$WINEPREFIX/system.reg"
     elif [ "$2" = --end-session ] && read -r program _ 2>/dev/null <"$pids"; then
         kill "$program" 2>/dev/null
@@ -64,6 +67,15 @@ noisy-exit)
     # Exits right away, leaving something in the prefix still writing.
     (sleep 0.5; burst; burst; rm -f "$pids") &
     echo "$! $!" >"$pids"
+    exit 0
+    ;;
+handoff)
+    (sleep 2; touch "$WINEPREFIX/handoff-done"; rm -f "$pids") &
+    echo "$! $!" >"$pids"
+    exit 0
+    ;;
+break-wineserver)
+    rm -f "${0%/*}/wineserver"
     exit 0
     ;;
 esac
@@ -107,7 +119,7 @@ exec "$@"
 /// Stands in for umu-launcher: it records what it was asked to do, makes `pfx/`
 /// under the compatdata directory when handed an empty program, which is how umu
 /// creates a prefix, and otherwise runs like the fake wine so the same programs
-/// work under both kinds.
+/// work under both kinds. Its handoff leaves something in umu's process group.
 const FAKE_UMU: &str = r#"#!/bin/sh
 echo "umu-run: $*"
 echo "umu-run: WINEPREFIX=$WINEPREFIX PROTONPATH=$PROTONPATH"
@@ -132,6 +144,11 @@ stubborn)
     trap '' TERM
     echo "$$ $$" >"$pids"
     while :; do sleep 0.1; done
+    ;;
+handoff)
+    # Leaves something in umu's process group after umu itself has exited.
+    (sleep 2; touch "$WINEPREFIX/handoff-done") &
+    exit 0
     ;;
 esac
 sleep 60 &
@@ -178,7 +195,7 @@ impl Fixture {
         // the sandbox cannot inherit the real PATH. It gets links to the few
         // tools the fake scripts reach for instead.
         for tool in [
-            "sh", "sleep", "rm", "kill", "printf", "seq", "touch", "head", "tr",
+            "sh", "sleep", "rm", "kill", "printf", "seq", "touch", "head", "tr", "mkdir",
         ] {
             if let Some(real) = find_on_path(tool) {
                 std::os::unix::fs::symlink(real, sandbox.join(tool)).unwrap();
@@ -2352,4 +2369,291 @@ fn a_template_naming_proton_and_dxvk_is_refused() {
         stderr(&refused)
     );
     assert!(!f.config_dir().join("environments/hades.toml").exists());
+}
+
+impl Fixture {
+    fn prefix(&self, name: &str) -> PathBuf {
+        self.root.path().join("prefixes").join(name)
+    }
+
+    /// `new` running `installer`, with the prefix where the other helpers look.
+    fn new_with_installer(&self, name: &str, extra: &[&str], installer: &str) -> Command {
+        let mut command = self.wineo();
+        command
+            .args(["new", "-n", name, "--dir"])
+            .arg(self.prefix(name))
+            .args(extra)
+            .args(["--install-exe", installer]);
+        command
+    }
+
+    /// Whether an installer's recovery record is there.
+    fn installer_recorded(&self, name: &str) -> bool {
+        self.runtime(name).dir().join("operation.toml").exists()
+    }
+}
+
+fn signal(child: &std::process::Child, signal: &str) {
+    let sent = Command::new("kill")
+        .args([signal, &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+}
+
+#[test]
+fn new_waits_for_what_an_installer_hands_off_to() {
+    let f = Fixture::new();
+    // Nothing reads the output, so the handoff can't hold `new` up through a
+    // pipe and only the wait on the prefix does.
+    let mut child = f
+        .new_with_installer("game", &[], "handoff")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for("the installer to hand off", || {
+        f.fake_program_running("game")
+    });
+
+    // The installer itself has exited, but the environment is still held.
+    let exec = f.run(&["exec", "game", "notepad"]);
+    assert!(!exec.status.success());
+    assert!(
+        stderr(&exec).contains("an installer is running in it"),
+        "{}",
+        stderr(&exec)
+    );
+    let listed = f.run(&["list"]);
+    assert!(stdout(&listed).contains("install"), "{}", stdout(&listed));
+
+    assert!(child.wait().unwrap().success());
+    assert!(f.prefix("game").join("handoff-done").exists());
+    assert!(!f.installer_recorded("game"));
+}
+
+#[test]
+fn an_installers_exit_code_is_passed_on_and_the_environment_kept() {
+    let f = Fixture::new();
+    let output = f
+        .new_with_installer("game", &[], "exit-3")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("The installer exited with code 3"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(f.created_config("game").contains("runner = \"wine\""));
+    assert!(f.prefix("game").join("system.reg").is_file());
+    assert!(!f.installer_recorded("game"));
+}
+
+#[test]
+fn ctrl_c_cancels_an_installer_and_keeps_the_environment() {
+    let f = Fixture::new();
+    let child = f
+        .new_with_installer("game", &[], "setup")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for("the installer to start", || f.fake_program_running("game"));
+
+    // An installer is not a run, so it is not stop's to end.
+    let stop = f.run(&["stop", "game"]);
+    assert!(!stop.status.success());
+    assert!(
+        stderr(&stop).contains("an installer is running in it"),
+        "{}",
+        stderr(&stop)
+    );
+
+    signal(&child, "-INT");
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(130), "{}", stderr(&output));
+    let text = stderr(&output);
+    assert!(
+        text.contains("Canceling the installer, press Ctrl+C again to force it"),
+        "{text}"
+    );
+    assert!(
+        text.contains("The installer was canceled. game and its prefix were kept"),
+        "{text}"
+    );
+    assert!(!f.fake_program_running("game"));
+    assert!(!f.installer_recorded("game"));
+    assert!(!f.created_config("game").is_empty());
+    assert_success(&f.run(&["exec", "game", "exit-0"]));
+}
+
+#[test]
+fn a_stubborn_installer_is_killed_once_the_stop_timeout_passes() {
+    let f = Fixture::new();
+    f.global_config("stop_timeout = 1\n");
+    let child = f
+        .new_with_installer("game", &[], "stubborn")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for("the installer to start", || f.fake_program_running("game"));
+
+    signal(&child, "-INT");
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(130), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("Killing everything the installer left running"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!f.fake_program_running("game"));
+    assert!(!f.installer_recorded("game"));
+}
+
+#[test]
+fn a_second_ctrl_c_kills_an_installer_right_away() {
+    let f = Fixture::new();
+    let child = f
+        .new_with_installer("game", &[], "stubborn")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for("the installer to start", || f.fake_program_running("game"));
+
+    let started = Instant::now();
+    signal(&child, "-INT");
+    thread::sleep(Duration::from_millis(300));
+    signal(&child, "-INT");
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(130), "{}", stderr(&output));
+    // Well inside the default ten second stop timeout.
+    assert!(started.elapsed() < Duration::from_secs(8));
+    assert!(!f.fake_program_running("game"));
+}
+
+#[test]
+fn a_crashed_installer_is_refused_until_stop_cleans_up() {
+    let f = Fixture::new();
+    // The fake program would hold a piped output open for a minute.
+    let mut child = f
+        .new_with_installer("game", &[], "setup")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for("the installer to start", || f.fake_program_running("game"));
+    signal(&child, "-KILL");
+    child.wait().unwrap();
+    assert!(f.installer_recorded("game"));
+    assert!(f.fake_program_running("game"));
+
+    // A target is only a config edit, so it can still be changed.
+    assert_success(&f.run(&["set", "game", "targets.app.exe=app"]));
+    for args in [
+        &["start", "game"][..],
+        &["run", "game"],
+        &["exec", "game", "notepad"],
+        &["set", "game", "runner=wine"],
+        &["rm", "game"],
+    ] {
+        let refused = f.run(args);
+        assert!(!refused.status.success(), "{args:?} was allowed");
+        let text = stderr(&refused);
+        assert!(
+            text.contains("last installer did not finish cleanly")
+                && text.contains("`wineo stop game`"),
+            "{args:?}: {text}"
+        );
+    }
+    let status = f.run(&["status", "game"]);
+    assert!(
+        stdout(&status).contains("an installer did not finish cleanly"),
+        "{}",
+        stdout(&status)
+    );
+    let listed = f.run(&["list"]);
+    assert!(
+        stdout(&listed).contains("unresolved"),
+        "{}",
+        stdout(&listed)
+    );
+
+    let stopped = f.run(&["stop", "game"]);
+    assert_success(&stopped);
+    assert!(
+        stderr(&stopped).contains(
+            "could not confirm that game's last installer had finished, so it stopped anything left behind"
+        ),
+        "{}",
+        stderr(&stopped)
+    );
+    assert!(!f.fake_program_running("game"));
+    assert!(!f.installer_recorded("game"));
+    assert_success(&f.run(&["rm", "game"]));
+}
+
+#[test]
+fn an_installer_whose_prefix_cannot_be_confirmed_idle_is_left_unresolved() {
+    let f = Fixture::new();
+    f.install_runner("fake");
+    let output = f
+        .new_with_installer("game", &["--runner", "fake"], "break-wineserver")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let text = stderr(&output);
+    assert!(
+        text.contains("could not confirm that everything the installer started has stopped"),
+        "{text}"
+    );
+    assert!(text.contains("The installer itself finished"), "{text}");
+    assert!(text.contains("`wineo stop game`"), "{text}");
+    assert!(f.installer_recorded("game"));
+
+    // The cleanup needs the same wineserver, so it can't succeed until that
+    // is back, and the environment stays refused until then.
+    let failed = f.run(&["stop", "game"]);
+    assert!(!failed.status.success());
+    assert!(f.installer_recorded("game"));
+    f.install_runner("fake");
+    assert_success(&f.run(&["stop", "game"]));
+    assert!(!f.installer_recorded("game"));
+}
+
+#[test]
+fn a_proton_installer_lasts_until_its_process_group_is_gone() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    let status = f
+        .new_with_installer("hades", &["--runner", "GE-Proton9-20"], "handoff")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    // umu exited right away. Only the wait on its group covers the handoff.
+    assert!(f.prefix("hades").join("handoff-done").exists());
+    assert!(!f.installer_recorded("hades"));
+}
+
+#[test]
+fn ctrl_c_cancels_a_proton_installer_through_its_group() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    let child = f
+        .new_with_installer("hades", &["--runner", "GE-Proton9-20"], "setup")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for("the installer to start", || f.fake_program_running("hades"));
+
+    signal(&child, "-INT");
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(130), "{}", stderr(&output));
+    assert!(!f.fake_program_running("hades"));
+    assert!(!f.installer_recorded("hades"));
 }

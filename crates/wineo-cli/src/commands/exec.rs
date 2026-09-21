@@ -9,7 +9,7 @@ use wineo_core::environment::Environment;
 use wineo_core::launch::{Launch, parse_env_assignment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
-use wineo_core::runtime::exit_code;
+use wineo_core::runtime::{Runtime, exit_code};
 
 use crate::commands::components;
 use crate::commands::desktop;
@@ -46,6 +46,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let locks = Locks::new(paths);
     let _guard = locks.acquire(Operation::Launch, &environment.name, &[&launch.prefix])?;
     Environment::ensure_exists(paths, &environment.name)?;
+    Runtime::new(paths, &environment.name).check_resolved(&environment.name)?;
     components::reconcile_config(paths, &global, &environment, &launch.runner, &launch.prefix)?;
     desktop::reconcile(
         paths,
@@ -59,8 +60,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
 }
 
-/// Runs `launch` attached to the terminal. Shared with `new --install-exe`.
-pub(crate) fn run_attached(launch: &Launch) -> anyhow::Result<i32> {
+/// Runs `launch` attached to the terminal.
+fn run_attached(launch: &Launch) -> anyhow::Result<i32> {
     // The program shares our process group and gets Ctrl+C itself. wineo keeps
     // waiting instead of exiting out from under it.
     signal_hook::flag::register(SIGINT, Arc::new(AtomicBool::new(false)))
