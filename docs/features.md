@@ -2,9 +2,10 @@
 
 Planned features that aren't scheduled yet. When one gets picked up, it gets its own numbered plan in `docs/plans/`.
 
-Completed: [0007: Guided game setup](plans/0007-guided-game-setup.md).
-Approved next: [0008: Downloads and prefix imports](plans/0008-downloads-and-imports.md),
+Completed: [0007: Guided game setup](plans/0007-guided-game-setup.md) and
+[0008: Downloads and prefix imports](plans/0008-downloads-and-imports.md),
 including launch settings for manually added Heroic games.
+See [Downloads and imports](downloads-and-imports.md) for usage.
 
 **Category**
 

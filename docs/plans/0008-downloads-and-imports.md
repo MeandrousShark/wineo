@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0008: Downloads and prefix imports
 
@@ -453,3 +453,31 @@ these moving upstream references are evidence, not a promise of a stable API.
   [sideload launch behavior](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/blob/main/src/backend/storeManagers/storeManagerCommon/games.ts),
   and [launcher environment handling](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/blob/main/src/backend/launcher.ts)
   establish the fields, argument parsing, and setting translations to test.
+
+## Acceptance results
+
+Completed on 2026-09-21. Usage is documented in
+[Downloads and imports](../downloads-and-imports.md).
+
+- Formatting, workspace clippy with warnings denied, and the workspace test
+  suite pass. The two real-Wine core tests also pass with disposable prefixes.
+  PTY tests need a supported terminal type; the temporary verification checkout
+  inherited `TERM=dumb`, so its successful rerun explicitly used `TERM=linux`.
+- Live official catalogs work for all four providers. Isolated installs of
+  GE-Proton11-7, CachyOS 11.0-20260703 SLR, DXVK 3.1.1, and vkd3d-proton 3.0.1
+  verified checksums and exercised gzip, xz, and zstd extraction. Both runner
+  aliases resolved to the expected installed builds.
+- Imported Stellar Blade from the native Heroic configuration using a copied
+  prefix and copied Heroic CachyOS runner, leaving its external game folder in
+  place. Verified four copied save files byte-for-byte. The running game used
+  the copied prefix/runner and the imported Wayland and NVAPI variables.
+  The maintainer confirmed the game launched correctly and its saves looked
+  right, then closed it.
+- Revisited setup, removed the test registration while retaining its prefix,
+  adopted that disposable copy with `Proton-CachyOS-Latest`, and removed it using
+  `rm --delete-prefix`. All 2,331 original prefix entries and the selected Heroic
+  metadata files matched their pre-import fingerprints after the launch and
+  removal checks.
+- The real launch logged missing `libgamemode.so` warnings inside the runtime.
+  Import preserved the requested GameMode setting; the game otherwise launched
+  successfully. Runtime library installation remains outside this plan.
