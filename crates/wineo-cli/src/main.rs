@@ -19,7 +19,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create an environment
+    /// Create an environment, asking for what it needs unless given a name
     New(commands::new::Args),
     /// Change settings of an environment, or the global config
     Set(commands::set::Args),
