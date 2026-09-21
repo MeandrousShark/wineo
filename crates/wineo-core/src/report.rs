@@ -59,10 +59,25 @@ impl EnvironmentReport {
     pub fn load(paths: &Paths, global: &GlobalConfig, environment: &Environment) -> Result<Self> {
         let status = Runtime::new(paths, &environment.name).status()?;
         // An unresolvable runner is worth showing the rest of the status for.
-        let runner_version = Runners::new(paths, global)
-            .and_then(|runners| runners.resolve(&environment.config.runner))
+        let operation_runner = Runtime::new(paths, &environment.name)
+            .read_operation()
             .ok()
-            .and_then(|runner| runner.version());
+            .flatten()
+            .map(|operation| operation.runner);
+        let resolved = operation_runner
+            .or_else(|| status.run.as_ref().and_then(|run| run.runner.clone()))
+            .or_else(|| {
+                Runners::new(paths, global)
+                    .and_then(|runners| runners.resolve(&environment.config.runner))
+                    .ok()
+            });
+        let runner_version = resolved.as_ref().and_then(|runner| runner.version());
+        let runner_name = match &resolved {
+            Some(runner) if runner.name() != environment.config.runner => {
+                format!("{} -> {}", environment.config.runner, runner.name())
+            }
+            _ => environment.config.runner.clone(),
+        };
         let target = status
             .run
             .as_ref()
@@ -77,7 +92,7 @@ impl EnvironmentReport {
             busy,
             gamemode: crate::launch::gamemode(global, environment, target),
             name: environment.name.clone(),
-            runner: environment.config.runner.clone(),
+            runner: runner_name,
             runner_version,
             prefix: environment.config.prefix.clone(),
             gameid: environment.config.gameid.clone(),

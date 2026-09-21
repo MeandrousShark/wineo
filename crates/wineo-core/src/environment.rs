@@ -125,7 +125,7 @@ impl Environment {
         // A finished prefix is kept even if this write fails, so a retry adopts it.
         let mut doc = DocumentMut::new();
         doc["prefix"] = value(prefix_value);
-        doc["runner"] = value(runner.name());
+        doc["runner"] = value(runner.selection());
         doc["arch"] = value(arch.as_str());
         if let Some(template) = &new.template {
             template.apply(&mut doc);

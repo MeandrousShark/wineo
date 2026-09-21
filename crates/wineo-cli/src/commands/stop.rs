@@ -122,9 +122,11 @@ fn clean_up_lost_run(paths: &Paths, name: &str, runtime: &Runtime) -> anyhow::Re
     };
     let environment = Environment::load(paths, name)?;
     let global = GlobalConfig::load(paths).unwrap_or_default();
-    let killed = Runners::new(paths, &global)?
-        .resolve(&environment.config.runner)?
-        .kill(&environment.prefix(paths)?, run.group)?;
+    let runner = match &run.runner {
+        Some(runner) => runner.clone(),
+        None => Runners::new(paths, &global)?.resolve(&environment.config.runner)?,
+    };
+    let killed = runner.kill(&environment.prefix(paths)?, run.group)?;
     run.finish(RunStatus::Stopped);
     runtime.write_state(&run)?;
     let outcome = match killed {

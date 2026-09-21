@@ -35,6 +35,8 @@ enum Command {
     Restart(commands::restart::Args),
     /// List installed wine runners
     Runners(commands::runners::Args),
+    /// Download a runner or graphics component
+    Download(commands::download::Args),
     /// List installed DXVK builds
     Dxvk(commands::builds::Args),
     /// List installed vkd3d-proton builds
@@ -95,6 +97,7 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Start(args) => commands::start::run(&paths, args),
         Command::Stop(args) => commands::stop::run(&paths, args),
         Command::Restart(args) => commands::restart::run(&paths, args),
+        Command::Download(args) => commands::download::run(&paths, args),
         Command::Runners(args) => commands::runners::run(&paths, args),
         Command::Dxvk(args) => commands::builds::run(&paths, Component::Dxvk, args),
         Command::Vkd3d(args) => commands::builds::run(&paths, Component::Vkd3d, args),

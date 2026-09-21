@@ -343,6 +343,12 @@ impl Fixture {
         fs::write(&proton, "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(&proton, fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(dir.join("version"), format!("1717451631 {name}\n")).unwrap();
+        fs::create_dir_all(dir.join("files/bin")).unwrap();
+        for exe in ["wine", "wineserver"] {
+            let path = dir.join("files/bin").join(exe);
+            fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
     }
 
     /// wineo with the fakes off PATH entirely, so anything that still reaches

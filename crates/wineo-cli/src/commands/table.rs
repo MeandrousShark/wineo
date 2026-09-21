@@ -125,6 +125,7 @@ mod tests {
 
     fn run(status: RunStatus, target: &str) -> RunState {
         RunState {
+            runner: None,
             status,
             mode: RunMode::Detached,
             target: target.to_owned(),

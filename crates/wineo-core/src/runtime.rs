@@ -43,6 +43,8 @@ pub struct RunState {
     pub status: RunStatus,
     pub mode: RunMode,
     pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner: Option<Runner>,
     pub pid: u32,
     /// The process group the run was spawned into, so what it left behind can
     /// still be killed once whatever owned it is gone. Missing in a state file
@@ -80,6 +82,7 @@ impl RunState {
             status: RunStatus::Running,
             mode,
             target,
+            runner: None,
             pid,
             group,
             started_at: Timestamp::now(),
@@ -502,6 +505,7 @@ mod tests {
             status,
             mode: RunMode::Detached,
             target: "notepad".to_owned(),
+            runner: None,
             pid: 4242,
             group: Some(4242),
             started_at: "2026-09-16T21:02:11Z".parse().unwrap(),

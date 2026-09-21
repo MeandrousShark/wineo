@@ -457,6 +457,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         Some(child.id()),
         &spec.overrides,
     );
+    state.runner = Some(spec.launch.runner.clone());
     if let Err(err) = runtime.write_state(&state) {
         log_notice(&log, Notice::Warning(err));
     }

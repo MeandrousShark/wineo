@@ -81,7 +81,7 @@ impl Installer {
         // Resolved once to know which prefix to lock, then again under it.
         let locked = launch(paths, global, &Environment::load(paths, name)?, program)?.prefix;
         let guard = Locks::new(paths).acquire(Operation::Install, name, &[&locked])?;
-        Self::claim(guard, paths, global, name, program, Some(&locked))
+        Self::claim(guard, paths, global, name, program, Some(&locked), None)
     }
 
     /// The same for a caller already holding the environment and its prefix
@@ -95,7 +95,20 @@ impl Installer {
         program: &str,
     ) -> Result<Self> {
         guard.relabel(Operation::Install)?;
-        Self::claim(guard, paths, global, name, program, None)
+        Self::claim(guard, paths, global, name, program, None, None)
+    }
+
+    /// Keeps creation and its installer on the same resolved runner.
+    pub fn prepare_with_runner(
+        mut guard: Guard,
+        paths: &Paths,
+        global: &GlobalConfig,
+        name: &str,
+        program: &str,
+        runner: &crate::runner::Runner,
+    ) -> Result<Self> {
+        guard.relabel(Operation::Install)?;
+        Self::claim(guard, paths, global, name, program, None, Some(runner))
     }
 
     /// Reads the environment again under the lock, so what runs is what its
@@ -107,9 +120,16 @@ impl Installer {
         name: &str,
         program: &str,
         locked: Option<&Path>,
+        fixed_runner: Option<&crate::runner::Runner>,
     ) -> Result<Self> {
-        let environment = Environment::load(paths, name)?;
-        let launch = launch(paths, global, &environment, program)?;
+        let mut environment = Environment::load(paths, name)?;
+        if let Some(runner) = fixed_runner {
+            environment.config.runner = runner.name().to_owned();
+        }
+        let mut launch = launch(paths, global, &environment, program)?;
+        if let Some(runner) = fixed_runner {
+            launch.runner = runner.clone();
+        }
         if locked.is_some_and(|locked| {
             crate::paths::resolve(locked) != crate::paths::resolve(&launch.prefix)
         }) {

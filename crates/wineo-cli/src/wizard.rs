@@ -413,6 +413,7 @@ fn settings<I: Input, W: Write>(
         enum Change {
             Accept,
             Runner,
+            Download,
             Arch,
         }
         let mut entries = Vec::new();
@@ -420,9 +421,17 @@ fn settings<I: Input, W: Write>(
             entries.push(("Use these".to_owned(), Change::Accept));
         }
         entries.push(("Change the runner".to_owned(), Change::Runner));
+        entries.push((
+            "Download a runner or graphics tool".to_owned(),
+            Change::Download,
+        ));
         if adopted.is_none() {
             entries.push(("Change the arch".to_owned(), Change::Arch));
         }
+        entries.push((
+            "Download a runner or graphics tool".to_owned(),
+            Change::Download,
+        ));
         match prompt.choose(&heading, "Choice", &numbered(entries), Some("1"), true)? {
             Reply::Back => return Ok(Reply::Back),
             Reply::Value(Change::Accept) => {
@@ -434,6 +443,14 @@ fn settings<I: Input, W: Write>(
                 if let Reply::Value(chosen) = pick_runner(prompt, &runners, &runner_name)? {
                     answers.runner = Some(chosen);
                 }
+            }
+            Reply::Value(Change::Download) => {
+                let _ = crate::commands::download::choose_and_install(
+                    paths,
+                    global,
+                    prompt,
+                    &crate::commands::download::PROVIDERS,
+                )?;
             }
             Reply::Value(Change::Arch) => {
                 let choices = numbered([
@@ -505,7 +522,11 @@ fn adopted_arch(runner: &Runner, dir: &Path) -> Option<Arch> {
 }
 
 fn describe_runner(runner: &Runner) -> String {
-    let mut text = runner.name().to_owned();
+    let mut text = if runner.selection() != runner.name() {
+        format!("{} -> {}", runner.selection(), runner.name())
+    } else {
+        runner.name().to_owned()
+    };
     let version = runner.version();
     match (runner.is_proton(), version) {
         (true, Some(version)) if version != runner.name() => {
@@ -535,6 +556,12 @@ fn pick_runner<I: Input, W: Write>(
     }
     for runner in &listing.runners {
         entries.push((describe_runner(runner), runner.name().to_owned()));
+    }
+    for alias in wineo_core::runner_alias::ALIASES {
+        match runners.resolve(alias) {
+            Ok(runner) => entries.push((describe_runner(&runner), alias.to_owned())),
+            Err(err) => unusable.push(err.to_string()),
+        }
     }
     for (name, reason) in &listing.skipped {
         unusable.push(format!("{name}: {}", reason.as_str()));
@@ -791,7 +818,8 @@ fn create<I: Input, W: Write>(
             return setup::finish(paths, global, &name, prompt, &batch);
         }
         How::Installer(program) => {
-            let installer = Installer::prepare_with(guard, paths, global, &name, &program)?;
+            let installer =
+                Installer::prepare_with_runner(guard, paths, global, &name, &program, &runner)?;
             match setup::run_installer(paths, global, &name, prompt, installer)? {
                 Ran::Finished => picker::pick(prompt, &place, &mut batch).map(|_| ())?,
                 Ran::Ended(code) => return Ok(code),

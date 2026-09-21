@@ -94,6 +94,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         Some(child.id()),
         &overrides,
     );
+    state.runner = Some(launch.runner.clone());
     // Wine is already running, so bailing out here would orphan it and free the lock.
     if let Err(err) = runtime.write_state(&state) {
         warn(err.into());

@@ -15,6 +15,7 @@ use crate::runner::Runner;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Skipped {
     Reserved,
+    AliasReserved,
     InvalidName,
     NoWine,
     NoWineserver,
@@ -24,6 +25,7 @@ pub enum Skipped {
 impl Skipped {
     pub fn as_str(self) -> &'static str {
         match self {
+            Skipped::AliasReserved => "this name is reserved for a runner alias",
             Skipped::Reserved => "`wine` is reserved for the system wine",
             Skipped::InvalidName => "not a usable name: use letters, digits, `-`, `_`, and `.`",
             Skipped::NoWine => "no bin/wine and no proton script",
@@ -62,6 +64,9 @@ impl Runners {
     /// The runner an environment's `runner` value names. `wine` always means
     /// the system wine, whatever is in the runners root.
     pub fn resolve(&self, name: &str) -> Result<Runner> {
+        if crate::runner_alias::is_alias(name) {
+            return self.resolve_alias(name);
+        }
         if name == Runner::SYSTEM {
             return Runner::system();
         }
@@ -107,7 +112,11 @@ impl Runners {
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            if name == Runner::SYSTEM {
+            if crate::runner_alias::is_alias(name) {
+                listing
+                    .skipped
+                    .push((name.to_owned(), Skipped::AliasReserved));
+            } else if name == Runner::SYSTEM {
                 listing.skipped.push((name.to_owned(), Skipped::Reserved));
             } else if !name::is_valid_runner(name) {
                 listing
@@ -123,6 +132,29 @@ impl Runners {
         listing.runners.sort_by(|a, b| a.name().cmp(b.name()));
         listing.skipped.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(listing)
+    }
+
+    fn resolve_alias(&self, alias: &str) -> Result<Runner> {
+        let failure = |reason: String| Error::RunnerAlias {
+            name: alias.to_owned(),
+            reason,
+        };
+        if self.root.join(alias).symlink_metadata().is_ok() {
+            return Err(failure(format!(
+                "{} already exists; rename it before using this alias",
+                self.root.join(alias).display()
+            )));
+        }
+        if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            return Err(failure("only Linux x86_64 builds are supported".to_owned()));
+        }
+        self.list()?.runners.into_iter()
+            .filter(Runner::is_proton)
+            .filter(|runner| crate::runner_alias::complete_proton(&self.root.join(runner.name())))
+            .filter_map(|runner| crate::runner_alias::version(&self.root, runner.name(), alias).map(|version| (version, runner)))
+            .max_by(|(a, ar), (b, br)| a.cmp(b).then_with(|| ar.name().cmp(br.name())))
+            .map(|(_, runner)| runner.with_selection(alias))
+            .ok_or_else(|| failure(format!("no compatible stable release is installed; use `wineo download {}` or select an installed version", if alias == "GE-Proton-Latest" { "ge-proton" } else { "proton-cachyos" })))
     }
 
     /// The newest Proton build installed, going by the version numbers in
@@ -298,6 +330,7 @@ mod tests {
             &[
                 ("proton", true),
                 ("files/bin/wine", true),
+                ("files/bin/wineserver", true),
                 ("version", false),
             ],
         );
@@ -469,5 +502,68 @@ mod tests {
         }
         let newest = runners(root.path()).newest_proton().unwrap().unwrap();
         assert_eq!(newest.name(), "GE-Proton11-7-x86_64");
+    }
+    #[test]
+    fn aliases_select_stable_family_versions_and_retain_resolved_runners() {
+        let root = tempfile::tempdir().unwrap();
+        let installed = runners(root.path());
+        assert!(installed.resolve("GE-Proton-Latest").is_err());
+        for name in [
+            "GE-Proton9-20",
+            "GE-Proton11-7-x86_64",
+            "GE-Proton11-99-rc1",
+            "proton-cachyos-12.0-20260921-slr-x86_64",
+            "GE-Proton99-1-aarch64",
+        ] {
+            proton_build(root.path(), name, name);
+        }
+        let before = installed.resolve("GE-Proton-Latest").unwrap();
+        assert_eq!(before.name(), "GE-Proton11-7-x86_64");
+        assert_eq!(before.selection(), "GE-Proton-Latest");
+        let serialized = toml::to_string(&before).unwrap();
+        proton_build(root.path(), "GE-Proton12-1", "GE-Proton12-1");
+        proton_build(root.path(), "GE-Proton8-1", "GE-Proton8-1");
+        assert_eq!(
+            installed.resolve("GE-Proton-Latest").unwrap().name(),
+            "GE-Proton12-1"
+        );
+        assert_eq!(toml::from_str::<Runner>(&serialized).unwrap(), before);
+        assert_eq!(
+            installed.resolve("GE-Proton9-20").unwrap().selection(),
+            "GE-Proton9-20"
+        );
+        assert_eq!(
+            installed.resolve("Proton-CachyOS-Latest").unwrap().name(),
+            "proton-cachyos-12.0-20260921-slr-x86_64"
+        );
+    }
+
+    #[test]
+    fn alias_receipts_allow_renames_but_not_incompatible_or_corrupt_builds() {
+        let root = tempfile::tempdir().unwrap();
+        proton_build(root.path(), "renamed", "GE-Proton12-1");
+        let path = root.path().join("runners/renamed/.wineo-install.json");
+        let mut receipt = serde_json::json!({"provider":"ge-proton", "version":"GE-Proton12-1", "architecture":"x86_64", "variant":"baseline", "stable":true});
+        fs::write(&path, receipt.to_string()).unwrap();
+        assert_eq!(
+            runners(root.path())
+                .resolve("GE-Proton-Latest")
+                .unwrap()
+                .name(),
+            "renamed"
+        );
+        receipt["stable"] = false.into();
+        fs::write(&path, receipt.to_string()).unwrap();
+        assert!(runners(root.path()).resolve("GE-Proton-Latest").is_err());
+        fs::write(&path, "broken").unwrap();
+        assert!(runners(root.path()).resolve("GE-Proton-Latest").is_err());
+        fs::write(root.path().join("runners/GE-Proton-Latest"), "reserved").unwrap();
+        assert!(
+            runners(root.path())
+                .resolve("GE-Proton-Latest")
+                .unwrap_err()
+                .to_string()
+                .contains("already exists")
+        );
     }
 }

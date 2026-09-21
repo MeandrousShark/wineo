@@ -225,6 +225,7 @@ mod tests {
 
     fn run(status: RunStatus, mode: RunMode) -> RunState {
         RunState {
+            runner: None,
             status,
             mode,
             target: "notepad".to_owned(),

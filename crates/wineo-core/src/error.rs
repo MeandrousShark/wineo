@@ -93,6 +93,9 @@ pub enum Error {
         root: PathBuf,
     },
 
+    #[error("cannot resolve runner alias `{name}`: {reason}")]
+    RunnerAlias { name: String, reason: String },
+
     #[error("`{name}` is not a wine build: {reason}")]
     NotARunner { name: String, reason: &'static str },
 

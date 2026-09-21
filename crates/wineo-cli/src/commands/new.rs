@@ -166,7 +166,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         );
         return Ok(ExitCode::SUCCESS);
     };
-    let installer = Installer::prepare_with(guard, paths, &global, &environment.name, program)?;
+    let installer =
+        Installer::prepare_with_runner(guard, paths, &global, &environment.name, program, &runner)?;
     let name = &environment.name;
     let outcome = installer.run(
         Duration::from_secs(global.stop_timeout.into()),

@@ -50,6 +50,18 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         detail: version(runner),
         path: String::new(),
     }));
+    for alias in wineo_core::runner_alias::ALIASES {
+        let detail = match runners.resolve(alias) {
+            Ok(runner) => format!("-> {}", runner.name()),
+            Err(err) => err.to_string(),
+        };
+        rows.push(Row {
+            name: alias.to_owned(),
+            kind: "alias".to_owned(),
+            detail,
+            path: String::new(),
+        });
+    }
     if args.all {
         rows.extend(listing.skipped.iter().map(|(name, reason)| Row {
             name: name.clone(),

@@ -1,6 +1,7 @@
 pub mod components;
 pub mod config;
 pub mod desktop;
+pub mod download;
 pub mod edit;
 pub mod environment;
 pub mod error;
@@ -17,6 +18,7 @@ pub mod process;
 pub mod programs;
 pub mod report;
 pub mod runner;
+pub mod runner_alias;
 pub mod runners;
 pub mod runtime;
 pub mod settings;

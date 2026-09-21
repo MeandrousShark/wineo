@@ -28,15 +28,17 @@ pub enum Killed {
 }
 
 /// The wine build an environment runs with.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Runner {
     name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selection: Option<String>,
     kind: Kind,
 }
 
 /// Proton is driven entirely through umu, so it shares no executables with a
 /// plain wine build rather than being another way to reach the same ones.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Kind {
     Wine { wine: PathBuf, wineserver: PathBuf },
@@ -44,6 +46,15 @@ enum Kind {
 }
 
 impl Runner {
+    pub fn selection(&self) -> &str {
+        self.selection.as_deref().unwrap_or(&self.name)
+    }
+
+    pub(crate) fn with_selection(mut self, selection: &str) -> Self {
+        self.selection = Some(selection.to_owned());
+        self
+    }
+
     /// The reserved name meaning whatever wine is on `PATH`.
     pub const SYSTEM: &'static str = "wine";
 
@@ -52,6 +63,7 @@ impl Runner {
         let path = std::env::var_os("PATH").unwrap_or_default();
         Ok(Self {
             name: Self::SYSTEM.to_owned(),
+            selection: None,
             kind: Kind::Wine {
                 wine: find_in_path(&path, "wine").ok_or(Error::ProgramNotFound("wine"))?,
                 wineserver: find_in_path(&path, "wineserver")
@@ -64,6 +76,7 @@ impl Runner {
     pub(crate) fn wine_build(name: String, wine: PathBuf, wineserver: PathBuf) -> Self {
         Self {
             name,
+            selection: None,
             kind: Kind::Wine { wine, wineserver },
         }
     }
@@ -73,6 +86,7 @@ impl Runner {
     pub(crate) fn proton(name: String, root: PathBuf) -> Self {
         Self {
             name,
+            selection: None,
             kind: Kind::Proton { root },
         }
     }
