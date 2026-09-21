@@ -134,7 +134,7 @@ pub fn list(paths: &Paths) -> Result<Vec<Entry>> {
     for found in fs::read_dir(&dir).into_iter().flatten().flatten() {
         let path = found.path();
         let name = found.file_name().to_string_lossy().into_owned();
-        if !name.starts_with(FILE_PREFIX) || !name.ends_with(".desktop") {
+        if !name.ends_with(".desktop") {
             continue;
         }
         if let Some(entry) = read_entry(&path) {
@@ -767,6 +767,21 @@ mod tests {
         assert_eq!(listed[0].environment, "hades");
         assert_eq!(listed[0].target, "hades");
         assert_eq!(listed[0].name, "hades");
+    }
+
+    #[test]
+    fn ownership_keys_identify_a_renamed_entry() {
+        let fixture = Fixture::new();
+        let environment = fixture.environment(ASKS);
+        fixture.reconcile(&environment);
+        let renamed = fixture.paths.applications_dir().join("renamed.desktop");
+        fs::rename(entry_path(&fixture.paths, "hades", "hades"), &renamed).unwrap();
+
+        let listed = list(&fixture.paths).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, renamed);
+        assert_eq!(remove_all(&fixture.paths, "hades").unwrap(), ["hades"]);
+        assert!(!renamed.exists());
     }
 
     #[test]
