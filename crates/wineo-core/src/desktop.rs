@@ -403,6 +403,7 @@ fn extract_icon(
         // menu builder, so an inherited value that disables it has nothing to say.
         .env("WINEDLLOVERRIDES", "winemenubuilder.exe=b")
         .env("XDG_DATA_HOME", scratch.path())
+        .env("XDG_CONFIG_HOME", scratch.path().join("config"))
         .env("WINEDEBUG", "-all")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -467,7 +468,7 @@ impl Drop for Scratch {
     }
 }
 
-/// The `Icon` name out of whatever `.desktop` wine wrote under `dir`.
+/// Reads the shortcut icon, ignoring file associations Wine may refresh too.
 fn wine_icon_name(dir: &Path) -> Option<String> {
     let mut stack = vec![dir.to_owned()];
     while let Some(dir) = stack.pop() {
@@ -477,6 +478,7 @@ fn wine_icon_name(dir: &Path) -> Option<String> {
                 stack.push(path);
             } else if path.extension().is_some_and(|ext| ext == "desktop")
                 && let Ok(text) = fs::read_to_string(&path)
+                && !text.lines().any(|line| line.starts_with("MimeType="))
                 && let Some(icon) = text
                     .lines()
                     .find_map(|line| line.strip_prefix("Icon="))
@@ -804,6 +806,26 @@ mod tests {
     fn entry_values_stay_on_one_line() {
         assert_eq!(clean("Hades\nInjected=x"), "HadesInjected=x");
         assert_eq!(clean("  Hades  "), "Hades");
+    }
+
+    #[test]
+    fn shortcut_icon_ignores_file_association_entries() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("wine-extension-vbs.desktop"),
+            "[Desktop Entry]\nMimeType=text/vbscript;\nIcon=wscript\n",
+        )
+        .unwrap();
+        assert_eq!(wine_icon_name(root.path()), None);
+
+        let menu = root.path().join("wine/Programs");
+        fs::create_dir_all(&menu).unwrap();
+        fs::write(
+            menu.join("Game.desktop"),
+            "[Desktop Entry]\nName=Game\nIcon=game\n",
+        )
+        .unwrap();
+        assert_eq!(wine_icon_name(root.path()).as_deref(), Some("game"));
     }
 
     #[test]
