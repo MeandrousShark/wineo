@@ -31,9 +31,16 @@ pub enum Outcome {
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
-    match stop(paths, &args.name, args.force)? {
-        Outcome::Stopped => println!("Stopped {}", args.name),
-        Outcome::NotRunning => eprintln!("{} is not running", args.name),
+    let name = &args.name;
+    // Only this command cleans up after an installer, as the one the refusals
+    // point at. `restart` stops a run without it and is then refused.
+    let outcome = match stop(paths, name, args.force)? {
+        Outcome::NotRunning if clean_up_installer(paths, name)? => Outcome::CleanedUp,
+        outcome => outcome,
+    };
+    match outcome {
+        Outcome::Stopped => println!("Stopped {name}"),
+        Outcome::NotRunning => eprintln!("{name} is not running"),
         Outcome::CleanedUp => {}
     }
     Ok(ExitCode::SUCCESS)
@@ -66,17 +73,21 @@ pub fn stop(paths: &Paths, name: &str, force: bool) -> anyhow::Result<Outcome> {
     {
         return Ok(Outcome::Stopped);
     }
-    if clean_up_installer(paths, name, timeout)? {
-        return Ok(Outcome::CleanedUp);
-    }
     clean_up_lost_run(paths, name, &runtime)
 }
 
 /// Stops whatever an installer left running when wineo could not confirm it
 /// was done, which is what other commands are refused over until then.
-fn clean_up_installer(paths: &Paths, name: &str, timeout: Duration) -> anyhow::Result<bool> {
-    let Some(cleaned) = installer::clean_up(paths, name, timeout)
-        .with_context(|| format!("failed to clean up after {name}'s last installer"))?
+fn clean_up_installer(paths: &Paths, name: &str) -> anyhow::Result<bool> {
+    let global = GlobalConfig::load(paths).unwrap_or_default();
+    let timeout = Duration::from_secs(u64::from(global.stop_timeout) + 10);
+    let record = Runtime::new(paths, name).operation_path();
+    let Some(cleaned) = installer::clean_up(paths, &global, name, timeout).with_context(|| {
+        format!(
+            "failed to clean up after {name}'s last installer. If nothing is running in its prefix any more, delete {} to clear this",
+            record.display()
+        )
+    })?
     else {
         return Ok(false);
     };

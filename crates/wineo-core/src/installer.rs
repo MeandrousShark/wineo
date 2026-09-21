@@ -23,7 +23,9 @@ use crate::error::{Error, IoContext, Result};
 use crate::launch::Launch;
 use crate::operation::{Guard, Locks, Operation};
 use crate::paths::Paths;
+use crate::process;
 use crate::runner::Killed;
+use crate::runners::Runners;
 use crate::runtime::{OperationState, Runtime};
 use crate::supervisor::{Notice, Settle, Supervisor, Watched};
 
@@ -67,19 +69,19 @@ pub struct Installer {
 }
 
 impl Installer {
-    /// Takes the environment and its prefix for `program`, resolved the way
+    /// Takes environment `name` and its prefix for `program`, resolved the way
     /// `exec` resolves it, `.msi` files included. Refused while a game runs,
     /// after a lost run, and while an earlier installer is unresolved.
     pub fn prepare(
         paths: &Paths,
         global: &GlobalConfig,
-        environment: &Environment,
+        name: &str,
         program: &str,
     ) -> Result<Self> {
-        let launch = launch(paths, global, environment, program)?;
-        let guard =
-            Locks::new(paths).acquire(Operation::Install, &environment.name, &[&launch.prefix])?;
-        Self::claim(paths, environment, program, launch, guard)
+        // Resolved once to know which prefix to lock, then again under it.
+        let locked = launch(paths, global, &Environment::load(paths, name)?, program)?.prefix;
+        let guard = Locks::new(paths).acquire(Operation::Install, name, &[&locked])?;
+        Self::claim(guard, paths, global, name, program, Some(&locked))
     }
 
     /// The same for a caller already holding the environment and its prefix
@@ -89,25 +91,32 @@ impl Installer {
         mut guard: Guard,
         paths: &Paths,
         global: &GlobalConfig,
-        environment: &Environment,
+        name: &str,
         program: &str,
     ) -> Result<Self> {
-        let launch = launch(paths, global, environment, program)?;
         guard.relabel(Operation::Install)?;
-        Self::claim(paths, environment, program, launch, guard)
+        Self::claim(guard, paths, global, name, program, None)
     }
 
+    /// Reads the environment again under the lock, so what runs is what its
+    /// config says now rather than when someone started answering questions.
     fn claim(
-        paths: &Paths,
-        environment: &Environment,
-        program: &str,
-        launch: Launch,
         guard: Guard,
+        paths: &Paths,
+        global: &GlobalConfig,
+        name: &str,
+        program: &str,
+        locked: Option<&Path>,
     ) -> Result<Self> {
-        // Everything so far was read before the lock, so it only counts now.
-        Environment::ensure_exists(paths, &environment.name)?;
-        let runtime = Runtime::new(paths, &environment.name);
-        runtime.check_quiet(&environment.name)?;
+        let environment = Environment::load(paths, name)?;
+        let launch = launch(paths, global, &environment, program)?;
+        if locked.is_some_and(|locked| {
+            crate::paths::resolve(locked) != crate::paths::resolve(&launch.prefix)
+        }) {
+            return Err(Error::Changed(name.to_owned()));
+        }
+        let runtime = Runtime::new(paths, name);
+        runtime.check_quiet(name)?;
         Ok(Self {
             guard,
             launch,
@@ -144,20 +153,22 @@ impl Installer {
             prefix: launch.prefix.clone(),
             pid: None,
             group: None,
+            boot_id: None,
+            leader_start: None,
             started_at: Timestamp::now(),
         };
+        // Listening starts first, so a Ctrl+C that comes early is still held
+        // for the loop below rather than killing wineo with a record written.
+        let supervisor = Supervisor::listen()?;
         // Written before anything starts, so a crash can never leave something
         // running that nothing records.
         runtime.write_operation(&record)?;
-        // Listening starts first, so a Ctrl+C that comes early still stops it.
-        let started = Supervisor::listen().and_then(|supervisor| {
-            let child = command(&launch, output)?
+        let child = match command(&launch, output).and_then(|mut command| {
+            command
                 .spawn()
-                .context(|| format!("failed to start {}", launch.runner.launcher()))?;
-            Ok((supervisor, child))
-        });
-        let (supervisor, child) = match started {
-            Ok(started) => started,
+                .context(|| format!("failed to start {}", launch.runner.launcher()))
+        }) {
+            Ok(child) => child,
             Err(err) => {
                 // Nothing is running, so there is nothing left to protect.
                 let _ = runtime.clear_operation();
@@ -166,6 +177,8 @@ impl Installer {
         };
         record.pid = Some(child.id());
         record.group = Some(child.id());
+        record.boot_id = process::boot_id();
+        record.leader_start = process::start_time(child.id());
         if let Err(err) = runtime.write_operation(&record) {
             watched(Watched::Notice(Notice::Warning(err)));
         }
@@ -254,26 +267,64 @@ pub enum Cleaned {
 /// Stops whatever an installer left running when it could not confirm that
 /// everything had stopped, then clears its record so the environment can be
 /// used again. None when there was nothing to clean up.
-pub fn clean_up(paths: &Paths, name: &str, timeout: Duration) -> Result<Option<Cleaned>> {
+pub fn clean_up(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    timeout: Duration,
+) -> Result<Option<Cleaned>> {
     let runtime = Runtime::new(paths, name);
-    let Some(record) = runtime.read_operation()? else {
+    let Some(target) = cleanup_target(paths, global, name, &runtime)? else {
         return Ok(None);
     };
-    let _guard = Locks::new(paths).acquire(Operation::Cleanup, name, &[&record.prefix])?;
+    let _guard = Locks::new(paths).acquire(Operation::Cleanup, name, &[&target.prefix])?;
     // Read again under the lock, in case another cleanup got there first.
-    let Some(record) = runtime.read_operation()? else {
+    let Some(target) = cleanup_target(paths, global, name, &runtime)? else {
         return Ok(None);
     };
-    let cleaned = match record.runner.kill(&record.prefix, record.group)? {
-        Killed::Done => Cleaned::Stopped,
-        Killed::Gone => Cleaned::Gone,
-        Killed::Untracked => Cleaned::Untracked,
+    let cleaned = if !target.group_is_ours() {
+        Cleaned::Gone
+    } else {
+        match target.runner.kill(&target.prefix, target.group)? {
+            Killed::Done => Cleaned::Stopped,
+            Killed::Gone => Cleaned::Gone,
+            Killed::Untracked => Cleaned::Untracked,
+        }
     };
     if cleaned == Cleaned::Stopped {
-        settle(&record, timeout)?;
+        settle(&target, timeout)?;
     }
     runtime.clear_operation()?;
     Ok(Some(cleaned))
+}
+
+/// What a cleanup acts on: the record, or when it can't be read, the
+/// environment's current runner and prefix with no process group, which is
+/// still enough to stop everything in a wine prefix.
+fn cleanup_target(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    runtime: &Runtime,
+) -> Result<Option<OperationState>> {
+    match runtime.read_operation() {
+        Ok(record) => Ok(record),
+        Err(Error::StateSyntax { .. }) => {
+            let environment = Environment::load(paths, name)?;
+            Ok(Some(OperationState {
+                operation: Operation::Install,
+                program: String::new(),
+                runner: Runners::new(paths, global)?.resolve(&environment.config.runner)?,
+                prefix: environment.prefix(paths)?,
+                pid: None,
+                group: None,
+                boot_id: None,
+                leader_start: None,
+                started_at: Timestamp::now(),
+            }))
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// Waits for a kill to take, giving up after `timeout` rather than hanging.
@@ -380,6 +431,8 @@ mod tests {
             prefix: root.path().join("prefix"),
             pid: Some(42),
             group: Some(42),
+            boot_id: None,
+            leader_start: None,
             started_at: Timestamp::now(),
         };
         runtime.write_operation(&record).unwrap();

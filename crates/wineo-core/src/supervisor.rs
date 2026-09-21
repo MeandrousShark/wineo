@@ -188,8 +188,11 @@ impl Supervisor {
         let mut exit = None;
         let mut stopping = false;
         let mut killing_since: Option<Instant> = None;
+        // Tells when the request to close is done, since it runs wine too.
+        let mut ending_session: Option<Receiver<()>> = None;
         // When the clean stop gives up, or the next kill is due.
         let mut deadline: Option<Instant> = None;
+        let lost = || Err(Error::Unsettled("lost track of the program".to_owned()));
         let settled = loop {
             let event = match deadline {
                 Some(deadline) => match self
@@ -198,11 +201,11 @@ impl Supervisor {
                 {
                     Ok(event) => event,
                     Err(RecvTimeoutError::Timeout) => Event::StopTimeout,
-                    Err(RecvTimeoutError::Disconnected) => break Ok(()),
+                    Err(RecvTimeoutError::Disconnected) => break lost(),
                 },
                 None => match self.events.recv() {
                     Ok(event) => event,
-                    Err(_) => break Ok(()),
+                    Err(_) => break lost(),
                 },
             };
             match event {
@@ -227,8 +230,11 @@ impl Supervisor {
                     deadline = Some(Instant::now() + stop_timeout);
                     watched(Watched::Notice(Notice::Stopping));
                     let (runner, prefix) = (runner.clone(), prefix.to_owned());
+                    let (done, ended) = mpsc::channel();
+                    ending_session = Some(ended);
                     thread::spawn(move || {
                         let _ = runner.end_session(&prefix, group);
+                        let _ = done.send(());
                     });
                 }
                 Event::Stop | Event::Force | Event::StopTimeout => {
@@ -249,6 +255,11 @@ impl Supervisor {
                 }
             }
         };
+        // The request to close can still be starting wine when the prefix
+        // goes idle, so it gets a moment to finish before this counts as over.
+        if let Some(ended) = ending_session {
+            let _ = ended.recv_timeout(stop_timeout.max(KILL_RETRY));
+        }
         Ending {
             exit_code: exit,
             stopped: stopping,

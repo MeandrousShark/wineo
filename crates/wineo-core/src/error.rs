@@ -196,6 +196,9 @@ pub enum Error {
     )]
     Unresolved(String),
 
+    #[error("{0}'s prefix changed while this was being prepared, so nothing ran. Try again")]
+    Changed(String),
+
     #[error("{0}")]
     StartFailed(String),
 

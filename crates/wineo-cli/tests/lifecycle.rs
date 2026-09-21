@@ -4,6 +4,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -45,6 +46,10 @@ wineboot)
 reg)
     echo "$*" >>"$WINEPREFIX/reg.log"
     exit 0
+    ;;
+winemenubuilder.exe)
+    echo "$*" >>"$WINEPREFIX/menubuilder.log"
+    exit 1
     ;;
 esac
 echo "fake wine: $*"
@@ -2664,4 +2669,217 @@ fn ctrl_c_cancels_a_proton_installer_through_its_group() {
     assert_eq!(output.status.code(), Some(130), "{}", stderr(&output));
     assert!(!f.fake_program_running("hades"));
     assert!(!f.installer_recorded("hades"));
+}
+
+/// An unresolved installer record for `name`, as if wineo had died mid-install.
+fn record_unresolved(f: &Fixture, name: &str, text: &str) {
+    let dir = f.runtime(name).dir().to_owned();
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("operation.toml"), text).unwrap();
+}
+
+/// The group a Proton installer record names, as its leader's pid.
+fn recorded_group(f: &Fixture, name: &str) -> u32 {
+    fs::read_to_string(f.runtime(name).dir().join("operation.toml"))
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("group = "))
+        .and_then(|group| group.trim().parse().ok())
+        .expect("the record names a group")
+}
+
+#[test]
+fn a_crashed_proton_installer_is_stopped_through_its_group() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    let mut child = f
+        .new_with_installer("hades", &["--runner", "GE-Proton9-20"], "setup")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for("the installer to start", || f.fake_program_running("hades"));
+    wait_for("the record to name its group", || {
+        fs::read_to_string(f.runtime("hades").dir().join("operation.toml"))
+            .is_ok_and(|text| text.contains("group = "))
+    });
+    signal(&child, "-KILL");
+    child.wait().unwrap();
+    let group = recorded_group(&f, "hades");
+    assert!(PathBuf::from(format!("/proc/{group}")).exists());
+
+    let stopped = f.run(&["stop", "hades"]);
+    assert_success(&stopped);
+    assert!(
+        stderr(&stopped).contains("so it stopped anything left behind"),
+        "{}",
+        stderr(&stopped)
+    );
+    wait_for("umu's group to be gone", || {
+        !PathBuf::from(format!("/proc/{group}")).exists()
+    });
+    assert!(!f.installer_recorded("hades"));
+}
+
+#[test]
+fn a_process_group_that_reused_the_number_is_never_signalled() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment("hades", "GE-Proton9-20", "");
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+    for (boot_id, reused) in [(boot.trim(), true), ("some-other-boot", false)] {
+        // Something unrelated now leads a group with the recorded number.
+        let mut bystander = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let group = bystander.id();
+        let started = fs::read_to_string(format!("/proc/{group}/stat")).unwrap();
+        let started: u64 = started[started.rfind(')').unwrap() + 1..]
+            .split_whitespace()
+            .nth(19)
+            .unwrap()
+            .parse()
+            .unwrap();
+        // Either the leader started at another time, or the record is from
+        // another boot.
+        let leader_start = if reused { started + 1 } else { started };
+        record_unresolved(
+            &f,
+            "hades",
+            &format!(
+                "operation = \"install\"\nprogram = \"setup\"\nprefix = \"{}\"\ngroup = {group}\nboot_id = \"{boot_id}\"\nleader_start = {leader_start}\nstarted_at = \"2026-09-20T00:00:00Z\"\n\n[runner]\nname = \"GE-Proton9-20\"\n\n[runner.kind.proton]\nroot = \"/nonexistent\"\n",
+                f.prefix("hades").display()
+            ),
+        );
+        let stopped = f.run(&["stop", "hades"]);
+        assert_success(&stopped);
+        assert!(
+            stderr(&stopped).contains("what it started had already exited"),
+            "{}",
+            stderr(&stopped)
+        );
+        assert!(bystander.try_wait().unwrap().is_none(), "it was signalled");
+        assert!(!f.installer_recorded("hades"));
+        bystander.kill().unwrap();
+        bystander.wait().unwrap();
+    }
+}
+
+#[test]
+fn winetricks_refuses_before_touching_the_prefix() {
+    let f = Fixture::new();
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    f.environment("app", &format!("dxvk = \"dxvk-2.7\"\n\n{APP}"));
+    record_unresolved(&f, "app", "not a record [");
+
+    let refused = f.run_sandboxed(&["winetricks", "app", "-q", "corefonts"]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("last installer did not finish cleanly"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(f.manifest("app").is_empty(), "{}", f.manifest("app"));
+    assert!(f.reg_log("app").is_empty(), "{}", f.reg_log("app"));
+}
+
+#[test]
+fn an_unreadable_installer_record_is_still_cleaned_up() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    record_unresolved(&f, "app", "");
+
+    let refused = f.run(&["start", "app"]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("`wineo stop app`"),
+        "{}",
+        stderr(&refused)
+    );
+
+    // With nothing to read, the environment's own runner and prefix are used.
+    let stopped = f.run(&["stop", "app"]);
+    assert_success(&stopped);
+    assert!(!f.installer_recorded("app"));
+    assert_success(&f.run(&["exec", "app", "exit-0"]));
+}
+
+#[test]
+fn restart_is_refused_rather_than_cleaning_up() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    record_unresolved(&f, "app", "");
+    let refused = f.run(&["restart", "app"]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("last installer did not finish cleanly"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(f.installer_recorded("app"));
+}
+
+/// A `.lnk` pointing at `target`, with the one field a scan reads.
+fn lnk(target: &str) -> Vec<u8> {
+    fn set(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    let mut info = vec![0u8; 0x1C];
+    let base_at = u32::try_from(info.len()).unwrap();
+    info.extend(target.bytes());
+    info.push(0);
+    let suffix_at = u32::try_from(info.len()).unwrap();
+    info.push(0);
+    let size = u32::try_from(info.len()).unwrap();
+    set(&mut info, 0, size);
+    set(&mut info, 4, 0x1C);
+    set(&mut info, 8, 1);
+    set(&mut info, 16, base_at);
+    set(&mut info, 24, suffix_at);
+
+    let mut out = vec![0u8; 0x4C];
+    set(&mut out, 0, 0x4C);
+    out[4..20].copy_from_slice(&[
+        0x01, 0x14, 0x02, 0, 0, 0, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46,
+    ]);
+    set(&mut out, 20, 2);
+    out.extend(info);
+    out
+}
+
+#[test]
+fn set_leaves_icons_for_later_while_an_installer_is_unresolved() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    let prefix = f.prefix("app");
+    fs::create_dir_all(prefix.join("dosdevices")).unwrap();
+    symlink("../drive_c", prefix.join("dosdevices/c:")).unwrap();
+    fs::create_dir_all(prefix.join("drive_c/Game")).unwrap();
+    fs::write(prefix.join("drive_c/Game/game.exe"), b"").unwrap();
+    let menu = prefix.join("drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs");
+    fs::create_dir_all(&menu).unwrap();
+    fs::write(menu.join("Game.lnk"), lnk(r"C:\Game\game.exe")).unwrap();
+    record_unresolved(&f, "app", "");
+
+    // Pulling out the icon would run wine in the prefix, so it waits.
+    assert_success(&f.run(&[
+        "set",
+        "app",
+        r"targets.game.exe=C:\Game\game.exe",
+        "targets.game.desktop=true",
+    ]));
+    assert!(
+        f.root
+            .path()
+            .join("data/applications/wineo-app-game.desktop")
+            .exists()
+    );
+    assert!(!prefix.join("menubuilder.log").exists());
+
+    // Once nothing is unresolved, the next change tries for the icon again.
+    assert_success(&f.run(&["stop", "app"]));
+    assert_success(&f.run(&["set", "app", "targets.game.name=Game"]));
+    assert!(prefix.join("menubuilder.log").exists());
 }

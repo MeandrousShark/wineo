@@ -136,7 +136,35 @@ pub struct OperationState {
     pub pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<u32>,
+    /// The boot it ran in and when its group's leader started, so a cleanup
+    /// never signals a later process group that reused the number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader_start: Option<u64>,
     pub started_at: Timestamp,
+}
+
+impl OperationState {
+    /// Whether the recorded process group can still be the one the operation
+    /// started. It can't after a reboot, or once a process with a different
+    /// start time holds the leader's pid, since the kernel only hands that
+    /// number out again after the whole group is gone.
+    pub fn group_is_ours(&self) -> bool {
+        if self
+            .boot_id
+            .as_ref()
+            .is_some_and(|boot| Some(boot) != crate::process::boot_id().as_ref())
+        {
+            return false;
+        }
+        match (self.group, self.leader_start) {
+            (Some(group), Some(started)) => {
+                crate::process::start_time(group).is_none_or(|now| now == started)
+            }
+            _ => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -431,7 +459,9 @@ impl Runtime {
         self.dir.join("state.toml")
     }
 
-    fn operation_path(&self) -> PathBuf {
+    /// Where an operation's recovery record is, for telling someone to delete
+    /// it when nothing else can clear it.
+    pub fn operation_path(&self) -> PathBuf {
         self.dir.join("operation.toml")
     }
 
@@ -695,6 +725,8 @@ mod tests {
                 prefix: root.path().join("prefix"),
                 pid: None,
                 group: None,
+                boot_id: None,
+                leader_start: None,
                 started_at: Timestamp::now(),
             })
             .unwrap();

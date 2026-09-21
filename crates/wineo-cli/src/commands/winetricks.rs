@@ -95,8 +95,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     if !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
         return Err(Error::MissingPrefix(prefix).into());
     }
-    crate::commands::components::reconcile_config(paths, &global, &environment, &runner, &prefix)?;
-
+    // Refused before anything writes into the prefix.
     let runtime = Runtime::new(paths, name);
     if runtime.is_running()? {
         bail!("{name} is running, stop it before running winetricks");
@@ -107,6 +106,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         );
     }
     runtime.check_resolved(name)?;
+    crate::commands::components::reconcile_config(paths, &global, &environment, &runner, &prefix)?;
 
     crate::commands::desktop::reconcile(paths, &global, &environment, Some(&runner), &prefix)?;
 

@@ -147,7 +147,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         );
         return Ok(ExitCode::SUCCESS);
     };
-    let installer = Installer::prepare_with(guard, paths, &global, &environment, program)?;
+    let installer = Installer::prepare_with(guard, paths, &global, &environment.name, program)?;
     let name = &environment.name;
     let outcome = installer.run(
         Duration::from_secs(global.stop_timeout.into()),
@@ -174,8 +174,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 Some(code) => eprintln!("The installer exited with code {code}"),
                 None => eprintln!("The installer's exit code could not be collected"),
             }
-            if let Some(listing) = installed(&prefix) {
-                programs::report(name, &listing, false);
+            match installed(&prefix) {
+                Some(listing) => programs::report(name, &listing, false),
+                None => println!("Add a target with: wineo set {name} targets.<target>.exe=<path>"),
             }
             Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
         }

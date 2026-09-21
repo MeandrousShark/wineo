@@ -135,17 +135,32 @@ fn check_desktop(
 }
 
 /// Writes the entries a config now asks for. Run after the write, so an entry
-/// is built from the config as it ends up rather than as it was.
-fn apply_desktop(paths: &Paths, name: &str) -> anyhow::Result<()> {
+/// is built from the config as it ends up rather than as it was. `held` says
+/// this command already has the environment to itself.
+fn apply_desktop(paths: &Paths, name: &str, held: bool) -> anyhow::Result<()> {
     let Ok(environment) = Environment::load(paths, name) else {
         return Ok(());
     };
     let Ok(prefix) = environment.prefix(paths) else {
         return Ok(());
     };
+    // Pulling out an icon runs wine in the prefix, which has to wait for
+    // whatever holds it exclusively, like an installer, and for what an
+    // unresolved one may have left running. The entry is still written, and
+    // gets its icon on a later launch.
+    let launch = (!held)
+        .then(|| {
+            Locks::new(paths)
+                .acquire(Operation::Launch, name, &[&prefix])
+                .ok()
+        })
+        .flatten();
+    let may_run_wine =
+        held || (launch.is_some() && Runtime::new(paths, name).check_resolved(name).is_ok());
     let global = GlobalConfig::load(paths).unwrap_or_default();
-    let runner = Runners::new(paths, &global)
-        .ok()
+    let runner = may_run_wine
+        .then(|| Runners::new(paths, &global).ok())
+        .flatten()
         .and_then(|runners| runners.resolve(&environment.config.runner).ok());
     desktop::reconcile(paths, &global, &environment, runner.as_ref(), &prefix)
 }
@@ -274,7 +289,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // Pointing an environment somewhere else has to exclude whatever is using
     // either prefix, so a removal can't delete one this is about to adopt. A
     // running environment holds the same lock, so this refuses that too.
-    let _guard = match file {
+    let guard = match file {
         ConfigFile::Environment(name) if changes_the_launch(&pairs, &unset) => {
             let mut prefixes = Vec::new();
             if let Ok(environment) = Environment::load(paths, name)
@@ -309,7 +324,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     }
 
     if let ConfigFile::Environment(name) = file {
-        apply_desktop(paths, name)?;
+        apply_desktop(paths, name, guard.is_some())?;
     }
 
     // Wine writes its version into a prefix, so an older build can choke on a
