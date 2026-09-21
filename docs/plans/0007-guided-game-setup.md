@@ -47,6 +47,12 @@ Settled by the maintainer during implementation:
 - Running an installer from `setup` while target changes are staged reviews
   and saves those changes first, so a failed or canceled installer can't lose
   them.
+- In guided `new`, choosing a Proton runner leaves out a template's DXVK and
+  vkd3d settings, since Proton bundles its own, and says so. Noninteractive
+  `new` still refuses that combination.
+- The guided name question is called the install name and says what it is for.
+  A name that can't be used says which characters are the problem and suggests
+  one that works.
 - Real Wine GUI tests may run on the maintainer's active display, since no
   dedicated display is installed. They still use throwaway prefixes and XDG
   roots.

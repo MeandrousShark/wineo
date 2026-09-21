@@ -13,6 +13,47 @@ use wineo_core::winpath;
 
 use crate::prompt::{Choice, Input, Picked, Prompt, Reply, numbered};
 
+/// Why `answer` can't be a name, and one that could be, or None when it can.
+pub fn name_problem(answer: &str) -> Option<String> {
+    if name::is_valid(answer) {
+        return None;
+    }
+    if answer.is_empty() {
+        return Some("Enter a name".to_owned());
+    }
+    let mut found: Vec<String> = Vec::new();
+    for char in answer.chars() {
+        if char.is_ascii_alphanumeric() || char == '-' || char == '_' {
+            continue;
+        }
+        let shown = if char == ' ' {
+            "a space".to_owned()
+        } else {
+            format!("`{char}`")
+        };
+        if !found.contains(&shown) {
+            found.push(shown);
+        }
+    }
+    let mut problem = format!(
+        "`{answer}` has {}. Names go into commands, file names, and config keys, so they can only use letters, digits, `-`, and `_`",
+        found.join(" and ")
+    );
+    let mut fixed = String::new();
+    for char in answer.chars() {
+        if char.is_ascii_alphanumeric() || char == '-' || char == '_' {
+            fixed.push(char);
+        } else if !fixed.is_empty() && !fixed.ends_with('-') {
+            fixed.push('-');
+        }
+    }
+    let fixed = fixed.trim_end_matches('-');
+    if name::is_valid(fixed) {
+        problem.push_str(&format!(". Try `{fixed}`"));
+    }
+    Some(problem)
+}
+
 /// Where targets are picked from.
 pub struct Place<'a> {
     pub paths: &'a Paths,
@@ -405,10 +446,8 @@ impl Card<'_> {
                 Field::Accept => return Ok(Reply::Value((target, spec, default))),
                 Field::Name => {
                     let reply = prompt.text("Target name", Some(&target), |answer| {
-                        if !name::is_valid(answer) {
-                            Err(format!(
-                                "`{answer}` can't be a target name: use letters, digits, `-`, and `_`"
-                            ))
+                        if let Some(problem) = name_problem(answer) {
+                            Err(problem)
                         } else if batch.contains(answer) {
                             Err(format!("There is already a target called `{answer}`"))
                         } else {
@@ -908,6 +947,22 @@ mod tests {
         });
         assert_eq!(result.unwrap(), Reply::Back);
         assert!(batch.is_empty());
+    }
+
+    #[test]
+    fn a_bad_name_says_what_is_wrong_and_what_would_work() {
+        assert_eq!(name_problem("Stellar-Blade"), None);
+        assert_eq!(
+            name_problem("Stellar Blade").unwrap(),
+            "`Stellar Blade` has a space. Names go into commands, file names, and config keys, so they can only use letters, digits, `-`, and `_`. Try `Stellar-Blade`"
+        );
+        let problem = name_problem("Hades: II!").unwrap();
+        assert!(
+            problem.starts_with("`Hades: II!` has `:` and a space and `!`."),
+            "{problem}"
+        );
+        assert!(problem.ends_with("Try `Hades-II`"), "{problem}");
+        assert!(!name_problem("游戏").unwrap().contains("Try"));
     }
 
     #[test]

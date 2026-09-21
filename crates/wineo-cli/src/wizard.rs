@@ -11,7 +11,6 @@ use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::environment::{Environment, NewEnvironment};
 use wineo_core::install::{self, Wanted};
 use wineo_core::installer::Installer;
-use wineo_core::name;
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::prefix;
@@ -160,7 +159,9 @@ pub fn run<I: Input, W: Write>(
 
     let name = answers.name.clone().expect("named before the review");
     let how = answers.how.clone().expect("chosen before the review");
-    let template = answers.template.map(|(_, template)| template);
+    let template = answers
+        .template
+        .map(|(_, template)| fit_template(&template, &runner).0);
     create(
         paths,
         global,
@@ -220,6 +221,32 @@ fn ask_template<I: Input, W: Write>(
     )
 }
 
+/// The template as it applies with `runner`: Proton bundles its own DXVK and
+/// vkd3d-proton, so a template's picks of those are left out for it.
+fn fit_template(template: &Template, runner: &Runner) -> (Template, bool) {
+    let mut fitted = template.clone();
+    if runner.is_proton() && (fitted.dxvk.is_some() || fitted.vkd3d.is_some()) {
+        fitted.dxvk = None;
+        fitted.vkd3d = None;
+        return (fitted, true);
+    }
+    (fitted, false)
+}
+
+/// A template line for a card, with what was left out for the runner.
+fn shown_template(template: Option<&(String, Template)>, runner: Option<&Runner>) -> String {
+    let Some((name, template)) = template else {
+        return "none".to_owned();
+    };
+    match runner.map(|runner| fit_template(template, runner)) {
+        Some((fitted, true)) => format!(
+            "{name} ({}; DXVK and vkd3d-proton left out, since Proton bundles its own)",
+            describe_template(&fitted)
+        ),
+        _ => format!("{name} ({})", describe_template(template)),
+    }
+}
+
 /// What a template sets, as a short list.
 fn describe_template(template: &Template) -> String {
     let mut parts = Vec::new();
@@ -263,16 +290,18 @@ fn ask_name<I: Input, W: Write>(
     paths: &Paths,
     default: Option<&str>,
 ) -> anyhow::Result<Reply<Name>> {
+    prompt.say(
+        "The install name is what wineo commands call it, like `wineo start <name>`, and it names the prefix folder.",
+    )?;
     loop {
-        let reply = prompt.text("Environment name", default, |answer| {
-            if name::is_valid(answer) {
-                Ok(answer.to_owned())
-            } else {
-                Err(format!(
-                    "`{answer}` can't be a name: use letters, digits, `-`, and `_`"
-                ))
-            }
-        })?;
+        let reply = prompt.text(
+            "Install name",
+            default,
+            |answer| match picker::name_problem(answer) {
+                Some(problem) => Err(problem),
+                None => Ok(answer.to_owned()),
+            },
+        )?;
         let Reply::Value(name) = reply else {
             return Ok(Reply::Back);
         };
@@ -375,10 +404,7 @@ fn settings<I: Input, W: Write>(
         heading.push_str(&format!("  arch      {shown_arch}\n"));
         heading.push_str(&format!(
             "  template  {}",
-            match &answers.template {
-                Some((name, template)) => format!("{name} ({})", describe_template(template)),
-                None => "none".to_owned(),
-            }
+            shown_template(answers.template.as_ref(), runner.as_ref().ok())
         ));
         if let Some(problem) = &problem {
             heading.push('\n');
@@ -465,6 +491,7 @@ fn combination_problem(
         ));
     }
     if let Some((template_name, template)) = &answers.template {
+        let (template, _) = fit_template(template, runner);
         let wanted = Wanted {
             dxvk: template.dxvk.clone(),
             vkd3d: template.vkd3d.clone(),
@@ -680,10 +707,7 @@ fn review<I: Input, W: Write>(
     heading.push_str(&format!("  arch      {arch}\n"));
     heading.push_str(&format!(
         "  template  {}\n",
-        match &answers.template {
-            Some((name, template)) => format!("{name} ({})", describe_template(template)),
-            None => "none".to_owned(),
-        }
+        shown_template(answers.template.as_ref(), Some(&runner))
     ));
     heading.push_str(&format!(
         "  program   {}",

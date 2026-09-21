@@ -164,7 +164,7 @@ fn plain_answers(pty: &mut Pty, name: &str, how: &str) {
     pty.expect("Start from a template?");
     pty.expect("Template [1]: ");
     pty.send("1");
-    pty.expect("Environment name, or < to go back: ");
+    pty.expect("Install name, or < to go back: ");
     pty.send(name);
     pty.expect("Prefix location, or < to go back [");
     pty.send("");
@@ -498,7 +498,7 @@ fn a_template_from_either_flag_is_prefilled_and_shown() {
     for (flag, name) in [("-t", "short"), ("--template", "long")] {
         let mut pty = f.new_guided(&[flag, "gaming"]);
         // The template came from the command line, so it isn't asked about.
-        pty.expect("Environment name, or < to go back: ");
+        pty.expect("Install name, or < to go back: ");
         pty.send(name);
         pty.expect("Prefix location, or < to go back [");
         pty.send("");
@@ -524,7 +524,7 @@ fn a_template_from_either_flag_is_prefilled_and_shown() {
 fn a_missing_build_is_explained_with_a_way_back() {
     let f = Fixture::new();
     let mut pty = f.new_guided(&["-t", "gaming"]);
-    pty.expect("Environment name, or < to go back: ");
+    pty.expect("Install name, or < to go back: ");
     pty.send("game");
     pty.expect("Prefix location, or < to go back [");
     pty.send("");
@@ -557,7 +557,7 @@ fn explicit_flags_win_over_the_template() {
         "--runner",
         "wine",
     ]);
-    pty.expect("Environment name, or < to go back [game]: ");
+    pty.expect("Install name, or < to go back [game]: ");
     pty.send("");
     pty.expect("Prefix location, or < to go back [");
     pty.send("");
@@ -576,7 +576,7 @@ fn enter_takes_the_global_suggestions() {
     let mut pty = f.new_guided(&[]);
     pty.expect("Template [1]: ");
     pty.send("");
-    pty.expect("Environment name, or < to go back: ");
+    pty.expect("Install name, or < to go back: ");
     pty.send("game");
     pty.expect("Prefix location, or < to go back [");
     pty.send("");
@@ -656,7 +656,7 @@ fn a_registered_name_offers_setup_instead() {
     let mut pty = f.new_guided(&[]);
     pty.expect("Template [1]: ");
     pty.send("1");
-    pty.expect("Environment name, or < to go back: ");
+    pty.expect("Install name, or < to go back: ");
     pty.send("app");
     pty.expect("app already exists, and wineo new never replaces one.");
     pty.expect("  1) Set up app instead");
@@ -695,4 +695,52 @@ fn a_failed_creation_says_nothing_was_registered() {
     assert_eq!(status.code(), Some(1), "{output}");
     assert!(!f.registered("game"));
     assert!(!f.root.path().join("data/wineo/prefixes/game").exists());
+}
+
+#[test]
+fn a_name_that_cant_be_used_says_why_and_suggests_one() {
+    let f = Fixture::new();
+    let mut pty = f.new_guided(&[]);
+    pty.expect("Template [1]: ");
+    pty.send("1");
+    pty.expect("The install name is what wineo commands call it");
+    pty.expect("Install name, or < to go back: ");
+    pty.send("Stellar Blade");
+    pty.expect("`Stellar Blade` has a space.");
+    pty.expect("Try `Stellar-Blade`");
+    pty.expect("Install name, or < to go back: ");
+    pty.send("q");
+    pty.interrupt();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+}
+
+#[test]
+fn a_proton_runner_leaves_the_templates_dxvk_and_vkd3d_out() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    // No DXVK or vkd3d builds are installed, and none are needed.
+    let mut pty = f.new_guided(&["-t", "gaming", "--runner", "GE-Proton9-20"]);
+    pty.expect("Install name, or < to go back: ");
+    pty.send("game");
+    pty.expect("Prefix location, or < to go back [");
+    pty.send("");
+    pty.expect(
+        "  template  gaming (gamemode on; DXVK and vkd3d-proton left out, since Proton bundles its own)",
+    );
+    pty.expect("  1) Use these");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Choice [1]: ");
+    pty.send("3");
+    pty.expect("DXVK and vkd3d-proton left out");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Add a target later with");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    let config = f.config("game");
+    assert!(config.contains("gamemode = true"), "{config}");
+    assert!(!config.contains("dxvk"), "{config}");
+    assert!(!config.contains("vkd3d"), "{config}");
 }
