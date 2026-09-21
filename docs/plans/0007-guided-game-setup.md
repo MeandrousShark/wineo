@@ -47,6 +47,9 @@ Settled by the maintainer during implementation:
 - Running an installer from `setup` while target changes are staged reviews
   and saves those changes first, so a failed or canceled installer can't lose
   them.
+- Real Wine GUI tests may run on the maintainer's active display, since no
+  dedicated display is installed. They still use throwaway prefixes and XDG
+  roots.
 
 The maintainer has approved the scope and details below.
 
