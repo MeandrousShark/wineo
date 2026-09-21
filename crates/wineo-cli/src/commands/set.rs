@@ -143,9 +143,6 @@ fn apply_desktop(paths: &Paths, name: &str) -> anyhow::Result<()> {
     let Ok(prefix) = environment.prefix(paths) else {
         return Ok(());
     };
-    if !prefix::holds_prefix(&prefix) {
-        return Ok(());
-    }
     let global = GlobalConfig::load(paths).unwrap_or_default();
     let runner = Runners::new(paths, &global)
         .ok()

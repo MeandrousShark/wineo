@@ -107,6 +107,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         );
     }
 
+    crate::commands::desktop::reconcile(paths, &global, &environment, Some(&runner), &prefix)?;
+
     // umu ships winetricks and runs it inside the container, so a Proton
     // environment needs no winetricks on PATH and no WINE to point at.
     let mut command = if runner.is_proton() {

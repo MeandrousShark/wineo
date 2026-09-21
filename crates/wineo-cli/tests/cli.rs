@@ -785,6 +785,21 @@ fn environment_with_prefix(root: &Path, name: &str, prefix: &Path) {
     );
 }
 
+fn desktop_entry(root: &Path, environment: &str, target: &str, name: &str) -> PathBuf {
+    let path = root
+        .join("data/applications")
+        .join(format!("wineo-{environment}-{target}.desktop"));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        format!(
+            "[Desktop Entry]\nName={name}\nX-Wineo-Environment={environment}\nX-Wineo-Target={target}\n"
+        ),
+    )
+    .unwrap();
+    path
+}
+
 fn locks(root: &Path) -> wineo_core::operation::Locks {
     wineo_core::operation::Locks::at(root.join("state/wineo/.locks"))
 }
@@ -1215,6 +1230,25 @@ fn winetricks_runs_with_the_environments_prefix_and_runner() {
         "{printed}"
     );
     assert!(printed.contains("winemenubuilder.exe=d"), "{printed}");
+}
+
+#[test]
+fn winetricks_reconciles_desktop_entries_after_it_finishes() {
+    let root = tempfile::tempdir().unwrap();
+    let out = output(
+        winetricks_fixture(
+            root.path(),
+            "[targets.app]\nexe = \"app\"\ndesktop = true\n",
+            Some("#!/bin/sh\nexit 0\n"),
+        )
+        .args(["winetricks", "notepad", "list-installed"]),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        root.path()
+            .join("data/applications/wineo-notepad-app.desktop")
+            .is_file()
+    );
 }
 
 #[test]
@@ -2073,4 +2107,205 @@ fn programs_finds_a_proton_prefix() {
     let out = output(wineo(root.path()).args(["programs", "game"]));
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stdout(&out), "shortcut  Game  C:\\Game\\game.exe\n");
+}
+
+#[test]
+fn set_desktop_writes_and_unset_removes_an_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/app");
+    scannable_prefix(&prefix);
+    write_environment(
+        root.path(),
+        "app",
+        &format!(
+            "prefix = \"{}\"\nrunner = \"wine\"\narch = \"win64\"\n\n[targets.app]\nexe = \"app\"\n",
+            prefix.display()
+        ),
+    );
+    let bin = fake_tools(root.path(), None);
+
+    let mut set = wineo(root.path());
+    set.env("PATH", path_ahead_of_system(&bin))
+        .args(["set", "app", "targets.app.desktop=true"]);
+    let out = output(&mut set);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains("Added a desktop entry for app in app"));
+
+    let path = root.path().join("data/applications/wineo-app-app.desktop");
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        concat!(
+            "[Desktop Entry]\n",
+            "Type=Application\n",
+            "Name=app\n",
+            "Comment=Runs in the wineo environment app\n",
+            "Exec=wineo start app --target app\n",
+            "Terminal=false\n",
+            "Categories=Utility;Software;\n",
+            "StartupWMClass=app.exe\n",
+            "X-Wineo-Environment=app\n",
+            "X-Wineo-Target=app\n",
+        )
+    );
+
+    let mut unset = wineo(root.path());
+    unset.env("PATH", path_ahead_of_system(&bin)).args([
+        "set",
+        "app",
+        "--unset",
+        "targets.app.desktop",
+    ]);
+    let out = output(&mut unset);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!path.exists());
+}
+
+#[test]
+fn set_desktop_rejects_a_missing_windows_executable() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/app");
+    scannable_prefix(&prefix);
+    write_environment(
+        root.path(),
+        "app",
+        &format!(
+            "prefix = \"{}\"\nrunner = \"wine\"\narch = \"win64\"\n\n[targets.app]\nexe = 'C:\\Program Files\\App\\App.exe'\n",
+            prefix.display()
+        ),
+    );
+    let bin = fake_tools(root.path(), None);
+
+    let mut set = wineo(root.path());
+    set.env("PATH", path_ahead_of_system(&bin))
+        .args(["set", "app", "targets.app.desktop=true"]);
+    let out = output(&mut set);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("`C:\\Program Files\\App\\App.exe` does not exist"));
+    let config =
+        fs::read_to_string(root.path().join("config/wineo/environments/app.toml")).unwrap();
+    assert!(!config.contains("desktop"), "{config}");
+    assert!(
+        !root
+            .path()
+            .join("data/applications/wineo-app-app.desktop")
+            .exists()
+    );
+}
+
+#[test]
+fn unsetting_a_target_removes_its_desktop_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/app");
+    scannable_prefix(&prefix);
+    write_environment(
+        root.path(),
+        "app",
+        &format!(
+            "prefix = \"{}\"\nrunner = \"wine\"\narch = \"win64\"\n\n[targets.app]\nexe = \"app\"\n",
+            prefix.display()
+        ),
+    );
+    let bin = fake_tools(root.path(), None);
+
+    let mut set = wineo(root.path());
+    set.env("PATH", path_ahead_of_system(&bin))
+        .args(["set", "app", "targets.app.desktop=true"]);
+    let out = output(&mut set);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let path = root.path().join("data/applications/wineo-app-app.desktop");
+    assert!(path.exists());
+
+    let mut remove = wineo(root.path());
+    remove
+        .env("PATH", path_ahead_of_system(&bin))
+        .args(["set", "app", "--unset", "targets.app"]);
+    let out = output(&mut remove);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!path.exists());
+    let config =
+        fs::read_to_string(root.path().join("config/wineo/environments/app.toml")).unwrap();
+    assert!(!config.contains("targets.app"), "{config}");
+}
+
+#[test]
+fn unsetting_desktop_removes_an_entry_when_the_prefix_is_missing() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(
+        root.path(),
+        "app",
+        "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n\n[targets.app]\nexe = \"app\"\ndesktop = true\n",
+    );
+    let path = desktop_entry(root.path(), "app", "app", "app");
+    let bin = fake_tools(root.path(), None);
+
+    let mut unset = wineo(root.path());
+    unset.env("PATH", path_ahead_of_system(&bin)).args([
+        "set",
+        "app",
+        "--unset",
+        "targets.app.desktop",
+    ]);
+    let out = output(&mut unset);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!path.exists());
+}
+
+#[test]
+fn desktop_lists_entries_and_marks_strays() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "known", MINIMAL_ENVIRONMENT);
+    desktop_entry(root.path(), "known", "game", "Game");
+    let stray = desktop_entry(root.path(), "gone", "old", "Old");
+    fs::write(
+        root.path().join("data/applications/wineo-ignored.desktop"),
+        "Name=ignored\n",
+    )
+    .unwrap();
+
+    let out = output(wineo(root.path()).arg("desktop"));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let listed = stdout(&out);
+    assert!(
+        listed
+            .lines()
+            .any(|line| line.contains("known") && line.contains("Game"))
+    );
+    assert!(
+        listed
+            .lines()
+            .any(|line| line.contains("gone") && line.contains("Old") && line.ends_with("stray"))
+    );
+    assert!(stderr(&out).contains("1 entry belong to an environment that no longer exists"));
+    assert!(stderr(&out).contains(&stray.display().to_string()));
+}
+
+#[test]
+fn status_lists_targets_with_desktop_entries() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "known", &env_toml("game"));
+    desktop_entry(root.path(), "known", "game", "Game");
+
+    let out = output(wineo(root.path()).args(["status", "known"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("\n  desktop   game\n"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn rm_removes_desktop_entries_with_the_environment() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "app", MINIMAL_ENVIRONMENT);
+    let path = desktop_entry(root.path(), "app", "app", "App");
+
+    let out = output(wineo(root.path()).args(["rm", "app"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!path.exists());
+    assert!(
+        stderr(&out).contains("Removed 1 desktop entry"),
+        "{}",
+        stderr(&out)
+    );
 }

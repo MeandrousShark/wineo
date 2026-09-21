@@ -524,6 +524,36 @@ fn start_then_stop() {
 }
 
 #[test]
+fn start_reconciles_a_desktop_setting_added_by_hand() {
+    let f = Fixture::new();
+    f.environment("app", "[targets.app]\nexe = \"exit-0\"\n");
+
+    assert_success(&f.run(&["start", "app"]));
+    wait_for("the first run to finish", || {
+        f.state("app").contains("status = \"exited\"")
+    });
+
+    let config = f.config_dir().join("environments/app.toml");
+    let mut text = fs::read_to_string(&config).unwrap();
+    text.push_str("desktop = true\n");
+    fs::write(&config, text).unwrap();
+
+    let started = f.run(&["start", "app"]);
+    assert_success(&started);
+    assert!(
+        f.root
+            .path()
+            .join("data/applications/wineo-app-app.desktop")
+            .is_file()
+    );
+    assert!(
+        stderr(&started).contains("Added a desktop entry for app in app"),
+        "{}",
+        stderr(&started)
+    );
+}
+
+#[test]
 fn a_program_exiting_on_its_own_records_its_code() {
     let f = Fixture::new();
     f.environment("app", "[targets.fail]\nexe = \"exit-3\"\n");
