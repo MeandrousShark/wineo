@@ -34,4 +34,5 @@ Standalone game setup and maintenance come before library migration.
 | Import from Lutris/Heroic/Bottles metadata | Compatibility | **3** | `import` existing prefixes, 0004 | Good convenience layer on top of generic `import` | Only if the complexity is minimal. |
 | Config schema versioning | Portability/Data | **3** | | Probably becomes necessary before first stable release, not necessarily now | Portable layout and full backup and restore wait on this, since that's when configs start outliving the machine or wineo version that wrote them. |
 | wineo-gui | UX | **4** | | Explicitly not the main product; let the CLI mature first | |
+| Artwork from SteamGridDB | UX | **4** | wineo-gui | Posters, backgrounds, and icons for games, which a GUI can show | Could also fill in desktop entry icons for games whose exe has no shortcut to take one from. |
 | Full backup and restore | Portability/Data | **4** | Config schema versioning | Great eventually, but this could become a whole subsystem | Covers filesystems without snapshot support. |
