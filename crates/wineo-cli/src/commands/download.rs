@@ -15,6 +15,7 @@ pub const PROVIDERS: [Provider; 4] = [
     Provider::Dxvk,
     Provider::Vkd3d,
 ];
+pub const RUNNERS: [Provider; 2] = [Provider::GeProton, Provider::ProtonCachyos];
 
 #[derive(clap::Args)]
 pub struct Args {

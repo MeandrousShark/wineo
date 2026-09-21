@@ -6,6 +6,8 @@ pub mod edit;
 pub mod environment;
 pub mod error;
 mod files;
+pub mod heroic;
+pub(crate) mod heroic_args;
 pub mod import;
 pub mod install;
 pub mod installer;

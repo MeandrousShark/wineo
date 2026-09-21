@@ -5,6 +5,8 @@ pub mod config;
 pub mod desktop;
 pub mod download;
 pub mod exec;
+pub mod import;
+pub mod import_heroic;
 pub mod list;
 pub mod logs;
 pub mod new;
