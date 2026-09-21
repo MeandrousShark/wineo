@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0008: Downloads and prefix imports
 
@@ -23,8 +23,10 @@ Settled by the maintainer:
   files, saves, or other data stored outside that prefix.
 - When Heroic's selected runner is missing from wineo, offer to copy that
   existing runner into wineo's runner root.
+- Support an opt-in runner-family alias such as `GE-Proton-Latest`, so an
+  environment follows newer installed releases of that family.
 
-Everything below is proposed for review, not approved for implementation.
+The maintainer approved this plan and requested runner-family latest aliases.
 
 ## Existing foundation
 
@@ -47,7 +49,7 @@ Everything below is proposed for review, not approved for implementation.
 
 ### Commands and selection
 
-Proposed command contract:
+Command contract:
 
 ```text
 wineo download                              # guided provider/version selection
@@ -83,10 +85,45 @@ release, and variant so different builds cannot collide. Show that name in
 the release listing. Do not install a mutable directory called `latest`.
 
 Installing a build does not rewrite environment configs, replace an installed
-version, or change a runner choice. Existing component settings of `latest`
+version, or change an explicitly pinned runner choice. Runner aliases resolve
+as described below. Existing component settings of `latest`
 still resolve to the newest local build at the next reconciliation, and the
 download result calls out this existing behavior. New environments using the
 gaming template likewise keep its existing newest-installed-Proton behavior.
+
+### Runner-family latest aliases
+
+```text
+wineo set hades runner=GE-Proton-Latest
+wineo set hades runner=Proton-CachyOS-Latest
+```
+
+These opt-in aliases resolve to the newest compatible stable release installed
+locally within that family. Resolve versions numerically, including release
+dates where used, rather than lexically or by installation time. Installing an
+older release later must not move an alias backward. Neither alias crosses
+families, checks the network, or downloads anything during launch.
+
+Keep the alias in the environment config. Resolve it to one concrete runner
+at the start of each operation and retain that runner for the entire operation,
+including installer cleanup and lost-run recovery. A newly downloaded version
+affects the next launch, never an already running game. Runtime records and
+status must identify the concrete version actually used, while config and
+runner listings show the alias and its current resolution.
+
+Use provider/version metadata from completed downloads, or unambiguous upstream
+family/version names for manual drop-ins and copied Heroic builds. Validate the
+runner layout before making it a candidate. Unknown family/version information,
+prereleases, incomplete installs, and incompatible variants are not candidates.
+If no candidate exists, fail with download/selection guidance rather than
+falling back to system Wine or another Proton family.
+
+Aliases are logical selectors, not mutable runner directories or symlinks.
+Reserve the two alias names; an existing filesystem entry using either name
+must produce a conflict requiring resolution, not silently change meaning.
+Expose aliases in guided runner choices as well as `new`, `set`, and templates.
+Existing configs naming a concrete version stay pinned. Choosing a concrete
+older version remains possible, with the existing prefix-compatibility notice.
 
 ### Verification, extraction, and failure
 
@@ -357,6 +394,12 @@ Managed copying of external game/portable application folders is also deferred.
   shared prefixes, destination nesting/aliases, running/lost operations,
   source changes, disk/write failures, cancellation, and config failure after
   publication. Verify source content remains unchanged for copy and adoption.
+- Runner aliases for numeric version ordering, family isolation, manual and
+  copied builds, missing candidates, reserved-name collisions, incomplete or
+  incompatible builds, pinned configs, and installing an older release later.
+  Download a newer version during a fake active run/installer and verify that
+  cleanup and recovery retain the original concrete runner, while the next
+  operation resolves the new one. Assert that alias resolution stays offline.
 - Heroic fixtures for native/Flatpak/custom locations, schema handling,
   inherited settings, false/empty overrides, duplicate environment keys,
   quoting, runner mismatches, executable overrides, unsupported settings,
@@ -380,7 +423,8 @@ Managed copying of external game/portable application folders is also deferred.
 
 ## Phases
 
-1. Shared download/verification/extraction foundation and the four providers.
+1. Shared download/verification/extraction foundation, the four providers, and
+   runner-family latest aliases.
 2. Generic prefix copy/adoption, registration, review, and recovery.
 3. Heroic discovery/settings adapter and runner copying, shared guided download
    integration, and complete manual acceptance.
