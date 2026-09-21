@@ -5,6 +5,17 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+filetime.workspace = true
+flate2.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+shell-words.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+xz2.workspace = true
+zstd.workspace = true
 jiff.workspace = true
 rustix.workspace = true
 serde.workspace = true
