@@ -27,6 +27,9 @@ Settled by the maintainer:
   belong together. Existing commands remain useful independently.
 - Check a complete game's lifecycle before treating the wizard as finished.
 - Defer imports, downloads, store integrations, and the GUI.
+- Portable apps run in place through existing executable and working-directory
+  settings in 0007. Revisit managed copying and organization with `wineo import`
+  after trying the basic flow with a new portable application.
 
 The remaining details below are proposals for approval.
 
@@ -216,18 +219,17 @@ general diagnostics command. Dynamic shell completion stays a later polish
 item. Bugs that prevent the lifecycle below belong here; unrelated hardening
 gets a separate plan.
 
-## Open design: portable applications
+## Deferred: portable application organization
 
-The maintainer wants to consider an organized setup flow for already extracted
-Windows applications. Currently, targets can reference external executables
-and launch from their containing directory, but there is no managed copy flow.
+0007 supports choosing an already extracted application's executable in place
+and reviewing its working directory. It does not copy, move, or automatically
+organize the application's folder.
 
-Discuss offering both use-in-place and copying a complete application folder
-into the environment's Wine drive. Selecting a folder could feed a bounded
-executable picker, followed by the normal target setup. This is not yet an
-approved extension to the no-copy behavior above. Settle storage location,
-working-directory defaults, copy failures/collisions, and removal semantics
-before making it part of the implementation scope.
+Revisit an optional managed copy of the complete folder when planning
+`wineo import`. Copying under `drive_c/Apps/<app>` is an idea to evaluate, not a
+settled storage layout. Experience with a new portable app should inform the
+folder picker, storage location, working-directory defaults, copy failures and
+collisions, and removal semantics in that later plan.
 
 ## Testing and acceptance
 

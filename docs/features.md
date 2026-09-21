@@ -25,7 +25,7 @@ Standalone game setup and maintenance come before library migration.
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
 | `--json` output for scripting | Automation | **2** | 0001 phase 2 | Additive, so it doesn't get harder later as long as output is built from structured data | Build `status` output from a struct in 0001's phase 2 so this stays nearly free. |
-| `import` existing prefixes | Compatibility | **2** | 0004, 0007 | Useful once standalone game management is comfortable | `new --dir` already adopts a prefix in place, so this is mostly about moving it into the default prefix dir. Establish the setup and maintenance workflow before adding migration. |
+| `import` existing prefixes | Compatibility | **2** | 0004, 0007 | Useful once standalone game management is comfortable | `new --dir` already adopts a prefix in place. Also revisit managed copying and organization of extracted portable apps, informed by trying 0007's use-in-place flow. Storage and removal semantics remain undecided. |
 | Shell completion for environment and target names | UX | **3** | 0002 | Polish on top of static completion | Needs dynamic completion, which is more work than static completions. |
 | Runner, DXVK, and vkd3d downloads | Compatibility | **3** | 0003, 0004, 0005 | Convenience on top of the drop-in directories | Covers GE-Proton and Proton-CachyOS alongside DXVK and vkd3d-proton, which 0005 leaves as drop-ins. Checksums and extraction get built once here for all of them. |
 | `clone` a prefix | Portability/Data | **3** | | Useful but not fundamental | Use reflink copies where the filesystem supports them, and a normal copy everywhere else. |
