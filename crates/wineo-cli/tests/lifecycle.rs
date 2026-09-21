@@ -2023,9 +2023,7 @@ fn ctrl_c_cancels_an_installer_and_keeps_the_environment() {
         "{text}"
     );
     assert!(
-        text.contains(
-            "The installer was canceled. game and its prefix were kept, continue with `wineo setup game`"
-        ),
+        text.contains("Installer canceled. Continue with `wineo setup game`."),
         "{text}"
     );
     assert!(!f.fake_program_running("game"));
@@ -2160,7 +2158,7 @@ fn an_installer_whose_prefix_cannot_be_confirmed_idle_is_left_unresolved() {
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     let text = stderr(&output);
     assert!(
-        text.contains("could not confirm that everything the installer started has stopped"),
+        text.contains("couldn't confirm the installer's processes stopped"),
         "{text}"
     );
     assert!(text.contains("The installer itself finished"), "{text}");

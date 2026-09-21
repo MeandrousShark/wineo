@@ -32,7 +32,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     Environment::ensure_exists(paths, name)?;
     if !prompt::interactive() {
         bail!(
-            "wineo setup asks questions, so it needs a terminal. Without one, `wineo programs {name}` lists what is installed, `wineo set {name} targets.<target>.exe=<path>` adds a target, and `wineo exec {name} <installer>` runs an installer"
+            "wineo setup needs a terminal. Without one, use `wineo programs {name}` and `wineo set {name} targets.<target>.exe=<path>`"
         );
     }
     // A broken config is reported with its path, before anything is asked.
@@ -41,9 +41,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
     match setup(paths, &global, name, &mut prompt) {
         Err(err) if err.is::<Canceled>() => {
-            eprintln!(
-                "Canceled, and anything not yet saved was left out. Continue with `wineo setup {name}`"
-            );
+            eprintln!("Canceled. Unsaved changes were dropped.");
             Ok(ExitCode::from(CANCELED))
         }
         other => other,
@@ -214,9 +212,7 @@ fn offer_cleanup<I: Input, W: Write>(
     if Runtime::new(paths, name).check_resolved(name).is_ok() {
         return Ok(());
     }
-    let heading = format!(
-        "{name}'s last installer did not finish cleanly, so wine may still be running in its prefix."
-    );
+    let heading = format!("{name}'s last installer didn't finish cleanly.");
     let choices = numbered([
         ("Stop what it left running".to_owned(), true),
         ("Leave it for now".to_owned(), false),
@@ -309,9 +305,7 @@ pub(crate) fn save<I: Input, W: Write>(
             Written::Changed(current) => {
                 let (rebased, dropped) = batch.rebase(current);
                 *batch = rebased;
-                prompt.say(format!(
-                    "{name}'s config changed while you were choosing, so here are the changes again."
-                ))?;
+                prompt.say("The config changed meanwhile. Review again:")?;
                 for note in dropped {
                     prompt.say(note)?;
                 }
@@ -349,7 +343,7 @@ fn reconcile<I: Input, W: Write>(
         Ok(()) => true,
         Err(err) => {
             let _ = prompt.say(format!(
-                "The config is saved, but the desktop entries could not be updated: {err:#}. Running `wineo setup {name}` again retries them"
+                "Saved, but desktop entries failed: {err:#}. Rerun `wineo setup {name}` to retry."
             ));
             false
         }
@@ -444,7 +438,7 @@ pub(crate) fn run_installer<I: Input, W: Write>(
     );
     // Those were the installer's to act on, not a request to leave setup.
     prompt.input().forget_interrupts();
-    let kept = format!("{name} and its targets were kept. Continue with `wineo setup {name}`");
+    let kept = format!("Kept {name}. Continue with `wineo setup {name}`.");
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(err) => {
@@ -477,7 +471,7 @@ pub(crate) fn run_installer<I: Input, W: Write>(
             exit_code, error, ..
         } => {
             prompt.say(format!(
-                "error: wineo could not confirm that everything the installer started has stopped: {:#}",
+                "error: couldn't confirm the installer's processes stopped: {:#}",
                 anyhow::Error::from(error)
             ))?;
             match exit_code {
@@ -485,9 +479,7 @@ pub(crate) fn run_installer<I: Input, W: Write>(
                 Some(code) => prompt.say(format!("The installer exited with code {code}."))?,
                 None => {}
             }
-            prompt.say(format!(
-                "{name} and its targets were kept. Clean up whatever may still be running with `wineo stop {name}` or `wineo setup {name}`"
-            ))?;
+            prompt.say(format!("Kept {name}. Clean up with `wineo stop {name}`."))?;
             Ran::Ended(ExitCode::FAILURE)
         }
     })

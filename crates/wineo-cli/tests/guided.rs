@@ -307,7 +307,7 @@ fn ctrl_c_at_a_question_cancels_without_saving() {
     pty.expect("Save these changes?");
     pty.expect("Choice [1]: ");
     pty.ctrl_c();
-    pty.expect("Canceled, and anything not yet saved was left out");
+    pty.expect("Canceled. Unsaved changes were dropped.");
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
     assert_eq!(f.config("app"), before);
@@ -352,7 +352,7 @@ fn a_change_made_while_a_question_waits_refreshes_the_review() {
     // Meanwhile, someone changes the same target's arguments.
     assert_success(&f.run(&["set", "app", r#"targets.app.args=["-safe"]"#]));
     pty.send("1");
-    pty.expect("app's config changed while you were choosing, so here are the changes again.");
+    pty.expect("The config changed meanwhile. Review again:");
     pty.expect(r"  ~ app  working dir: the executable's folder -> C:\Games");
     pty.expect("Choice [1]: ");
     pty.send("1");
@@ -471,7 +471,7 @@ fn setup_offers_to_clean_up_after_an_unresolved_installer() {
     fs::create_dir_all(record.parent().unwrap()).unwrap();
     fs::write(&record, "").unwrap();
     let mut pty = f.setup("app");
-    pty.expect("app's last installer did not finish cleanly");
+    pty.expect("app's last installer didn't finish cleanly.");
     pty.expect("  1) Stop what it left running");
     pty.expect("Choice [1]: ");
     pty.send("1");
@@ -561,7 +561,7 @@ fn a_missing_build_is_explained_with_a_way_back() {
     pty.send("game");
     pty.expect("Prefix location, or < to go back [");
     pty.send("");
-    pty.expect("The gaming template can't be used with this: no dxvk builds are installed");
+    pty.expect("Can't use the gaming template: no dxvk builds are installed");
     // Nothing that can't work is offered, but going back is.
     pty.expect("  1) Change the runner");
     pty.expect("Choice [1]: ");
@@ -569,7 +569,7 @@ fn a_missing_build_is_explained_with_a_way_back() {
     pty.expect("Start from a template?");
     pty.expect("Template [2]: ");
     pty.send("q");
-    pty.expect("Canceled, and nothing was created");
+    pty.expect("Canceled. Nothing was created.");
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
     assert!(!f.registered("game"));
@@ -675,7 +675,7 @@ fn canceling_after_creation_keeps_the_environment() {
     pty.send("1");
     pty.expect("Add which, like 1 3: ");
     pty.send("q");
-    pty.expect("Canceled. game and its prefix were kept, continue with `wineo setup game`");
+    pty.expect("Canceled. Kept game, continue with `wineo setup game`.");
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
     assert!(f.registered("game"));
@@ -691,7 +691,7 @@ fn a_registered_name_offers_setup_instead() {
     pty.send("1");
     pty.expect("Install name, or < to go back: ");
     pty.send("app");
-    pty.expect("app already exists, and wineo new never replaces one.");
+    pty.expect("app already exists.");
     pty.expect("  1) Set up app instead");
     pty.expect("Choice [1]: ");
     pty.send("1");
@@ -723,7 +723,7 @@ fn a_failed_creation_says_nothing_was_registered() {
     pty.expect("Choice [1]: ");
     pty.send("1");
     pty.expect("error: wine failed to create the prefix: could not load kernel32.dll");
-    pty.expect("game was not created, and nothing was registered");
+    pty.expect("game wasn't created.");
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(1), "{output}");
     assert!(!f.registered("game"));
@@ -736,11 +736,10 @@ fn a_name_that_cant_be_used_says_why_and_suggests_one() {
     let mut pty = f.new_guided(&[]);
     pty.expect("Template [1]: ");
     pty.send("1");
-    pty.expect("The install name is what wineo commands call it");
+    pty.expect("Used in commands like `wineo start <name>`");
     pty.expect("Install name, or < to go back: ");
     pty.send("Stellar Blade");
-    pty.expect("`Stellar Blade` has a space.");
-    pty.expect("Try `Stellar-Blade`");
+    pty.expect("Invalid input: spaces not allowed.");
     pty.expect("Install name, or < to go back: ");
     pty.ctrl_c();
     let (status, output) = pty.finish();
@@ -757,15 +756,13 @@ fn a_proton_runner_leaves_the_templates_dxvk_and_vkd3d_out() {
     pty.send("game");
     pty.expect("Prefix location, or < to go back [");
     pty.send("");
-    pty.expect(
-        "  template  gaming (gamemode on; DXVK and vkd3d-proton left out, since Proton bundles its own)",
-    );
+    pty.expect("  template  gaming (gamemode on; no DXVK or vkd3d-proton, Proton has its own)");
     pty.expect("  1) Use these");
     pty.expect("Choice [1]: ");
     pty.send("1");
     pty.expect("Choice [1]: ");
     pty.send("3");
-    pty.expect("DXVK and vkd3d-proton left out");
+    pty.expect("no DXVK or vkd3d-proton, Proton has its own");
     pty.expect("Choice [1]: ");
     pty.send("1");
     pty.expect("Add a target later with");

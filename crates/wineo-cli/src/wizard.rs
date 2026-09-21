@@ -233,7 +233,7 @@ fn shown_template(template: Option<&(String, Template)>, runner: Option<&Runner>
     };
     match runner.map(|runner| template.for_runner(runner)) {
         Some((fitted, true)) => format!(
-            "{name} ({}; DXVK and vkd3d-proton left out, since Proton bundles its own)",
+            "{name} ({}; no DXVK or vkd3d-proton, Proton has its own)",
             describe_template(&fitted)
         ),
         _ => format!("{name} ({})", describe_template(template)),
@@ -285,9 +285,7 @@ fn ask_name<I: Input, W: Write>(
     paths: &Paths,
     default: Option<&str>,
 ) -> anyhow::Result<Reply<Name>> {
-    prompt.say(
-        "The install name is what wineo commands call it, like `wineo start <name>`, and it names the prefix folder.",
-    )?;
+    prompt.say("Used in commands like `wineo start <name>` and as the prefix folder name.")?;
     loop {
         let reply = prompt.text(
             "Install name",
@@ -303,7 +301,7 @@ fn ask_name<I: Input, W: Write>(
         if !paths.environment_config(&name).exists() {
             return Ok(Reply::Value(Name::New(name)));
         }
-        let heading = format!("{name} already exists, and wineo new never replaces one.");
+        let heading = format!("{name} already exists.");
         let choices = numbered([
             (format!("Set up {name} instead"), true),
             ("Pick another name".to_owned(), false),
@@ -334,9 +332,9 @@ fn ask_location<I: Input, W: Write>(
         let answer = &picker::clean_path(answer);
         let dir = paths.absolute(answer).map_err(|err| err.to_string())?;
         match fs::read_dir(&dir).map(|mut entries| entries.next().is_some()) {
-            Ok(true) if !prefix::holds_prefix(&dir) => Err(format!(
-                "{answer} is not empty and holds no wine prefix, so pick another place"
-            )),
+            Ok(true) if !prefix::holds_prefix(&dir) => {
+                Err("Not empty, and not a wine prefix.".to_owned())
+            }
             Ok(_) => Ok(answer.to_owned()),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(answer.to_owned()),
             Err(err) => Err(format!("{answer} can't be used: {err}")),
@@ -346,7 +344,7 @@ fn ask_location<I: Input, W: Write>(
         && let Ok(absolute) = paths.absolute(dir)
         && prefix::holds_prefix(&absolute)
     {
-        prompt.say("There is a prefix there already, so it is used as it is.")?;
+        prompt.say("Using the existing prefix there.")?;
     }
     Ok(reply)
 }
@@ -465,20 +463,17 @@ fn combination_problem(
     answers: &Answers,
 ) -> Option<String> {
     if runner.is_proton() && arch == Arch::Win32 && answers.arch_asked {
-        return Some(format!(
-            "Proton prefixes are always win64, so win32 can't be used with {}.",
-            runner.name()
-        ));
+        return Some("Proton prefixes are always win64.".to_owned());
     }
     // The layout decides which kind of runner an existing prefix is for.
     let wine_prefix = runner.wine_prefix(dir);
     let occupied = fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some());
     if occupied && !prefix::is_prefix(&wine_prefix) {
         return Some(format!(
-            "{} holds a prefix {} can't use. Pick a {} runner, or go back and pick another location.",
+            "{} holds a {} prefix, which {} can't use.",
             dir.display(),
-            runner.name(),
-            if runner.is_proton() { "wine" } else { "Proton" }
+            if runner.is_proton() { "wine" } else { "Proton" },
+            runner.name()
         ));
     }
     if answers.arch_asked
@@ -486,9 +481,7 @@ fn combination_problem(
         && adopted != arch
         && !runner.is_proton()
     {
-        return Some(format!(
-            "The existing prefix is {adopted}, not {arch}. Change the arch, or go back and pick another location."
-        ));
+        return Some(format!("The existing prefix is {adopted}."));
     }
     if let Some((template_name, template)) = &answers.template {
         let (template, _) = template.for_runner(runner);
@@ -497,9 +490,7 @@ fn combination_problem(
             vkd3d: template.vkd3d.clone(),
         };
         if let Err(err) = install::check_available(paths, global, name, runner, &wanted) {
-            return Some(format!(
-                "The {template_name} template can't be used with this: {err}. Change the runner, or go back and pick another template."
-            ));
+            return Some(format!("Can't use the {template_name} template: {err}."));
         }
     }
     None
@@ -660,9 +651,9 @@ fn local_file(paths: &Paths, wine_prefix: Option<&Path>, answer: &str) -> Result
     };
     match found {
         Some(path) if path.is_file() => Ok(path),
-        _ if winpath::is_windows_path(answer) && wine_prefix.is_none() => Err(format!(
-            "`{answer}` is a Windows path, and the prefix doesn't exist yet. Give its Unix path"
-        )),
+        _ if winpath::is_windows_path(answer) && wine_prefix.is_none() => {
+            Err("Use a Unix path, the prefix doesn't exist yet.".to_owned())
+        }
         _ => Err(format!("`{answer}` does not exist")),
     }
 }
@@ -721,7 +712,7 @@ fn review<I: Input, W: Write>(
     ));
     if runner.is_proton() {
         heading.push_str(
-            "\nThe first umu run also downloads the Steam Linux Runtime, which takes a while.",
+            "\nThe first umu run downloads the Steam Linux Runtime, which takes a while.",
         );
     }
     let choices = numbered([("Create it".to_owned(), ())]);
@@ -774,7 +765,7 @@ fn create<I: Input, W: Write>(
             }
             prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
             prompt.say(format!(
-                "{name} was not created, and nothing was registered. Once that is sorted out, run `wineo new` again"
+                "{name} wasn't created. Fix that, then run `wineo new` again."
             ))?;
             return Ok(ExitCode::FAILURE);
         }

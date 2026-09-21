@@ -13,13 +13,13 @@ use wineo_core::winpath;
 
 use crate::prompt::{Choice, Input, Picked, Prompt, Reply, numbered};
 
-/// Why `answer` can't be a name, and one that could be, or None when it can.
+/// Why `answer` can't be a name, or None when it can.
 pub fn name_problem(answer: &str) -> Option<String> {
     if name::is_valid(answer) {
         return None;
     }
     if answer.is_empty() {
-        return Some("Enter a name".to_owned());
+        return Some("Enter a name.".to_owned());
     }
     let mut found: Vec<String> = Vec::new();
     for char in answer.chars() {
@@ -27,7 +27,7 @@ pub fn name_problem(answer: &str) -> Option<String> {
             continue;
         }
         let shown = if char == ' ' {
-            "a space".to_owned()
+            "spaces".to_owned()
         } else {
             format!("`{char}`")
         };
@@ -35,23 +35,10 @@ pub fn name_problem(answer: &str) -> Option<String> {
             found.push(shown);
         }
     }
-    let mut problem = format!(
-        "`{answer}` has {}. Names go into commands, file names, and config keys, so they can only use letters, digits, `-`, and `_`",
+    Some(format!(
+        "Invalid input: {} not allowed.",
         found.join(" and ")
-    );
-    let mut fixed = String::new();
-    for char in answer.chars() {
-        if char.is_ascii_alphanumeric() || char == '-' || char == '_' {
-            fixed.push(char);
-        } else if !fixed.is_empty() && !fixed.ends_with('-') {
-            fixed.push('-');
-        }
-    }
-    let fixed = fixed.trim_end_matches('-');
-    if name::is_valid(fixed) {
-        problem.push_str(&format!(". Try `{fixed}`"));
-    }
-    Some(problem)
+    ))
 }
 
 /// A path as typed or pasted, which may come wrapped in quotes or with the
@@ -238,11 +225,11 @@ pub fn add_program<I: Input, W: Write>(
     let mut notes = Vec::new();
     if target != suggested {
         notes.push(format!(
-            "`{suggested}` is already a target, so this one is `{target}` unless you change it."
+            "`{suggested}` is taken, so this one is `{target}`."
         ));
     }
     if program.source == Source::Shortcut {
-        notes.push("Shortcut arguments aren't imported, so add any it needs.".to_owned());
+        notes.push("Shortcut arguments aren't imported.".to_owned());
     }
     let spec = Spec {
         exe: program.exe.clone(),
@@ -329,10 +316,7 @@ pub fn remove<I: Input, W: Write>(
     let was_default = batch.default().as_deref() == Some(target.as_str());
     batch.remove(&target);
     if was_default && batch.targets().len() > 1 {
-        let heading = format!(
-            "{target} was the default. Which target should `wineo start {}` launch now?",
-            place.name
-        );
+        let heading = format!("{target} was the default. Pick a new one:");
         // Going back here still leaves the removal staged, with no default
         // yet, which finishing asks about again.
         choose_default(prompt, batch, &heading)?;
@@ -486,7 +470,7 @@ impl Card<'_> {
                 }
                 Field::Args => {
                     prompt.say(
-                        "Arguments, one per line, and an empty line to finish. They replace the ones above.",
+                        "One argument per line, empty line to finish. Replaces the current ones.",
                     )?;
                     if let Reply::Value(args) = prompt.list("argument")? {
                         spec.args = args;
@@ -858,7 +842,7 @@ mod tests {
             "{printed}"
         );
         assert!(
-            printed.contains("`hades` is already a target, so this one is `hades-2`"),
+            printed.contains("`hades` is taken, so this one is `hades-2`."),
             "{printed}"
         );
         assert_eq!(
@@ -968,19 +952,16 @@ mod tests {
     }
 
     #[test]
-    fn a_bad_name_says_what_is_wrong_and_what_would_work() {
+    fn a_bad_name_says_what_is_wrong() {
         assert_eq!(name_problem("Stellar-Blade"), None);
         assert_eq!(
             name_problem("Stellar Blade").unwrap(),
-            "`Stellar Blade` has a space. Names go into commands, file names, and config keys, so they can only use letters, digits, `-`, and `_`. Try `Stellar-Blade`"
+            "Invalid input: spaces not allowed."
         );
-        let problem = name_problem("Hades: II!").unwrap();
-        assert!(
-            problem.starts_with("`Hades: II!` has `:` and a space and `!`."),
-            "{problem}"
+        assert_eq!(
+            name_problem("Hades: II").unwrap(),
+            "Invalid input: `:` and spaces not allowed."
         );
-        assert!(problem.ends_with("Try `Hades-II`"), "{problem}");
-        assert!(!name_problem("游戏").unwrap().contains("Try"));
     }
 
     #[test]

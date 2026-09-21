@@ -191,7 +191,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             match exit_code {
                 Some(0) => {}
                 Some(code) => eprintln!(
-                    "The installer exited with code {code}. {name} and its prefix were kept, continue with `wineo setup {name}`"
+                    "The installer exited with code {code}. Continue with `wineo setup {name}`."
                 ),
                 None => eprintln!("The installer's exit code could not be collected"),
             }
@@ -203,7 +203,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
         Outcome::Canceled { .. } => {
             note(&format!(
-                "The installer was canceled. {name} and its prefix were kept, continue with `wineo setup {name}`"
+                "Installer canceled. Continue with `wineo setup {name}`."
             ));
             Ok(ExitCode::from(CANCELED))
         }
@@ -213,7 +213,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             // Both failures are reported, but the one that leaves something
             // possibly still running decides what to do next.
             note(&format!(
-                "error: wineo could not confirm that everything the installer started has stopped: {:#}",
+                "error: couldn't confirm the installer's processes stopped: {:#}",
                 anyhow::Error::from(error)
             ));
             match exit_code {
@@ -221,9 +221,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 Some(code) => note(&format!("The installer exited with code {code}")),
                 None => {}
             }
-            note(&format!(
-                "{name} and its prefix were kept. Clean up whatever may still be running with `wineo stop {name}` or `wineo setup {name}`"
-            ));
+            note(&format!("Kept {name}. Clean up with `wineo stop {name}`."));
             Ok(ExitCode::FAILURE)
         }
     }
@@ -233,7 +231,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     if !prompt::interactive() {
         bail!(
-            "wineo new asks questions unless it is given a name, so it needs a terminal. Without one, pass what it needs: wineo new -n <name> [--template <template>] [--install-exe <path>]"
+            "wineo new needs a terminal without -n. Use: wineo new -n <name> [-t <template>] [--install-exe <path>]"
         );
     }
     let global = GlobalConfig::load(paths)?;
@@ -250,10 +248,10 @@ fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     match wizard::run(paths, &global, &prefill, &mut prompt, &mut guided) {
         Err(err) if err.is::<Canceled>() => {
             match guided.registered {
-                Some(name) => eprintln!(
-                    "Canceled. {name} and its prefix were kept, continue with `wineo setup {name}`"
-                ),
-                None => eprintln!("Canceled, and nothing was created"),
+                Some(name) => {
+                    eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.")
+                }
+                None => eprintln!("Canceled. Nothing was created."),
             }
             Ok(ExitCode::from(CANCELED))
         }
