@@ -409,6 +409,39 @@ fn a_failed_installer_ends_setup_with_its_code() {
 }
 
 #[test]
+fn setup_keeps_saved_targets_when_the_installer_disappears_during_prepare() {
+    let f = Fixture::new();
+    f.environment("app", "[targets.app]\nexe = \"app\"\n");
+    let before = f.config("app");
+    let installer = f.root.path().join("installer.exe");
+    fs::write(&installer, b"").unwrap();
+
+    let mut pty = f.setup("app");
+    pty.expect("Choice [5]: ");
+    pty.send("4");
+    pty.expect("or < to go back: ");
+    pty.send(installer.to_str().unwrap());
+    pty.expect("Run installer.exe in app?");
+    fs::remove_file(&installer).unwrap();
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Continue with `wineo setup app`.");
+    pty.expect("Choice [5]: ");
+    pty.send("5");
+    let (status, output) = pty.finish();
+
+    assert!(status.success(), "{output}");
+    assert!(
+        output.contains("failed to prepare")
+            || output.contains("not found")
+            || output.contains("does not exist"),
+        "{output}"
+    );
+    assert_eq!(f.config("app"), before);
+    assert!(f.root.path().join("prefixes/app/system.reg").is_file());
+}
+
+#[test]
 fn staged_changes_are_saved_before_an_installer_runs() {
     let f = Fixture::new();
     f.games("app", "");
@@ -467,20 +500,55 @@ fn ctrl_c_during_an_installer_cancels_it_and_ends_setup() {
 fn setup_offers_to_clean_up_after_an_unresolved_installer() {
     let f = Fixture::new();
     f.games("app", "");
+    f.environment("other", "");
     let record = f.runtime("app").dir().join("operation.toml");
     fs::create_dir_all(record.parent().unwrap()).unwrap();
-    fs::write(&record, "").unwrap();
+    fs::write(
+        &record,
+        format!(
+            "operation = \"install\"\nprogram = \"setup\"\nprefix = \"{}\"\nstarted_at = \"2026-09-22T00:00:00Z\"\n\n[runner]\nname = \"GE-Proton9-20\"\n\n[runner.kind.proton]\nroot = \"/unused\"\n",
+            f.root.path().join("prefixes/app").display()
+        ),
+    )
+    .unwrap();
     let mut pty = f.setup("app");
     pty.expect("app's last installer didn't finish cleanly.");
     pty.expect("  1) Stop what it left running");
     pty.expect("Choice [1]: ");
     pty.send("1");
-    pty.expect("Stopped what it left running.");
-    pty.expect("Choice [1]: ");
-    pty.send("5");
+    pty.expect("Cleanup is unresolved");
     let (status, output) = pty.finish();
-    assert!(status.success(), "{output}");
-    assert!(!record.exists());
+    assert_eq!(status.code(), Some(1), "{output}");
+    assert!(record.exists());
+    assert!(!output.contains("No targets yet."), "{output}");
+    assert!(!output.contains("What next?"), "{output}");
+    assert_success(&f.run(&["exec", "other", "exit-0"]));
+}
+
+#[test]
+fn setup_does_not_scan_a_prefix_when_cleanup_is_deferred() {
+    let f = Fixture::new();
+    f.games("app", "");
+    let record = f.runtime("app").dir().join("operation.toml");
+    fs::create_dir_all(record.parent().unwrap()).unwrap();
+    fs::write(
+        &record,
+        format!(
+            "operation = \"install\"\nprogram = \"setup\"\nprefix = \"{}\"\nstarted_at = \"2026-09-22T00:00:00Z\"\n\n[runner]\nname = \"GE-Proton9-20\"\n\n[runner.kind.proton]\nroot = \"/unused\"\n",
+            f.root.path().join("prefixes/app").display()
+        ),
+    )
+    .unwrap();
+    let mut pty = f.setup("app");
+    pty.expect("app's last installer didn't finish cleanly.");
+    pty.expect("Choice [1]: ");
+    pty.send("2");
+    pty.expect("Cleanup remains unresolved.");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(1), "{output}");
+    assert!(record.exists());
+    assert!(!output.contains("No targets yet."), "{output}");
+    assert!(!output.contains("What next?"), "{output}");
 }
 
 #[test]
@@ -667,6 +735,71 @@ fn guided_new_runs_the_installer_then_picks_what_it_installed() {
 }
 
 #[test]
+fn guided_new_reports_recovery_when_the_installer_disappears_after_creation() {
+    let f = Fixture::new();
+    let installer = f.root.path().join("installer.exe");
+    fs::write(&installer, b"").unwrap();
+    let mut command = f.wineo();
+    command
+        .args(["new", "--install-exe"])
+        .arg(&installer)
+        .env("WINEO_TEST_REMOVE_INSTALLER", &installer);
+    let mut pty = Pty::spawn(command);
+    plain_answers(&mut pty, "game", "1");
+    pty.expect("Installer, or < to go back [");
+    pty.send("");
+    pty.expect("  program   run the installer");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Created game.");
+    pty.expect("error:");
+    pty.expect("Kept game. Continue with `wineo setup game`.");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(1), "{output}");
+    assert!(f.registered("game"));
+    assert!(
+        f.root
+            .path()
+            .join("data/wineo/prefixes/game/system.reg")
+            .is_file()
+    );
+    assert!(!f.runtime("game").operation_path().exists());
+}
+
+#[test]
+fn guided_new_reports_recovery_when_the_installer_cannot_spawn_after_creation() {
+    let f = Fixture::new();
+    let installer = f.root.path().join("installer.exe");
+    fs::write(&installer, b"").unwrap();
+    let mut command = f.wineo();
+    command
+        .args(["new", "--install-exe"])
+        .arg(&installer)
+        .env("WINEO_TEST_REMOVE_WINE", f.root.path().join("bin/wine"));
+    let mut pty = Pty::spawn(command);
+    plain_answers(&mut pty, "game", "1");
+    pty.expect("Installer, or < to go back [");
+    pty.send("");
+    pty.expect("  program   run the installer");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Created game.");
+    assert!(!f.root.path().join("bin/wine").exists());
+    pty.expect("error: failed to start wine");
+    pty.expect("Kept game. Continue with `wineo setup game`.");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(1), "{output}");
+    assert!(f.registered("game"));
+    assert!(
+        f.root
+            .path()
+            .join("data/wineo/prefixes/game/system.reg")
+            .is_file()
+    );
+    assert!(!f.runtime("game").operation_path().exists());
+}
+
+#[test]
 fn canceling_after_creation_keeps_the_environment() {
     let f = Fixture::new();
     let installer = f.root.path().join("install-game.exe");
@@ -730,6 +863,8 @@ fn a_failed_creation_says_nothing_was_registered() {
     pty.expect("game wasn't created.");
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(1), "{output}");
+    assert!(!output.contains("Kept game"), "{output}");
+    assert!(!output.contains("wineo setup game"), "{output}");
     assert!(!f.registered("game"));
     assert!(!f.root.path().join("data/wineo/prefixes/game").exists());
 }

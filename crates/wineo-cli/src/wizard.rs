@@ -851,8 +851,16 @@ fn create<I: Input, W: Write>(
             return setup::finish(paths, global, &name, prompt, &batch);
         }
         How::Installer(program) => {
-            let installer =
-                Installer::prepare_with_runner(guard, paths, global, &name, &program, &runner)?;
+            let installer = match Installer::prepare_with_runner(
+                guard, paths, global, &name, &program, &runner,
+            ) {
+                Ok(installer) => installer,
+                Err(err) => {
+                    prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
+                    setup::report_recovery(paths, &name, prompt)?;
+                    return Ok(ExitCode::FAILURE);
+                }
+            };
             match setup::run_installer(paths, global, &name, prompt, installer)? {
                 Ran::Finished => picker::pick(prompt, &place, &mut batch).map(|_| ())?,
                 Ran::Ended(code) => return Ok(code),

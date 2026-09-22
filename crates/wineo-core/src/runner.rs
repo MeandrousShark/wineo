@@ -224,6 +224,45 @@ impl Runner {
         }
     }
 
+    /// Like `wait_settled`, but requires the recorded process-group identity
+    /// before it can confirm that the group is gone.
+    pub fn wait_settled_owned(
+        &self,
+        prefix: &Path,
+        group: Option<u32>,
+        boot_id: Option<&str>,
+        leader_start: Option<u64>,
+    ) -> Result<()> {
+        if let Some(mut command) = self.wineserver(prefix) {
+            let status = quietly(command.arg("-w"))
+                .status()
+                .context(|| "failed to run wineserver -w".to_owned())?;
+            if !status.success() {
+                return Err(Error::Unsettled(format!("wineserver -w failed ({status})")));
+            }
+        }
+        wait_for_recorded_group(group, boot_id, leader_start)
+    }
+
+    /// Settlement for the owner that still holds the live operation lock.
+    pub fn wait_settled_live(
+        &self,
+        prefix: &Path,
+        group: Option<u32>,
+        boot_id: Option<&str>,
+        leader_start: Option<u64>,
+    ) -> Result<()> {
+        if let Some(mut command) = self.wineserver(prefix) {
+            let status = quietly(command.arg("-w"))
+                .status()
+                .context(|| "failed to run wineserver -w".to_owned())?;
+            if !status.success() {
+                return Err(Error::Unsettled(format!("wineserver -w failed ({status})")));
+            }
+        }
+        wait_for_live_group(group, boot_id, leader_start)
+    }
+
     /// Asks running programs to close: a Windows logoff for wine, SIGTERM to
     /// umu's process group for Proton, which has no wineserver to talk to.
     pub fn end_session(&self, prefix: &Path, group: Option<u32>) -> Result<()> {
@@ -240,6 +279,70 @@ impl Runner {
         Ok(())
     }
 
+    /// Ends the session only while the recorded leader still proves ownership.
+    pub fn end_session_owned(
+        &self,
+        prefix: &Path,
+        group: Option<u32>,
+        boot_id: Option<&str>,
+        leader_start: Option<u64>,
+    ) -> Result<crate::process::GroupOwnership> {
+        let ownership = crate::process::group_ownership(group, boot_id, leader_start);
+        if ownership != crate::process::GroupOwnership::Owned {
+            return Ok(ownership);
+        }
+        if self.is_proton() {
+            return crate::process::signal_group_if_owned(
+                group,
+                boot_id,
+                leader_start,
+                Signal::TERM,
+            )
+            .context(|| "failed to signal tracked process group".to_owned());
+        }
+        quietly(
+            self.command(prefix, None)?
+                .args(["wineboot", "--end-session"]),
+        )
+        .status()
+        .context(|| "failed to run wineboot --end-session".to_owned())?;
+        Ok(crate::process::GroupOwnership::Owned)
+    }
+
+    /// Ends a session while the caller still owns the operation and prefix.
+    pub fn end_session_live(
+        &self,
+        prefix: &Path,
+        group: Option<u32>,
+        boot_id: Option<&str>,
+        leader_start: Option<u64>,
+    ) -> Result<crate::process::GroupOwnership> {
+        let (Some(group_id), Some(boot_id), Some(leader_start)) = (group, boot_id, leader_start)
+        else {
+            return Ok(crate::process::GroupOwnership::Unknown);
+        };
+        let ownership = crate::process::live_group_ownership(group_id, boot_id, leader_start);
+        if ownership != crate::process::GroupOwnership::Owned {
+            return Ok(ownership);
+        }
+        if self.is_proton() {
+            return crate::process::signal_group_if_live(
+                Some(group_id),
+                Some(boot_id),
+                Some(leader_start),
+                Signal::TERM,
+            )
+            .context(|| "failed to signal tracked process group".to_owned());
+        }
+        quietly(
+            self.command(prefix, None)?
+                .args(["wineboot", "--end-session"]),
+        )
+        .status()
+        .context(|| "failed to run wineboot --end-session".to_owned())?;
+        Ok(crate::process::GroupOwnership::Owned)
+    }
+
     /// Kills whatever is left without giving programs a chance to clean up.
     pub fn kill(&self, prefix: &Path, group: Option<u32>) -> Result<Killed> {
         let Some(mut command) = self.wineserver(prefix) else {
@@ -249,6 +352,60 @@ impl Runner {
             .status()
             .context(|| "failed to run wineserver -k".to_owned())?;
         Ok(Killed::Done)
+    }
+
+    /// Kills only work whose recorded leader still proves ownership.
+    pub fn kill_owned(
+        &self,
+        prefix: &Path,
+        group: Option<u32>,
+        boot_id: Option<&str>,
+        leader_start: Option<u64>,
+    ) -> Result<crate::process::GroupOwnership> {
+        let ownership = crate::process::group_ownership(group, boot_id, leader_start);
+        if ownership != crate::process::GroupOwnership::Owned {
+            return Ok(ownership);
+        }
+        if self.is_proton() {
+            return crate::process::signal_group_if_owned(
+                group,
+                boot_id,
+                leader_start,
+                Signal::KILL,
+            )
+            .context(|| "failed to signal tracked process group".to_owned());
+        }
+        self.kill(prefix, group)?;
+        Ok(crate::process::GroupOwnership::Owned)
+    }
+
+    /// Kills tracked work while the caller still owns its active operation.
+    pub fn kill_live(
+        &self,
+        prefix: &Path,
+        group: Option<u32>,
+        boot_id: Option<&str>,
+        leader_start: Option<u64>,
+    ) -> Result<crate::process::GroupOwnership> {
+        let (Some(group_id), Some(boot_id), Some(leader_start)) = (group, boot_id, leader_start)
+        else {
+            return Ok(crate::process::GroupOwnership::Unknown);
+        };
+        let ownership = crate::process::live_group_ownership(group_id, boot_id, leader_start);
+        if ownership != crate::process::GroupOwnership::Owned {
+            return Ok(ownership);
+        }
+        if self.is_proton() {
+            return crate::process::signal_group_if_live(
+                Some(group_id),
+                Some(boot_id),
+                Some(leader_start),
+                Signal::KILL,
+            )
+            .context(|| "failed to signal tracked process group".to_owned());
+        }
+        self.kill(prefix, Some(group_id))?;
+        Ok(crate::process::GroupOwnership::Owned)
     }
 
     /// The version this runner reports: what wine prints, or what Proton
@@ -318,6 +475,72 @@ fn wait_for_group(group: Option<u32>) -> Result<()> {
     }
 }
 
+fn wait_for_recorded_group(
+    group: Option<u32>,
+    boot_id: Option<&str>,
+    leader_start: Option<u64>,
+) -> Result<()> {
+    let Some(group) = group else {
+        return Err(Error::Unsettled(
+            "no process group was recorded to check".to_owned(),
+        ));
+    };
+    loop {
+        match crate::process::group_ownership(Some(group), boot_id, leader_start) {
+            crate::process::GroupOwnership::Gone => return Ok(()),
+            crate::process::GroupOwnership::Owned => {
+                match crate::process::group_has_live_members(group) {
+                    Some(false) => return Ok(()),
+                    Some(true) => std::thread::sleep(GROUP_POLL),
+                    None => {
+                        return Err(Error::Unsettled(
+                            "process-group members could not be inspected".to_owned(),
+                        ));
+                    }
+                }
+            }
+            crate::process::GroupOwnership::Unknown => {
+                return Err(Error::Unsettled(
+                    "process-group ownership could not be confirmed".to_owned(),
+                ));
+            }
+        }
+    }
+}
+
+fn wait_for_live_group(
+    group: Option<u32>,
+    boot_id: Option<&str>,
+    leader_start: Option<u64>,
+) -> Result<()> {
+    let (Some(group), Some(boot_id), Some(leader_start)) = (group, boot_id, leader_start) else {
+        return Err(Error::Unsettled(
+            "no complete process identity was recorded".to_owned(),
+        ));
+    };
+    loop {
+        match crate::process::live_group_ownership(group, boot_id, leader_start) {
+            crate::process::GroupOwnership::Gone => return Ok(()),
+            crate::process::GroupOwnership::Owned => {
+                match crate::process::group_has_live_members(group) {
+                    Some(false) => return Ok(()),
+                    Some(true) => std::thread::sleep(GROUP_POLL),
+                    None => {
+                        return Err(Error::Unsettled(
+                            "process-group members could not be inspected".to_owned(),
+                        ));
+                    }
+                }
+            }
+            crate::process::GroupOwnership::Unknown => {
+                return Err(Error::Unsettled(
+                    "process-group ownership could not be confirmed".to_owned(),
+                ));
+            }
+        }
+    }
+}
+
 /// `program`, or `wrapper program` when something like gamemoderun wraps it.
 fn wrapped(program: &Path, wrapper: Option<&Path>) -> Command {
     match wrapper {
@@ -370,6 +593,7 @@ fn find_in_path(path_var: &OsStr, program: &str) -> Option<PathBuf> {
         .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(program))
         .find(|candidate| is_executable(candidate))
+        .and_then(|candidate| std::fs::canonicalize(candidate).ok())
 }
 
 pub(crate) fn is_executable(path: &Path) -> bool {

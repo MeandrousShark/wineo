@@ -14,10 +14,11 @@ use wineo_core::paths::Paths;
 use wineo_core::prefix;
 use wineo_core::programs::Listing;
 use wineo_core::runners::Runners;
+use wineo_core::runtime::Runtime;
 use wineo_core::supervisor::{Notice, Watched};
 use wineo_core::templates::Templates;
 
-use super::{components, desktop, programs};
+use super::{components, desktop, programs, setup};
 use crate::prompt::{self, Canceled, Prompt, Terminal};
 use crate::wizard::{self, Guided, Prefill};
 
@@ -166,10 +167,23 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         );
         return Ok(ExitCode::SUCCESS);
     };
-    let installer =
-        Installer::prepare_with_runner(guard, paths, &global, &environment.name, program, &runner)?;
+    let installer = match Installer::prepare_with_runner(
+        guard,
+        paths,
+        &global,
+        &environment.name,
+        program,
+        &runner,
+    ) {
+        Ok(installer) => installer,
+        Err(err) => {
+            note(&format!("error: {:#}", anyhow::Error::from(err)));
+            note(&setup::recovery_message(paths, &environment.name));
+            return Ok(ExitCode::FAILURE);
+        }
+    };
     let name = &environment.name;
-    let outcome = installer.run(
+    let outcome = match installer.run(
         Duration::from_secs(global.stop_timeout.into()),
         Output::Inherit,
         |watched| match watched {
@@ -184,17 +198,30 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             }
             Watched::Exited(_) => {}
         },
-    )?;
+    ) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            note(&format!("error: {:#}", anyhow::Error::from(err)));
+            note(&setup::recovery_message(paths, &environment.name));
+            return Ok(ExitCode::FAILURE);
+        }
+    };
 
     match outcome {
         Outcome::Finished { exit_code } => {
             let code = exit_code.unwrap_or(1);
             match exit_code {
                 Some(0) => {}
-                Some(code) => eprintln!(
-                    "The installer exited with code {code}. Continue with `wineo setup {name}`."
-                ),
+                Some(code) => eprintln!("The installer exited with code {code}."),
                 None => eprintln!("The installer's exit code could not be collected"),
+            }
+            if Runtime::new(paths, name).check_resolved(name).is_err() {
+                note("The installer finished, but cleanup is unresolved.");
+                note(&setup::recovery_message(paths, name));
+                return Ok(ExitCode::FAILURE);
+            }
+            if exit_code != Some(0) {
+                note(&setup::recovery_message(paths, name));
             }
             match installed(&prefix) {
                 Some(listing) => programs::report(name, &listing, false),
@@ -203,9 +230,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
         }
         Outcome::Canceled { .. } => {
-            note(&format!(
-                "Installer canceled. Continue with `wineo setup {name}`."
-            ));
+            note("Installer canceled.");
+            note(&setup::recovery_message(paths, name));
             Ok(ExitCode::from(CANCELED))
         }
         Outcome::Unresolved {
@@ -222,7 +248,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 Some(code) => note(&format!("The installer exited with code {code}")),
                 None => {}
             }
-            note(&format!("Kept {name}. Clean up with `wineo stop {name}`."));
+            note(&setup::recovery_message(paths, name));
             Ok(ExitCode::FAILURE)
         }
     }

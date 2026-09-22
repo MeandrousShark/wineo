@@ -45,12 +45,20 @@ pub struct RunState {
     pub target: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runner: Option<Runner>,
+    /// Concrete prefix used by this run, preserved if its alias changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<PathBuf>,
     pub pid: u32,
     /// The process group the run was spawned into, so what it left behind can
     /// still be killed once whatever owned it is gone. Missing in a state file
     /// written before wineo recorded it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<u32>,
+    /// The boot and leader identity needed to recover a lost process group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader_start: Option<u64>,
     pub started_at: Timestamp,
     /// The run lasts until the prefix goes idle, which can be well after the
     /// launched program exits.
@@ -83,8 +91,11 @@ impl RunState {
             mode,
             target,
             runner: None,
+            prefix: None,
             pid,
             group,
+            boot_id: None,
+            leader_start: None,
             started_at: Timestamp::now(),
             program_exited_at: None,
             ended_at: None,
@@ -149,24 +160,14 @@ pub struct OperationState {
 }
 
 impl OperationState {
-    /// Whether the recorded process group can still be the one the operation
-    /// started. It can't after a reboot, or once a process with a different
-    /// start time holds the leader's pid, since the kernel only hands that
-    /// number out again after the whole group is gone.
-    pub fn group_is_ours(&self) -> bool {
-        if self
-            .boot_id
-            .as_ref()
-            .is_some_and(|boot| Some(boot) != crate::process::boot_id().as_ref())
-        {
-            return false;
-        }
-        match (self.group, self.leader_start) {
-            (Some(group), Some(started)) => {
-                crate::process::start_time(group).is_none_or(|now| now == started)
-            }
-            _ => true,
-        }
+    pub fn group_ownership(&self) -> crate::process::GroupOwnership {
+        crate::process::group_ownership(self.group, self.boot_id.as_deref(), self.leader_start)
+    }
+}
+
+impl RunState {
+    pub fn group_ownership(&self) -> crate::process::GroupOwnership {
+        crate::process::group_ownership(self.group, self.boot_id.as_deref(), self.leader_start)
     }
 }
 
@@ -385,10 +386,11 @@ impl Runtime {
         if self.is_running()? {
             return Err(Error::Running(name.to_owned()));
         }
-        // An unreadable state file says nothing either way, and must not keep
-        // the prefix from being used.
-        if self.status().is_ok_and(|status| status.lost) {
-            return Err(Error::LostRun(name.to_owned()));
+        match self.status() {
+            Ok(status) if status.lost => return Err(Error::LostRun(name.to_owned())),
+            Err(Error::StateSyntax { .. }) => return Err(Error::LostRun(name.to_owned())),
+            Err(err) => return Err(err),
+            Ok(_) => {}
         }
         self.check_resolved(name)
     }
@@ -401,6 +403,12 @@ impl Runtime {
             // An unreadable record still says something was left unresolved.
             Ok(Some(_)) | Err(Error::StateSyntax { .. }) => Err(Error::Unresolved(name.to_owned())),
             Err(err) => Err(err),
+        }?;
+        match self.status() {
+            Ok(status) if status.lost => Err(Error::LostRun(name.to_owned())),
+            Err(Error::StateSyntax { .. }) => Err(Error::LostRun(name.to_owned())),
+            Err(err) => Err(err),
+            Ok(_) => Ok(()),
         }
     }
 
@@ -506,8 +514,11 @@ mod tests {
             mode: RunMode::Detached,
             target: "notepad".to_owned(),
             runner: None,
+            prefix: None,
             pid: 4242,
             group: Some(4242),
+            boot_id: None,
+            leader_start: None,
             started_at: "2026-09-16T21:02:11Z".parse().unwrap(),
             program_exited_at: None,
             ended_at: None,
@@ -607,6 +618,9 @@ mod tests {
             requested_target: Some("notepad".to_owned()),
             args: vec!["-x".to_owned()],
             env: BTreeMap::from([("DXVK_HUD".to_owned(), "1".to_owned())]),
+            prefix: None,
+            boot_id: None,
+            leader_start: None,
             ..run_state(RunStatus::Running)
         };
         runtime.write_state(&state).unwrap();
@@ -741,9 +755,17 @@ mod tests {
         runtime.clear_operation().unwrap();
         runtime.check_quiet("notepad").unwrap();
 
-        // A state file nothing can read says nothing about a lost run.
+        // An unreadable state file cannot make the lost-run block disappear.
         fs::write(runtime.dir().join("state.toml"), "garbage [").unwrap();
-        runtime.check_quiet("notepad").unwrap();
+        assert!(matches!(
+            runtime.check_quiet("notepad"),
+            Err(Error::LostRun(_))
+        ));
+        assert!(matches!(
+            runtime.check_resolved("notepad"),
+            Err(Error::LostRun(_))
+        ));
+        assert!(runtime.state_path().is_file());
     }
 
     #[test]

@@ -1108,7 +1108,17 @@ fn rm_delete_prefix_refuses_unreadable_run_state() {
     );
     assert!(prefix.join("system.reg").exists());
 
-    // Broken state alone doesn't block removing the registration.
+    // The unreadable run state blocks removing the registration too.
+    let out = output(wineo(root.path()).args(["rm", "notepad"]));
+    assert!(!out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("wineo stop notepad"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(prefix.join("system.reg").exists());
+
+    fs::remove_file(root.path().join("state/wineo/notepad/state.toml")).unwrap();
     let out = output(wineo(root.path()).args(["rm", "notepad"]));
     assert!(out.status.success(), "{}", stderr(&out));
 }

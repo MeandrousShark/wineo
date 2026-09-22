@@ -222,7 +222,9 @@ fn check(dir: &Path) -> std::result::Result<Runner, Skipped> {
     let proton = dir.join("proton");
     if proton.exists() {
         return if crate::runner::is_executable(&proton) {
-            Ok(Runner::proton(name, dir.to_owned()))
+            fs::canonicalize(dir)
+                .map(|dir| Runner::proton(name, dir))
+                .map_err(|_| Skipped::NotExecutable)
         } else {
             Err(Skipped::NotExecutable)
         };
@@ -239,12 +241,15 @@ fn check(dir: &Path) -> std::result::Result<Runner, Skipped> {
     if !crate::runner::is_executable(&wine) || !crate::runner::is_executable(&wineserver) {
         return Err(Skipped::NotExecutable);
     }
+    let wine = fs::canonicalize(wine).map_err(|_| Skipped::NotExecutable)?;
+    let wineserver = fs::canonicalize(wineserver).map_err(|_| Skipped::NotExecutable)?;
     Ok(Runner::wine_build(name, wine, wineserver))
 }
 
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::symlink;
 
     use super::*;
 
@@ -415,6 +420,25 @@ mod tests {
         );
         // A wine prefix is the configured directory itself.
         assert_eq!(runner.wine_prefix(Path::new("/p")), Path::new("/p"));
+    }
+
+    #[test]
+    fn resolving_a_runner_alias_keeps_the_concrete_executable_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let concrete = root.path().join("builds/wine-tkg");
+        for name in ["wine", "wineserver"] {
+            let path = concrete.join("bin").join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "#!/bin/sh\n").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::create_dir_all(root.path().join("runners")).unwrap();
+        symlink(&concrete, root.path().join("runners/current")).unwrap();
+
+        let runner = runners(root.path()).resolve("current").unwrap();
+        let concrete_wine = concrete.join("bin/wine").canonicalize().unwrap();
+        assert_eq!(runner.name(), "current");
+        assert_eq!(runner.wine_path(), Some(concrete_wine.as_path()));
     }
 
     #[test]

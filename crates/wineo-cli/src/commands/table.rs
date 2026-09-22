@@ -126,11 +126,14 @@ mod tests {
     fn run(status: RunStatus, target: &str) -> RunState {
         RunState {
             runner: None,
+            prefix: None,
             status,
             mode: RunMode::Detached,
             target: target.to_owned(),
             pid: 1,
             group: Some(1),
+            boot_id: None,
+            leader_start: None,
             started_at: ts("2026-09-16T14:02:00Z"),
             program_exited_at: None,
             ended_at: None,

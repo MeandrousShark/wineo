@@ -41,6 +41,9 @@ wineboot)
     if [ "$2" = --init ]; then
         mkdir -p "$WINEPREFIX/drive_c"
         printf 'WINE REGISTRY Version 2\n\n#arch=win64\n' >"$WINEPREFIX/system.reg"
+        if [ -n "${WINEO_TEST_REMOVE_INSTALLER-}" ]; then
+            rm -f "$WINEO_TEST_REMOVE_INSTALLER"
+        fi
     elif [ "$2" = --end-session ] && read -r program _ 2>/dev/null <"$pids"; then
         kill "$program" 2>/dev/null
     fi
@@ -48,6 +51,9 @@ wineboot)
     ;;
 reg)
     echo "$*" >>"$WINEPREFIX/reg.log"
+    if [ -n "${WINEO_TEST_REMOVE_WINE-}" ]; then
+        rm -f "$WINEO_TEST_REMOVE_WINE"
+    fi
     exit 0
     ;;
 winemenubuilder.exe)

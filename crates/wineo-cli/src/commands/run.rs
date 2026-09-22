@@ -9,6 +9,7 @@ use wineo_core::environment::Environment;
 use wineo_core::launch::{Launch, Overrides, parse_env_assignment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
+use wineo_core::process;
 use wineo_core::runtime::{RunMode, RunState, Runtime};
 use wineo_core::supervisor::{Notice, Supervisor};
 
@@ -95,6 +96,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         &overrides,
     );
     state.runner = Some(launch.runner.clone());
+    state.prefix = Some(launch.prefix.clone());
+    state.boot_id = process::boot_id();
+    state.leader_start = process::start_time(child.id());
     // Wine is already running, so bailing out here would orphan it and free the lock.
     if let Err(err) = runtime.write_state(&state) {
         warn(err.into());

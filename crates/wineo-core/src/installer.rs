@@ -24,8 +24,6 @@ use crate::launch::Launch;
 use crate::operation::{Guard, Locks, Operation};
 use crate::paths::Paths;
 use crate::process;
-use crate::runner::Killed;
-use crate::runners::Runners;
 use crate::runtime::{OperationState, Runtime};
 use crate::supervisor::{Notice, Settle, Supervisor, Watched};
 
@@ -158,7 +156,19 @@ impl Installer {
         self,
         stop_timeout: Duration,
         output: Output,
+        watched: impl FnMut(Watched),
+    ) -> Result<Outcome> {
+        self.run_with_writer(stop_timeout, output, watched, |runtime, state| {
+            runtime.write_operation(state)
+        })
+    }
+
+    fn run_with_writer(
+        self,
+        stop_timeout: Duration,
+        output: Output,
         mut watched: impl FnMut(Watched),
+        mut write_operation: impl FnMut(&Runtime, &OperationState) -> Result<()>,
     ) -> Result<Outcome> {
         let Self {
             guard,
@@ -182,8 +192,8 @@ impl Installer {
         let supervisor = Supervisor::listen()?;
         // Written before anything starts, so a crash can never leave something
         // running that nothing records.
-        runtime.write_operation(&record)?;
-        let child = match command(&launch, output).and_then(|mut command| {
+        write_operation(&runtime, &record)?;
+        let mut child = match command(&launch, output).and_then(|mut command| {
             command
                 .spawn()
                 .context(|| format!("failed to start {}", launch.runner.launcher()))
@@ -199,14 +209,49 @@ impl Installer {
         record.group = Some(child.id());
         record.boot_id = process::boot_id();
         record.leader_start = process::start_time(child.id());
-        if let Err(err) = runtime.write_operation(&record) {
-            watched(Watched::Notice(Notice::Warning(err)));
+        if let Err(err) = write_operation(&runtime, &record) {
+            let cleanup = launch.runner.kill_owned(
+                &launch.prefix,
+                record.group,
+                record.boot_id.as_deref(),
+                record.leader_start,
+            );
+            let _ = child.kill();
+            let exit_code = child.wait().ok().map(crate::runtime::exit_code);
+            let settled = match cleanup {
+                Ok(process::GroupOwnership::Owned | process::GroupOwnership::Gone) => {
+                    settle(&record, GIVE_UP)
+                }
+                Ok(process::GroupOwnership::Unknown) => Err(Error::Unsettled(
+                    "installer process ownership could not be confirmed".to_owned(),
+                )),
+                Err(cleanup) => Err(cleanup),
+            };
+            return match settled {
+                Ok(()) => match runtime.clear_operation() {
+                    Ok(()) => Err(err),
+                    Err(cleanup) => Ok(Outcome::Unresolved {
+                        exit_code,
+                        canceled: false,
+                        error: cleanup,
+                    }),
+                },
+                Err(cleanup) => Ok(Outcome::Unresolved {
+                    exit_code,
+                    canceled: false,
+                    error: Error::Unsettled(format!(
+                        "failed to save installer process identity: {err}; {cleanup}"
+                    )),
+                }),
+            };
         }
 
         let ending = supervisor.watch(
             &launch.runner,
             &launch.prefix,
             record.group,
+            record.boot_id.clone(),
+            record.leader_start,
             child,
             stop_timeout,
             Settle::Confirmed,
@@ -282,6 +327,8 @@ pub enum Cleaned {
     Gone,
     /// It recorded no process group, so there was nothing to signal.
     Untracked,
+    /// Its identity or cleanup could not be confirmed, so the record remains.
+    Unresolved,
 }
 
 /// Stops whatever an installer left running when it could not confirm that
@@ -302,60 +349,63 @@ pub fn clean_up(
     let Some(target) = cleanup_target(paths, global, name, &runtime)? else {
         return Ok(None);
     };
-    // Wine is stopped through the prefix's own wineserver, which is always
-    // safe. Proton is stopped through the process group, which has to still
-    // be the installer's.
-    let cleaned = if target.runner.is_proton() && !target.group_is_ours() {
-        Cleaned::Gone
-    } else {
-        match target.runner.kill(&target.prefix, target.group)? {
-            Killed::Done => Cleaned::Stopped,
-            Killed::Gone => Cleaned::Gone,
-            Killed::Untracked => Cleaned::Untracked,
+    let cleaned = match target.group_ownership() {
+        process::GroupOwnership::Unknown => return Ok(Some(Cleaned::Unresolved)),
+        process::GroupOwnership::Gone => {
+            settle(&target, timeout)?;
+            Cleaned::Gone
+        }
+        process::GroupOwnership::Owned => {
+            match target.runner.kill_owned(
+                &target.prefix,
+                target.group,
+                target.boot_id.as_deref(),
+                target.leader_start,
+            )? {
+                process::GroupOwnership::Unknown => return Ok(Some(Cleaned::Unresolved)),
+                process::GroupOwnership::Gone => {
+                    settle(&target, timeout)?;
+                    Cleaned::Gone
+                }
+                process::GroupOwnership::Owned => {
+                    settle(&target, timeout)?;
+                    Cleaned::Stopped
+                }
+            }
         }
     };
-    if cleaned == Cleaned::Stopped {
-        settle(&target, timeout)?;
-    }
     runtime.clear_operation()?;
     Ok(Some(cleaned))
 }
 
-/// What a cleanup acts on: the record, or when it can't be read, the
-/// environment's current runner and prefix with no process group, which is
-/// still enough to stop everything in a wine prefix.
+/// The record cleanup acts on. An unreadable record cannot identify what is
+/// safe to stop, so it remains unresolved.
 fn cleanup_target(
-    paths: &Paths,
-    global: &GlobalConfig,
-    name: &str,
+    _paths: &Paths,
+    _global: &GlobalConfig,
+    _name: &str,
     runtime: &Runtime,
 ) -> Result<Option<OperationState>> {
-    match runtime.read_operation() {
-        Ok(record) => Ok(record),
-        Err(Error::StateSyntax { .. }) => {
-            let environment = Environment::load(paths, name)?;
-            Ok(Some(OperationState {
-                operation: Operation::Install,
-                program: String::new(),
-                runner: Runners::new(paths, global)?.resolve(&environment.config.runner)?,
-                prefix: environment.prefix(paths)?,
-                pid: None,
-                group: None,
-                boot_id: None,
-                leader_start: None,
-                started_at: Timestamp::now(),
-            }))
-        }
-        Err(err) => Err(err),
-    }
+    runtime.read_operation()
 }
 
 /// Waits for a kill to take, giving up after `timeout` rather than hanging.
 fn settle(record: &OperationState, timeout: Duration) -> Result<()> {
     let (sender, settled) = mpsc::channel();
-    let (runner, prefix, group) = (record.runner.clone(), record.prefix.clone(), record.group);
+    let (runner, prefix, group, boot_id, leader_start) = (
+        record.runner.clone(),
+        record.prefix.clone(),
+        record.group,
+        record.boot_id.clone(),
+        record.leader_start,
+    );
     thread::spawn(move || {
-        let _ = sender.send(runner.wait_settled(&prefix, group));
+        let _ = sender.send(runner.wait_settled_owned(
+            &prefix,
+            group,
+            boot_id.as_deref(),
+            leader_start,
+        ));
     });
     settled
         .recv_timeout(timeout)
@@ -370,13 +420,14 @@ mod tests {
     use super::*;
     use crate::runner::Runner;
 
-    fn runtime(root: &Path) -> Runtime {
+    fn paths(root: &Path) -> Paths {
         let home = root.to_owned();
-        let paths = Paths::from_lookup(move |key| {
-            (key == "HOME").then(|| OsString::from(home.as_os_str()))
-        })
-        .unwrap();
-        Runtime::new(&paths, "hades")
+        Paths::from_lookup(move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())))
+            .unwrap()
+    }
+
+    fn runtime(root: &Path) -> Runtime {
+        Runtime::new(&paths(root), "hades")
     }
 
     fn installer(root: &Path, wine: &str) -> Installer {
@@ -430,6 +481,95 @@ mod tests {
     }
 
     #[test]
+    fn a_post_spawn_identity_write_failure_stops_the_live_child_before_returning() {
+        let root = tempfile::tempdir().unwrap();
+        let mut installer = installer(root.path(), "/bin/sleep");
+        installer.launch.args = vec!["30".to_owned()];
+        let mut writes = 0;
+        let mut identity = None;
+        let error = installer
+            .run_with_writer(
+                Duration::from_secs(1),
+                Output::Inherit,
+                |_| {},
+                |runtime, state| {
+                    writes += 1;
+                    if writes == 1 {
+                        runtime.write_operation(state)
+                    } else {
+                        identity = Some((state.group, state.boot_id.clone(), state.leader_start));
+                        Err(Error::Unsettled(
+                            "injected identity write failure".to_owned(),
+                        ))
+                    }
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "injected identity write failure");
+        assert_eq!(writes, 2);
+        assert!(runtime(root.path()).read_operation().unwrap().is_none());
+        let (Some(group), Some(boot), Some(leader_start)) = identity.unwrap() else {
+            panic!("the launched child's full identity should be available");
+        };
+        assert_eq!(
+            process::group_ownership(Some(group), Some(&boot), Some(leader_start)),
+            process::GroupOwnership::Gone
+        );
+    }
+
+    #[test]
+    fn a_post_spawn_identity_write_failure_keeps_unsettled_work_blocked() {
+        let root = tempfile::tempdir().unwrap();
+        let mut installer = installer(root.path(), "/bin/sh");
+        let started = root.path().join("child-started");
+        installer.launch.args = vec![
+            "-c".to_owned(),
+            format!("sleep 1 & echo ready > '{}'; wait", started.display()),
+        ];
+        let mut writes = 0;
+        let mut group = None;
+        let outcome = installer
+            .run_with_writer(
+                Duration::from_secs(1),
+                Output::Inherit,
+                |_| {},
+                |runtime, state| {
+                    writes += 1;
+                    if writes == 1 {
+                        runtime.write_operation(state)
+                    } else {
+                        group = state.group;
+                        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                        while !started.exists() && std::time::Instant::now() < deadline {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(Error::Unsettled(
+                            "injected identity write failure".to_owned(),
+                        ))
+                    }
+                },
+            )
+            .unwrap();
+
+        assert!(matches!(outcome, Outcome::Unresolved { .. }), "{outcome:?}");
+        let runtime = runtime(root.path());
+        assert!(runtime.read_operation().unwrap().is_some());
+        assert!(matches!(
+            runtime.check_resolved("hades"),
+            Err(Error::Unresolved(_))
+        ));
+        let group = group.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while process::group_has_live_members(group) != Some(false)
+            && std::time::Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(process::group_has_live_members(group), Some(false));
+    }
+
+    #[test]
     fn output_can_go_to_a_log_that_each_run_replaces() {
         let root = tempfile::tempdir().unwrap();
         let log = root.path().join("state/install.log");
@@ -476,5 +616,62 @@ mod tests {
         runtime.clear_operation().unwrap();
         runtime.clear_operation().unwrap();
         assert!(runtime.check_resolved("hades").is_ok());
+    }
+
+    #[test]
+    fn cleanup_keeps_an_old_identity_unresolved_and_blocked() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let runtime = Runtime::new(&paths, "hades");
+        let record = OperationState {
+            operation: Operation::Install,
+            program: "setup.exe".to_owned(),
+            runner: Runner::fake("wine"),
+            prefix: root.path().join("prefix-alias"),
+            pid: Some(1234),
+            group: Some(1234),
+            boot_id: None,
+            leader_start: None,
+            started_at: Timestamp::now(),
+        };
+        runtime.write_operation(&record).unwrap();
+
+        let result = clean_up(
+            &paths,
+            &GlobalConfig::default(),
+            "hades",
+            Duration::from_secs(1),
+        )
+        .unwrap();
+
+        assert_eq!(result, Some(Cleaned::Unresolved));
+        assert!(runtime.read_operation().unwrap().is_some());
+        assert!(matches!(
+            runtime.check_resolved("hades"),
+            Err(Error::Unresolved(_))
+        ));
+    }
+
+    #[test]
+    fn cleanup_does_not_remove_an_unreadable_operation_record() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let runtime = Runtime::new(&paths, "hades");
+        fs::create_dir_all(runtime.dir()).unwrap();
+        let text = "not toml [";
+        fs::write(runtime.dir().join("operation.toml"), text).unwrap();
+
+        let result = clean_up(
+            &paths,
+            &GlobalConfig::default(),
+            "hades",
+            Duration::from_secs(1),
+        );
+
+        assert!(matches!(result, Err(Error::StateSyntax { .. })));
+        assert_eq!(
+            fs::read_to_string(runtime.dir().join("operation.toml")).unwrap(),
+            text
+        );
     }
 }

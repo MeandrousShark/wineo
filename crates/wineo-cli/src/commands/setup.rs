@@ -67,13 +67,41 @@ pub(crate) enum Ran {
     Ended(ExitCode),
 }
 
+/// Recovery guidance after an error that happened after environment creation.
+/// A retained operation record means setup cannot use the prefix yet.
+pub(crate) fn recovery_message(paths: &Paths, name: &str) -> String {
+    let runtime = Runtime::new(paths, name);
+    let status = runtime.status();
+    if runtime.check_resolved(name).is_err()
+        || status.as_ref().is_err()
+        || status.as_ref().is_ok_and(|status| status.lost)
+    {
+        format!("Kept {name}. Clean up first with `wineo stop {name}`.")
+    } else if status.is_ok_and(|status| status.state == wineo_core::runtime::State::Running) {
+        format!("Kept {name}. Stop it first with `wineo stop {name}`.")
+    } else {
+        format!("Kept {name}. Continue with `wineo setup {name}`.")
+    }
+}
+
+pub(crate) fn report_recovery<I: Input, W: Write>(
+    paths: &Paths,
+    name: &str,
+    prompt: &mut Prompt<I, W>,
+) -> anyhow::Result<()> {
+    prompt.say(recovery_message(paths, name))?;
+    Ok(())
+}
+
 pub(crate) fn setup<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
     name: &str,
     prompt: &mut Prompt<I, W>,
 ) -> anyhow::Result<ExitCode> {
-    offer_cleanup(paths, global, name, prompt)?;
+    if !offer_cleanup(paths, global, name, prompt)? {
+        return Ok(ExitCode::FAILURE);
+    }
     let environment = Environment::load(paths, name)?;
     let dir = environment.prefix(paths)?;
     let place = Place {
@@ -201,16 +229,19 @@ fn offer_cleanup<I: Input, W: Write>(
     global: &GlobalConfig,
     name: &str,
     prompt: &mut Prompt<I, W>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
+    if !check_run_recovery(paths, name, prompt)? {
+        return Ok(false);
+    }
     if let Some(operation) = Locks::new(paths).busy_with(name)? {
         prompt.say(format!(
             "{name} is busy: {}. Its targets can still be changed.",
             operation.describe()
         ))?;
-        return Ok(());
+        return Ok(true);
     }
     if Runtime::new(paths, name).check_resolved(name).is_ok() {
-        return Ok(());
+        return Ok(true);
     }
     let heading = format!("{name}'s last installer didn't finish cleanly.");
     let choices = numbered([
@@ -218,22 +249,70 @@ fn offer_cleanup<I: Input, W: Write>(
         ("Leave it for now".to_owned(), false),
     ]);
     if prompt.choose(&heading, "Choice", &choices, Some("1"), false)? != Reply::Value(true) {
-        return Ok(());
+        prompt.say(format!(
+            "Cleanup remains unresolved. Run `wineo stop {name}` before scanning or running anything in the prefix."
+        ))?;
+        return Ok(false);
     }
     let timeout = Duration::from_secs(u64::from(global.stop_timeout) + 10);
     match installer::clean_up(paths, global, name, timeout) {
         Ok(Some(Cleaned::Stopped)) => prompt.say("Stopped what it left running.")?,
         Ok(Some(Cleaned::Gone)) => prompt.say("What it started had already exited.")?,
         Ok(Some(Cleaned::Untracked)) => {
-            prompt.say("It recorded nothing to stop, so check the prefix yourself.")?;
+            prompt.say(format!(
+                "Cleanup is unresolved: the installer recorded no process group. Check the prefix, then remove {} only after confirming nothing it started is still running.",
+                Runtime::new(paths, name).operation_path().display()
+            ))?;
+            return Ok(false);
+        }
+        Ok(Some(Cleaned::Unresolved)) => {
+            prompt.say(format!(
+                "Cleanup is unresolved because ownership could not be confirmed. Check the prefix, then remove {} only after confirming nothing it started is still running.",
+                Runtime::new(paths, name).operation_path().display()
+            ))?;
+            return Ok(false);
         }
         Ok(None) => {}
-        Err(err) => prompt.say(format!(
-            "Could not clean up after it: {:#}. Try `wineo stop {name}`",
-            anyhow::Error::from(err)
-        ))?,
+        Err(err) => {
+            prompt.say(format!(
+                "Could not clean up after it: {:#}. Try `wineo stop {name}`",
+                anyhow::Error::from(err)
+            ))?;
+            return Ok(false);
+        }
     }
-    Ok(())
+    if !check_run_recovery(paths, name, prompt)? {
+        return Ok(false);
+    }
+    if Runtime::new(paths, name).check_resolved(name).is_err() {
+        prompt.say(format!(
+            "Cleanup remains unresolved. Run `wineo stop {name}` before scanning or running anything in the prefix."
+        ))?;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn check_run_recovery<I: Input, W: Write>(
+    paths: &Paths,
+    name: &str,
+    prompt: &mut Prompt<I, W>,
+) -> anyhow::Result<bool> {
+    match Runtime::new(paths, name).status() {
+        Ok(status) if status.lost => {
+            prompt.say(format!(
+                "{name}'s last run is unresolved. Run `wineo stop {name}` before scanning or running anything in the prefix."
+            ))?;
+            Ok(false)
+        }
+        Err(err) => {
+            prompt.say(format!(
+                "Could not read {name}'s run state: {err:#}. Run `wineo stop {name}` before scanning or running anything in the prefix."
+            ))?;
+            Ok(false)
+        }
+        _ => Ok(true),
+    }
 }
 
 fn list<I: Input, W: Write>(prompt: &mut Prompt<I, W>, batch: &Batch) -> anyhow::Result<()> {
@@ -390,7 +469,13 @@ fn install<I: Input, W: Write>(
         Ok(installer) => installer,
         Err(err) => {
             prompt.say(format!("{:#}", anyhow::Error::from(err)))?;
-            return Ok(Ran::Back);
+            let resolved = Runtime::new(paths, name).check_resolved(name).is_ok();
+            report_recovery(paths, name, prompt)?;
+            return if resolved {
+                Ok(Ran::Back)
+            } else {
+                Ok(Ran::Ended(ExitCode::FAILURE))
+            };
         }
     };
     run_installer(paths, global, name, prompt, installer)
@@ -438,17 +523,21 @@ pub(crate) fn run_installer<I: Input, W: Write>(
     );
     // Those were the installer's to act on, not a request to leave setup.
     prompt.input().forget_interrupts();
-    let kept = format!("Kept {name}. Continue with `wineo setup {name}`.");
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(err) => {
             prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
-            prompt.say(kept)?;
+            report_recovery(paths, name, prompt)?;
             return Ok(Ran::Ended(ExitCode::FAILURE));
         }
     };
     Ok(match outcome {
         Outcome::Finished { exit_code: Some(0) } => {
+            if Runtime::new(paths, name).check_resolved(name).is_err() {
+                prompt.say("The installer finished, but cleanup is unresolved.")?;
+                report_recovery(paths, name, prompt)?;
+                return Ok(Ran::Ended(ExitCode::FAILURE));
+            }
             prompt.say("The installer finished and the prefix is idle.")?;
             Ran::Finished
         }
@@ -457,14 +546,16 @@ pub(crate) fn run_installer<I: Input, W: Write>(
                 Some(code) => prompt.say(format!("The installer exited with code {code}."))?,
                 None => prompt.say("The installer's exit code could not be collected.")?,
             }
-            prompt.say(format!("Its output is in {shown_log}. {kept}"))?;
+            prompt.say(format!("Its output is in {shown_log}."))?;
+            report_recovery(paths, name, prompt)?;
             let code = exit_code
                 .and_then(|code| u8::try_from(code).ok())
                 .unwrap_or(1);
             Ran::Ended(ExitCode::from(code))
         }
         Outcome::Canceled { .. } => {
-            prompt.say(format!("The installer was canceled. {kept}"))?;
+            prompt.say("The installer was canceled.")?;
+            report_recovery(paths, name, prompt)?;
             Ran::Ended(ExitCode::from(CANCELED))
         }
         Outcome::Unresolved {
@@ -479,7 +570,7 @@ pub(crate) fn run_installer<I: Input, W: Write>(
                 Some(code) => prompt.say(format!("The installer exited with code {code}."))?,
                 None => {}
             }
-            prompt.say(format!("Kept {name}. Clean up with `wineo stop {name}`."))?;
+            report_recovery(paths, name, prompt)?;
             Ran::Ended(ExitCode::FAILURE)
         }
     })

@@ -313,9 +313,65 @@ fn stop_cleans_up_after_a_dead_supervisor() {
 }
 
 #[test]
-fn a_corrupt_state_file_does_not_block_start_stop_or_logs() {
+fn an_untracked_lost_run_stays_blocked_without_signaling_its_group() {
     let f = Fixture::new();
     f.environment("app", APP);
+    f.environment("other", APP);
+    assert_success(&f.run(&["start", "app"]));
+    wait_for("the program to start", || f.fake_program_running("app"));
+
+    let supervisor = f.runtime("app").holder_pid().unwrap().unwrap();
+    let killed = Command::new("kill")
+        .args(["-KILL", &supervisor.to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    wait_for("the run lock to be released", || {
+        !f.runtime("app").is_running().unwrap()
+    });
+
+    let state_path = f.runtime("app").dir().join("state.toml");
+    let current = fs::read_to_string(&state_path).unwrap();
+    let legacy = current
+        .lines()
+        .filter(|line| {
+            !line.starts_with("boot_id = ")
+                && !line.starts_with("leader_start = ")
+                && !line.starts_with("prefix = ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&state_path, legacy).unwrap();
+
+    let stopped = f.run(&["stop", "app"]);
+    let still_running = f.fake_program_running("app");
+    let still_lost = f.state("app").contains("status = \"running\"");
+    let refused = f.run(&["start", "app"]);
+    let other = f.run(&["exec", "other", "exit-0"]);
+
+    fs::write(&state_path, current).unwrap();
+    let cleanup = f.run(&["stop", "app"]);
+    let stopped_running = !f.fake_program_running("app");
+    assert!(!stopped.status.success());
+    assert!(
+        stderr(&stopped).contains("could not confirm ownership"),
+        "{}",
+        stderr(&stopped)
+    );
+    assert!(still_running, "stop signaled an untracked group");
+    assert!(still_lost);
+    assert!(!refused.status.success());
+    assert_success(&other);
+    assert_success(&cleanup);
+    assert!(stopped_running);
+    assert!(f.state("app").contains("status = \"stopped\""));
+}
+
+#[test]
+fn a_corrupt_state_file_keeps_lost_run_cleanup_blocked() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    f.environment("other", APP);
     let state = f.runtime("app").dir().join("state.toml");
     fs::create_dir_all(state.parent().unwrap()).unwrap();
     fs::write(&state, "").unwrap();
@@ -325,16 +381,20 @@ fn a_corrupt_state_file_does_not_block_start_stop_or_logs() {
     assert_success(&logs);
     assert_eq!(stdout(&logs), "old output\n");
     let stopped = f.run(&["stop", "app"]);
-    assert_success(&stopped);
+    assert!(!stopped.status.success());
     assert!(
-        stderr(&stopped).contains("invalid state file"),
+        stderr(&stopped).contains("state") && stderr(&stopped).contains("remove"),
         "{}",
         stderr(&stopped)
     );
+    let started = f.run(&["start", "app"]);
+    assert!(!started.status.success());
+    assert!(!f.fake_program_running("app"));
+    assert_success(&f.run(&["exec", "other", "exit-0"]));
 
+    fs::remove_file(&state).unwrap();
     assert_success(&f.run(&["start", "app"]));
     wait_for("the program to start", || f.fake_program_running("app"));
-    fs::write(&state, "").unwrap();
     let stopped = f.run(&["stop", "app"]);
     assert_success(&stopped);
     assert_eq!(stdout(&stopped), "Stopped app\n");
@@ -1404,13 +1464,13 @@ fn a_lost_run_that_recorded_no_group_says_it_cant_be_cleaned_up() {
     assert!(runtime.status().unwrap().lost);
 
     let stopped = f.run(&["stop", "hades"]);
-    assert_success(&stopped);
+    assert!(!stopped.status.success());
     assert!(
-        stderr(&stopped).contains("too old to record what to kill"),
+        stderr(&stopped).contains("could not confirm ownership"),
         "{}",
         stderr(&stopped)
     );
-    assert!(f.state("hades").contains("status = \"stopped\""));
+    assert!(f.state("hades").contains("status = \"running\""));
 }
 
 #[test]
@@ -1995,6 +2055,53 @@ fn an_installers_exit_code_is_passed_on_and_the_environment_kept() {
 }
 
 #[test]
+fn new_reports_recovery_when_the_installer_disappears_after_registration() {
+    let f = Fixture::new();
+    let installer = f.root.path().join("installer.exe");
+    fs::write(&installer, b"").unwrap();
+    let installer_arg = installer.to_str().unwrap();
+    let output = f
+        .new_with_installer("game", &[], installer_arg)
+        .env("WINEO_TEST_REMOVE_INSTALLER", &installer)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let text = stderr(&output);
+    assert!(text.contains("does not exist"), "{text}");
+    assert!(
+        text.contains("Kept game. Continue with `wineo setup game`."),
+        "{text}"
+    );
+    assert!(f.created_config("game").contains("runner = \"wine\""));
+    assert!(f.prefix("game").join("system.reg").is_file());
+    assert!(!f.installer_recorded("game"));
+}
+
+#[test]
+fn new_reports_recovery_when_the_installer_cannot_spawn_after_registration() {
+    let f = Fixture::new();
+    let installer = f.root.path().join("installer.exe");
+    fs::write(&installer, b"").unwrap();
+    let output = f
+        .new_with_installer("game", &[], installer.to_str().unwrap())
+        .env("WINEO_TEST_REMOVE_WINE", f.root.path().join("bin/wine"))
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let text = stderr(&output);
+    assert!(text.contains("failed to start wine"), "{text}");
+    assert!(
+        text.contains("Kept game. Continue with `wineo setup game`."),
+        "{text}"
+    );
+    assert!(f.created_config("game").contains("runner = \"wine\""));
+    assert!(f.prefix("game").join("system.reg").is_file());
+    assert!(!f.installer_recorded("game"));
+}
+
+#[test]
 fn ctrl_c_cancels_an_installer_and_keeps_the_environment() {
     let f = Fixture::new();
     let child = f
@@ -2023,7 +2130,8 @@ fn ctrl_c_cancels_an_installer_and_keeps_the_environment() {
         "{text}"
     );
     assert!(
-        text.contains("Installer canceled. Continue with `wineo setup game`."),
+        text.contains("Installer canceled.")
+            && text.contains("Kept game. Continue with `wineo setup game`."),
         "{text}"
     );
     assert!(!f.fake_program_running("game"));
@@ -2325,9 +2433,10 @@ fn winetricks_refuses_before_touching_the_prefix() {
 }
 
 #[test]
-fn an_unreadable_installer_record_is_still_cleaned_up() {
+fn an_unreadable_installer_record_stays_blocked_until_manual_cleanup() {
     let f = Fixture::new();
     f.environment("app", APP);
+    f.environment("other", APP);
     record_unresolved(&f, "app", "");
 
     let refused = f.run(&["start", "app"]);
@@ -2338,10 +2447,20 @@ fn an_unreadable_installer_record_is_still_cleaned_up() {
         stderr(&refused)
     );
 
-    // With nothing to read, the environment's own runner and prefix are used.
     let stopped = f.run(&["stop", "app"]);
-    assert_success(&stopped);
-    assert!(!f.installer_recorded("app"));
+    assert!(!stopped.status.success());
+    assert!(stderr(&stopped).contains("delete"), "{}", stderr(&stopped));
+    assert!(
+        stderr(&stopped).contains("operation.toml"),
+        "{}",
+        stderr(&stopped)
+    );
+    assert!(f.installer_recorded("app"));
+    let still_blocked = f.run(&["exec", "app", "exit-0"]);
+    assert!(!still_blocked.status.success());
+    assert_success(&f.run(&["exec", "other", "exit-0"]));
+
+    fs::remove_file(f.runtime("app").operation_path()).unwrap();
     assert_success(&f.run(&["exec", "app", "exit-0"]));
 }
 
@@ -2417,8 +2536,18 @@ fn set_leaves_icons_for_later_while_an_installer_is_unresolved() {
     );
     assert!(!prefix.join("menubuilder.log").exists());
 
-    // Once nothing is unresolved, the next change tries for the icon again.
-    assert_success(&f.run(&["stop", "app"]));
+    // An unreadable record stays blocked until someone confirms cleanup.
+    let stopped = f.run(&["stop", "app"]);
+    assert!(!stopped.status.success());
+    assert!(
+        stderr(&stopped).contains("operation.toml"),
+        "{}",
+        stderr(&stopped)
+    );
+    assert!(f.installer_recorded("app"));
+
+    // This fixture has no installer process, so manual cleanup is safe.
+    fs::remove_file(f.runtime("app").operation_path()).unwrap();
     assert_success(&f.run(&["set", "app", "targets.game.name=Game"]));
     assert!(prefix.join("menubuilder.log").exists());
 }

@@ -4,15 +4,15 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use rustix::io::Errno;
-use rustix::process::{Pid, Signal, kill_process, setsid};
+use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process, setsid, waitid};
 use serde::{Deserialize, Serialize};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
 use signal_hook::iterator::{Handle, Signals};
@@ -34,6 +34,7 @@ const KILL_RETRY: Duration = Duration::from_secs(1);
 
 enum Event {
     Exited(io::Result<ExitStatus>),
+    WaitFailed(Error),
     Idle(Result<()>),
     Stop,
     Force,
@@ -137,6 +138,8 @@ impl Supervisor {
             &launch.runner,
             &launch.prefix,
             group,
+            state.boot_id.clone(),
+            state.leader_start,
             child,
             stop_timeout,
             Settle::Idle,
@@ -151,6 +154,13 @@ impl Supervisor {
                 Watched::Notice(notice) => notify(notice),
             },
         );
+
+        if let Err(error) = ending.settled {
+            // Keep the run marked live so ordinary commands cannot pass a
+            // process we failed to observe or settle.
+            runtime.write_state(state)?;
+            return Err(error);
+        }
 
         // Exit codes can't tell a kill from a normal exit, so a stop is only
         // known from the request.
@@ -174,6 +184,8 @@ impl Supervisor {
         runner: &Runner,
         prefix: &Path,
         group: Option<u32>,
+        boot_id: Option<String>,
+        leader_start: Option<u64>,
         mut child: Child,
         stop_timeout: Duration,
         settle: Settle,
@@ -181,11 +193,58 @@ impl Supervisor {
         mut watched: impl FnMut(Watched),
     ) -> Ending {
         let sender = self.sender.clone();
+        let (reap, release_child) = mpsc::channel();
+        let (reaped, child_reaped) = mpsc::channel::<()>();
         thread::spawn(move || {
-            let _ = sender.send(Event::Exited(child.wait()));
+            let pid = i32::try_from(child.id()).ok().and_then(Pid::from_raw);
+            if let Some(pid) = pid {
+                loop {
+                    match release_child.try_recv() {
+                        Ok(()) => {
+                            let _ = child.wait();
+                            let _ = reaped.send(());
+                            return;
+                        }
+                        Err(TryRecvError::Disconnected) => return,
+                        Err(TryRecvError::Empty) => {}
+                    }
+                    match waitid(
+                        WaitId::Pid(pid),
+                        WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+                    ) {
+                        Ok(Some(status)) => {
+                            let _ = sender.send(Event::Exited(Ok(wait_status(status))));
+                            break;
+                        }
+                        Ok(None) => thread::sleep(Duration::from_millis(20)),
+                        Err(err) => {
+                            let err = io::Error::from(err);
+                            if err.kind() == io::ErrorKind::Interrupted {
+                                continue;
+                            }
+                            let _ = sender.send(Event::WaitFailed(Error::Io {
+                                context: "failed to inspect the launched process".to_owned(),
+                                source: err,
+                            }));
+                            return;
+                        }
+                    }
+                }
+            } else {
+                let _ = sender.send(Event::WaitFailed(Error::Unsettled(
+                    "invalid child process id".to_owned(),
+                )));
+                return;
+            }
+            if release_child.recv().is_err() {
+                return;
+            }
+            let _ = child.wait();
+            let _ = reaped.send(());
         });
 
         let mut exit = None;
+        let mut observed_exit = false;
         let mut stopping = false;
         let mut killing_since: Option<Instant> = None;
         // Tells when the request to close is done, since it runs wine too.
@@ -210,30 +269,44 @@ impl Supervisor {
             };
             match event {
                 Event::Exited(status) => {
+                    observed_exit = true;
                     exit = status.ok().map(exit_code);
                     watched(Watched::Exited(exit));
                     // Launchers often hand off to another process and exit, so
                     // this lasts until nothing is left running in the prefix.
                     let sender = self.sender.clone();
-                    let (runner, prefix) = (runner.clone(), prefix.to_owned());
+                    let (runner, prefix, boot_id) =
+                        (runner.clone(), prefix.to_owned(), boot_id.clone());
                     thread::spawn(move || {
                         let result = match settle {
                             Settle::Idle => runner.wait_idle(&prefix),
-                            Settle::Confirmed => runner.wait_settled(&prefix, group),
+                            Settle::Confirmed => runner.wait_settled_live(
+                                &prefix,
+                                group,
+                                boot_id.as_deref(),
+                                leader_start,
+                            ),
                         };
                         let _ = sender.send(Event::Idle(result));
                     });
                 }
+                Event::WaitFailed(error) => break Err(error),
                 Event::Idle(result) => break result,
                 Event::Stop if !stopping => {
                     stopping = true;
                     deadline = Some(Instant::now() + stop_timeout);
                     watched(Watched::Notice(Notice::Stopping));
-                    let (runner, prefix) = (runner.clone(), prefix.to_owned());
+                    let (runner, prefix, boot_id) =
+                        (runner.clone(), prefix.to_owned(), boot_id.clone());
                     let (done, ended) = mpsc::channel();
                     ending_session = Some(ended);
                     thread::spawn(move || {
-                        let _ = runner.end_session(&prefix, group);
+                        let _ = runner.end_session_live(
+                            &prefix,
+                            group,
+                            boot_id.as_deref(),
+                            leader_start,
+                        );
                         let _ = done.send(());
                     });
                 }
@@ -248,8 +321,17 @@ impl Supervisor {
                     {
                         break Err(Error::StillRunning((stop_timeout + limit).as_secs().max(1)));
                     }
-                    if let Err(err) = runner.kill(prefix, group) {
-                        watched(Watched::Notice(Notice::Warning(err)));
+                    match runner.kill_live(prefix, group, boot_id.as_deref(), leader_start) {
+                        Ok(
+                            crate::process::GroupOwnership::Owned
+                            | crate::process::GroupOwnership::Gone,
+                        ) => {}
+                        Ok(crate::process::GroupOwnership::Unknown) => {
+                            watched(Watched::Notice(Notice::Warning(Error::Unsettled(
+                                "process-group ownership could not be confirmed".to_owned(),
+                            ))))
+                        }
+                        Err(err) => watched(Watched::Notice(Notice::Warning(err))),
                     }
                     deadline = Some(Instant::now() + KILL_RETRY);
                 }
@@ -260,12 +342,27 @@ impl Supervisor {
         if let Some(ended) = ending_session {
             let _ = ended.recv_timeout(stop_timeout.max(KILL_RETRY));
         }
+        if observed_exit {
+            let _ = reap.send(());
+            let _ = child_reaped.recv();
+        }
         Ending {
             exit_code: exit,
             stopped: stopping,
             settled,
         }
     }
+}
+
+fn wait_status(status: rustix::process::WaitIdStatus) -> ExitStatus {
+    let raw = if let Some(code) = status.exit_status() {
+        code << 8
+    } else if let Some(signal) = status.terminating_signal() {
+        signal | i32::from(status.dumped()) << 7
+    } else {
+        0
+    };
+    ExitStatus::from_raw(raw)
 }
 
 impl Drop for Supervisor {
@@ -458,6 +555,9 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         &spec.overrides,
     );
     state.runner = Some(spec.launch.runner.clone());
+    state.prefix = Some(spec.launch.prefix.clone());
+    state.boot_id = crate::process::boot_id();
+    state.leader_start = crate::process::start_time(child.id());
     if let Err(err) = runtime.write_state(&state) {
         log_notice(&log, Notice::Warning(err));
     }

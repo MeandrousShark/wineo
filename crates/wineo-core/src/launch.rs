@@ -189,7 +189,7 @@ fn open(
     global: &GlobalConfig,
     environment: &Environment,
 ) -> Result<(Runner, PathBuf)> {
-    let prefix = environment.prefix(paths)?;
+    let prefix = crate::paths::resolve(&environment.prefix(paths)?);
     let runner = Runners::new(paths, global)?.resolve(&environment.config.runner)?;
     // Wine would silently create a fresh prefix here otherwise.
     if !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
@@ -362,6 +362,7 @@ pub fn merge_env(
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::fs::symlink;
 
     use super::*;
@@ -396,6 +397,39 @@ mod tests {
             paths,
             prefix,
         }
+    }
+
+    #[test]
+    fn launch_snapshots_the_concrete_prefix_while_environment_keeps_its_alias() {
+        let f = fixture();
+        fs::write(f.prefix.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+        let alias = f.prefix.parent().unwrap().join("prefix-alias");
+        symlink(&f.prefix, &alias).unwrap();
+
+        let wine_dir = f.prefix.parent().unwrap().join("runners/fake/bin");
+        fs::create_dir_all(&wine_dir).unwrap();
+        for name in ["wine", "wineserver"] {
+            let path = wine_dir.join(name);
+            fs::write(&path, "#!/bin/sh\n").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let config_text = format!(
+            "prefix = \"{}\"\nrunner = \"fake\"\narch = \"win64\"\n",
+            alias.display()
+        );
+        let environment = Environment {
+            name: "app".to_owned(),
+            path: PathBuf::from("/app.toml"),
+            config: EnvironmentConfig::parse(Path::new("/app.toml"), &config_text).unwrap(),
+        };
+        let mut global = GlobalConfig::default();
+        global.defaults.runner_root = Some("~/runners".to_owned());
+
+        let configured_prefix = environment.prefix(&f.paths).unwrap();
+        let (_, launch_prefix) = open(&f.paths, &global, &environment).unwrap();
+        assert_eq!(configured_prefix, alias);
+        assert_eq!(launch_prefix, f.prefix.canonicalize().unwrap());
     }
 
     fn environment(text: &str) -> Environment {

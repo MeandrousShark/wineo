@@ -2,13 +2,16 @@ mod common;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 
 use common::{Fixture, assert_success};
 use wineo_core::config::{EnvironmentConfig, GlobalConfig};
 use wineo_core::environment::Environment;
 use wineo_core::operation::Operation;
 use wineo_core::paths::Paths;
+use wineo_core::process;
 use wineo_core::report::EnvironmentReport;
 use wineo_core::runners::Runners;
 use wineo_core::runtime::{OperationState, Runtime};
@@ -38,6 +41,23 @@ fn paths(f: &Fixture) -> Paths {
         Some(dir.into_os_string())
     })
     .unwrap()
+}
+
+fn disposable_group() -> Child {
+    Command::new("sleep")
+        .arg("60")
+        .process_group(0)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
+fn stop_child(child: &mut Child) {
+    if child.try_wait().unwrap().is_none() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
 }
 
 #[test]
@@ -218,18 +238,27 @@ fn lost_run_cleanup_uses_its_snapshot_when_the_alias_has_no_candidates() {
         "prefix = \"~/prefix\"\nrunner = \"GE-Proton-Latest\"\narch = \"win64\"\n",
     )
     .unwrap();
+    fs::create_dir_all(f.root.path().join("prefix")).unwrap();
+    let prefix = fs::canonicalize(f.root.path().join("prefix")).unwrap();
+    let mut child = disposable_group();
+    let pid = child.id();
     let mut state = wineo_core::runtime::RunState::running(
         wineo_core::runtime::RunMode::Detached,
         "game".into(),
-        1,
-        None,
+        pid,
+        Some(pid),
         &Default::default(),
     );
     state.runner = Some(runner);
+    state.prefix = Some(prefix);
+    state.boot_id = process::boot_id();
+    state.leader_start = process::start_time(pid);
     let runtime = Runtime::new(&paths, "test");
     runtime.write_state(&state).unwrap();
     fs::remove_dir_all(runner_root(&f)).unwrap();
-    assert_success(&f.run(&["stop", "test"]));
+    let stopped = f.run(&["stop", "test"]);
+    stop_child(&mut child);
+    assert_success(&stopped);
     assert_eq!(
         runtime.read_state().unwrap().unwrap().status,
         wineo_core::runtime::RunStatus::Stopped
@@ -251,20 +280,26 @@ fn installer_cleanup_uses_its_snapshot_when_the_alias_has_no_candidates() {
     )
     .unwrap();
     let runtime = Runtime::new(&paths, "test");
+    fs::create_dir_all(f.root.path().join("prefix")).unwrap();
+    let prefix = fs::canonicalize(f.root.path().join("prefix")).unwrap();
+    let mut child = disposable_group();
+    let pid = child.id();
     runtime
         .write_operation(&OperationState {
             operation: Operation::Install,
             program: "setup.exe".into(),
             runner,
-            prefix: f.root.path().join("prefix"),
-            pid: None,
-            group: None,
-            boot_id: None,
-            leader_start: None,
+            prefix,
+            pid: Some(pid),
+            group: Some(pid),
+            boot_id: process::boot_id(),
+            leader_start: process::start_time(pid),
             started_at: jiff::Timestamp::now(),
         })
         .unwrap();
     fs::remove_dir_all(runner_root(&f)).unwrap();
-    assert_success(&f.run(&["stop", "test"]));
+    let stopped = f.run(&["stop", "test"]);
+    stop_child(&mut child);
+    assert_success(&stopped);
     assert!(runtime.read_operation().unwrap().is_none());
 }

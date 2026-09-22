@@ -226,11 +226,14 @@ mod tests {
     fn run(status: RunStatus, mode: RunMode) -> RunState {
         RunState {
             runner: None,
+            prefix: None,
             status,
             mode,
             target: "notepad".to_owned(),
             pid: 48213,
             group: Some(48213),
+            boot_id: None,
+            leader_start: None,
             started_at: ts("2026-09-16T14:02:11Z"),
             program_exited_at: None,
             ended_at: None,
