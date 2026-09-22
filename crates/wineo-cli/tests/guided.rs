@@ -561,6 +561,10 @@ fn a_missing_build_is_explained_with_a_way_back() {
     pty.send("game");
     pty.expect("Prefix location, or < to go back [");
     pty.send("");
+    pty.expect(
+        "No matching DXVK build is installed. Download the latest release? [Y/n], or < to go back: ",
+    );
+    pty.send("n");
     pty.expect("Can't use the gaming template: no dxvk builds are installed");
     // Nothing that can't work is offered, but going back is.
     pty.expect("  1) Change the runner");

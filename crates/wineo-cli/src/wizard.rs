@@ -361,6 +361,9 @@ fn settings<I: Input, W: Write>(
     let runners = Runners::new(paths, global)?;
     let name = answers.name.clone().expect("named before this");
     let dir = paths.absolute(answers.dir.as_deref().expect("placed before this"))?;
+    // Asked at most once per component, so declining doesn't ask again every
+    // time the loop redraws with the same missing build.
+    let mut offered_download = Vec::new();
     loop {
         let template = answers.template.as_ref().map(|(_, template)| template);
         let from_template = match template {
@@ -377,6 +380,29 @@ fn settings<I: Input, W: Write>(
             .or_else(|| template.and_then(|template| template.arch))
             .unwrap_or(global.defaults.arch);
         let runner = runners.resolve(&runner_name);
+
+        if let Ok(runner) = &runner
+            && let Some(template) = template
+            && let Err(error) = install::check_available(
+                paths,
+                global,
+                &name,
+                runner,
+                &template_wanted(runner, template),
+            )
+            && let Some(component) = components::missing_build_component(&error)
+            && !offered_download.contains(&component)
+        {
+            offered_download.push(component);
+            let question = format!(
+                "No matching {} build is installed. Download the latest release?",
+                component.label()
+            );
+            if components::offer_download(prompt, paths, global, component, &question)? {
+                continue;
+            }
+        }
+
         let problem = match &runner {
             Err(err) => Some(format!("That runner can't be used: {err}")),
             Ok(runner) => combination_problem(paths, global, &name, &dir, runner, arch, answers),
@@ -502,16 +528,22 @@ fn combination_problem(
         return Some(format!("The existing prefix is {adopted}."));
     }
     if let Some((template_name, template)) = &answers.template {
-        let (template, _) = template.for_runner(runner);
-        let wanted = Wanted {
-            dxvk: template.dxvk.clone(),
-            vkd3d: template.vkd3d.clone(),
-        };
+        let wanted = template_wanted(runner, template);
         if let Err(err) = install::check_available(paths, global, name, runner, &wanted) {
             return Some(format!("Can't use the {template_name} template: {err}."));
         }
     }
     None
+}
+
+/// The DXVK/vkd3d-proton a template asks for once fitted to `runner`, ready
+/// to check or offer to download.
+fn template_wanted(runner: &Runner, template: &Template) -> Wanted {
+    let (fitted, _) = template.for_runner(runner);
+    Wanted {
+        dxvk: fitted.dxvk,
+        vkd3d: fitted.vkd3d,
+    }
 }
 
 fn adopted_arch(runner: &Runner, dir: &Path) -> Option<Arch> {
