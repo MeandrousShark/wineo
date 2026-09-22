@@ -469,6 +469,7 @@ fn run_all(
     };
 
     let listing = source.list_candidates()?;
+    println!("Checking {} Heroic games...", listing.candidates.len());
     let existing = existing_environments(paths)?;
     let (rows, ready, already) = classify_candidates(
         paths,
