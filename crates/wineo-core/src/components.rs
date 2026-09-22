@@ -421,6 +421,10 @@ mod tests {
         let message = builds.resolve("nope").unwrap_err().to_string();
         assert!(message.contains("is not installed"), "{message}");
         assert!(message.contains("dxvk"), "{message}");
+        assert!(
+            message.contains("Get one with: wineo download dxvk"),
+            "{message}"
+        );
 
         dxvk(root.path(), "2.7");
         let message = builds.resolve("nope").unwrap_err().to_string();
@@ -506,7 +510,12 @@ mod tests {
             .resolve(LATEST)
             .unwrap_err();
         assert!(matches!(err, Error::NoBuilds { .. }), "{err}");
-        assert!(err.to_string().contains("dxvk"), "{err}");
+        let message = err.to_string();
+        assert!(message.contains("dxvk"), "{message}");
+        assert!(
+            message.contains("Get one with: wineo download dxvk"),
+            "{message}"
+        );
     }
 
     #[test]
