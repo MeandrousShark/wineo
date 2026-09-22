@@ -2057,6 +2057,15 @@ fn sync_block(review: &SettingsReview) -> Option<Block> {
 
 /// The settings that are set for this game, one row each. `-v` also shows
 /// the Heroic fields normally left out.
+/// Proton handles a prefix with both registry layouts, so the conflict
+/// Heroic's reader raises for it is not worth showing before the runner is
+/// picked. It is dropped for real once one is.
+fn covered_prefix_conflict(imported: &HeroicImport, issue: &HeroicIssue) -> bool {
+    imported.runner.kind == HeroicRunnerKind::Proton
+        && issue.kind == HeroicIssueKind::Conflict
+        && issue.field.as_deref() == Some("winePrefix")
+}
+
 fn show_game_summary<I: Input, W: Write>(
     prompt: &mut Prompt<I, W>,
     paths: &Paths,
@@ -2159,7 +2168,7 @@ fn show_game_summary<I: Input, W: Write>(
             matches!(
                 issue.kind,
                 HeroicIssueKind::Missing | HeroicIssueKind::Invalid | HeroicIssueKind::Conflict
-            )
+            ) && !covered_prefix_conflict(imported, issue)
         })
         .map(|issue| style::error(&issue.message))
         .collect();
@@ -3027,6 +3036,12 @@ mod tests {
                     field: Some("battlEyeRuntime".to_owned()),
                     message: "Heroic-managed anti-cheat runtime is not imported".to_owned(),
                 },
+                HeroicIssue {
+                    kind: HeroicIssueKind::Conflict,
+                    field: Some("winePrefix".to_owned()),
+                    message: "prefix contains both direct and nested Proton registry markers"
+                        .to_owned(),
+                },
             ],
             external_dependencies: vec![exe.clone()],
             fingerprint: InputFingerprint {
@@ -3043,6 +3058,7 @@ mod tests {
         assert!(printed.contains("runner       Proton-CachyOS-latest (Heroic's copy)"));
         assert!(printed.contains("gamemode     on"));
         assert!(printed.contains("warning      EAC and BattlEye runtimes aren't imported"));
+        assert!(!printed.contains("registry markers"), "{printed}");
     }
 
     #[test]
