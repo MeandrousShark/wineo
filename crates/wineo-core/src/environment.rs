@@ -3,10 +3,12 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use toml_edit::{DocumentMut, value};
+use toml_edit::{DocumentMut, Value, value};
 
 use crate::config::{Arch, EnvironmentConfig, GlobalConfig};
+use crate::edit;
 use crate::error::{Error, IoContext, Result};
+use crate::files::write_atomic;
 use crate::name;
 use crate::operation::Locks;
 use crate::paths::Paths;
@@ -137,6 +139,37 @@ impl Environment {
 
     pub fn prefix(&self, paths: &Paths) -> Result<PathBuf> {
         paths.absolute(&self.config.prefix)
+    }
+
+    /// Writes `heroic_id` onto an environment's config, keeping the rest of
+    /// the file unchanged. For backfilling environments matched to a Heroic
+    /// game that predate the id being recorded.
+    pub fn record_heroic_id(paths: &Paths, name: &str, heroic_id: &str) -> Result<()> {
+        check_name(name)?;
+        let path = paths.environment_config(name);
+        let _guard = Locks::new(paths).config(&path)?;
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                return Err(Error::UnknownEnvironment(name.to_owned()));
+            }
+            Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
+        };
+        let mut doc: DocumentMut = text.parse().map_err(|source| Error::ConfigParse {
+            path: path.clone(),
+            source: Box::new(source),
+        })?;
+        edit::store_value(
+            doc.as_table_mut(),
+            "heroic_id",
+            Value::from(heroic_id.to_owned()),
+        );
+        let updated = doc.to_string();
+        EnvironmentConfig::parse(&path, &updated)?;
+        if updated != text {
+            write_atomic(&path, &updated)?;
+        }
+        Ok(())
     }
 }
 
@@ -323,6 +356,42 @@ mod tests {
             Err(Error::ArchMismatch { .. })
         ));
         assert!(!paths.environment_config("old").exists());
+    }
+
+    #[test]
+    fn record_heroic_id_preserves_the_rest_of_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let path = paths.environment_config("game");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "# hand written\nprefix = \"~/Games/Game\"\nrunner = \"wine\"\narch = \"win64\"\n",
+        )
+        .unwrap();
+
+        Environment::record_heroic_id(&paths, "game", "abc123").unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# hand written\n"), "{text}");
+        assert!(text.contains("heroic_id = \"abc123\"\n"), "{text}");
+        let config = EnvironmentConfig::parse(&path, &text).unwrap();
+        assert_eq!(config.heroic_id.as_deref(), Some("abc123"));
+
+        // A second write updates the value in place instead of duplicating it.
+        Environment::record_heroic_id(&paths, "game", "def456").unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("heroic_id").count(), 1, "{text}");
+        assert!(text.contains("heroic_id = \"def456\"\n"), "{text}");
+    }
+
+    #[test]
+    fn record_heroic_id_on_unknown_environment_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        assert!(matches!(
+            Environment::record_heroic_id(&paths, "nope", "abc123"),
+            Err(Error::UnknownEnvironment(_))
+        ));
     }
 
     #[test]
