@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0012: QA follow-up for guided setup, imports, and downloads
 
@@ -15,7 +15,7 @@ line numbers. The reviewed ranges were `ee6a6bb..1d76897`,
 
 ## Decisions
 
-Settled by the maintainer during QA triage:
+Settled by the maintainer during QA triage and plan approval:
 
 - Fix 0007 findings 1, 2, 3, 5, and 6.
 - Keep 0007 finding 4 as-is: invalid-name errors should be concise and identify
@@ -26,11 +26,14 @@ Settled by the maintainer during QA triage:
   build; otherwise explain the problem and offer a compatible host runner.
   Portable builds used by Flatpak Heroic remain eligible for copy. Do not add
   sandbox path discovery or a Flatpak launch backend as part of this fix.
-- Investigate 0008 finding 7 (`disableUMU`); findings are recorded in H, but
-  its handling still needs a maintainer decision.
+- For 0008 finding 7 (`disableUMU`), use option 1: report the launcher mismatch
+  through the existing review policy and retain Wineo's UMU-only Proton model.
+  H records the investigation and selected handling.
 - Fix all twelve 0009 findings.
-- Draft this plan before implementation. The remediation designs below remain
-  proposals until the maintainer approves the plan.
+- The maintainer approved this plan using the recommended solutions. Preserve
+  manual recovery when process ownership is uncertain and report success for
+  cancellation after atomic publication. For a missing pinned component,
+  offer an explicit download of that exact version and resume the operation.
 
 Preserve the earlier decisions on copied versus adopted prefixes, external
 game files staying in place, reviewed target batches, retained completed
@@ -55,10 +58,10 @@ which keys invoke cancel or back is not.
 | 0008.1 | Fix | C: publication decides download success |
 | 0008.2 | Fix | D: home expansion for edited exe/cwd paths |
 | 0008.3 | Fix | D: shared-prefix disclosure |
-| 0008.4 | Fix, option 1 selected | H: validate copying or offer a host runner |
+| 0008.4 | Fix, option 1 selected | D/F, specified in H: validate copying or offer a host runner |
 | 0008.5 | Fix | D: external dependencies of copied runners |
 | 0008.6 | Fix | D: Wine NVAPI dependency warning |
-| 0008.7 | Investigated, decision pending | H: choose handling of `disableUMU` |
+| 0008.7 | Fix, option 1 selected | D/E/F, specified in H: disclose the `disableUMU` mismatch |
 | 0008.8 | Fix | F: adoption followed by `rm --delete-prefix` |
 | 0008.9 | Fix | C: abandoned download staging retry test |
 | 0008.10 | Fix | F: local runner-copy failure and concurrency tests |
@@ -168,7 +171,8 @@ the guided callers in `wizard` and `import_heroic`.
 - Cover accepting a missing DXVK/vkd3d download and resuming the original
   guided operation. Preserve Wine/Proton compatibility rules, explicit version
   requirements, and vkd3d's DXVK dependency. Do not replace a requested pinned
-  version with `latest` silently.
+  version with `latest` silently. When a pinned build is missing, offer to
+  download that exact version and resume the operation after installation.
 
 Use an injectable fixture transport/catalog and deterministic phase hooks where
 needed; tests must not contact upstream or depend on signal timing. Assert:
@@ -210,6 +214,9 @@ Primary code: core `heroic` and `import`; CLI `import_heroic` review/edit paths.
   Distinguish enabling variables from installing DLLs; do not add automatic
   NVAPI installation or an unconditional claim that DLLs are missing. Preserve
   the settled suppression of settings covered by Proton.
+- Apply H's selected runner-copy preflight and compatible host fallback for
+  0008.4, and collect the specific `disableUMU` mismatch evidence for 0008.7.
+  E handles its review/log presentation; F covers the complete import flows.
 
 Tests assert both data and disclosure: edited targets launch through fake
 runners with the intended paths; shared-prefix warnings name the affected
@@ -410,51 +417,41 @@ The confirmed mismatch is a Linux Proton sideload with effective
 tested. This investigation establishes the behavior difference and missing
 disclosure, not that every affected game fails.
 
-Handling options, awaiting the maintainer's choice:
+Selected by the maintainer: option 1, report the mismatch using existing review
+policy. Keep Wineo's UMU-only Proton model and report a specific warning such as
+`Heroic disabled umu; wineo uses umu for Proton`. Guided and bulk import continue
+using their approved warning defaults, without another prompt. Flag-driven
+single-game import follows its existing unresolved-setting refusal and
+guidance. Preserve the evidence in verbose output and logs; do not warn for
+absent/false values or plain Wine. This does not preserve direct-Proton
+behavior, and the warning must say so.
 
-1. **Report the mismatch using existing review policy (recommended).** Keep
-   Wineo's UMU-only Proton model and report a specific warning such as
-   `Heroic disabled umu; wineo uses umu for Proton`. Guided and bulk import
-   continue using their approved warning defaults, without another prompt.
-   Flag-driven single-game import follows its existing unresolved-setting
-   refusal and guidance. Preserve the evidence in verbose output and logs;
-   do not warn for absent/false values or plain Wine. This does not preserve
-   direct-Proton behavior, and the warning must say so.
-2. **Require explicit acceptance of the launcher change.** Refuse or skip
-   these imports until the user explicitly accepts UMU. This needs a new
-   acknowledgment mechanism and an exception to the settled guided/bulk
-   warning defaults; its command/prompt contract needs approval first.
-3. **Support direct Proton as a launch mode.** Preserve the effective setting
-   through runner/config design, initialization, launch, tools, stopping, and
-   recovery. This expands the runner architecture and revisits plan 0004;
-   it needs a separate design before implementation, not an environment-variable
-   substitution or a silent switch to Wine.
+A new acknowledgment mechanism and a direct-Proton launch mode are outside
+this plan. A direct-Proton mode would revisit plan 0004 and require a separate
+design covering initialization, launch, tools, stopping, and recovery.
 
-Once a handling is selected, add regression fixtures for the table above,
+Add regression fixtures for the table above,
 per-game versus global-only values under the supported schema, and every
-affected review mode/log. This investigation did not add permanent tests or
-change runtime code, and it does not authorize any of the three options.
+affected review mode/log. The investigation itself did not add permanent tests
+or change runtime code; implementing the selected handling is part of D/E/F.
 
-## Implementation proposals needing attention
+## Approval clarifications
 
-The following are proposed behavior or unresolved details, not additional
-maintainer decisions hidden inside the fix list:
+The maintainer approved the proposed recovery and completion behavior:
 
-- **Recovery for legacy or unreadable records (A):** the draft keeps work
-  blocked when ownership cannot be proven and relies on existing manual
+- **Recovery for legacy or unreadable records (A):** keep work
+  blocked when ownership cannot be proven and rely on existing manual
   state-removal guidance after the user verifies the processes are gone.
-  Decide whether that manual path is sufficient or a dedicated, explicitly
-  acknowledged state-clear command belongs in a separate design. Neither path
-  may signal a process based solely on a stale group number.
-- **Cancellation after publication (C):** the draft proposes success once the
+  A dedicated state-clear command is outside this plan. Never signal a process
+  based solely on a stale group number.
+- **Cancellation after publication (C):** report success once the
   verified build has been atomically installed, even if cancel arrives before
   the CLI returns. This preserves disk truth without deleting a completed
-  build; the previous plan did not explicitly settle that raced exit status.
+  build.
 - **A missing pinned component build (C):** retaining the pin is already
-  required, but the guided response is unspecified. Choose between offering
-  an explicit download of that exact version or giving an exact-version
-  command and returning to review; downloading latest must not silently replace
-  the pin.
+  required. Offer an explicit download of that exact version, then resume the
+  guided operation after installation. Downloading latest must not silently
+  replace the pin.
 
 Existing 0009 policy already backfills legacy Heroic IDs during classification,
 before the import confirmation. Keeping that order means declining the later
@@ -468,14 +465,28 @@ presentation during implementation; no new review prompt is implied.
 
 ## Sequence and verification
 
-1. Approve this plan's implementation proposals, including the selected
-   0008.4 handling and the outstanding details above.
-2. Implement A and B first, with regression tests before moving to UI work.
-3. Implement C and D, with fixture-backed tests and preserved source content.
-4. Implement E and complete the remaining F workflow coverage.
-5. Obtain a maintainer disposition for H's `disableUMU` findings; the
-   investigation is complete and does not authorize a guessed fix.
-6. Run independent QA, then perform and record G's manual acceptance.
+The lettered sections are implementation and acceptance batches:
+
+| Batch | Work |
+|---|---|
+| A | Process ownership, cleanup, and setup recovery |
+| B | Heroic identity and existing-config safety |
+| C | Download completion, recovery, and guided choices |
+| D | Import paths, runner selection, and dependency disclosure |
+| E | Review output, logs, color, and progress |
+| F | Remaining integration and workflow test coverage |
+| G | Recorded manual lifecycle acceptance |
+| H | Completed investigation and selected import designs, implemented in D/E/F |
+
+1. Implement A and B first, with regression tests before moving to UI work.
+2. Implement C and D, with fixture-backed tests and preserved source content.
+3. Implement E and complete the remaining F workflow coverage.
+4. Run independent QA, then perform and record G's manual acceptance.
+
+Each implementation batch includes its own regression tests and appropriate
+checks; F closes the remaining cross-flow gaps. A batch may contain several
+logical commits. H is supporting specification, not a separate investigation
+to repeat after the implementation batches.
 
 Commit every logical change with a short message and no attribution trailers.
 When delegating, use scoped coder ownership, QA for independent review, and
@@ -510,13 +521,12 @@ all automated test I/O isolated from the maintainer's real prefixes/configs.
 - Completed and canceled operations report outcomes consistent with disk state.
 - Normal/verbose/logged reviews preserve the required facts and warnings.
 - Automated checks and independent QA pass; real lifecycle results are recorded.
-- 0008.4's selected fallback has been implemented and 0008.7 has a maintainer
-  disposition based on the recorded evidence. A deferral is recorded as such,
-  not described as fixed.
+- 0008.4's selected fallback and 0008.7's selected mismatch disclosure have
+  been implemented and tested through the applicable review modes.
 - Known deferred behavior remains deferred, and 0007.4 remains concise.
 
 ## Acceptance results
 
-Manual acceptance has not run. This is a draft plan with the investigation
+Manual acceptance has not run. This plan is approved, with the investigation
 results recorded in H; no implementation or real-game acceptance run has
 been performed for it.
