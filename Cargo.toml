@@ -9,6 +9,8 @@ license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
 wineo-core = { path = "crates/wineo-core" }
+anstream = "1.0"
+anstyle = "1.0"
 anyhow = "1"
 filetime = "0.2"
 flate2 = "1"

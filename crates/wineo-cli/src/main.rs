@@ -1,6 +1,7 @@
 mod commands;
 mod picker;
 mod prompt;
+mod style;
 mod wizard;
 
 use std::process::ExitCode;

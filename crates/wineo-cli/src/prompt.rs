@@ -119,11 +119,23 @@ pub enum Picked<T> {
 pub struct Prompt<I, W> {
     input: I,
     out: W,
+    color: bool,
 }
 
 impl<I: Input, W: Write> Prompt<I, W> {
     pub fn new(input: I, out: W) -> Self {
-        Self { input, out }
+        Self {
+            input,
+            out,
+            color: false,
+        }
+    }
+
+    /// Enables bold menu titles, for callers whose `out` is a real,
+    /// color-capable terminal.
+    pub fn with_color(mut self, enabled: bool) -> Self {
+        self.color = enabled;
+        self
     }
 
     pub fn input(&mut self) -> &mut I {
@@ -255,7 +267,11 @@ impl<I: Input, W: Write> Prompt<I, W> {
     }
 
     fn menu<T>(&mut self, heading: &str, choices: &[Choice<T>], back: bool) -> io::Result<()> {
-        writeln!(self.out, "{heading}")?;
+        if self.color {
+            writeln!(self.out, "{}", crate::style::title(heading))?;
+        } else {
+            writeln!(self.out, "{heading}")?;
+        }
         for choice in choices {
             writeln!(self.out, "  {}) {}", choice.key, choice.label)?;
         }

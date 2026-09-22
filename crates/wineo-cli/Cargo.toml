@@ -10,6 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 wineo-core.workspace = true
+anstream.workspace = true
+anstyle.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
