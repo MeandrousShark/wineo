@@ -95,6 +95,12 @@ wrappers, scripts, runtime settings, and other omissions require attention.
 Noninteractive imports refuse unresolved settings; add `--interactive` to review
 them. Import does not launch the game automatically.
 
+With a Wine runner, Heroic's DXVK and vkd3d-proton toggles become
+`dxvk = "latest"` and `vkd3d = "latest"`. Proton bundles its own, so Proton
+imports leave them out. When no local build exists, guided imports offer to
+download the latest release. Noninteractive imports stop and name the
+`wineo download` command to run.
+
 ### Import every Heroic game
 
 ```sh
