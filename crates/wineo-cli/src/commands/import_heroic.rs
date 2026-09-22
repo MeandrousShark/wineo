@@ -840,7 +840,11 @@ fn classify_candidates(
                     title: imported.title.clone(),
                     warn,
                     component,
-                    reason: format!("{error:#}"),
+                    reason: format!(
+                        "no {} build, run wineo download {}",
+                        component.label(),
+                        component.as_str()
+                    ),
                     imported,
                     inspection,
                     request,
@@ -3544,7 +3548,7 @@ mod tests {
         let pending = vec![pending_game(
             root.path(),
             Component::Dxvk,
-            "no dxvk builds are installed\nGet one with: wineo download dxvk",
+            "no DXVK build, run wineo download dxvk",
         )];
         let (rows, ready) = resolve_pending::<Script, Vec<u8>>(
             &paths(root.path()),
@@ -3559,10 +3563,7 @@ mod tests {
         let RowStatus::Skipped(reason) = &rows[0].status else {
             panic!("expected a skip row");
         };
-        assert!(
-            reason.contains("Get one with: wineo download dxvk"),
-            "{reason}"
-        );
+        assert!(reason.contains("wineo download dxvk"), "{reason}");
     }
 
     #[test]
