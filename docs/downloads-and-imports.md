@@ -95,6 +95,25 @@ wrappers, scripts, runtime settings, and other omissions require attention.
 Noninteractive imports refuse unresolved settings; add `--interactive` to review
 them. Import does not launch the game automatically.
 
+### Import every Heroic game
+
+```sh
+wineo import heroic --all [--runner <name>] [--adopt] [--desktop] [--yes]
+```
+
+Every game uses `--runner`, or the newest installed Proton. Games already in
+wineo are skipped, matched by recorded Heroic id, adopted prefix, name, or
+target executable. A table lists each game as copied, adopted, or skipped with
+a reason, and one confirmation covers them all. Review items take the guided
+defaults: unsupported settings are omitted, conflicting managed settings are
+dropped, and settings needing attention are kept, each noted in the table.
+
+`--desktop` creates a desktop entry for every game without asking. `--yes`
+skips the confirmation, works without a terminal, and creates no desktop
+entries unless `--desktop` is also given. Failed games don't stop the rest, and
+the command exits nonzero if any failed. `-v` prints each game's full summary
+and writes its import log.
+
 ## Removal
 
 `wineo rm my-game` removes registration and wineo desktop entries, retaining the
