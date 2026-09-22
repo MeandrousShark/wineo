@@ -477,6 +477,8 @@ impl HeroicSource {
             cwd,
             env,
             gamemode,
+            dxvk: None,
+            vkd3d: None,
             issues,
             external_dependencies,
             fingerprint: self.fingerprint(game_id)?,
@@ -604,6 +606,12 @@ pub struct HeroicImport {
     pub cwd: Option<PathBuf>,
     pub env: BTreeMap<String, String>,
     pub gamemode: Option<bool>,
+    /// `dxvk`/`vkd3d` to carry into the environment config, filled in by the
+    /// importer once it knows the chosen wineo runner. Inspection itself
+    /// never sets these, since Proton bundles its own and only the CLI
+    /// knows which runner was picked.
+    pub dxvk: Option<String>,
+    pub vkd3d: Option<String>,
     pub issues: Vec<HeroicIssue>,
     pub external_dependencies: Vec<PathBuf>,
     pub fingerprint: InputFingerprint,

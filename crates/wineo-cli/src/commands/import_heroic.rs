@@ -3,18 +3,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use wineo_core::components::Component;
 use wineo_core::config::{Arch, GlobalConfig, Target};
 use wineo_core::download::Provider;
 use wineo_core::environment::{self, Environment};
 use wineo_core::heroic::{
     HeroicCandidate, HeroicGameKind, HeroicImport, HeroicIssue, HeroicIssueKind, HeroicRunnerKind,
-    HeroicSource, SettingsReview,
+    HeroicSource, ReviewItem, SettingsReview,
 };
 use wineo_core::import::{self, ExternalDependency, ImportRequest, ImportedSettings, Inspection};
+use wineo_core::install::{self, Wanted};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
+use super::components;
 use super::desktop;
 use super::download;
 use super::import::{choose_runner, finish_guided, import_reviewed};
@@ -115,7 +118,18 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         let inspection = prefix_inspection(&imported, &runner, args.arch)?;
         clear_runner_dependency(&mut imported);
         drop_runner_conflicts(&mut imported);
-        suppress_covered_settings(&mut imported);
+        suppress_covered_settings(&mut imported, &runner);
+        carry_over_components(&mut imported, &runner);
+        install::check_available(
+            paths,
+            &global,
+            &name,
+            &runner,
+            &Wanted {
+                dxvk: imported.dxvk.clone(),
+                vkd3d: imported.vkd3d.clone(),
+            },
+        )?;
         let mut request = request(
             paths,
             imported.prefix.clone(),
@@ -335,7 +349,19 @@ fn guided<I: Input, W: Write>(
     let inspection = prefix_inspection(&imported, &resolved, args.arch)?;
     clear_runner_dependency(&mut imported);
     drop_runner_conflicts(&mut imported);
-    suppress_covered_settings(&mut imported);
+    suppress_covered_settings(&mut imported, &resolved);
+    carry_over_components(&mut imported, &resolved);
+    ensure_components_available(
+        paths,
+        global,
+        &name,
+        &resolved,
+        &Wanted {
+            dxvk: imported.dxvk.clone(),
+            vkd3d: imported.vkd3d.clone(),
+        },
+        prompt,
+    )?;
     review_settings(prompt, &mut imported)?;
     let adopt = if args.adopt {
         true
@@ -435,6 +461,21 @@ struct ReadyGame {
     request: ImportRequest,
 }
 
+/// A candidate that's ready except for one missing DXVK/vkd3d-proton build,
+/// so it's held back until `--all` decides whether to download it.
+struct PendingGame {
+    name: String,
+    title: String,
+    warn: Option<String>,
+    component: Component,
+    /// The resolve error's own message, hint included, reused as the skip
+    /// reason if this doesn't end up downloaded.
+    reason: String,
+    imported: HeroicImport,
+    inspection: Inspection,
+    request: ImportRequest,
+}
+
 fn run_all(
     paths: &Paths,
     global: &GlobalConfig,
@@ -471,7 +512,7 @@ fn run_all(
     let listing = source.list_candidates()?;
     println!("Checking {} Heroic games...", listing.candidates.len());
     let existing = existing_environments(paths)?;
-    let (rows, ready, already) = classify_candidates(
+    let (mut rows, mut ready, already, pending) = classify_candidates(
         paths,
         global,
         &source,
@@ -481,6 +522,10 @@ fn run_all(
         &runner,
         &args,
     )?;
+    let (pending_rows, pending_ready) =
+        resolve_pending(paths, global, pending, args.yes, prompt.as_mut())?;
+    rows.extend(pending_rows);
+    ready.extend(pending_ready);
 
     let mode_label = if args.adopt { "adopt" } else { "copy" };
     println!(
@@ -645,6 +690,11 @@ fn default_name_for(title: &str, executable: Option<&Path>) -> String {
     wineo_core::targets::suggest_name(title, &exe)
 }
 
+/// Rows and games sorted three ways: ready, skipped, and pending on a
+/// missing DXVK/vkd3d-proton build, plus the environment names already
+/// imported.
+type Classified = (Vec<BulkRow>, Vec<ReadyGame>, Vec<String>, Vec<PendingGame>);
+
 /// Sorts every Heroic candidate into already imported, skipped with a
 /// reason, or ready to import, backfilling `heroic_id` onto legacy matches
 /// as it goes.
@@ -658,10 +708,11 @@ fn classify_candidates(
     runner_name: &str,
     runner: &Runner,
     args: &Args,
-) -> anyhow::Result<(Vec<BulkRow>, Vec<ReadyGame>, Vec<String>)> {
+) -> anyhow::Result<Classified> {
     let mut rows = Vec::new();
     let mut ready = Vec::new();
     let mut already = Vec::new();
+    let mut pending = Vec::new();
     let mut used_names: BTreeSet<String> = BTreeSet::new();
 
     for candidate in candidates {
@@ -714,7 +765,8 @@ fn classify_candidates(
         }
         clear_runner_dependency(&mut imported);
         drop_runner_conflicts(&mut imported);
-        suppress_covered_settings(&mut imported);
+        suppress_covered_settings(&mut imported, runner);
+        carry_over_components(&mut imported, runner);
         let inspection = match prefix_inspection(&imported, runner, args.arch) {
             Ok(inspection) => inspection,
             Err(error) => {
@@ -763,20 +815,105 @@ fn classify_candidates(
             adopt: args.adopt,
             arch: args.arch,
         };
-        rows.push(BulkRow {
-            name: name.clone(),
-            title: imported.title.clone(),
-            status: RowStatus::Ready { warn },
-        });
-        ready.push(ReadyGame {
-            name,
-            title: imported.title.clone(),
-            imported,
-            inspection,
-            request,
-        });
+        let wanted = Wanted {
+            dxvk: imported.dxvk.clone(),
+            vkd3d: imported.vkd3d.clone(),
+        };
+        match install::check_available(paths, global, &name, runner, &wanted) {
+            Ok(()) => {
+                rows.push(BulkRow {
+                    name: name.clone(),
+                    title: imported.title.clone(),
+                    status: RowStatus::Ready { warn },
+                });
+                ready.push(ReadyGame {
+                    name,
+                    title: imported.title.clone(),
+                    imported,
+                    inspection,
+                    request,
+                });
+            }
+            Err(error) => match components::missing_build_component(&error) {
+                Some(component) => pending.push(PendingGame {
+                    name,
+                    title: imported.title.clone(),
+                    warn,
+                    component,
+                    reason: format!("{error:#}"),
+                    imported,
+                    inspection,
+                    request,
+                }),
+                None => rows.push(BulkRow {
+                    name,
+                    title: imported.title,
+                    status: RowStatus::Skipped(format!("{error:#}")),
+                }),
+            },
+        }
     }
-    Ok((rows, ready, already))
+    Ok((rows, ready, already, pending))
+}
+
+/// Resolves games only blocked on a missing DXVK/vkd3d-proton build.
+/// `--yes` never downloads and fails each one with the same hint `wineo set`
+/// gives; interactively, this asks once per missing component, grouped
+/// across every game that needs it, before the table.
+fn resolve_pending<I: Input, W: Write>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    pending: Vec<PendingGame>,
+    yes: bool,
+    prompt: Option<&mut Prompt<I, W>>,
+) -> anyhow::Result<(Vec<BulkRow>, Vec<ReadyGame>)> {
+    let mut rows = Vec::new();
+    let mut ready = Vec::new();
+    let mut downloaded: Vec<Component> = Vec::new();
+
+    if !yes && let Some(prompt) = prompt {
+        for component in Component::ALL {
+            if !pending.iter().any(|game| game.component == component) {
+                continue;
+            }
+            let count = pending
+                .iter()
+                .filter(|game| game.component == component)
+                .count();
+            let question = format!(
+                "No matching {} build is installed for {count} game{}. Download the latest release?",
+                component.label(),
+                if count == 1 { "" } else { "s" }
+            );
+            if components::offer_download(prompt, paths, global, component, &question)? {
+                downloaded.push(component);
+            }
+        }
+    }
+
+    for game in pending {
+        if downloaded.contains(&game.component) {
+            rows.push(BulkRow {
+                name: game.name.clone(),
+                title: game.title.clone(),
+                status: RowStatus::Ready { warn: game.warn },
+            });
+            ready.push(ReadyGame {
+                name: game.name,
+                title: game.title,
+                imported: game.imported,
+                inspection: game.inspection,
+                request: game.request,
+            });
+        } else {
+            rows.push(BulkRow {
+                name: game.name,
+                title: game.title,
+                status: RowStatus::Skipped(game.reason),
+            });
+        }
+    }
+    Ok((rows, ready))
 }
 
 /// Applies `review_settings`'s guided "yes" defaults without prompting, as
@@ -1566,6 +1703,8 @@ fn imported_settings(
         targets,
         env: imported.env.clone(),
         gamemode: imported.gamemode,
+        dxvk: imported.dxvk.clone(),
+        vkd3d: imported.vkd3d.clone(),
         heroic_id: Some(imported.id.clone()),
         ..ImportedSettings::default()
     }
@@ -1623,15 +1762,16 @@ fn candidate_filter_issue(candidate: &HeroicCandidate) -> Option<&HeroicIssue> {
 /// Heroic settings wineo already covers by way of the chosen runner, so
 /// they don't need review or a place in the output: Proton bundles its own
 /// DXVK, vkd3d-proton, and NVAPI, so a Proton import can ignore whatever
-/// Heroic recorded for them.
+/// Heroic recorded for them. What matters is the runner wineo ends up
+/// using, not what Heroic itself recorded.
 const COVERED_BY_PROTON: [&str; 3] = [
     "autoInstallDxvk",
     "autoInstallVkd3d",
     "autoInstallDxvkNvapi",
 ];
 
-fn suppress_covered_settings(imported: &mut HeroicImport) {
-    if imported.runner.kind != HeroicRunnerKind::Proton {
+fn suppress_covered_settings(imported: &mut HeroicImport, runner: &Runner) {
+    if !runner.is_proton() {
         return;
     }
     imported
@@ -1645,6 +1785,79 @@ fn suppress_covered_settings(imported: &mut HeroicImport) {
         .settings_review
         .carried
         .retain(|item| !COVERED_BY_PROTON.contains(&item.field.as_str()));
+}
+
+/// Heroic's `autoInstallDxvk`/`autoInstallVkd3d` become `dxvk`/`vkd3d =
+/// "latest"` for a Wine (or system) chosen runner, which install their own
+/// way; a Proton runner still drops them, which `suppress_covered_settings`
+/// already handles.
+fn carry_over_components(imported: &mut HeroicImport, runner: &Runner) {
+    if runner.is_proton() {
+        return;
+    }
+    if take_unsupported_issue(imported, "autoInstallDxvk") {
+        imported.dxvk = Some(wineo_core::components::LATEST.to_owned());
+        imported.settings_review.carried.push(ReviewItem {
+            field: "autoInstallDxvk".to_owned(),
+            detail: "dxvk=latest".to_owned(),
+        });
+    }
+    if take_unsupported_issue(imported, "autoInstallVkd3d") {
+        imported.vkd3d = Some(wineo_core::components::LATEST.to_owned());
+        imported.settings_review.carried.push(ReviewItem {
+            field: "autoInstallVkd3d".to_owned(),
+            detail: "vkd3d=latest".to_owned(),
+        });
+    }
+}
+
+/// Removes the Unsupported issue for `field`, if there is one, and says
+/// whether there was: Heroic's own setting was on.
+fn take_unsupported_issue(imported: &mut HeroicImport, field: &str) -> bool {
+    let had = imported.issues.iter().any(|issue| {
+        issue.kind == HeroicIssueKind::Unsupported && issue.field.as_deref() == Some(field)
+    });
+    if had {
+        imported
+            .issues
+            .retain(|issue| issue.field.as_deref() != Some(field));
+        imported
+            .settings_review
+            .unsupported
+            .retain(|item| item.field != field);
+    }
+    had
+}
+
+/// Offers to download a missing DXVK/vkd3d-proton build for guided Heroic
+/// import, the same way guided `new` does, one component at a time until
+/// everything resolves or a person declines. Declining leaves the usual
+/// error, so this changes nothing about what ends up refused.
+fn ensure_components_available<I: Input, W: Write>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    runner: &Runner,
+    wanted: &Wanted,
+    prompt: &mut Prompt<I, W>,
+) -> anyhow::Result<()> {
+    loop {
+        match install::check_available(paths, global, name, runner, wanted) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                let Some(component) = components::missing_build_component(&error) else {
+                    return Err(error.into());
+                };
+                let question = format!(
+                    "No matching {} build is installed. Download the latest release?",
+                    component.label()
+                );
+                if !components::offer_download(prompt, paths, global, component, &question)? {
+                    return Err(error.into());
+                }
+            }
+        }
+    }
 }
 
 fn reject_unresolved(imported: &HeroicImport) -> anyhow::Result<()> {
@@ -1871,6 +2084,18 @@ fn show_game_summary<I: Input, W: Write>(
         blocks.push(Block {
             label: "gamemode",
             lines: vec![on_off(gamemode).to_owned()],
+        });
+    }
+    if let Some(dxvk) = &imported.dxvk {
+        blocks.push(Block {
+            label: "dxvk",
+            lines: vec![dxvk.clone()],
+        });
+    }
+    if let Some(vkd3d) = &imported.vkd3d {
+        blocks.push(Block {
+            label: "vkd3d",
+            lines: vec![vkd3d.clone()],
         });
     }
     if let Some(sync) = sync_block(&imported.settings_review) {
@@ -2319,6 +2544,8 @@ mod tests {
             cwd: Some(root.join("drive_c")),
             env: BTreeMap::new(),
             gamemode: Some(true),
+            dxvk: None,
+            vkd3d: None,
             issues: Vec::new(),
             external_dependencies: Vec::new(),
             fingerprint: InputFingerprint {
@@ -2355,6 +2582,18 @@ mod tests {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         }
         fs::write(dir.join("version"), format!("1 {name}\n")).unwrap();
+    }
+
+    fn fake_wine_runner(root: &Path, name: &str) -> Runner {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = root.join(name);
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        for executable in ["wine", "wineserver"] {
+            let path = dir.join("bin").join(executable);
+            fs::write(&path, "#!/bin/sh\n").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        Runners::at(root.to_owned()).resolve(name).unwrap()
     }
 
     #[test]
@@ -2516,6 +2755,13 @@ mod tests {
     #[test]
     fn covered_proton_settings_are_suppressed() {
         let root = tempdir().unwrap();
+        let runners_root = root.path().join("runners");
+        fake_proton_runner(&runners_root, "GE-Proton9-20");
+        let proton = Runners::at(runners_root.clone())
+            .resolve("GE-Proton9-20")
+            .unwrap();
+        let wine = fake_wine_runner(&runners_root, "wine-tkg");
+
         let (mut imported, _, _) = reviewed_import(root.path());
         imported.runner.kind = HeroicRunnerKind::Proton;
         for field in COVERED_BY_PROTON {
@@ -2532,18 +2778,119 @@ mod tests {
                     detail: "true".to_owned(),
                 });
         }
-        suppress_covered_settings(&mut imported);
+        suppress_covered_settings(&mut imported, &proton);
         assert!(imported.issues.is_empty());
         assert!(imported.settings_review.unsupported.is_empty());
-        // Suppression does not apply to non-Proton runners.
+        // Suppression follows the chosen wineo runner, not what Heroic itself
+        // recorded: a Wine choice leaves the issue for `carry_over_components`.
         let (mut wine_import, _, _) = reviewed_import(root.path());
+        wine_import.runner.kind = HeroicRunnerKind::Proton;
         wine_import.issues.push(HeroicIssue {
             kind: HeroicIssueKind::Unsupported,
             field: Some("autoInstallDxvk".to_owned()),
             message: "Heroic component installation is not imported".to_owned(),
         });
-        suppress_covered_settings(&mut wine_import);
+        suppress_covered_settings(&mut wine_import, &wine);
         assert_eq!(wine_import.issues.len(), 1);
+    }
+
+    #[test]
+    fn carry_over_components_sets_dxvk_and_vkd3d_for_a_wine_runner() {
+        let root = tempdir().unwrap();
+        let wine = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
+        let (mut imported, _, _) = reviewed_import(root.path());
+        for field in ["autoInstallDxvk", "autoInstallVkd3d"] {
+            imported.issues.push(HeroicIssue {
+                kind: HeroicIssueKind::Unsupported,
+                field: Some(field.to_owned()),
+                message: "Heroic component installation is not imported".to_owned(),
+            });
+        }
+        carry_over_components(&mut imported, &wine);
+        assert_eq!(imported.dxvk.as_deref(), Some("latest"));
+        assert_eq!(imported.vkd3d.as_deref(), Some("latest"));
+        assert!(imported.issues.is_empty(), "{:?}", imported.issues);
+    }
+
+    #[test]
+    fn carry_over_components_leaves_a_proton_choice_alone() {
+        let root = tempdir().unwrap();
+        let runners_root = root.path().join("runners");
+        fake_proton_runner(&runners_root, "GE-Proton9-20");
+        let proton = Runners::at(runners_root).resolve("GE-Proton9-20").unwrap();
+        let (mut imported, _, _) = reviewed_import(root.path());
+        imported.issues.push(HeroicIssue {
+            kind: HeroicIssueKind::Unsupported,
+            field: Some("autoInstallDxvk".to_owned()),
+            message: "Heroic component installation is not imported".to_owned(),
+        });
+        carry_over_components(&mut imported, &proton);
+        assert_eq!(imported.dxvk, None);
+        assert_eq!(imported.issues.len(), 1);
+    }
+
+    #[test]
+    fn imported_settings_carries_dxvk_and_vkd3d() {
+        let root = tempdir().unwrap();
+        let (mut imported, inspection, request) = reviewed_import(root.path());
+        imported.dxvk = Some("latest".to_owned());
+        imported.vkd3d = Some("latest".to_owned());
+        let desktop = DesktopChoice {
+            enabled: false,
+            name: String::new(),
+        };
+        let settings = imported_settings(&imported, &inspection, &request, &desktop);
+        assert_eq!(settings.dxvk.as_deref(), Some("latest"));
+        assert_eq!(settings.vkd3d.as_deref(), Some("latest"));
+    }
+
+    #[test]
+    fn ensure_components_available_passes_through_when_nothing_is_missing() {
+        let root = tempdir().unwrap();
+        let wine = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
+        let mut prompt = Prompt::new(Script::new(&[]), Vec::new());
+        ensure_components_available(
+            &paths(root.path()),
+            &GlobalConfig::default(),
+            "game",
+            &wine,
+            &Wanted::default(),
+            &mut prompt,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn ensure_components_available_declining_leaves_the_usual_hinted_error() {
+        let root = tempdir().unwrap();
+        let wine = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
+        let mut prompt = Prompt::new(Script::new(&["n"]), Vec::new());
+        let error = ensure_components_available(
+            &paths(root.path()),
+            &GlobalConfig::default(),
+            "game",
+            &wine,
+            &Wanted {
+                dxvk: Some("latest".to_owned()),
+                vkd3d: None,
+            },
+            &mut prompt,
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("no dxvk builds are installed"),
+            "{message}"
+        );
+        assert!(
+            message.contains("Get one with: wineo download dxvk"),
+            "{message}"
+        );
+        let printed = String::from_utf8_lossy(prompt.output()).into_owned();
+        assert!(
+            printed.contains("No matching DXVK build is installed. Download the latest release?"),
+            "{printed}"
+        );
     }
 
     #[test]
@@ -2663,6 +3010,8 @@ mod tests {
                 ("PROTON_ENABLE_WAYLAND".to_owned(), "1".to_owned()),
             ]),
             gamemode: Some(true),
+            dxvk: None,
+            vkd3d: None,
             issues: vec![
                 HeroicIssue {
                     kind: HeroicIssueKind::Unsupported,
@@ -2756,6 +3105,8 @@ mod tests {
             cwd: exe.parent().map(Path::to_owned),
             env: BTreeMap::new(),
             gamemode: Some(true),
+            dxvk: None,
+            vkd3d: None,
             issues: Vec::new(),
             external_dependencies: vec![exe.clone()],
             fingerprint: InputFingerprint {
@@ -3171,5 +3522,93 @@ mod tests {
             }]),
             None
         );
+    }
+
+    fn pending_game(root: &Path, component: Component, reason: &str) -> PendingGame {
+        let (imported, inspection, request) = reviewed_import(root);
+        PendingGame {
+            name: "hades".to_owned(),
+            title: "Hades".to_owned(),
+            warn: None,
+            component,
+            reason: reason.to_owned(),
+            imported,
+            inspection,
+            request,
+        }
+    }
+
+    #[test]
+    fn resolve_pending_with_yes_skips_without_asking() {
+        let root = tempdir().unwrap();
+        let pending = vec![pending_game(
+            root.path(),
+            Component::Dxvk,
+            "no dxvk builds are installed\nGet one with: wineo download dxvk",
+        )];
+        let (rows, ready) = resolve_pending::<Script, Vec<u8>>(
+            &paths(root.path()),
+            &GlobalConfig::default(),
+            pending,
+            true,
+            None,
+        )
+        .unwrap();
+        assert!(ready.is_empty());
+        assert_eq!(rows.len(), 1);
+        let RowStatus::Skipped(reason) = &rows[0].status else {
+            panic!("expected a skip row");
+        };
+        assert!(
+            reason.contains("Get one with: wineo download dxvk"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn resolve_pending_interactive_decline_keeps_the_original_reason() {
+        let root = tempdir().unwrap();
+        let pending = vec![pending_game(
+            root.path(),
+            Component::Dxvk,
+            "no dxvk builds are installed",
+        )];
+        let mut prompt = Prompt::new(Script::new(&["n"]), Vec::new());
+        let (rows, ready) = resolve_pending(
+            &paths(root.path()),
+            &GlobalConfig::default(),
+            pending,
+            false,
+            Some(&mut prompt),
+        )
+        .unwrap();
+        assert!(ready.is_empty());
+        assert_eq!(rows.len(), 1);
+        assert!(
+            matches!(&rows[0].status, RowStatus::Skipped(reason) if reason == "no dxvk builds are installed")
+        );
+    }
+
+    #[test]
+    fn resolve_pending_asks_once_per_component_across_every_game_that_needs_it() {
+        let root = tempdir().unwrap();
+        let pending = vec![
+            pending_game(root.path(), Component::Dxvk, "dxvk missing"),
+            pending_game(root.path(), Component::Dxvk, "dxvk missing"),
+        ];
+        let mut prompt = Prompt::new(Script::new(&["n"]), Vec::new());
+        let (rows, _) = resolve_pending(
+            &paths(root.path()),
+            &GlobalConfig::default(),
+            pending,
+            false,
+            Some(&mut prompt),
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        let printed = String::from_utf8_lossy(prompt.output()).into_owned();
+        // One question covering both games, not one each.
+        assert_eq!(printed.matches("Download the latest release?").count(), 1);
+        assert!(printed.contains("for 2 games"), "{printed}");
     }
 }
