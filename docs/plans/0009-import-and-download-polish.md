@@ -31,6 +31,11 @@ Settled by the maintainer:
   items. Each shows as a `warn:` note in the table.
 - `--all` prints one line per game while importing, then a summary. `-v`
   adds each game's full summary and writes its import log.
+- `--all` also counts an environment as already imported when one of its
+  targets runs the Heroic game's exe, and records the id on it.
+- `--all` prints `Checking N Heroic games...` before inspecting prefixes.
+- A warning shared by every game in the `--all` table prints once under it
+  instead of on each row.
 
 The maintainer approved this plan.
 
