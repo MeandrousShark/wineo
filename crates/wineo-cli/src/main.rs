@@ -14,6 +14,9 @@ use wineo_core::supervisor;
 #[derive(Parser)]
 #[command(name = "wineo", version, about = "Manage Wine environments")]
 struct Cli {
+    /// Show full detail that lists normally leave out, like installed names
+    #[arg(short, long, global = true)]
+    verbose: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -92,6 +95,7 @@ fn run() -> anyhow::Result<ExitCode> {
 
     let cli = Cli::parse();
     let paths = Paths::from_env()?;
+    let verbose = cli.verbose;
     match cli.command {
         Command::New(args) => commands::new::run(&paths, args),
         Command::Set(args) => commands::set::run(&paths, args),
@@ -101,7 +105,7 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Stop(args) => commands::stop::run(&paths, args),
         Command::Restart(args) => commands::restart::run(&paths, args),
         Command::Import(args) => commands::import::run(&paths, args),
-        Command::Download(args) => commands::download::run(&paths, args),
+        Command::Download(args) => commands::download::run(&paths, args, verbose),
         Command::Runners(args) => commands::runners::run(&paths, args),
         Command::Dxvk(args) => commands::builds::run(&paths, Component::Dxvk, args),
         Command::Vkd3d(args) => commands::builds::run(&paths, Component::Vkd3d, args),

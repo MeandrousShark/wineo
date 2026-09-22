@@ -450,6 +450,7 @@ fn settings<I: Input, W: Write>(
                     global,
                     prompt,
                     &crate::commands::download::PROVIDERS,
+                    false,
                 )?;
             }
             Reply::Value(Change::Arch) => {

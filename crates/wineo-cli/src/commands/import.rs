@@ -396,7 +396,7 @@ pub(crate) fn choose_runner<I: Input, W: Write>(
             Reply::Value(Some(name)) => return Ok(Reply::Value(name)),
             Reply::Value(None) => {
                 if let Reply::Value(name) =
-                    download::choose_and_install(paths, global, prompt, &download::RUNNERS)?
+                    download::choose_and_install(paths, global, prompt, &download::RUNNERS, false)?
                 {
                     return Ok(Reply::Value(name));
                 }
