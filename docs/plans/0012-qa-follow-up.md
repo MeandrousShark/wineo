@@ -127,6 +127,35 @@ Inject disappearance/failure between validation, registration, preparation,
 and spawn. Assert surviving files and exact recovery guidance. Failures before
 registration must not claim that a resumable environment exists.
 
+### Batch A implementation record
+
+Implemented for 0007.1-0007.3:
+
+- Runtime and installer records include boot and leader-start identity. Recovery
+  uses pidfds for verified processes and rechecks ownership before signaling.
+- Unknown or legacy identity remains unresolved with manual recovery guidance.
+  `Untracked` cleanup does not clear the block or allow setup to continue.
+- A live retained leader remains an ownership witness while tracked children
+  are being settled. Resolved runner and prefix snapshots are retained across
+  aliases and configuration changes.
+- Failure to persist installer identity triggers cleanup through the live
+  process handle; unconfirmed cleanup retains its recovery record.
+- Post-registration setup errors use shared recovery reporting in guided and
+  flag-driven CLI flows.
+- Core and CLI tests cover identity mismatches, pidfd signaling, unknown
+  records, leader and child cleanup, registration-write failure, and recovery
+  guidance.
+
+Batch A is implemented and verified. `TERM=linux cargo test --offline` passed
+with 591 tests passed, 0 failed, and 10 ignored. `cargo fmt --check`,
+`cargo clippy --offline --all-targets -- -D warnings`, `git diff --check`, and
+ShellCheck for the modified fake-Wine fixture passed. Regression tests cover
+both confirmed cleanup and unresolved retention after post-spawn failures,
+plus bounded settlement of a lost run. Independent QA passed with notes and
+found no remaining defects. Ignored real-Wine tests were deferred because
+`WINEO_TEST_PROTON` and `WINEO_TEST_DXVK` are unset; manual acceptance for G
+has not been run. B-G remain open.
+
 ## B. Heroic identity and existing-config safety
 
 Primary code: CLI `import_heroic` matching/classification and core
@@ -527,6 +556,6 @@ all automated test I/O isolated from the maintainer's real prefixes/configs.
 
 ## Acceptance results
 
-Manual acceptance has not run. This plan is approved, with the investigation
-results recorded in H; no implementation or real-game acceptance run has
-been performed for it.
+Batch A is implemented and verified; see the [Batch A implementation
+record](#batch-a-implementation-record). B-G remain open. Manual lifecycle
+acceptance for G has not run.
