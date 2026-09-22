@@ -36,8 +36,11 @@ Settled by the maintainer:
 - `--all` prints `Checking N Heroic games...` before inspecting prefixes.
 - A warning shared by every game in the `--all` table prints once under it
   instead of on each row.
-- Guided Heroic import no longer asks to keep settings needing attention.
-  They print as summary warnings, and the final review edits the paths.
+- Guided Heroic import no longer asks about settings needing attention,
+  unsupported settings, or conflicting managed settings. It applies the same
+  defaults as `--all`, and the summary shows them as warnings: attention
+  items by message, dropped conflicts as `X is dropped, wineo manages it`,
+  and unsupported settings as a count that `-v` expands.
 
 The maintainer approved this plan.
 

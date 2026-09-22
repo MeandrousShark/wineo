@@ -1908,45 +1908,15 @@ fn review_settings<I: Input, W: Write>(
             .issues
             .retain(|issue| issue.field.as_deref() != Some("launcherArgs"));
     }
-    let conflicts: Vec<_> = imported
-        .issues
-        .iter()
-        .filter(|issue| issue.kind == HeroicIssueKind::Conflict)
-        .cloned()
-        .collect();
-    if !conflicts.is_empty() {
-        for issue in &conflicts {
-            print_issue("conflict", issue);
-        }
-        match prompt.confirm(
-            "Remove conflicting Heroic managed settings and continue?",
-            false,
-        )? {
-            Reply::Value(true) => imported.issues.retain(|issue| {
-                issue.kind != HeroicIssueKind::Conflict
-                    || issue.field.as_deref() == Some("wineVersion")
-            }),
-            _ => return Err(anyhow::anyhow!(Canceled)),
-        }
-    }
-    let unsupported = imported
-        .issues
-        .iter()
-        .any(|issue| issue.kind == HeroicIssueKind::Unsupported);
-    if unsupported {
-        match prompt.confirm("Continue with unsupported Heroic settings omitted?", false)? {
-            Reply::Value(true) => imported
-                .issues
-                .retain(|issue| issue.kind != HeroicIssueKind::Unsupported),
-            _ => return Err(anyhow::anyhow!(Canceled)),
-        }
-    }
-    // Already shown as summary warnings, and the final review edits the paths.
-    imported.issues.retain(|issue| {
-        !matches!(
-            issue.kind,
-            HeroicIssueKind::NeedsAttention | HeroicIssueKind::External
-        )
+    // The summary already showed these as warnings. Conflicting settings are
+    // ones wineo manages itself, unsupported ones have nowhere to go, and the
+    // final review edits the paths needing attention.
+    imported.issues.retain(|issue| match issue.kind {
+        HeroicIssueKind::Conflict => !dropped_conflict(issue),
+        HeroicIssueKind::Unsupported
+        | HeroicIssueKind::NeedsAttention
+        | HeroicIssueKind::External => false,
+        _ => true,
     });
     if imported.issues.iter().any(|issue| {
         matches!(
@@ -2044,6 +2014,16 @@ fn sync_block(review: &SettingsReview) -> Option<Block> {
 
 /// The settings that are set for this game, one row each. `-v` also shows
 /// the Heroic fields normally left out.
+/// A conflict with a setting wineo manages itself, which import drops
+/// rather than refusing over. Runner and prefix conflicts still block.
+fn dropped_conflict(issue: &HeroicIssue) -> bool {
+    issue.kind == HeroicIssueKind::Conflict
+        && !matches!(
+            issue.field.as_deref(),
+            Some("wineVersion") | Some("winePrefix")
+        )
+}
+
 /// Proton handles a prefix with both registry layouts, so the conflict
 /// Heroic's reader raises for it is not worth showing before the runner is
 /// picked. It is dropped for real once one is.
@@ -2128,23 +2108,45 @@ fn show_game_summary<I: Input, W: Write>(
         ) {
             continue;
         }
-        let shown = match issue.kind {
-            HeroicIssueKind::NeedsAttention => true,
-            HeroicIssueKind::Unsupported => verbose,
-            _ => false,
-        };
-        if !shown {
-            continue;
+        let field = issue.field.as_deref().unwrap_or("?");
+        match issue.kind {
+            HeroicIssueKind::NeedsAttention if verbose => {
+                warnings.push(format!("{field}: {}", issue.message));
+            }
+            HeroicIssueKind::NeedsAttention => warnings.push(issue.message.clone()),
+            HeroicIssueKind::Unsupported if verbose => {
+                warnings.push(format!("{field}: {}", issue.message));
+            }
+            HeroicIssueKind::Conflict if dropped_conflict(issue) => {
+                warnings.push(format!("{field} is dropped, wineo manages it"));
+            }
+            _ => {}
         }
-        warnings.push(if verbose {
-            format!(
-                "{}: {}",
-                issue.field.as_deref().unwrap_or("?"),
-                issue.message
-            )
-        } else {
-            issue.message.clone()
-        });
+    }
+    let hidden = imported
+        .issues
+        .iter()
+        .filter(|issue| {
+            issue.kind == HeroicIssueKind::Unsupported
+                && !matches!(
+                    issue.field.as_deref(),
+                    Some("eacRuntime") | Some("battlEyeRuntime")
+                )
+                && !issue
+                    .field
+                    .as_deref()
+                    .is_some_and(|field| COVERED_BY_PROTON.contains(&field))
+        })
+        .count();
+    if !verbose && hidden > 0 {
+        warnings.push(format!(
+            "{hidden} more Heroic {} not imported, -v lists them",
+            if hidden == 1 {
+                "setting is"
+            } else {
+                "settings are"
+            }
+        ));
     }
     if !warnings.is_empty() {
         blocks.push(Block {
@@ -2161,6 +2163,7 @@ fn show_game_summary<I: Input, W: Write>(
                 issue.kind,
                 HeroicIssueKind::Missing | HeroicIssueKind::Invalid | HeroicIssueKind::Conflict
             ) && !covered_prefix_conflict(imported, issue)
+                && !dropped_conflict(issue)
         })
         .map(|issue| style::error(&issue.message))
         .collect();
@@ -2758,7 +2761,7 @@ mod tests {
     }
 
     #[test]
-    fn attention_items_are_summary_warnings_not_a_prompt() {
+    fn review_items_are_summary_warnings_not_prompts() {
         let root = tempdir().unwrap();
         let (mut imported, _, _) = reviewed_import(root.path());
         imported.issues = vec![
@@ -2772,6 +2775,16 @@ mod tests {
                 field: Some("external files".to_owned()),
                 message: "game files or saves remain outside the imported prefix".to_owned(),
             },
+            HeroicIssue {
+                kind: HeroicIssueKind::Conflict,
+                field: Some("WINEPREFIX".to_owned()),
+                message: "Heroic setting conflicts with a wineo-managed variable".to_owned(),
+            },
+            HeroicIssue {
+                kind: HeroicIssueKind::Unsupported,
+                field: Some("gamescope".to_owned()),
+                message: "gamescope is not imported".to_owned(),
+            },
         ];
         let mut prompt = Prompt::new(Script::new(&[]), Vec::new());
         show_game_summary(&mut prompt, &paths(root.path()), &imported, false).unwrap();
@@ -2781,6 +2794,15 @@ mod tests {
             "{printed}"
         );
         assert!(!printed.contains("remain outside"), "{printed}");
+        assert!(
+            printed.contains("WINEPREFIX is dropped, wineo manages it"),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("1 more Heroic setting is not imported"),
+            "{printed}"
+        );
+        assert!(!printed.contains("error"), "{printed}");
 
         review_settings(&mut prompt, &mut imported).unwrap();
         assert!(imported.issues.is_empty());

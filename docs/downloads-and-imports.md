@@ -91,9 +91,10 @@ A successfully installed runner remains available if the import is canceled.
 
 Review covers the executable, argument boundaries, working directory,
 environment variables, gamemode, and supported compatibility toggles. Unsupported
-wrappers, scripts, runtime settings, and other omissions require attention.
-Noninteractive imports refuse unresolved settings; add `--interactive` to review
-them. Import does not launch the game automatically.
+wrappers, scripts, and runtime settings are omitted, and settings wineo manages
+itself are dropped. The summary lists both as warnings, with `-v` naming every
+omitted setting. Noninteractive imports refuse unresolved settings; add
+`--interactive` to review them. Import does not launch the game automatically.
 
 With a Wine runner, Heroic's DXVK and vkd3d-proton toggles become
 `dxvk = "latest"` and `vkd3d = "latest"`. Proton bundles its own, so Proton
