@@ -1941,26 +1941,13 @@ fn review_settings<I: Input, W: Write>(
             _ => return Err(anyhow::anyhow!(Canceled)),
         }
     }
-    let needs_attention = imported.issues.iter().any(|issue| {
-        matches!(
+    // Already shown as summary warnings, and the final review edits the paths.
+    imported.issues.retain(|issue| {
+        !matches!(
             issue.kind,
             HeroicIssueKind::NeedsAttention | HeroicIssueKind::External
         )
     });
-    if needs_attention {
-        match prompt.confirm(
-            "Keep external paths and other settings needing attention?",
-            true,
-        )? {
-            Reply::Value(true) => imported.issues.retain(|issue| {
-                !matches!(
-                    issue.kind,
-                    HeroicIssueKind::NeedsAttention | HeroicIssueKind::External
-                )
-            }),
-            _ => return Err(anyhow::anyhow!(Canceled)),
-        }
-    }
     if imported.issues.iter().any(|issue| {
         matches!(
             issue.kind,
@@ -2134,25 +2121,30 @@ fn show_game_summary<I: Input, W: Write>(
     }) {
         warnings.push("EAC and BattlEye runtimes aren't imported".to_owned());
     }
-    if verbose {
-        for issue in &imported.issues {
-            if matches!(
-                issue.field.as_deref(),
-                Some("eacRuntime") | Some("battlEyeRuntime")
-            ) {
-                continue;
-            }
-            if matches!(
-                issue.kind,
-                HeroicIssueKind::Unsupported | HeroicIssueKind::NeedsAttention
-            ) {
-                warnings.push(format!(
-                    "{}: {}",
-                    issue.field.as_deref().unwrap_or("?"),
-                    issue.message
-                ));
-            }
+    for issue in &imported.issues {
+        if matches!(
+            issue.field.as_deref(),
+            Some("eacRuntime") | Some("battlEyeRuntime")
+        ) {
+            continue;
         }
+        let shown = match issue.kind {
+            HeroicIssueKind::NeedsAttention => true,
+            HeroicIssueKind::Unsupported => verbose,
+            _ => false,
+        };
+        if !shown {
+            continue;
+        }
+        warnings.push(if verbose {
+            format!(
+                "{}: {}",
+                issue.field.as_deref().unwrap_or("?"),
+                issue.message
+            )
+        } else {
+            issue.message.clone()
+        });
     }
     if !warnings.is_empty() {
         blocks.push(Block {
@@ -2763,6 +2755,35 @@ mod tests {
             printed.contains("warning      EAC and BattlEye runtimes aren't imported"),
             "{printed}"
         );
+    }
+
+    #[test]
+    fn attention_items_are_summary_warnings_not_a_prompt() {
+        let root = tempdir().unwrap();
+        let (mut imported, _, _) = reviewed_import(root.path());
+        imported.issues = vec![
+            HeroicIssue {
+                kind: HeroicIssueKind::NeedsAttention,
+                field: Some("targetExe".to_owned()),
+                message: "executable path was relative".to_owned(),
+            },
+            HeroicIssue {
+                kind: HeroicIssueKind::External,
+                field: Some("external files".to_owned()),
+                message: "game files or saves remain outside the imported prefix".to_owned(),
+            },
+        ];
+        let mut prompt = Prompt::new(Script::new(&[]), Vec::new());
+        show_game_summary(&mut prompt, &paths(root.path()), &imported, false).unwrap();
+        let printed = String::from_utf8_lossy(prompt.output()).into_owned();
+        assert!(
+            printed.contains("executable path was relative"),
+            "{printed}"
+        );
+        assert!(!printed.contains("remain outside"), "{printed}");
+
+        review_settings(&mut prompt, &mut imported).unwrap();
+        assert!(imported.issues.is_empty());
     }
 
     #[test]

@@ -36,6 +36,8 @@ Settled by the maintainer:
 - `--all` prints `Checking N Heroic games...` before inspecting prefixes.
 - A warning shared by every game in the `--all` table prints once under it
   instead of on each row.
+- Guided Heroic import no longer asks to keep settings needing attention.
+  They print as summary warnings, and the final review edits the paths.
 
 The maintainer approved this plan.
 
