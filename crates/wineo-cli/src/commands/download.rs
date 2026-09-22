@@ -357,6 +357,21 @@ pub(crate) fn install(
     Ok(release.installed_name.clone())
 }
 
+/// Downloads the newest stable release for `provider`, with no picking: for
+/// callers that already decided what they want and just need it fetched,
+/// like a missing Proton runner or DXVK/vkd3d-proton build offered a quick
+/// download instead of the full picker.
+pub(crate) fn install_latest(
+    paths: &Paths,
+    global: &GlobalConfig,
+    provider: Provider,
+) -> anyhow::Result<String> {
+    let cancellation = Cancellation::new()?;
+    let client = Client::new()?;
+    let release = cancellation.result(client.select(provider, None))?;
+    install(paths, global, &client, &release, &cancellation)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

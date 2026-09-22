@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use wineo_core::config::{Arch, GlobalConfig, Target};
-use wineo_core::download::{Client, Provider};
+use wineo_core::download::Provider;
 use wineo_core::environment::{self, Environment};
 use wineo_core::heroic::{
     HeroicCandidate, HeroicGameKind, HeroicImport, HeroicIssue, HeroicIssueKind, HeroicRunnerKind,
@@ -537,10 +537,7 @@ fn download_latest_ge_proton<I: Input, W: Write>(
         Reply::Value(true) => {}
         _ => return Err(Canceled.into()),
     }
-    let cancellation = Cancellation::new()?;
-    let client = Client::new()?;
-    let release = cancellation.result(client.select(Provider::GeProton, None))?;
-    let name = download::install(paths, global, &client, &release, &cancellation)?;
+    let name = download::install_latest(paths, global, Provider::GeProton)?;
     let runner = runners.resolve(&name)?;
     Ok((name, runner))
 }
