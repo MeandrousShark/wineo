@@ -828,7 +828,7 @@ fn bulk_warning(imported: &HeroicImport) -> Option<String> {
         )
     });
     if eac_or_battleye {
-        return Some("EAC/BattlEye not imported".to_owned());
+        return Some("EAC/BattlEye runtimes aren't imported".to_owned());
     }
     imported
         .issues
@@ -854,12 +854,27 @@ fn bulk_desktop_choice(desktop_flag: bool, yes_flag: bool) -> Option<bool> {
     }
 }
 
+/// The warning every ready (non-skipped) row shares, if there is at least
+/// one ready row and they all carry the exact same one. `None` also covers
+/// there being no shared warning to pull out.
+fn shared_ready_warning(rows: &[BulkRow]) -> Option<&str> {
+    let mut ready_warnings = rows.iter().filter_map(|row| match &row.status {
+        RowStatus::Ready { warn } => Some(warn.as_deref()),
+        RowStatus::Skipped(_) => None,
+    });
+    let first = ready_warnings.next()??;
+    ready_warnings
+        .all(|warn| warn == Some(first))
+        .then_some(first)
+}
+
 fn render_bulk_table(
     runner_name: &str,
     mode_label: &str,
     rows: &[BulkRow],
     already: &[String],
 ) -> String {
+    let shared_warning = shared_ready_warning(rows);
     let name_width = rows.iter().map(|row| row.name.len()).max().unwrap_or(0);
     let title_width = rows.iter().map(|row| row.title.len()).max().unwrap_or(0);
     let mut out = format!(
@@ -872,13 +887,15 @@ fn render_bulk_table(
     for row in rows {
         let status = match &row.status {
             RowStatus::Skipped(reason) => format!("skip: {reason}"),
-            RowStatus::Ready { warn: None } => mode_label.to_owned(),
-            RowStatus::Ready {
-                warn: Some(warning),
-            } => format!(
-                "{mode_label}   {}",
-                style::warning(format!("warn: {warning}"))
-            ),
+            RowStatus::Ready { warn } => {
+                match warn.as_deref().filter(|_| shared_warning.is_none()) {
+                    None => mode_label.to_owned(),
+                    Some(warning) => format!(
+                        "{mode_label}   {}",
+                        style::warning(format!("warn: {warning}"))
+                    ),
+                }
+            }
         };
         let name = &row.name;
         let title = &row.title;
@@ -888,6 +905,9 @@ fn render_bulk_table(
     }
     if !already.is_empty() {
         out.push_str(&format!("Already imported: {}\n", already.join(", ")));
+    }
+    if let Some(warning) = shared_warning {
+        out.push_str(&format!("{}\n", style::warning(format!("warn: {warning}"))));
     }
     out.pop();
     out
@@ -2900,7 +2920,10 @@ mod tests {
             },
         ];
         let warn = bulk_review_issues(&mut imported).unwrap();
-        assert_eq!(warn.as_deref(), Some("EAC/BattlEye not imported"));
+        assert_eq!(
+            warn.as_deref(),
+            Some("EAC/BattlEye runtimes aren't imported")
+        );
     }
 
     #[test]
@@ -3056,7 +3079,7 @@ mod tests {
                 name: "hades".to_owned(),
                 title: "Hades".to_owned(),
                 status: RowStatus::Ready {
-                    warn: Some("EAC/BattlEye not imported".to_owned()),
+                    warn: Some("EAC/BattlEye runtimes aren't imported".to_owned()),
                 },
             },
             BulkRow {
@@ -3074,11 +3097,82 @@ mod tests {
             "copy",
             "hades",
             "Hades",
-            "copy   warn: EAC/BattlEye not imported",
+            "copy   warn: EAC/BattlEye runtimes aren't imported",
             "celeste",
             "Celeste",
             "skip: Wine runner, needs --runner",
         );
         assert_eq!(text, expected);
+    }
+
+    #[test]
+    fn render_bulk_table_collapses_a_warning_every_ready_row_shares() {
+        let rows = vec![
+            BulkRow {
+                name: "palworld".to_owned(),
+                title: "Palworld".to_owned(),
+                status: RowStatus::Ready {
+                    warn: Some("EAC/BattlEye runtimes aren't imported".to_owned()),
+                },
+            },
+            BulkRow {
+                name: "hades".to_owned(),
+                title: "Hades".to_owned(),
+                status: RowStatus::Ready {
+                    warn: Some("EAC/BattlEye runtimes aren't imported".to_owned()),
+                },
+            },
+            BulkRow {
+                name: "celeste".to_owned(),
+                title: "Celeste".to_owned(),
+                status: RowStatus::Skipped("Wine runner, needs --runner".to_owned()),
+            },
+        ];
+        let text = render_bulk_table("GE-Proton11-1", "copy", &rows, &[]);
+        let expected = format!(
+            "Import 3 Heroic games with GE-Proton11-1:\n  {:8}  {:8}  {}\n  {:8}  {:8}  {}\n  {:8}  {:8}  {}\nwarn: EAC/BattlEye runtimes aren't imported",
+            "palworld",
+            "Palworld",
+            "copy",
+            "hades",
+            "Hades",
+            "copy",
+            "celeste",
+            "Celeste",
+            "skip: Wine runner, needs --runner",
+        );
+        assert_eq!(text, expected);
+    }
+
+    #[test]
+    fn shared_ready_warning_requires_every_ready_row_to_agree() {
+        let same = |name: &str, warn: Option<&str>| BulkRow {
+            name: name.to_owned(),
+            title: name.to_owned(),
+            status: RowStatus::Ready {
+                warn: warn.map(str::to_owned),
+            },
+        };
+        assert_eq!(
+            shared_ready_warning(&[same("a", Some("x")), same("b", Some("x"))]),
+            Some("x")
+        );
+        assert_eq!(
+            shared_ready_warning(&[same("a", Some("x")), same("b", Some("y"))]),
+            None
+        );
+        assert_eq!(
+            shared_ready_warning(&[same("a", Some("x")), same("b", None)]),
+            None
+        );
+        assert_eq!(shared_ready_warning(&[same("a", None)]), None);
+        assert_eq!(
+            shared_ready_warning(&[BulkRow {
+                name: "a".to_owned(),
+                title: "a".to_owned(),
+                status: RowStatus::Skipped("nope".to_owned()),
+            }]),
+            None
+        );
     }
 }
