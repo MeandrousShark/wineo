@@ -215,9 +215,18 @@ Choice [1]:
 ## Missing DXVK and vkd3d-proton
 
 Proton runners bundle their own, so this only concerns Wine environments.
-When a guided flow (`new`, `set`, `import`) selects a DXVK or vkd3d-proton
+When a guided flow (`new`, `import`) selects a DXVK or vkd3d-proton
 setting with no matching local build, offer to download the latest release
 instead of failing later.
+
+- `set` stays noninteractive. Its missing-build error adds a hint, for
+  example `Get one with: wineo download dxvk`.
+- Heroic imports with a Wine runner carry `autoInstallDxvk` and
+  `autoInstallVkd3d` over as `dxvk = "latest"` and `vkd3d = "latest"`,
+  shown as `dxvk` and `vkd3d` summary rows. Proton imports still drop them.
+- Flag-driven imports and `--all --yes` don't download. They fail with the
+  same hint as `set`. Interactive `--all` offers each missing download once,
+  before the table.
 
 ## Import log
 
