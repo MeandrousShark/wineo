@@ -22,9 +22,12 @@ Settled by the maintainer during QA triage:
   the problem, without suggesting a replacement name. This supersedes the
   original 0007 wording and is recorded there too.
 - Fix 0008 findings 1, 2, 3, 5, 6, 8, 9, and 10.
-- Explain 0008 finding 4 before deciding on a change. Its proposed handling
-  below is not yet approved for implementation.
-- Investigate 0008 finding 7 (`disableUMU`); the outcome is not predetermined.
+- For 0008 finding 4, use option 1: offer copy only for an accessible, validated
+  build; otherwise explain the problem and offer a compatible host runner.
+  Portable builds used by Flatpak Heroic remain eligible for copy. Do not add
+  sandbox path discovery or a Flatpak launch backend as part of this fix.
+- Investigate 0008 finding 7 (`disableUMU`); findings are recorded in H, but
+  its handling still needs a maintainer decision.
 - Fix all twelve 0009 findings.
 - Draft this plan before implementation. The remediation designs below remain
   proposals until the maintainer approves the plan.
@@ -52,10 +55,10 @@ which keys invoke cancel or back is not.
 | 0008.1 | Fix | C: publication decides download success |
 | 0008.2 | Fix | D: home expansion for edited exe/cwd paths |
 | 0008.3 | Fix | D: shared-prefix disclosure |
-| 0008.4 | Explain, pending decision | H: Flatpak-only runner classification |
+| 0008.4 | Fix, option 1 selected | H: validate copying or offer a host runner |
 | 0008.5 | Fix | D: external dependencies of copied runners |
 | 0008.6 | Fix | D: Wine NVAPI dependency warning |
-| 0008.7 | Investigate | H: determine effective `disableUMU` behavior |
+| 0008.7 | Investigated, decision pending | H: choose handling of `disableUMU` |
 | 0008.8 | Fix | F: adoption followed by `rm --delete-prefix` |
 | 0008.9 | Fix | C: abandoned download staging retry test |
 | 0008.10 | Fix | F: local runner-copy failure and concurrency tests |
@@ -345,39 +348,133 @@ claim that the maintainer's installed Heroic currently stores those exact values
 A GE-Proton or Wine build downloaded into a user directory by Flatpak Heroic
 may still be copyable from the host. Do not reject all Flatpak-origin runners.
 
-Proposed handling, pending the maintainer's decision: identify sandbox-only
-system runners before offering copy, explain the unavailable host runner in
-one sentence, and route to a compatible installed/downloaded replacement.
-Keep portable host-accessible builds eligible for copy. Do not silently switch
-Wine/Proton kind, install Flatpak, or copy the application/runtime filesystem.
+Selected by the maintainer: option 1, validate the source before offering copy.
+For a sandbox-only or otherwise unavailable build, explain the problem in one
+sentence and route guided import to compatible host runner selection. Wine
+can use host system Wine or an installed Wine build; Proton can use an
+installed build or an explicitly downloaded supported Proton build. Scripted
+imports get a clear error directing them to `--runner` when a replacement is
+required. Keep portable host-accessible builds eligible for copy.
 
-If approved, add fixtures distinguishing sandbox-only metadata, host system
-Wine, and a copyable build downloaded by Flatpak Heroic. Assert the unavailable
-copy is never selected and replacement choices remain usable.
+Do not silently switch Wine/Proton kind, install Flatpak, copy the application
+or runtime filesystem, add sandbox-to-host path discovery, or add a Flatpak
+launch backend. Preflight does not replace validation immediately before
+copying, since source contents can change after the menu was shown.
+
+Add fixtures distinguishing sandbox-only metadata, host system Wine, and a
+copyable build downloaded by Flatpak Heroic. Assert the unavailable copy is
+never selected, replacement choices remain usable, and scripted imports do
+not silently choose a different runner.
 
 ### 0008.7: Investigate `disableUMU`
 
-Inspect the supported Heroic source/schema at a recorded revision and construct
-fixtures for absent, false, and true values across Wine and Proton. Determine
-whether the field changes effective launch behavior, is obsolete, or is already
-accounted for by the chosen runner. Trace inheritance and source-origin effects
-instead of assuming its name describes current behavior.
+Investigation completed on 2026-09-22 against Heroic v2.22.3 at commit
+`97078f6b81e1db86eb8b287d1468ef31a5b6cf13`. The same UMU eligibility rule was
+checked on main at `3934a83a0707baad23cd2c06bc94bd23f51e6622`.
 
-Report the evidence, a concrete affected configuration if one exists, and the
-smallest proposed response. Possible outcomes include no runtime change with
-a documented regression test, an unsupported-setting warning, or a separately
-approved compatibility change. Do not implement a new launch mode or silently
-drop/change the field while the investigation is pending. Obtain the maintainer's
-decision before implementing any proposed behavior change.
+Evidence:
+
+- Heroic's [UMU eligibility check](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/blob/97078f6b81e1db86eb8b287d1468ef31a5b6cf13/src/backend/utils/compatibility_layers.ts#L581-L594)
+  requires Linux and a Proton runner, and returns false for
+  `disableUMU === true`. False or absent does not disable UMU; plain Wine is
+  ineligible regardless of this field. This check has no Flatpak-only branch.
+- The [sideload launch path](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/blob/97078f6b81e1db86eb8b287d1468ef31a5b6cf13/src/backend/storeManagers/storeManagerCommon/games.ts#L255-L271)
+  calls `runWineCommand` with `waitforexitandrun`. That
+  [command builder](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/blob/97078f6b81e1db86eb8b287d1468ef31a5b6cf13/src/backend/launcher.ts#L1518-L1524)
+  selects the Proton binary instead of UMU when UMU is disabled, and prepends
+  the Proton verb. The field changes the launcher; it does not change a
+  Proton prefix into a Wine prefix.
+- The reviewed [game settings loader](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/blob/97078f6b81e1db86eb8b287d1468ef31a5b6cf13/src/backend/game_config.ts#L203-L317)
+  preserves the per-game value, leaves it absent on existing configs when not
+  set, and supplies false for new games. Its whitelist of inherited global
+  fields does not include `disableUMU`. Do not infer an effective true value
+  solely from an arbitrary global field; match the supported schema's loader.
+- Wineo's core `heroic::collect_unsupported` lists `disableUMU` as known but
+  neither translates nor reports it. `Runner::command` always invokes
+  `umu-run` for Proton, as settled in plan 0004.
+
+Six disposable CLI fixtures were imported with explicit runners, `--adopt`,
+and `-v`, using isolated XDG roots and synthetic Wine/Proton prefixes. Each
+import succeeded; none mentioned `disableUMU` in its saved config, output, or
+import log. No game, Wine, Proton, or UMU process was launched.
+
+| Fixture | Heroic's relevant behavior | Current wineo result |
+|---|---|---|
+| Proton, absent | Does not disable UMU | Imports silently; uses UMU |
+| Proton, false | Does not disable UMU | Imports silently; uses UMU |
+| Proton, true | Runs Proton without UMU | Imports silently; uses UMU |
+| Wine, absent/false/true | This flag has no effect on runner eligibility | Imports silently; uses Wine |
+
+The confirmed mismatch is a Linux Proton sideload with effective
+`disableUMU=true`. Real-game compatibility under the changed launcher was not
+tested. This investigation establishes the behavior difference and missing
+disclosure, not that every affected game fails.
+
+Handling options, awaiting the maintainer's choice:
+
+1. **Report the mismatch using existing review policy (recommended).** Keep
+   Wineo's UMU-only Proton model and report a specific warning such as
+   `Heroic disabled umu; wineo uses umu for Proton`. Guided and bulk import
+   continue using their approved warning defaults, without another prompt.
+   Flag-driven single-game import follows its existing unresolved-setting
+   refusal and guidance. Preserve the evidence in verbose output and logs;
+   do not warn for absent/false values or plain Wine. This does not preserve
+   direct-Proton behavior, and the warning must say so.
+2. **Require explicit acceptance of the launcher change.** Refuse or skip
+   these imports until the user explicitly accepts UMU. This needs a new
+   acknowledgment mechanism and an exception to the settled guided/bulk
+   warning defaults; its command/prompt contract needs approval first.
+3. **Support direct Proton as a launch mode.** Preserve the effective setting
+   through runner/config design, initialization, launch, tools, stopping, and
+   recovery. This expands the runner architecture and revisits plan 0004;
+   it needs a separate design before implementation, not an environment-variable
+   substitution or a silent switch to Wine.
+
+Once a handling is selected, add regression fixtures for the table above,
+per-game versus global-only values under the supported schema, and every
+affected review mode/log. This investigation did not add permanent tests or
+change runtime code, and it does not authorize any of the three options.
+
+## Implementation proposals needing attention
+
+The following are proposed behavior or unresolved details, not additional
+maintainer decisions hidden inside the fix list:
+
+- **Recovery for legacy or unreadable records (A):** the draft keeps work
+  blocked when ownership cannot be proven and relies on existing manual
+  state-removal guidance after the user verifies the processes are gone.
+  Decide whether that manual path is sufficient or a dedicated, explicitly
+  acknowledged state-clear command belongs in a separate design. Neither path
+  may signal a process based solely on a stale group number.
+- **Cancellation after publication (C):** the draft proposes success once the
+  verified build has been atomically installed, even if cancel arrives before
+  the CLI returns. This preserves disk truth without deleting a completed
+  build; the previous plan did not explicitly settle that raced exit status.
+- **A missing pinned component build (C):** retaining the pin is already
+  required, but the guided response is unspecified. Choose between offering
+  an explicit download of that exact version or giving an exact-version
+  command and returning to review; downloading latest must not silently replace
+  the pin.
+
+Existing 0009 policy already backfills legacy Heroic IDs during classification,
+before the import confirmation. Keeping that order means declining the later
+import can still leave a valid ID backfill. This is preserved behavior, not a
+new proposal; changing it would reopen that part of 0009. No nonempty different
+ID may be overwritten under either ordering.
+
+The warning defaults and real manual acceptance requirement were also settled
+previously. Multiple warnings on a single bulk row still need a concise
+presentation during implementation; no new review prompt is implied.
 
 ## Sequence and verification
 
-1. Approve this plan's implementation proposals; resolve 0008.4 independently.
+1. Approve this plan's implementation proposals, including the selected
+   0008.4 handling and the outstanding details above.
 2. Implement A and B first, with regression tests before moving to UI work.
 3. Implement C and D, with fixture-backed tests and preserved source content.
 4. Implement E and complete the remaining F workflow coverage.
-5. Complete H's investigation and present its evidence for a maintainer decision;
-   it can run alongside the approved work and does not authorize a guessed fix.
+5. Obtain a maintainer disposition for H's `disableUMU` findings; the
+   investigation is complete and does not authorize a guessed fix.
 6. Run independent QA, then perform and record G's manual acceptance.
 
 Commit every logical change with a short message and no attribution trailers.
@@ -413,11 +510,13 @@ all automated test I/O isolated from the maintainer's real prefixes/configs.
 - Completed and canceled operations report outcomes consistent with disk state.
 - Normal/verbose/logged reviews preserve the required facts and warnings.
 - Automated checks and independent QA pass; real lifecycle results are recorded.
-- 0008.4 has an explicit disposition and 0008.7 has reported evidence and a
-  maintainer disposition. A deferral is recorded as such, not described as fixed.
+- 0008.4's selected fallback has been implemented and 0008.7 has a maintainer
+  disposition based on the recorded evidence. A deferral is recorded as such,
+  not described as fixed.
 - Known deferred behavior remains deferred, and 0007.4 remains concise.
 
 ## Acceptance results
 
-Not run. This is a draft plan; no implementation or new acceptance run has
+Manual acceptance has not run. This is a draft plan with the investigation
+results recorded in H; no implementation or real-game acceptance run has
 been performed for it.
