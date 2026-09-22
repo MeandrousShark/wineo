@@ -310,7 +310,9 @@ fn describe(paths: &Paths, global: &GlobalConfig, release: &Release) -> anyhow::
     ))
 }
 
-fn install(
+/// Also used by `import heroic --all` to fetch a GE-Proton build when no
+/// Proton runner is installed.
+pub(crate) fn install(
     paths: &Paths,
     global: &GlobalConfig,
     client: &Client,

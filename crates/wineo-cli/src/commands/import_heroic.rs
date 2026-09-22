@@ -1,12 +1,14 @@
 use anyhow::{Context, bail};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use wineo_core::config::{Arch, GlobalConfig, Target};
+use wineo_core::download::{Client, Provider};
+use wineo_core::environment::{self, Environment};
 use wineo_core::heroic::{
-    HeroicGameKind, HeroicImport, HeroicIssue, HeroicIssueKind, HeroicRunnerKind, HeroicSource,
-    SettingsReview,
+    HeroicCandidate, HeroicGameKind, HeroicImport, HeroicIssue, HeroicIssueKind, HeroicRunnerKind,
+    HeroicSource, SettingsReview,
 };
 use wineo_core::import::{self, ExternalDependency, ImportRequest, ImportedSettings, Inspection};
 use wineo_core::paths::Paths;
@@ -14,6 +16,7 @@ use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
 use super::desktop;
+use super::download;
 use super::import::{choose_runner, finish_guided, import_reviewed};
 use super::transfer::Cancellation;
 use crate::picker;
@@ -52,6 +55,12 @@ pub struct Args {
     /// Review and edit choices even when flags supply all required values
     #[arg(long)]
     pub interactive: bool,
+    /// Import every importable Heroic sideload at once
+    #[arg(long, conflicts_with_all = ["game", "name", "list", "dir", "interactive"])]
+    pub all: bool,
+    /// Skip the confirmation and allow running without a terminal
+    #[arg(short, long)]
+    pub yes: bool,
 }
 
 struct OutputOnly;
@@ -83,6 +92,16 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         }
         return Ok(ExitCode::SUCCESS);
     }
+    if args.all {
+        return match run_all(paths, &global, args, verbose) {
+            Ok(code) => Ok(code),
+            Err(error) if error.is::<Canceled>() => {
+                eprintln!("Import canceled");
+                Ok(ExitCode::from(130))
+            }
+            Err(error) => Err(error),
+        };
+    }
     let needs_guided =
         args.interactive || args.game.is_none() || args.name.is_none() || args.runner.is_none();
     if !needs_guided {
@@ -95,13 +114,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         let runner = Runners::new(paths, &global)?.resolve(&runner_name)?;
         let inspection = prefix_inspection(&imported, &runner, args.arch)?;
         clear_runner_dependency(&mut imported);
-        imported.issues.retain(|issue| {
-            !(issue.kind == HeroicIssueKind::Conflict
-                && matches!(
-                    issue.field.as_deref(),
-                    Some("wineVersion") | Some("winePrefix")
-                ))
-        });
+        drop_runner_conflicts(&mut imported);
         suppress_covered_settings(&mut imported);
         let mut request = request(
             paths,
@@ -263,19 +276,7 @@ fn guided<I: Input, W: Write>(
     let candidates: Vec<_> = listing
         .candidates
         .iter()
-        .filter(|candidate| {
-            candidate.kind == HeroicGameKind::Windows
-                && !candidate.issues.iter().any(|issue| {
-                    matches!(
-                        issue.kind,
-                        HeroicIssueKind::Missing | HeroicIssueKind::Invalid
-                    ) && issue.field.as_deref() != Some("launcherArgs")
-                })
-                && !candidate.issues.iter().any(|issue| {
-                    issue.field.as_deref() == Some("runner")
-                        && issue.kind == HeroicIssueKind::Unsupported
-                })
-        })
+        .filter(|candidate| candidate_filter_issue(candidate).is_none())
         .cloned()
         .collect();
     anyhow::ensure!(
@@ -333,13 +334,7 @@ fn guided<I: Input, W: Write>(
     let resolved = Runners::new(paths, global)?.resolve(&runner_name)?;
     let inspection = prefix_inspection(&imported, &resolved, args.arch)?;
     clear_runner_dependency(&mut imported);
-    imported.issues.retain(|issue| {
-        !(issue.kind == HeroicIssueKind::Conflict
-            && matches!(
-                issue.field.as_deref(),
-                Some("wineVersion") | Some("winePrefix")
-            ))
-    });
+    drop_runner_conflicts(&mut imported);
     suppress_covered_settings(&mut imported);
     review_settings(prompt, &mut imported)?;
     let adopt = if args.adopt {
@@ -413,6 +408,548 @@ fn guided<I: Input, W: Write>(
         print_log_path(paths, &environment.name, &body);
     }
     finish_guided(paths, global, &environment, prompt)
+}
+
+// -- Bulk import (`--all`) --
+
+/// A candidate as `--all` displays it before importing: how it's named, and
+/// what happens to it.
+struct BulkRow {
+    name: String,
+    title: String,
+    status: RowStatus,
+}
+
+enum RowStatus {
+    Ready { warn: Option<String> },
+    Skipped(String),
+}
+
+/// A candidate ready to import, with everything already inspected and
+/// reviewed so importing it needs no further Heroic reads.
+struct ReadyGame {
+    name: String,
+    title: String,
+    imported: HeroicImport,
+    inspection: Inspection,
+    request: ImportRequest,
+}
+
+fn run_all(
+    paths: &Paths,
+    global: &GlobalConfig,
+    args: Args,
+    verbose: bool,
+) -> anyhow::Result<ExitCode> {
+    anyhow::ensure!(
+        args.yes || prompt::interactive(),
+        "bulk Heroic import needs a terminal; pass --yes to skip the confirmation"
+    );
+    let source = source(paths, args.config_dir.as_deref())?;
+    let runners = Runners::new(paths, global)?;
+    let mut prompt = if args.yes {
+        None
+    } else {
+        Some(Prompt::new(Terminal::open()?, io::stdout()).with_color(style::enabled()))
+    };
+
+    let (runner_name, runner) = match &args.runner {
+        Some(name) => (name.clone(), runners.resolve(name)?),
+        None => match runners.newest_proton()? {
+            Some(runner) => (runner.selection().to_owned(), runner),
+            None => {
+                anyhow::ensure!(
+                    !args.yes,
+                    "no Proton runner is installed; pass --runner or download one first"
+                );
+                let prompt = prompt.as_mut().expect("interactive was checked above");
+                download_latest_ge_proton(paths, global, &runners, prompt)?
+            }
+        },
+    };
+
+    let listing = source.list_candidates()?;
+    let existing = existing_environments(paths)?;
+    let (rows, ready, already) = classify_candidates(
+        paths,
+        global,
+        &source,
+        &listing.candidates,
+        &existing,
+        &runner_name,
+        &runner,
+        &args,
+    )?;
+
+    let mode_label = if args.adopt { "adopt" } else { "copy" };
+    println!(
+        "{}",
+        render_bulk_table(&runner_name, mode_label, &rows, &already)
+    );
+    if ready.is_empty() {
+        println!("No Heroic games are ready to import.");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let desktop_enabled = match bulk_desktop_choice(args.desktop, args.yes) {
+        Some(value) => value,
+        None => {
+            let prompt = prompt.as_mut().expect("interactive was checked above");
+            match prompt.confirm("Create desktop entries for these games?", true)? {
+                Reply::Value(value) => value,
+                Reply::Back => return Err(Canceled.into()),
+            }
+        }
+    };
+
+    if !args.yes {
+        let prompt = prompt.as_mut().expect("interactive was checked above");
+        match prompt.confirm(&format!("Import {} games?", ready.len()), true)? {
+            Reply::Value(true) => {}
+            _ => return Err(Canceled.into()),
+        }
+    }
+
+    import_all(
+        paths,
+        global,
+        &source,
+        &runner,
+        ready,
+        desktop_enabled,
+        verbose,
+    )
+}
+
+/// Confirms once, then downloads the newest stable GE-Proton release with
+/// the same install routine the guided runner chooser's download uses.
+fn download_latest_ge_proton<I: Input, W: Write>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    runners: &Runners,
+    prompt: &mut Prompt<I, W>,
+) -> anyhow::Result<(String, Runner)> {
+    match prompt.confirm(
+        "No Proton runner is installed. Download the latest GE-Proton?",
+        true,
+    )? {
+        Reply::Value(true) => {}
+        _ => return Err(Canceled.into()),
+    }
+    let cancellation = Cancellation::new()?;
+    let client = Client::new()?;
+    let release = cancellation.result(client.select(Provider::GeProton, None))?;
+    let name = download::install(paths, global, &client, &release, &cancellation)?;
+    let runner = runners.resolve(&name)?;
+    Ok((name, runner))
+}
+
+/// An environment already on disk, as much as matching a Heroic candidate
+/// against it needs.
+struct ExistingEnvironment {
+    name: String,
+    heroic_id: Option<String>,
+    prefix: PathBuf,
+}
+
+fn existing_environments(paths: &Paths) -> anyhow::Result<Vec<ExistingEnvironment>> {
+    let mut found = Vec::new();
+    for name in environment::names(paths)? {
+        let Ok(loaded) = Environment::load(paths, &name) else {
+            continue;
+        };
+        let Ok(prefix) = loaded.prefix(paths) else {
+            continue;
+        };
+        found.push(ExistingEnvironment {
+            name,
+            heroic_id: loaded.config.heroic_id.clone(),
+            prefix: wineo_core::paths::resolve(&prefix),
+        });
+    }
+    Ok(found)
+}
+
+/// Which existing environment a Heroic candidate was already imported as.
+struct ExistingMatch {
+    name: String,
+    /// Whether that environment predates recording the Heroic id, and so
+    /// still needs it backfilled.
+    needs_id: bool,
+}
+
+/// Matches a Heroic candidate to an environment already imported from it: by
+/// its recorded id first, then for older imports, by the prefix it adopted
+/// or its default name.
+fn match_existing(
+    existing: &[ExistingEnvironment],
+    candidate_id: &str,
+    candidate_prefix: Option<&Path>,
+    default_name: &str,
+) -> Option<ExistingMatch> {
+    if let Some(environment) = existing
+        .iter()
+        .find(|environment| environment.heroic_id.as_deref() == Some(candidate_id))
+    {
+        return Some(ExistingMatch {
+            name: environment.name.clone(),
+            needs_id: false,
+        });
+    }
+    if let Some(prefix) = candidate_prefix {
+        let resolved = wineo_core::paths::resolve(prefix);
+        if let Some(environment) = existing
+            .iter()
+            .find(|environment| environment.prefix == resolved)
+        {
+            return Some(ExistingMatch {
+                name: environment.name.clone(),
+                needs_id: true,
+            });
+        }
+    }
+    existing
+        .iter()
+        .find(|environment| environment.name == default_name)
+        .map(|environment| ExistingMatch {
+            name: environment.name.clone(),
+            needs_id: true,
+        })
+}
+
+fn default_name_for(title: &str, executable: Option<&Path>) -> String {
+    let exe = executable
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    wineo_core::targets::suggest_name(title, &exe)
+}
+
+/// Sorts every Heroic candidate into already imported, skipped with a
+/// reason, or ready to import, backfilling `heroic_id` onto legacy matches
+/// as it goes.
+#[allow(clippy::too_many_arguments)]
+fn classify_candidates(
+    paths: &Paths,
+    global: &GlobalConfig,
+    source: &HeroicSource,
+    candidates: &[HeroicCandidate],
+    existing: &[ExistingEnvironment],
+    runner_name: &str,
+    runner: &Runner,
+    args: &Args,
+) -> anyhow::Result<(Vec<BulkRow>, Vec<ReadyGame>, Vec<String>)> {
+    let mut rows = Vec::new();
+    let mut ready = Vec::new();
+    let mut already = Vec::new();
+    let mut used_names: BTreeSet<String> = BTreeSet::new();
+
+    for candidate in candidates {
+        let default_name = default_name_for(&candidate.title, candidate.executable.as_deref());
+        if let Some(matched) = match_existing(
+            existing,
+            &candidate.id,
+            candidate.prefix.as_deref(),
+            &default_name,
+        ) {
+            if matched.needs_id {
+                Environment::record_heroic_id(paths, &matched.name, &candidate.id)?;
+            }
+            already.push(matched.name);
+            continue;
+        }
+        if let Some(issue) = candidate_filter_issue(candidate) {
+            rows.push(BulkRow {
+                name: default_name,
+                title: candidate.title.clone(),
+                status: RowStatus::Skipped(issue.message.clone()),
+            });
+            continue;
+        }
+        let mut imported = match source.inspect(&candidate.id) {
+            Ok(imported) => imported,
+            Err(error) => {
+                rows.push(BulkRow {
+                    name: default_name,
+                    title: candidate.title.clone(),
+                    status: RowStatus::Skipped(format!("{error:#}")),
+                });
+                continue;
+            }
+        };
+        let candidate_is_proton = imported.runner.kind == HeroicRunnerKind::Proton;
+        if candidate_is_proton != runner.is_proton() {
+            let reason = if candidate_is_proton {
+                "Proton runner, needs --runner"
+            } else {
+                "Wine runner, needs --runner"
+            };
+            rows.push(BulkRow {
+                name: default_name,
+                title: imported.title,
+                status: RowStatus::Skipped(reason.to_owned()),
+            });
+            continue;
+        }
+        clear_runner_dependency(&mut imported);
+        drop_runner_conflicts(&mut imported);
+        suppress_covered_settings(&mut imported);
+        let inspection = match prefix_inspection(&imported, runner, args.arch) {
+            Ok(inspection) => inspection,
+            Err(error) => {
+                rows.push(BulkRow {
+                    name: default_name,
+                    title: imported.title,
+                    status: RowStatus::Skipped(format!("{error:#}")),
+                });
+                continue;
+            }
+        };
+        let warn = match bulk_review_issues(&mut imported) {
+            Ok(warn) => warn,
+            Err(reason) => {
+                rows.push(BulkRow {
+                    name: default_name,
+                    title: imported.title,
+                    status: RowStatus::Skipped(reason),
+                });
+                continue;
+            }
+        };
+        let name =
+            wineo_core::targets::suggest_name(&imported.title, &imported.exe.to_string_lossy());
+        if existing.iter().any(|environment| environment.name == name) || used_names.contains(&name)
+        {
+            let reason = format!("name `{name}` is already taken");
+            rows.push(BulkRow {
+                name,
+                title: imported.title,
+                status: RowStatus::Skipped(reason),
+            });
+            continue;
+        }
+        used_names.insert(name.clone());
+        let destination = if args.adopt {
+            None
+        } else {
+            Some(global.prefix_root(paths)?.join(&name))
+        };
+        let request = ImportRequest {
+            source: imported.prefix.clone(),
+            name: name.clone(),
+            runner: runner_name.to_owned(),
+            destination,
+            adopt: args.adopt,
+            arch: args.arch,
+        };
+        rows.push(BulkRow {
+            name: name.clone(),
+            title: imported.title.clone(),
+            status: RowStatus::Ready { warn },
+        });
+        ready.push(ReadyGame {
+            name,
+            title: imported.title.clone(),
+            imported,
+            inspection,
+            request,
+        });
+    }
+    Ok((rows, ready, already))
+}
+
+/// Applies `review_settings`'s guided "yes" defaults without prompting, as
+/// `--all` does: conflicting managed settings are dropped and unsupported
+/// ones are omitted. Returns a short warning when anything needing
+/// attention was kept, or a one-line reason this game can't be imported.
+fn bulk_review_issues(imported: &mut HeroicImport) -> Result<Option<String>, String> {
+    if let Some(issue) = imported.issues.iter().find(|issue| {
+        issue.kind == HeroicIssueKind::Invalid && issue.field.as_deref() != Some("launcherArgs")
+    }) {
+        return Err(issue.message.clone());
+    }
+    if imported
+        .issues
+        .iter()
+        .any(|issue| issue.field.as_deref() == Some("launcherArgs"))
+    {
+        return Err("invalid launcher arguments".to_owned());
+    }
+    let warn = bulk_warning(imported);
+    imported.issues.retain(|issue| {
+        !matches!(
+            issue.kind,
+            HeroicIssueKind::Conflict | HeroicIssueKind::Unsupported
+        )
+    });
+    if let Some(issue) = imported.issues.iter().find(|issue| {
+        matches!(
+            issue.kind,
+            HeroicIssueKind::Missing | HeroicIssueKind::Invalid | HeroicIssueKind::Conflict
+        )
+    }) {
+        return Err(issue.message.clone());
+    }
+    Ok(warn)
+}
+
+/// The short table note for a game `--all` keeps settings needing attention
+/// for: EAC/BattlEye specifically, since it's common enough to name, or a
+/// generic nudge toward `-v` for anything else.
+fn bulk_warning(imported: &HeroicImport) -> Option<String> {
+    let eac_or_battleye = imported.issues.iter().any(|issue| {
+        matches!(
+            issue.field.as_deref(),
+            Some("eacRuntime") | Some("battlEyeRuntime")
+        )
+    });
+    if eac_or_battleye {
+        return Some("EAC/BattlEye not imported".to_owned());
+    }
+    imported
+        .issues
+        .iter()
+        .any(|issue| {
+            matches!(
+                issue.kind,
+                HeroicIssueKind::NeedsAttention | HeroicIssueKind::External
+            )
+        })
+        .then(|| "settings need attention, see -v".to_owned())
+}
+
+/// `Some` skips asking: `--desktop` always answers yes, and `--yes` alone
+/// (without `--desktop`) answers no. `None` means `--all` must ask.
+fn bulk_desktop_choice(desktop_flag: bool, yes_flag: bool) -> Option<bool> {
+    if desktop_flag {
+        Some(true)
+    } else if yes_flag {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn render_bulk_table(
+    runner_name: &str,
+    mode_label: &str,
+    rows: &[BulkRow],
+    already: &[String],
+) -> String {
+    let name_width = rows.iter().map(|row| row.name.len()).max().unwrap_or(0);
+    let title_width = rows.iter().map(|row| row.title.len()).max().unwrap_or(0);
+    let mut out = format!(
+        "{}\n",
+        style::title(format!(
+            "Import {} Heroic games with {runner_name}:",
+            rows.len()
+        ))
+    );
+    for row in rows {
+        let status = match &row.status {
+            RowStatus::Skipped(reason) => format!("skip: {reason}"),
+            RowStatus::Ready { warn: None } => mode_label.to_owned(),
+            RowStatus::Ready {
+                warn: Some(warning),
+            } => format!(
+                "{mode_label}   {}",
+                style::warning(format!("warn: {warning}"))
+            ),
+        };
+        let name = &row.name;
+        let title = &row.title;
+        out.push_str(&format!(
+            "  {name:name_width$}  {title:title_width$}  {status}\n"
+        ));
+    }
+    if !already.is_empty() {
+        out.push_str(&format!("Already imported: {}\n", already.join(", ")));
+    }
+    out.pop();
+    out
+}
+
+fn import_all(
+    paths: &Paths,
+    global: &GlobalConfig,
+    source: &HeroicSource,
+    runner: &Runner,
+    ready: Vec<ReadyGame>,
+    desktop_enabled: bool,
+    verbose: bool,
+) -> anyhow::Result<ExitCode> {
+    let total = ready.len();
+    let mut done = 0usize;
+    let mut failed = Vec::new();
+    for game in ready {
+        if verbose {
+            let mut output = Prompt::new(OutputOnly, io::stdout());
+            show_game_summary(&mut output, paths, &game.imported, verbose)?;
+        }
+        let desktop = DesktopChoice {
+            enabled: desktop_enabled,
+            name: game.title.clone(),
+        };
+        match import_one(paths, global, source, runner, &game, &desktop, verbose) {
+            Ok(()) => {
+                println!("Importing {}... done", game.name);
+                done += 1;
+            }
+            Err(error) => {
+                println!("Importing {}... failed: {error:#}", game.name);
+                failed.push(game.name);
+            }
+        }
+    }
+    if failed.is_empty() {
+        println!("Imported {done} of {total} games.");
+    } else {
+        println!(
+            "Imported {done} of {total} games. {} failed: {}",
+            failed.len(),
+            failed.join(", ")
+        );
+    }
+    Ok(if failed.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+fn import_one(
+    paths: &Paths,
+    global: &GlobalConfig,
+    source: &HeroicSource,
+    runner: &Runner,
+    game: &ReadyGame,
+    desktop: &DesktopChoice,
+    verbose: bool,
+) -> anyhow::Result<()> {
+    ensure_source_unchanged(source, &game.imported)?;
+    let settings = imported_settings(&game.imported, &game.inspection, &game.request, desktop);
+    let log_body = verbose.then(|| {
+        log_text(
+            global,
+            source,
+            &game.imported,
+            &game.inspection,
+            &game.request,
+            desktop,
+        )
+    });
+    let destination = resolved_destination(paths, global, &game.request, &game.inspection)?;
+    let environment = import_reviewed(
+        paths,
+        global,
+        game.request.clone(),
+        &game.inspection,
+        Some(&settings),
+    )?;
+    desktop::reconcile(paths, global, &environment, Some(runner), &destination)?;
+    if let Some(body) = log_body {
+        print_log_path(paths, &environment.name, &body);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -1007,6 +1544,38 @@ fn clear_runner_dependency(imported: &mut HeroicImport) {
     if let Some(source) = imported.runner.source.as_ref() {
         imported.external_dependencies.retain(|path| path != source);
     }
+}
+
+/// Drops the wineVersion/winePrefix Conflict issues, which just flag that
+/// Heroic's own runner choice doesn't apply once wineo picks its own.
+fn drop_runner_conflicts(imported: &mut HeroicImport) {
+    imported.issues.retain(|issue| {
+        !(issue.kind == HeroicIssueKind::Conflict
+            && matches!(
+                issue.field.as_deref(),
+                Some("wineVersion") | Some("winePrefix")
+            ))
+    });
+}
+
+/// The issue that makes `candidate` unimportable, the same rule guided
+/// selection and `--all` both filter candidates by. `None` means it can be
+/// imported.
+fn candidate_filter_issue(candidate: &HeroicCandidate) -> Option<&HeroicIssue> {
+    if candidate.kind != HeroicGameKind::Windows {
+        return candidate
+            .issues
+            .iter()
+            .find(|issue| issue.kind == HeroicIssueKind::Unsupported);
+    }
+    candidate.issues.iter().find(|issue| {
+        (matches!(
+            issue.kind,
+            HeroicIssueKind::Missing | HeroicIssueKind::Invalid
+        ) && issue.field.as_deref() != Some("launcherArgs"))
+            || (issue.field.as_deref() == Some("runner")
+                && issue.kind == HeroicIssueKind::Unsupported)
+    })
 }
 
 /// Heroic settings wineo already covers by way of the chosen runner, so
@@ -2186,5 +2755,260 @@ mod tests {
         assert!(printed.contains("Palworld -> palworld"));
         assert!(printed.contains("links     24 prefix files point into Heroic's GE-Proton11-1"));
         assert!(printed.contains("8) desktop      yes"));
+    }
+
+    // -- --all (bulk import) --
+
+    fn candidate(kind: HeroicGameKind, issues: Vec<HeroicIssue>) -> HeroicCandidate {
+        HeroicCandidate {
+            id: "game".to_owned(),
+            title: "Game".to_owned(),
+            kind,
+            prefix: None,
+            runner: None,
+            executable: None,
+            issues,
+        }
+    }
+
+    #[test]
+    fn candidate_filter_issue_allows_a_clean_windows_candidate() {
+        assert!(candidate_filter_issue(&candidate(HeroicGameKind::Windows, Vec::new())).is_none());
+    }
+
+    #[test]
+    fn candidate_filter_issue_allows_invalid_launcher_args() {
+        let candidate = candidate(
+            HeroicGameKind::Windows,
+            vec![HeroicIssue {
+                kind: HeroicIssueKind::Invalid,
+                field: Some("launcherArgs".to_owned()),
+                message: "bad args".to_owned(),
+            }],
+        );
+        assert!(candidate_filter_issue(&candidate).is_none());
+    }
+
+    #[test]
+    fn candidate_filter_issue_rejects_non_windows_kinds() {
+        let candidate = candidate(
+            HeroicGameKind::Native,
+            vec![HeroicIssue {
+                kind: HeroicIssueKind::Unsupported,
+                field: Some("platform".to_owned()),
+                message: "native games are not Windows prefix imports".to_owned(),
+            }],
+        );
+        let issue = candidate_filter_issue(&candidate).unwrap();
+        assert_eq!(issue.message, "native games are not Windows prefix imports");
+    }
+
+    #[test]
+    fn candidate_filter_issue_rejects_missing_settings() {
+        let candidate = candidate(
+            HeroicGameKind::Windows,
+            vec![HeroicIssue {
+                kind: HeroicIssueKind::Missing,
+                field: Some("exe".to_owned()),
+                message: "no executable set".to_owned(),
+            }],
+        );
+        let issue = candidate_filter_issue(&candidate).unwrap();
+        assert_eq!(issue.message, "no executable set");
+    }
+
+    #[test]
+    fn candidate_filter_issue_rejects_unsupported_runner() {
+        let candidate = candidate(
+            HeroicGameKind::Windows,
+            vec![HeroicIssue {
+                kind: HeroicIssueKind::Unsupported,
+                field: Some("runner".to_owned()),
+                message: "only manually added sideloaded games are supported".to_owned(),
+            }],
+        );
+        assert!(candidate_filter_issue(&candidate).is_some());
+    }
+
+    #[test]
+    fn bulk_review_issues_drops_conflicts_and_unsupported_but_keeps_attention_as_a_warning() {
+        let root = tempdir().unwrap();
+        let (mut imported, _, _) = reviewed_import(root.path());
+        imported.issues = vec![
+            HeroicIssue {
+                kind: HeroicIssueKind::Conflict,
+                field: Some("useGameMode".to_owned()),
+                message: "conflicts with wineo's own setting".to_owned(),
+            },
+            HeroicIssue {
+                kind: HeroicIssueKind::Unsupported,
+                field: Some("autoInstallDxvk".to_owned()),
+                message: "not imported".to_owned(),
+            },
+            HeroicIssue {
+                kind: HeroicIssueKind::NeedsAttention,
+                field: Some("wrapperOptions".to_owned()),
+                message: "review this manually".to_owned(),
+            },
+        ];
+        let warn = bulk_review_issues(&mut imported).unwrap();
+        assert_eq!(warn.as_deref(), Some("settings need attention, see -v"));
+        // Conflict and unsupported issues are gone; the kept attention item stays.
+        assert_eq!(imported.issues.len(), 1);
+        assert_eq!(imported.issues[0].kind, HeroicIssueKind::NeedsAttention);
+    }
+
+    #[test]
+    fn bulk_review_issues_names_eac_and_battleye_specifically() {
+        let root = tempdir().unwrap();
+        let (mut imported, _, _) = reviewed_import(root.path());
+        imported.issues = vec![
+            HeroicIssue {
+                kind: HeroicIssueKind::Unsupported,
+                field: Some("eacRuntime".to_owned()),
+                message: "not imported".to_owned(),
+            },
+            HeroicIssue {
+                kind: HeroicIssueKind::Unsupported,
+                field: Some("battlEyeRuntime".to_owned()),
+                message: "not imported".to_owned(),
+            },
+        ];
+        let warn = bulk_review_issues(&mut imported).unwrap();
+        assert_eq!(warn.as_deref(), Some("EAC/BattlEye not imported"));
+    }
+
+    #[test]
+    fn bulk_review_issues_has_no_warning_when_nothing_needs_attention() {
+        let root = tempdir().unwrap();
+        let (mut imported, _, _) = reviewed_import(root.path());
+        assert_eq!(bulk_review_issues(&mut imported).unwrap(), None);
+    }
+
+    #[test]
+    fn bulk_review_issues_rejects_invalid_settings() {
+        let root = tempdir().unwrap();
+        let (mut imported, _, _) = reviewed_import(root.path());
+        imported.issues = vec![HeroicIssue {
+            kind: HeroicIssueKind::Invalid,
+            field: Some("wrapperOptions".to_owned()),
+            message: "cannot be parsed".to_owned(),
+        }];
+        let error = bulk_review_issues(&mut imported).unwrap_err();
+        assert_eq!(error, "cannot be parsed");
+    }
+
+    #[test]
+    fn bulk_review_issues_rejects_invalid_launcher_args() {
+        let root = tempdir().unwrap();
+        let (mut imported, _, _) = reviewed_import(root.path());
+        imported.issues = vec![HeroicIssue {
+            kind: HeroicIssueKind::Invalid,
+            field: Some("launcherArgs".to_owned()),
+            message: "unbalanced quotes".to_owned(),
+        }];
+        assert!(bulk_review_issues(&mut imported).is_err());
+    }
+
+    fn existing(name: &str, heroic_id: Option<&str>, prefix: &Path) -> ExistingEnvironment {
+        ExistingEnvironment {
+            name: name.to_owned(),
+            heroic_id: heroic_id.map(str::to_owned),
+            prefix: prefix.to_owned(),
+        }
+    }
+
+    #[test]
+    fn match_existing_matches_by_recorded_id_first() {
+        let existing = vec![existing(
+            "palworld",
+            Some("abc"),
+            Path::new("/prefixes/palworld"),
+        )];
+        let matched = match_existing(&existing, "abc", None, "something-else").unwrap();
+        assert_eq!(matched.name, "palworld");
+        assert!(!matched.needs_id);
+    }
+
+    #[test]
+    fn match_existing_falls_back_to_the_adopted_prefix() {
+        let existing = vec![existing("zomboid", None, Path::new("/prefixes/zomboid"))];
+        let matched = match_existing(
+            &existing,
+            "different-id",
+            Some(Path::new("/prefixes/zomboid")),
+            "not-the-name",
+        )
+        .unwrap();
+        assert_eq!(matched.name, "zomboid");
+        assert!(matched.needs_id, "a legacy match should be backfilled");
+    }
+
+    #[test]
+    fn match_existing_falls_back_to_the_default_name() {
+        let existing = vec![existing("hades", None, Path::new("/prefixes/other"))];
+        let matched = match_existing(
+            &existing,
+            "different-id",
+            Some(Path::new("/elsewhere")),
+            "hades",
+        )
+        .unwrap();
+        assert_eq!(matched.name, "hades");
+        assert!(matched.needs_id);
+    }
+
+    #[test]
+    fn match_existing_returns_none_when_nothing_matches() {
+        let existing = vec![existing("hades", None, Path::new("/prefixes/hades"))];
+        assert!(
+            match_existing(&existing, "id", Some(Path::new("/elsewhere")), "not-hades").is_none()
+        );
+    }
+
+    #[test]
+    fn bulk_desktop_choice_follows_desktop_and_yes_flags() {
+        assert_eq!(bulk_desktop_choice(true, true), Some(true));
+        assert_eq!(bulk_desktop_choice(true, false), Some(true));
+        assert_eq!(bulk_desktop_choice(false, true), Some(false));
+        assert_eq!(bulk_desktop_choice(false, false), None);
+    }
+
+    #[test]
+    fn render_bulk_table_matches_the_plan_example_shape() {
+        let rows = vec![
+            BulkRow {
+                name: "palworld".to_owned(),
+                title: "Palworld".to_owned(),
+                status: RowStatus::Ready { warn: None },
+            },
+            BulkRow {
+                name: "hades".to_owned(),
+                title: "Hades".to_owned(),
+                status: RowStatus::Ready {
+                    warn: Some("EAC/BattlEye not imported".to_owned()),
+                },
+            },
+            BulkRow {
+                name: "celeste".to_owned(),
+                title: "Celeste".to_owned(),
+                status: RowStatus::Skipped("Wine runner, needs --runner".to_owned()),
+            },
+        ];
+        let already = vec!["zomboid".to_owned()];
+        let text = render_bulk_table("GE-Proton11-1", "copy", &rows, &already);
+        let expected = format!(
+            "Import 3 Heroic games with GE-Proton11-1:\n  {:8}  {:8}  {}\n  {:8}  {:8}  {}\n  {:8}  {:8}  {}\nAlready imported: zomboid",
+            "palworld",
+            "Palworld",
+            "copy",
+            "hades",
+            "Hades",
+            "copy   warn: EAC/BattlEye not imported",
+            "celeste",
+            "Celeste",
+            "skip: Wine runner, needs --runner",
+        );
+        assert_eq!(text, expected);
     }
 }
