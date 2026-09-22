@@ -550,6 +550,8 @@ struct ExistingEnvironment {
     name: String,
     heroic_id: Option<String>,
     prefix: PathBuf,
+    /// Every target's exe, expanded and resolved the same way as `prefix`.
+    target_exes: Vec<PathBuf>,
 }
 
 fn existing_environments(paths: &Paths) -> anyhow::Result<Vec<ExistingEnvironment>> {
@@ -561,10 +563,18 @@ fn existing_environments(paths: &Paths) -> anyhow::Result<Vec<ExistingEnvironmen
         let Ok(prefix) = loaded.prefix(paths) else {
             continue;
         };
+        let target_exes = loaded
+            .config
+            .targets
+            .values()
+            .filter_map(|target| paths.absolute(&target.exe).ok())
+            .map(|exe| wineo_core::paths::resolve(&exe))
+            .collect();
         found.push(ExistingEnvironment {
             name,
             heroic_id: loaded.config.heroic_id.clone(),
             prefix: wineo_core::paths::resolve(&prefix),
+            target_exes,
         });
     }
     Ok(found)
@@ -579,12 +589,13 @@ struct ExistingMatch {
 }
 
 /// Matches a Heroic candidate to an environment already imported from it: by
-/// its recorded id first, then for older imports, by the prefix it adopted
-/// or its default name.
+/// its recorded id first, then for older imports, by the prefix it adopted,
+/// a target that runs its exe, or its default name.
 fn match_existing(
     existing: &[ExistingEnvironment],
     candidate_id: &str,
     candidate_prefix: Option<&Path>,
+    candidate_exe: Option<&Path>,
     default_name: &str,
 ) -> Option<ExistingMatch> {
     if let Some(environment) = existing
@@ -601,6 +612,18 @@ fn match_existing(
         if let Some(environment) = existing
             .iter()
             .find(|environment| environment.prefix == resolved)
+        {
+            return Some(ExistingMatch {
+                name: environment.name.clone(),
+                needs_id: true,
+            });
+        }
+    }
+    if let Some(exe) = candidate_exe {
+        let resolved = wineo_core::paths::resolve(exe);
+        if let Some(environment) = existing
+            .iter()
+            .find(|environment| environment.target_exes.contains(&resolved))
         {
             return Some(ExistingMatch {
                 name: environment.name.clone(),
@@ -649,6 +672,7 @@ fn classify_candidates(
             existing,
             &candidate.id,
             candidate.prefix.as_deref(),
+            candidate.executable.as_deref(),
             &default_name,
         ) {
             if matched.needs_id {
@@ -2910,11 +2934,17 @@ mod tests {
         assert!(bulk_review_issues(&mut imported).is_err());
     }
 
-    fn existing(name: &str, heroic_id: Option<&str>, prefix: &Path) -> ExistingEnvironment {
+    fn existing(
+        name: &str,
+        heroic_id: Option<&str>,
+        prefix: &Path,
+        target_exes: &[&Path],
+    ) -> ExistingEnvironment {
         ExistingEnvironment {
             name: name.to_owned(),
             heroic_id: heroic_id.map(str::to_owned),
             prefix: prefix.to_owned(),
+            target_exes: target_exes.iter().map(|exe| exe.to_path_buf()).collect(),
         }
     }
 
@@ -2924,19 +2954,26 @@ mod tests {
             "palworld",
             Some("abc"),
             Path::new("/prefixes/palworld"),
+            &[],
         )];
-        let matched = match_existing(&existing, "abc", None, "something-else").unwrap();
+        let matched = match_existing(&existing, "abc", None, None, "something-else").unwrap();
         assert_eq!(matched.name, "palworld");
         assert!(!matched.needs_id);
     }
 
     #[test]
     fn match_existing_falls_back_to_the_adopted_prefix() {
-        let existing = vec![existing("zomboid", None, Path::new("/prefixes/zomboid"))];
+        let existing = vec![existing(
+            "zomboid",
+            None,
+            Path::new("/prefixes/zomboid"),
+            &[],
+        )];
         let matched = match_existing(
             &existing,
             "different-id",
             Some(Path::new("/prefixes/zomboid")),
+            None,
             "not-the-name",
         )
         .unwrap();
@@ -2945,12 +2982,37 @@ mod tests {
     }
 
     #[test]
+    fn match_existing_falls_back_to_a_target_running_the_same_exe() {
+        let existing = vec![existing(
+            "Zomboid",
+            None,
+            Path::new("/prefixes/other"),
+            &[Path::new(
+                "/home/me/Games/ProjectZomboid/ProjectZomboid64.exe",
+            )],
+        )];
+        let matched = match_existing(
+            &existing,
+            "5HYciurSM5YdUGzasx38E7",
+            Some(Path::new("/elsewhere")),
+            Some(Path::new(
+                "/home/me/Games/ProjectZomboid/ProjectZomboid64.exe",
+            )),
+            "project-zomboid",
+        )
+        .unwrap();
+        assert_eq!(matched.name, "Zomboid");
+        assert!(matched.needs_id, "a legacy match should be backfilled");
+    }
+
+    #[test]
     fn match_existing_falls_back_to_the_default_name() {
-        let existing = vec![existing("hades", None, Path::new("/prefixes/other"))];
+        let existing = vec![existing("hades", None, Path::new("/prefixes/other"), &[])];
         let matched = match_existing(
             &existing,
             "different-id",
             Some(Path::new("/elsewhere")),
+            None,
             "hades",
         )
         .unwrap();
@@ -2960,9 +3022,16 @@ mod tests {
 
     #[test]
     fn match_existing_returns_none_when_nothing_matches() {
-        let existing = vec![existing("hades", None, Path::new("/prefixes/hades"))];
+        let existing = vec![existing("hades", None, Path::new("/prefixes/hades"), &[])];
         assert!(
-            match_existing(&existing, "id", Some(Path::new("/elsewhere")), "not-hades").is_none()
+            match_existing(
+                &existing,
+                "id",
+                Some(Path::new("/elsewhere")),
+                Some(Path::new("/elsewhere/Game.exe")),
+                "not-hades"
+            )
+            .is_none()
         );
     }
 
