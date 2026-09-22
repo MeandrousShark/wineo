@@ -54,8 +54,9 @@ Settled by the maintainer during implementation:
   default runner with DXVK and vkd3d. A template's `runner = "proton"` asks for
   this, and `--runner` still wins.
 - The guided name question is called the install name and says what it is for.
-  A name that can't be used says which characters are the problem and suggests
-  one that works.
+  A name that can't be used says which characters are the problem. During the
+  QA follow-up, the maintainer chose concise errors without a replacement-name
+  suggestion, superseding the original suggestion requirement.
 - Real Wine GUI tests may run on the maintainer's active display, since no
   dedicated display is installed. They still use throwaway prefixes and XDG
   roots.
