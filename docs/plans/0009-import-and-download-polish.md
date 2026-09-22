@@ -26,6 +26,11 @@ Settled by the maintainer:
 - `--all` asks once whether to create desktop entries, and a yes creates one
   for every imported game.
 - `-v` also writes the full detail to an import log.
+- `--all` applies the guided review defaults without prompting: omit
+  unsupported settings, drop conflicting managed settings, keep attention
+  items. Each shows as a `warn:` note in the table.
+- `--all` prints one line per game while importing, then a summary. `-v`
+  adds each game's full summary and writes its import log.
 
 The maintainer approved this plan.
 
@@ -158,7 +163,16 @@ Already imported: zomboid
 Import 2 games? [Y/n]
 ```
 
-5. Import each game, continuing past failures, and end with a summary.
+   A game with review items gets a note instead of a skip, for example
+   `copy   warn: EAC/BattlEye not imported`.
+
+5. Import each game, continuing past failures, and end with a summary:
+
+```text
+Importing palworld... done
+Importing hades... failed: copy: disk full
+Imported 1 of 2 games. 1 failed: hades
+```
 
 Games are skipped with a one-line reason when their name is taken, their
 runner kind does not match `--runner`, or they have a blocking error.
