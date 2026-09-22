@@ -104,7 +104,7 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Start(args) => commands::start::run(&paths, args),
         Command::Stop(args) => commands::stop::run(&paths, args),
         Command::Restart(args) => commands::restart::run(&paths, args),
-        Command::Import(args) => commands::import::run(&paths, args),
+        Command::Import(args) => commands::import::run(&paths, args, verbose),
         Command::Download(args) => commands::download::run(&paths, args, verbose),
         Command::Runners(args) => commands::runners::run(&paths, args),
         Command::Dxvk(args) => commands::builds::run(&paths, Component::Dxvk, args),

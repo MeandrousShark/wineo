@@ -86,6 +86,8 @@ pub struct ImportedSettings {
     pub store: Option<String>,
     pub dxvk: Option<String>,
     pub vkd3d: Option<String>,
+    /// The Heroic game id, recorded only by a Heroic import.
+    pub heroic_id: Option<String>,
 }
 
 /// Events emitted while copying a prefix or runner tree.
@@ -820,6 +822,9 @@ fn config_text(
         if let Some(vkd3d) = &settings.vkd3d {
             doc["vkd3d"] = value(vkd3d);
         }
+        if let Some(heroic_id) = &settings.heroic_id {
+            doc["heroic_id"] = value(heroic_id);
+        }
         if !settings.env.is_empty() {
             let mut table = Table::new();
             for (key, env_value) in &settings.env {
@@ -1386,6 +1391,7 @@ mod tests {
                 },
             )]),
             env: BTreeMap::from([("GAME_MODE".to_owned(), "heroic".to_owned())]),
+            heroic_id: Some("kZXLzzKAFWBP4dpRatpPHu".to_owned()),
             ..ImportedSettings::default()
         };
         let env = execute_reviewed(
@@ -1407,6 +1413,10 @@ mod tests {
         .unwrap();
         assert_eq!(env.config.targets["game"].exe, "Z:\\games\\game.exe");
         assert_eq!(env.config.env["GAME_MODE"], "heroic");
+        assert_eq!(
+            env.config.heroic_id.as_deref(),
+            Some("kZXLzzKAFWBP4dpRatpPHu")
+        );
         assert!(prefix_root.join("game/system.reg").is_file());
         assert!(paths.environment_config("game").is_file());
     }

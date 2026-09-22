@@ -53,10 +53,10 @@ struct PrefixArgs {
     interactive: bool,
 }
 
-pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
+pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
     match args.source {
-        Some(Source::Heroic(args)) => import_heroic::run(paths, args),
-        Some(Source::Prefix(args)) => prefix(paths, args),
+        Some(Source::Heroic(args)) => import_heroic::run(paths, args, verbose),
+        Some(Source::Prefix(args)) => prefix(paths, args, verbose),
         None => {
             anyhow::ensure!(
                 prompt::interactive(),
@@ -76,8 +76,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 )
             };
             match choice {
-                Ok(Reply::Value(false)) => prefix(paths, PrefixArgs::default()),
-                Ok(Reply::Value(true)) => import_heroic::run(paths, import_heroic::Args::default()),
+                Ok(Reply::Value(false)) => prefix(paths, PrefixArgs::default(), verbose),
+                Ok(Reply::Value(true)) => {
+                    import_heroic::run(paths, import_heroic::Args::default(), verbose)
+                }
                 Ok(Reply::Back) => Ok(ExitCode::SUCCESS),
                 Err(error) if error.is::<Canceled>() => Ok(ExitCode::from(130)),
                 Err(error) => Err(error),
@@ -86,7 +88,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     }
 }
 
-fn prefix(paths: &Paths, args: PrefixArgs) -> anyhow::Result<ExitCode> {
+fn prefix(paths: &Paths, args: PrefixArgs, verbose: bool) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let guided =
         args.interactive || args.name.is_none() || args.runner.is_none() || args.source.is_none();
@@ -132,7 +134,7 @@ fn prefix(paths: &Paths, args: PrefixArgs) -> anyhow::Result<ExitCode> {
         "guided import needs a terminal; specify a source, -n <name>, and --runner <runner> for noninteractive import"
     );
     let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
-    let result = guided_prefix(paths, &global, args, &mut prompt);
+    let result = guided_prefix(paths, &global, args, &mut prompt, verbose);
     match result {
         Err(error) if error.is::<Canceled>() => {
             eprintln!("Import canceled");
@@ -154,6 +156,7 @@ fn guided_prefix<I: Input, W: Write>(
     global: &GlobalConfig,
     args: PrefixArgs,
     prompt: &mut Prompt<I, W>,
+    verbose: bool,
 ) -> anyhow::Result<ExitCode> {
     let mut source = args.source.unwrap_or_default();
     let mut name = args.name.unwrap_or_default();
@@ -255,7 +258,7 @@ fn guided_prefix<I: Input, W: Write>(
                 let proton = detected
                     .as_ref()
                     .map(|i| i.layout == import::ImportLayout::Proton);
-                match choose_runner(prompt, paths, global, runner.as_deref(), proton)? {
+                match choose_runner(prompt, paths, global, runner.as_deref(), proton, verbose)? {
                     Reply::Value(value) => {
                         runner = Some(value);
                         step = 5;
@@ -351,6 +354,7 @@ pub(crate) fn choose_runner<I: Input, W: Write>(
     global: &GlobalConfig,
     current: Option<&str>,
     proton: Option<bool>,
+    verbose: bool,
 ) -> anyhow::Result<Reply<String>> {
     loop {
         let runners = Runners::new(paths, global)?;
@@ -395,9 +399,13 @@ pub(crate) fn choose_runner<I: Input, W: Write>(
             Reply::Back => return Ok(Reply::Back),
             Reply::Value(Some(name)) => return Ok(Reply::Value(name)),
             Reply::Value(None) => {
-                if let Reply::Value(name) =
-                    download::choose_and_install(paths, global, prompt, &download::RUNNERS, false)?
-                {
+                if let Reply::Value(name) = download::choose_and_install(
+                    paths,
+                    global,
+                    prompt,
+                    &download::RUNNERS,
+                    verbose,
+                )? {
                     return Ok(Reply::Value(name));
                 }
             }

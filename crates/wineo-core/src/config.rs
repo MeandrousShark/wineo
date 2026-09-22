@@ -96,6 +96,9 @@ pub struct EnvironmentConfig {
     /// newest installed, resolved on use rather than written back.
     pub dxvk: Option<String>,
     pub vkd3d: Option<String>,
+    /// The Heroic game id this environment was imported from. Only Heroic
+    /// imports set this; older configs load fine without it.
+    pub heroic_id: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
@@ -348,6 +351,17 @@ mod tests {
         assert_eq!(bridge.args, ["-nosplash"]);
         assert_eq!(bridge.cwd.as_deref(), Some(r"C:\users\Public"));
         assert!(!bridge.default);
+    }
+
+    #[test]
+    fn heroic_id_is_optional_and_round_trips() {
+        let config = environment("prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"").unwrap();
+        assert_eq!(config.heroic_id, None);
+        let config = environment(
+            "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\nheroic_id = \"abc123\"",
+        )
+        .unwrap();
+        assert_eq!(config.heroic_id.as_deref(), Some("abc123"));
     }
 
     #[test]

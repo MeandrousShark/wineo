@@ -215,6 +215,37 @@ impl<I: Input, W: Write> Prompt<I, W> {
         }
     }
 
+    /// A menu whose numbered entries are edited in place rather than chosen
+    /// once: picking one returns it to edit, and a bare Enter returns `None`
+    /// to run the menu's own default action (importing, in practice). `note`
+    /// prints after the choices and before the question, if given.
+    pub fn choose_or_enter<T: Clone>(
+        &mut self,
+        heading: &str,
+        note: Option<&str>,
+        label: &str,
+        choices: &[Choice<T>],
+        back: bool,
+    ) -> anyhow::Result<Reply<Option<T>>> {
+        self.menu(heading, choices, back)?;
+        if let Some(note) = note {
+            self.say(note)?;
+        }
+        loop {
+            let answer = self.read(&format!("{label}: "))?;
+            if answer.is_empty() {
+                return Ok(Reply::Value(None));
+            }
+            if let Some(reply) = self.special(&answer, back)? {
+                return Ok(reply.map(Some));
+            }
+            match choices.iter().find(|choice| choice.key == answer) {
+                Some(choice) => return Ok(Reply::Value(Some(choice.value.clone()))),
+                None => self.say(format!("`{answer}` is not one of the choices"))?,
+            }
+        }
+    }
+
     /// A line of text. Enter takes `default`, and `<` goes back. `parse`
     /// explains what is wrong with an answer, and the question is asked again.
     pub fn text<T>(
@@ -603,6 +634,34 @@ mod tests {
             .choose("Pick:", "Template", &menu(), None, true)
             .unwrap_err();
         assert!(err.is::<Canceled>());
+    }
+
+    #[test]
+    fn choose_or_enter_returns_none_on_a_bare_enter_and_prints_a_trailing_note() {
+        let mut p = prompt(&[""]);
+        let reply = p
+            .choose_or_enter(
+                "Review:",
+                Some("Close the game first."),
+                "Choice, or Enter to import",
+                &menu(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(reply, Reply::Value(None));
+        assert_eq!(
+            printed(&p),
+            "Review:\n  1) None, choose each setting\n  2) gaming\n  p) enter a path\n  b) back   q) cancel\nClose the game first.\nChoice, or Enter to import: "
+        );
+    }
+
+    #[test]
+    fn choose_or_enter_picks_a_numbered_entry_to_edit() {
+        let mut p = prompt(&["2"]);
+        let reply = p
+            .choose_or_enter("Review:", None, "Choice", &menu(), true)
+            .unwrap();
+        assert_eq!(reply, Reply::Value(Some("gaming")));
     }
 
     #[test]

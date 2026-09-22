@@ -108,6 +108,11 @@ impl Paths {
         self.state.join(name)
     }
 
+    /// Where a Heroic import appends its `-v` log, one file per environment name.
+    pub fn import_log(&self, name: &str) -> PathBuf {
+        self.state.join("imports").join(format!("{name}.log"))
+    }
+
     /// Expands a leading `~` in a path taken from a config file or the command line.
     pub fn expand(&self, path: &str) -> PathBuf {
         if path == "~" {
@@ -198,6 +203,10 @@ mod tests {
         assert_eq!(
             paths.runtime_dir("notepad"),
             Path::new("/home/me/.local/state/wineo/notepad")
+        );
+        assert_eq!(
+            paths.import_log("palworld"),
+            Path::new("/home/me/.local/state/wineo/imports/palworld.log")
         );
     }
 
