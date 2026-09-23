@@ -4,36 +4,7 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 
-use common::{Fixture, assert_success, stderr, stdout};
-
-fn heroic_library(f: &Fixture, prefix: &Path) -> std::path::PathBuf {
-    let config = f.root.path().join("heroic");
-    fs::create_dir_all(config.join("sideload_apps")).unwrap();
-    fs::create_dir_all(config.join("GamesConfig")).unwrap();
-    let exe = prefix.join("drive_c/Games/Game.exe");
-    fs::write(&exe, "game executable").unwrap();
-    fs::write(
-        config.join("config.json"),
-        format!(
-            r#"{{"defaultSettings":{{"winePrefix":"{}","wineVersion":{{"type":"wine","name":"System","bin":"wine"}}}}}}"#,
-            prefix.display()
-        ),
-    )
-    .unwrap();
-    let entries: Vec<_> = [("a", "Alpha"), ("b", "Beta")]
-        .into_iter()
-        .map(|(id, title)| {
-            fs::write(config.join(format!("GamesConfig/{id}.json")), format!(r#"{{"{id}":{{}}}}"#)).unwrap();
-            format!(r#"{{"app_name":"{id}","title":"{title}","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}}"#, exe.display())
-        })
-        .collect();
-    fs::write(
-        config.join("sideload_apps/library.json"),
-        format!(r#"{{"games":[{}]}}"#, entries.join(",")),
-    )
-    .unwrap();
-    config
-}
+use common::{Fixture, assert_success, heroic_library, stderr, stdout};
 
 fn bulk_heroic(f: &Fixture, config: &Path) -> std::process::Output {
     f.run(&[
@@ -150,6 +121,130 @@ fn heroic_bulk_reports_a_name_collision_without_retagging_the_existing_game() {
         );
         assert!(!configs.join("alpha.toml").exists());
     }
+}
+
+#[test]
+fn heroic_bulk_copy_and_adopt_register_all_games_with_explicit_desktop_entries() {
+    for adopt in [false, true] {
+        let f = Fixture::new();
+        let prefix = source(f.root.path());
+        let heroic = heroic_library(&f, &prefix);
+        let mut command = f.wineo();
+        command.args([
+            "-v",
+            "import",
+            "heroic",
+            "--config-dir",
+            heroic.to_str().unwrap(),
+            "--all",
+            "--yes",
+            "--runner",
+            "wine",
+            "--desktop",
+        ]);
+        if adopt {
+            command.arg("--adopt");
+        }
+        let output = command.output().unwrap();
+        assert_success(&output);
+        assert!(stdout(&output).contains("Imported 2 of 2 games."));
+        for (name, id) in [("alpha", "a"), ("beta", "b")] {
+            let path = f.config_dir().join(format!("environments/{name}.toml"));
+            let text = fs::read_to_string(&path).unwrap();
+            let config = wineo_core::config::EnvironmentConfig::parse(&path, &text).unwrap();
+            assert_eq!(config.heroic_id.as_deref(), Some(id));
+            let target = config.targets.get(name).unwrap();
+            assert!(target.desktop);
+            assert!(target.default);
+            assert!(
+                f.root
+                    .path()
+                    .join(format!("data/applications/wineo-{name}-{name}.desktop"))
+                    .exists()
+            );
+            if adopt {
+                assert_eq!(config.prefix, prefix.to_str().unwrap());
+            } else {
+                let copied = f.root.path().join("data/wineo/prefixes").join(name);
+                assert_eq!(
+                    fs::read(copied.join("drive_c/Games/save.dat")).unwrap(),
+                    b"save data"
+                );
+                assert_eq!(
+                    target.exe,
+                    copied.join("drive_c/Games/Game.exe").to_str().unwrap()
+                );
+            }
+        }
+        assert_eq!(
+            fs::read(prefix.join("drive_c/Games/save.dat")).unwrap(),
+            b"save data"
+        );
+        assert_eq!(
+            fs::read(prefix.join("drive_c/Games/Game.exe")).unwrap(),
+            b"game executable"
+        );
+    }
+}
+
+#[test]
+fn heroic_bulk_continues_after_a_destination_failure_and_reports_counts() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    let collision = f.root.path().join("data/wineo/prefixes/beta");
+    fs::create_dir_all(&collision).unwrap();
+    fs::write(collision.join("keep.txt"), b"unrelated destination").unwrap();
+    let output = bulk_heroic(&f, &heroic);
+    assert!(!output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("Importing alpha... done"), "{text}");
+    assert!(text.contains("Importing beta... failed"), "{text}");
+    assert!(text.contains("Imported 1 of 2"), "{text}");
+    assert!(f.config_dir().join("environments/alpha.toml").exists());
+    assert!(!f.config_dir().join("environments/beta.toml").exists());
+    assert!(
+        !f.root
+            .path()
+            .join("data/applications/wineo-alpha-alpha.desktop")
+            .exists()
+    );
+    assert_eq!(
+        fs::read(collision.join("keep.txt")).unwrap(),
+        b"unrelated destination"
+    );
+    assert_eq!(
+        fs::read(prefix.join("drive_c/Games/save.dat")).unwrap(),
+        b"save data"
+    );
+}
+
+#[test]
+fn heroic_bulk_yes_skips_missing_components_without_downloading() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    let settings = heroic.join("config.json");
+    let text = fs::read_to_string(&settings).unwrap().replace(
+        "\"defaultSettings\":{",
+        "\"defaultSettings\":{\"autoInstallDxvk\":true,",
+    );
+    fs::write(settings, text).unwrap();
+    let output = bulk_heroic(&f, &heroic);
+    assert_success(&output);
+    let text = stdout(&output);
+    assert!(text.contains("skip:"), "{text}");
+    assert!(
+        text.contains("No Heroic games are ready to import."),
+        "{text}"
+    );
+    assert!(!f.config_dir().join("environments/alpha.toml").exists());
+    assert!(!f.config_dir().join("environments/beta.toml").exists());
+    assert!(!f.root.path().join("data/wineo/dxvk").exists());
+    assert_eq!(
+        fs::read(prefix.join("drive_c/Games/save.dat")).unwrap(),
+        b"save data"
+    );
 }
 
 fn source(root: &Path) -> std::path::PathBuf {

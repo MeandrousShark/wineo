@@ -231,6 +231,67 @@ fn setup_needs_a_terminal() {
 }
 
 #[test]
+fn heroic_bulk_asks_once_for_desktop_entries_and_confirmation() {
+    for accept in [false, true] {
+        let f = Fixture::new();
+        let prefix = f.root.path().join("heroic prefix");
+        fs::create_dir_all(prefix.join("drive_c/Games")).unwrap();
+        fs::write(
+            prefix.join("system.reg"),
+            "WINE REGISTRY Version 2\n#arch=win64\n",
+        )
+        .unwrap();
+        fs::write(prefix.join("drive_c/Games/save.dat"), b"existing save").unwrap();
+        let heroic = heroic_library(&f, &prefix);
+        let mut command = f.wineo();
+        command.args([
+            "import",
+            "heroic",
+            "--config-dir",
+            heroic.to_str().unwrap(),
+            "--all",
+            "--runner",
+            "wine",
+            "--adopt",
+        ]);
+        let mut pty = Pty::spawn(command);
+        pty.expect("Create desktop entries for these games? [Y/n], or < to go back: ");
+        pty.send("");
+        pty.expect("Import 2 games? [Y/n], or < to go back: ");
+        pty.send(if accept { "" } else { "n" });
+        let (status, output) = pty.finish();
+        if accept {
+            assert!(status.success(), "{output}");
+            assert!(output.contains("Imported 2 of 2 games."), "{output}");
+        } else {
+            assert_eq!(status.code(), Some(130), "{output}");
+            assert!(output.contains("Import canceled"), "{output}");
+        }
+        for name in ["alpha", "beta"] {
+            assert_eq!(f.registered(name), accept);
+            assert_eq!(
+                f.root
+                    .path()
+                    .join(format!("data/applications/wineo-{name}-{name}.desktop"))
+                    .exists(),
+                accept
+            );
+        }
+        assert_eq!(
+            output
+                .matches("Create desktop entries for these games?")
+                .count(),
+            1
+        );
+        assert_eq!(output.matches("Import 2 games?").count(), 1);
+        assert_eq!(
+            fs::read(prefix.join("drive_c/Games/save.dat")).unwrap(),
+            b"existing save"
+        );
+    }
+}
+
+#[test]
 fn setup_adds_targets_from_what_is_installed() {
     let f = Fixture::new();
     f.games("app", "");

@@ -526,3 +526,32 @@ pub fn wait_for(what: &str, mut condition: impl FnMut() -> bool) {
         thread::sleep(Duration::from_millis(50));
     }
 }
+
+pub fn heroic_library(f: &Fixture, prefix: &std::path::Path) -> std::path::PathBuf {
+    let config = f.root.path().join("heroic");
+    fs::create_dir_all(config.join("sideload_apps")).unwrap();
+    fs::create_dir_all(config.join("GamesConfig")).unwrap();
+    let exe = prefix.join("drive_c/Games/Game.exe");
+    fs::write(&exe, "game executable").unwrap();
+    fs::write(
+        config.join("config.json"),
+        format!(
+            r#"{{"defaultSettings":{{"winePrefix":"{}","wineVersion":{{"type":"wine","name":"System","bin":"wine"}}}}}}"#,
+            prefix.display()
+        ),
+    )
+    .unwrap();
+    let entries: Vec<_> = [("a", "Alpha"), ("b", "Beta")]
+        .into_iter()
+        .map(|(id, title)| {
+            fs::write(config.join(format!("GamesConfig/{id}.json")), format!(r#"{{"{id}":{{}}}}"#)).unwrap();
+            format!(r#"{{"app_name":"{id}","title":"{title}","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}}"#, exe.display())
+        })
+        .collect();
+    fs::write(
+        config.join("sideload_apps/library.json"),
+        format!(r#"{{"games":[{}]}}"#, entries.join(",")),
+    )
+    .unwrap();
+    config
+}
