@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0011: Esc to go back, Ctrl+C to cancel
 
@@ -15,12 +15,11 @@ Settled by the maintainer:
 
 - Ctrl+C is the way to cancel a guided flow.
 - Esc goes back one step.
-
-Open:
-
-- Whether `b`, `q`, and `<` keep working as quiet fallbacks, or are removed.
-  The plain stdin reader (used when the line editor can't start) has no Esc
-  key, so it would need `<` or similar either way.
+- Keep `b`, `q`, and `<` working as quiet fallbacks. The plain stdin reader
+  (used when the line editor can't start) has no Esc key, so `<` remains its
+  way to go back.
+- The maintainer approved implementation of this plan and deferred independent
+  QA until plan 0010 is also complete. Run the plan's automated checks now.
 
 ## Existing foundation
 
@@ -42,6 +41,7 @@ Open:
   since terminals also start Alt+key and arrow sequences with Esc.
 - Esc at a prompt with nowhere to go back to does nothing.
 - Ctrl+C is unchanged.
+- Existing typed back and cancel inputs remain accepted without hints.
 
 ## Output
 
