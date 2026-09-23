@@ -252,3 +252,16 @@ The path is printed at the end. `rm` leaves the log alone.
 - `-v` prints the expanded review and writes the import log.
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`,
   and `cargo test -- --ignored`.
+
+## Acceptance progress
+
+On 2026-09-23, the maintainer confirmed that the Palworld import walkthrough
+worked and that downloading Proton-CachyOS worked. The maintainer did not check
+the real-library `import heroic --all` case or the manual `-v` review and import
+log case during that walkthrough.
+
+Plan 0012's disposable Heroic fixture exercised verbose bulk import, skipping
+an existing environment, expanded review evidence, and import logs. Its
+automated checks also covered download output and selection. That fixture did
+not exercise the specific remaining sideloaded games and Project Zomboid case
+above. The plan remains approved until the remaining acceptance is settled.
