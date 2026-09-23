@@ -24,13 +24,6 @@ pub fn stderr_enabled() -> bool {
     anstream::AutoStream::choice(&std::io::stderr()) != anstream::ColorChoice::Never
 }
 
-/// Whether stdout should carry ANSI styling right now.
-///
-/// Kept for callers that use the default stdout styling helpers.
-pub fn enabled() -> bool {
-    stdout_enabled()
-}
-
 /// A bold section title styled for stdout.
 pub fn title(text: impl fmt::Display) -> String {
     title_with_color(text, stdout_enabled())
