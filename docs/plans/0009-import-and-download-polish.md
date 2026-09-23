@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0009: Import and download polish
 
@@ -271,6 +271,8 @@ both imported successfully. That retry did not use `-v`.
 
 Plan 0012's disposable Heroic fixture exercised verbose bulk import, skipping
 an existing environment, expanded review evidence, and import logs. Its
-automated checks also covered download output and selection. This plan remains
-approved until the manual `-v` review and import log case is checked or the
-maintainer accepts the fixture evidence for that case.
+automated checks also covered download output and selection. On 2026-09-23, the
+maintainer accepted that fixture evidence for the `-v` review and import log
+case. The real-library bulk import and Palworld and Proton-CachyOS walkthroughs
+passed. Plan 0012 records the automated QA gate; ignored real-Wine fixture
+tests were not run because `WINEO_TEST_PROTON` and `WINEO_TEST_DXVK` were unset.
