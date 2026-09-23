@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0015: Arch package for Wineo and shell completions
 
