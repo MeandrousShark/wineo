@@ -931,9 +931,48 @@ pub fn copy_runner(
     destination_root: impl AsRef<Path>,
     name: &str,
     cancel: &AtomicBool,
+    progress: impl FnMut(ImportProgress),
+) -> Result<RunnerCopyReceipt> {
+    copy_runner_with_review(
+        source.as_ref(),
+        destination_root.as_ref(),
+        name,
+        None,
+        cancel,
+        progress,
+    )
+}
+
+/// Copy the same runner tree that was offered in an earlier review.
+pub fn copy_runner_reviewed(
+    reviewed: &RunnerCopyInspection,
+    destination_root: impl AsRef<Path>,
+    name: &str,
+    cancel: &AtomicBool,
+    progress: impl FnMut(ImportProgress),
+) -> Result<RunnerCopyReceipt> {
+    copy_runner_with_review(
+        &reviewed.source,
+        destination_root.as_ref(),
+        name,
+        Some(reviewed),
+        cancel,
+        progress,
+    )
+}
+
+fn copy_runner_with_review(
+    source: &Path,
+    destination_root: &Path,
+    name: &str,
+    reviewed: Option<&RunnerCopyInspection>,
+    cancel: &AtomicBool,
     mut progress: impl FnMut(ImportProgress),
 ) -> Result<RunnerCopyReceipt> {
     let inspection = inspect_runner_copy(source)?;
+    if reviewed.is_some_and(|reviewed| reviewed != &inspection) {
+        bail!("the reviewed runner changed; inspect it again before copying");
+    }
     let source = &inspection.source;
     if !name::is_valid_runner(name) {
         bail!("invalid runner name `{name}`");
@@ -941,7 +980,7 @@ pub fn copy_runner(
     if runner_alias::is_alias(name) {
         bail!("runner name `{name}` is reserved for a latest alias");
     }
-    let destination_root = std::path::absolute(destination_root.as_ref())?;
+    let destination_root = std::path::absolute(destination_root)?;
     fs::create_dir_all(&destination_root)
         .with_context(|| format!("failed to create {}", destination_root.display()))?;
     let destination = destination_root.join(name);
@@ -1610,5 +1649,160 @@ mod tests {
             receipt.path.join("bin/wine-real")
         );
         assert_eq!(fs::read_to_string(&external).unwrap(), "host data");
+    }
+
+    #[test]
+    fn reviewed_runner_copy_rejects_changes_before_copy() {
+        let root = tempfile::tempdir().unwrap();
+        wine_runner(root.path(), "wine-build");
+        let source = root.path().join("wine-build");
+        let reviewed = inspect_runner_copy(&source).unwrap();
+        fs::remove_dir_all(source.join("bin")).unwrap();
+        fs::write(source.join("proton"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(source.join("proton"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(source.join("files/bin")).unwrap();
+        for name in ["wine", "wineserver"] {
+            let path = source.join("files/bin").join(name);
+            fs::write(&path, "#!/bin/sh\n").unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let destination = root.path().join("installed");
+        let error = copy_runner_reviewed(
+            &reviewed,
+            &destination,
+            "wine-build",
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("reviewed runner changed"));
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn runner_copy_cancellation_and_source_change_leave_no_publication() {
+        let root = tempfile::tempdir().unwrap();
+        wine_runner(root.path(), "wine-build");
+        let source = root.path().join("wine-build");
+        let destination = root.path().join("installed");
+        let canceled = AtomicBool::new(false);
+        let result = copy_runner(&source, &destination, "canceled", &canceled, |event| {
+            if matches!(event, ImportProgress::Copied { .. }) {
+                canceled.store(true, Ordering::Relaxed);
+            }
+        });
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert!(!destination.join("canceled").exists());
+        assert!(fs::read_dir(&destination).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".wineo-runner-")
+        }));
+
+        let changed = source.join("bin/wine");
+        let result = copy_runner(
+            &source,
+            &destination,
+            "changed",
+            &AtomicBool::new(false),
+            |event| {
+                if let ImportProgress::Copied { path } = event
+                    && path == changed
+                {
+                    fs::write(&changed, "#!/bin/sh\necho changed\n").unwrap();
+                }
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("changed"));
+        assert!(!destination.join("changed").exists());
+        assert!(fs::read_dir(&destination).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".wineo-runner-")
+        }));
+    }
+
+    #[test]
+    fn concurrent_runner_copies_publish_only_one_complete_build() {
+        use std::sync::{Arc, Barrier};
+
+        let root = tempfile::tempdir().unwrap();
+        proton_runner(root.path(), "GE-Proton9-20");
+        let source = root.path().join("GE-Proton9-20");
+        let destination = root.path().join("installed");
+        let barrier = Arc::new(Barrier::new(2));
+        let copies = (0..2)
+            .map(|_| {
+                let source = source.clone();
+                let destination = destination.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    copy_runner(
+                        source,
+                        destination,
+                        "GE-Proton9-20",
+                        &AtomicBool::new(false),
+                        |_| {},
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = copies
+            .into_iter()
+            .map(|copy| copy.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert!(destination.join("GE-Proton9-20/proton").is_file());
+        assert!(destination.join("GE-Proton9-20/files/bin/wine").is_file());
+        assert!(
+            destination
+                .join("GE-Proton9-20/.wineo-install.json")
+                .is_file()
+        );
+        assert_eq!(
+            fs::read_dir(&destination)
+                .unwrap()
+                .filter(|entry| entry.as_ref().unwrap().file_type().unwrap().is_dir())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn proton_runner_copy_preserves_executable_modes_and_internal_links() {
+        let root = tempfile::tempdir().unwrap();
+        proton_runner(root.path(), "GE-Proton9-20");
+        let source = root.path().join("GE-Proton9-20");
+        fs::rename(source.join("proton"), source.join("proton-real")).unwrap();
+        symlink(source.join("proton-real"), source.join("proton")).unwrap();
+        let reviewed = inspect_runner_copy(&source).unwrap();
+        let receipt = copy_runner_reviewed(
+            &reviewed,
+            root.path().join("installed"),
+            "GE-Proton9-20",
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            fs::canonicalize(receipt.path.join("proton")).unwrap(),
+            receipt.path.join("proton-real")
+        );
+        for path in ["proton-real", "files/bin/wine", "files/bin/wineserver"] {
+            assert_ne!(
+                fs::metadata(receipt.path.join(path))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o111,
+                0
+            );
+        }
     }
 }
