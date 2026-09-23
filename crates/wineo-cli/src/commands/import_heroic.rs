@@ -468,6 +468,7 @@ struct PendingGame {
     title: String,
     warn: Option<String>,
     component: Component,
+    version: Option<String>,
     /// The resolve error's own message, hint included, reused as the skip
     /// reason if this doesn't end up downloaded.
     reason: String,
@@ -523,7 +524,7 @@ fn run_all(
         &args,
     )?;
     let (pending_rows, pending_ready) =
-        resolve_pending(paths, global, pending, args.yes, prompt.as_mut())?;
+        resolve_pending(paths, global, &runner, pending, args.yes, prompt.as_mut())?;
     rows.extend(pending_rows);
     ready.extend(pending_ready);
 
@@ -866,11 +867,8 @@ fn classify_candidates(
                     title: imported.title.clone(),
                     warn,
                     component,
-                    reason: format!(
-                        "no {} build, run wineo download {}",
-                        component.label(),
-                        component.as_str()
-                    ),
+                    version: components::missing_build_version(&error).map(str::to_owned),
+                    reason: error.to_string(),
                     imported,
                     inspection,
                     request,
@@ -893,36 +891,107 @@ fn classify_candidates(
 fn resolve_pending<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
+    runner: &Runner,
     pending: Vec<PendingGame>,
     yes: bool,
     prompt: Option<&mut Prompt<I, W>>,
 ) -> anyhow::Result<(Vec<BulkRow>, Vec<ReadyGame>)> {
+    resolve_pending_with(
+        paths,
+        global,
+        runner,
+        pending,
+        yes,
+        prompt,
+        |component, version| components::download_build(paths, global, component, version),
+    )
+}
+
+fn resolve_pending_with<I: Input, W: Write>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    runner: &Runner,
+    mut pending: Vec<PendingGame>,
+    yes: bool,
+    mut prompt: Option<&mut Prompt<I, W>>,
+    mut download: impl FnMut(Component, Option<&str>) -> anyhow::Result<()>,
+) -> anyhow::Result<(Vec<BulkRow>, Vec<ReadyGame>)> {
     let mut rows = Vec::new();
     let mut ready = Vec::new();
-    let mut downloaded: Vec<Component> = Vec::new();
+    let mut offered = Vec::new();
 
-    if !yes && let Some(prompt) = prompt {
-        for component in Component::ALL {
-            if !pending.iter().any(|game| game.component == component) {
-                continue;
+    while !yes && let Some(prompt) = prompt.as_mut() {
+        let Some(component) = Component::ALL.into_iter().find(|component| {
+            pending.iter().any(|game| game.component == *component) && !offered.contains(component)
+        }) else {
+            break;
+        };
+        offered.push(component);
+        let versions: Vec<Option<String>> = pending
+            .iter()
+            .filter(|game| game.component == component)
+            .map(|game| game.version.clone())
+            .collect();
+        let mut unique = Vec::new();
+        for version in versions {
+            if !unique.contains(&version) {
+                unique.push(version);
             }
-            let count = pending
-                .iter()
-                .filter(|game| game.component == component)
-                .count();
-            let question = format!(
+        }
+        let count = pending
+            .iter()
+            .filter(|game| game.component == component)
+            .count();
+        let pinned: Vec<&str> = unique.iter().filter_map(|v| v.as_deref()).collect();
+        let question = if pinned.is_empty() {
+            format!(
                 "No matching {} build is installed for {count} game{}. Download the latest release?",
                 component.label(),
                 if count == 1 { "" } else { "s" }
-            );
-            if components::offer_download(prompt, paths, global, component, &question)? {
-                downloaded.push(component);
+            )
+        } else {
+            format!(
+                "{} is missing for {count} game{} ({}). Download the exact requested version{}?",
+                component.label(),
+                if count == 1 { "" } else { "s" },
+                pinned.join(", "),
+                if pinned.len() == 1 { "" } else { "s" }
+            )
+        };
+        if !matches!(prompt.confirm(&question, true)?, Reply::Value(true)) {
+            continue;
+        }
+        for version in &unique {
+            if version.is_none() && !pinned.is_empty() {
+                continue;
+            }
+            download(component, version.as_deref())?;
+        }
+        for game in &mut pending {
+            let wanted = Wanted {
+                dxvk: game.imported.dxvk.clone(),
+                vkd3d: game.imported.vkd3d.clone(),
+            };
+            match install::check_available(paths, global, &game.name, runner, &wanted) {
+                Ok(()) => {}
+                Err(error) => {
+                    if let Some(component) = components::missing_build_component(&error) {
+                        game.component = component;
+                        game.version = components::missing_build_version(&error).map(str::to_owned);
+                    }
+                    game.reason = error.to_string();
+                }
             }
         }
     }
 
     for game in pending {
-        if downloaded.contains(&game.component) {
+        let wanted = Wanted {
+            dxvk: game.imported.dxvk.clone(),
+            vkd3d: game.imported.vkd3d.clone(),
+        };
+        let available = install::check_available(paths, global, &game.name, runner, &wanted);
+        if available.is_ok() {
             rows.push(BulkRow {
                 name: game.name.clone(),
                 title: game.title.clone(),
@@ -1871,6 +1940,26 @@ fn ensure_components_available<I: Input, W: Write>(
     wanted: &Wanted,
     prompt: &mut Prompt<I, W>,
 ) -> anyhow::Result<()> {
+    ensure_components_available_with(
+        paths,
+        global,
+        name,
+        runner,
+        wanted,
+        prompt,
+        |component, version| components::download_build(paths, global, component, version),
+    )
+}
+
+fn ensure_components_available_with<I: Input, W: Write>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    runner: &Runner,
+    wanted: &Wanted,
+    prompt: &mut Prompt<I, W>,
+    mut download: impl FnMut(Component, Option<&str>) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     loop {
         match install::check_available(paths, global, name, runner, wanted) {
             Ok(()) => return Ok(()),
@@ -1878,11 +1967,24 @@ fn ensure_components_available<I: Input, W: Write>(
                 let Some(component) = components::missing_build_component(&error) else {
                     return Err(error.into());
                 };
-                let question = format!(
-                    "No matching {} build is installed. Download the latest release?",
-                    component.label()
-                );
-                if !components::offer_download(prompt, paths, global, component, &question)? {
+                let version = components::missing_build_version(&error);
+                let question = match version {
+                    Some(name) => format!(
+                        "{} build `{name}` is not installed. Download that exact version?",
+                        component.label()
+                    ),
+                    None => format!(
+                        "No matching {} build is installed. Download the latest release?",
+                        component.label()
+                    ),
+                };
+                if !components::offer_download_with(
+                    prompt,
+                    component,
+                    version,
+                    &question,
+                    &mut download,
+                )? {
                     return Err(error.into());
                 }
             }
@@ -3681,12 +3783,17 @@ mod tests {
     }
 
     fn pending_game(root: &Path, component: Component, reason: &str) -> PendingGame {
-        let (imported, inspection, request) = reviewed_import(root);
+        let (mut imported, inspection, request) = reviewed_import(root);
+        imported.dxvk = Some("latest".to_owned());
+        if component == Component::Vkd3d {
+            imported.vkd3d = Some("latest".to_owned());
+        }
         PendingGame {
             name: "hades".to_owned(),
             title: "Hades".to_owned(),
             warn: None,
             component,
+            version: None,
             reason: reason.to_owned(),
             imported,
             inspection,
@@ -3694,9 +3801,195 @@ mod tests {
         }
     }
 
+    fn install_component_fixture(
+        paths: &Paths,
+        global: &GlobalConfig,
+        component: Component,
+        name: &str,
+    ) {
+        let root = wineo_core::components::Builds::new(paths, global, component)
+            .unwrap()
+            .root()
+            .to_owned();
+        let (x64, x32) = component.arch_dirs();
+        let marker = if component == Component::Dxvk {
+            "dxgi.dll"
+        } else {
+            "d3d12.dll"
+        };
+        for arch in [x64, x32] {
+            let dir = root.join(name).join(arch);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(marker), b"fixture").unwrap();
+        }
+    }
+
+    #[test]
+    fn guided_accepts_exact_pinned_component_and_resumes() {
+        let root = tempdir().unwrap();
+        let paths = paths(root.path());
+        let global = GlobalConfig::default();
+        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
+        let wanted = Wanted {
+            dxvk: Some("dxvk-2.7".to_owned()),
+            vkd3d: None,
+        };
+        let mut prompt = Prompt::new(Script::new(&["y"]), Vec::new());
+        let mut requests = Vec::new();
+        ensure_components_available_with(
+            &paths,
+            &global,
+            "game",
+            &runner,
+            &wanted,
+            &mut prompt,
+            |component, version| {
+                requests.push((component, version.map(str::to_owned)));
+                install_component_fixture(&paths, &global, component, version.unwrap());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            requests,
+            vec![(Component::Dxvk, Some("dxvk-2.7".to_owned()))]
+        );
+        let output = String::from_utf8_lossy(prompt.output());
+        assert!(output.contains("Download that exact version?"), "{output}");
+        assert_eq!(wanted.dxvk.as_deref(), Some("dxvk-2.7"));
+    }
+
+    #[test]
+    fn guided_accepts_both_components_in_dependency_order() {
+        let root = tempdir().unwrap();
+        let paths = paths(root.path());
+        let global = GlobalConfig::default();
+        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
+        let wanted = Wanted {
+            dxvk: Some("latest".to_owned()),
+            vkd3d: Some("latest".to_owned()),
+        };
+        let mut prompt = Prompt::new(Script::new(&["y", "y"]), Vec::new());
+        let mut requests = Vec::new();
+        ensure_components_available_with(
+            &paths,
+            &global,
+            "game",
+            &runner,
+            &wanted,
+            &mut prompt,
+            |component, version| {
+                requests.push((component, version.map(str::to_owned)));
+                let name = if component == Component::Dxvk {
+                    "dxvk-2.7"
+                } else {
+                    "vkd3d-proton-2.14"
+                };
+                install_component_fixture(&paths, &global, component, name);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            requests,
+            vec![(Component::Dxvk, None), (Component::Vkd3d, None)]
+        );
+    }
+
+    #[test]
+    fn bulk_accepts_one_component_prompt_for_shared_pin_and_resumes() {
+        let root = tempdir().unwrap();
+        let paths = paths(root.path());
+        let global = GlobalConfig::default();
+        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
+        let mut a = pending_game(root.path(), Component::Dxvk, "missing");
+        a.imported.dxvk = Some("dxvk-2.7".to_owned());
+        a.version = Some("dxvk-2.7".to_owned());
+        let mut b = pending_game(root.path(), Component::Dxvk, "missing");
+        b.name = "second".to_owned();
+        b.imported.dxvk = Some("dxvk-2.7".to_owned());
+        b.version = Some("dxvk-2.7".to_owned());
+        let mut prompt = Prompt::new(Script::new(&["y"]), Vec::new());
+        let mut requests = Vec::new();
+        let (rows, ready) = resolve_pending_with(
+            &paths,
+            &global,
+            &runner,
+            vec![a, b],
+            false,
+            Some(&mut prompt),
+            |component, version| {
+                requests.push((component, version.map(str::to_owned)));
+                install_component_fixture(&paths, &global, component, version.unwrap());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            requests,
+            vec![(Component::Dxvk, Some("dxvk-2.7".to_owned()))]
+        );
+        assert_eq!(ready.len(), 2);
+        assert!(
+            rows.iter()
+                .all(|row| matches!(row.status, RowStatus::Ready { .. }))
+        );
+        assert_eq!(
+            String::from_utf8_lossy(prompt.output())
+                .matches("Download the exact requested version?")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn bulk_downloads_dxvk_then_vkd3d_and_resumes() {
+        let root = tempdir().unwrap();
+        let paths = paths(root.path());
+        let global = GlobalConfig::default();
+        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
+        let mut game = pending_game(root.path(), Component::Dxvk, "dxvk missing");
+        game.imported.vkd3d = Some("latest".to_owned());
+        let pending = vec![game];
+        let mut prompt = Prompt::new(Script::new(&["y", "y"]), Vec::new());
+        let mut requested = Vec::new();
+        let (rows, ready) = resolve_pending_with(
+            &paths,
+            &global,
+            &runner,
+            pending,
+            false,
+            Some(&mut prompt),
+            |component, version| {
+                requested.push((component, version.map(str::to_owned)));
+                let name = if component == Component::Dxvk {
+                    "dxvk-2.7"
+                } else {
+                    "vkd3d-proton-2.14"
+                };
+                install_component_fixture(&paths, &global, component, name);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            requested,
+            vec![(Component::Dxvk, None), (Component::Vkd3d, None)]
+        );
+        assert_eq!(ready.len(), 1);
+        assert!(matches!(rows[0].status, RowStatus::Ready { .. }));
+        assert_eq!(
+            String::from_utf8_lossy(prompt.output())
+                .matches("Download the latest release?")
+                .count(),
+            2
+        );
+    }
+
     #[test]
     fn resolve_pending_with_yes_skips_without_asking() {
         let root = tempdir().unwrap();
+        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
         let pending = vec![pending_game(
             root.path(),
             Component::Dxvk,
@@ -3705,6 +3998,7 @@ mod tests {
         let (rows, ready) = resolve_pending::<Script, Vec<u8>>(
             &paths(root.path()),
             &GlobalConfig::default(),
+            &runner,
             pending,
             true,
             None,
@@ -3721,6 +4015,7 @@ mod tests {
     #[test]
     fn resolve_pending_interactive_decline_keeps_the_original_reason() {
         let root = tempdir().unwrap();
+        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
         let pending = vec![pending_game(
             root.path(),
             Component::Dxvk,
@@ -3730,6 +4025,7 @@ mod tests {
         let (rows, ready) = resolve_pending(
             &paths(root.path()),
             &GlobalConfig::default(),
+            &runner,
             pending,
             false,
             Some(&mut prompt),
@@ -3745,6 +4041,7 @@ mod tests {
     #[test]
     fn resolve_pending_asks_once_per_component_across_every_game_that_needs_it() {
         let root = tempdir().unwrap();
+        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
         let pending = vec![
             pending_game(root.path(), Component::Dxvk, "dxvk missing"),
             pending_game(root.path(), Component::Dxvk, "dxvk missing"),
@@ -3753,6 +4050,7 @@ mod tests {
         let (rows, _) = resolve_pending(
             &paths(root.path()),
             &GlobalConfig::default(),
+            &runner,
             pending,
             false,
             Some(&mut prompt),

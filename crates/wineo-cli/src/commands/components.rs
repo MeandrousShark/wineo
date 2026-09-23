@@ -52,24 +52,64 @@ pub fn missing_build_component(error: &Error) -> Option<Component> {
     Component::ALL.into_iter().find(|c| c.as_str() == name)
 }
 
-/// Confirms `question`, and downloads the newest stable release for
-/// `component` if the answer is yes. `Ok(true)` means it was downloaded.
+pub fn missing_build_version(error: &Error) -> Option<&str> {
+    match error {
+        Error::UnknownBuild { name, .. } => Some(name),
+        _ => None,
+    }
+}
+
+/// Confirms `question`, then downloads the requested build or latest release.
 pub fn offer_download<I: Input, W: Write>(
     prompt: &mut Prompt<I, W>,
     paths: &Paths,
     global: &GlobalConfig,
     component: Component,
+    version: Option<&str>,
     question: &str,
+) -> anyhow::Result<bool> {
+    offer_download_with(
+        prompt,
+        component,
+        version,
+        question,
+        |component, version| download_build(paths, global, component, version),
+    )
+}
+
+pub fn offer_download_with<I: Input, W: Write>(
+    prompt: &mut Prompt<I, W>,
+    component: Component,
+    version: Option<&str>,
+    question: &str,
+    download: impl FnOnce(Component, Option<&str>) -> anyhow::Result<()>,
 ) -> anyhow::Result<bool> {
     if !matches!(prompt.confirm(question, true)?, Reply::Value(true)) {
         return Ok(false);
     }
+    download(component, version)?;
+    Ok(true)
+}
+
+pub fn download_build(
+    paths: &Paths,
+    global: &GlobalConfig,
+    component: Component,
+    version: Option<&str>,
+) -> anyhow::Result<()> {
     let provider = match component {
         Component::Dxvk => Provider::Dxvk,
         Component::Vkd3d => Provider::Vkd3d,
     };
-    download::install_latest(paths, global, provider)?;
-    Ok(true)
+    match version {
+        Some(name) => {
+            download::install_component_version(paths, global, provider, name)?;
+        }
+        None => {
+            download::install_latest(paths, global, provider)?;
+        }
+    }
+    Ok(())
 }
 
 fn describe(change: &Change, name: &str) -> String {
@@ -133,9 +173,42 @@ mod tests {
             &paths,
             &global,
             Component::Dxvk,
+            None,
             "Download the latest release?",
         )
         .unwrap();
         assert!(!downloaded);
+    }
+
+    #[test]
+    fn accepted_download_passes_the_exact_pin_and_reports_failure() {
+        let mut prompt = Prompt::new(Script::new(&["y"]), Vec::new());
+        let error = offer_download_with(
+            &mut prompt,
+            Component::Dxvk,
+            Some("dxvk-2.7"),
+            "Download that exact version?",
+            |component, version| {
+                assert_eq!(component, Component::Dxvk);
+                assert_eq!(version, Some("dxvk-2.7"));
+                anyhow::bail!("fixture download failed")
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fixture download failed"));
+    }
+
+    #[test]
+    fn cancel_does_not_start_a_download() {
+        let mut prompt = Prompt::new(Script::new(&["q"]), Vec::new());
+        let error = offer_download_with(
+            &mut prompt,
+            Component::Dxvk,
+            None,
+            "Download the latest release?",
+            |_, _| panic!("canceled prompt must not download"),
+        )
+        .unwrap_err();
+        assert!(error.is::<crate::prompt::Canceled>());
     }
 }

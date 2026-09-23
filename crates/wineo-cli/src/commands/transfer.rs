@@ -29,6 +29,13 @@ impl Cancellation {
             result
         }
     }
+
+    pub fn published_result<T>(&self, result: anyhow::Result<T>) -> anyhow::Result<T> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => self.result(Err(error)),
+        }
+    }
 }
 
 impl Drop for Cancellation {
@@ -36,5 +43,26 @@ impl Drop for Cancellation {
         for handler in self.handlers.drain(..) {
             signal_hook::low_level::unregister(handler);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn late_cancel_does_not_override_published_success() {
+        let cancellation = Cancellation::new().unwrap();
+        cancellation.flag.store(true, Ordering::Relaxed);
+        assert_eq!(
+            cancellation.published_result(Ok("installed")).unwrap(),
+            "installed"
+        );
+        assert!(
+            cancellation
+                .published_result::<()>(Err(anyhow::anyhow!("failed")))
+                .unwrap_err()
+                .is::<crate::prompt::Canceled>()
+        );
     }
 }

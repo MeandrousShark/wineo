@@ -394,11 +394,18 @@ fn settings<I: Input, W: Write>(
             && !offered_download.contains(&component)
         {
             offered_download.push(component);
-            let question = format!(
-                "No matching {} build is installed. Download the latest release?",
-                component.label()
-            );
-            if components::offer_download(prompt, paths, global, component, &question)? {
+            let version = components::missing_build_version(&error);
+            let question = match version {
+                Some(name) => format!(
+                    "{} build `{name}` is not installed. Download that exact version?",
+                    component.label()
+                ),
+                None => format!(
+                    "No matching {} build is installed. Download the latest release?",
+                    component.label()
+                ),
+            };
+            if components::offer_download(prompt, paths, global, component, version, &question)? {
                 continue;
             }
         }
