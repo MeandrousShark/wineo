@@ -1,6 +1,6 @@
 # shellcheck disable=SC2034,SC2154
 pkgname=wineo-git
-pkgver=0.1.0.r209.g3afd08d
+pkgver=0.1.0.r210.g8a4cd05
 pkgrel=1
 pkgdesc='Wine environment manager with live shell completions'
 arch=('x86_64')
@@ -50,7 +50,7 @@ build() {
 
 check() {
   cd "$srcdir/wineo" || return
-  TERM=xterm-256color cargo test --workspace --frozen
+  TERM=xterm-256color cargo test --workspace --frozen -- --test-threads=1
 }
 
 package() {
