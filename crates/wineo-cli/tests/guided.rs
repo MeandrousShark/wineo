@@ -292,6 +292,72 @@ fn heroic_bulk_asks_once_for_desktop_entries_and_confirmation() {
 }
 
 #[test]
+fn canceling_heroic_import_keeps_a_completed_runner_copy_and_reports_it() {
+    let f = Fixture::new();
+    let prefix = f.root.path().join("heroic prefix");
+    fs::create_dir_all(prefix.join("drive_c/Games")).unwrap();
+    fs::write(
+        prefix.join("system.reg"),
+        "WINE REGISTRY Version 2\n#arch=win64\n",
+    )
+    .unwrap();
+    let heroic = heroic_library(&f, &prefix);
+    let source = f.root.path().join("heroic runner");
+    fs::create_dir_all(source.join("bin")).unwrap();
+    for file in ["wine", "wineserver"] {
+        fs::copy(
+            f.root.path().join("bin").join(file),
+            source.join("bin").join(file),
+        )
+        .unwrap();
+    }
+    fs::write(
+        heroic.join("GamesConfig/a.json"),
+        format!(
+            r#"{{"a":{{"wineVersion":{{"type":"wine","name":"heroic-wine","bin":"{}"}}}}}}"#,
+            source.join("bin/wine").display()
+        ),
+    )
+    .unwrap();
+    let original = fs::read(source.join("bin/wine")).unwrap();
+    let mut command = f.wineo();
+    command.args([
+        "import",
+        "heroic",
+        "--config-dir",
+        heroic.to_str().unwrap(),
+        "--game",
+        "a",
+        "--name",
+        "alpha",
+        "--adopt",
+    ]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Environment name, or < to go back [alpha]: ");
+    pty.send("");
+    pty.expect("Runner [1]: ");
+    pty.send("");
+    pty.expect("This runner copy is retained if the prefix import is canceled.");
+    pty.expect("Choice, or Enter to import: ");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(
+        output.contains("Copied Heroic runner heroic-wine"),
+        "{output}"
+    );
+    assert!(!f.registered("alpha"));
+    let copy = f.root.path().join("data/wineo/runners/heroic-wine");
+    assert_eq!(fs::read(copy.join("bin/wine")).unwrap(), original);
+    assert_eq!(fs::read(source.join("bin/wine")).unwrap(), original);
+    assert!(copy.join("bin/wineserver").is_file());
+    assert_eq!(
+        fs::read(prefix.join("drive_c/Games/Game.exe")).unwrap(),
+        b"game executable"
+    );
+}
+
+#[test]
 fn setup_adds_targets_from_what_is_installed() {
     let f = Fixture::new();
     f.games("app", "");
