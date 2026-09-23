@@ -9,6 +9,7 @@ use wineo_core::paths::Paths;
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to show, or the global config if left out
+    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
     name: Option<String>,
 
     /// Print the file's path instead of its contents

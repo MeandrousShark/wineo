@@ -13,6 +13,7 @@ use wineo_core::runtime::Runtime;
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to remove
+    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
     name: String,
 
     /// Delete the environment's wine prefix as well

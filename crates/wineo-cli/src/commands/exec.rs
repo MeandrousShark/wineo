@@ -17,6 +17,7 @@ use crate::commands::desktop;
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to run the program in
+    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
     name: String,
 
     /// Set an environment variable, overriding the config

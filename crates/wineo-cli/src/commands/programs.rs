@@ -9,6 +9,7 @@ use wineo_core::programs::{self, Listing};
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to look in
+    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
     name: String,
 
     /// Also list the executables held back as noise, like uninstallers

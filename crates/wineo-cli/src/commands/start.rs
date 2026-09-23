@@ -16,6 +16,7 @@ use crate::commands::run::LaunchArgs;
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to start
+    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
     name: String,
 
     #[command(flatten)]

@@ -18,6 +18,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(200);
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment whose log to print
+    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
     name: String,
 
     /// Keep printing new output as it's written

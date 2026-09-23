@@ -24,6 +24,7 @@ const CANCELED: u8 = 130;
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to set up
+    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
     name: String,
 }
 

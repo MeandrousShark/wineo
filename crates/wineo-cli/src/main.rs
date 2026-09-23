@@ -1,4 +1,5 @@
 mod commands;
+mod completion;
 mod picker;
 mod prompt;
 mod style;
@@ -92,6 +93,8 @@ fn run() -> anyhow::Result<ExitCode> {
             .map(|()| ExitCode::SUCCESS)
             .map_err(Into::into);
     }
+
+    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
 
     let cli = Cli::parse();
     let paths = Paths::from_env()?;

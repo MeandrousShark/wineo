@@ -22,6 +22,7 @@ const LABEL_GAP: usize = 2;
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to show, every running environment if left out
+    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
     name: Option<String>,
     /// Print machine-readable JSON
     #[arg(long)]

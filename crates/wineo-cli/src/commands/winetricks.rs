@@ -49,7 +49,8 @@ pub struct Args {
         required = true,
         value_name = "NAME [WINETRICKS ARGS]...",
         trailing_var_arg = true,
-        allow_hyphen_values = true
+        allow_hyphen_values = true,
+        add = clap_complete::ArgValueCompleter::new(crate::completion::environments)
     )]
     rest: Vec<String>,
 }

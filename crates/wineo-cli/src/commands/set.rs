@@ -248,6 +248,7 @@ fn new_prefix(paths: &Paths, raw: &str) -> Option<PathBuf> {
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to change, left out with --global
+    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
     name: Option<String>,
 
     /// Settings to change, like runner=wine or targets.app.exe='C:\app.exe'

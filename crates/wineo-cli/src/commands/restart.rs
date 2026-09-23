@@ -12,6 +12,7 @@ use crate::commands::{start, stop};
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to restart
+    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
     name: String,
 
     #[command(flatten)]

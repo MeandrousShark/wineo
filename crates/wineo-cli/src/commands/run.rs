@@ -19,6 +19,7 @@ use crate::commands::desktop;
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to run
+    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
     name: String,
 
     #[command(flatten)]
@@ -29,7 +30,7 @@ pub struct Args {
 #[derive(clap::Args)]
 pub struct LaunchArgs {
     /// Target to launch instead of the default
-    #[arg(short, long)]
+    #[arg(short, long, add = clap_complete::ArgValueCompleter::new(crate::completion::targets))]
     target: Option<String>,
 
     /// Set an environment variable for this run, overriding the config

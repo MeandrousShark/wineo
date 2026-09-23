@@ -17,6 +17,7 @@ use wineo_core::supervisor;
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to stop
+    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
     name: String,
 
     /// Kill everything in the prefix right away instead of asking programs to close
