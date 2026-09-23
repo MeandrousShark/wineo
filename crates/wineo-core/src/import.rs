@@ -106,6 +106,17 @@ pub struct RunnerCopyReceipt {
     pub name: String,
     pub receipt: PathBuf,
     pub provenance: RunnerProvenance,
+    pub external_dependencies: Vec<ExternalDependency>,
+}
+
+/// A host-accessible runner tree that can be offered for copying.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerCopyInspection {
+    pub source: PathBuf,
+    pub supports_wine: bool,
+    pub supports_proton: bool,
+    pub external_dependencies: Vec<ExternalDependency>,
+    pub fingerprint: SourceFingerprint,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -897,6 +908,24 @@ fn write_config_once(path: &Path, contents: &str) -> Result<()> {
 
 /// Copy an existing runner tree into a wineo runner root without replacing an
 /// installed build. The copy is staged and receives an import provenance file.
+pub fn inspect_runner_copy(source: impl AsRef<Path>) -> Result<RunnerCopyInspection> {
+    let source = canonical_source(source.as_ref())?;
+    let (supports_wine, supports_proton) = runner_tree_kinds(&source)?;
+    if !supports_wine && !supports_proton {
+        bail!(
+            "{} is not a valid Wine or Proton runner tree",
+            source.display()
+        );
+    }
+    Ok(RunnerCopyInspection {
+        external_dependencies: find_external_dependencies(&source)?,
+        fingerprint: fingerprint(&source)?,
+        source,
+        supports_wine,
+        supports_proton,
+    })
+}
+
 pub fn copy_runner(
     source: impl AsRef<Path>,
     destination_root: impl AsRef<Path>,
@@ -904,26 +933,26 @@ pub fn copy_runner(
     cancel: &AtomicBool,
     mut progress: impl FnMut(ImportProgress),
 ) -> Result<RunnerCopyReceipt> {
-    let source = canonical_source(source.as_ref())?;
+    let inspection = inspect_runner_copy(source)?;
+    let source = &inspection.source;
     if !name::is_valid_runner(name) {
         bail!("invalid runner name `{name}`");
     }
     if runner_alias::is_alias(name) {
         bail!("runner name `{name}` is reserved for a latest alias");
     }
-    validate_runner_tree(&source)?;
     let destination_root = std::path::absolute(destination_root.as_ref())?;
     fs::create_dir_all(&destination_root)
         .with_context(|| format!("failed to create {}", destination_root.display()))?;
     let destination = destination_root.join(name);
-    reject_overlapping_paths(&source, &destination)?;
+    reject_overlapping_paths(source, &destination)?;
     if destination.exists() {
         bail!(
             "runner destination already exists: {}",
             destination.display()
         );
     }
-    let before = fingerprint(&source)?;
+    let before = inspection.fingerprint;
     let _publish_lock = InstallLock::acquire(&destination)?;
     let staging = tempfile::Builder::new()
         .prefix(".wineo-runner-")
@@ -935,9 +964,9 @@ pub fn copy_runner(
             )
         })?;
     let staging_path = staging.path().to_owned();
-    copy_tree(&source, &staging_path, &destination, cancel, &mut progress)?;
+    copy_tree(source, &staging_path, &destination, cancel, &mut progress)?;
     check_cancelled(cancel)?;
-    if fingerprint(&source)? != before {
+    if fingerprint(source)? != before {
         bail!(
             "runner {} changed while it was being copied; try again",
             source.display()
@@ -955,7 +984,7 @@ pub fn copy_runner(
         fs::remove_file(&receipt)
             .with_context(|| format!("failed to replace {}", receipt.display()))?;
     }
-    let provenance = runner_provenance(&source, name)?;
+    let provenance = runner_provenance(source, name)?;
     let receipt_json = runner_receipt(&provenance)?;
     OpenOptions::new()
         .write(true)
@@ -975,6 +1004,14 @@ pub fn copy_runner(
         name: name.to_owned(),
         receipt: destination.join(".wineo-install.json"),
         provenance,
+        external_dependencies: inspection
+            .external_dependencies
+            .into_iter()
+            .map(|dependency| ExternalDependency {
+                source: destination.join(dependency.source.strip_prefix(source).unwrap()),
+                target: dependency.target,
+            })
+            .collect(),
     })
 }
 
@@ -1053,7 +1090,7 @@ fn runner_receipt(provenance: &RunnerProvenance) -> Result<Vec<u8>> {
     }))?)
 }
 
-fn validate_runner_tree(root: &Path) -> Result<()> {
+fn runner_tree_kinds(root: &Path) -> Result<(bool, bool)> {
     let proton = root.join("proton");
     let wine = root.join("bin/wine");
     let wineserver = root.join("bin/wineserver");
@@ -1075,13 +1112,7 @@ fn validate_runner_tree(root: &Path) -> Result<()> {
         && wineserver.is_file()
         && wine.metadata()?.permissions().mode() & 0o111 != 0
         && wineserver.metadata()?.permissions().mode() & 0o111 != 0;
-    if !proton_ok && !wine_ok {
-        bail!(
-            "{} is not a valid Wine or Proton runner tree",
-            root.display()
-        );
-    }
-    Ok(())
+    Ok((wine_ok, proton_ok))
 }
 
 fn validate_staged_runner_tree(staging: &Path, final_root: &Path) -> Result<()> {
@@ -1521,5 +1552,63 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn runner_copy_preflight_rejects_unavailable_and_invalid_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("app");
+        assert!(inspect_runner_copy(&missing).is_err());
+        fs::create_dir(&missing).unwrap();
+        assert!(inspect_runner_copy(&missing).is_err());
+
+        wine_runner(root.path(), "wine-build");
+        let wine = inspect_runner_copy(root.path().join("wine-build")).unwrap();
+        assert!(wine.supports_wine);
+        assert!(!wine.supports_proton);
+
+        proton_runner(root.path(), "GE-Proton9-20");
+        let proton = inspect_runner_copy(root.path().join("GE-Proton9-20")).unwrap();
+        assert!(proton.supports_proton);
+    }
+
+    #[test]
+    fn runner_copy_retains_external_dependencies_and_rebases_internal_links() {
+        let root = tempfile::tempdir().unwrap();
+        wine_runner(root.path(), "wine-build");
+        let source = root.path().join("wine-build");
+        fs::rename(source.join("bin/wine"), source.join("bin/wine-real")).unwrap();
+        symlink(source.join("bin/wine-real"), source.join("bin/wine")).unwrap();
+        let external = root.path().join("shared-lib");
+        fs::write(&external, "host data").unwrap();
+        symlink("../../shared-lib", source.join("bin/lib-shared")).unwrap();
+
+        let inspection = inspect_runner_copy(&source).unwrap();
+        assert_eq!(inspection.external_dependencies.len(), 1);
+        assert_eq!(inspection.external_dependencies[0].target, external);
+
+        let receipt = copy_runner(
+            &source,
+            root.path().join("installed"),
+            "wine-build",
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(receipt.external_dependencies.len(), 1);
+        assert_eq!(
+            receipt.external_dependencies[0].source,
+            receipt.path.join("bin/lib-shared")
+        );
+        assert_eq!(receipt.external_dependencies[0].target, external);
+        assert_eq!(
+            fs::read_to_string(receipt.path.join("bin/lib-shared")).unwrap(),
+            "host data"
+        );
+        assert_eq!(
+            fs::canonicalize(receipt.path.join("bin/wine")).unwrap(),
+            receipt.path.join("bin/wine-real")
+        );
+        assert_eq!(fs::read_to_string(&external).unwrap(), "host data");
     }
 }

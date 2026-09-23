@@ -228,6 +228,29 @@ impl HeroicSource {
         self.inspect_entry(game_id, entry, &global)
     }
 
+    pub fn shared_prefix_candidates(&self, game_id: &str) -> Result<Vec<HeroicSharedPrefix>> {
+        let selected = self.inspect(game_id)?;
+        let selected_prefix = crate::paths::resolve(&selected.prefix);
+        let mut shared = self
+            .list_candidates()?
+            .candidates
+            .into_iter()
+            .filter(|candidate| candidate.id != game_id)
+            .filter(|candidate| {
+                candidate
+                    .prefix
+                    .as_ref()
+                    .is_some_and(|prefix| crate::paths::resolve(prefix) == selected_prefix)
+            })
+            .map(|candidate| HeroicSharedPrefix {
+                id: candidate.id,
+                title: candidate.title,
+            })
+            .collect::<Vec<_>>();
+        shared.sort_by(|a, b| a.title.cmp(&b.title).then(a.id.cmp(&b.id)));
+        Ok(shared)
+    }
+
     pub fn fingerprint(&self, game_id: &str) -> Result<InputFingerprint> {
         if !valid_game_id(game_id) {
             return Err(invalid_json(
@@ -324,6 +347,9 @@ impl HeroicSource {
             .filter(|value| !value.is_empty())
             .map(|value| self.expand_path(value).0)
             .ok_or_else(|| missing_file(&game_path, "Heroic has no winePrefix for this game"))?;
+        let runner = parse_runner(&effective, &self.home, &mut issues, &mut review)
+            .ok_or_else(|| missing_file(&game_path, "Heroic has no usable wineVersion"))?;
+        let prefix = normalize_heroic_prefix(prefix, runner.kind);
         let prefix_layout = detect_prefix_layout(&prefix);
         if !prefix.exists() {
             issues.push(HeroicIssue::missing(
@@ -345,8 +371,6 @@ impl HeroicSource {
             .carried
             .push(review_item("winePrefix", prefix.display().to_string()));
 
-        let runner = parse_runner(&effective, &self.home, &mut issues, &mut review)
-            .ok_or_else(|| missing_file(&game_path, "Heroic has no usable wineVersion"))?;
         if (runner.kind == HeroicRunnerKind::Proton && prefix_layout == PrefixLayout::Wine)
             || (runner.kind == HeroicRunnerKind::Wine && prefix_layout == PrefixLayout::Proton)
         {
@@ -422,6 +446,31 @@ impl HeroicSource {
         }
 
         collect_unsupported(&effective, global, &overrides, &mut issues, &mut review);
+        if runner.kind == HeroicRunnerKind::Proton
+            && bool_setting(&overrides, "disableUMU") == Some(true)
+        {
+            let detail = "Heroic disabled umu; wineo uses umu for Proton";
+            issues.push(HeroicIssue::unsupported(
+                Some("disableUMU".to_owned()),
+                detail,
+            ));
+            review.unsupported.push(review_item("disableUMU", detail));
+        }
+        if matches!(
+            runner.kind,
+            HeroicRunnerKind::Wine | HeroicRunnerKind::System
+        ) && bool_setting(&effective, "autoInstallDxvkNvapi") == Some(true)
+        {
+            let detail =
+                "Wine NVAPI requires dxvk-nvapi DLLs; enabling variables does not install them";
+            issues.push(HeroicIssue::needs_attention(
+                Some("autoInstallDxvkNvapi".to_owned()),
+                detail,
+            ));
+            review
+                .needs_attention
+                .push(review_item("autoInstallDxvkNvapi", detail));
+        }
         let mut external_dependencies = Vec::new();
         if let Some(runner_source) = runner.source.clone() {
             external_dependencies.push(runner_source.clone());
@@ -567,6 +616,12 @@ pub struct HeroicCandidate {
     pub runner: Option<HeroicRunner>,
     pub executable: Option<PathBuf>,
     pub issues: Vec<HeroicIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeroicSharedPrefix {
+    pub id: String,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -913,6 +968,19 @@ fn path_is_within(path: &Path, root: &Path) -> bool {
     let path = crate::paths::resolve(path);
     let root = crate::paths::resolve(root);
     path == root || path.starts_with(&root)
+}
+
+fn normalize_heroic_prefix(prefix: PathBuf, runner: HeroicRunnerKind) -> PathBuf {
+    if runner == HeroicRunnerKind::Proton
+        && prefix.file_name().and_then(|name| name.to_str()) == Some("pfx")
+        && prefix.parent().is_some_and(|parent| {
+            parent.join("pfx") == prefix && detect_prefix_layout(parent) == PrefixLayout::Proton
+        })
+    {
+        prefix.parent().unwrap().to_owned()
+    } else {
+        prefix
+    }
 }
 
 fn detect_prefix_layout(prefix: &Path) -> PrefixLayout {
@@ -1621,6 +1689,152 @@ mod tests {
         assert_eq!(
             source.inspect("one").unwrap().prefix,
             source.inspect("two").unwrap().prefix
+        );
+    }
+
+    #[test]
+    fn shared_prefix_candidates_resolve_aliases_and_proton_pfx() {
+        use std::os::unix::fs::symlink;
+
+        let (root, source) = fixture();
+        let compatdata = root.path().join("compatdata");
+        fs::create_dir_all(compatdata.join("pfx/drive_c")).unwrap();
+        fs::write(
+            compatdata.join("pfx/system.reg"),
+            "WINE REGISTRY Version 2\n#arch=win64\n",
+        )
+        .unwrap();
+        symlink(&compatdata, root.path().join("alias")).unwrap();
+        let global = format!(
+            r#"{{"defaultSettings":{{"winePrefix":"{}","wineVersion":{{"type":"proton","name":"GE-Proton","bin":"/runners/GE-Proton/proton"}}}}}}"#,
+            compatdata.display()
+        );
+        let library = format!(
+            r#"{{"games":[{{"app_name":"one","title":"One","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}},{{"app_name":"two","title":"Two","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}},{{"app_name":"other","title":"Other","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}}]}}"#,
+            compatdata.join("pfx/drive_c/one.exe").display(),
+            compatdata.join("pfx/drive_c/two.exe").display(),
+            compatdata.join("pfx/drive_c/other.exe").display(),
+        );
+        fs::write(source.config_path(), global).unwrap();
+        fs::write(source.library_path(), library).unwrap();
+        fs::write(
+            source.game_config_path("two"),
+            format!(
+                r#"{{"version":"v0.1","two":{{"winePrefix":"{}"}}}}"#,
+                root.path().join("alias/pfx").display()
+            ),
+        )
+        .unwrap();
+        let other = wine_prefix(root.path().join("separate").as_path());
+        fs::write(
+            source.game_config_path("other"),
+            format!(
+                r#"{{"version":"v0.1","other":{{"winePrefix":"{}"}}}}"#,
+                other.display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            source.inspect("two").unwrap().prefix,
+            root.path().join("alias")
+        );
+        assert_eq!(
+            source.shared_prefix_candidates("one").unwrap(),
+            vec![HeroicSharedPrefix {
+                id: "two".to_owned(),
+                title: "Two".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn disable_umu_reports_only_per_game_true_for_proton() {
+        let (root, source) = fixture();
+        let prefix = root.path().join("compatdata");
+        fs::create_dir_all(prefix.join("pfx/drive_c")).unwrap();
+        fs::write(prefix.join("pfx/system.reg"), "#arch=win64\n").unwrap();
+        let global = format!(
+            r#"{{"defaultSettings":{{"winePrefix":"{}","wineVersion":{{"type":"proton","name":"GE-Proton","bin":"/runners/GE-Proton/proton"}},"disableUMU":true}}}}"#,
+            prefix.display()
+        );
+        let library = format!(
+            r#"{{"games":[{{"app_name":"hades","title":"Hades","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}}]}}"#,
+            prefix.join("pfx/drive_c/game.exe").display()
+        );
+        write_fixture(&source, &global, "", &library);
+        assert!(
+            !source
+                .inspect("hades")
+                .unwrap()
+                .issues
+                .iter()
+                .any(|issue| issue.field.as_deref() == Some("disableUMU"))
+        );
+        fs::write(
+            source.game_config_path("hades"),
+            r#"{"version":"v0.1","hades":{"disableUMU":false}}"#,
+        )
+        .unwrap();
+        assert!(
+            !source
+                .inspect("hades")
+                .unwrap()
+                .issues
+                .iter()
+                .any(|issue| issue.field.as_deref() == Some("disableUMU"))
+        );
+        fs::write(
+            source.game_config_path("hades"),
+            r#"{"version":"v0.1","hades":{"disableUMU":true}}"#,
+        )
+        .unwrap();
+        let imported = source.inspect("hades").unwrap();
+        assert!(
+            imported
+                .issues
+                .iter()
+                .any(|issue| issue.field.as_deref() == Some("disableUMU")
+                    && issue.kind == HeroicIssueKind::Unsupported
+                    && issue.message.contains("wineo uses umu"))
+        );
+        assert!(
+            imported
+                .settings_review
+                .unsupported
+                .iter()
+                .any(|item| item.field == "disableUMU")
+        );
+    }
+
+    #[test]
+    fn wine_nvapi_warns_about_dll_requirement_without_claiming_absence() {
+        let (root, source) = fixture();
+        let prefix = wine_prefix(root.path());
+        let global = format!(
+            r#"{{"defaultSettings":{{"winePrefix":"{}","wineVersion":{{"type":"wine","name":"System","bin":"wine"}},"autoInstallDxvkNvapi":true,"disableUMU":true}}}}"#,
+            prefix.display()
+        );
+        let library = format!(
+            r#"{{"games":[{{"app_name":"hades","title":"Hades","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}}]}}"#,
+            prefix.join("drive_c/game.exe").display()
+        );
+        write_fixture(
+            &source,
+            &global,
+            r#"{"version":"v0.1","hades":{"disableUMU":true}}"#,
+            &library,
+        );
+        let imported = source.inspect("hades").unwrap();
+        assert_eq!(imported.env.get("DXVK_ENABLE_NVAPI"), Some(&"1".to_owned()));
+        assert!(imported.issues.iter().any(|issue| issue.field.as_deref()
+            == Some("autoInstallDxvkNvapi")
+            && issue.message.contains("requires dxvk-nvapi DLLs")
+            && !issue.message.contains("missing")));
+        assert!(
+            !imported
+                .issues
+                .iter()
+                .any(|issue| issue.field.as_deref() == Some("disableUMU"))
         );
     }
 }
