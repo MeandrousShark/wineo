@@ -3393,7 +3393,7 @@ mod tests {
 
     #[test]
     fn import_progress_flushes_before_blocked_copy_and_completes_same_line() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::{Arc, Mutex, mpsc};
 
         struct VisibleWriter {
@@ -3411,6 +3411,12 @@ mod tests {
             }
         }
 
+        let root = tempdir().unwrap();
+        let source_root = root.path().join("source-runners");
+        fake_wine_runner(&source_root, "wine-tkg");
+        let reviewed = import::inspect_runner_copy(source_root.join("wine-tkg")).unwrap();
+        let destination_root = root.path().join("copied-runners");
+        let installed = destination_root.join("wine-copy");
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let flushes = Arc::new(AtomicUsize::new(0));
         let (started_tx, started_rx) = mpsc::channel();
@@ -3422,19 +3428,33 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let mut writer = writer;
             import_progress(&mut writer, "hades", || {
-                started_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-                Ok(())
+                let cancelled = AtomicBool::new(false);
+                let mut paused = false;
+                import::copy_runner_reviewed(
+                    &reviewed,
+                    destination_root,
+                    "wine-copy",
+                    &cancelled,
+                    |progress| {
+                        if !paused && matches!(progress, import::ImportProgress::Copied { .. }) {
+                            paused = true;
+                            started_tx.send(()).unwrap();
+                            release_rx.recv().unwrap();
+                        }
+                    },
+                )
             })
             .unwrap()
             .unwrap();
         });
-        started_rx.recv().unwrap();
+        started_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         assert_eq!(&*bytes.lock().unwrap(), b"Importing hades...");
         assert_eq!(flushes.load(Ordering::SeqCst), 1);
+        assert!(!installed.exists());
         release_tx.send(()).unwrap();
         worker.join().unwrap();
         assert_eq!(&*bytes.lock().unwrap(), b"Importing hades... done\n");
+        assert!(installed.join("bin/wine").is_file());
 
         let mut failed = Vec::new();
         assert!(
