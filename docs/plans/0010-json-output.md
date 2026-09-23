@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0010: JSON output for status and list
 
@@ -19,7 +19,7 @@ Settled by the maintainer while drafting:
 - Collection output includes per-environment errors in JSON and exits with
   failure if any environment could not be inspected.
 
-The output contract below is proposed for maintainer approval with this plan.
+The maintainer approved the output contract below.
 
 ## Existing foundation
 
