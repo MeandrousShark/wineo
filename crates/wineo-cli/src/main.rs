@@ -75,7 +75,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("error: {err:#}");
+            eprintln!("{}", style::error_stderr(format!("error: {err:#}")));
             ExitCode::FAILURE
         }
     }

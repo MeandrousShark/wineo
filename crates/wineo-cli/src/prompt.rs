@@ -298,11 +298,11 @@ impl<I: Input, W: Write> Prompt<I, W> {
     }
 
     fn menu<T>(&mut self, heading: &str, choices: &[Choice<T>], back: bool) -> io::Result<()> {
-        if self.color {
-            writeln!(self.out, "{}", crate::style::title(heading))?;
-        } else {
-            writeln!(self.out, "{heading}")?;
-        }
+        writeln!(
+            self.out,
+            "{}",
+            crate::style::title_with_color(heading, self.color)
+        )?;
         for choice in choices {
             writeln!(self.out, "  {}) {}", choice.key, choice.label)?;
         }
@@ -596,6 +596,22 @@ mod tests {
             printed(&p),
             "Choose a template:\n  1) None, choose each setting\n  2) gaming\n  p) enter a path\n  b) back   q) cancel\nTemplate [1]: "
         );
+    }
+
+    #[test]
+    fn menu_heading_uses_the_prompt_color_setting() {
+        let mut colored = prompt(&["1"]).with_color(true);
+        colored
+            .choose("Choose:", "Template", &menu(), None, false)
+            .unwrap();
+        assert!(printed(&colored).contains("\u{1b}[1mChoose:\u{1b}[0m"));
+
+        let mut plain = prompt(&["1"]).with_color(false);
+        plain
+            .choose("Choose:", "Template", &menu(), None, false)
+            .unwrap();
+        assert!(printed(&plain).starts_with("Choose:\n"));
+        assert!(!printed(&plain).contains('\u{1b}'));
     }
 
     #[test]
