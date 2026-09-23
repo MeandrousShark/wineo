@@ -37,7 +37,11 @@ fn heroic_bulk_preserves_recorded_ids_and_imports_another_game_with_the_same_pat
     assert_success(&output);
     assert!(stdout(&output).contains("Already imported: alpha"));
     assert!(stdout(&output).contains("Imported 1 of 1 games."));
-    assert!(!stdout(&output).contains("warn:"));
+    assert!(
+        stdout(&output).contains("Copying includes the whole prefix."),
+        "{}",
+        stdout(&output)
+    );
     assert_eq!(
         fs::read_to_string(configs.join("alpha.toml")).unwrap(),
         original
@@ -75,7 +79,11 @@ fn heroic_bulk_backfills_a_legacy_environment_only_once_per_invocation() {
     assert_success(&output);
     assert!(stdout(&output).contains("Already imported: legacy"));
     assert!(stdout(&output).contains("Imported 1 of 1 games."));
-    assert!(!stdout(&output).contains("warn:"));
+    assert!(
+        stdout(&output).contains("Copying includes the whole prefix."),
+        "{}",
+        stdout(&output)
+    );
     let expected = format!("{original}heroic_id = \"a\"\n");
     assert_eq!(
         fs::read_to_string(configs.join("legacy.toml")).unwrap(),
@@ -245,6 +253,154 @@ fn heroic_bulk_yes_skips_missing_components_without_downloading() {
         fs::read(prefix.join("drive_c/Games/save.dat")).unwrap(),
         b"save data"
     );
+}
+
+#[test]
+fn heroic_bulk_preserves_omission_evidence_in_verbose_output_and_plain_logs() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    fs::write(heroic.join("GamesConfig/a.json"), r#"{"a":{
+        "launcherArgs":"--profile 'two words'",
+        "enviromentOptions":[{"key":"WINEPREFIX","value":"/do/not/use"},{"key":"API_TOKEN","value":"redact-me"}],
+        "wrapperOptions":"unsupported-wrapper",
+        "steamGridDbApiKey":"never-import-this"
+    }}"#).unwrap();
+    let output = f
+        .wineo()
+        .args([
+            "-v",
+            "import",
+            "heroic",
+            "--config-dir",
+            heroic.to_str().unwrap(),
+            "--all",
+            "--yes",
+            "--runner",
+            "wine",
+        ])
+        .env("CLICOLOR_FORCE", "1")
+        .env_remove("NO_COLOR")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let printed = stdout(&output);
+    let log = fs::read_to_string(f.root.path().join("state/wineo/imports/alpha.log")).unwrap();
+    for text in [&printed, &log] {
+        assert!(text.contains("WINEPREFIX"), "{text}");
+        assert!(text.contains("wrapperOptions"), "{text}");
+        assert!(text.contains("two words"), "{text}");
+        assert!(!text.contains("redact-me"), "{text}");
+        assert!(!text.contains("never-import-this"), "{text}");
+    }
+    assert!(printed.contains("warn:"), "{printed}");
+    assert!(!log.contains('\u{1b}'));
+    let config_path = f.config_dir().join("environments/alpha.toml");
+    let config_text = fs::read_to_string(&config_path).unwrap();
+    let config = wineo_core::config::EnvironmentConfig::parse(&config_path, &config_text).unwrap();
+    assert!(!config.env.contains_key("WINEPREFIX"));
+    assert!(!config_text.contains("never-import-this"));
+    assert_eq!(config.targets["alpha"].args, ["--profile", "two words"]);
+}
+
+#[test]
+fn heroic_disable_umu_disclosure_follows_runner_and_per_game_setting() {
+    for (proton, per_game, global_only) in [
+        (true, Some(true), false),
+        (true, Some(false), false),
+        (true, None, false),
+        (true, None, true),
+        (false, Some(true), false),
+        (false, Some(false), false),
+        (false, None, false),
+    ] {
+        for bulk in [false, true] {
+            for verbose in [false, true] {
+                let f = Fixture::new();
+                let prefix = source(f.root.path());
+                let heroic = heroic_library(&f, &prefix);
+                let runner = if proton {
+                    f.install_proton("GE-Proton11-7");
+                    symlink(".", prefix.join("pfx")).unwrap();
+                    "GE-Proton11-7"
+                } else {
+                    "wine"
+                };
+                let mut settings = fs::read_to_string(heroic.join("config.json")).unwrap();
+                if proton {
+                    settings = settings.replace(
+                        "\"type\":\"wine\",\"name\":\"System\",\"bin\":\"wine\"",
+                        &format!(
+                            "\"type\":\"proton\",\"name\":\"GE-Proton11-7\",\"bin\":\"{}\"",
+                            f.root
+                                .path()
+                                .join("data/wineo/runners/GE-Proton11-7/proton")
+                                .display()
+                        ),
+                    );
+                }
+                if global_only {
+                    settings = settings.replace(
+                        "\"defaultSettings\":{",
+                        "\"defaultSettings\":{\"disableUMU\":true,",
+                    );
+                }
+                fs::write(heroic.join("config.json"), settings).unwrap();
+                if let Some(value) = per_game {
+                    fs::write(
+                        heroic.join("GamesConfig/a.json"),
+                        format!(r#"{{"a":{{"disableUMU":{value}}}}}"#),
+                    )
+                    .unwrap();
+                }
+                let mut command = f.wineo();
+                if verbose {
+                    command.arg("-v");
+                }
+                command.args([
+                    "import",
+                    "heroic",
+                    "--config-dir",
+                    heroic.to_str().unwrap(),
+                    "--runner",
+                    runner,
+                    "--adopt",
+                ]);
+                if bulk {
+                    command.args(["--all", "--yes"]);
+                } else {
+                    command.args(["--game", "a", "--name", "alpha"]);
+                }
+                let output = command.output().unwrap();
+                let mismatch = proton && per_game == Some(true);
+                if mismatch && !bulk {
+                    assert!(!output.status.success());
+                    assert!(stderr(&output).contains("--interactive"));
+                    assert!(
+                        stderr(&output).contains("Heroic disabled umu; wineo uses umu for Proton")
+                    );
+                    assert!(!f.config_dir().join("environments/alpha.toml").exists());
+                } else {
+                    assert_success(&output);
+                    if verbose {
+                        let log = fs::read_to_string(f.root.path().join("state/wineo/imports/alpha.log"))
+                    .unwrap_or_else(|error| panic!("proton={proton}, per_game={per_game:?}, global_only={global_only}, bulk={bulk}: {error}\n{}\n{}", stdout(&output), stderr(&output)));
+                        assert_eq!(
+                            log.contains("Heroic disabled umu; wineo uses umu for Proton"),
+                            mismatch,
+                            "{log}"
+                        );
+                    }
+                    assert_eq!(
+                        stdout(&output).contains("Heroic disabled umu; wineo uses umu for Proton"),
+                        mismatch,
+                        "{}",
+                        stdout(&output)
+                    );
+                }
+            }
+        }
+    }
 }
 
 fn source(root: &Path) -> std::path::PathBuf {

@@ -292,69 +292,101 @@ fn heroic_bulk_asks_once_for_desktop_entries_and_confirmation() {
 }
 
 #[test]
-fn canceling_heroic_import_keeps_a_completed_runner_copy_and_reports_it() {
-    let f = Fixture::new();
-    let prefix = f.root.path().join("heroic prefix");
-    fs::create_dir_all(prefix.join("drive_c/Games")).unwrap();
-    fs::write(
-        prefix.join("system.reg"),
-        "WINE REGISTRY Version 2\n#arch=win64\n",
-    )
-    .unwrap();
-    let heroic = heroic_library(&f, &prefix);
-    let source = f.root.path().join("heroic runner");
-    fs::create_dir_all(source.join("bin")).unwrap();
-    for file in ["wine", "wineserver"] {
-        fs::copy(
-            f.root.path().join("bin").join(file),
-            source.join("bin").join(file),
+fn heroic_runner_copy_preserves_dependencies_and_survives_later_cancellation() {
+    for cancel in [false, true] {
+        let f = Fixture::new();
+        let prefix = f.root.path().join("heroic prefix");
+        fs::create_dir_all(prefix.join("drive_c/Games")).unwrap();
+        fs::write(
+            prefix.join("system.reg"),
+            "WINE REGISTRY Version 2\n#arch=win64\n",
         )
         .unwrap();
+        let heroic = heroic_library(&f, &prefix);
+        let source = f.root.path().join("heroic runner");
+        fs::create_dir_all(source.join("bin")).unwrap();
+        for file in ["wine", "wineserver"] {
+            fs::copy(
+                f.root.path().join("bin").join(file),
+                source.join("bin").join(file),
+            )
+            .unwrap();
+        }
+        fs::write(
+            heroic.join("GamesConfig/a.json"),
+            format!(
+                r#"{{"a":{{"wineVersion":{{"type":"wine","name":"heroic-wine","bin":"{}"}}}}}}"#,
+                source.join("bin/wine").display()
+            ),
+        )
+        .unwrap();
+        let external = f.root.path().join("external-library.so");
+        fs::write(&external, b"external library bytes").unwrap();
+        fs::create_dir(source.join("lib")).unwrap();
+        symlink(&external, source.join("lib/external.so")).unwrap();
+        symlink("wine", source.join("bin/wine64")).unwrap();
+        let original = fs::read(source.join("bin/wine")).unwrap();
+        let mut command = f.wineo();
+        command.args([
+            "-v",
+            "import",
+            "heroic",
+            "--config-dir",
+            heroic.to_str().unwrap(),
+            "--game",
+            "a",
+            "--name",
+            "alpha",
+            "--adopt",
+        ]);
+        let mut pty = Pty::spawn(command);
+        pty.expect("Environment name, or < to go back [alpha]: ");
+        pty.send("");
+        pty.expect("Runner [1]: ");
+        pty.send("");
+        pty.expect("This runner copy is retained if the prefix import is canceled.");
+        pty.expect("Choice, or Enter to import: ");
+        if cancel {
+            pty.ctrl_c();
+        } else {
+            pty.send("");
+            pty.expect("Set up launch targets now? [Y/n], or < to go back: ");
+            pty.send("n");
+        }
+        let (status, output) = pty.finish();
+        assert_eq!(
+            status.code(),
+            Some(if cancel { 130 } else { 0 }),
+            "{output}"
+        );
+        assert!(output.contains(external.to_str().unwrap()), "{output}");
+        assert!(output.contains("Beta"), "{output}");
+        if !cancel {
+            let log =
+                fs::read_to_string(f.root.path().join("state/wineo/imports/alpha.log")).unwrap();
+            assert!(log.contains(external.to_str().unwrap()), "{log}");
+            assert!(log.contains("Beta"), "{log}");
+        }
+        assert!(
+            output.contains("Copied Heroic runner heroic-wine"),
+            "{output}"
+        );
+        assert_eq!(f.registered("alpha"), !cancel);
+        let copy = f.root.path().join("data/wineo/runners/heroic-wine");
+        assert_eq!(fs::read(copy.join("bin/wine")).unwrap(), original);
+        assert_eq!(fs::read(source.join("bin/wine")).unwrap(), original);
+        assert!(copy.join("bin/wineserver").is_file());
+        assert_eq!(
+            fs::read_link(copy.join("lib/external.so")).unwrap(),
+            external
+        );
+        assert_eq!(fs::read(copy.join("bin/wine64")).unwrap(), original);
+        assert_eq!(fs::read(&external).unwrap(), b"external library bytes");
+        assert_eq!(
+            fs::read(prefix.join("drive_c/Games/Game.exe")).unwrap(),
+            b"game executable"
+        );
     }
-    fs::write(
-        heroic.join("GamesConfig/a.json"),
-        format!(
-            r#"{{"a":{{"wineVersion":{{"type":"wine","name":"heroic-wine","bin":"{}"}}}}}}"#,
-            source.join("bin/wine").display()
-        ),
-    )
-    .unwrap();
-    let original = fs::read(source.join("bin/wine")).unwrap();
-    let mut command = f.wineo();
-    command.args([
-        "import",
-        "heroic",
-        "--config-dir",
-        heroic.to_str().unwrap(),
-        "--game",
-        "a",
-        "--name",
-        "alpha",
-        "--adopt",
-    ]);
-    let mut pty = Pty::spawn(command);
-    pty.expect("Environment name, or < to go back [alpha]: ");
-    pty.send("");
-    pty.expect("Runner [1]: ");
-    pty.send("");
-    pty.expect("This runner copy is retained if the prefix import is canceled.");
-    pty.expect("Choice, or Enter to import: ");
-    pty.ctrl_c();
-    let (status, output) = pty.finish();
-    assert_eq!(status.code(), Some(130), "{output}");
-    assert!(
-        output.contains("Copied Heroic runner heroic-wine"),
-        "{output}"
-    );
-    assert!(!f.registered("alpha"));
-    let copy = f.root.path().join("data/wineo/runners/heroic-wine");
-    assert_eq!(fs::read(copy.join("bin/wine")).unwrap(), original);
-    assert_eq!(fs::read(source.join("bin/wine")).unwrap(), original);
-    assert!(copy.join("bin/wineserver").is_file());
-    assert_eq!(
-        fs::read(prefix.join("drive_c/Games/Game.exe")).unwrap(),
-        b"game executable"
-    );
 }
 
 #[test]

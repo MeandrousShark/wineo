@@ -769,6 +769,12 @@ mod tests {
         for progress in ["Verifying download", "Extracting build", "Installed in "] {
             assert_eq!(stderr.matches(progress).count(), 1, "{stderr}");
         }
+        assert!(
+            stderr
+                .lines()
+                .any(|line| line.starts_with("Installed in ") && line.ends_with("/dxvk-2.6")),
+            "{stderr}"
+        );
     }
 
     fn successful_flow(mode: &str) -> anyhow::Result<(String, String)> {
