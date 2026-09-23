@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0013: Import prefixes with absolute internal directory links
 
@@ -26,9 +26,9 @@ Dispatch failures found during plan 0009's real-library bulk import.
 - The maintainer's `~/.local/bin/wineo` was built before plan 0011 and still
   prints the old `<` prompt. The current source has the same staged-path bug.
 
-## Proposed decisions
+## Decisions
 
-For maintainer approval with this plan:
+Approved by the maintainer:
 
 - Keep the copied absolute link pointed at the final destination so it works
   after publication. Do not modify the Heroic source prefix.
