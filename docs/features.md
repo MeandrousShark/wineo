@@ -1,6 +1,7 @@
 # Features
 
-Planned features that aren't scheduled yet. When one gets picked up, it gets its own numbered plan in `docs/plans/`.
+Feature backlog and queued work. When a feature gets picked up, it gets its
+own numbered plan in `docs/plans/`.
 
 Completed: [0007: Guided game setup](plans/0007-guided-game-setup.md) and
 [0008: Downloads and prefix imports](plans/0008-downloads-and-imports.md),
@@ -8,6 +9,9 @@ including launch settings for manually added Heroic games.
 See [Downloads and imports](downloads-and-imports.md) for usage.
 Completed: [0010: JSON output for status and list](plans/0010-json-output.md).
 See [JSON output](json-output.md) for the command schema and examples.
+
+Scheduled: [0014: Dynamic environment and target completion](plans/0014-dynamic-shell-completion.md).
+Clone an environment is queued after 0014 and will get its own plan.
 
 **Category**
 
@@ -28,8 +32,7 @@ See [JSON output](json-output.md) for the command schema and examples.
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| Shell completion for environment and target names | UX | **3** | 0002 | Polish on top of static completion | Needs dynamic completion, which is more work than static completions. |
-| `clone` a prefix | Portability/Data | **3** | | Useful but not fundamental | Use reflink copies where the filesystem supports them, and a normal copy everywhere else. |
+| `clone` an environment | Portability/Data | **1** | | Queued next after 0014 | Use reflink copies where the filesystem supports them, and a normal copy everywhere else. Settle config and target behavior in its own plan. |
 | Prefix snapshots | Portability/Data | **3** | | Cheap where the filesystem supports it, so it can sit next to `clone` | Only offered on filesystems with reflinks or native snapshots, like btrfs. Everyone else waits for full backup and restore. |
 | Portable layout | Portability/Data | **3** | Config schema versioning | Nice design feature, but standard layout should stabilize first | |
 | Import from Lutris/Bottles and Heroic store metadata | Compatibility | **3** | 0008 | Extends generic import and Heroic sideloaded-game import | 0008 covers manually added Heroic games only. Store integration and other launchers remain separate work. |
