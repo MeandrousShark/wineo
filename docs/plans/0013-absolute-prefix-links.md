@@ -82,5 +82,5 @@ Approved by the maintainer:
 - The release build was installed atomically to `~/.local/bin/wineo`. Its
   checksum matched `target/release/wineo`, bare `wineo` resolves to it, and
   `wineo --version` succeeds.
-- The maintainer has not retried the Cyberpunk 2077 and Dispatch imports.
-  That real-library retry remains maintainer-controlled.
+- The maintainer retried the Cyberpunk 2077 and Dispatch imports with the
+  updated local binary and confirmed that both succeeded.
