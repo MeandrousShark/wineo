@@ -196,6 +196,106 @@ fn heroic_bulk_copy_and_adopt_register_all_games_with_explicit_desktop_entries()
 }
 
 #[test]
+fn heroic_bulk_imports_absolute_pfx_self_links_and_recognizes_completed_games() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton11-7");
+    let heroic = f.root.path().join("heroic");
+    fs::create_dir_all(heroic.join("sideload_apps")).unwrap();
+    fs::create_dir_all(heroic.join("GamesConfig")).unwrap();
+    fs::write(
+        heroic.join("config.json"),
+        r#"{"defaultSettings":{"wineVersion":{"type":"proton","name":"GE-Proton11-7","bin":"proton"}}}"#,
+    )
+    .unwrap();
+    let mut entries = Vec::new();
+    for (id, title, linked) in [
+        ("a", "Alpha", true),
+        ("b", "Beta", true),
+        ("c", "Gamma", false),
+    ] {
+        let prefix = f.root.path().join(format!("prefix-{id}"));
+        let pfx = if linked {
+            fs::create_dir_all(&prefix).unwrap();
+            symlink(&prefix, prefix.join("pfx")).unwrap();
+            prefix.clone()
+        } else {
+            prefix.join("pfx")
+        };
+        fs::create_dir_all(pfx.join("drive_c/Games")).unwrap();
+        fs::write(
+            pfx.join("system.reg"),
+            "WINE REGISTRY Version 2\n#arch=win64\n",
+        )
+        .unwrap();
+        let exe = pfx.join("drive_c/Games/Game.exe");
+        fs::write(&exe, "game executable").unwrap();
+        fs::write(
+            heroic.join(format!("GamesConfig/{id}.json")),
+            format!(r#"{{"{id}":{{"winePrefix":"{}"}}}}"#, prefix.display()),
+        )
+        .unwrap();
+        entries.push(format!(
+            r#"{{"app_name":"{id}","title":"{title}","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}}"#,
+            exe.display()
+        ));
+    }
+    fs::write(
+        heroic.join("sideload_apps/library.json"),
+        format!(r#"{{"games":[{}]}}"#, entries.join(",")),
+    )
+    .unwrap();
+
+    let run = || {
+        f.wineo()
+            .args([
+                "import",
+                "heroic",
+                "--config-dir",
+                heroic.to_str().unwrap(),
+                "--all",
+                "--yes",
+                "--runner",
+                "GE-Proton11-7",
+            ])
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    assert_success(&output);
+    let printed = stdout(&output);
+    assert!(printed.contains("Imported 3 of 3 games."), "{printed}");
+    for (id, name) in [("a", "alpha"), ("b", "beta"), ("c", "gamma")] {
+        assert!(
+            printed.contains(&format!("Importing {name}... done")),
+            "{printed}"
+        );
+        assert!(
+            f.config_dir()
+                .join(format!("environments/{name}.toml"))
+                .exists()
+        );
+        let copied = f.root.path().join(format!("data/wineo/prefixes/{name}"));
+        assert!(copied.join("pfx/system.reg").is_file());
+        if id != "c" {
+            assert_eq!(fs::read_link(copied.join("pfx")).unwrap(), copied);
+            let source = f.root.path().join(format!("prefix-{id}"));
+            assert_eq!(fs::read_link(source.join("pfx")).unwrap(), source);
+        }
+    }
+    let repeated = run();
+    assert_success(&repeated);
+    let printed = stdout(&repeated);
+    assert!(
+        printed.contains("Already imported: alpha, beta, gamma"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("No Heroic games are ready to import."),
+        "{printed}"
+    );
+}
+
+#[test]
 fn heroic_bulk_continues_after_a_destination_failure_and_reports_counts() {
     let f = Fixture::new();
     let prefix = source(f.root.path());

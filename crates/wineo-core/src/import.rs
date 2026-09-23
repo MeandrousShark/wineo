@@ -1200,11 +1200,7 @@ fn staged_path_if_exists(
     staging: &Path,
     final_root: &Path,
 ) -> Result<Option<PathBuf>> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => staged_path(path, staging, final_root).map(Some),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err).with_context(|| format!("failed to inspect {}", path.display())),
-    }
+    resolve_staged_path(path, staging, final_root, true)
 }
 
 fn staged_executable_if_exists(path: &Path, staging: &Path, final_root: &Path) -> Result<bool> {
@@ -1219,29 +1215,73 @@ fn executable_metadata(path: &Path) -> Result<bool> {
 }
 
 fn staged_path(path: &Path, staging: &Path, final_root: &Path) -> Result<PathBuf> {
+    resolve_staged_path(path, staging, final_root, false)?.ok_or_else(|| {
+        anyhow!(
+            "failed to inspect {}: no such file or directory",
+            path.display()
+        )
+    })
+}
+
+fn resolve_staged_path(
+    path: &Path,
+    staging: &Path,
+    final_root: &Path,
+    allow_missing: bool,
+) -> Result<Option<PathBuf>> {
     let mut current = path.to_owned();
-    for _ in 0..40 {
-        let metadata = fs::symlink_metadata(&current)
-            .with_context(|| format!("failed to inspect {}", current.display()))?;
-        if !metadata.file_type().is_symlink() {
-            return Ok(current);
-        }
-        let target = fs::read_link(&current)
-            .with_context(|| format!("failed to read link {}", current.display()))?;
-        let target = if target.is_absolute() {
-            let target = lexical_normalize(&target);
-            if target.starts_with(final_root) {
-                let relative = target.strip_prefix(final_root).unwrap_or(Path::new(""));
-                staging.join(relative)
-            } else {
-                target
+    let mut links = 0;
+    'resolve: loop {
+        let mut resolved = PathBuf::new();
+        let mut components = current.components();
+        while let Some(component) = components.next() {
+            match component {
+                Component::Prefix(_) | Component::RootDir | Component::CurDir => {
+                    resolved.push(component.as_os_str());
+                    continue;
+                }
+                Component::ParentDir => {
+                    resolved.pop();
+                    continue;
+                }
+                Component::Normal(part) => resolved.push(part),
             }
-        } else {
-            current.parent().unwrap_or(Path::new(".")).join(target)
-        };
-        current = lexical_normalize(&target);
+            let metadata = match fs::symlink_metadata(&resolved) {
+                Ok(metadata) => metadata,
+                Err(err)
+                    if allow_missing && links == 0 && err.kind() == io::ErrorKind::NotFound =>
+                {
+                    return Ok(None);
+                }
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("failed to inspect {}", resolved.display()));
+                }
+            };
+            if !metadata.file_type().is_symlink() {
+                continue;
+            }
+            if links == 40 {
+                bail!("link chain is too deep: {}", path.display());
+            }
+            links += 1;
+            let target = fs::read_link(&resolved)
+                .with_context(|| format!("failed to read link {}", resolved.display()))?;
+            let target = if target.is_absolute() {
+                let target = lexical_normalize(&target);
+                if let Ok(relative) = target.strip_prefix(final_root) {
+                    staging.join(relative)
+                } else {
+                    target
+                }
+            } else {
+                resolved.parent().unwrap_or(Path::new(".")).join(target)
+            };
+            current = lexical_normalize(&target.join(components.as_path()));
+            continue 'resolve;
+        }
+        return Ok(Some(resolved));
     }
-    bail!("link chain is too deep: {}", path.display())
 }
 
 #[cfg(test)]
@@ -1393,6 +1433,64 @@ mod tests {
         .unwrap();
         let copied = prefix_root.join("stellar");
         assert_eq!(fs::read_link(copied.join("pfx")).unwrap(), Path::new("."));
+    }
+
+    #[test]
+    fn proton_import_rebases_an_absolute_pfx_self_link() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let runner_root = root.path().join("runners");
+        let prefix_root = root.path().join("prefixes");
+        proton_runner(&runner_root, "GE-Proton9-20");
+        let source = root.path().join("compatdata/123");
+        prefix(&source, "win64");
+        symlink(&source, source.join("pfx")).unwrap();
+        let global = base_global(&runner_root, &prefix_root);
+
+        execute(
+            &paths,
+            &global,
+            ImportRequest {
+                source: source.clone(),
+                name: "stellar".to_owned(),
+                runner: "GE-Proton9-20".to_owned(),
+                destination: None,
+                adopt: false,
+                arch: None,
+            },
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+
+        let copied = prefix_root.join("stellar");
+        assert_eq!(fs::read_link(source.join("pfx")).unwrap(), source);
+        assert_eq!(fs::read_link(copied.join("pfx")).unwrap(), copied);
+        assert!(copied.join("pfx/system.reg").is_file());
+        assert!(copied.join("pfx/drive_c").is_dir());
+        assert!(paths.environment_config("stellar").exists());
+    }
+
+    #[test]
+    fn staged_validation_rejects_missing_targets_and_link_cycles() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = root.path().join("staging");
+        let destination = root.path().join("destination");
+        fs::create_dir(&staging).unwrap();
+        symlink(&destination, staging.join("pfx")).unwrap();
+        assert!(validate_staged_prefix(&staging, &destination, ImportLayout::Proton).is_err());
+        assert!(
+            staged_path_if_exists(&staging.join("pfx/system.reg"), &staging, &destination).is_err()
+        );
+
+        fs::remove_file(staging.join("pfx")).unwrap();
+        symlink(destination.join("loop"), staging.join("pfx")).unwrap();
+        symlink(destination.join("pfx"), staging.join("loop")).unwrap();
+        let error = validate_staged_prefix(&staging, &destination, ImportLayout::Proton)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("link chain is too deep"), "{error}");
+        assert!(!destination.exists());
     }
 
     #[test]
