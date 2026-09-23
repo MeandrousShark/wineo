@@ -264,10 +264,13 @@ On a later real-library `import heroic --all` run, Wineo recognized Zomboid as
 already imported and imported five of seven selected games. Cyberpunk 2077 and
 Dispatch failed after copying, when staged validation could not inspect
 `pfx/system.reg`. Both source prefixes have `pfx` as an absolute symlink to
-their own root. See plan 0013 for the fix. The manual `-v` review and import
-log case has not been checked.
+their own root. Plan 0013 fixed staged validation for this layout, and the
+updated binary is installed at `~/.local/bin/wineo`. The maintainer has not
+retried the two real imports. The manual `-v` review and import log case also
+has not been checked.
 
 Plan 0012's disposable Heroic fixture exercised verbose bulk import, skipping
 an existing environment, expanded review evidence, and import logs. Its
-automated checks also covered download output and selection. The plan remains
-approved until the two real imports and remaining acceptance are settled.
+automated checks also covered download output and selection. This plan remains
+approved until the two real imports are retried and the manual `-v` review and
+import log case is checked.

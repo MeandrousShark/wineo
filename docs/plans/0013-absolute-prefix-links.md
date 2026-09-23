@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0013: Import prefixes with absolute internal directory links
 
@@ -70,3 +70,17 @@ Approved by the maintainer:
   failure, and that validation does not follow an unpublished final path.
 - Bare `wineo` resolves to the updated local build. The maintainer can then
   retry the two failed real imports and check the remaining 0009 acceptance.
+
+## Acceptance results
+
+- Independent QA passed with no defects.
+- Focused core import tests passed: 15/15. CLI import tests passed: 14/14.
+- `TERM=linux cargo test --offline`, `cargo fmt --check`, offline Clippy for
+  all targets with `-D warnings`, and `git diff --check` passed.
+- Ignored real-Wine fixture tests were not run because
+  `WINEO_TEST_PROTON` and `WINEO_TEST_DXVK` were unset.
+- The release build was installed atomically to `~/.local/bin/wineo`. Its
+  checksum matched `target/release/wineo`, bare `wineo` resolves to it, and
+  `wineo --version` succeeds.
+- The maintainer has not retried the Cyberpunk 2077 and Dispatch imports.
+  That real-library retry remains maintainer-controlled.
