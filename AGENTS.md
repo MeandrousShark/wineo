@@ -17,7 +17,8 @@ wineo is a Wine environment manager written in Rust, organized as a Cargo worksp
 
 ## Release Work
 
-- The primary session handles all release work, including staging, commits, pushes, merges, tags, releases, publishing, and deployments.
+- Coding subagents may stage and commit their own logical changes.
+- The primary session handles all release work, including pushes, merges, tags, releases, publishing, and deployments.
 - Do not delegate release work to the `release` subagent or any other subagent.
 
 ## Plans
