@@ -858,11 +858,13 @@ fn status_name_unknown_environment_errors() {
 }
 
 const SHELLS: [&str; 5] = ["bash", "elvish", "fish", "powershell", "zsh"];
+const STATIC_SHELLS: [&str; 2] = ["elvish", "powershell"];
+const DYNAMIC_SHELLS: [&str; 3] = ["bash", "fish", "zsh"];
 
 #[test]
-fn completions_cover_every_visible_command_and_flag() {
+fn static_completions_cover_every_visible_command_and_flag() {
     let root = tempfile::tempdir().unwrap();
-    for shell in SHELLS {
+    for shell in STATIC_SHELLS {
         let out = output(wineo(root.path()).args(["completions", shell]));
         assert!(out.status.success(), "{shell}: {}", stderr(&out));
         let script = stdout(&out);
@@ -894,23 +896,24 @@ fn completions_cover_every_visible_command_and_flag() {
             "delete-prefix",
             "all",
         ] {
-            // fish spells long options `-l name`, every other generator uses `--name`.
-            let needle = if shell == "fish" {
-                format!("-l {flag}")
-            } else {
-                format!("--{flag}")
-            };
+            let needle = format!("--{flag}");
             assert!(script.contains(&needle), "{shell} is missing {needle}");
         }
-        // clap_complete only expands a positional's possible values for bash and zsh.
-        if shell == "bash" || shell == "zsh" {
-            for value in SHELLS {
-                assert!(
-                    script.contains(value),
-                    "{shell} is missing the {value} choice"
-                );
-            }
-        }
+    }
+}
+
+#[test]
+fn dynamic_completions_source_current_binary() {
+    let root = tempfile::tempdir().unwrap();
+    for shell in DYNAMIC_SHELLS {
+        let out = output(wineo(root.path()).args(["completions", shell]));
+        assert!(out.status.success(), "{shell}: {}", stderr(&out));
+        let script = stdout(&out);
+        assert!(
+            script.contains(&format!("COMPLETE={shell}")),
+            "{shell}: {script}"
+        );
+        assert!(script.contains("wineo"), "{shell}: {script}");
     }
 }
 
