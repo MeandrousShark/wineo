@@ -18,6 +18,7 @@ pub struct EnvironmentReport {
     pub name: String,
     pub status: Status,
     pub runner: String,
+    pub runner_resolved: Option<String>,
     pub runner_version: Option<String>,
     /// The prefix as stored in the config, e.g. `~/.local/share/wineo/prefixes/notepad`.
     pub prefix: String,
@@ -72,6 +73,7 @@ impl EnvironmentReport {
                     .ok()
             });
         let runner_version = resolved.as_ref().and_then(|runner| runner.version());
+        let runner_resolved = resolved.as_ref().map(|runner| runner.name().to_owned());
         let runner_name = match &resolved {
             Some(runner) if runner.name() != environment.config.runner => {
                 format!("{} -> {}", environment.config.runner, runner.name())
@@ -93,6 +95,7 @@ impl EnvironmentReport {
             gamemode: crate::launch::gamemode(global, environment, target),
             name: environment.name.clone(),
             runner: runner_name,
+            runner_resolved,
             runner_version,
             prefix: environment.config.prefix.clone(),
             gameid: environment.config.gameid.clone(),

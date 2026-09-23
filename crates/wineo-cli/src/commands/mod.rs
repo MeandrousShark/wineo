@@ -7,6 +7,7 @@ pub mod download;
 pub mod exec;
 pub mod import;
 pub mod import_heroic;
+mod json;
 pub mod list;
 pub mod logs;
 pub mod new;

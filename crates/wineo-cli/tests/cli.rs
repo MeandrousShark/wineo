@@ -541,6 +541,183 @@ fn list_reports_a_broken_state_file_but_keeps_going() {
     assert!(!text.contains("notepad"), "{text}");
 }
 
+fn parsed_json(out: &Output) -> serde_json::Value {
+    let text = stdout(out);
+    assert!(text.ends_with('\n'), "{text}");
+    assert!(!text.contains("\u{1b}["), "{text}");
+    serde_json::from_str(&text).unwrap()
+}
+
+#[test]
+fn json_collections_are_sorted_and_keep_broken_configs() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "zulu", &env_toml("zulu"));
+    write_environment(root.path(), "broken", "not valid toml");
+    write_environment(root.path(), "alpha", &env_toml("alpha"));
+    let running = runtime(root.path(), "zulu");
+    let _lock = running.try_lock().unwrap().unwrap();
+    running
+        .write_state(&RunState::running(
+            RunMode::Attached,
+            "zulu".to_owned(),
+            1234,
+            Some(1234),
+            &Overrides::default(),
+        ))
+        .unwrap();
+
+    let listed = output(wineo(root.path()).args(["list", "--json"]));
+    assert!(listed.status.success(), "{}", stderr(&listed));
+    let value = parsed_json(&listed);
+    assert_eq!(value["errors"], serde_json::json!([]));
+    assert_eq!(value["environments"].as_array().unwrap().len(), 3);
+    assert_eq!(value["environments"][0]["name"], "alpha");
+    assert_eq!(value["environments"][1]["name"], "broken");
+    assert_eq!(value["environments"][1]["state"], "inactive");
+    assert_eq!(value["environments"][1]["run"], serde_json::Value::Null);
+    assert_eq!(value["environments"][2]["state"], "running");
+    assert_eq!(value["environments"][2]["run"]["mode"], "attached");
+    assert_eq!(value["environments"][2]["run"]["pid"], 1234);
+    assert!(
+        value["environments"][2]["run"]["started_at"]
+            .as_str()
+            .unwrap()
+            .ends_with('Z')
+    );
+
+    let status = output(wineo(root.path()).args(["status", "--json"]));
+    assert!(status.status.success(), "{}", stderr(&status));
+    let value = parsed_json(&status);
+    assert_eq!(value["environments"].as_array().unwrap().len(), 1);
+    assert_eq!(value["environments"][0]["name"], "zulu");
+    assert_eq!(value["errors"], serde_json::json!([]));
+}
+
+#[test]
+fn json_collection_reports_partial_errors_without_stderr() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "bad", &env_toml("bad"));
+    write_environment(root.path(), "good", &env_toml("good"));
+    write_log(root.path(), "bad", "state.toml", "not valid toml");
+    let good = runtime(root.path(), "good");
+    let _lock = good.try_lock().unwrap().unwrap();
+    good.write_state(&RunState::running(
+        RunMode::Detached,
+        "good".to_owned(),
+        1234,
+        Some(1234),
+        &Overrides::default(),
+    ))
+    .unwrap();
+
+    for command in ["list", "status"] {
+        let out = output(wineo(root.path()).args([command, "--json"]));
+        assert!(!out.status.success());
+        assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+        let value = parsed_json(&out);
+        assert_eq!(value["errors"][0]["name"], "bad");
+        assert!(
+            value["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("state.toml")
+        );
+        assert_eq!(value["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(value["environments"].as_array().unwrap().len(), 1);
+        assert_eq!(value["environments"][0]["name"], "good");
+        assert_eq!(value["environments"][0]["state"], "running");
+    }
+}
+
+#[test]
+fn json_named_status_omits_saved_launch_options_and_internal_identity() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "game", &env_toml("game"));
+    let runtime = runtime(root.path(), "game");
+    let mut run = RunState::running(
+        RunMode::Detached,
+        "game".to_owned(),
+        42,
+        Some(99),
+        &Overrides {
+            target: Some("game".to_owned()),
+            args: vec!["secret-argument".to_owned()],
+            env: [("SECRET".to_owned(), "secret-value".to_owned())]
+                .into_iter()
+                .collect(),
+        },
+    );
+    run.boot_id = Some("secret-boot-id".to_owned());
+    run.leader_start = Some(987);
+    run.finish(RunStatus::Exited);
+    runtime.write_state(&run).unwrap();
+
+    let out = output(wineo(root.path()).args(["status", "game", "--json"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let value = parsed_json(&out);
+    assert_eq!(value["name"], "game");
+    assert_eq!(value["state"], "exited");
+    assert_eq!(value["runner"]["configured"], "wine");
+    assert!(value["runner"]["resolved"].is_null() || value["runner"]["resolved"] == "wine");
+    assert_eq!(value["prefix"], "/p");
+    assert_eq!(value["run"]["pid"], 42);
+    assert!(value["run"]["ended_at"].as_str().unwrap().ends_with('Z'));
+    assert_eq!(value["run"]["program_exited_at"], serde_json::Value::Null);
+    assert_eq!(value["desktop"], serde_json::json!([]));
+    let text = stdout(&out);
+    for secret in [
+        "secret-argument",
+        "SECRET",
+        "secret-value",
+        "secret-boot-id",
+        "group",
+        "leader_start",
+        "requested_target",
+    ] {
+        assert!(!text.contains(secret), "{secret}: {text}");
+    }
+
+    let missing = output(wineo(root.path()).args(["status", "missing", "--json"]));
+    assert!(!missing.status.success());
+    assert!(stdout(&missing).is_empty());
+    assert!(!stderr(&missing).is_empty());
+}
+
+#[test]
+fn json_empty_and_busy_unresolved_collections() {
+    let root = tempfile::tempdir().unwrap();
+    let empty = output(wineo(root.path()).args(["status", "--json"]));
+    assert!(empty.status.success());
+    assert_eq!(
+        parsed_json(&empty),
+        serde_json::json!({"environments": [], "errors": []})
+    );
+    assert!(stderr(&empty).is_empty());
+
+    write_environment(root.path(), "busy", &env_toml("busy"));
+    write_environment(root.path(), "unresolved", &env_toml("unresolved"));
+    let _held = locks(root.path())
+        .acquire(wineo_core::operation::Operation::Winetricks, "busy", &[])
+        .unwrap();
+    write_log(
+        root.path(),
+        "unresolved",
+        "operation.toml",
+        "not valid toml",
+    );
+    let out = output(wineo(root.path()).args(["status", "--json"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let value = parsed_json(&out);
+    assert_eq!(value["environments"][0]["name"], "busy");
+    assert_eq!(value["environments"][0]["state"], "inactive");
+    assert_eq!(value["environments"][0]["busy"], "winetricks");
+    assert_eq!(value["environments"][0]["unresolved"], false);
+    assert_eq!(value["environments"][1]["name"], "unresolved");
+    assert_eq!(value["environments"][1]["state"], "inactive");
+    assert_eq!(value["environments"][1]["busy"], serde_json::Value::Null);
+    assert_eq!(value["environments"][1]["unresolved"], true);
+}
+
 #[test]
 fn status_without_a_name_shows_only_whats_running() {
     let root = tempfile::tempdir().unwrap();

@@ -18,6 +18,8 @@ clap_complete.workspace = true
 jiff.workspace = true
 rustix = { workspace = true, features = ["termios"] }
 rustyline.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 signal-hook.workspace = true
 
 [dev-dependencies]

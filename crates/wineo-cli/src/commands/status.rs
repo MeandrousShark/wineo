@@ -8,6 +8,7 @@ use wineo_core::paths::Paths;
 use wineo_core::report::{self, EnvironmentReport};
 use wineo_core::runtime::{RunMode, RunState, State};
 
+use super::json::{self, NamedOutput};
 use super::table;
 use super::time::{absolute, relative};
 
@@ -22,6 +23,9 @@ const LABEL_GAP: usize = 2;
 pub struct Args {
     /// Environment to show, every running environment if left out
     name: Option<String>,
+    /// Print machine-readable JSON
+    #[arg(long)]
+    json: bool,
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
@@ -31,29 +35,38 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             // A broken global config only costs the runner version line.
             let global = GlobalConfig::load(paths).unwrap_or_default();
             let report = EnvironmentReport::load(paths, &global, &environment)?;
-            print!("{}", render(&report, Timestamp::now(), &TimeZone::system()));
+            if args.json {
+                json::print(&NamedOutput::new(&report, &environment.config.runner))?;
+            } else {
+                print!("{}", render(&report, Timestamp::now(), &TimeZone::system()));
+            }
             Ok(ExitCode::SUCCESS)
         }
-        None => running(paths),
+        None => running(paths, args.json),
     }
 }
 
-fn running(paths: &Paths) -> anyhow::Result<ExitCode> {
+fn running(paths: &Paths, json_output: bool) -> anyhow::Result<ExitCode> {
     let now = Timestamp::now();
     let tz = TimeZone::system();
     // Something holding an environment is happening now too, and so may be
     // whatever an unresolved installer left, so both show up here.
-    let (rows, failed) = table::gather(paths, now, &tz, |status, held| {
+    let gathered = table::gather(paths, now, &tz, |status, held| {
         status.state == State::Running || held
     })?;
-    if rows.is_empty() {
-        eprintln!("Nothing is running");
+    if json_output {
+        json::print(&gathered.json())?;
     } else {
-        for line in table::render(&rows) {
-            println!("{line}");
+        gathered.print_errors();
+        if gathered.rows.is_empty() {
+            eprintln!("Nothing is running");
+        } else {
+            for line in table::render(&gathered.rows) {
+                println!("{line}");
+            }
         }
     }
-    Ok(if failed {
+    Ok(if gathered.failed() {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -249,6 +262,7 @@ mod tests {
             name: "notepad".to_owned(),
             status,
             runner: "wine".to_owned(),
+            runner_resolved: Some("wine".to_owned()),
             runner_version: Some("wine-11.17".to_owned()),
             prefix: "~/.local/share/wineo/prefixes/notepad".to_owned(),
             target_exe: Some("notepad".to_owned()),

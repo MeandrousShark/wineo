@@ -6,6 +6,7 @@ use wineo_core::paths::Paths;
 use wineo_core::report;
 use wineo_core::runtime::{Runtime, State, Status};
 
+use super::json::{CollectionError, CollectionOutput, StatusOutput};
 use super::time::{clock, relative};
 
 /// One line of `wineo status` or `wineo list`: name, state, target, and time.
@@ -14,6 +15,9 @@ pub struct Row {
     state: String,
     target: String,
     time: String,
+    status: Status,
+    busy: Option<Operation>,
+    unresolved: bool,
 }
 
 impl Row {
@@ -39,6 +43,37 @@ impl Row {
                 .map(|run| run.target.clone())
                 .unwrap_or_default(),
             time: time_column(status, now, tz),
+            status: status.clone(),
+            busy,
+            unresolved,
+        }
+    }
+}
+
+pub struct Gathered {
+    pub rows: Vec<Row>,
+    pub errors: Vec<CollectionError>,
+}
+
+impl Gathered {
+    pub fn failed(&self) -> bool {
+        !self.errors.is_empty()
+    }
+
+    pub fn print_errors(&self) {
+        for error in &self.errors {
+            eprintln!("error: {}", error.message);
+        }
+    }
+
+    pub fn json(&self) -> CollectionOutput<'_> {
+        CollectionOutput {
+            environments: self
+                .rows
+                .iter()
+                .map(|row| StatusOutput::new(&row.name, &row.status, row.busy, row.unresolved))
+                .collect(),
+            errors: &self.errors,
         }
     }
 }
@@ -65,17 +100,16 @@ fn time_column(status: &Status, now: Timestamp, tz: &TimeZone) -> String {
 /// Gathers a row for every environment name, keeping only the ones `keep`
 /// accepts, which is also told whether an operation holds the environment or
 /// an installer left it unresolved. Errors reading one environment's status
-/// are printed and skipped rather than stopping the rest, and are reported
-/// back so the caller can exit with an error after showing what it could.
+/// are skipped and reported back so the caller can show the available rows.
 pub fn gather(
     paths: &Paths,
     now: Timestamp,
     tz: &TimeZone,
     mut keep: impl FnMut(&Status, bool) -> bool,
-) -> anyhow::Result<(Vec<Row>, bool)> {
+) -> anyhow::Result<Gathered> {
     let locks = Locks::new(paths);
     let mut rows = Vec::new();
-    let mut failed = false;
+    let mut errors = Vec::new();
     for name in environment::names(paths)? {
         let busy = locks.busy_with(&name).unwrap_or(None);
         let unresolved = busy.is_none() && report::unresolved(paths, &name);
@@ -85,12 +119,14 @@ pub fn gather(
             }
             Ok(_) => {}
             Err(err) => {
-                failed = true;
-                eprintln!("error: {:#}", anyhow::Error::from(err));
+                errors.push(CollectionError {
+                    name,
+                    message: format!("{:#}", anyhow::Error::from(err)),
+                });
             }
         }
     }
-    Ok((rows, failed))
+    Ok(Gathered { rows, errors })
 }
 
 /// Aligns columns, padded to the widest value in that column with two spaces
@@ -195,18 +231,39 @@ mod tests {
                 state: "running".to_owned(),
                 target: "notepad".to_owned(),
                 time: "since 14:02 (3 min ago)".to_owned(),
+                status: Status {
+                    state: State::Running,
+                    run: None,
+                    lost: false,
+                },
+                busy: None,
+                unresolved: false,
             },
             Row {
                 name: "photoshop".to_owned(),
                 state: "exited".to_owned(),
                 target: "photoshop".to_owned(),
                 time: "ended 16 h ago".to_owned(),
+                status: Status {
+                    state: State::Exited,
+                    run: None,
+                    lost: false,
+                },
+                busy: None,
+                unresolved: false,
             },
             Row {
                 name: "winecfg".to_owned(),
                 state: "inactive".to_owned(),
                 target: String::new(),
                 time: String::new(),
+                status: Status {
+                    state: State::Inactive,
+                    run: None,
+                    lost: false,
+                },
+                busy: None,
+                unresolved: false,
             },
         ];
         assert_eq!(
