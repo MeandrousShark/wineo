@@ -267,11 +267,23 @@ impl<T: Transport> Client<T> {
         global: &GlobalConfig,
         release: &Release,
         cancelled: &AtomicBool,
+        progress: impl FnMut(Progress),
+    ) -> Result<PathBuf> {
+        self.install_with_phase(paths, global, release, cancelled, progress, |_| {})
+    }
+    fn install_with_phase(
+        &self,
+        paths: &Paths,
+        global: &GlobalConfig,
+        release: &Release,
+        cancelled: &AtomicBool,
         mut progress: impl FnMut(Progress),
+        mut phase: impl FnMut(InstallPhase),
     ) -> Result<PathBuf> {
         check_cancel(cancelled)?;
         let destination = destination_identity(&release.destination(paths, global)?)?;
         let _lock = InstallLock::acquire(&destination)?;
+        remove_abandoned_stages(&destination)?;
         let expected = self.expected_digests(release)?;
         check_cancel(cancelled)?;
         let receipt_base = Receipt {
@@ -310,24 +322,8 @@ impl<T: Transport> Client<T> {
             return Ok(destination);
         }
         let parent = destination.parent().context("destination has no parent")?;
-        let stage_prefix = format!(
-            ".wineo-stage-{:x}-",
-            Sha256::digest(destination.as_os_str().as_encoded_bytes())
-        );
-        // Only the destination lock holder can own staging directories with this prefix.
-        for entry in fs::read_dir(parent)? {
-            let entry = entry?;
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(&stage_prefix)
-                && entry.file_type()?.is_dir()
-            {
-                fs::remove_dir_all(entry.path())?;
-            }
-        }
         let stage = tempfile::Builder::new()
-            .prefix(&stage_prefix)
+            .prefix(&stage_prefix(&destination))
             .tempdir_in(parent)?;
         let archive_path = stage.path().join("archive");
         let mut output = File::create(&archive_path)?;
@@ -387,8 +383,10 @@ impl<T: Transport> Client<T> {
             ..receipt_base
         };
         fs::write(build.join(RECEIPT), serde_json::to_vec_pretty(&receipt)?)?;
+        phase(InstallPhase::BeforePublication);
         check_cancel(cancelled)?;
         publish(&build, &destination)?;
+        phase(InstallPhase::AfterPublication);
         progress(Progress::Installed(destination.clone()));
         Ok(destination)
     }
@@ -417,6 +415,31 @@ impl<T: Transport> Client<T> {
         );
         Ok(digests)
     }
+}
+
+enum InstallPhase {
+    BeforePublication,
+    AfterPublication,
+}
+
+fn stage_prefix(destination: &Path) -> String {
+    format!(
+        ".wineo-stage-{:x}-",
+        Sha256::digest(destination.as_os_str().as_encoded_bytes())
+    )
+}
+
+fn remove_abandoned_stages(destination: &Path) -> Result<()> {
+    let parent = destination.parent().context("destination has no parent")?;
+    let prefix = stage_prefix(destination);
+    // The destination lock excludes another install from actively using this prefix.
+    for entry in fs::read_dir(parent)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with(&prefix) && entry.file_type()?.is_dir() {
+            fs::remove_dir_all(entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1176,6 +1199,130 @@ mod tests {
                 .unwrap();
             assert!(already);
         }
+    }
+    #[test]
+    fn cancellation_on_either_side_of_publication_matches_installed_state() {
+        let (client, release) = install_fixture(false);
+        let temp = tempfile::tempdir().unwrap();
+        let paths = fixture_paths(temp.path());
+        let global = GlobalConfig::default();
+        let destination = release.destination(&paths, &global).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let result = client.install_with_phase(
+            &paths,
+            &global,
+            &release,
+            &cancelled,
+            |_| {},
+            |phase| {
+                if matches!(phase, InstallPhase::BeforePublication) {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("canceled"));
+        assert!(!destination.exists());
+        let parent = destination.parent().unwrap();
+        assert!(fs::read_dir(parent).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&stage_prefix(&destination))
+        }));
+
+        cancelled.store(false, Ordering::Relaxed);
+        let result = client.install_with_phase(
+            &paths,
+            &global,
+            &release,
+            &cancelled,
+            |_| {},
+            |phase| {
+                if matches!(phase, InstallPhase::AfterPublication) {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            },
+        );
+        assert_eq!(result.unwrap(), destination);
+        assert!(cancelled.load(Ordering::Relaxed));
+        assert_eq!(fs::read(destination.join("x64/dxgi.dll")).unwrap(), b"wide");
+        assert!(destination.join(RECEIPT).is_file());
+    }
+    #[test]
+    fn abandoned_stage_cleanup_is_locked_and_scoped_to_destination() {
+        let (client, release) = install_fixture(false);
+        let (racing_client, _) = install_fixture(false);
+        let temp = tempfile::tempdir().unwrap();
+        let paths = fixture_paths(temp.path());
+        let global = GlobalConfig::default();
+        let destination =
+            destination_identity(&release.destination(&paths, &global).unwrap()).unwrap();
+        let parent = destination.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+        let abandoned = parent.join(format!("{}abandoned", stage_prefix(&destination)));
+        let other_destination = parent.join("other-build");
+        let unrelated = parent.join(format!("{}active", stage_prefix(&other_destination)));
+        let completed = parent.join("completed-build");
+        for dir in [&abandoned, &unrelated, &completed] {
+            fs::create_dir(dir).unwrap();
+            fs::write(dir.join("marker"), dir.as_os_str().as_encoded_bytes()).unwrap();
+        }
+        let mut checked_active_stage = false;
+        client
+            .install(
+                &paths,
+                &global,
+                &release,
+                &AtomicBool::new(false),
+                |phase| {
+                    if matches!(phase, Progress::Downloading { .. }) && !checked_active_stage {
+                        checked_active_stage = true;
+                        let active = fs::read_dir(parent)
+                            .unwrap()
+                            .map(|entry| entry.unwrap().path())
+                            .find(|path| {
+                                path.file_name()
+                                    .unwrap()
+                                    .to_string_lossy()
+                                    .starts_with(&stage_prefix(&destination))
+                            })
+                            .unwrap();
+                        assert!(
+                            racing_client
+                                .install(&paths, &global, &release, &AtomicBool::new(false), |_| {})
+                                .unwrap_err()
+                                .to_string()
+                                .contains("another install")
+                        );
+                        assert!(active.exists());
+                    }
+                },
+            )
+            .unwrap();
+        assert!(checked_active_stage);
+        assert!(!abandoned.exists());
+        assert!(unrelated.join("marker").is_file());
+        assert!(completed.join("marker").is_file());
+        assert!(destination.join(RECEIPT).is_file());
+
+        fs::create_dir(&abandoned).unwrap();
+        fs::write(abandoned.join("marker"), b"orphan").unwrap();
+        client
+            .install(
+                &paths,
+                &global,
+                &release,
+                &AtomicBool::new(false),
+                |phase| {
+                    assert!(matches!(phase, Progress::AlreadyInstalled(_)));
+                },
+            )
+            .unwrap();
+        assert!(!abandoned.exists());
+        assert!(unrelated.join("marker").is_file());
+        assert!(completed.join("marker").is_file());
+        assert!(destination.join(RECEIPT).is_file());
     }
     #[test]
     fn corruption_cancellation_and_collision_leave_no_partial_install() {
