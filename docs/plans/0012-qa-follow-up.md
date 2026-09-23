@@ -377,10 +377,12 @@ acceptance results. Run the full sequence:
 1. Create, install, select targets, choose the default, and create desktop entries.
 2. Launch from the desktop and CLI; check arguments, working directory, saves,
    and icon grouping with the existing supported icon sources.
-3. Stop, edit targets, revisit setup, run an updater, and relaunch. If the
-   chosen GOG game has no standalone patch, rerun its installer through setup
-   as the maintainer-approved substitute. Record that reinstall was tested
-   and an actual version update was not tested.
+3. Stop, edit targets, revisit setup, run an updater, and relaunch. The
+   maintainer selected RimWorld with its Royalty DLC installer as the
+   substitute for a standalone patch. Run the DLC installer through setup
+   and verify the game recognizes the DLC. Record DLC installation rather
+   than claiming an actual version update was tested. A reinstall through
+   setup was also approved as a fallback if needed.
 4. Remove registration while retaining the prefix; separately adopt and delete
    a disposable prefix with `rm --delete-prefix` and verify external data survives.
 5. Check the corrected Heroic summary/logs and bulk flow using disposable
