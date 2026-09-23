@@ -377,7 +377,10 @@ acceptance results. Run the full sequence:
 1. Create, install, select targets, choose the default, and create desktop entries.
 2. Launch from the desktop and CLI; check arguments, working directory, saves,
    and icon grouping with the existing supported icon sources.
-3. Stop, edit targets, revisit setup, run an updater, and relaunch.
+3. Stop, edit targets, revisit setup, run an updater, and relaunch. If the
+   chosen GOG game has no standalone patch, rerun its installer through setup
+   as the maintainer-approved substitute. Record that reinstall was tested
+   and an actual version update was not tested.
 4. Remove registration while retaining the prefix; separately adopt and delete
    a disposable prefix with `rm --delete-prefix` and verify external data survives.
 5. Check the corrected Heroic summary/logs and bulk flow using disposable
@@ -545,7 +548,9 @@ to repeat after the implementation batches.
 
 Commit every logical change with a short message and no attribution trailers.
 When delegating, use scoped coder ownership, QA for independent review, and
-documentation/release agents for their matching roles. Coordinate shared
+documentation agents for their matching roles. Coding agents may commit their
+own logical changes; the primary session handles pushes, merges, tags,
+releases, publishing, and deployments. Do not use a release subagent. Coordinate shared
 `import_heroic.rs` work instead of editing it concurrently across phases.
 
 Required automated checks after implementation:

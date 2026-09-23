@@ -592,6 +592,96 @@ fn guided_new_makes_an_empty_environment_with_nothing_switched_on() {
 }
 
 #[test]
+fn guided_adoption_preserves_content_and_detects_the_existing_architecture() {
+    let f = Fixture::new();
+    let prefix = f.root.path().join("existing prefix");
+    fs::create_dir_all(prefix.join("drive_c")).unwrap();
+    let registry = b"WINE REGISTRY Version 2\n#arch=win32\n# existing registry\n";
+    fs::write(prefix.join("system.reg"), registry).unwrap();
+    fs::write(prefix.join("drive_c/save.dat"), b"saved progress").unwrap();
+    let mut pty = f.new_guided(&["--dir", prefix.to_str().unwrap()]);
+    plain_answers(&mut pty, "adopted", "3");
+    pty.expect("Ready to create adopted:");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Created adopted, using the prefix already at");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(
+        output.contains("win32, as the existing prefix is"),
+        "{output}"
+    );
+    assert!(f.config("adopted").contains("arch = \"win32\""));
+    assert_eq!(fs::read(prefix.join("system.reg")).unwrap(), registry);
+    assert_eq!(
+        fs::read(prefix.join("drive_c/save.dat")).unwrap(),
+        b"saved progress"
+    );
+    assert!(!f.runtime("adopted").install_log_path().exists());
+}
+
+#[test]
+fn guided_existing_executable_keeps_external_paths_and_argument_boundaries() {
+    let f = Fixture::new();
+    let directory = f.root.path().join("external game files");
+    fs::create_dir(&directory).unwrap();
+    let exe = directory.join("My Game.exe");
+    fs::write(&exe, b"existing executable").unwrap();
+    let mut pty = f.new_guided(&[]);
+    plain_answers(&mut pty, "external", "2");
+    pty.expect("Executable, or < to go back: ");
+    pty.send(&format!("'{}'", exe.display()));
+    pty.expect("Ready to create external:");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Adding \"My Game\":");
+    pty.expect("Choice [1]: ");
+    pty.send("3");
+    pty.expect("One argument per line");
+    pty.expect("argument 1: ");
+    pty.send("--profile");
+    pty.expect("argument 2: ");
+    pty.send("two words");
+    pty.expect("argument 3: ");
+    pty.send("");
+    pty.expect("Choice [1]: ");
+    pty.send("4");
+    pty.expect("Working directory, or empty for the executable's folder");
+    pty.send(directory.to_str().unwrap());
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Save these changes?");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    let config_path = f.config_dir().join("environments/external.toml");
+    let config =
+        wineo_core::config::EnvironmentConfig::parse(&config_path, &f.config("external")).unwrap();
+    let target = config.targets.get("my-game").unwrap();
+    assert_eq!(target.exe, exe.to_str().unwrap());
+    assert_eq!(target.args, ["--profile", "two words"]);
+    assert_eq!(target.cwd.as_deref(), directory.to_str());
+    assert_eq!(fs::read(&exe).unwrap(), b"existing executable");
+    let desktop = f
+        .root
+        .path()
+        .join("data/applications/wineo-external-my-game.desktop");
+    assert!(desktop.exists());
+    let before = f.config("external");
+    let desktop_before = fs::read(&desktop).unwrap();
+    for _ in 0..2 {
+        let mut pty = f.setup("external");
+        pty.expect("Choice [5]: ");
+        pty.send("5");
+        let (status, output) = pty.finish();
+        assert!(status.success(), "{output}");
+        assert_eq!(f.config("external"), before);
+        assert_eq!(fs::read(&desktop).unwrap(), desktop_before);
+    }
+}
+
+#[test]
 fn a_template_from_either_flag_is_prefilled_and_shown() {
     let f = Fixture::new();
     f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
@@ -802,6 +892,8 @@ fn guided_new_reports_recovery_when_the_installer_cannot_spawn_after_creation() 
 #[test]
 fn canceling_after_creation_keeps_the_environment() {
     let f = Fixture::new();
+    f.games("unrelated", "gamemode = true\n");
+    let unrelated = f.config("unrelated");
     let installer = f.root.path().join("install-game.exe");
     fs::write(&installer, b"").unwrap();
     let mut pty = f.new_guided(&[]);
@@ -816,6 +908,39 @@ fn canceling_after_creation_keeps_the_environment() {
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
     assert!(f.registered("game"));
+    let installer_log = fs::read(f.runtime("game").install_log_path()).unwrap();
+    let prefix = f.root.path().join("data/wineo/prefixes/game");
+    fs::create_dir_all(prefix.join("dosdevices")).unwrap();
+    symlink("../drive_c", prefix.join("dosdevices/c:")).unwrap();
+    let mut pty = f.setup("game");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Add which, like 1 3: ");
+    pty.send("1");
+    pty.expect("Adding \"Game\":");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Add which, like 1 3: ");
+    pty.send("s");
+    pty.expect("Choice [5]: ");
+    pty.send("5");
+    pty.expect("Save these changes?");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(f.config("game").contains("[targets.game]"));
+    assert_eq!(
+        fs::read(f.runtime("game").install_log_path()).unwrap(),
+        installer_log
+    );
+    assert_eq!(f.config("unrelated"), unrelated);
+    assert!(
+        f.root
+            .path()
+            .join("data/applications/wineo-game-game.desktop")
+            .exists()
+    );
 }
 
 #[test]
@@ -870,7 +995,7 @@ fn a_failed_creation_says_nothing_was_registered() {
 }
 
 #[test]
-fn a_name_that_cant_be_used_says_why_and_suggests_one() {
+fn a_name_that_cant_be_used_reports_the_problem_concisely() {
     let f = Fixture::new();
     let mut pty = f.new_guided(&[]);
     pty.expect("Template [1]: ");

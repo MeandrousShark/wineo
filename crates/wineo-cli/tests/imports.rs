@@ -1,7 +1,7 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 
 use common::{Fixture, assert_success, stderr, stdout};
@@ -244,4 +244,106 @@ fn import_without_required_flags_needs_a_terminal_and_never_writes() {
     assert!(stderr(&output).contains("terminal"));
     assert!(!f.config_dir().join("environments").exists());
     assert_success(&f.run(&["import", "--help"]));
+}
+
+#[test]
+fn adopted_wine_and_proton_prefixes_can_be_deleted_without_following_external_links() {
+    for proton in [false, true] {
+        let f = Fixture::new();
+        let mut prefix = source(f.root.path());
+        let runner = if proton {
+            f.install_proton("GE-Proton11-7");
+            let compatdata = f.root.path().join("compatdata");
+            fs::create_dir(&compatdata).unwrap();
+            fs::rename(&prefix, compatdata.join("pfx")).unwrap();
+            prefix = compatdata.join("pfx");
+            "GE-Proton11-7"
+        } else {
+            "wine"
+        };
+        let external = f.root.path().join("external saves");
+        fs::create_dir(&external).unwrap();
+        fs::write(external.join("save.dat"), b"external save\0bytes").unwrap();
+        symlink(&external, prefix.join("drive_c/external")).unwrap();
+        assert_success(&f.run(&[
+            "import",
+            "prefix",
+            prefix.to_str().unwrap(),
+            "-n",
+            "adopted",
+            "--runner",
+            runner,
+            "--adopt",
+        ]));
+        let config_path = f.config_dir().join("environments/adopted.toml");
+        let config = fs::read_to_string(&config_path).unwrap();
+        let configured_root = if proton {
+            prefix.parent().unwrap()
+        } else {
+            &prefix
+        };
+        assert!(
+            config.contains(configured_root.to_str().unwrap()),
+            "{config}"
+        );
+        assert_success(&f.run(&["rm", "adopted", "--delete-prefix"]));
+        assert!(!configured_root.exists());
+        assert!(!config_path.exists());
+        assert_eq!(
+            fs::read(external.join("save.dat")).unwrap(),
+            b"external save\0bytes"
+        );
+    }
+}
+
+#[test]
+fn adopted_prefix_deletion_refuses_registered_aliases_and_retains_failed_removals() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    assert_success(&f.run(&[
+        "import",
+        "prefix",
+        prefix.to_str().unwrap(),
+        "-n",
+        "adopted",
+        "--runner",
+        "wine",
+        "--adopt",
+    ]));
+    let configs = f.config_dir().join("environments");
+    let original = fs::read_to_string(configs.join("adopted.toml")).unwrap();
+    let alias = f.root.path().join("prefix alias");
+    symlink(&prefix, &alias).unwrap();
+    fs::write(
+        configs.join("other.toml"),
+        original.replace(prefix.to_str().unwrap(), alias.to_str().unwrap()),
+    )
+    .unwrap();
+    let refused = f.run(&["rm", "adopted", "--delete-prefix"]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("also used by other"));
+    assert_eq!(
+        fs::read_to_string(configs.join("adopted.toml")).unwrap(),
+        original
+    );
+    assert_eq!(
+        fs::read(prefix.join("drive_c/Games/save.dat")).unwrap(),
+        b"save data"
+    );
+    assert_success(&f.run(&["rm", "other"]));
+    assert!(prefix.exists());
+
+    let games = prefix.join("drive_c/Games");
+    fs::set_permissions(&games, fs::Permissions::from_mode(0o555)).unwrap();
+    let failed = f.run(&["rm", "adopted", "--delete-prefix"]);
+    fs::set_permissions(&games, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!failed.status.success());
+    assert!(stderr(&failed).contains("adopted was kept and the prefix may be partly deleted"));
+    assert_eq!(
+        fs::read_to_string(configs.join("adopted.toml")).unwrap(),
+        original
+    );
+    assert_eq!(fs::read(games.join("save.dat")).unwrap(), b"save data");
+    assert_success(&f.run(&["rm", "adopted"]));
+    assert!(prefix.exists());
 }
