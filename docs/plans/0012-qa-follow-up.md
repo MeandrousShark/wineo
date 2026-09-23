@@ -246,6 +246,15 @@ needed; tests must not contact upstream or depend on signal timing. Assert:
   import asks once per component. Flag-driven import and `--all --yes` never
   download implicitly.
 
+### Batch C implementation record
+
+Core download changes were committed as `404352b`. CLI download work was
+committed as `2ea0aa8` and `e575ca4`. Core C has 18 host tests passing.
+Commit `6beccb1` closed the successful-download output coverage gap; QA passed
+10 CLI download tests. A further assertion checks that the emitted
+`Installed in` path includes `dxvk-2.6`; that assertion passed in
+`3d5a1ef`. C implementation and verification are complete; see the acceptance results.
+
 ## D. Import paths and dependency disclosure
 
 Primary code: core `heroic` and `import`; CLI `import_heroic` review/edit paths.
@@ -279,6 +288,15 @@ games; copied internal links still work; external targets remain untouched;
 normal/verbose output and logs retain external dependencies and the Wine
 NVAPI warning.
 
+### Batch D implementation record
+
+Core import and runner work was committed as `941f204` and `60f3597`.
+The runner dependency copy and retained verbose/log evidence passed. The
+complete `disableUMU` matrix also passed in normal and verbose scripted and
+bulk flows. Commit `1686cea` fixed stale resolved runner conflicts rendered as
+errors and quadratic shared-prefix reads. QA re-review passed with no behavior
+defects. D implementation and verification are complete; see the acceptance results.
+
 ## E. Review output, logs, color, and progress
 
 Primary code: CLI `import_heroic`, `style`, `prompt`, and download output.
@@ -311,6 +329,14 @@ component/argument rows, and one-time output. Use a controlled blocked copy to
 prove progress is visible before completion. Test terminal/pipe combinations
 for stdout and stderr independently, `NO_COLOR`, and forced color in isolated
 subprocesses; distinguish styling from line-editor control sequences.
+
+### Batch E implementation record
+
+Stream-aware styling was committed as `877c854`. Its styling tests passed and
+independent QA found no defects. Omission evidence, redaction, and plain-text
+logs passed. Commit `1686cea` fixed stale resolved runner conflicts rendered
+as errors, and QA re-review passed with no behavior defects. E implementation
+and verification are complete; see the acceptance results.
 
 ## F. End-to-end regression coverage
 
@@ -362,6 +388,17 @@ sources, desktop entries, actual output, and final registration state.
 The existing terse invalid-name behavior stays. Rename any misleading test
 that claims to check replacement suggestions so it describes the assertion
 it actually makes; do not restore the removed suggestion.
+
+### Batch F implementation record
+
+Lifecycle and bulk-flow regression tests were committed as `67b7fb5`,
+`912fc94`, and `578df95`. The retained-runner test gap was closed with a PTY,
+and bulk omission evidence and the `disableUMU` matrix passed. The blocked-copy
+fixture test in `b679f3b` pauses `copy_runner_reviewed` at the Copied callback and
+confirms the prefix is flushed while the destination is absent, then published
+before the operation completes. Commit `1686cea` fixed quadratic shared-prefix
+reads, and QA re-review passed with no behavior defects. F implementation is
+complete and verified; see the acceptance results.
 
 ## G. Recorded manual acceptance (0007.6)
 
@@ -589,7 +626,20 @@ all automated test I/O isolated from the maintainer's real prefixes/configs.
 
 ## Acceptance results
 
-Batch A is implemented and verified; see the [Batch A implementation
-record](#batch-a-implementation-record). Batch B is implemented and verified;
-see its implementation record above. C-G remain open. Manual lifecycle
-acceptance for G has not run.
+Batch A and B are implemented and verified; see their implementation records.
+C-F implementation is complete. C's emitted install-path assertion passed;
+D/E's resolved-conflict and shared-prefix fixes passed QA re-review with no
+behavior defects. The blocked-copy timing test and 13 import tests passed.
+The full host gate passed: `cargo fmt --check`,
+`cargo clippy --offline --all-targets -- -D warnings`, and
+`TERM=linux cargo test --offline` with 648 passed, 0 failed, and 10 ignored.
+`git diff --check` passed. The ignored real-runtime fixtures were not run
+because `WINEO_TEST_PROTON` and `WINEO_TEST_DXVK` are unset; no upstream
+downloads were made. Independent QA gave C-F a final PASS after reviewing the closed test gaps.
+C-F are implemented and verified.
+
+For G, the maintainer supplied real RimWorld base-game and Royalty DLC
+installers. The DLC installer is the approved updater substitute, and setup
+reinstall is an approved fallback. The maintainer chose active-desktop use
+with manual visual assistance because hidden desktop tools are unavailable.
+No G run has taken place yet.

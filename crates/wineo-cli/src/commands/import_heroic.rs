@@ -3447,7 +3447,9 @@ mod tests {
             .unwrap()
             .unwrap();
         });
-        started_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
         assert_eq!(&*bytes.lock().unwrap(), b"Importing hades...");
         assert_eq!(flushes.load(Ordering::SeqCst), 1);
         assert!(!installed.exists());
