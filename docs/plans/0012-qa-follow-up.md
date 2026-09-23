@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0012: QA follow-up for guided setup, imports, and downloads
 
@@ -153,8 +153,8 @@ ShellCheck for the modified fake-Wine fixture passed. Regression tests cover
 both confirmed cleanup and unresolved retention after post-spawn failures,
 plus bounded settlement of a lost run. Independent QA passed with notes and
 found no remaining defects. Ignored real-Wine tests were deferred because
-`WINEO_TEST_PROTON` and `WINEO_TEST_DXVK` are unset; manual acceptance for G
-has not been run. B-G remain open.
+`WINEO_TEST_PROTON` and `WINEO_TEST_DXVK` are unset. Manual acceptance for G
+is recorded below.
 
 ## B. Heroic identity and existing-config safety
 
@@ -204,8 +204,8 @@ passed. `TERM=linux cargo test --offline` passed with 599 tests passed, 0
 failed, and 10 ignored. The sandboxed test attempt stalled in existing
 winetricks/process tests and was interrupted; the offline host run completed
 the verification. The ignored real-runtime tests were deferred because
-`WINEO_TEST_PROTON` and `WINEO_TEST_DXVK` are unset. Manual lifecycle acceptance
-for G has not run.
+`WINEO_TEST_PROTON` and `WINEO_TEST_DXVK` are unset. Manual lifecycle
+acceptance for G is recorded below.
 
 ## C. Download completion, recovery, and guided choices
 
@@ -639,7 +639,122 @@ downloads were made. Independent QA gave C-F a final PASS after reviewing the cl
 C-F are implemented and verified.
 
 For G, the maintainer supplied real RimWorld base-game and Royalty DLC
-installers. The DLC installer is the approved updater substitute, and setup
-reinstall is an approved fallback. The maintainer chose active-desktop use
-with manual visual assistance because hidden desktop tools are unavailable.
-No G run has taken place yet.
+installers. The DLC installer was used as the approved updater substitute.
+Acceptance used the active desktop with manual visual assistance. Tested
+commit: `464d70bb5fac4ea5caa23507a4f56a2107626e8c`, system `wine-11.17`,
+win64. Disposable root: `/tmp/wineo-0012-acceptance.YUe03a`; isolated XDG
+config, data, state, and cache roots are its corresponding subdirectories.
+The tested prefix is `rimworld-prefix` beneath that root.
+
+Local installer fixtures in `/home/mphannon/Downloads`:
+
+- `setup_rimworld_1.6.4871_rev588_(64bit)_(91984).exe`, SHA-256
+  `e63a0ee0e5ff31109c1709faab39dc0ef91c44d242497a6c2207d8fb27da2249`.
+- `setup_rimworld_-_royalty_1.6.4871_rev588_(64bit)_(91984).exe`, SHA-256
+  `8f53d580158785de9b09a233875dd2bf70493ef46fa9aa6131db866b97e60c65`.
+
+With the isolated XDG roots, `TERM=linux`, `NO_COLOR=1`, and `WINEDEBUG=-all`,
+creation used the tested `target/debug/wineo` binary:
+
+```text
+wineo new --interactive --name qa-rimworld --dir /tmp/wineo-0012-acceptance.YUe03a/rimworld-prefix --runner wine --arch win64 --install-exe "/home/mphannon/Downloads/setup_rimworld_1.6.4871_rev588_(64bit)_(91984).exe"
+```
+
+Guided choices were no template, accept the supplied name and prefix, keep
+Wine/win64, run the supplied installer, and create. The maintainer installed
+to `C:\GOG Games\RimWorld` and closed the installer. Wineo reported idle,
+found the shortcut, saved target `rimworld`, and created its desktop entry.
+This sole target was the effective default. Launching the desktop entry with
+`gio launch` succeeded; runtime status reported running and `/proc` confirmed
+the game folder as working directory. Seven icon sizes and
+`StartupWMClass=RimWorldWin64.exe` were generated.
+
+The initial main menu had no visible text. The game log reported RimWorld
+`1.6.4871 rev574` and Unity `2022.3.35f1`. After `wineo stop qa-rimworld`,
+`arial.ttf` and `arialbd.ttf` were copied from the existing local
+`GE-Proton11-7-x86_64/files/share/fonts` directory into the disposable
+prefix's Windows Fonts directory. Relaunching with `wineo start qa-rimworld`
+restored menu text, confirmed by the maintainer. No download or source runner
+modification was needed. Font SHA-256 values:
+
+- `arial.ttf`: `30328e88b08753dc63b14d84ce882ce504d53e27a56e637f5a068fdedc6ae385`.
+- `arialbd.ttf`: `d0ad81706afb49050687f2d6fe58ec3c8147419e773375b1f9d6e2edd70d2a37`.
+
+The maintainer saved a game and confirmed it persisted after stopping and
+relaunching. Visual icon grouping could not be checked because the maintainer
+has no dock or taskbar. Generated icon files and `StartupWMClass` were
+validated; visual grouping remains unverified.
+
+`wineo stop qa-rimworld` succeeded. Setup was revisited and the Royalty
+installer was selected from:
+
+```text
+"/home/mphannon/Downloads/setup_rimworld_-_royalty_1.6.4871_rev588_(64bit)_(91984).exe"
+```
+
+After the installer completed and was closed, the prefix returned to idle.
+Setup identified the existing `rimworld` target. Choosing not to add it again
+created no duplicate. The target was edited with arguments on separate lines,
+`-logFile` and `C:\GOG Games\RimWorld\Wineo QA.log`, and working directory
+`C:\GOG Games\RimWorld`; the edit was saved. A CLI launch succeeded.
+`/proc` confirmed `-logFile` and the full space-containing log path as separate
+arguments, and the game folder as working directory. The custom log was
+created. The maintainer confirmed Royalty was recognized and WineoQA loaded.
+The `WineoQA.rws` save SHA-256
+`aac8f8de78dde1c45f88e1b2e49895fdc6123b64cc2ce9884a7713107233dfa0` remained
+unchanged across the Royalty install. The log listed `Ludeon.RimWorld` and
+`Ludeon.RimWorld.Royalty`, with some game migration and think-node warnings
+during the successful load. Repeating setup and choosing Finish made no
+changes. No actual version patch was tested; the DLC installer was the
+approved substitute.
+
+Heroic acceptance used a disposable fixture at `heroic-fixture` with
+`config.json`, `sideload_apps/library.json`, and per-game `GamesConfig` files.
+It described two Windows games, `rimworld-a` and `rimworld-b`, sharing the
+real disposable installed prefix. Metadata included launcher arguments,
+unsupported wrapper options, a WINEPREFIX override, and token-like secrets to
+check review and log handling. The original Heroic library and source prefix
+were not changed.
+`--list` reported the expected blockers. A verbose interactive import of
+`rimworld-a` preserved its arguments and showed the shared-prefix relationship,
+omitted settings, and redacted token; that review was canceled.
+
+The first verbose bulk import under the original isolated XDG roots used:
+
+```text
+wineo -v import heroic --config-dir /tmp/wineo-0012-acceptance.YUe03a/heroic-fixture --all --yes --runner wine --desktop
+```
+
+It safely
+matched and backfilled the existing `qa-rimworld` registration as
+`rimworld-a`, skipped it, and imported `rimworld-b`. A second run with the
+same command and clean `bulk-config`, `bulk-data`, `bulk-state`, and
+`bulk-cache` XDG roots imported both games. Its warnings identified the shared
+prefix, omitted wrapper setting, and dropped WINEPREFIX override. Arguments
+`--profile` and `two words` persisted as separate values, the managed
+WINEPREFIX override was absent, and copied prefixes and desktop entries were
+present. Logs retained review evidence without ANSI color or fixture secrets.
+Source-prefix content and symlink manifests and the Heroic fixture manifest
+were unchanged. Text outputs are `bulk-import.txt` and
+`bulk-import-clean.txt` under the disposable root. Import logs are under
+`state/wineo/imports` and `bulk-state/wineo/imports` for the original and clean
+XDG roots, respectively.
+
+Removing `qa-rimworld` and `rimworld-beta` without deleting prefixes removed
+their registrations and desktop entries while retaining both prefixes and
+their game executables. An external sentinel symlink was added inside the beta
+copy before adoption. This command succeeded:
+
+```text
+wineo import prefix /tmp/wineo-0012-acceptance.YUe03a/data/wineo/prefixes/rimworld-beta --name qa-adopt-delete --runner wine --adopt
+```
+
+`wineo rm qa-adopt-delete --delete-prefix` then removed that copied prefix and
+registration. The external sentinel contents and both original installer
+hashes remained unchanged, and the original installed prefix remained in
+place. All game processes were stopped. Other bulk-import copies were retained
+as evidence.
+
+The existing duplicate download option in the guided settings menu was also
+observed. It predates this plan's C-F implementation and remains a cosmetic,
+out-of-scope issue.
