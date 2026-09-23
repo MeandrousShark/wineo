@@ -1,6 +1,6 @@
 # shellcheck disable=SC2034,SC2154
 pkgname=wineo-git
-pkgver=0.1.0.r207.g7b31b1f
+pkgver=0.1.0.r208.gaca53a2
 pkgrel=1
 pkgdesc='Wine environment manager with live shell completions'
 arch=('x86_64')
@@ -17,6 +17,7 @@ optdepends=(
 )
 provides=('wineo')
 conflicts=('wineo')
+options=('!lto')
 source=('wineo::git+ssh://gitea/mphannon/wineo.git#branch=main')
 sha256sums=('SKIP')
 
