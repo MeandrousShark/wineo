@@ -2,8 +2,17 @@
 
 Wineo provides dynamic completion for Bash, Zsh, and Fish. The generated
 initialization snippet asks the installed `wineo` binary for its current
-completion registration when the shell loads it. Add the Bash or Zsh output
-to the corresponding startup file once:
+completion registration when the shell loads it.
+
+On Arch, the repository's `wineo-git` PKGBUILD installs the binary and all
+three completion files together. After pushing changes to Gitea `main`, run
+`makepkg -si` from the repository directory to build and install the update.
+No separate completion setup is needed. An older file at
+`~/.config/fish/completions/wineo.fish` takes priority over the packaged Fish
+file and should be removed after the package is installed.
+
+For a manual binary install, add the Bash or Zsh output to the corresponding
+startup file once:
 
 ```sh
 wineo completions bash >> ~/.bashrc
