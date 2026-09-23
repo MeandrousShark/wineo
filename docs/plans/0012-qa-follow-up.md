@@ -181,6 +181,32 @@ environment; concurrent ID/config edits; and removal before backfill. Assert
 exact config content, imports/skips, warnings, and idempotence rather than only
 the matching helper's return value.
 
+### Batch B implementation record
+
+Implemented authoritative Heroic ID matching and existing-config safety:
+
+- Recorded IDs are authoritative. Prefix, executable, and default-name
+  fallbacks apply only when an environment has no recorded ID.
+- Backfill snapshots the config text and file identity, then locks and rereads
+  the current config before writing. It rejects missing, replaced, changed, or
+  differently identified configs and treats an already matching ID as a
+  no-op.
+- The in-memory classification view is refreshed after backfill so later
+  candidates cannot claim the same environment using stale legacy data.
+- Core tests cover concurrent edits, removal, replacement, and idempotence;
+  matcher tests cover stale backfill state; CLI end-to-end regressions cover
+  shared paths with different IDs, multiple legacy candidates, repeated
+  imports, collisions, and exact config content.
+
+Independent QA passed with no issues. `cargo fmt --check`,
+`cargo clippy --offline --all-targets -- -D warnings`, and `git diff --check`
+passed. `TERM=linux cargo test --offline` passed with 599 tests passed, 0
+failed, and 10 ignored. The sandboxed test attempt stalled in existing
+winetricks/process tests and was interrupted; the offline host run completed
+the verification. The ignored real-runtime tests were deferred because
+`WINEO_TEST_PROTON` and `WINEO_TEST_DXVK` are unset. Manual lifecycle acceptance
+for G has not run.
+
 ## C. Download completion, recovery, and guided choices
 
 Primary code: core `download`; CLI `download`, `transfer`, `components`, and
@@ -557,5 +583,6 @@ all automated test I/O isolated from the maintainer's real prefixes/configs.
 ## Acceptance results
 
 Batch A is implemented and verified; see the [Batch A implementation
-record](#batch-a-implementation-record). B-G remain open. Manual lifecycle
+record](#batch-a-implementation-record). Batch B is implemented and verified;
+see its implementation record above. C-G remain open. Manual lifecycle
 acceptance for G has not run.

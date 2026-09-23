@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use wineo_core::components::Component;
 use wineo_core::config::{Arch, GlobalConfig, Target};
 use wineo_core::download::Provider;
-use wineo_core::environment::{self, Environment};
+use wineo_core::environment::{self, Environment, HeroicIdSnapshot};
 use wineo_core::heroic::{
     HeroicCandidate, HeroicGameKind, HeroicImport, HeroicIssue, HeroicIssueKind, HeroicRunnerKind,
     HeroicSource, ReviewItem, SettingsReview,
@@ -589,9 +589,11 @@ fn download_latest_ge_proton<I: Input, W: Write>(
 
 /// An environment already on disk, as much as matching a Heroic candidate
 /// against it needs.
+#[derive(Clone)]
 struct ExistingEnvironment {
     name: String,
     heroic_id: Option<String>,
+    snapshot: Option<HeroicIdSnapshot>,
     prefix: PathBuf,
     /// Every target's exe, expanded and resolved the same way as `prefix`.
     target_exes: Vec<PathBuf>,
@@ -600,7 +602,7 @@ struct ExistingEnvironment {
 fn existing_environments(paths: &Paths) -> anyhow::Result<Vec<ExistingEnvironment>> {
     let mut found = Vec::new();
     for name in environment::names(paths)? {
-        let Ok(loaded) = Environment::load(paths, &name) else {
+        let Ok((loaded, snapshot)) = Environment::load_for_heroic_match(paths, &name) else {
             continue;
         };
         let Ok(prefix) = loaded.prefix(paths) else {
@@ -616,6 +618,7 @@ fn existing_environments(paths: &Paths) -> anyhow::Result<Vec<ExistingEnvironmen
         found.push(ExistingEnvironment {
             name,
             heroic_id: loaded.config.heroic_id.clone(),
+            snapshot: Some(snapshot),
             prefix: wineo_core::paths::resolve(&prefix),
             target_exes,
         });
@@ -654,7 +657,7 @@ fn match_existing(
         let resolved = wineo_core::paths::resolve(prefix);
         if let Some(environment) = existing
             .iter()
-            .find(|environment| environment.prefix == resolved)
+            .find(|environment| environment.heroic_id.is_none() && environment.prefix == resolved)
         {
             return Some(ExistingMatch {
                 name: environment.name.clone(),
@@ -664,10 +667,9 @@ fn match_existing(
     }
     if let Some(exe) = candidate_exe {
         let resolved = wineo_core::paths::resolve(exe);
-        if let Some(environment) = existing
-            .iter()
-            .find(|environment| environment.target_exes.contains(&resolved))
-        {
+        if let Some(environment) = existing.iter().find(|environment| {
+            environment.heroic_id.is_none() && environment.target_exes.contains(&resolved)
+        }) {
             return Some(ExistingMatch {
                 name: environment.name.clone(),
                 needs_id: true,
@@ -676,11 +678,34 @@ fn match_existing(
     }
     existing
         .iter()
-        .find(|environment| environment.name == default_name)
+        .find(|environment| environment.heroic_id.is_none() && environment.name == default_name)
         .map(|environment| ExistingMatch {
             name: environment.name.clone(),
             needs_id: true,
         })
+}
+
+fn backfill_match(
+    paths: &Paths,
+    existing: &mut [ExistingEnvironment],
+    matched: &ExistingMatch,
+    candidate_id: &str,
+) -> anyhow::Result<()> {
+    let environment = existing
+        .iter_mut()
+        .find(|environment| environment.name == matched.name)
+        .expect("matched environment is present");
+    Environment::record_heroic_id(
+        paths,
+        &matched.name,
+        candidate_id,
+        environment
+            .snapshot
+            .as_ref()
+            .expect("disk snapshot is present"),
+    )?;
+    environment.heroic_id = Some(candidate_id.to_owned());
+    Ok(())
 }
 
 fn default_name_for(title: &str, executable: Option<&Path>) -> String {
@@ -714,18 +739,19 @@ fn classify_candidates(
     let mut already = Vec::new();
     let mut pending = Vec::new();
     let mut used_names: BTreeSet<String> = BTreeSet::new();
+    let mut existing = existing.to_vec();
 
     for candidate in candidates {
         let default_name = default_name_for(&candidate.title, candidate.executable.as_deref());
         if let Some(matched) = match_existing(
-            existing,
+            &existing,
             &candidate.id,
             candidate.prefix.as_deref(),
             candidate.executable.as_deref(),
             &default_name,
         ) {
             if matched.needs_id {
-                Environment::record_heroic_id(paths, &matched.name, &candidate.id)?;
+                backfill_match(paths, &mut existing, &matched, &candidate.id)?;
             }
             already.push(matched.name);
             continue;
@@ -3378,6 +3404,7 @@ mod tests {
         ExistingEnvironment {
             name: name.to_owned(),
             heroic_id: heroic_id.map(str::to_owned),
+            snapshot: None,
             prefix: prefix.to_owned(),
             target_exes: target_exes.iter().map(|exe| exe.to_path_buf()).collect(),
         }
@@ -3394,6 +3421,72 @@ mod tests {
         let matched = match_existing(&existing, "abc", None, None, "something-else").unwrap();
         assert_eq!(matched.name, "palworld");
         assert!(!matched.needs_id);
+    }
+
+    #[test]
+    fn match_existing_does_not_claim_another_id_through_legacy_fallbacks() {
+        let prefix = Path::new("/prefixes/shared");
+        let exe = Path::new("/games/shared.exe");
+        let existing = vec![
+            existing("shared", Some("game-a"), prefix, &[exe]),
+            existing("legacy", None, prefix, &[exe]),
+        ];
+        let matched =
+            match_existing(&existing, "game-b", Some(prefix), Some(exe), "shared").unwrap();
+        assert_eq!(matched.name, "legacy");
+        assert!(matched.needs_id);
+
+        let recorded_only = &existing[..1];
+        assert!(
+            match_existing(recorded_only, "game-b", Some(prefix), Some(exe), "shared").is_none()
+        );
+        let matched =
+            match_existing(recorded_only, "game-a", Some(prefix), Some(exe), "other").unwrap();
+        assert_eq!(matched.name, "shared");
+        assert!(!matched.needs_id);
+    }
+
+    #[test]
+    fn backfill_match_rejects_stale_classification_without_changing_the_config() {
+        for change in ["config", "id", "removed"] {
+            let root = tempdir().unwrap();
+            let paths = paths(root.path());
+            let path = paths.environment_config("legacy");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let prefix = root.path().join("shared-prefix");
+            let original = format!(
+                "# keep this\nprefix = {:?}\nrunner = \"wine\"\narch = \"win64\"\n",
+                prefix.to_string_lossy()
+            );
+            fs::write(&path, &original).unwrap();
+            let mut existing = existing_environments(&paths).unwrap();
+            let matched =
+                match_existing(&existing, "candidate", Some(&prefix), None, "other").unwrap();
+            assert!(matched.needs_id);
+
+            let changed = match change {
+                "config" => original.replace("wine", "other"),
+                "id" => format!("{original}heroic_id = \"different\"\n"),
+                _ => String::new(),
+            };
+            if change == "removed" {
+                fs::remove_file(&path).unwrap();
+            } else {
+                fs::write(&path, &changed).unwrap();
+            }
+            let error = backfill_match(&paths, &mut existing, &matched, "candidate").unwrap_err();
+            assert!(
+                error.to_string().contains("retry the import")
+                    || error.to_string().contains("does not exist"),
+                "{error:#}"
+            );
+            assert_eq!(existing[0].heroic_id, None);
+            if change == "removed" {
+                assert!(!path.exists());
+            } else {
+                assert_eq!(fs::read_to_string(&path).unwrap(), changed);
+            }
+        }
     }
 
     #[test]

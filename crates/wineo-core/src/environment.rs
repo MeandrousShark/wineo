@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, Value, value};
@@ -21,6 +22,13 @@ pub struct Environment {
     pub name: String,
     pub path: PathBuf,
     pub config: EnvironmentConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct HeroicIdSnapshot {
+    text: String,
+    device: u64,
+    inode: u64,
 }
 
 /// Options for creating an environment. Anything unset falls back to the global defaults.
@@ -45,6 +53,38 @@ impl NewEnvironment {
 }
 
 impl Environment {
+    pub fn load_for_heroic_match(paths: &Paths, name: &str) -> Result<(Self, HeroicIdSnapshot)> {
+        check_name(name)?;
+        let path = paths.environment_config(name);
+        let mut file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                return Err(Error::UnknownEnvironment(name.to_owned()));
+            }
+            Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
+        };
+        let mut text = String::new();
+        file.read_to_string(&mut text)
+            .context(|| format!("failed to read {}", path.display()))?;
+        let metadata = file
+            .metadata()
+            .context(|| format!("failed to inspect {}", path.display()))?;
+        let config = EnvironmentConfig::parse(&path, &text)?;
+        let snapshot = HeroicIdSnapshot {
+            text,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        };
+        Ok((
+            Self {
+                name: name.to_owned(),
+                path,
+                config,
+            },
+            snapshot,
+        ))
+    }
+
     pub fn load(paths: &Paths, name: &str) -> Result<Self> {
         check_name(name)?;
         let path = paths.environment_config(name);
@@ -144,17 +184,47 @@ impl Environment {
     /// Writes `heroic_id` onto an environment's config, keeping the rest of
     /// the file unchanged. For backfilling environments matched to a Heroic
     /// game that predate the id being recorded.
-    pub fn record_heroic_id(paths: &Paths, name: &str, heroic_id: &str) -> Result<()> {
+    pub fn record_heroic_id(
+        paths: &Paths,
+        name: &str,
+        heroic_id: &str,
+        expected: &HeroicIdSnapshot,
+    ) -> Result<()> {
         check_name(name)?;
         let path = paths.environment_config(name);
         let _guard = Locks::new(paths).config(&path)?;
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
+        let mut file = match fs::File::open(&path) {
+            Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 return Err(Error::UnknownEnvironment(name.to_owned()));
             }
             Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
         };
+        let mut text = String::new();
+        file.read_to_string(&mut text)
+            .context(|| format!("failed to read {}", path.display()))?;
+        let metadata = file
+            .metadata()
+            .context(|| format!("failed to inspect {}", path.display()))?;
+        let config = EnvironmentConfig::parse(&path, &text)?;
+        if config.heroic_id.as_deref() == Some(heroic_id) {
+            return Ok(());
+        }
+        if config.heroic_id.is_some() {
+            return Err(Error::ConfigInvalid {
+                path,
+                message: "Heroic ID changed; retry the import".to_owned(),
+            });
+        }
+        if text != expected.text
+            || metadata.dev() != expected.device
+            || metadata.ino() != expected.inode
+        {
+            return Err(Error::ConfigInvalid {
+                path,
+                message: "environment changed during Heroic matching; retry the import".to_owned(),
+            });
+        }
         let mut doc: DocumentMut = text.parse().map_err(|source| Error::ConfigParse {
             path: path.clone(),
             source: Box::new(source),
@@ -364,34 +434,109 @@ mod tests {
         let paths = test_paths(root.path());
         let path = paths.environment_config("game");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(
-            &path,
-            "# hand written\nprefix = \"~/Games/Game\"\nrunner = \"wine\"\narch = \"win64\"\n",
-        )
-        .unwrap();
+        let original = "# hand written\nprefix = \"~/Games/Game\"\nrunner = \"wine\"\narch = \"win64\"\n# keep this\ngamemode = true\n";
+        fs::write(&path, original).unwrap();
 
-        Environment::record_heroic_id(&paths, "game", "abc123").unwrap();
+        let (_, snapshot) = Environment::load_for_heroic_match(&paths, "game").unwrap();
+        Environment::record_heroic_id(&paths, "game", "abc123", &snapshot).unwrap();
         let text = fs::read_to_string(&path).unwrap();
-        assert!(text.starts_with("# hand written\n"), "{text}");
-        assert!(text.contains("heroic_id = \"abc123\"\n"), "{text}");
+        assert_eq!(text, format!("{original}heroic_id = \"abc123\"\n"));
         let config = EnvironmentConfig::parse(&path, &text).unwrap();
         assert_eq!(config.heroic_id.as_deref(), Some("abc123"));
 
-        // A second write updates the value in place instead of duplicating it.
-        Environment::record_heroic_id(&paths, "game", "def456").unwrap();
+        Environment::record_heroic_id(&paths, "game", "abc123", &snapshot).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert_eq!(text.matches("heroic_id").count(), 1, "{text}");
-        assert!(text.contains("heroic_id = \"def456\"\n"), "{text}");
+        assert!(text.contains("heroic_id = \"abc123\"\n"), "{text}");
+    }
+
+    #[test]
+    fn record_heroic_id_refuses_a_concurrent_id_or_config_edit() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let path = paths.environment_config("game");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = "prefix = \"/games/one\"\nrunner = \"wine\"\narch = \"win64\"\n";
+        fs::write(&path, original).unwrap();
+        let (_, snapshot) = Environment::load_for_heroic_match(&paths, "game").unwrap();
+
+        let changed = original.replace("/games/one", "/games/two");
+        fs::write(&path, &changed).unwrap();
+        assert!(matches!(
+            Environment::record_heroic_id(&paths, "game", "abc123", &snapshot),
+            Err(Error::ConfigInvalid { .. })
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), changed);
+
+        let changed_id = format!("{original}heroic_id = \"other\"\n");
+        fs::write(&path, &changed_id).unwrap();
+        assert!(matches!(
+            Environment::record_heroic_id(&paths, "game", "abc123", &snapshot),
+            Err(Error::ConfigInvalid { .. })
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), changed_id);
+    }
+
+    #[test]
+    fn record_heroic_id_accepts_a_concurrent_backfill_of_the_same_id() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let path = paths.environment_config("game");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "prefix = \"/games/one\"\nrunner = \"wine\"\narch = \"win64\"\n",
+        )
+        .unwrap();
+        let (_, snapshot) = Environment::load_for_heroic_match(&paths, "game").unwrap();
+        let concurrent = "# concurrent edit\nprefix = \"/games/two\"\nrunner = \"wine\"\narch = \"win64\"\nheroic_id = \"abc123\"\n";
+        fs::write(&path, concurrent).unwrap();
+        Environment::record_heroic_id(&paths, "game", "abc123", &snapshot).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), concurrent);
+    }
+
+    #[test]
+    fn record_heroic_id_refuses_removed_or_replaced_config() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let path = paths.environment_config("game");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = "prefix = \"/games/one\"\nrunner = \"wine\"\narch = \"win64\"\n";
+        fs::write(&path, original).unwrap();
+        let (_, snapshot) = Environment::load_for_heroic_match(&paths, "game").unwrap();
+        let replacement = path.with_extension("replacement");
+        fs::write(&replacement, original).unwrap();
+
+        fs::remove_file(&path).unwrap();
+        assert!(matches!(
+            Environment::record_heroic_id(&paths, "game", "abc123", &snapshot),
+            Err(Error::UnknownEnvironment(_))
+        ));
+        assert!(!path.exists());
+
+        fs::rename(&replacement, &path).unwrap();
+        assert!(matches!(
+            Environment::record_heroic_id(&paths, "game", "abc123", &snapshot),
+            Err(Error::ConfigInvalid { .. })
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
     }
 
     #[test]
     fn record_heroic_id_on_unknown_environment_is_an_error() {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
+        let path = paths.environment_config("nope");
+        let snapshot = HeroicIdSnapshot {
+            text: String::new(),
+            device: 0,
+            inode: 0,
+        };
         assert!(matches!(
-            Environment::record_heroic_id(&paths, "nope", "abc123"),
+            Environment::record_heroic_id(&paths, "nope", "abc123", &snapshot),
             Err(Error::UnknownEnvironment(_))
         ));
+        assert!(!path.exists());
     }
 
     #[test]
