@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0010: JSON output for status and list
 
@@ -63,9 +63,11 @@ strings with an offset. Field names and enum values use lowercase snake case.
 
 `state` is the runtime state such as `running` or `inactive`. `busy` names an
 operation separately, and `unresolved` is a separate boolean; neither
-replaces the runtime state. `runner.configured` is the value in the config,
-and `runner.resolved` is the selected installed build, or `null` when it
-cannot be resolved. No field contains a human display string such as
+replaces the runtime state. `runner.configured` is the value in the config.
+`runner.resolved` follows human status resolution: an active operation's
+runner takes precedence, followed by the runner saved with the last run, then
+resolution of the configured value. It is `null` when none can be resolved.
+No field contains a human display string such as
 `latest -> GE-Proton11-1`.
 
 Collection commands emit the same envelope, including when empty:
@@ -116,9 +118,9 @@ stdout. Clap argument errors retain Clap's existing stderr behavior.
 3. Let the shared collection path return structured rows and per-name errors.
    Keep human rendering and diagnostics unchanged; render JSON from the same
    gathered state without a second runtime probe.
-4. Document the commands and examples. Once accepted, update the feature
-   roadmap. Plan 0009's status and its original manual acceptance remain a
-   separate tracking item.
+4. Document the commands and examples, then update the feature roadmap.
+   Plan 0009's status and its original manual acceptance remain a separate
+   tracking item.
 
 ## Acceptance
 
@@ -134,5 +136,19 @@ stdout. Clap argument errors retain Clap's existing stderr behavior.
 - Run `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and
   `cargo test`. Run the ignored real-Wine tests when their local fixtures are
   available; otherwise record why they were skipped.
-- Complete the independent QA deferred by plan 0011, including its prompt-key
-  changes, before marking this plan done.
+
+## Acceptance results
+
+- Named status, list, and nameless status JSON tests passed, including safe
+  output, collection errors, and the required status cases.
+- Independent QA passed with no code defect. Focused JSON tests (4), plan
+  0011 Esc/Ctrl+C tests, and the download back-key test passed.
+- `TERM=linux cargo test --offline` exited 0;
+  `cargo fmt --check`,
+  `cargo clippy --offline --all-targets -- -D warnings`, and
+  `git diff --check` passed.
+- Ignored real-Wine fixture tests were not run because `WINEO_TEST_PROTON`
+  and `WINEO_TEST_DXVK` were unset.
+- The command contract and examples are documented in
+  [JSON output](../json-output.md). Plan 0009 remains approved with its
+  separate manual acceptance outstanding.

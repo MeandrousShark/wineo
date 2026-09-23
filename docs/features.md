@@ -6,6 +6,8 @@ Completed: [0007: Guided game setup](plans/0007-guided-game-setup.md) and
 [0008: Downloads and prefix imports](plans/0008-downloads-and-imports.md),
 including launch settings for manually added Heroic games.
 See [Downloads and imports](downloads-and-imports.md) for usage.
+Completed: [0010: JSON output for status and list](plans/0010-json-output.md).
+See [JSON output](json-output.md) for the command schema and examples.
 
 **Category**
 
@@ -26,7 +28,6 @@ See [Downloads and imports](downloads-and-imports.md) for usage.
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| `--json` output for scripting | Automation | **2** | 0001 phase 2 | Additive, so it doesn't get harder later as long as output is built from structured data | Build `status` output from a struct in 0001's phase 2 so this stays nearly free. |
 | Shell completion for environment and target names | UX | **3** | 0002 | Polish on top of static completion | Needs dynamic completion, which is more work than static completions. |
 | `clone` a prefix | Portability/Data | **3** | | Useful but not fundamental | Use reflink copies where the filesystem supports them, and a normal copy everywhere else. |
 | Prefix snapshots | Portability/Data | **3** | | Cheap where the filesystem supports it, so it can sit next to `clone` | Only offered on filesystems with reflinks or native snapshots, like btrfs. Everyone else waits for full backup and restore. |

@@ -88,5 +88,11 @@ does not need a network request.
 and `TERM=linux cargo test --offline` passed on the host. The sandboxed test
 run stalled in the existing installer and signal tests, as recorded in 0012.
 Ignored real-runtime tests were deferred because `WINEO_TEST_PROTON` and
-`WINEO_TEST_DXVK` are unset. Independent QA is deferred until 0010 is complete,
-as requested by the maintainer.
+`WINEO_TEST_DXVK` are unset. Independent QA was deferred until 0010 was
+complete, as requested by the maintainer; see the follow-up below.
+
+## Independent QA follow-up
+
+After 0010 completed, independent QA passed with no code defect found. Three
+focused Esc PTY tests, the Ctrl+C PTY test, and the fixture-backed download
+back-key test passed.
