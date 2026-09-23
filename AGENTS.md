@@ -15,6 +15,11 @@ wineo is a Wine environment manager written in Rust, organized as a Cargo worksp
 - Plan before implementing. Draft a plan in `docs/plans/` and get it approved by the project maintainer before writing any implementation code.
 - Design decisions belong to the maintainer. When something is ambiguous or unspecified, ask instead of guessing.
 
+## Release Work
+
+- The primary session handles all release work, including staging, commits, pushes, merges, tags, releases, publishing, and deployments.
+- Do not delegate release work to the `release` subagent or any other subagent.
+
 ## Plans
 
 - One file per plan: `docs/plans/NNNN-short-name.md`, numbered in order.
