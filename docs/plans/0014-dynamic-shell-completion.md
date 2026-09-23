@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0014: Dynamic environment and target completion
 
@@ -19,8 +19,7 @@ Settled by the maintainer while drafting:
 - Clone an environment is queued after this plan. It needs its own plan and
   maintainer approval before implementation.
 
-The command and behavior details below are proposed for approval with this
-plan.
+The command and behavior details below were approved with this plan.
 
 ## Existing foundation
 
