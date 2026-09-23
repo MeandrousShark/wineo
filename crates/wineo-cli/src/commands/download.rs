@@ -77,7 +77,7 @@ fn run_inner(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCod
                 "guided download needs a terminal; use `wineo download <provider> [--version <tag>]`"
             );
             let mut prompt =
-                Prompt::new(Terminal::open()?, io::stdout()).with_color(style::enabled());
+                Prompt::new(Terminal::open()?, io::stdout()).with_color(style::stdout_enabled());
             choose_and_install(paths, &global, &mut prompt, &PROVIDERS, verbose).map(|_| ())
         }
     };
