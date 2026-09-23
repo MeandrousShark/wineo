@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0015: Arch package for Wineo and shell completions
 
@@ -71,3 +71,25 @@ and packaging, with its own plan.
 - On the maintainer's machine, pacman owns `/usr/bin/wineo` and the completion
   files. The manual files no longer shadow them. Fish completion offers live
   environment and selected target names.
+
+## Acceptance results
+
+- `shellcheck -s bash PKGBUILD`, `makepkg --printsrcinfo`, and package QA pass.
+  The built `wineo-git` archive from pushed Gitea commit `1c801bc` contains
+  the binary, license, and all three completion files at the planned paths.
+- `makepkg` ran the full non-ignored Rust suite in `check()` successfully.
+  C LTO is disabled because it caused linker errors in `ring` under this
+  machine's Arch build flags; tests run serially after a parallel lock-test
+  failure.
+- Fish returned `hades` and its `game` target from an isolated config using
+  the binary and completion file extracted from the package archive.
+- The maintainer installed the package with pacman. Pacman owns `/usr/bin/wineo`
+  and all three completion files. The old manual binary and Fish file were
+  moved into a temporary backup; bare `wineo` resolves to `/usr/bin/wineo`.
+  The maintainer's Fish shell offers real `palworld` environment and target
+  candidates through the packaged completion file.
+- Tokyo's separate root-snapshot post-transaction hook reported
+  `Config is in use` after pacman installed Wineo. The hook clears its pending
+  marker before cleanup, and `pacman-recover-complete` reported no pending
+  transaction. This points to a cleanup failure after the snapshot pair was
+  recorded; the package files and completion work.

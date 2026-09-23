@@ -12,7 +12,7 @@ See [JSON output](json-output.md) for the command schema and examples.
 
 Completed: [0014: Dynamic environment and target completion](plans/0014-dynamic-shell-completion.md).
 See [Shell completion](shell-completion.md) for setup and supported values.
-In progress: [0015: Arch package for Wineo and shell completions](plans/0015-arch-package.md).
+Completed: [0015: Arch package for Wineo and shell completions](plans/0015-arch-package.md).
 Clone an environment is queued after 0015 and will get its own plan.
 
 **Category**

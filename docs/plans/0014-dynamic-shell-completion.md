@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0014: Dynamic environment and target completion
 
@@ -116,3 +116,23 @@ the `--` passthrough boundary, and incomplete input in tests.
   otherwise record why they were skipped. Independent QA reviews the change.
 - Bare `wineo` resolves to the new tested build. Fish Tab offers the current
   environment and target names through the updated completion file.
+
+## Acceptance results
+
+- Independent QA passed after a `winetricks --` boundary fix. Seven dynamic
+  completion tests pass, including a real Fish shell request. Isolated Fish
+  and Bash requests return both environment and selected target names.
+- `cargo fmt --all -- --check`,
+  `cargo clippy --offline --all-targets -- -D warnings`, and
+  `TERM=xterm-256color cargo test --offline` pass. The terminal setting is
+  needed because this command runner otherwise sets `TERM=dumb` and breaks
+  pre-existing PTY-driven tests.
+- Two ignored real-Wine CLI tests pass. A GUI real-Wine test cannot run in
+  this command session because no display server is available; the remaining
+  ignored tests were not reached after that failure.
+- Zsh is not installed here. Its callback protocol and first-autoload wrapper
+  have tests, but a real Zsh Tab request has not been run.
+- The implementation and usage docs are pushed to Gitea. After the 0015
+  package migration, bare `wineo` resolves to pacman-owned `/usr/bin/wineo`.
+  The maintainer's Fish shell offers real environment and selected target
+  names through the packaged completion file.
