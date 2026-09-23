@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0011: Esc to go back, Ctrl+C to cancel
 
@@ -74,3 +74,19 @@ Docs that mention `b`, `q`, or `<` are updated.
 - The PTY tests in `crates/wineo-cli/tests/guided.rs` cover Esc and Ctrl+C.
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`,
   and `cargo test -- --ignored`.
+
+## Acceptance results
+
+Esc returns to the previous guided step, including when text is already typed.
+At a root menu it leaves the question open. Ctrl+C still cancels with exit 130.
+The old typed inputs remain working but are no longer shown as prompts.
+PTY tests cover guided new, prefix import, and Heroic selection. A fixture-backed
+download picker test covers leaving release selection; its provider selector
+does not need a network request.
+
+`cargo fmt --check`, `cargo clippy --offline --all-targets -- -D warnings`,
+and `TERM=linux cargo test --offline` passed on the host. The sandboxed test
+run stalled in the existing installer and signal tests, as recorded in 0012.
+Ignored real-runtime tests were deferred because `WINEO_TEST_PROTON` and
+`WINEO_TEST_DXVK` are unset. Independent QA is deferred until 0010 is complete,
+as requested by the maintainer.

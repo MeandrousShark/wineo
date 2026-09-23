@@ -110,6 +110,11 @@ impl Pty {
         self.type_keys("\x03");
     }
 
+    /// Presses Esc by itself, letting the line editor's timeout finish it.
+    fn esc(&mut self) {
+        self.type_keys("\x1b");
+    }
+
     /// SIGINT from outside, the way Ctrl+C reaches wineo while no question
     /// is being asked, like during an installer.
     fn interrupt(&self) {
@@ -195,16 +200,19 @@ impl Fixture {
 /// with no template, the suggested location and settings, and `how`.
 fn plain_answers(pty: &mut Pty, name: &str, how: &str) {
     pty.expect("Start from a template?");
+    pty.expect("Ctrl+C cancel");
     pty.expect("Template [1]: ");
     pty.send("1");
-    pty.expect("Install name, or < to go back: ");
+    pty.expect("Install name: ");
     pty.send(name);
-    pty.expect("Prefix location, or < to go back [");
+    pty.expect("Prefix location [");
     pty.send("");
     pty.expect(&format!("Settings for {name}:"));
+    pty.expect("Esc back, Ctrl+C cancel");
     pty.expect("Choice [1]: ");
     pty.send("1");
     pty.expect(&format!("How does {name} get its program?"));
+    pty.expect("Esc back, Ctrl+C cancel");
     pty.expect("Choice [1]: ");
     pty.send(how);
 }
@@ -255,9 +263,9 @@ fn heroic_bulk_asks_once_for_desktop_entries_and_confirmation() {
             "--adopt",
         ]);
         let mut pty = Pty::spawn(command);
-        pty.expect("Create desktop entries for these games? [Y/n], or < to go back: ");
+        pty.expect("Create desktop entries for these games? [Y/n]: ");
         pty.send("");
-        pty.expect("Import 2 games? [Y/n], or < to go back: ");
+        pty.expect("Import 2 games? [Y/n]: ");
         pty.send(if accept { "" } else { "n" });
         let (status, output) = pty.finish();
         if accept {
@@ -340,7 +348,7 @@ fn heroic_runner_copy_preserves_dependencies_and_survives_later_cancellation() {
             "--adopt",
         ]);
         let mut pty = Pty::spawn(command);
-        pty.expect("Environment name, or < to go back [alpha]: ");
+        pty.expect("Environment name [alpha]: ");
         pty.send("");
         pty.expect("Runner [1]: ");
         pty.send("");
@@ -350,7 +358,7 @@ fn heroic_runner_copy_preserves_dependencies_and_survives_later_cancellation() {
             pty.ctrl_c();
         } else {
             pty.send("");
-            pty.expect("Set up launch targets now? [Y/n], or < to go back: ");
+            pty.expect("Set up launch targets now? [Y/n]: ");
             pty.send("n");
         }
         let (status, output) = pty.finish();
@@ -499,7 +507,7 @@ fn a_change_made_while_a_question_waits_refreshes_the_review() {
     pty.expect("Choice [1]: ");
     // The working directory, which is all this setup changes.
     pty.send("4");
-    pty.expect("Working directory, or empty for the executable's folder, or < to go back: ");
+    pty.expect("Working directory, or empty for the executable's folder: ");
     pty.send(r"C:\Games");
     pty.expect("Choice [1]: ");
     pty.send("1");
@@ -531,7 +539,7 @@ fn setup_runs_an_installer_then_picks_from_what_it_left() {
     let mut pty = f.setup("app");
     pty.expect("Choice [1]: ");
     pty.send("4");
-    pty.expect("Installer or updater, as a Unix path or a Windows one, or < to go back: ");
+    pty.expect("Installer or updater, as a Unix path or a Windows one: ");
     pty.send("handoff");
     pty.expect("Run handoff in app? Its output goes to ");
     pty.expect("Choice [1]: ");
@@ -557,7 +565,7 @@ fn a_failed_installer_ends_setup_with_its_code() {
     let mut pty = f.setup("app");
     pty.expect("Choice [1]: ");
     pty.send("4");
-    pty.expect("or < to go back: ");
+    pty.expect("Installer or updater, as a Unix path or a Windows one: ");
     pty.send("exit-3");
     pty.expect("Choice [1]: ");
     pty.send("1");
@@ -578,7 +586,7 @@ fn setup_keeps_saved_targets_when_the_installer_disappears_during_prepare() {
     let mut pty = f.setup("app");
     pty.expect("Choice [5]: ");
     pty.send("4");
-    pty.expect("or < to go back: ");
+    pty.expect("Installer or updater, as a Unix path or a Windows one: ");
     pty.send(installer.to_str().unwrap());
     pty.expect("Run installer.exe in app?");
     fs::remove_file(&installer).unwrap();
@@ -623,7 +631,7 @@ fn staged_changes_are_saved_before_an_installer_runs() {
     pty.expect("Choice [1]: ");
     pty.send("1");
     pty.expect("Saved app.");
-    pty.expect("or < to go back: ");
+    pty.expect("Installer or updater, as a Unix path or a Windows one: ");
     // Going back from the installer keeps what was saved.
     pty.send("<");
     pty.expect("Choice [5]: ");
@@ -640,7 +648,7 @@ fn ctrl_c_during_an_installer_cancels_it_and_ends_setup() {
     let mut pty = f.setup("app");
     pty.expect("Choice [1]: ");
     pty.send("4");
-    pty.expect("or < to go back: ");
+    pty.expect("Installer or updater, as a Unix path or a Windows one: ");
     pty.send("setup");
     pty.expect("Choice [1]: ");
     pty.send("1");
@@ -751,6 +759,80 @@ fn guided_new_makes_an_empty_environment_with_nothing_switched_on() {
 }
 
 #[test]
+fn esc_goes_back_in_guided_new_and_q_and_b_remain_text() {
+    let f = Fixture::new();
+    let mut pty = f.new_guided(&[]);
+    pty.expect("Start from a template?");
+    pty.expect("Ctrl+C cancel");
+    pty.expect("Template [1]: ");
+    pty.send("1");
+    pty.expect("Install name: ");
+    pty.send("q");
+    pty.expect("Prefix location [");
+    pty.esc();
+    pty.expect("Install name [q]: ");
+    pty.send("b");
+    pty.expect("Prefix location [");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(output.contains("Ctrl+C cancel"), "{output}");
+    assert!(!f.registered("b"));
+    assert!(!f.registered("q"));
+}
+
+#[test]
+fn esc_goes_back_from_the_guided_import_name_to_the_prefix() {
+    let f = Fixture::new();
+    let source = f.root.path().join("prefix");
+    fs::create_dir_all(source.join("drive_c")).unwrap();
+    fs::write(
+        source.join("system.reg"),
+        "WINE REGISTRY Version 2\n\n#arch=win64\n",
+    )
+    .unwrap();
+    let mut command = f.wineo();
+    command
+        .args(["import", "prefix"])
+        .arg(&source)
+        .args(["--runner", "wine"]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Existing prefix [");
+    pty.send("");
+    pty.expect("Install name [prefix]: ");
+    pty.esc();
+    pty.expect("Existing prefix [");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(output.contains("Import canceled"), "{output}");
+    assert!(!f.registered("prefix"));
+}
+
+#[test]
+fn esc_backs_out_of_the_heroic_game_selection() {
+    let f = Fixture::new();
+    let prefix = f.root.path().join("heroic prefix");
+    fs::create_dir_all(prefix.join("drive_c/Games")).unwrap();
+    fs::write(
+        prefix.join("system.reg"),
+        "WINE REGISTRY Version 2\n#arch=win64\n",
+    )
+    .unwrap();
+    let heroic = heroic_library(&f, &prefix);
+    let mut command = f.wineo();
+    command.args(["import", "heroic", "--config-dir", heroic.to_str().unwrap()]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Which Heroic game?");
+    pty.expect("Esc back, Ctrl+C cancel");
+    pty.esc();
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(!f.registered("alpha"));
+    assert!(!f.registered("beta"));
+}
+
+#[test]
 fn guided_adoption_preserves_content_and_detects_the_existing_architecture() {
     let f = Fixture::new();
     let prefix = f.root.path().join("existing prefix");
@@ -788,7 +870,7 @@ fn guided_existing_executable_keeps_external_paths_and_argument_boundaries() {
     fs::write(&exe, b"existing executable").unwrap();
     let mut pty = f.new_guided(&[]);
     plain_answers(&mut pty, "external", "2");
-    pty.expect("Executable, or < to go back: ");
+    pty.expect("Executable: ");
     pty.send(&format!("'{}'", exe.display()));
     pty.expect("Ready to create external:");
     pty.expect("Choice [1]: ");
@@ -848,9 +930,9 @@ fn a_template_from_either_flag_is_prefilled_and_shown() {
     for (flag, name) in [("-t", "short"), ("--template", "long")] {
         let mut pty = f.new_guided(&[flag, "gaming"]);
         // The template came from the command line, so it isn't asked about.
-        pty.expect("Install name, or < to go back: ");
+        pty.expect("Install name: ");
         pty.send(name);
-        pty.expect("Prefix location, or < to go back [");
+        pty.expect("Prefix location [");
         pty.send("");
         pty.expect("  template  gaming (DXVK latest, vkd3d-proton latest, gamemode on)");
         pty.expect("Choice [1]: ");
@@ -874,20 +956,20 @@ fn a_template_from_either_flag_is_prefilled_and_shown() {
 fn a_missing_build_is_explained_with_a_way_back() {
     let f = Fixture::new();
     let mut pty = f.new_guided(&["-t", "gaming"]);
-    pty.expect("Install name, or < to go back: ");
+    pty.expect("Install name: ");
     pty.send("game");
-    pty.expect("Prefix location, or < to go back [");
+    pty.expect("Prefix location [");
     pty.send("");
-    pty.expect(
-        "No matching DXVK build is installed. Download the latest release? [Y/n], or < to go back: ",
-    );
+    pty.expect("No matching DXVK build is installed. Download the latest release? [Y/n]: ");
     pty.send("n");
     pty.expect("Can't use the gaming template: no dxvk builds are installed");
     // Nothing that can't work is offered, but going back is.
     pty.expect("  1) Change the runner");
+    pty.expect("Esc back, Ctrl+C cancel");
     pty.expect("Choice [1]: ");
     pty.send("b");
     pty.expect("Start from a template?");
+    pty.expect("Ctrl+C cancel");
     pty.expect("Template [2]: ");
     pty.send("q");
     pty.expect("Canceled. Nothing was created.");
@@ -911,9 +993,9 @@ fn explicit_flags_win_over_the_template() {
         "--runner",
         "wine",
     ]);
-    pty.expect("Install name, or < to go back [game]: ");
+    pty.expect("Install name [game]: ");
     pty.send("");
-    pty.expect("Prefix location, or < to go back [");
+    pty.expect("Prefix location [");
     pty.send("");
     pty.expect("  runner    wine (wine-fake)");
     pty.expect("Choice [1]: ");
@@ -930,9 +1012,9 @@ fn enter_takes_the_global_suggestions() {
     let mut pty = f.new_guided(&[]);
     pty.expect("Template [1]: ");
     pty.send("");
-    pty.expect("Install name, or < to go back: ");
+    pty.expect("Install name: ");
     pty.send("game");
-    pty.expect("Prefix location, or < to go back [");
+    pty.expect("Prefix location [");
     pty.send("");
     pty.expect("  runner    custom (wine-fake)");
     pty.expect("  arch      win64");
@@ -956,7 +1038,7 @@ fn guided_new_runs_the_installer_then_picks_what_it_installed() {
     fs::write(&installer, b"").unwrap();
     let mut pty = f.new_guided(&[]);
     plain_answers(&mut pty, "game", "1");
-    pty.expect("Installer, or < to go back: ");
+    pty.expect("Installer: ");
     pty.send(installer.to_str().unwrap());
     pty.expect("  program   run the installer ");
     pty.expect("Choice [1]: ");
@@ -995,7 +1077,7 @@ fn guided_new_reports_recovery_when_the_installer_disappears_after_creation() {
         .env("WINEO_TEST_REMOVE_INSTALLER", &installer);
     let mut pty = Pty::spawn(command);
     plain_answers(&mut pty, "game", "1");
-    pty.expect("Installer, or < to go back [");
+    pty.expect("Installer [");
     pty.send("");
     pty.expect("  program   run the installer");
     pty.expect("Choice [1]: ");
@@ -1027,7 +1109,7 @@ fn guided_new_reports_recovery_when_the_installer_cannot_spawn_after_creation() 
         .env("WINEO_TEST_REMOVE_WINE", f.root.path().join("bin/wine"));
     let mut pty = Pty::spawn(command);
     plain_answers(&mut pty, "game", "1");
-    pty.expect("Installer, or < to go back [");
+    pty.expect("Installer [");
     pty.send("");
     pty.expect("  program   run the installer");
     pty.expect("Choice [1]: ");
@@ -1057,7 +1139,7 @@ fn canceling_after_creation_keeps_the_environment() {
     fs::write(&installer, b"").unwrap();
     let mut pty = f.new_guided(&[]);
     plain_answers(&mut pty, "game", "1");
-    pty.expect("Installer, or < to go back: ");
+    pty.expect("Installer: ");
     pty.send(installer.to_str().unwrap());
     pty.expect("Choice [1]: ");
     pty.send("1");
@@ -1110,7 +1192,7 @@ fn a_registered_name_offers_setup_instead() {
     let mut pty = f.new_guided(&[]);
     pty.expect("Template [1]: ");
     pty.send("1");
-    pty.expect("Install name, or < to go back: ");
+    pty.expect("Install name: ");
     pty.send("app");
     pty.expect("app already exists.");
     pty.expect("  1) Set up app instead");
@@ -1160,10 +1242,10 @@ fn a_name_that_cant_be_used_reports_the_problem_concisely() {
     pty.expect("Template [1]: ");
     pty.send("1");
     pty.expect("Used in commands like `wineo start <name>`");
-    pty.expect("Install name, or < to go back: ");
+    pty.expect("Install name: ");
     pty.send("Stellar Blade");
     pty.expect("Invalid input: spaces not allowed.");
-    pty.expect("Install name, or < to go back: ");
+    pty.expect("Install name: ");
     pty.ctrl_c();
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
@@ -1175,9 +1257,9 @@ fn a_proton_runner_leaves_the_templates_dxvk_and_vkd3d_out() {
     f.install_proton("GE-Proton9-20");
     // No DXVK or vkd3d builds are installed, and none are needed.
     let mut pty = f.new_guided(&["-t", "gaming", "--runner", "GE-Proton9-20"]);
-    pty.expect("Install name, or < to go back: ");
+    pty.expect("Install name: ");
     pty.send("game");
-    pty.expect("Prefix location, or < to go back [");
+    pty.expect("Prefix location [");
     pty.send("");
     pty.expect("  template  gaming (gamemode on; no DXVK or vkd3d-proton, Proton has its own)");
     pty.expect("  1) Use these");
@@ -1203,13 +1285,13 @@ fn the_arrow_keys_and_word_deletion_edit_an_answer() {
     let mut pty = f.new_guided(&[]);
     pty.expect("Template [1]: ");
     pty.send("1");
-    pty.expect("Install name, or < to go back: ");
+    pty.expect("Install name: ");
     // `game Xx`, then Ctrl+W deletes `Xx`, and Left twice lands before the
     // `e` for an insert.
     pty.type_keys("game Xx");
     pty.type_keys("\x17");
     pty.type_keys("\x1b[D\x1b[D-2\r");
-    pty.expect("Prefix location, or < to go back [");
+    pty.expect("Prefix location [");
     pty.expect("/prefixes/gam-2e]: ");
     pty.ctrl_c();
     let (status, output) = pty.finish();

@@ -4,12 +4,17 @@
 
 use std::fmt;
 use std::io::{self, IsTerminal, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
 use rustyline::error::ReadlineError;
-use rustyline::{Cmd, DefaultEditor, EventHandler, KeyCode, KeyEvent, Modifiers, Movement, Word};
+use rustyline::{
+    Cmd, ConditionalEventHandler, Config, DefaultEditor, Event as KeyBindingEvent, EventContext,
+    EventHandler, KeyCode, KeyEvent, Modifiers, Movement, Word,
+};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::{Handle, Signals};
 
@@ -43,15 +48,16 @@ impl<T> Reply<T> {
     }
 }
 
-/// A line the user typed, or the end of input: EOF or an interrupt.
+/// A line the user typed, a back key, or the end of input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Line {
     Text(String),
+    Back,
     End,
 }
 
 pub trait Input {
-    /// The next line, asked for with `prompt`.
+    /// The next answer, asked for with `prompt`.
     fn line(&mut self, prompt: &str) -> io::Result<Line>;
 
     /// Whether `line` shows the prompt itself, as a line editor has to so it
@@ -164,7 +170,11 @@ impl<I: Input, W: Write> Prompt<I, W> {
     ) -> anyhow::Result<Reply<T>> {
         self.menu(heading, choices, back)?;
         loop {
-            let answer = self.ask(label, default)?;
+            let answer = match self.ask(label, default)? {
+                Reply::Value(answer) => answer,
+                Reply::Back if back => return Ok(Reply::Back),
+                Reply::Back => continue,
+            };
             if let Some(reply) = self.special(&answer, back)? {
                 return Ok(reply);
             }
@@ -187,7 +197,11 @@ impl<I: Input, W: Write> Prompt<I, W> {
     ) -> anyhow::Result<Reply<Picked<T>>> {
         self.menu(heading, choices, back)?;
         loop {
-            let answer = self.ask(label, default)?;
+            let answer = match self.ask(label, default)? {
+                Reply::Value(answer) => answer,
+                Reply::Back if back => return Ok(Reply::Back),
+                Reply::Back => continue,
+            };
             if let Some(reply) = self.special(&answer, back)? {
                 return Ok(reply);
             }
@@ -232,7 +246,11 @@ impl<I: Input, W: Write> Prompt<I, W> {
             self.say(note)?;
         }
         loop {
-            let answer = self.read(&format!("{label}: "))?;
+            let answer = match self.read(&format!("{label}: "))? {
+                Reply::Value(answer) => answer,
+                Reply::Back if back => return Ok(Reply::Back),
+                Reply::Back => continue,
+            };
             if answer.is_empty() {
                 return Ok(Reply::Value(None));
             }
@@ -246,7 +264,7 @@ impl<I: Input, W: Write> Prompt<I, W> {
         }
     }
 
-    /// A line of text. Enter takes `default`, and `<` goes back. `parse`
+    /// A line of text. Enter takes `default`, and Esc or `<` goes back. `parse`
     /// explains what is wrong with an answer, and the question is asked again.
     pub fn text<T>(
         &mut self,
@@ -254,9 +272,11 @@ impl<I: Input, W: Write> Prompt<I, W> {
         default: Option<&str>,
         mut parse: impl FnMut(&str) -> Result<T, String>,
     ) -> anyhow::Result<Reply<T>> {
-        let label = format!("{label}, or < to go back");
         loop {
-            let answer = self.ask(&label, default)?;
+            let answer = match self.ask(label, default)? {
+                Reply::Value(answer) => answer,
+                Reply::Back => return Ok(Reply::Back),
+            };
             if answer == "<" {
                 return Ok(Reply::Back);
             }
@@ -271,7 +291,10 @@ impl<I: Input, W: Write> Prompt<I, W> {
     pub fn confirm(&mut self, label: &str, default: bool) -> anyhow::Result<Reply<bool>> {
         let shown = if default { "Y/n" } else { "y/N" };
         loop {
-            let answer = self.read(&format!("{label} [{shown}], or < to go back: "))?;
+            let answer = match self.read(&format!("{label} [{shown}]: "))? {
+                Reply::Value(answer) => answer,
+                Reply::Back => return Ok(Reply::Back),
+            };
             match answer.to_ascii_lowercase().as_str() {
                 "" => return Ok(Reply::Value(default)),
                 "y" | "yes" => return Ok(Reply::Value(true)),
@@ -286,7 +309,10 @@ impl<I: Input, W: Write> Prompt<I, W> {
     pub fn list(&mut self, item: &str) -> anyhow::Result<Reply<Vec<String>>> {
         let mut values = Vec::new();
         loop {
-            let answer = self.read_raw(&format!("  {item} {}: ", values.len() + 1))?;
+            let answer = match self.read_raw(&format!("  {item} {}: ", values.len() + 1))? {
+                Reply::Value(answer) => answer,
+                Reply::Back => return Ok(Reply::Back),
+            };
             if values.is_empty() && answer.trim() == "<" {
                 return Ok(Reply::Back);
             }
@@ -307,9 +333,9 @@ impl<I: Input, W: Write> Prompt<I, W> {
             writeln!(self.out, "  {}) {}", choice.key, choice.label)?;
         }
         if back {
-            writeln!(self.out, "  b) back   q) cancel")
+            writeln!(self.out, "Esc back, Ctrl+C cancel")
         } else {
-            writeln!(self.out, "  q) cancel")
+            writeln!(self.out, "Ctrl+C cancel")
         }
     }
 
@@ -324,30 +350,35 @@ impl<I: Input, W: Write> Prompt<I, W> {
 
     /// Asks with the default shown, and returns the trimmed answer, or the
     /// default for an empty one.
-    fn ask(&mut self, label: &str, default: Option<&str>) -> anyhow::Result<String> {
+    fn ask(&mut self, label: &str, default: Option<&str>) -> anyhow::Result<Reply<String>> {
         let question = match default {
             Some(default) => format!("{label} [{default}]: "),
             None => format!("{label}: "),
         };
-        let answer = self.read(&question)?;
-        Ok(match (answer.is_empty(), default) {
-            (true, Some(default)) => default.to_owned(),
-            _ => answer,
-        })
+        Ok(self.read(&question)?.map(|answer| {
+            if answer.is_empty() {
+                default.unwrap_or_default().to_owned()
+            } else {
+                answer
+            }
+        }))
     }
 
-    fn read(&mut self, prompt: &str) -> anyhow::Result<String> {
-        Ok(self.read_raw(prompt)?.trim().to_owned())
+    fn read(&mut self, prompt: &str) -> anyhow::Result<Reply<String>> {
+        Ok(self
+            .read_raw(prompt)?
+            .map(|answer| answer.trim().to_owned()))
     }
 
-    /// A line as typed, without its newline. The end of input cancels.
-    fn read_raw(&mut self, prompt: &str) -> anyhow::Result<String> {
+    /// An answer as typed, without its newline. The end of input cancels.
+    fn read_raw(&mut self, prompt: &str) -> anyhow::Result<Reply<String>> {
         if !self.input.shows_prompt() {
             write!(self.out, "{prompt}")?;
             self.out.flush()?;
         }
         match self.input.line(prompt)? {
-            Line::Text(text) => Ok(text),
+            Line::Text(text) => Ok(Reply::Value(text)),
+            Line::Back => Ok(Reply::Back),
             Line::End => {
                 // The cursor is still on the question.
                 let _ = writeln!(self.out);
@@ -405,7 +436,7 @@ pub struct Terminal {
     requests: Sender<String>,
     /// A read still under way from a question an interrupt cut short.
     pending: bool,
-    stash: Option<io::Result<Option<String>>>,
+    stash: Option<io::Result<Line>>,
     signals: Handle,
     /// The terminal's settings before any question, put back when this goes,
     /// so leaving in the middle of one never leaves it in raw mode.
@@ -413,7 +444,7 @@ pub struct Terminal {
 }
 
 enum Event {
-    Line(io::Result<Option<String>>),
+    Line(io::Result<Line>),
     Interrupt,
 }
 
@@ -436,27 +467,32 @@ impl Terminal {
             let mut editor = line_editor().ok();
             while let Ok(prompt) = asked.recv() {
                 let event = match editor.as_mut() {
-                    Some(editor) => match editor.readline(&prompt) {
+                    Some((editor, back_key)) => match editor.readline(&prompt) {
                         Ok(line) => {
                             let _ = editor.add_history_entry(line.as_str());
-                            Event::Line(Ok(Some(line)))
+                            Event::Line(Ok(Line::Text(line)))
                         }
-                        // In raw mode Ctrl+C is a key, not a signal.
                         Err(ReadlineError::Interrupted | ReadlineError::Signal(_)) => {
-                            Event::Interrupt
+                            if back_key.swap(false, Ordering::SeqCst) {
+                                Event::Line(Ok(Line::Back))
+                            } else {
+                                Event::Interrupt
+                            }
                         }
-                        Err(ReadlineError::Eof) => Event::Line(Ok(None)),
+                        Err(ReadlineError::Eof) => Event::Line(Ok(Line::End)),
                         Err(err) => Event::Line(Err(io::Error::other(err))),
                     },
                     None => {
                         print!("{prompt}");
                         let _ = io::stdout().flush();
                         let mut line = String::new();
-                        Event::Line(
-                            io::stdin()
-                                .read_line(&mut line)
-                                .map(|read| (read > 0).then_some(line)),
-                        )
+                        Event::Line(io::stdin().read_line(&mut line).map(|read| {
+                            if read > 0 {
+                                Line::Text(line)
+                            } else {
+                                Line::End
+                            }
+                        }))
                     }
                 };
                 if sender.send(event).is_err() {
@@ -475,16 +511,30 @@ impl Terminal {
     }
 }
 
-/// Emacs-style editing, with Ctrl+Backspace deleting a word where the
-/// terminal sends it as its own key. One that sends plain `^H` can't be told
-/// apart from Backspace, and Alt+Backspace or Ctrl+W deletes a word instead.
-fn line_editor() -> rustyline::Result<DefaultEditor> {
-    let mut editor = DefaultEditor::new()?;
+struct BackKey(Arc<AtomicBool>);
+
+impl ConditionalEventHandler for BackKey {
+    fn handle(&self, _: &KeyBindingEvent, _: u16, _: bool, _: &EventContext) -> Option<Cmd> {
+        self.0.store(true, Ordering::SeqCst);
+        Some(Cmd::Interrupt)
+    }
+}
+
+fn line_editor() -> rustyline::Result<(DefaultEditor, Arc<AtomicBool>)> {
+    // A lone Esc needs a timeout to separate it from arrow and Alt sequences.
+    let config = Config::builder().keyseq_timeout(Some(500)).build();
+    let mut editor = DefaultEditor::with_config(config)?;
+    let back_key = Arc::new(AtomicBool::new(false));
+    editor.bind_sequence(
+        KeyEvent(KeyCode::Esc, Modifiers::NONE),
+        EventHandler::Conditional(Box::new(BackKey(back_key.clone()))),
+    );
+    // Terminals sending plain ^H cannot distinguish Ctrl+Backspace from Backspace.
     editor.bind_sequence(
         KeyEvent(KeyCode::Backspace, Modifiers::CTRL),
         EventHandler::Simple(Cmd::Kill(Movement::BackwardWord(1, Word::Emacs))),
     );
-    Ok(editor)
+    Ok((editor, back_key))
 }
 
 impl Input for Terminal {
@@ -504,7 +554,7 @@ impl Input for Terminal {
         };
         self.pending = false;
         Ok(match read? {
-            Some(mut text) => {
+            Line::Text(mut text) => {
                 if text.ends_with('\n') {
                     text.pop();
                     if text.ends_with('\r') {
@@ -513,7 +563,7 @@ impl Input for Terminal {
                 }
                 Line::Text(text)
             }
-            None => Line::End,
+            other => other,
         })
     }
 
@@ -567,6 +617,19 @@ impl Input for Script {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+
+    struct Lines(VecDeque<Line>);
+
+    impl Input for Lines {
+        fn line(&mut self, _prompt: &str) -> io::Result<Line> {
+            Ok(self.0.pop_front().unwrap_or(Line::End))
+        }
+    }
+
+    fn lines(answers: impl IntoIterator<Item = Line>) -> Prompt<Lines, Vec<u8>> {
+        Prompt::new(Lines(answers.into_iter().collect()), Vec::new())
+    }
 
     fn prompt(lines: &[&str]) -> Prompt<Script, Vec<u8>> {
         Prompt::new(Script::new(lines), Vec::new())
@@ -594,7 +657,7 @@ mod tests {
         assert_eq!(reply, Reply::Value("none"));
         assert_eq!(
             printed(&p),
-            "Choose a template:\n  1) None, choose each setting\n  2) gaming\n  p) enter a path\n  b) back   q) cancel\nTemplate [1]: "
+            "Choose a template:\n  1) None, choose each setting\n  2) gaming\n  p) enter a path\nEsc back, Ctrl+C cancel\nTemplate [1]: "
         );
     }
 
@@ -642,7 +705,7 @@ mod tests {
             .choose("Pick:", "Template", &menu(), None, false)
             .unwrap_err();
         assert!(err.is::<Canceled>());
-        assert!(printed(&p).contains("  q) cancel\n"));
+        assert!(printed(&p).contains("Ctrl+C cancel\n"));
         assert!(!printed(&p).contains("b) back"));
 
         // Running out of input is Ctrl+D, which cancels too.
@@ -650,6 +713,34 @@ mod tests {
             .choose("Pick:", "Template", &menu(), None, true)
             .unwrap_err();
         assert!(err.is::<Canceled>());
+    }
+
+    #[test]
+    fn back_key_returns_from_prompts_and_is_ignored_at_a_root_menu() {
+        let mut p = lines([Line::Back]);
+        assert_eq!(
+            p.choose("Pick:", "Template", &menu(), None, true).unwrap(),
+            Reply::Back
+        );
+
+        let mut p = lines([Line::Back, Line::Text("1".to_owned())]);
+        assert_eq!(
+            p.choose("Pick:", "Template", &menu(), None, false).unwrap(),
+            Reply::Value("none")
+        );
+
+        let mut p = lines([Line::Back]);
+        assert_eq!(
+            p.text("Name", None, |s| Ok::<_, String>(s.to_owned()))
+                .unwrap(),
+            Reply::Back
+        );
+
+        let mut p = lines([Line::Back]);
+        assert_eq!(p.confirm("Continue?", true).unwrap(), Reply::Back);
+
+        let mut p = lines([Line::Text("one".to_owned()), Line::Back]);
+        assert_eq!(p.list("argument").unwrap(), Reply::Back);
     }
 
     #[test]
@@ -667,7 +758,7 @@ mod tests {
         assert_eq!(reply, Reply::Value(None));
         assert_eq!(
             printed(&p),
-            "Review:\n  1) None, choose each setting\n  2) gaming\n  p) enter a path\n  b) back   q) cancel\nClose the game first.\nChoice, or Enter to import: "
+            "Review:\n  1) None, choose each setting\n  2) gaming\n  p) enter a path\nEsc back, Ctrl+C cancel\nClose the game first.\nChoice, or Enter to import: "
         );
     }
 
@@ -724,7 +815,7 @@ mod tests {
             reply,
             Reply::Value("/home/me/My Games/setup (1).exe".to_owned())
         );
-        assert_eq!(printed(&p), "Installer, or < to go back: ");
+        assert_eq!(printed(&p), "Installer: ");
     }
 
     #[test]
@@ -743,7 +834,7 @@ mod tests {
         );
         assert_eq!(p.text("Name", Some("hades"), parse).unwrap(), Reply::Back);
         let text = printed(&p);
-        assert!(text.contains("Name, or < to go back [hades]: "), "{text}");
+        assert!(text.contains("Name [hades]: "), "{text}");
         assert!(text.contains("`bad name` is not a valid name\n"), "{text}");
     }
 
@@ -760,7 +851,7 @@ mod tests {
         );
         assert_eq!(p.confirm("Desktop entry?", false).unwrap(), Reply::Back);
         assert!(printed(&p).contains("Answer y or n\n"));
-        assert!(printed(&p).contains("Desktop entry? [y/N], or < to go back: "));
+        assert!(printed(&p).contains("Desktop entry? [y/N]: "));
     }
 
     #[test]

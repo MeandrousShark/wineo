@@ -493,6 +493,14 @@ mod tests {
     use super::*;
     use crate::prompt::Script;
 
+    struct BackInput;
+
+    impl Input for BackInput {
+        fn line(&mut self, _prompt: &str) -> io::Result<prompt::Line> {
+            Ok(prompt::Line::Back)
+        }
+    }
+
     struct FixtureTransport(BTreeMap<String, Vec<u8>>);
 
     impl Transport for FixtureTransport {
@@ -607,6 +615,27 @@ mod tests {
             1
         );
         assert_eq!(output.matches("destination:").count(), 1);
+    }
+
+    #[test]
+    fn back_key_leaves_release_selection() {
+        let root = tempfile::tempdir().unwrap();
+        let client = fixture(&[vec!["v2.6"]]);
+        let mut prompt = Prompt::new(BackInput, Vec::new());
+        let cancellation = Cancellation::new().unwrap();
+        assert!(matches!(
+            pick_release(
+                &paths(root.path()),
+                &GlobalConfig::default(),
+                &mut prompt,
+                Provider::Dxvk,
+                &client,
+                &cancellation,
+                false,
+            )
+            .unwrap(),
+            Reply::Back
+        ));
     }
 
     #[test]

@@ -115,7 +115,7 @@ Palworld -> palworld
   6) name         palworld
   7) copy to      ~/.local/share/wineo/prefixes/palworld
   8) desktop      yes
-  b) back   q) cancel
+Esc back, Ctrl+C cancel
 Close Heroic and the game first.
 Choice, or Enter to import:
 ```
@@ -211,7 +211,8 @@ Proton-CachyOS releases:
   1) cachyos-11.0-20260703-slr  320 MiB  [latest]
   2) cachyos-11.0-20260612-slr  318 MiB
   3) cachyos-10.0-20260520-slr  301 MiB
-  m) more   b) back   q) cancel
+  m) more
+Esc back, Ctrl+C cancel
 Choice [1]:
 ```
 
