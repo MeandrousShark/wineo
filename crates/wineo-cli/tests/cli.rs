@@ -174,6 +174,23 @@ fn run_refuses_an_unsupported_environment_version() {
 }
 
 #[test]
+fn status_warns_about_an_unsupported_global_config() {
+    let root = tempfile::tempdir().unwrap();
+    let global = write_global(root.path(), "schema_version = 2\n");
+    write_environment(root.path(), "notepad", &env_toml("notepad"));
+    let result = output(wineo(root.path()).args(["status", "notepad"]));
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(
+        stderr(&result),
+        format!(
+            "warning: unsupported schema_version 2 in {}\n",
+            global.display()
+        )
+    );
+    assert!(stdout(&result).starts_with("notepad: inactive\n"));
+}
+
+#[test]
 fn set_needs_a_name_or_global_and_something_to_change() {
     let root = tempfile::tempdir().unwrap();
     let result = output(wineo(root.path()).args(["set", "runner=wine"]));

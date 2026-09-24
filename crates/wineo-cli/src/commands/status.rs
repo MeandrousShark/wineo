@@ -4,6 +4,7 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
+use wineo_core::error::Error;
 use wineo_core::paths::Paths;
 use wineo_core::report::{self, EnvironmentReport};
 use wineo_core::runtime::{RunMode, RunState, State};
@@ -34,7 +35,12 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         Some(name) => {
             let environment = Environment::load(paths, &name)?;
             // A broken global config only costs the runner version line.
-            let global = GlobalConfig::load(paths).unwrap_or_default();
+            let global = GlobalConfig::load(paths).unwrap_or_else(|err| {
+                if matches!(err, Error::SchemaVersion { .. }) {
+                    eprintln!("warning: {err}");
+                }
+                GlobalConfig::default()
+            });
             let report = EnvironmentReport::load(paths, &global, &environment)?;
             if args.json {
                 json::print(&NamedOutput::new(&report, &environment.config.runner))?;
