@@ -42,6 +42,8 @@ pub enum Operation {
     Install,
     /// Stopping what an installer left running when it could not finish.
     Cleanup,
+    /// Creating, restoring, deleting, or recovering a snapshot.
+    Snapshot,
 }
 
 impl Operation {
@@ -54,6 +56,7 @@ impl Operation {
             Operation::Launch => "launch",
             Operation::Install => "install",
             Operation::Cleanup => "cleanup",
+            Operation::Snapshot => "snapshot",
         }
     }
 
@@ -66,6 +69,7 @@ impl Operation {
             Operation::Launch,
             Operation::Install,
             Operation::Cleanup,
+            Operation::Snapshot,
         ]
         .into_iter()
         .find(|operation| operation.as_str() == word)
@@ -87,6 +91,7 @@ impl Operation {
             Operation::Launch => "a program is running in it",
             Operation::Install => "an installer is running in it",
             Operation::Cleanup => "what an installer left running is being stopped",
+            Operation::Snapshot => "a snapshot operation is running",
         }
     }
 }
@@ -186,6 +191,21 @@ impl Locks {
                 record(&file, &target.path, operation)?;
             }
             files.push((file, target.path.clone()));
+        }
+        if operation != Operation::Snapshot {
+            let marker = self.dir.join(crate::snapshot::marker_name(name));
+            match marker.symlink_metadata() {
+                Ok(_) => {
+                    return Err(Error::Busy {
+                        subject: format!("environment `{name}`"),
+                        holder: "an interrupted snapshot restore needs recovery",
+                    });
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(err).context(|| format!("failed to inspect {}", marker.display()));
+                }
+            }
         }
         Ok(Guard {
             files,
@@ -590,6 +610,34 @@ mod tests {
         assert_eq!(locks.dir, Path::new("/home/me/.local/state/wineo/.locks"));
         // `.locks` is not a valid environment name, so it can never be one.
         assert!(!crate::name::is_valid(".locks"));
+    }
+
+    #[test]
+    fn interrupted_restore_blocks_ordinary_operation_after_locking() {
+        let root = tempfile::tempdir().unwrap();
+        let locks = locks(root.path());
+        fs::create_dir_all(&locks.dir).unwrap();
+        fs::write(
+            locks.dir.join("snapshot-restore-game-restore.json"),
+            "marker",
+        )
+        .unwrap();
+        let prefix = root.path().join("prefix");
+        assert!(
+            locks
+                .acquire(Operation::Launch, "game", &[&prefix])
+                .is_err()
+        );
+        assert!(
+            locks
+                .acquire(Operation::Remove, "game", &[&prefix])
+                .is_err()
+        );
+        drop(
+            locks
+                .acquire(Operation::Snapshot, "game", &[&prefix])
+                .unwrap(),
+        );
     }
 
     #[test]

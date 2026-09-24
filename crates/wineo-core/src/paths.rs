@@ -58,6 +58,14 @@ impl Paths {
         self.environments_dir().join(format!("{name}.toml"))
     }
 
+    pub fn snapshot_root(&self, prefix: &Path, name: &str) -> PathBuf {
+        prefix
+            .parent()
+            .expect("a prefix root has a parent")
+            .join(".wineo-snapshots")
+            .join(name)
+    }
+
     /// The XDG applications directory. Desktop entries have to sit in the
     /// standard location, not under wineo's own data dir, or nothing reads them.
     pub fn applications_dir(&self) -> PathBuf {

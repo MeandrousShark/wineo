@@ -55,6 +55,7 @@ impl NewEnvironment {
 impl Environment {
     pub fn load_for_heroic_match(paths: &Paths, name: &str) -> Result<(Self, HeroicIdSnapshot)> {
         check_name(name)?;
+        crate::snapshot::check_recovery_marker(paths, name)?;
         let path = paths.environment_config(name);
         let mut file = match fs::File::open(&path) {
             Ok(file) => file,
@@ -87,6 +88,7 @@ impl Environment {
 
     pub fn load(paths: &Paths, name: &str) -> Result<Self> {
         check_name(name)?;
+        crate::snapshot::check_recovery_marker(paths, name)?;
         let path = paths.environment_config(name);
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
@@ -108,6 +110,7 @@ impl Environment {
     pub fn ensure_exists(paths: &Paths, name: &str) -> Result<()> {
         check_name(name)?;
         if paths.environment_config(name).is_file() {
+            crate::snapshot::check_recovery_marker(paths, name)?;
             Ok(())
         } else {
             Err(Error::UnknownEnvironment(name.to_owned()))
@@ -191,6 +194,7 @@ impl Environment {
         expected: &HeroicIdSnapshot,
     ) -> Result<()> {
         check_name(name)?;
+        crate::snapshot::check_recovery_marker(paths, name)?;
         let path = paths.environment_config(name);
         let _guard = Locks::new(paths).config(&path)?;
         let mut file = match fs::File::open(&path) {
