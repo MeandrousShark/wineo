@@ -4,13 +4,19 @@
 //! or `grid.jpg`, in the environment's art dir. A target can override any kind
 //! in a subdirectory named for it.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use serde::{Deserialize, Serialize};
+
+use crate::config::{self, SCHEMA_VERSION};
 use crate::error::{IoContext, Result};
+use crate::files::write_atomic;
+use crate::name;
 
 /// The largest art file wineo accepts.
 pub const MAX_BYTES: u64 = 32 * 1024 * 1024;
@@ -252,28 +258,288 @@ pub enum Origin {
     Target,
 }
 
+/// The art a kind resolves to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    pub origin: Origin,
+    pub found: Found,
+    /// None for a file `art.toml` does not record, which counts as manual
+    /// with an unknown origin.
+    pub source: Option<Source>,
+}
+
 /// The art `kind` resolves to for `target`, falling back to the environment's
-/// when the target does not override it. `recorded` gives each dir's recorded
-/// format for the kind.
+/// when the target does not override it.
 pub fn resolve(
     art_dir: &Path,
+    config: &ArtConfig,
     target: Option<&str>,
     kind: Kind,
-    recorded: impl Fn(Origin) -> Option<Format>,
-) -> Result<Option<(Origin, Found)>> {
+) -> Result<Option<Resolved>> {
+    let lookup = |origin, dir: &Path, target| -> Result<Option<Resolved>> {
+        let record = config.record(target, kind);
+        Ok(
+            find(dir, kind, record.map(|r| r.format))?.map(|found| Resolved {
+                origin,
+                source: record
+                    .filter(|r| r.format == found.format)
+                    .map(|r| r.source.clone()),
+                found,
+            }),
+        )
+    };
     if let Some(target) = target {
         let dir = target_dir(art_dir, target);
-        if let Some(found) = find(&dir, kind, recorded(Origin::Target))? {
-            return Ok(Some((Origin::Target, found)));
+        if let Some(resolved) = lookup(Origin::Target, &dir, Some(target))? {
+            return Ok(Some(resolved));
         }
     }
-    Ok(find(art_dir, kind, recorded(Origin::Environment))?
-        .map(|found| (Origin::Environment, found)))
+    lookup(Origin::Environment, art_dir, None)
+}
+
+/// The file in an environment's art dir that records where its art came from.
+pub const ART_FILE: &str = "art.toml";
+
+/// Where a piece of art came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// A SteamGridDB asset ID.
+    SteamGridDb(u64),
+    /// Set by hand from a file with this name.
+    Manual(String),
+}
+
+/// What `art.toml` says about one kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Record {
+    /// The stored file is the kind's file in this format.
+    pub format: Format,
+    pub source: Source,
+}
+
+pub type Records = BTreeMap<Kind, Record>;
+
+/// `art/<env>/art.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArtConfig {
+    /// 0 for a legacy or absent file. Checked by `parse`.
+    pub schema_version: u32,
+    /// The SteamGridDB game, shared by the environment and its targets.
+    pub game: Option<u64>,
+    pub kinds: Records,
+    pub targets: BTreeMap<String, Records>,
+}
+
+impl ArtConfig {
+    /// Loads an environment's `art.toml`, treating a missing file as one
+    /// that records nothing.
+    pub fn load(art_dir: &Path) -> Result<Self> {
+        let path = art_dir.join(ART_FILE);
+        match fs::read_to_string(&path) {
+            Ok(text) => Self::parse(&path, &text),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(err) => Err(err).context(|| format!("failed to read {}", path.display())),
+        }
+    }
+
+    /// `path` is only used for error messages.
+    pub fn parse(path: &Path, text: &str) -> Result<Self> {
+        config::check_schema(path, text)?;
+        let raw: RawArt = config::parse_toml(path, text)?;
+        raw.validate()
+            .map_err(|message| config::invalid(path, message))
+    }
+
+    /// Writes `art.toml` into `art_dir`, as the current version.
+    pub fn save(&self, art_dir: &Path) -> Result<()> {
+        let text = toml::to_string(&RawArt::from(self)).expect("art records always serialize");
+        write_atomic(&art_dir.join(ART_FILE), &text)
+    }
+
+    /// The records for `target`, or the environment's for None.
+    pub fn records(&self, target: Option<&str>) -> Option<&Records> {
+        match target {
+            Some(target) => self.targets.get(target),
+            None => Some(&self.kinds),
+        }
+    }
+
+    pub fn record(&self, target: Option<&str>, kind: Kind) -> Option<&Record> {
+        self.records(target)?.get(&kind)
+    }
+
+    /// Records `kind` for `target`, or forgets it when `record` is None.
+    pub fn set(&mut self, target: Option<&str>, kind: Kind, record: Option<Record>) {
+        let records = match target {
+            Some(target) => self.targets.entry(target.to_owned()).or_default(),
+            None => &mut self.kinds,
+        };
+        match record {
+            Some(record) => records.insert(kind, record),
+            None => records.remove(&kind),
+        };
+        self.targets.retain(|_, records| !records.is_empty());
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawArt {
+    #[serde(default)]
+    schema_version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    game: Option<u64>,
+    // Spelled out rather than a flattened `RawKinds`, since serde can't
+    // refuse unknown keys through `flatten`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon: Option<RawRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grid: Option<RawRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hero: Option<RawRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logo: Option<RawRecord>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    targets: BTreeMap<String, RawKinds>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawKinds {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon: Option<RawRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grid: Option<RawRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hero: Option<RawRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logo: Option<RawRecord>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRecord {
+    file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    steamgriddb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manual: Option<String>,
+}
+
+impl RawArt {
+    fn validate(self) -> Result<ArtConfig, String> {
+        let mut targets = BTreeMap::new();
+        for (name, kinds) in self.targets {
+            if !name::is_valid(&name) {
+                return Err(format!(
+                    "invalid target name `{name}`: use letters, digits, `-`, and `_`"
+                ));
+            }
+            let records = kinds.validate(&format!("targets.{name}."))?;
+            targets.insert(name, records);
+        }
+        let kinds = RawKinds {
+            icon: self.icon,
+            grid: self.grid,
+            hero: self.hero,
+            logo: self.logo,
+        };
+        Ok(ArtConfig {
+            schema_version: self.schema_version,
+            game: self.game,
+            kinds: kinds.validate("")?,
+            targets,
+        })
+    }
+}
+
+impl From<&ArtConfig> for RawArt {
+    fn from(config: &ArtConfig) -> Self {
+        let kinds = RawKinds::from(&config.kinds);
+        Self {
+            schema_version: SCHEMA_VERSION,
+            game: config.game,
+            icon: kinds.icon,
+            grid: kinds.grid,
+            hero: kinds.hero,
+            logo: kinds.logo,
+            targets: config
+                .targets
+                .iter()
+                .filter(|(_, records)| !records.is_empty())
+                .map(|(name, records)| (name.clone(), RawKinds::from(records)))
+                .collect(),
+        }
+    }
+}
+
+impl RawKinds {
+    fn slots(&mut self) -> [(Kind, &mut Option<RawRecord>); 4] {
+        [
+            (Kind::Icon, &mut self.icon),
+            (Kind::Grid, &mut self.grid),
+            (Kind::Hero, &mut self.hero),
+            (Kind::Logo, &mut self.logo),
+        ]
+    }
+
+    /// `prefix` places the tables in the file, for error messages.
+    fn validate(mut self, prefix: &str) -> Result<Records, String> {
+        let mut records = Records::new();
+        for (kind, slot) in self.slots() {
+            let Some(raw) = slot.take() else { continue };
+            let key = format!("{prefix}{kind}");
+            let format = Format::ALL
+                .into_iter()
+                .filter(|format| kind.accepts(*format))
+                .find(|format| kind.file_name(*format) == raw.file)
+                .ok_or_else(|| {
+                    let names: Vec<String> = Format::ALL
+                        .into_iter()
+                        .filter(|format| kind.accepts(*format))
+                        .map(|format| kind.file_name(format))
+                        .collect();
+                    format!("`{key}.file` must be one of {}", names.join(", "))
+                })?;
+            let source = match (raw.steamgriddb, raw.manual) {
+                (Some(asset), None) => Source::SteamGridDb(asset),
+                (None, Some(original)) => Source::Manual(original),
+                _ => {
+                    return Err(format!(
+                        "`{key}` needs exactly one of `steamgriddb` and `manual`"
+                    ));
+                }
+            };
+            records.insert(kind, Record { format, source });
+        }
+        Ok(records)
+    }
+}
+
+impl From<&Records> for RawKinds {
+    fn from(records: &Records) -> Self {
+        let mut raw = Self::default();
+        for (kind, slot) in raw.slots() {
+            *slot = records.get(&kind).map(|record| {
+                let (steamgriddb, manual) = match &record.source {
+                    Source::SteamGridDb(asset) => (Some(*asset), None),
+                    Source::Manual(original) => (None, Some(original.clone())),
+                };
+                RawRecord {
+                    file: kind.file_name(record.format),
+                    steamgriddb,
+                    manual,
+                }
+            });
+        }
+        raw
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Error;
 
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
     const JPEG: &[u8] = b"\xff\xd8\xff\xe0\0\x10JFIF\0";
@@ -447,42 +713,235 @@ mod tests {
         let env_icon = touch(art, "icon.png");
         let env_hero = touch(art, "hero.jpg");
         let target_icon = touch(&target_dir(art, "editor"), "icon.svg");
-        let none = |_| None;
+        let config = ArtConfig::default();
+        let at = |target, kind| {
+            resolve(art, &config, target, kind)
+                .unwrap()
+                .map(|r| (r.origin, r.found.path))
+        };
 
-        let (origin, found) = resolve(art, Some("editor"), Kind::Icon, none)
-            .unwrap()
-            .unwrap();
-        assert_eq!((origin, found.path), (Origin::Target, target_icon));
-        let (origin, found) = resolve(art, Some("editor"), Kind::Hero, none)
-            .unwrap()
-            .unwrap();
-        assert_eq!((origin, found.path), (Origin::Environment, env_hero));
-        let (origin, found) = resolve(art, None, Kind::Icon, none).unwrap().unwrap();
         assert_eq!(
-            (origin, found.path),
-            (Origin::Environment, env_icon.clone())
+            at(Some("editor"), Kind::Icon),
+            Some((Origin::Target, target_icon))
         );
-        let (origin, found) = resolve(art, Some("other"), Kind::Icon, none)
+        assert_eq!(
+            at(Some("editor"), Kind::Hero),
+            Some((Origin::Environment, env_hero))
+        );
+        assert_eq!(
+            at(None, Kind::Icon),
+            Some((Origin::Environment, env_icon.clone()))
+        );
+        assert_eq!(
+            at(Some("other"), Kind::Icon),
+            Some((Origin::Environment, env_icon))
+        );
+        assert_eq!(at(Some("editor"), Kind::Logo), None);
+    }
+
+    const EXAMPLE: &str = "schema_version = 1
+game = 5247
+
+[icon]
+file = \"icon.png\"
+steamgriddb = 36952
+
+[grid]
+file = \"grid.jpg\"
+manual = \"poster final.jpg\"
+
+[targets.server.icon]
+file = \"icon.svg\"
+manual = \"server.svg\"
+";
+
+    fn example() -> ArtConfig {
+        ArtConfig::parse(Path::new("art.toml"), EXAMPLE).unwrap()
+    }
+
+    fn manual(format: Format, original: &str) -> Record {
+        Record {
+            format,
+            source: Source::Manual(original.to_owned()),
+        }
+    }
+
+    #[test]
+    fn the_plan_example_parses() {
+        let config = example();
+        assert_eq!(config.schema_version, 1);
+        assert_eq!(config.game, Some(5247));
+        assert_eq!(
+            config.record(None, Kind::Icon),
+            Some(&Record {
+                format: Format::Png,
+                source: Source::SteamGridDb(36952),
+            })
+        );
+        assert_eq!(
+            config.record(None, Kind::Grid),
+            Some(&manual(Format::Jpeg, "poster final.jpg"))
+        );
+        assert_eq!(config.record(None, Kind::Hero), None);
+        assert_eq!(
+            config.record(Some("server"), Kind::Icon),
+            Some(&manual(Format::Svg, "server.svg"))
+        );
+        assert_eq!(config.record(Some("server"), Kind::Grid), None);
+        assert_eq!(config.record(Some("other"), Kind::Icon), None);
+    }
+
+    #[test]
+    fn saving_writes_the_current_version_and_round_trips() {
+        let root = tempfile::tempdir().unwrap();
+        let art = root.path().join("hades");
+        let mut config = example();
+        config.save(&art).unwrap();
+        let text = fs::read_to_string(art.join(ART_FILE)).unwrap();
+        assert_eq!(text, EXAMPLE);
+        assert_eq!(ArtConfig::load(&art).unwrap(), config);
+
+        config.schema_version = 0;
+        config.set(Some("server"), Kind::Icon, None);
+        config.save(&art).unwrap();
+        let text = fs::read_to_string(art.join(ART_FILE)).unwrap();
+        assert!(text.starts_with("schema_version = 1\n"), "{text}");
+        assert!(!text.contains("targets"), "{text}");
+    }
+
+    #[test]
+    fn set_records_and_forgets_kinds() {
+        let mut config = ArtConfig::default();
+        config.set(
+            Some("server"),
+            Kind::Logo,
+            Some(manual(Format::Webp, "l.webp")),
+        );
+        assert_eq!(
+            config.record(Some("server"), Kind::Logo),
+            Some(&manual(Format::Webp, "l.webp"))
+        );
+        config.set(Some("server"), Kind::Logo, None);
+        assert!(config.targets.is_empty());
+        config.set(None, Kind::Hero, Some(manual(Format::Png, "h.png")));
+        assert_eq!(config.kinds.len(), 1);
+    }
+
+    #[test]
+    fn an_absent_art_toml_records_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(ArtConfig::load(root.path()).unwrap(), ArtConfig::default());
+        assert_eq!(
+            ArtConfig::load(&root.path().join("absent")).unwrap(),
+            ArtConfig::default()
+        );
+    }
+
+    #[test]
+    fn a_missing_schema_version_is_legacy() {
+        let text = "[logo]\nfile = \"logo.png\"\nsteamgriddb = 1\n";
+        let config = ArtConfig::parse(Path::new("art.toml"), text).unwrap();
+        assert_eq!(config.schema_version, 0);
+        assert!(config.record(None, Kind::Logo).is_some());
+    }
+
+    #[test]
+    fn unsupported_schema_versions_are_refused() {
+        for version in ["0", "2", "\"1\"", "1.0"] {
+            let text = format!("schema_version = {version}\n");
+            let err = ArtConfig::parse(Path::new("art.toml"), &text).unwrap_err();
+            assert!(
+                matches!(err, Error::SchemaVersion { .. }),
+                "{version}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_or_missing_keys_are_refused() {
+        for text in [
+            "schema_version = 1\ncolor = 1\n",
+            "[icon]\nfile = \"icon.png\"\nmanual = \"a\"\nscore = 3\n",
+            "[banner]\nfile = \"banner.png\"\nmanual = \"a\"\n",
+            "[targets.server.banner]\nfile = \"banner.png\"\nmanual = \"a\"\n",
+            "[icon]\nmanual = \"a\"\n",
+            "game = -1\n",
+        ] {
+            let err = ArtConfig::parse(Path::new("art.toml"), text).unwrap_err();
+            assert!(matches!(err, Error::ConfigSyntax { .. }), "{text}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_kind_needs_exactly_one_source_and_a_valid_file() {
+        for text in [
+            "[icon]\nfile = \"icon.png\"\n",
+            "[icon]\nfile = \"icon.png\"\nsteamgriddb = 1\nmanual = \"a\"\n",
+            "[targets.server.hero]\nfile = \"hero.png\"\n",
+            "[icon]\nfile = \"icon.webp\"\nmanual = \"a\"\n",
+            "[icon]\nfile = \"grid.png\"\nmanual = \"a\"\n",
+            "[icon]\nfile = \"../icon.png\"\nmanual = \"a\"\n",
+            "[grid]\nfile = \"grid.jpeg\"\nmanual = \"a\"\n",
+            "[targets.\"bad.name\".icon]\nfile = \"icon.png\"\nmanual = \"a\"\n",
+        ] {
+            let err = ArtConfig::parse(Path::new("art.toml"), text).unwrap_err();
+            assert!(matches!(err, Error::ConfigInvalid { .. }), "{text}: {err}");
+        }
+    }
+
+    #[test]
+    fn recorded_files_win_and_others_are_unrecorded() {
+        let root = tempfile::tempdir().unwrap();
+        let art = root.path();
+        let png = touch(art, "grid.png");
+        let jpg = touch(art, "grid.jpg");
+        let config = example();
+
+        let grid = resolve(art, &config, None, Kind::Grid).unwrap().unwrap();
+        assert_eq!(grid.found.path, jpg);
+        assert_eq!(grid.found.duplicates, vec![png.clone()]);
+        assert_eq!(grid.source, Some(Source::Manual("poster final.jpg".into())));
+
+        // The recorded file is gone, so what is left is unrecorded.
+        fs::remove_file(&jpg).unwrap();
+        let grid = resolve(art, &config, None, Kind::Grid).unwrap().unwrap();
+        assert_eq!((grid.found.path, grid.source), (png, None));
+
+        let hero = touch(art, "hero.webp");
+        let resolved = resolve(art, &config, None, Kind::Hero).unwrap().unwrap();
+        assert_eq!((resolved.found.path, resolved.source), (hero, None));
+        let resolved = resolve(art, &ArtConfig::default(), None, Kind::Grid)
             .unwrap()
             .unwrap();
-        assert_eq!((origin, found.path), (Origin::Environment, env_icon));
-        assert_eq!(
-            resolve(art, Some("editor"), Kind::Logo, none).unwrap(),
-            None
-        );
+        assert_eq!(resolved.source, None);
     }
 
     #[test]
     fn each_dir_uses_its_own_record() {
         let root = tempfile::tempdir().unwrap();
         let art = root.path();
-        let target = target_dir(art, "editor");
-        touch(&target, "logo.png");
-        let webp = touch(&target, "logo.webp");
-        let recorded = |origin| (origin == Origin::Target).then_some(Format::Webp);
-        let (_, found) = resolve(art, Some("editor"), Kind::Logo, recorded)
+        let env_png = touch(art, "icon.png");
+        let target = target_dir(art, "server");
+        touch(&target, "icon.png");
+        let svg = touch(&target, "icon.svg");
+        let config = example();
+
+        let icon = resolve(art, &config, Some("server"), Kind::Icon)
             .unwrap()
             .unwrap();
-        assert_eq!(found.path, webp);
+        assert_eq!(icon.origin, Origin::Target);
+        assert_eq!(icon.found.path, svg);
+        assert_eq!(icon.source, Some(Source::Manual("server.svg".into())));
+
+        let icon = resolve(art, &config, None, Kind::Icon).unwrap().unwrap();
+        assert_eq!(icon.found.path, env_png);
+        assert_eq!(icon.source, Some(Source::SteamGridDb(36952)));
+
+        // The target records its SVG, so its leftover PNG is unrecorded.
+        fs::remove_file(&svg).unwrap();
+        let icon = resolve(art, &config, Some("server"), Kind::Icon)
+            .unwrap()
+            .unwrap();
+        assert_eq!((icon.origin, icon.source), (Origin::Target, None));
     }
 }

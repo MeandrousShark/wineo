@@ -282,14 +282,14 @@ pub(crate) fn stamp_schema(doc: &mut DocumentMut) {
     }
 }
 
-fn parse_toml<T: serde::de::DeserializeOwned>(path: &Path, text: &str) -> Result<T> {
+pub(crate) fn parse_toml<T: serde::de::DeserializeOwned>(path: &Path, text: &str) -> Result<T> {
     toml::from_str(text).map_err(|source| Error::ConfigSyntax {
         path: path.to_owned(),
         source: Box::new(source),
     })
 }
 
-fn invalid(path: &Path, message: String) -> Error {
+pub(crate) fn invalid(path: &Path, message: String) -> Error {
     Error::ConfigInvalid {
         path: path.to_owned(),
         message,
