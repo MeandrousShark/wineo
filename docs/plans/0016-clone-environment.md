@@ -31,7 +31,9 @@ regular files when supported, with a normal copy when they are not.
 - Add `wineo clone SOURCE NEW_NAME [--dir PATH]`. Both names are required, so
   the command works without a terminal. Shell completion offers existing
   environments for SOURCE. The destination defaults to the configured prefix
-  root plus NEW_NAME. `--dir` selects a different new prefix directory.
+  root plus NEW_NAME. `--dir` selects a different new prefix directory. If
+  either name is missing, Clap reports the missing argument and prints usage;
+  clone does not start a guided flow or write anything.
 - For example, `wineo clone zomboid zomboid_modded` copies to
   `~/.local/share/wineo/prefixes/zomboid_modded` when the prefix root has its
   default value. Use `--dir ~/somewhere/zomboid_modded` only to override that
@@ -108,7 +110,8 @@ regular files when supported, with a normal copy when they are not.
   success and fallback; collisions, overlap, unsafe runtime state, source
   changes, cancellation, and failed registration recovery.
 - CLI tests with isolated XDG roots and fake runners show a complete clone,
-  unchanged source config and prefix, no Wine launch, and correct removal.
+  unchanged source config and prefix, no Wine launch, correct removal, and a
+  usage error with no writes when NEW_NAME is missing.
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`
   pass. Run applicable ignored tests and independent QA before shipping.
 - The maintainer authorized using Dispatch or Zomboid for testing. Clone one
