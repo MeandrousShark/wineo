@@ -319,9 +319,15 @@ fn links_in_snapshots_follow_the_copied_prefix() {
         &["snapshot", "restore", "game", "one", "--yes"],
     ));
     let live = dir.join("prefixes/game/drive_c");
+    // Restoring inside a portable folder writes the link relative, and it
+    // resolves into the portable prefix.
     assert_eq!(
         fs::read_link(live.join("live")).unwrap(),
-        live.join("game.exe")
+        Path::new("game.exe")
+    );
+    assert_eq!(
+        fs::canonicalize(live.join("live")).unwrap(),
+        fs::canonicalize(live.join("game.exe")).unwrap()
     );
     assert_eq!(
         fs::read_link(live.join("outside")).unwrap(),
