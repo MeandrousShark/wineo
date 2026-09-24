@@ -23,6 +23,9 @@ pub enum Error {
     #[error("portable prefixes must be inside {}", .0.display())]
     PrefixOutsidePortable(PathBuf),
 
+    #[error("{} can't be used in a desktop entry", .0.display())]
+    DesktopPath(PathBuf),
+
     #[error("{} is not valid UTF-8, which config files require", .0.display())]
     NonUtf8Path(PathBuf),
 
