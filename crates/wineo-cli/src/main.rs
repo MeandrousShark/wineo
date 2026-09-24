@@ -26,6 +26,8 @@ struct Cli {
 enum Command {
     /// Create an environment, asking for what it needs unless given a name
     New(commands::new::Args),
+    /// Copy an environment and its prefix under a new name
+    Clone(commands::clone::Args),
     /// Change settings of an environment, or the global config
     Set(commands::set::Args),
     /// Pick, edit, and remove an environment's targets, or run an installer in it
@@ -101,6 +103,7 @@ fn run() -> anyhow::Result<ExitCode> {
     let verbose = cli.verbose;
     match cli.command {
         Command::New(args) => commands::new::run(&paths, args),
+        Command::Clone(args) => commands::clone::run(&paths, args),
         Command::Set(args) => commands::set::run(&paths, args),
         Command::Setup(args) => commands::setup::run(&paths, args),
         Command::Config(args) => commands::config::run(&paths, args),

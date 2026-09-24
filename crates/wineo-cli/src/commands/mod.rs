@@ -1,4 +1,5 @@
 pub mod builds;
+pub mod clone;
 pub mod completions;
 pub mod components;
 pub mod config;

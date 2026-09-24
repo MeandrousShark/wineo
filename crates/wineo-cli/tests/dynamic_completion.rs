@@ -54,6 +54,7 @@ fn fish_completes_environment_positions_and_filters_prefix() {
     fixture(root.path());
     for command in [
         "setup",
+        "clone",
         "config",
         "start",
         "stop",
@@ -85,6 +86,7 @@ fn fish_omits_environment_names_in_other_positions() {
     fixture(root.path());
     for words in [
         vec!["wineo", "new", "ha"],
+        vec!["wineo", "clone", "hades", "ha"],
         vec!["wineo", "set", "--global", "ha"],
         vec!["wineo", "set", "hades", "ha"],
         vec!["wineo", "run", "hades", "--", "ha"],
