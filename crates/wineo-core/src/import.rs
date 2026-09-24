@@ -702,33 +702,57 @@ pub(crate) fn copy_tree(
     cancel: &AtomicBool,
     progress: &mut impl FnMut(ImportProgress),
 ) -> Result<()> {
+    copy_tree_with_reflink_mode(source, destination, final_root, cancel, progress, false)
+}
+
+pub(crate) fn copy_tree_strict_reflink(
+    source: &Path,
+    destination: &Path,
+    final_root: &Path,
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(ImportProgress),
+) -> Result<()> {
+    copy_tree_with_reflink_mode(source, destination, final_root, cancel, progress, true)
+}
+
+fn copy_tree_with_reflink_mode(
+    source: &Path,
+    destination: &Path,
+    final_root: &Path,
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(ImportProgress),
+    strict_reflink: bool,
+) -> Result<()> {
     let total = fingerprint(source)?.entries;
     progress(ImportProgress::Started { entries: total });
     fs::create_dir_all(destination)
         .with_context(|| format!("failed to create {}", destination.display()))?;
     let mut hardlinks = HashMap::new();
-    copy_entry(
-        source,
-        destination,
-        source,
+    let options = CopyOptions {
+        source_root: source,
         final_root,
         cancel,
-        progress,
-        &mut hardlinks,
-    )?;
+        strict_reflink,
+    };
+    copy_entry(source, destination, &options, progress, &mut hardlinks)?;
     Ok(())
+}
+
+struct CopyOptions<'a> {
+    source_root: &'a Path,
+    final_root: &'a Path,
+    cancel: &'a AtomicBool,
+    strict_reflink: bool,
 }
 
 fn copy_entry(
     source: &Path,
     destination: &Path,
-    source_root: &Path,
-    final_root: &Path,
-    cancel: &AtomicBool,
+    options: &CopyOptions<'_>,
     progress: &mut impl FnMut(ImportProgress),
     hardlinks: &mut HashMap<(u64, u64), PathBuf>,
 ) -> Result<()> {
-    check_cancelled(cancel)?;
+    check_cancelled(options.cancel)?;
     let metadata = fs::symlink_metadata(source)
         .with_context(|| format!("failed to inspect {}", source.display()))?;
     let kind = metadata.file_type();
@@ -736,10 +760,12 @@ fn copy_entry(
         let target = fs::read_link(source)
             .with_context(|| format!("failed to read link {}", source.display()))?;
         let resolved = resolve_link(source, &target);
-        let target = if resolved.starts_with(source_root) {
+        let target = if resolved.starts_with(options.source_root) {
             if target.is_absolute() {
-                let relative = resolved.strip_prefix(source_root).unwrap_or(Path::new(""));
-                lexical_normalize(&final_root.join(relative))
+                let relative = resolved
+                    .strip_prefix(options.source_root)
+                    .unwrap_or(Path::new(""));
+                lexical_normalize(&options.final_root.join(relative))
             } else {
                 target
             }
@@ -752,7 +778,7 @@ fn copy_entry(
         std::os::unix::fs::symlink(&target, destination)
             .with_context(|| format!("failed to copy link {}", source.display()))?;
     } else if kind.is_dir() {
-        if source != source_root {
+        if source != options.source_root {
             fs::create_dir(destination)
                 .with_context(|| format!("failed to create {}", destination.display()))?;
         }
@@ -769,9 +795,7 @@ fn copy_entry(
             copy_entry(
                 &child,
                 &destination.join(name),
-                source_root,
-                final_root,
-                cancel,
+                options,
                 progress,
                 hardlinks,
             )?;
@@ -784,7 +808,11 @@ fn copy_entry(
                 format!("failed to preserve hardlink {}", destination.display())
             })?;
         } else {
-            copy_regular_file(source, destination)?;
+            if options.strict_reflink {
+                copy_regular_file_strict(source, destination)?;
+            } else {
+                copy_regular_file(source, destination)?;
+            }
             hardlinks.insert(key, destination.to_owned());
         }
         copy_metadata(&metadata, destination)?;
@@ -808,6 +836,24 @@ fn copy_regular_file_with(
     destination: &Path,
     reflink: impl FnOnce(&mut File, &mut File) -> rustix::io::Result<()>,
 ) -> Result<()> {
+    copy_regular_file_with_mode(source, destination, reflink, false)
+}
+
+fn copy_regular_file_strict(source: &Path, destination: &Path) -> Result<()> {
+    copy_regular_file_with_mode(
+        source,
+        destination,
+        |output, input| ioctl_ficlone(output, input),
+        true,
+    )
+}
+
+fn copy_regular_file_with_mode(
+    source: &Path,
+    destination: &Path,
+    reflink: impl FnOnce(&mut File, &mut File) -> rustix::io::Result<()>,
+    strict_reflink: bool,
+) -> Result<()> {
     let mut input =
         File::open(source).with_context(|| format!("failed to open {}", source.display()))?;
     let mut output = OpenOptions::new()
@@ -817,6 +863,21 @@ fn copy_regular_file_with(
         .with_context(|| format!("failed to create {}", destination.display()))?;
     match reflink(&mut output, &mut input) {
         Ok(()) => Ok(()),
+        Err(err)
+            if strict_reflink
+                && matches!(
+                    err,
+                    Errno::OPNOTSUPP | Errno::NOTTY | Errno::XDEV | Errno::INVAL | Errno::NOSYS
+                ) =>
+        {
+            Err(anyhow!(err)).with_context(|| {
+                format!(
+                    "filesystem does not support reflinks from {} to {}",
+                    source.display(),
+                    destination.display()
+                )
+            })
+        }
         Err(Errno::OPNOTSUPP | Errno::NOTTY | Errno::XDEV | Errno::INVAL | Errno::NOSYS) => {
             fs::copy(source, destination)
                 .with_context(|| format!("failed to copy {}", source.display()))?;
@@ -1625,6 +1686,25 @@ mod tests {
         let error = copy_regular_file_with(&source, &failed, |_, _| Err(Errno::IO)).unwrap_err();
         assert!(error.to_string().contains("failed to reflink"));
         assert_eq!(fs::metadata(&failed).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn strict_reflink_copy_fails_when_reflinks_are_unsupported() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::write(&source, b"contents").unwrap();
+        let destination = root.path().join("destination");
+
+        let error =
+            copy_regular_file_with_mode(&source, &destination, |_, _| Err(Errno::OPNOTSUPP), true)
+                .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("filesystem does not support reflinks")
+        );
+        assert_eq!(fs::metadata(destination).unwrap().len(), 0);
     }
 
     #[test]
