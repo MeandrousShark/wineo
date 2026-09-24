@@ -693,7 +693,7 @@ fn existing_environments(paths: &Paths) -> anyhow::Result<Vec<ExistingEnvironmen
             .config
             .targets
             .values()
-            .filter_map(|target| paths.absolute(&target.exe).ok())
+            .filter_map(|target| paths.resolve_stored(&target.exe).ok().flatten())
             .map(|exe| wineo_core::paths::resolve(&exe))
             .collect();
         found.push(ExistingEnvironment {

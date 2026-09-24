@@ -331,6 +331,7 @@ fn ask_location<I: Input, W: Write>(
     let reply = prompt.text("Prefix location", Some(&suggested), |answer| {
         let answer = &picker::clean_path(answer);
         let dir = paths.absolute(answer).map_err(|err| err.to_string())?;
+        paths.check_prefix(&dir).map_err(|err| err.to_string())?;
         match fs::read_dir(&dir).map(|mut entries| entries.next().is_some()) {
             Ok(true) if !prefix::holds_prefix(&dir) => {
                 Err("Not empty, and not a wine prefix.".to_owned())
@@ -692,7 +693,7 @@ fn ask_how<I: Input, W: Write>(
                             wine_prefix
                                 .as_deref()
                                 .and_then(|wine_prefix| winpath::from_unix(wine_prefix, &unix))
-                                .or_else(|| paths.contract(&unix).ok())
+                                .or_else(|| paths.store(&unix).ok())
                                 .unwrap_or_else(|| unix.display().to_string())
                         })
                     })?

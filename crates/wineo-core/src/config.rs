@@ -201,14 +201,14 @@ impl GlobalConfig {
 
     pub fn prefix_root(&self, paths: &Paths) -> Result<std::path::PathBuf> {
         match &self.defaults.prefix_root {
-            Some(root) => paths.absolute(root),
+            Some(root) => paths.config_path(root),
             None => Ok(paths.default_prefix_root()),
         }
     }
 
     pub fn runner_root(&self, paths: &Paths) -> Result<std::path::PathBuf> {
         match &self.defaults.runner_root {
-            Some(root) => paths.absolute(root),
+            Some(root) => paths.config_path(root),
             None => Ok(paths.default_runner_root()),
         }
     }

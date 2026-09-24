@@ -55,8 +55,13 @@ pub fn update(
     for (key, value) in set {
         let value = match (scope, *key) {
             // Stored the same way `wineo new` writes them.
-            (Scope::Environment, "prefix") | (Scope::Global, "defaults.prefix_root") => {
-                paths.contract(&paths.absolute(value)?)?
+            (Scope::Environment, "prefix") => paths.store_prefix(&paths.absolute(value)?)?,
+            (Scope::Global, "defaults.prefix_root") => paths.store(&paths.absolute(value)?)?,
+            (Scope::Environment, key)
+                if key.starts_with("targets.")
+                    && (key.ends_with(".exe") || key.ends_with(".cwd")) =>
+            {
+                paths.store_value(value)?
             }
             _ => (*value).to_owned(),
         };

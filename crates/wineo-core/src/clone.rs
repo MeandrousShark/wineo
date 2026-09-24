@@ -54,7 +54,9 @@ pub fn inspect(
         .with_context(|| format!("failed to read {}", source_path.display()))?;
     let config =
         EnvironmentConfig::parse(&source_path, &source_config).map_err(|err| anyhow!(err))?;
-    let configured_root = paths.absolute(&config.prefix).map_err(|err| anyhow!(err))?;
+    let configured_root = paths
+        .config_path(&config.prefix)
+        .map_err(|err| anyhow!(err))?;
     let runner = if import::root_layout_ambiguous(&configured_root) {
         Some(
             Runners::new(paths, global)
@@ -79,6 +81,7 @@ pub fn inspect(
                 .join(new_name),
         ),
     };
+    paths.check_prefix(&destination)?;
     import::reject_overlapping_paths(&source_root, &destination)?;
     if destination.exists() {
         bail!(
@@ -106,8 +109,10 @@ pub fn inspect(
     for (key, target) in &config.targets {
         for (field, raw) in [("exe", Some(&target.exe)), ("cwd", target.cwd.as_ref())] {
             let Some(raw) = raw else { continue };
-            let path = paths.expand(raw);
-            if path.is_absolute() && !paths::resolve(&path).starts_with(&source_root) {
+            let Some(path) = stored_path(paths, raw) else {
+                continue;
+            };
+            if !paths::resolve(&path).starts_with(&source_root) {
                 external_target_paths.push(format!("targets.{key}.{field}: {raw}"));
             }
         }
@@ -288,7 +293,9 @@ fn transform_config(
     destination: &Path,
 ) -> Result<String> {
     let mut doc: DocumentMut = source.parse()?;
-    let prefix = paths.contract(destination).map_err(|err| anyhow!(err))?;
+    let prefix = paths
+        .store_prefix(destination)
+        .map_err(|err| anyhow!(err))?;
     edit::store_value(doc.as_table_mut(), "prefix", Value::from(prefix));
     doc.as_table_mut().remove("heroic_id");
     if let Some(targets) = doc
@@ -301,7 +308,11 @@ fn transform_config(
                 .and_then(|item| item.as_table_like_mut())
                 .ok_or_else(|| anyhow!("target `{name}` has an unsupported TOML shape"))?;
             for (field, old) in [("exe", Some(&target.exe)), ("cwd", target.cwd.as_ref())] {
-                if let Some(old) = old.and_then(|old| rebase(old, source_root, destination)) {
+                if let Some(old) = old
+                    .map(|old| rebase(paths, old, source_root, destination))
+                    .transpose()?
+                    .flatten()
+                {
                     replace_existing(table, field, Value::from(old))?;
                 }
             }
@@ -326,15 +337,39 @@ fn replace_existing(table: &mut dyn TableLike, field: &str, mut new: Value) -> R
     Ok(())
 }
 
-fn rebase(value: &str, source_root: &Path, destination: &Path) -> Option<String> {
-    let path = Path::new(value);
-    if !path.is_absolute() {
-        return None;
+/// Where a target path points, for the paths that can point into a prefix.
+/// Outside portable mode only absolute paths and `~/...` qualify, as before.
+fn stored_path(paths: &Paths, value: &str) -> Option<PathBuf> {
+    if paths.portable_root().is_some() {
+        return paths.resolve_stored(value).ok().flatten();
     }
-    paths::resolve(path)
+    let path = paths.expand(value);
+    path.is_absolute().then_some(path)
+}
+
+fn rebase(
+    paths: &Paths,
+    value: &str,
+    source_root: &Path,
+    destination: &Path,
+) -> Result<Option<String>> {
+    if paths.portable_root().is_none() && !Path::new(value).is_absolute() {
+        return Ok(None);
+    }
+    let Some(path) = stored_path(paths, value) else {
+        return Ok(None);
+    };
+    let Ok(relative) = paths::resolve(&path)
         .strip_prefix(source_root)
-        .ok()
-        .map(|relative| destination.join(relative).to_string_lossy().into_owned())
+        .map(Path::to_owned)
+    else {
+        return Ok(None);
+    };
+    let rebased = destination.join(relative);
+    if paths.portable_root().is_some() {
+        return paths.store(&rebased).map(Some).map_err(|err| anyhow!(err));
+    }
+    Ok(Some(rebased.to_string_lossy().into_owned()))
 }
 
 fn absolute(path: &Path) -> Result<PathBuf> {

@@ -266,7 +266,12 @@ fn resolve_program(
         });
     }
 
-    let unix = paths.absolute(exe)?;
+    // A target comes from a config, so it resolves the way config paths do.
+    let unix = if relative_to_cwd {
+        paths.absolute(exe)?
+    } else {
+        paths.config_path(exe)?
+    };
     if !unix.is_file() {
         return Err(not_found());
     }
@@ -324,7 +329,7 @@ fn resolve_cwd(paths: &Paths, prefix: &Path, cwd: &str) -> Result<PathBuf> {
     let dir = if winpath::is_windows_path(cwd) {
         winpath::to_unix(prefix, cwd)
     } else {
-        Some(paths.absolute(cwd)?)
+        Some(paths.config_path(cwd)?)
     };
     dir.filter(|dir| dir.is_dir())
         .ok_or_else(|| Error::CwdNotFound(cwd.to_owned()))

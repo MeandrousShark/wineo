@@ -683,7 +683,7 @@ fn config_path(place: &Place, unix: &Path) -> String {
         .wine_prefix
         .as_deref()
         .and_then(|wine_prefix| winpath::from_unix(wine_prefix, unix))
-        .or_else(|| place.paths.contract(unix).ok())
+        .or_else(|| place.paths.store(unix).ok())
         .unwrap_or_else(|| unix.display().to_string())
 }
 

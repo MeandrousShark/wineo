@@ -143,7 +143,7 @@ impl Builds {
             Component::Vkd3d => &global.defaults.vkd3d_root,
         };
         let root = match configured {
-            Some(root) => paths.absolute(root)?,
+            Some(root) => paths.config_path(root)?,
             None => match component {
                 Component::Dxvk => paths.default_dxvk_root(),
                 Component::Vkd3d => paths.default_vkd3d_root(),

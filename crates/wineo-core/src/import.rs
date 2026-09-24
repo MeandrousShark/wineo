@@ -256,6 +256,7 @@ pub fn execute_reviewed(
                 .join(&request.name),
         }
     };
+    paths.check_prefix(&destination)?;
     if !request.adopt {
         reject_overlapping_paths(&source_root, &destination)?;
     }
@@ -299,8 +300,18 @@ pub fn execute_reviewed(
 
     // Validate Heroic settings before copying so a bad target or environment
     // variable cannot leave a published prefix with no registration.
-    let prefix_value = paths.contract(&destination).map_err(|err| anyhow!(err))?;
-    let config_text = config_text(&prefix_value, &request.runner, locked.arch, settings)?;
+    let prefix_value = paths
+        .store_prefix(&destination)
+        .map_err(|err| anyhow!(err))?;
+    let settings = settings
+        .map(|settings| stored_settings(paths, settings))
+        .transpose()?;
+    let config_text = config_text(
+        &prefix_value,
+        &request.runner,
+        locked.arch,
+        settings.as_ref(),
+    )?;
 
     let mut published = false;
     if !request.adopt {
@@ -933,6 +944,18 @@ pub(crate) fn check_cancelled(cancel: &AtomicBool) -> Result<()> {
         return Err(Cancelled.into());
     }
     Ok(())
+}
+
+/// Target paths in the config form `paths` stores them in.
+fn stored_settings(paths: &Paths, settings: &ImportedSettings) -> Result<ImportedSettings> {
+    let mut stored = settings.clone();
+    for target in stored.targets.values_mut() {
+        target.exe = paths.store_value(&target.exe)?;
+        if let Some(cwd) = &mut target.cwd {
+            *cwd = paths.store_value(cwd)?;
+        }
+    }
+    Ok(stored)
 }
 
 fn config_text(

@@ -132,7 +132,7 @@ impl Environment {
             return Err(Error::EnvironmentExists(new.name.clone()));
         }
         let dir = new.prefix_dir(paths, global)?;
-        let prefix_value = paths.contract(&dir)?;
+        let prefix_value = paths.store_prefix(&dir)?;
 
         // Proton keeps its prefix in `pfx/` under the directory it is given.
         let wine_prefix = runner.wine_prefix(&dir);
@@ -181,7 +181,7 @@ impl Environment {
     }
 
     pub fn prefix(&self, paths: &Paths) -> Result<PathBuf> {
-        paths.absolute(&self.config.prefix)
+        paths.config_path(&self.config.prefix)
     }
 
     /// Writes `heroic_id` onto an environment's config, keeping the rest of

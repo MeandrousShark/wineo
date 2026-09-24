@@ -28,11 +28,14 @@ struct Manifest {
     version: u32,
     environment: String,
     label: String,
+    /// Absolute, or relative to the root for a portable folder.
     prefix: PathBuf,
     layout: ImportLayout,
     created_at: String,
 }
 
+/// On disk, a portable marker's paths are relative to the root, so recovery
+/// still finds them after the folder moves.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RestoreMarker {
     version: u32,
@@ -191,7 +194,7 @@ pub fn create_reviewed(
         version: VERSION,
         environment: reviewed.name.clone(),
         label: reviewed.label.clone(),
-        prefix: reviewed.prefix.clone(),
+        prefix: prefix_identity(paths, &reviewed.prefix)?,
         layout: reviewed.layout,
         created_at: jiff::Timestamp::now().to_string(),
     };
@@ -231,7 +234,7 @@ pub fn list(paths: &Paths, name: &str) -> Result<Vec<SnapshotInfo>> {
         if !name::is_valid(label) {
             continue;
         }
-        let manifest = read_manifest(&path, name, label, &prefix)?;
+        let manifest = read_manifest(paths, &path, name, label, &prefix)?;
         snapshots.push(SnapshotInfo {
             label: label.to_owned(),
             created_at: manifest.created_at,
@@ -254,10 +257,10 @@ pub fn inspect_restore(
     let current = inspect_prefix(paths, global, &env, &prefix)?;
     let snapshot = paths.snapshot_root(&prefix, name).join(label);
     import::reject_overlapping_paths(&prefix, &snapshot)?;
-    let manifest = read_manifest(&snapshot, name, label, &prefix)?;
+    let manifest = read_manifest(paths, &snapshot, name, label, &prefix)?;
     let saved_config = fs::read_to_string(snapshot.join("config.toml"))?;
     let saved = EnvironmentConfig::parse(&snapshot.join("config.toml"), &saved_config)?;
-    if paths::resolve(&paths.absolute(&saved.prefix)?) != prefix {
+    if paths::resolve(&paths.config_path(&saved.prefix)?) != prefix {
         bail!("snapshot config points to a different prefix");
     }
     let snap_prefix = snapshot.join("prefix");
@@ -325,7 +328,7 @@ pub fn restore_reviewed(
         old_config: reviewed.current_config.clone(),
     };
     let staging_path = staging.keep();
-    if let Err(err) = write_marker(&marker_path, &marker) {
+    if let Err(err) = write_marker(&marker_path, &stored_marker(paths, &marker)?) {
         if fs::symlink_metadata(&marker_path).is_ok() {
             bail!(
                 "restore stopped while publishing recovery marker: {err}; staged prefix remains at {}; marker at {}; run `wineo snapshot recover {}`",
@@ -405,7 +408,7 @@ pub fn delete(paths: &Paths, name: &str, label: &str) -> Result<()> {
         bail!("environment prefix changed; retry");
     }
     let snapshot = paths.snapshot_root(&prefix, name).join(label);
-    read_manifest(&snapshot, name, label, &prefix)?;
+    read_manifest(paths, &snapshot, name, label, &prefix)?;
     remove_tree(&snapshot)?;
     Ok(())
 }
@@ -415,21 +418,21 @@ pub fn recover(paths: &Paths, name: &str) -> Result<()> {
         bail!("unknown environment `{name}`");
     }
     let path = marker_path(paths, name);
-    let marker = read_marker(&path, name)?;
+    let marker = read_marker(paths, &path, name)?;
     let prefix = marker.prefix.clone();
     validate_marker_config(paths, name, &marker)?;
     let locks = Locks::new(paths);
     let _operation = locks.acquire(Operation::Snapshot, name, &[&prefix])?;
     let _config_lock = locks.config(&paths.environment_config(name))?;
     Runtime::new(paths, name).check_quiet(name)?;
-    let marker = read_marker(&path, name)?;
+    let marker = read_marker(paths, &path, name)?;
     validate_marker_config(paths, name, &marker)?;
     rollback_locked(paths, &path, &marker)
 }
 
 fn validate_marker_config(paths: &Paths, name: &str, marker: &RestoreMarker) -> Result<()> {
     let config = EnvironmentConfig::parse(&paths.environment_config(name), &marker.old_config)?;
-    if paths::resolve(&paths.absolute(&config.prefix)?) != marker.prefix {
+    if paths::resolve(&paths.config_path(&config.prefix)?) != marker.prefix {
         bail!("restore marker config points to a different prefix");
     }
     Ok(())
@@ -439,7 +442,26 @@ fn registered(paths: &Paths, name: &str) -> Result<(Environment, String, PathBuf
     let env = Environment::load(paths, name)?;
     let text = fs::read_to_string(&env.path)?;
     let prefix = paths::resolve(&env.prefix(paths)?);
+    paths.check_prefix(&prefix)?;
     Ok((env, text, prefix))
+}
+
+/// How a manifest names its prefix: relative to a portable root, so a moved
+/// folder still matches, or absolute as before.
+fn prefix_identity(paths: &Paths, prefix: &Path) -> Result<PathBuf> {
+    if paths.portable_root().is_none() {
+        return Ok(prefix.to_owned());
+    }
+    paths
+        .portable_relative(prefix)
+        .ok_or_else(|| anyhow!("prefix is outside the portable folder"))
+}
+
+fn stored_marker(paths: &Paths, marker: &RestoreMarker) -> Result<RestoreMarker> {
+    let mut stored = marker.clone();
+    stored.prefix = prefix_identity(paths, &marker.prefix)?;
+    stored.staging = prefix_identity(paths, &marker.staging)?;
+    Ok(stored)
 }
 
 fn inspect_prefix(
@@ -512,7 +534,13 @@ fn ensure_restore_same(a: &RestoreInspection, b: &RestoreInspection) -> Result<(
     Ok(())
 }
 
-fn read_manifest(path: &Path, name: &str, label: &str, prefix: &Path) -> Result<Manifest> {
+fn read_manifest(
+    paths: &Paths,
+    path: &Path,
+    name: &str,
+    label: &str,
+    prefix: &Path,
+) -> Result<Manifest> {
     ensure_directory(
         path.parent()
             .ok_or_else(|| anyhow!("snapshot has no parent"))?,
@@ -528,7 +556,7 @@ fn read_manifest(path: &Path, name: &str, label: &str, prefix: &Path) -> Result<
     if manifest.version != VERSION
         || manifest.environment != name
         || manifest.label != label
-        || manifest.prefix != prefix
+        || manifest.prefix != prefix_identity(paths, prefix)?
     {
         bail!(
             "snapshot manifest does not match `{name}/{label}` and prefix {}",
@@ -585,9 +613,16 @@ fn write_marker(path: &Path, marker: &RestoreMarker) -> Result<()> {
     sync_dir(path.parent().unwrap())
 }
 
-fn read_marker(path: &Path, name: &str) -> Result<RestoreMarker> {
+fn read_marker(paths: &Paths, path: &Path, name: &str) -> Result<RestoreMarker> {
     ensure_regular(path)?;
-    let marker: RestoreMarker = serde_json::from_slice(&fs::read(path)?)?;
+    let mut marker: RestoreMarker = serde_json::from_slice(&fs::read(path)?)?;
+    if let Some(root) = paths.portable_root() {
+        if marker.prefix.is_absolute() || marker.staging.is_absolute() {
+            bail!("invalid restore marker at {}", path.display());
+        }
+        marker.prefix = root.join(&marker.prefix);
+        marker.staging = root.join(&marker.staging);
+    }
     if marker.version != VERSION
         || marker.environment != name
         || !marker.prefix.is_absolute()

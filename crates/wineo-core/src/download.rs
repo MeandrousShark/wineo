@@ -57,11 +57,11 @@ impl Provider {
         Ok(match self {
             Self::GeProton | Self::ProtonCachyos => global.runner_root(paths)?,
             Self::Dxvk => match &global.defaults.dxvk_root {
-                Some(p) => paths.absolute(p)?,
+                Some(p) => paths.config_path(p)?,
                 None => paths.default_dxvk_root(),
             },
             Self::Vkd3d => match &global.defaults.vkd3d_root {
-                Some(p) => paths.absolute(p)?,
+                Some(p) => paths.config_path(p)?,
                 None => paths.default_vkd3d_root(),
             },
         })

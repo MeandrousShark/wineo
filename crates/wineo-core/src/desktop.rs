@@ -364,7 +364,7 @@ pub fn check(paths: &Paths, prefix: &Path, exe: &str) -> Result<()> {
     let found = if winpath::is_windows_path(exe) {
         winpath::to_unix(&wine_prefix, exe).is_some_and(|unix| unix.is_file())
     } else if exe.contains('/') {
-        paths.absolute(exe).is_ok_and(|unix| unix.is_file())
+        paths.config_path(exe).is_ok_and(|unix| unix.is_file())
     } else {
         true
     };
