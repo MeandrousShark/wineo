@@ -18,6 +18,41 @@ arch = "win64"
 - `environments/<name>.toml`
 - `templates/<name>.toml`, including the built-in `gaming` template
 
+## Creating an environment from a template
+
+Wineo creates prefixes itself, so an environment config written by hand
+has no prefix behind it, and `wineo start` refuses it. To describe an
+environment in a file, write a template instead and create from it. A user
+template lives in `templates/<name>.toml` in the config directory and can
+set:
+
+```toml
+schema_version = 1
+runner = "proton"      # a runner name, or "proton" for the newest Proton installed
+arch = "win64"         # or "win32"
+gamemode = true
+dxvk = "latest"        # left out on Proton, which bundles its own
+vkd3d = "latest"
+gameid = "umu-12345"
+store = "steam"
+
+[env]
+DXVK_HUD = "fps"
+```
+
+Then create an environment from it, optionally running an installer:
+
+```sh
+wineo new -n palworld -t mygame --install-exe ~/Downloads/setup.exe
+```
+
+Wineo builds the prefix with the template's runner and arch, then writes
+the rest of its settings into `environments/palworld.toml`. Flags like
+`--runner` and `--arch` win over the template, and a template without a
+runner uses the global default. `wineo templates` lists the templates, and
+the built-in `gaming` template can be shadowed by a file of the same name.
+Targets come from the installer, `wineo setup`, or `wineo set` afterwards.
+
 ## Legacy files
 
 A missing `schema_version` means a legacy, unversioned file. Wineo reads it
