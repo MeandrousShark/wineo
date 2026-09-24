@@ -30,6 +30,7 @@ pub mod runtime;
 pub mod settings;
 pub mod shortcut;
 pub mod snapshot;
+pub mod steamgriddb;
 pub mod supervisor;
 pub mod targets;
 pub mod templates;

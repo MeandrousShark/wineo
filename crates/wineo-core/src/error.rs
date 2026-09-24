@@ -171,6 +171,12 @@ pub enum Error {
         kind: crate::art::Kind,
     },
 
+    #[error("no SteamGridDB key, run `wineo art key` or set WINEO_STEAMGRIDDB_KEY")]
+    NoSteamGridDbKey,
+
+    #[error("the keyring failed: {0}")]
+    Keyring(String),
+
     #[error("environment `{environment}` has no target `{target}`")]
     UnknownTarget { environment: String, target: String },
 

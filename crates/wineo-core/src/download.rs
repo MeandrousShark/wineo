@@ -142,12 +142,48 @@ pub enum Progress {
     AlreadyInstalled(PathBuf),
 }
 
+/// A response whose status the caller reads for itself.
+pub struct Response {
+    pub status: u16,
+    pub body: Box<dyn Read>,
+}
+
 /// An injectable streaming transport. Production requests and redirects are HTTPS only.
 pub trait Transport {
     fn get(&self, url: &str) -> Result<Box<dyn Read>>;
+
+    /// A GET sending `token` as a bearer token, for an API that answers a bad
+    /// one with a status. Transports that never make one keep this refusal.
+    fn get_bearer(&self, url: &str, token: &str) -> Result<Response> {
+        let _ = token;
+        bail!("this transport can't send an authenticated request to {url}")
+    }
 }
 pub struct Https(reqwest::blocking::Client);
+impl Https {
+    /// An HTTPS client for API requests.
+    pub fn new() -> Result<Self> {
+        Ok(Self(http_client(true, Duration::from_secs(10))?))
+    }
+}
 impl Transport for Https {
+    fn get_bearer(&self, url: &str, token: &str) -> Result<Response> {
+        ensure!(
+            reqwest::Url::parse(url)?.scheme() == "https",
+            "API URL must use HTTPS"
+        );
+        let response = self
+            .0
+            .get(url)
+            .bearer_auth(token)
+            .send()
+            .with_context(|| format!("request failed: {url}"))?;
+        Ok(Response {
+            status: response.status().as_u16(),
+            body: Box::new(response),
+        })
+    }
+
     fn get(&self, url: &str) -> Result<Box<dyn Read>> {
         ensure!(
             reqwest::Url::parse(url)?.scheme() == "https",
