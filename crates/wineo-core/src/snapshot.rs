@@ -167,10 +167,11 @@ pub fn create_reviewed(
         .prefix(".wineo-create-")
         .tempdir_in(parent)?;
     let staged_prefix = staging.path().join("prefix");
-    import::copy_tree_strict_reflink(
+    import::copy_tree_strict_reflink_with(
         &reviewed.prefix,
         &staged_prefix,
         &reviewed.snapshot.join("prefix"),
+        &import::Links::for_paths(paths),
         cancel,
         &mut progress,
     )?;
@@ -305,10 +306,19 @@ pub fn restore_reviewed(
         .prefix(".wineo-restore-")
         .tempdir_in(parent)?;
     let staging_path = staging.path().to_owned();
-    import::copy_tree_strict_reflink(
+    // A saved link into the live prefix is internal to what the restore
+    // puts back, so it is written relative too.
+    let mut links = import::Links::for_paths(paths);
+    if links.relative {
+        links
+            .moved
+            .push((reviewed.prefix.clone(), reviewed.prefix.clone()));
+    }
+    import::copy_tree_strict_reflink_with(
         &reviewed.snapshot.join("prefix"),
         &staging_path,
         &reviewed.prefix,
+        &links,
         cancel,
         &mut progress,
     )?;

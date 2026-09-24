@@ -779,6 +779,7 @@ pub(crate) fn external_links(root: &Path, moved: &[&Path]) -> Result<Vec<Externa
         .collect())
 }
 
+#[cfg(test)]
 pub(crate) fn copy_tree_strict_reflink(
     source: &Path,
     destination: &Path,
@@ -792,6 +793,26 @@ pub(crate) fn copy_tree_strict_reflink(
         destination,
         final_root,
         &links,
+        cancel,
+        progress,
+        true,
+    )
+}
+
+/// `copy_tree_strict_reflink` with the link handling `links` asks for.
+pub(crate) fn copy_tree_strict_reflink_with(
+    source: &Path,
+    destination: &Path,
+    final_root: &Path,
+    links: &Links,
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(ImportProgress),
+) -> Result<()> {
+    copy_tree_with_reflink_mode(
+        source,
+        destination,
+        final_root,
+        links,
         cancel,
         progress,
         true,
