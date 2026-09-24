@@ -37,10 +37,13 @@ Support both new environments and copying existing ones into the directory.
   resolve them from that root, independent of the current directory. Keep
   absolute paths and `~/...` for deliberately external games and runners.
   Do not reinterpret Windows target paths as Unix paths. A portable prefix
-  must be inside `DIR/prefixes/`; reject new or edited prefixes outside it.
+  must be a direct child of `DIR/prefixes/`; reject new or edited prefixes
+  anywhere else, and refuse a `defaults.prefix_root` other than
+  `DIR/prefixes/` when it is set. Commands that show a prefix print the
+  resolved absolute path, not the stored relative value.
 - Continue to find runners, DXVK, and vkd3d-proton in their existing host
   locations unless the user config points elsewhere. Keep runtime state,
-  locks, logs, generated desktop entries, and icons in host XDG locations;
+  locks, and logs in host XDG locations;
   isolate runtime state by portable root so same-named XDG and portable
   environments cannot share state or locks accidentally. Explain that moving
   the folder can require runner and external game paths to be updated.
@@ -55,9 +58,12 @@ Support both new environments and copying existing ones into the directory.
 
 - `wineo --portable DIR new NAME` and the other normal environment commands
   operate within the selected folder. Include the portable selector in any
-  detached supervisor invocation and generated desktop launch command so they
-  keep using the intended folder. Existing desktop launchers need to be
-  refreshed after the folder moves.
+  detached supervisor invocation so it keeps using the intended folder.
+- Portable environments never get desktop entries or icons. `set`, `new`,
+  and imports refuse `desktop = true` on a portable target and `wineo
+  desktop` refuses portable environments. A hand-edited `desktop = true` is
+  ignored with a one-line warning on start. `portable copy` writes copied
+  targets with `desktop = false` and lists that change in its review.
 - Add `wineo portable copy NAME --to DIR` to copy an environment from the
   standard XDG layout into a portable folder. Keep the source unchanged. Copy
   its config, full configured prefix tree, and every snapshot for that prefix.
@@ -99,7 +105,7 @@ Support both new environments and copying existing ones into the directory.
    isolation, and command completion. Add root-relative path handling without
    changing XDG path interpretation.
 2. Make normal creation, import, clone, set, target, and snapshot flows write
-   and read portable paths. Update desktop launch commands for the selector.
+   and read portable paths. Keep desktop entries out of portable mode.
 3. Implement staged copying from XDG into a portable folder, with snapshot
    relocation, external-dependency review, and explicit recovery messages.
 4. Document setup, moving the folder, and external dependencies; update the
@@ -115,7 +121,7 @@ Support both new environments and copying existing ones into the directory.
   game and runner paths remain explicit, and every snapshot survives a move.
 - Test selector precedence, XDG behavior without a selector, same-named
   environments in different roots, path collisions, interrupted operations,
-  non-reflink destinations, detached runs, and desktop launch commands.
+  non-reflink destinations, detached runs, and refused desktop entries.
 - Run `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo
   test`, plus a real-prefix smoke test using a temporary portable folder.
 
