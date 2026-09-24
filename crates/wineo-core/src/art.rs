@@ -7,7 +7,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -385,6 +386,107 @@ pub fn set_manual(
     })
 }
 
+/// A SteamGridDB image, downloaded and identified.
+pub(crate) struct Downloaded {
+    pub asset: u64,
+    pub bytes: Vec<u8>,
+    pub format: Format,
+}
+
+/// Publishes a downloaded image as `kind` for `target`, or the environment
+/// for None, recorded as SteamGridDB `asset`. Without `replace`, art that
+/// appeared since the fetch began is kept and None is returned. The file is
+/// staged beside its final name and published without replacing anything
+/// but the kind's own files this decided to replace.
+pub(crate) fn publish_fetched(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    image: &Downloaded,
+    replace: bool,
+) -> Result<Option<Stored>> {
+    let Downloaded {
+        asset,
+        bytes,
+        format,
+    } = image;
+    let (asset, format) = (*asset, *format);
+    let art_dir = paths.art_dir(env);
+    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    check_spot(paths, env, target)?;
+    let mut art = ArtFile::open(&art_dir)?;
+    let dir = spot_dir(&art_dir, target);
+    let current = find(
+        &dir,
+        kind,
+        art.config().record(target, kind).map(|r| r.format),
+    )?;
+    if current.is_some() && !replace {
+        return Ok(None);
+    }
+    let old: Vec<PathBuf> = current
+        .map(|found| {
+            std::iter::once(found.path)
+                .chain(found.duplicates)
+                .collect()
+        })
+        .unwrap_or_default();
+    fs::create_dir_all(&dir).context(|| format!("failed to create {}", dir.display()))?;
+    let path = dir.join(kind.file_name(format));
+    let context = || format!("failed to write {}", path.display());
+    let mut staged = tempfile::Builder::new()
+        .prefix(".wineo-fetch-")
+        .tempfile_in(&dir)
+        .context(context)?;
+    staged.write_all(bytes).context(context)?;
+    staged.as_file().sync_all().context(context)?;
+    fs::set_permissions(staged.path(), fs::Permissions::from_mode(0o644)).context(context)?;
+    let published = if old.contains(&path) {
+        staged.persist(&path).map(drop)
+    } else {
+        staged.persist_noclobber(&path).map(drop)
+    };
+    published
+        .map_err(|err| err.error)
+        .context(|| format!("cannot publish without replacing {}", path.display()))?;
+    art.set(
+        target,
+        kind,
+        Record {
+            format,
+            source: Source::SteamGridDb(asset),
+        },
+    )?;
+    art.save()?;
+    let mut removed = Vec::new();
+    for file in old.into_iter().filter(|file| *file != path) {
+        fs::remove_file(&file).context(|| format!("failed to remove {}", file.display()))?;
+        removed.push(file);
+    }
+    Ok(Some(Stored {
+        path,
+        format,
+        removed,
+    }))
+}
+
+/// The SteamGridDB game an environment's art is recorded for.
+pub fn saved_game(paths: &Paths, env: &str) -> Result<Option<u64>> {
+    Ok(ArtConfig::load(&paths.art_dir(env))?.game)
+}
+
+/// Records `game` as the environment's SteamGridDB game.
+pub fn save_game(paths: &Paths, env: &str, game: u64) -> Result<()> {
+    let art_dir = paths.art_dir(env);
+    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    Environment::ensure_exists(paths, env)?;
+    let mut art = ArtFile::open(&art_dir)?;
+    art.set_game(Some(game))?;
+    art.save()?;
+    Ok(())
+}
+
 /// What `remove` took away.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Removed {
@@ -637,7 +739,7 @@ fn check(
 }
 
 /// Refuses art for an environment or target that doesn't exist.
-fn check_spot(paths: &Paths, env: &str, target: Option<&str>) -> Result<()> {
+pub(crate) fn check_spot(paths: &Paths, env: &str, target: Option<&str>) -> Result<()> {
     match target {
         None => Environment::ensure_exists(paths, env),
         Some(target) => {
