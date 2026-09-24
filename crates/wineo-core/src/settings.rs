@@ -1,7 +1,11 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+use toml_edit::DocumentMut;
+
+use crate::art;
 use crate::config::{self, EnvironmentConfig, GlobalConfig};
 use crate::edit::{self, Scope};
 use crate::error::{Error, IoContext, Result};
@@ -51,6 +55,7 @@ pub fn update(
         None => config::new_document(),
     };
     let before = doc.to_string();
+    let targets_before = target_names(&doc);
 
     for (key, value) in set {
         let value = match (scope, *key) {
@@ -113,7 +118,20 @@ pub fn update(
     if changed {
         write_atomic(&path, &updated)?;
     }
+    if let ConfigFile::Environment(env) = file {
+        let targets_after = target_names(&doc);
+        for target in targets_before.difference(&targets_after) {
+            art::remove_target(paths, env, target)?;
+        }
+    }
     Ok(missing)
+}
+
+fn target_names(doc: &DocumentMut) -> BTreeSet<String> {
+    doc.get("targets")
+        .and_then(|targets| targets.as_table_like())
+        .map(|targets| targets.iter().map(|(name, _)| name.to_owned()).collect())
+        .unwrap_or_default()
 }
 
 fn config_path(paths: &Paths, file: ConfigFile) -> Result<(Scope, PathBuf)> {
@@ -414,5 +432,36 @@ mod tests {
             ),
             Err(Error::UnknownEnvironment(_))
         ));
+    }
+
+    #[test]
+    fn unsetting_a_target_removes_its_art() {
+        let (_root, paths) = setup();
+        write_env(
+            &paths,
+            &format!("{NOTEPAD}[targets.a]\nexe = \"a\"\n[targets.b]\nexe = \"b\"\n"),
+        );
+        let art = paths.art_dir("notepad");
+        for target in ["a", "b"] {
+            fs::create_dir_all(art.join(target)).unwrap();
+            fs::write(art.join(target).join("icon.png"), b"x").unwrap();
+        }
+        update(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[("targets.b.exe", "b2")],
+            &["targets.a.cwd"],
+        )
+        .unwrap();
+        assert!(art.join("a").exists() && art.join("b").exists());
+        update(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[],
+            &["targets.a"],
+        )
+        .unwrap();
+        assert!(!art.join("a").exists());
+        assert!(art.join("b/icon.png").exists());
     }
 }

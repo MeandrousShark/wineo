@@ -449,6 +449,28 @@ pub fn remove_all(paths: &Paths, env: &str) -> Result<bool> {
     }
 }
 
+/// Removes a removed target's art dir and records, so a later target with the
+/// same name starts clean. Returns whether it had any.
+pub fn remove_target(paths: &Paths, env: &str, target: &str) -> Result<bool> {
+    if !name::is_valid(target) {
+        return Err(Error::InvalidName(target.to_owned()));
+    }
+    let art_dir = paths.art_dir(env);
+    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    let mut art = ArtFile::open(&art_dir)?;
+    let recorded = art.remove_target(target);
+    art.save()?;
+    let dir = target_dir(&art_dir, target);
+    match fs::symlink_metadata(&dir) {
+        Ok(_) => {
+            fs::remove_dir_all(&dir).context(|| format!("failed to remove {}", dir.display()))?;
+            Ok(true)
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(recorded),
+        Err(err) => Err(err).context(|| format!("failed to read {}", dir.display())),
+    }
+}
+
 /// Something `art list` warns about. None of them change the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning {
@@ -458,6 +480,9 @@ pub enum Warning {
         kind: Kind,
         used: PathBuf,
         ignored: Vec<PathBuf>,
+        /// Whether `used` wins because `art.toml` records it, rather than by
+        /// format order.
+        recorded: bool,
     },
     /// A record whose file is gone.
     MissingFile {
@@ -566,6 +591,7 @@ fn check(
             kind,
             used: resolved.found.path.clone(),
             ignored: resolved.found.duplicates.clone(),
+            recorded: resolved.source.is_some(),
         });
     }
 }
@@ -898,6 +924,15 @@ impl ArtFile {
                     }
                 }
             }
+        }
+        removed
+    }
+
+    /// Forgets everything recorded for `target`. Returns whether there was anything.
+    pub fn remove_target(&mut self, target: &str) -> bool {
+        let mut removed = false;
+        for kind in Kind::ALL {
+            removed |= self.remove(Some(target), kind);
         }
         removed
     }
@@ -1759,6 +1794,7 @@ manual = \"b.png\"
                     kind: Kind::Grid,
                     used: png,
                     ignored: vec![jpg],
+                    recorded: false,
                 },
                 Warning::UnknownTarget("gone".into()),
             ]
@@ -1809,5 +1845,25 @@ manual = \"b.png\"
         let none = StagedArt::stage(&locks, &paths.art_dir("absent"), &paths.art_dir("x")).unwrap();
         assert_eq!(none.publish().unwrap(), None);
         assert!(!paths.art_dir("x").exists());
+    }
+
+    #[test]
+    fn a_removed_targets_art_is_cleaned_up() {
+        let (root, paths) = store();
+        let file = source(root.path(), "a.png", PNG);
+        set_manual(&paths, "hades", None, Kind::Icon, &file).unwrap();
+        set_manual(&paths, "hades", Some("server"), Kind::Icon, &file).unwrap();
+        set_manual(&paths, "hades", Some("server"), Kind::Logo, &file).unwrap();
+        let art = paths.art_dir("hades");
+        touch(&target_dir(&art, "server"), "notes.txt");
+
+        assert!(remove_target(&paths, "hades", "server").unwrap());
+        assert!(!target_dir(&art, "server").exists());
+        let config = ArtConfig::load(&art).unwrap();
+        assert!(config.targets.is_empty());
+        assert!(config.record(None, Kind::Icon).is_some());
+        assert!(art.join("icon.png").exists());
+        assert!(!remove_target(&paths, "hades", "server").unwrap());
+        assert!(!remove_target(&paths, "other", "server").unwrap());
     }
 }

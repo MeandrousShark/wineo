@@ -13,6 +13,7 @@ use std::io;
 
 use toml_edit::{Array, DocumentMut, Value};
 
+use crate::art;
 use crate::config::{self, EnvironmentConfig, Target};
 use crate::edit::{ensure_table, existing_table, store_value};
 use crate::error::{Error, IoContext, Result};
@@ -417,9 +418,14 @@ pub fn write(paths: &Paths, environment: &str, batch: &Batch) -> Result<Written>
         config::stamp_schema(&mut doc);
         updated = doc.to_string();
     }
-    EnvironmentConfig::parse(&path, &updated)?;
+    let written = EnvironmentConfig::parse(&path, &updated)?;
     if updated != text {
         write_atomic(&path, &updated)?;
+    }
+    for target in current.targets.keys() {
+        if !written.targets.contains_key(target) {
+            art::remove_target(paths, environment, target)?;
+        }
     }
     Ok(Written::Saved)
 }
@@ -823,5 +829,50 @@ mod tests {
         assert_eq!(batch.using("C:/Games/Hades/Hades.exe"), ["hades"]);
         assert_eq!(batch.using("/opt/Tool.exe"), ["tool"]);
         assert!(batch.using("/opt/tool.exe").is_empty());
+    }
+
+    /// Art for `target`, set up by hand the way `art set` leaves it.
+    fn target_art(paths: &Paths, target: &str) -> std::path::PathBuf {
+        let art = paths.art_dir("hades");
+        fs::create_dir_all(art.join(target)).unwrap();
+        fs::write(art.join(target).join("icon.png"), b"x").unwrap();
+        fs::write(
+            art.join("art.toml"),
+            format!(
+                "schema_version = 1\n[targets.{target}.icon]\nfile = \"icon.png\"\nmanual = \"a.png\"\n"
+            ),
+        )
+        .unwrap();
+        art
+    }
+
+    #[test]
+    fn a_removed_target_takes_its_art_along() {
+        let f = Fixture::new(&format!(
+            "{HEADER}\n[targets.old]\nexe = \"old\"\n\n[targets.kept]\nexe = \"kept\"\n"
+        ));
+        let art = target_art(&f.paths, "old");
+        fs::create_dir_all(art.join("kept")).unwrap();
+
+        let mut batch = Batch::new(f.targets());
+        batch.edit("kept", spec("kept2"));
+        assert!(matches!(
+            write(&f.paths, "hades", &batch),
+            Ok(Written::Saved)
+        ));
+        assert!(art.join("old/icon.png").exists());
+
+        let mut batch = Batch::new(f.targets());
+        batch.remove("old");
+        assert!(matches!(
+            write(&f.paths, "hades", &batch),
+            Ok(Written::Saved)
+        ));
+        assert!(!art.join("old").exists());
+        assert!(art.join("kept").exists());
+        assert_eq!(
+            fs::read_to_string(art.join("art.toml")).unwrap(),
+            "schema_version = 1\n"
+        );
     }
 }
