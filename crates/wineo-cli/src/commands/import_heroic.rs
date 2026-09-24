@@ -122,6 +122,9 @@ impl ReviewEvidence {
 }
 
 pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
+    if args.desktop {
+        wineo_core::desktop::supported(paths)?;
+    }
     let global = GlobalConfig::load(paths)?;
     if args.list {
         let sources = sources(paths, args.config_dir.as_deref())?;
@@ -474,7 +477,7 @@ fn guided<I: Input, W: Write>(
         arch: args.arch,
     };
     let mut desktop_choice = DesktopChoice {
-        enabled: true,
+        enabled: paths.portable_root().is_none(),
         name: imported.title.clone(),
     };
     let ctx = ReviewContext {
@@ -618,7 +621,8 @@ fn run_all(
         return Ok(ExitCode::SUCCESS);
     }
 
-    let desktop_enabled = match bulk_desktop_choice(args.desktop, args.yes) {
+    let portable = paths.portable_root().is_some();
+    let desktop_enabled = match bulk_desktop_choice(args.desktop, args.yes || portable) {
         Some(value) => value,
         None => {
             let prompt = prompt.as_mut().expect("interactive was checked above");
@@ -1552,7 +1556,7 @@ fn final_review<I: Input, W: Write>(
                 EditField::GameMode => edit_gamemode(imported, prompt)?,
                 EditField::Name => edit_name(paths, global, request, prompt)?,
                 EditField::Destination => edit_destination(paths, global, request, prompt)?,
-                EditField::Desktop => edit_desktop(imported, desktop, prompt)?,
+                EditField::Desktop => edit_desktop(paths, imported, desktop, prompt)?,
             },
             Reply::Back => return Err(Canceled.into()),
         }
@@ -1731,10 +1735,16 @@ fn edit_destination<I: Input, W: Write>(
 }
 
 fn edit_desktop<I: Input, W: Write>(
+    paths: &Paths,
     imported: &HeroicImport,
     desktop: &mut DesktopChoice,
     prompt: &mut Prompt<I, W>,
 ) -> anyhow::Result<()> {
+    if let Err(err) = wineo_core::desktop::supported(paths) {
+        desktop.enabled = false;
+        prompt.say(format!("{err}."))?;
+        return Ok(());
+    }
     match prompt.confirm("Create a desktop entry?", desktop.enabled)? {
         Reply::Value(true) => {
             let current = if desktop.name.is_empty() {

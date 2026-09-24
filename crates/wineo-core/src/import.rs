@@ -303,6 +303,11 @@ pub fn execute_reviewed(
     let prefix_value = paths
         .store_prefix(&destination)
         .map_err(|err| anyhow!(err))?;
+    if paths.portable_root().is_some()
+        && settings.is_some_and(|settings| settings.targets.values().any(|target| target.desktop))
+    {
+        return Err(anyhow!(crate::Error::PortableDesktop));
+    }
     let settings = settings
         .map(|settings| stored_settings(paths, settings))
         .transpose()?;

@@ -113,6 +113,7 @@ fn check_desktop(
     if enabled.is_empty() {
         return Ok(());
     }
+    wineo_core::desktop::supported(paths)?;
     let environment = Environment::load(paths, name).ok();
     let Some(prefix) = environment.as_ref().and_then(|env| env.prefix(paths).ok()) else {
         return Ok(());

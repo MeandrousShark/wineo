@@ -75,6 +75,20 @@ pub fn reconcile(
     runner: Option<&Runner>,
     prefix: &Path,
 ) -> Result<Vec<Change>> {
+    // The entries on the host belong to XDG environments, even one with the
+    // same name, so a portable one only reports what it asked for.
+    if supported(paths).is_err() {
+        return Ok(environment
+            .config
+            .targets
+            .iter()
+            .filter(|(_, target)| target.desktop)
+            .map(|(target, _)| Change::Skipped {
+                target: target.clone(),
+                reason: Error::PortableDesktop.to_string(),
+            })
+            .collect());
+    }
     let mut changes = Vec::new();
     let mut wanted = BTreeSet::new();
 
@@ -118,6 +132,9 @@ pub fn reconcile(
 /// Removes every entry belonging to `environment`, for `wineo rm`. Returns the
 /// targets whose entries went.
 pub fn remove_all(paths: &Paths, environment: &str) -> Result<Vec<String>> {
+    if supported(paths).is_err() {
+        return Ok(Vec::new());
+    }
     let mut removed = Vec::new();
     for entry in owned_by(paths, environment)? {
         remove_file(&entry.path)?;
@@ -125,6 +142,14 @@ pub fn remove_all(paths: &Paths, environment: &str) -> Result<Vec<String>> {
         removed.push(entry.target);
     }
     Ok(removed)
+}
+
+/// Refuses portable mode, whose environments never get desktop entries.
+pub fn supported(paths: &Paths) -> Result<()> {
+    match paths.portable_root() {
+        Some(_) => Err(Error::PortableDesktop),
+        None => Ok(()),
+    }
 }
 
 /// Every entry wineo has written, whatever environment it belongs to.
@@ -597,6 +622,49 @@ mod tests {
                 "X-Wineo-Target=hades\n",
             )
         );
+    }
+
+    #[test]
+    fn a_portable_environment_never_touches_host_entries() {
+        let fixture = Fixture::new();
+        let environment = fixture.environment(ASKS);
+        assert_eq!(fixture.reconcile(&environment).len(), 1);
+        let entry = fixture.entry("hades").unwrap();
+
+        let usb = fixture._root.path().join("usb");
+        let home = fixture._root.path().to_owned();
+        let portable = Paths::select(
+            move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+            Some(&usb),
+        )
+        .unwrap();
+        let config = portable.environment_config("hades");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        fs::write(
+            &config,
+            "prefix = 'prefixes/hades'\nrunner = 'wine'\narch = 'win64'\n[targets.other]\nexe = 'notepad'\ndesktop = true\n",
+        )
+        .unwrap();
+        let same_name = Environment::load(&portable, "hades").unwrap();
+        let changes = reconcile(
+            &portable,
+            &GlobalConfig::default(),
+            &same_name,
+            None,
+            &usb.join("prefixes/hades"),
+        )
+        .unwrap();
+        assert_eq!(
+            changes,
+            [Change::Skipped {
+                target: "other".to_owned(),
+                reason: Error::PortableDesktop.to_string(),
+            }]
+        );
+        assert!(remove_all(&portable, "hades").unwrap().is_empty());
+        assert!(supported(&portable).is_err());
+        assert_eq!(fixture.entry("hades").unwrap(), entry);
+        assert_eq!(fixture.entry("other"), None);
     }
 
     // Reconciliation runs on every launch, so an entry that already matches has

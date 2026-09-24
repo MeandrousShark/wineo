@@ -236,7 +236,7 @@ pub fn add_program<I: Input, W: Write>(
         args: Vec::new(),
         cwd: None,
         name: Some(program.name.clone()),
-        desktop: true,
+        desktop: place.paths.portable_root().is_none(),
     };
     let card = Card {
         adding: Some(&program.name),
@@ -429,7 +429,9 @@ impl Card<'_> {
             }
             fields.push(("Change the arguments", Field::Args));
             fields.push(("Change the working directory", Field::Cwd));
-            fields.push(("Change the desktop entry", Field::Desktop));
+            if place.paths.portable_root().is_none() {
+                fields.push(("Change the desktop entry", Field::Desktop));
+            }
             if others && !default {
                 fields.push(("Make it the default", Field::Default));
             }

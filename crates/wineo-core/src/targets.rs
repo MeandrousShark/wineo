@@ -247,6 +247,14 @@ impl Batch {
         (rebased, dropped)
     }
 
+    /// Whether a target gains a desktop entry it didn't already ask for.
+    fn enables_desktop(&self) -> bool {
+        self.changes.iter().any(|(target, change)| {
+            change.as_ref().is_some_and(|spec| spec.desktop)
+                && !self.base.get(target).is_some_and(|target| target.desktop)
+        })
+    }
+
     /// Whether anything this batch touches differs between the config it was
     /// collected against and `current`.
     fn is_stale(&self, current: &BTreeMap<String, Target>) -> bool {
@@ -396,6 +404,9 @@ pub fn write(paths: &Paths, environment: &str, batch: &Batch) -> Result<Written>
     if batch.is_stale(&current.targets) {
         return Ok(Written::Changed(current.targets));
     }
+    if paths.portable_root().is_some() && batch.enables_desktop() {
+        return Err(Error::PortableDesktop);
+    }
     let mut doc: DocumentMut = text.parse().map_err(|source| Error::ConfigParse {
         path: path.clone(),
         source: Box::new(source),
@@ -507,6 +518,38 @@ mod tests {
     }
 
     const HEADER: &str = "# my notes\nprefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\ngamemode = true\n\n[env]\nDXVK_HUD = \"fps\"\n";
+
+    #[test]
+    fn a_portable_target_can_not_gain_a_desktop_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_owned();
+        let paths = Paths::select(
+            move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+            Some(&root.path().join("usb")),
+        )
+        .unwrap();
+        let path = paths.environment_config("hades");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let text = "prefix = 'prefixes/hades'\nrunner = 'wine'\narch = 'win64'\n[targets.old]\nexe = 'old'\ndesktop = true\n";
+        fs::write(&path, text).unwrap();
+        let base = EnvironmentConfig::parse(&path, text).unwrap().targets;
+
+        let mut batch = Batch::new(base.clone());
+        let mut wanted = spec("new");
+        wanted.desktop = true;
+        batch.add("new", wanted).unwrap();
+        assert!(matches!(
+            write(&paths, "hades", &batch),
+            Err(Error::PortableDesktop)
+        ));
+
+        // A hand-edited one is left as it is when the target changes otherwise.
+        let mut batch = Batch::new(base.clone());
+        let mut edited = Spec::of(&base["old"]);
+        edited.exe = "older".to_owned();
+        batch.edit("old", edited);
+        assert!(matches!(write(&paths, "hades", &batch), Ok(Written::Saved)));
+    }
 
     #[test]
     fn names_come_from_labels_then_executables() {

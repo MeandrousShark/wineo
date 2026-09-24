@@ -20,8 +20,14 @@ pub enum Error {
     #[error("the portable folder path is empty")]
     EmptyPortable,
 
-    #[error("portable prefixes must be inside {}", .0.display())]
+    #[error("portable prefixes must be directly in {}", .0.display())]
     PrefixOutsidePortable(PathBuf),
+
+    #[error("a portable prefix_root must be {}", .0.display())]
+    PortablePrefixRoot(PathBuf),
+
+    #[error("desktop entries aren't supported for portable environments")]
+    PortableDesktop,
 
     #[error("{} is not valid UTF-8, which config files require", .0.display())]
     NonUtf8Path(PathBuf),

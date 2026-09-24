@@ -12,6 +12,7 @@ use wineo_core::runner::Runner;
 pub struct Args {}
 
 pub fn run(paths: &Paths, _args: Args) -> anyhow::Result<ExitCode> {
+    desktop::supported(paths)?;
     let entries = desktop::list(paths)?;
     let known: BTreeSet<String> = environment::names(paths)?.into_iter().collect();
 
