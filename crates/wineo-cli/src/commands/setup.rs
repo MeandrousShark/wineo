@@ -112,7 +112,8 @@ pub(crate) fn setup<I: Input, W: Write>(
     };
     prompt.say(format!(
         "{name}: runs on {}, prefix {}",
-        environment.config.runner, environment.config.prefix
+        environment.config.runner,
+        paths.shown(&environment.config.prefix)
     ))?;
     if place.wine_prefix.is_none() {
         prompt.say("Its prefix is missing, so there is nothing installed to pick from.")?;

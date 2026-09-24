@@ -87,7 +87,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         (_, true) => println!("Removed environment {name} and its prefix"),
         (Some(environment), false) => println!(
             "Removed environment {name}, its prefix is still at {}",
-            environment.config.prefix
+            paths.shown(&environment.config.prefix)
         ),
         (None, false) => println!("Removed environment {name}; its prefix was left untouched"),
     }

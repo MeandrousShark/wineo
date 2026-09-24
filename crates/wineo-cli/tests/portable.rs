@@ -239,7 +239,7 @@ fn a_portable_environment_keeps_working_after_the_folder_moves() {
         &["set", "app", &format!("prefix={}", outside.display())],
     );
     assert!(!refused.status.success());
-    assert!(stderr(&refused).contains("portable prefixes must be inside"));
+    assert!(stderr(&refused).contains("portable prefixes must be directly in"));
     let refused = wineo(
         &dir,
         &["new", "-n", "stray", "--dir", outside.to_str().unwrap()],
@@ -316,7 +316,7 @@ fn imports_land_inside_the_folder_and_adopting_outside_is_refused() {
         "import", "prefix", source_arg, "-n", "kept", "--runner", "wine", "--adopt",
     ]);
     assert!(!adopted.status.success());
-    assert!(stderr(&adopted).contains("portable prefixes must be inside"));
+    assert!(stderr(&adopted).contains("portable prefixes must be directly in"));
     assert_eq!(config(&dir, "kept"), "");
 
     assert_success(&wineo(&[
@@ -324,4 +324,71 @@ fn imports_land_inside_the_folder_and_adopting_outside_is_refused() {
     ]));
     assert!(config(&dir, "copied").contains("prefix = \"prefixes/copied\""));
     assert!(dir.join("prefixes/copied/system.reg").exists());
+}
+
+#[test]
+fn portable_environments_never_get_desktop_entries() {
+    let f = Fixture::new();
+    let applications = f.root.path().join("data/applications");
+    fs::create_dir_all(&applications).unwrap();
+    let host_entry = applications.join("wineo-hades-app.desktop");
+    let entry = "[Desktop Entry]\nExec=wineo start hades --target app\nX-Wineo-Environment=hades\nX-Wineo-Target=app\n";
+    fs::write(&host_entry, entry).unwrap();
+
+    let dir = f.root.path().join("usb");
+    let prefix = portable_environment(&dir, "hades");
+    let config_path = dir.join("config/environments/hades.toml");
+    fs::write(
+        &config_path,
+        "prefix = 'prefixes/hades'\nrunner = 'wine'\narch = 'win64'\n\n[targets.app]\nexe = 'app'\ndesktop = true\n",
+    )
+    .unwrap();
+    let _stop = StopOnDrop(&f, dir.clone(), "hades");
+    let wineo = |args: &[&str]| {
+        f.wineo()
+            .arg("--portable")
+            .arg(&dir)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    const REFUSED: &str = "desktop entries aren't supported for portable environments";
+
+    let started = wineo(&["start", "hades"]);
+    assert_success(&started);
+    let warning = stderr(&started);
+    assert_eq!(warning.lines().count(), 1, "{warning}");
+    assert!(warning.contains(REFUSED), "{warning}");
+    wait_for("the portable program", || prefix.join("fake-pids").exists());
+    assert_success(&wineo(&["stop", "hades"]));
+
+    let desktop = wineo(&["desktop"]);
+    assert!(!desktop.status.success());
+    assert!(stderr(&desktop).contains(REFUSED));
+    let set = wineo(&[
+        "set",
+        "hades",
+        "targets.other.exe=app",
+        "targets.other.desktop=true",
+    ]);
+    assert!(!set.status.success());
+    assert!(stderr(&set).contains(REFUSED), "{}", stderr(&set));
+    assert!(!fs::read_to_string(&config_path).unwrap().contains("other"));
+
+    let status = stdout(&wineo(&["status", "hades"]));
+    assert!(status.contains(prefix.to_str().unwrap()), "{status}");
+    let json = stdout(&wineo(&["status", "hades", "--json"]));
+    assert!(json.contains(prefix.to_str().unwrap()), "{json}");
+
+    let root = wineo(&["set", "--global", "defaults.prefix_root=/elsewhere"]);
+    assert!(!root.status.success());
+    assert!(stderr(&root).contains("prefix_root"), "{}", stderr(&root));
+    let nested = dir.join("prefixes/hades/nested");
+    let moved = wineo(&["set", "hades", &format!("prefix={}", nested.display())]);
+    assert!(!moved.status.success());
+
+    let removed = wineo(&["rm", "hades"]);
+    assert_success(&removed);
+    assert!(stdout(&removed).contains(prefix.to_str().unwrap()));
+    assert_eq!(fs::read_to_string(&host_entry).unwrap(), entry);
 }

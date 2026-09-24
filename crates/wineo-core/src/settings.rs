@@ -56,7 +56,11 @@ pub fn update(
         let value = match (scope, *key) {
             // Stored the same way `wineo new` writes them.
             (Scope::Environment, "prefix") => paths.store_prefix(&paths.absolute(value)?)?,
-            (Scope::Global, "defaults.prefix_root") => paths.store(&paths.absolute(value)?)?,
+            (Scope::Global, "defaults.prefix_root") => {
+                let dir = paths.absolute(value)?;
+                paths.check_prefix_root(&dir)?;
+                paths.store(&dir)?
+            }
             (Scope::Environment, key)
                 if key.starts_with("targets.")
                     && (key.ends_with(".exe") || key.ends_with(".cwd")) =>
@@ -66,6 +70,24 @@ pub fn update(
             _ => (*value).to_owned(),
         };
         edit::set(&mut doc, scope, key, &value)?;
+    }
+    if paths.portable_root().is_some() && scope == Scope::Environment {
+        for (key, _) in set {
+            let Some((target, "desktop")) = key
+                .strip_prefix("targets.")
+                .and_then(|rest| rest.rsplit_once('.'))
+            else {
+                continue;
+            };
+            let enabled = doc
+                .get("targets")
+                .and_then(|targets| targets.get(target))
+                .and_then(|table| table.get("desktop"))
+                .and_then(|value| value.as_bool());
+            if enabled == Some(true) {
+                return Err(Error::PortableDesktop);
+            }
+        }
     }
     let mut missing = Vec::new();
     for key in unset {

@@ -259,6 +259,17 @@ impl Paths {
         }
     }
 
+    /// How a stored path is shown. A portable one is relative to a root the
+    /// reader can't see, so it is shown resolved. Elsewhere it is kept as written.
+    pub fn shown(&self, value: &str) -> String {
+        match &self.portable {
+            Some(_) => self
+                .config_path(value)
+                .map_or_else(|_| value.to_owned(), |path| path.display().to_string()),
+            None => value.to_owned(),
+        }
+    }
+
     /// Like `config_path`, but Windows paths are left to wine, so they give None.
     pub fn resolve_stored(&self, value: &str) -> Result<Option<PathBuf>> {
         if winpath::is_windows_path(value) {
@@ -295,15 +306,30 @@ impl Paths {
             return Ok(());
         };
         let prefixes = root.join("prefixes");
-        let inside = resolve(prefix)
+        // Snapshots and restore markers are found beside the prefix, which
+        // only lines up with the folder's layout for a direct child.
+        let child = resolve(prefix)
             .strip_prefix(&prefixes)
             .ok()
-            .and_then(|rest| rest.components().next())
-            .is_some_and(|first| first.as_os_str() != SNAPSHOTS);
-        if inside {
+            .is_some_and(|rest| {
+                let mut parts = rest.components();
+                matches!(parts.next(), Some(Component::Normal(name)) if name != SNAPSHOTS)
+                    && parts.next().is_none()
+            });
+        if child {
             Ok(())
         } else {
             Err(Error::PrefixOutsidePortable(prefixes))
+        }
+    }
+
+    /// Refuses a prefix root other than the portable folder's own.
+    pub fn check_prefix_root(&self, dir: &Path) -> Result<()> {
+        match &self.portable {
+            Some(root) if resolve(dir) != root.join("prefixes") => {
+                Err(Error::PortablePrefixRoot(root.join("prefixes")))
+            }
+            _ => Ok(()),
         }
     }
 
@@ -688,6 +714,7 @@ mod tests {
             "/mnt/usb/wineo/prefixes",
             "/mnt/usb/wineo/prefixes/.wineo-snapshots/x",
             "/mnt/usb/wineo/config/x",
+            "/mnt/usb/wineo/prefixes/a/b",
             "/mnt/usb/wineo/prefixes/../x",
             "/home/me/prefix",
         ] {
@@ -707,6 +734,19 @@ mod tests {
         );
         let xdg = portable(&[("HOME", "/home/me")], None).unwrap();
         assert!(xdg.check_prefix(Path::new("/anywhere")).is_ok());
+
+        assert!(
+            paths
+                .check_prefix_root(Path::new("/mnt/usb/wineo/prefixes"))
+                .is_ok()
+        );
+        assert!(matches!(
+            paths.check_prefix_root(Path::new("/mnt/usb/wineo/other")),
+            Err(Error::PortablePrefixRoot(_))
+        ));
+        assert!(xdg.check_prefix_root(Path::new("/anywhere")).is_ok());
+        assert_eq!(paths.shown("prefixes/x"), "/mnt/usb/wineo/prefixes/x");
+        assert_eq!(xdg.shown("~/x"), "~/x");
     }
 
     #[test]

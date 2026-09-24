@@ -97,12 +97,13 @@ impl EnvironmentReport {
             runner: runner_name,
             runner_resolved,
             runner_version,
-            prefix: environment.config.prefix.clone(),
+            prefix: paths.shown(&environment.config.prefix),
             gameid: environment.config.gameid.clone(),
             store: environment.config.store.clone(),
             target_exe,
             status,
-            desktop: desktop::list(paths)
+            desktop: desktop::supported(paths)
+                .and_then(|()| desktop::list(paths))
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|entry| entry.environment == environment.name)

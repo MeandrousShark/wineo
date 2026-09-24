@@ -147,7 +147,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     } else {
         println!(
             "Created environment {} using the existing prefix at {}",
-            environment.name, environment.config.prefix
+            environment.name,
+            paths.shown(&environment.config.prefix)
         );
     }
 
