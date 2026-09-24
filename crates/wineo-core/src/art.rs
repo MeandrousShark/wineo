@@ -502,7 +502,7 @@ pub struct Listing {
     pub kinds: Vec<(Kind, Option<Resolved>)>,
     /// Each of the environment's targets that overrides at least one kind,
     /// with just its overrides.
-    pub targets: Vec<(String, Vec<Resolved>)>,
+    pub targets: Vec<(String, Vec<(Kind, Resolved)>)>,
     pub warnings: Vec<Warning>,
 }
 
@@ -545,7 +545,7 @@ pub fn list(paths: &Paths, env: &str) -> Result<Listing> {
                 resolved.as_ref(),
                 &mut warnings,
             );
-            overrides.extend(resolved);
+            overrides.extend(resolved.map(|resolved| (kind, resolved)));
         }
         if !overrides.is_empty() {
             targets.push((target.clone(), overrides));
@@ -1724,7 +1724,7 @@ manual = \"logo.png\"
         assert_eq!(stored.path, art.join("server/icon.svg"));
         let listing = list(&paths, "hades").unwrap();
         assert_eq!(listing.targets.len(), 1);
-        assert_eq!(listing.targets[0].1[0].found.path, stored.path);
+        assert_eq!(listing.targets[0].1[0].1.found.path, stored.path);
 
         let removed = remove(&paths, "hades", Some("server"), Kind::Icon).unwrap();
         assert_eq!(removed.files, vec![stored.path]);

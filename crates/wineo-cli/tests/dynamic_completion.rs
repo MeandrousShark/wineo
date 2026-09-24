@@ -323,6 +323,8 @@ fn completion_reads_the_selected_portable_folder() {
 fn art_completes_environments_targets_and_kinds() {
     let root = tempfile::tempdir().unwrap();
     fixture(root.path());
+    let names = complete(root.path(), "fish", &["wineo", "art", "list", "ha"]);
+    assert_eq!(names, ["hades", "halo"]);
     for action in ["set", "rm"] {
         let names = complete(root.path(), "fish", &["wineo", "art", action, "ha"]);
         assert_eq!(names, ["hades", "halo"], "{action}");
