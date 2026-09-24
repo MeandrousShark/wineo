@@ -198,10 +198,11 @@ pub fn execute_reviewed(
         .with_context(|| format!("failed to create staging directory in {}", parent.display()))?;
     let staging_path = staging.path().to_owned();
     let _publish_lock = InstallLock::acquire(&reviewed.destination)?;
-    import::copy_tree(
+    import::copy_tree_with(
         &reviewed.source_root,
         &staging_path,
         &reviewed.destination,
+        &import::Links::for_paths(paths),
         cancel,
         &mut progress,
     )?;

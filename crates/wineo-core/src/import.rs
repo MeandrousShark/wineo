@@ -339,10 +339,11 @@ pub fn execute_reviewed(
             })?;
         let staging_path = staging.path().to_owned();
         let _publish_lock = InstallLock::acquire(&destination)?;
-        copy_tree(
+        copy_tree_with(
             &source_root,
             &staging_path,
             &destination,
+            &Links::for_paths(paths),
             cancel,
             &mut progress,
         )?;
@@ -718,25 +719,44 @@ pub(crate) fn copy_tree(
     cancel: &AtomicBool,
     progress: &mut impl FnMut(ImportProgress),
 ) -> Result<()> {
+    let links = Links::default();
     copy_tree_with_reflink_mode(
         source,
         destination,
         final_root,
-        &[],
+        &links,
         cancel,
         progress,
         false,
     )
 }
 
-/// Like `copy_tree`, but a link into one of the other trees `moved` names, as
-/// `(from, to)`, follows it to where that tree is copied, the way a link into
-/// the copied tree itself does.
-pub(crate) fn copy_tree_moving(
+/// How a copy rewrites links that point inside what is being copied.
+#[derive(Debug, Default)]
+pub(crate) struct Links {
+    /// Other trees copied alongside, as `(from, to)`. A link into one follows
+    /// it the way a link into the copied tree itself does.
+    pub moved: Vec<(PathBuf, PathBuf)>,
+    /// Rewritten links are written relative to where they sit, so a portable
+    /// folder can move. Otherwise they are absolute.
+    pub relative: bool,
+}
+
+impl Links {
+    /// Relative links when the copy lands in a portable folder.
+    pub(crate) fn for_paths(paths: &Paths) -> Self {
+        Self {
+            moved: Vec::new(),
+            relative: paths.portable_root().is_some(),
+        }
+    }
+}
+
+pub(crate) fn copy_tree_with(
     source: &Path,
     destination: &Path,
     final_root: &Path,
-    moved: &[(PathBuf, PathBuf)],
+    links: &Links,
     cancel: &AtomicBool,
     progress: &mut impl FnMut(ImportProgress),
 ) -> Result<()> {
@@ -744,7 +764,7 @@ pub(crate) fn copy_tree_moving(
         source,
         destination,
         final_root,
-        moved,
+        links,
         cancel,
         progress,
         false,
@@ -766,14 +786,23 @@ pub(crate) fn copy_tree_strict_reflink(
     cancel: &AtomicBool,
     progress: &mut impl FnMut(ImportProgress),
 ) -> Result<()> {
-    copy_tree_with_reflink_mode(source, destination, final_root, &[], cancel, progress, true)
+    let links = Links::default();
+    copy_tree_with_reflink_mode(
+        source,
+        destination,
+        final_root,
+        &links,
+        cancel,
+        progress,
+        true,
+    )
 }
 
 fn copy_tree_with_reflink_mode(
     source: &Path,
     destination: &Path,
     final_root: &Path,
-    moved: &[(PathBuf, PathBuf)],
+    links: &Links,
     cancel: &AtomicBool,
     progress: &mut impl FnMut(ImportProgress),
     strict_reflink: bool,
@@ -786,7 +815,7 @@ fn copy_tree_with_reflink_mode(
     let options = CopyOptions {
         source_root: source,
         final_root,
-        moved,
+        links,
         cancel,
         strict_reflink,
     };
@@ -797,7 +826,7 @@ fn copy_tree_with_reflink_mode(
 struct CopyOptions<'a> {
     source_root: &'a Path,
     final_root: &'a Path,
-    moved: &'a [(PathBuf, PathBuf)],
+    links: &'a Links,
     cancel: &'a AtomicBool,
     strict_reflink: bool,
 }
@@ -817,22 +846,34 @@ fn copy_entry(
         let target = fs::read_link(source)
             .with_context(|| format!("failed to read link {}", source.display()))?;
         let resolved = resolve_link(source, &target);
+        let rewrite = |to: PathBuf| {
+            if !options.links.relative {
+                return to;
+            }
+            // Relative to where the link ends up, not where it is staged.
+            let inside = source
+                .strip_prefix(options.source_root)
+                .unwrap_or(Path::new(""));
+            let placed = options.final_root.join(inside);
+            relative_path(&to, placed.parent().unwrap_or(Path::new("/")))
+        };
         let target = if resolved.starts_with(options.source_root) {
             if target.is_absolute() {
                 let relative = resolved
                     .strip_prefix(options.source_root)
                     .unwrap_or(Path::new(""));
-                lexical_normalize(&options.final_root.join(relative))
+                rewrite(lexical_normalize(&options.final_root.join(relative)))
             } else {
                 target
             }
         } else if let Some((from, to)) = options
+            .links
             .moved
             .iter()
             .find(|(from, _)| resolved.starts_with(from))
         {
             let relative = resolved.strip_prefix(from).unwrap_or(Path::new(""));
-            lexical_normalize(&to.join(relative))
+            rewrite(lexical_normalize(&to.join(relative)))
         } else {
             // An external link would point somewhere else after copying when
             // it is relative, or through an internal link that is re-rooted.
@@ -975,6 +1016,29 @@ fn resolve_link(source: &Path, target: &Path) -> PathBuf {
     };
     let lexical = lexical_normalize(&base);
     fs::canonicalize(&lexical).unwrap_or(lexical)
+}
+
+/// `target` as seen from the directory `base`, both absolute and normalized.
+fn relative_path(target: &Path, base: &Path) -> PathBuf {
+    let target: Vec<Component> = target.components().collect();
+    let base: Vec<Component> = base.components().collect();
+    let common = target
+        .iter()
+        .zip(&base)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut relative = PathBuf::new();
+    for _ in common..base.len() {
+        relative.push("..");
+    }
+    for component in &target[common..] {
+        relative.push(component.as_os_str());
+    }
+    if relative.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        relative
+    }
 }
 
 fn lexical_normalize(path: &Path) -> PathBuf {
@@ -1547,6 +1611,35 @@ mod tests {
         let outside = &stored.targets["outside"];
         assert_eq!(outside.exe, "/home/me/Games/game.exe");
         assert_eq!(outside.cwd.as_deref(), Some("C:\\Games"));
+    }
+
+    #[test]
+    fn relative_paths_are_taken_from_where_the_link_sits() {
+        let cases = [
+            ("/usb/prefixes/game", "/usb/prefixes/game", "."),
+            (
+                "/usb/prefixes/game/drive_c/x",
+                "/usb/prefixes/game/drive_c",
+                "x",
+            ),
+            (
+                "/usb/prefixes/game/drive_c",
+                "/usb/prefixes/game/pfx/a",
+                "../../drive_c",
+            ),
+            (
+                "/usb/prefixes/game/drive_c/x",
+                "/usb/prefixes/.wineo-snapshots/game/one/prefix",
+                "../../../../game/drive_c/x",
+            ),
+        ];
+        for (target, base, expected) in cases {
+            assert_eq!(
+                relative_path(Path::new(target), Path::new(base)),
+                Path::new(expected),
+                "{target} from {base}"
+            );
+        }
     }
 
     fn prefix(root: &Path, arch: &str) {

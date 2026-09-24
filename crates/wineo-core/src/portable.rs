@@ -284,31 +284,38 @@ pub fn execute_reviewed(
         destination_snapshots.clone(),
     );
     let staged_prefix = staging.path().join("prefix");
-    import::copy_tree_moving(
+    let links = import::Links {
+        moved: vec![snapshots_moved.clone()],
+        relative: true,
+    };
+    import::copy_tree_with(
         &reviewed.source_root,
         &staged_prefix,
         &reviewed.destination,
-        std::slice::from_ref(&snapshots_moved),
+        &links,
         cancel,
         &mut progress,
     )?;
     // A snapshot becomes the live prefix again on restore, so its links into
     // the prefix or its other snapshots follow the copy too.
-    let moved = [
-        (reviewed.source_root.clone(), reviewed.destination.clone()),
-        snapshots_moved,
-    ];
+    let snapshot_links = import::Links {
+        moved: vec![
+            (reviewed.source_root.clone(), reviewed.destination.clone()),
+            snapshots_moved,
+        ],
+        relative: true,
+    };
     let staged_snapshots = staging.path().join("snapshots");
     if !reviewed.snapshots.is_empty() {
         fs::create_dir(&staged_snapshots)?;
     }
     for label in &reviewed.snapshots {
         let staged = staged_snapshots.join(label);
-        import::copy_tree_moving(
+        import::copy_tree_with(
             &source_snapshots.join(label),
             &staged,
             &destination_snapshots.join(label),
-            &moved,
+            &snapshot_links,
             cancel,
             &mut progress,
         )?;
