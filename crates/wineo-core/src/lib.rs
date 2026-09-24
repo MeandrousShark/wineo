@@ -17,6 +17,7 @@ pub mod log;
 pub mod name;
 pub mod operation;
 pub mod paths;
+pub mod portable;
 pub mod prefix;
 pub mod process;
 pub mod programs;

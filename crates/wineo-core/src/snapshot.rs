@@ -457,6 +457,20 @@ fn prefix_identity(paths: &Paths, prefix: &Path) -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("prefix is outside the portable folder"))
 }
 
+/// Points a copied snapshot's manifest at `prefix`, named the way `to` names
+/// it, and returns the layout it records.
+pub(crate) fn relocate_manifest(
+    to: &Paths,
+    snapshot: &Path,
+    prefix: &Path,
+) -> Result<ImportLayout> {
+    let path = snapshot.join(MANIFEST);
+    let mut manifest: Manifest = serde_json::from_slice(&fs::read(&path)?)?;
+    manifest.prefix = prefix_identity(to, prefix)?;
+    fs::write(&path, serde_json::to_vec_pretty(&manifest)?)?;
+    Ok(manifest.layout)
+}
+
 fn stored_marker(paths: &Paths, marker: &RestoreMarker) -> Result<RestoreMarker> {
     let mut stored = marker.clone();
     stored.prefix = prefix_identity(paths, &marker.prefix)?;

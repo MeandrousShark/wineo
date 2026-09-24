@@ -32,6 +32,8 @@ enum Command {
     New(commands::new::Args),
     /// Copy an environment and its prefix under a new name
     Clone(commands::clone::Args),
+    /// Copy an environment into a portable folder
+    Portable(commands::portable::Args),
     /// Save or restore a local environment snapshot
     Snapshot(commands::snapshot::Args),
     /// Change settings of an environment, or the global config
@@ -110,6 +112,7 @@ fn run() -> anyhow::Result<ExitCode> {
     match cli.command {
         Command::New(args) => commands::new::run(&paths, args),
         Command::Clone(args) => commands::clone::run(&paths, args, verbose),
+        Command::Portable(args) => commands::portable::run(&paths, args, verbose),
         Command::Snapshot(args) => commands::snapshot::run(&paths, args, verbose),
         Command::Set(args) => commands::set::run(&paths, args),
         Command::Setup(args) => commands::setup::run(&paths, args),

@@ -44,6 +44,8 @@ pub enum Operation {
     Cleanup,
     /// Creating, restoring, deleting, or recovering a snapshot.
     Snapshot,
+    /// Copying an environment into a portable folder.
+    Copy,
 }
 
 impl Operation {
@@ -57,6 +59,7 @@ impl Operation {
             Operation::Install => "install",
             Operation::Cleanup => "cleanup",
             Operation::Snapshot => "snapshot",
+            Operation::Copy => "copy",
         }
     }
 
@@ -70,6 +73,7 @@ impl Operation {
             Operation::Install,
             Operation::Cleanup,
             Operation::Snapshot,
+            Operation::Copy,
         ]
         .into_iter()
         .find(|operation| operation.as_str() == word)
@@ -92,6 +96,7 @@ impl Operation {
             Operation::Install => "an installer is running in it",
             Operation::Cleanup => "what an installer left running is being stopped",
             Operation::Snapshot => "a snapshot operation is running",
+            Operation::Copy => "it is being copied to a portable folder",
         }
     }
 }

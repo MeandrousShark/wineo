@@ -12,6 +12,7 @@ mod json;
 pub mod list;
 pub mod logs;
 pub mod new;
+pub mod portable;
 pub mod programs;
 pub mod restart;
 pub mod rm;
