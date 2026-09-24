@@ -198,3 +198,63 @@ fn a_standard_clone_keeps_absolute_links() {
         copy.join("drive_c/Games/game.exe")
     );
 }
+
+/// A portable environment whose prefix gets an absolute internal link by hand,
+/// the way a user or a tool running in it might add one.
+fn hand_linked(f: &Fixture) -> PathBuf {
+    let dir = f.root.path().join("usb");
+    let prefix = dir.join("prefixes/game");
+    fs::create_dir_all(prefix.join("drive_c/Games")).unwrap();
+    fs::write(
+        prefix.join("system.reg"),
+        "WINE REGISTRY Version 2\n\n#arch=win64\n",
+    )
+    .unwrap();
+    fs::write(prefix.join("drive_c/Games/game.exe"), "game").unwrap();
+    register(&dir.join("config/environments"), "game", "prefixes/game");
+    symlink(
+        prefix.join("drive_c/Games/game.exe"),
+        prefix.join("drive_c/hand.exe"),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn a_portable_snapshot_round_trip_makes_hand_links_relative() {
+    let Some(f) = fixture() else { return };
+    let dir = hand_linked(&f);
+    assert_success(&portable(&f, &dir, &["snapshot", "create", "game", "one"]));
+    let saved = dir.join("prefixes/.wineo-snapshots/game/one/prefix/drive_c/hand.exe");
+    assert!(fs::read_link(&saved).unwrap().is_relative());
+    assert_success(&portable(
+        &f,
+        &dir,
+        &["snapshot", "restore", "game", "one", "--yes"],
+    ));
+    let live = dir.join("prefixes/game/drive_c/hand.exe");
+    assert!(fs::read_link(&live).unwrap().is_relative());
+
+    let dir = moved(&f, &dir);
+    assert_eq!(
+        fs::read_to_string(dir.join("prefixes/game/drive_c/hand.exe")).unwrap(),
+        "game"
+    );
+}
+
+#[test]
+fn a_portable_snapshot_restores_after_the_folder_moves() {
+    let Some(f) = fixture() else { return };
+    let dir = hand_linked(&f);
+    assert_success(&portable(&f, &dir, &["snapshot", "create", "game", "one"]));
+    let dir = moved(&f, &dir);
+    fs::remove_file(dir.join("prefixes/game/drive_c/hand.exe")).unwrap();
+    assert_success(&portable(
+        &f,
+        &dir,
+        &["snapshot", "restore", "game", "one", "--yes"],
+    ));
+    let live = dir.join("prefixes/game/drive_c/hand.exe");
+    assert!(fs::read_link(&live).unwrap().is_relative());
+    assert_eq!(fs::read_to_string(&live).unwrap(), "game");
+}
