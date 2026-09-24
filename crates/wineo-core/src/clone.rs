@@ -15,6 +15,7 @@ use crate::import::{self, ExternalDependency, ImportLayout, ImportProgress};
 use crate::name;
 use crate::operation::{Locks, Operation};
 use crate::paths::{self, Paths};
+use crate::runners::Runners;
 use crate::runtime::Runtime;
 
 pub use crate::import::Cancelled as Canceled;
@@ -54,7 +55,17 @@ pub fn inspect(
     let config =
         EnvironmentConfig::parse(&source_path, &source_config).map_err(|err| anyhow!(err))?;
     let configured_root = paths.absolute(&config.prefix).map_err(|err| anyhow!(err))?;
-    let prefix = import::inspect_root(&configured_root, config.arch)?;
+    let runner = if import::root_layout_ambiguous(&configured_root) {
+        Some(
+            Runners::new(paths, global)
+                .map_err(|err| anyhow!(err))?
+                .resolve(&config.runner)
+                .map_err(|err| anyhow!(err))?,
+        )
+    } else {
+        None
+    };
+    let prefix = import::inspect_root(&configured_root, runner.as_ref(), config.arch)?;
     if paths::resolve(&configured_root) != prefix.source_root {
         bail!("configured prefix root does not match inspected source root");
     }
@@ -95,8 +106,8 @@ pub fn inspect(
     for (key, target) in &config.targets {
         for (field, raw) in [("exe", Some(&target.exe)), ("cwd", target.cwd.as_ref())] {
             let Some(raw) = raw else { continue };
-            let path = Path::new(raw);
-            if path.is_absolute() && !paths::resolve(path).starts_with(&source_root) {
+            let path = paths.expand(raw);
+            if path.is_absolute() && !paths::resolve(&path).starts_with(&source_root) {
                 external_target_paths.push(format!("targets.{key}.{field}: {raw}"));
             }
         }
@@ -356,7 +367,7 @@ fn shared_names(paths: &Paths, name: &str, prefixes: [&Path; 2]) -> Result<Vec<S
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
-    use std::os::unix::fs::{MetadataExt, symlink};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 
     use super::*;
 
@@ -397,7 +408,7 @@ mod tests {
             source.clone()
         };
         let text = format!(
-            "# source comment\nprefix = '{}'\nrunner = 'wine'\narch = 'win64'\nheroic_id = 'id'\ngameid = 'game'\nstore = 'steam'\n\n[env]\nSOURCE_NOTE = '{}'\n\n[targets.game]\nexe = '{}' # exe comment\ncwd = '{}'\nargs = ['--from={}']\ndesktop = true\nname = 'Game'\ndefault = true\n\n[targets.external]\nexe = '/some/external/game'\ncwd = 'C:\\\\Games'\n",
+            "# source comment\nprefix = '{}'\nrunner = 'wine'\narch = 'win64'\nheroic_id = 'id'\ngameid = 'game'\nstore = 'steam'\n\n[env]\nSOURCE_NOTE = '{}'\n\n[targets.game]\nexe = '{}' # exe comment\ncwd = '{}'\nargs = ['--from={}']\ndesktop = true\nname = 'Game'\ndefault = true\n\n[targets.external]\nexe = '/some/external/game'\ncwd = 'C:\\\\Games'\n\n[targets.home]\nexe = '~/Games/ProjectZomboid/ProjectZomboid64.exe'\n",
             source.display(),
             source.display(),
             wine.join("drive_c/game.exe").display(),
@@ -435,6 +446,15 @@ mod tests {
                     .iter()
                     .any(|path| path.contains("targets.external.exe"))
             );
+            assert!(review.external_target_paths.iter().any(|path| {
+                path.contains("targets.home.exe: ~/Games/ProjectZomboid/ProjectZomboid64.exe")
+            }));
+            assert!(
+                !review
+                    .external_target_paths
+                    .iter()
+                    .any(|path| path.contains("targets.external.cwd"))
+            );
             let clone = execute_reviewed(
                 &paths,
                 &GlobalConfig::default(),
@@ -450,6 +470,10 @@ mod tests {
             assert!(clone.config.targets["game"].default);
             assert!(!clone.config.targets["game"].desktop);
             assert_eq!(clone.config.targets["external"].exe, "/some/external/game");
+            assert_eq!(
+                clone.config.targets["home"].exe,
+                "~/Games/ProjectZomboid/ProjectZomboid64.exe"
+            );
             assert_eq!(
                 clone.config.targets["external"].cwd.as_deref(),
                 Some("C:\\\\Games")
@@ -588,6 +612,47 @@ mod tests {
                 fs::read_to_string(paths.environment_config("source")).unwrap(),
                 original
             );
+        }
+    }
+
+    #[test]
+    fn ambiguous_configured_root_uses_runner_layout_without_normalizing_root() {
+        for proton in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let (paths, source, _) = setup(root.path(), false);
+            prefix(&source.join("pfx"), false);
+            let runner_root = root.path().join("runners");
+            let runner_name = if proton { "proton-build" } else { "wine-build" };
+            let executable = if proton {
+                runner_root.join(runner_name).join("proton")
+            } else {
+                runner_root.join(runner_name).join("bin/wine")
+            };
+            fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            fs::write(&executable, b"#!/bin/sh\n").unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+            if !proton {
+                let server = executable.with_file_name("wineserver");
+                fs::write(&server, b"#!/bin/sh\n").unwrap();
+                fs::set_permissions(server, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            fs::write(
+                paths.environment_config("source"),
+                format!(
+                    "prefix = '{}'\nrunner = '{runner_name}'\narch = 'win64'\n",
+                    source.display()
+                ),
+            )
+            .unwrap();
+            let mut global = GlobalConfig::default();
+            global.defaults.runner_root = Some(runner_root.to_string_lossy().into_owned());
+            let destination = root.path().join("copy");
+            let review = inspect(&paths, &global, "source", "copy", Some(&destination)).unwrap();
+            assert_eq!(review.layout == ImportLayout::Proton, proton);
+            assert_eq!(review.source_root, source);
+            execute_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+            assert!(destination.join("system.reg").is_file());
+            assert!(destination.join("pfx/system.reg").is_file());
         }
     }
 

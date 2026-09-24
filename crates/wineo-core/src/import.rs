@@ -145,8 +145,16 @@ pub fn inspect(
     inspect_impl(source.as_ref(), runner, arch, true)
 }
 
-pub(crate) fn inspect_root(source: &Path, arch: Arch) -> Result<Inspection> {
-    inspect_impl(source, None, Some(arch), false)
+pub(crate) fn inspect_root(
+    source: &Path,
+    runner: Option<&Runner>,
+    arch: Arch,
+) -> Result<Inspection> {
+    inspect_impl(source, runner, Some(arch), false)
+}
+
+pub(crate) fn root_layout_ambiguous(source: &Path) -> bool {
+    is_prefix_shape(source) && is_prefix_shape(&source.join("pfx"))
 }
 
 fn inspect_impl(
