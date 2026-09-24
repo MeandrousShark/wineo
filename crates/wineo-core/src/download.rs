@@ -631,7 +631,7 @@ fn destination_identity(destination: &Path) -> Result<PathBuf> {
 
 /// The lock file stays in place so another process cannot acquire a new inode.
 pub struct InstallLock {
-    _file: File,
+    file: File,
 }
 impl InstallLock {
     pub fn acquire(destination: &Path) -> Result<Self> {
@@ -652,7 +652,15 @@ impl InstallLock {
             .open(parent.join(format!(".wineo-lock-{key}")))?;
         rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
             .context("another install is using this destination")?;
-        Ok(Self { _file: file })
+        Ok(Self { file })
+    }
+}
+impl Drop for InstallLock {
+    fn drop(&mut self) {
+        // A forked child inherits a copy of the fd, which keeps the flock held
+        // on the open file description until it exits or execs. An explicit
+        // unlock frees the lock the moment this holder is done with it.
+        let _ = rustix::fs::flock(&self.file, rustix::fs::FlockOperation::Unlock);
     }
 }
 pub fn publish(staging: &Path, destination: &Path) -> Result<()> {
@@ -1369,6 +1377,17 @@ mod tests {
         fs::create_dir(&source).unwrap();
         assert!(publish(&source, &dest).is_err());
         assert!(source.is_dir());
+    }
+    #[test]
+    fn install_lock_releases_even_if_a_forked_child_still_holds_the_fd() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("build");
+        let guard = InstallLock::acquire(&dest).unwrap();
+        // Stands in for a forked child's copy of the fd, kept alive past the drop.
+        let clone = guard.file.try_clone().unwrap();
+        drop(guard);
+        assert!(InstallLock::acquire(&dest).is_ok());
+        drop(clone);
     }
     #[test]
     fn metadata_selection_obeys_stability_pagination_and_exact_tags() {
