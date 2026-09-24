@@ -133,6 +133,13 @@ desktop entries is plan 0022, and showing posters and heroes is for
   file. `wineo art key --remove` deletes it from both.
 - A command that needs the key and finds none says to run `wineo art key` or
   set the variable, in one short line.
+- The keyring is reached with `dbus-secret-service` (synchronous, links the
+  system libdbus), so the Arch package gains a `dbus` dependency.
+- A keyring that exists but fails, such as a dismissed unlock prompt, is an
+  error. The key never falls back to the plain text file in that case. Saving
+  to the keyring deletes a leftover key file, and piped stdin is accepted.
+- When `WINEO_STEAMGRIDDB_KEY` is set, `art key` and `art key --remove` add
+  `note: WINEO_STEAMGRIDDB_KEY is set and overrides the saved key`.
 
 ### Fetching
 
