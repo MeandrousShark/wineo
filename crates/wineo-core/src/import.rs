@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, anyhow, bail};
+use rustix::fs::ioctl_ficlone;
+use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 use toml_edit::{Array, DocumentMut, Item, Table, Value, value};
 
@@ -49,7 +51,7 @@ pub struct ExternalDependency {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceFingerprint {
     hash: u64,
-    entries: u64,
+    pub(crate) entries: u64,
 }
 
 /// Read-only information shown before an import is written.
@@ -98,6 +100,10 @@ pub enum ImportProgress {
     Finished { entries: u64 },
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("import cancelled")]
+pub struct Cancelled;
+
 /// A record written beside a copied runner. Download receipts can use this
 /// same small JSON envelope and add provider-specific fields later.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,7 +142,25 @@ pub fn inspect(
     runner: Option<&Runner>,
     arch: Option<Arch>,
 ) -> Result<Inspection> {
-    let source = normalize_source(canonical_source(source.as_ref())?, runner);
+    inspect_impl(source.as_ref(), runner, arch, true)
+}
+
+pub(crate) fn inspect_root(source: &Path, arch: Arch) -> Result<Inspection> {
+    inspect_impl(source, None, Some(arch), false)
+}
+
+fn inspect_impl(
+    source: &Path,
+    runner: Option<&Runner>,
+    arch: Option<Arch>,
+    normalize: bool,
+) -> Result<Inspection> {
+    let source = canonical_source(source)?;
+    let source = if normalize {
+        normalize_source(source, runner)
+    } else {
+        source
+    };
     let (source_root, wine_prefix, layout) = resolve_layout(&source, runner)?;
     validate_prefix(&wine_prefix)?;
 
@@ -375,7 +399,7 @@ pub fn execute_reviewed(
     })
 }
 
-fn ensure_same_review(expected: &Inspection, actual: &Inspection) -> Result<()> {
+pub(crate) fn ensure_same_review(expected: &Inspection, actual: &Inspection) -> Result<()> {
     if expected.source_root != actual.source_root
         || expected.layout != actual.layout
         || expected.fingerprint != actual.fingerprint
@@ -519,7 +543,11 @@ fn registry_arch(dir: &Path) -> Result<Option<Arch>> {
     Ok(None)
 }
 
-fn validate_staged_prefix(staging: &Path, final_root: &Path, layout: ImportLayout) -> Result<()> {
+pub(crate) fn validate_staged_prefix(
+    staging: &Path,
+    final_root: &Path,
+    layout: ImportLayout,
+) -> Result<()> {
     let root = prefix_for_layout(staging, layout);
     let system = staged_path(&root.join("system.reg"), staging, final_root)?;
     let drive_c = staged_path(&root.join("drive_c"), staging, final_root)?;
@@ -530,7 +558,7 @@ fn validate_staged_prefix(staging: &Path, final_root: &Path, layout: ImportLayou
     Ok(())
 }
 
-fn reject_overlapping_paths(source: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn reject_overlapping_paths(source: &Path, destination: &Path) -> Result<()> {
     let source = paths::resolve(source);
     let destination = paths::resolve(destination);
     if source == destination || source.starts_with(&destination) || destination.starts_with(&source)
@@ -565,7 +593,7 @@ fn find_external_dependencies(root: &Path) -> Result<Vec<ExternalDependency>> {
     Ok(found)
 }
 
-fn fingerprint(root: &Path) -> Result<SourceFingerprint> {
+pub(crate) fn fingerprint(root: &Path) -> Result<SourceFingerprint> {
     let mut records = Vec::new();
     let mut entries = 0;
     walk_no_follow(root, &mut |path, metadata| {
@@ -659,7 +687,7 @@ fn walk_no_follow(
     Ok(())
 }
 
-fn copy_tree(
+pub(crate) fn copy_tree(
     source: &Path,
     destination: &Path,
     final_root: &Path,
@@ -748,8 +776,7 @@ fn copy_entry(
                 format!("failed to preserve hardlink {}", destination.display())
             })?;
         } else {
-            fs::copy(source, destination)
-                .with_context(|| format!("failed to copy {}", source.display()))?;
+            copy_regular_file(source, destination)?;
             hardlinks.insert(key, destination.to_owned());
         }
         copy_metadata(&metadata, destination)?;
@@ -760,6 +787,41 @@ fn copy_entry(
         path: source.to_owned(),
     });
     Ok(())
+}
+
+fn copy_regular_file(source: &Path, destination: &Path) -> Result<()> {
+    copy_regular_file_with(source, destination, |output, input| {
+        ioctl_ficlone(output, input)
+    })
+}
+
+fn copy_regular_file_with(
+    source: &Path,
+    destination: &Path,
+    reflink: impl FnOnce(&mut File, &mut File) -> rustix::io::Result<()>,
+) -> Result<()> {
+    let mut input =
+        File::open(source).with_context(|| format!("failed to open {}", source.display()))?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .with_context(|| format!("failed to create {}", destination.display()))?;
+    match reflink(&mut output, &mut input) {
+        Ok(()) => Ok(()),
+        Err(Errno::OPNOTSUPP | Errno::NOTTY | Errno::XDEV | Errno::INVAL | Errno::NOSYS) => {
+            fs::copy(source, destination)
+                .with_context(|| format!("failed to copy {}", source.display()))?;
+            Ok(())
+        }
+        Err(err) => Err(anyhow!(err)).with_context(|| {
+            format!(
+                "failed to reflink {} to {}",
+                source.display(),
+                destination.display()
+            )
+        }),
+    }
 }
 
 fn copy_metadata(source: &fs::Metadata, destination: &Path) -> Result<()> {
@@ -797,9 +859,9 @@ fn lexical_normalize(path: &Path) -> PathBuf {
     result
 }
 
-fn check_cancelled(cancel: &AtomicBool) -> Result<()> {
+pub(crate) fn check_cancelled(cancel: &AtomicBool) -> Result<()> {
     if cancel.load(Ordering::SeqCst) {
-        bail!("import cancelled")
+        return Err(Cancelled.into());
     }
     Ok(())
 }
@@ -881,7 +943,7 @@ fn config_text(
     Ok(text)
 }
 
-fn write_config_once(path: &Path, contents: &str) -> Result<()> {
+pub(crate) fn write_config_once(path: &Path, contents: &str) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("config has no parent: {}", path.display()))?;
@@ -1532,6 +1594,29 @@ mod tests {
             fs::read_link(destination.join("drive_c/external-link")).unwrap(),
             Path::new("/outside/save")
         );
+    }
+
+    #[test]
+    fn regular_file_copy_uses_reflink_and_falls_back_only_when_unavailable() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::write(&source, b"contents").unwrap();
+        let cloned = root.path().join("cloned");
+        copy_regular_file_with(&source, &cloned, |output, input| {
+            std::io::copy(input, output).unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(fs::read(&cloned).unwrap(), b"contents");
+
+        let fallback = root.path().join("fallback");
+        copy_regular_file_with(&source, &fallback, |_, _| Err(Errno::OPNOTSUPP)).unwrap();
+        assert_eq!(fs::read(&fallback).unwrap(), b"contents");
+
+        let failed = root.path().join("failed");
+        let error = copy_regular_file_with(&source, &failed, |_, _| Err(Errno::IO)).unwrap_err();
+        assert!(error.to_string().contains("failed to reflink"));
+        assert_eq!(fs::metadata(&failed).unwrap().len(), 0);
     }
 
     #[test]
