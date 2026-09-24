@@ -152,11 +152,11 @@ pub struct Response {
 pub trait Transport {
     fn get(&self, url: &str) -> Result<Box<dyn Read>>;
 
-    /// A GET sending `token` as a bearer token, for an API that answers a bad
-    /// one with a status. Transports that never make one keep this refusal.
-    fn get_bearer(&self, url: &str, token: &str) -> Result<Response> {
-        let _ = token;
-        bail!("this transport can't send an authenticated request to {url}")
+    /// A GET whose status the caller reads, sending `bearer` as a bearer token
+    /// when given, for APIs. Transports that never make one keep this refusal.
+    fn request(&self, url: &str, bearer: Option<&str>) -> Result<Response> {
+        let _ = bearer;
+        bail!("this transport can't make an API request to {url}")
     }
 }
 pub struct Https(reqwest::blocking::Client);
@@ -167,15 +167,16 @@ impl Https {
     }
 }
 impl Transport for Https {
-    fn get_bearer(&self, url: &str, token: &str) -> Result<Response> {
+    fn request(&self, url: &str, bearer: Option<&str>) -> Result<Response> {
         ensure!(
             reqwest::Url::parse(url)?.scheme() == "https",
             "API URL must use HTTPS"
         );
-        let response = self
-            .0
-            .get(url)
-            .bearer_auth(token)
+        let mut request = self.0.get(url);
+        if let Some(token) = bearer {
+            request = request.bearer_auth(token);
+        }
+        let response = request
             .send()
             .with_context(|| format!("request failed: {url}"))?;
         Ok(Response {
