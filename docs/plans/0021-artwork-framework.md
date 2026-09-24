@@ -64,7 +64,12 @@ desktop entries is plan 0022, and showing posters and heroes is for
   key: `steamgriddb` with the asset ID, or `manual` with the original file
   name. Target overrides live in the same file as `[targets.<target>.<kind>]`
   with the same fields, so the game ID is shared. Unknown keys are refused,
-  like other configs.
+  like other configs, and a bad value makes the whole file invalid. wineo
+  edits `art.toml` with `toml_edit`, so hand-added comments survive.
+- `art list` warns in one line about a record whose file is missing and about
+  a `[targets.<target>]` table for a target the environment does not have. It
+  does not change the file. The next `art set` or `art rm` of that kind
+  replaces or drops the stale record.
 
   ```toml
   schema_version = 1
