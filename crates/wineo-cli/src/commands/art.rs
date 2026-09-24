@@ -9,7 +9,7 @@ use wineo_core::art::{self, Kind, Listing, Resolved, Source, Warning};
 use wineo_core::download::Https;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
-use wineo_core::steamgriddb::{self, Keyring, Saved};
+use wineo_core::steamgriddb::{self, KEY_VAR, Keyring, Saved};
 
 use crate::{prompt, style};
 
@@ -95,6 +95,9 @@ fn keyring() -> Box<dyn Keyring> {
 }
 
 fn key(paths: &Paths, keyring: &dyn Keyring, remove: bool) -> anyhow::Result<()> {
+    if std::env::var_os(KEY_VAR).is_some_and(|value| !value.is_empty()) {
+        eprintln!("note: {KEY_VAR} is set and overrides the saved key");
+    }
     if remove {
         let removed = steamgriddb::remove_key(paths, keyring)?;
         if removed.keyring || removed.file {

@@ -186,3 +186,36 @@ fn key_removal_and_empty_input_never_reach_the_network() {
     assert_eq!(stderr(&empty), "error: no key entered\n");
     assert!(!file.exists());
 }
+
+#[test]
+fn key_notes_a_variable_that_overrides_the_saved_key() {
+    let f = Fixture::new();
+    let removed = f
+        .wineo()
+        .args(["art", "key", "--remove"])
+        .env("WINEO_STEAMGRIDDB_KEY", "abc")
+        .output()
+        .unwrap();
+    assert_success(&removed);
+    assert_eq!(
+        stderr(&removed),
+        "note: WINEO_STEAMGRIDDB_KEY is set and overrides the saved key\n"
+    );
+    let empty = f
+        .wineo()
+        .args(["art", "key"])
+        .env("WINEO_STEAMGRIDDB_KEY", "abc")
+        .output()
+        .unwrap();
+    assert_eq!(
+        stderr(&empty),
+        "note: WINEO_STEAMGRIDDB_KEY is set and overrides the saved key\nerror: no key entered\n"
+    );
+    let unset = f
+        .wineo()
+        .args(["art", "key", "--remove"])
+        .env("WINEO_STEAMGRIDDB_KEY", "")
+        .output()
+        .unwrap();
+    assert_eq!(stderr(&unset), "");
+}
