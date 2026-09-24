@@ -277,11 +277,11 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         (false, Some(name)) if !name.contains('=') => ConfigFile::Environment(name),
         (false, _) => bail!("name an environment before the settings, or pass --global"),
     };
-    if let ConfigFile::Environment(name) = file {
-        Environment::ensure_exists(paths, name)?;
-    }
     if settings.is_empty() && args.unset.is_empty() {
         bail!("nothing to change, pass KEY=VALUE settings or --unset KEY");
+    }
+    if let ConfigFile::Environment(name) = file {
+        Environment::ensure_exists(paths, name)?;
     }
 
     let pairs = settings
