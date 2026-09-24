@@ -154,6 +154,12 @@ impl Paths {
         }
     }
 
+    /// The XDG data dir, even in a portable folder, for what belongs to this
+    /// machine rather than the folder, like the SteamGridDB key.
+    pub fn host_data(&self) -> &Path {
+        &self.data
+    }
+
     /// An environment's artwork. A portable folder carries it, so it moves
     /// with the folder.
     pub fn art_dir(&self, name: &str) -> PathBuf {
@@ -465,6 +471,7 @@ mod tests {
         );
         assert_eq!(paths.runtime_dir("x"), Path::new("/state/wineo/x"));
         assert_eq!(paths.art_dir("x"), Path::new("/data/wineo/art/x"));
+        assert_eq!(paths.host_data(), Path::new("/data/wineo"));
     }
 
     #[test]
@@ -592,6 +599,7 @@ mod tests {
             paths.art_dir("hades"),
             Path::new("/mnt/usb/wineo/art/hades")
         );
+        assert_eq!(paths.host_data(), Path::new("/home/me/.local/share/wineo"));
         let state = Path::new("/home/me/.local/state/wineo/.portable");
         assert!(paths.runtime_dir("hades").starts_with(state));
         assert!(paths.locks_dir().starts_with(state));
