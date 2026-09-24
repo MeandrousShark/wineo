@@ -145,6 +145,13 @@ impl Drop for Guard {
                 let _ = file.set_len(0);
             }
         }
+        // A forked child can hold a copy of the fd, which keeps a flock held on
+        // the open file description until it exits or execs. Unlocking
+        // explicitly frees it the moment this holder is done, whatever copies
+        // still exist.
+        for (file, _) in &self.files {
+            let _ = flock(file, FlockOperation::Unlock);
+        }
     }
 }
 
@@ -152,7 +159,13 @@ impl Drop for Guard {
 /// commands changing it at once can't overwrite each other's change.
 #[derive(Debug)]
 pub struct ConfigGuard {
-    _file: File,
+    file: File,
+}
+
+impl Drop for ConfigGuard {
+    fn drop(&mut self) {
+        let _ = flock(&self.file, FlockOperation::Unlock);
+    }
 }
 
 /// One lock to take, and how a message would name what it protects.
@@ -249,7 +262,7 @@ impl Locks {
                 holder: "another wineo command is changing it",
             });
         }
-        Ok(ConfigGuard { _file: file })
+        Ok(ConfigGuard { file })
     }
 
     /// The operation holding `name` exclusively, for `status` and `list`. A
@@ -337,9 +350,14 @@ fn take(file: &File, path: &Path, shared: bool, attempts: u32) -> Result<bool> {
     Ok(true)
 }
 
-/// A single shared attempt, released as soon as `file` closes.
+/// A single shared attempt, released explicitly the instant it succeeds so a
+/// forked child holding a copy of the fd can never keep it held.
 fn probe(file: &File, path: &Path) -> Result<bool> {
-    try_flock(file, path, FlockOperation::NonBlockingLockShared)
+    let acquired = try_flock(file, path, FlockOperation::NonBlockingLockShared)?;
+    if acquired {
+        let _ = flock(file, FlockOperation::Unlock);
+    }
+    Ok(acquired)
 }
 
 /// Returns false if another open file holds a conflicting lock.
@@ -548,6 +566,84 @@ mod tests {
         );
         drop(held);
         assert_eq!(locks.busy_with("notepad").unwrap(), None);
+    }
+
+    #[test]
+    fn relabel_never_lets_go_of_the_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let locks = locks(root.path());
+        let prefix = root.path().join("p");
+        let mut held = locks
+            .acquire(Operation::Create, "notepad", &[&prefix])
+            .unwrap();
+        assert!(
+            locks
+                .acquire(Operation::Remove, "notepad", &[&prefix])
+                .is_err()
+        );
+        held.relabel(Operation::Install).unwrap();
+        // Still held right after relabeling: it never let go in between.
+        assert!(
+            locks
+                .acquire(Operation::Remove, "notepad", &[&prefix])
+                .is_err()
+        );
+        drop(held);
+        assert!(
+            locks
+                .acquire(Operation::Remove, "notepad", &[&prefix])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn guard_releases_its_locks_even_if_a_forked_child_still_holds_the_fd() {
+        let root = tempfile::tempdir().unwrap();
+        let locks = locks(root.path());
+        let prefix = root.path().join("p");
+        let held = locks
+            .acquire(Operation::Winetricks, "notepad", &[&prefix])
+            .unwrap();
+        // Stand in for a forked child's copies of the fds, kept alive past the drop.
+        let clones: Vec<File> = held
+            .files
+            .iter()
+            .map(|(file, _)| file.try_clone().unwrap())
+            .collect();
+        drop(held);
+        assert!(
+            locks
+                .acquire(Operation::Remove, "notepad", &[&prefix])
+                .is_ok()
+        );
+        drop(clones);
+    }
+
+    #[test]
+    fn config_guard_releases_its_lock_even_if_a_forked_child_still_holds_the_fd() {
+        let root = tempfile::tempdir().unwrap();
+        let locks = locks(root.path());
+        let config = root.path().join("environments/notepad.toml");
+        let held = locks.config(&config).unwrap();
+        // Stands in for a forked child's copy of the fd, kept alive past the drop.
+        let clone = held.file.try_clone().unwrap();
+        drop(held);
+        assert!(locks.config(&config).is_ok());
+        drop(clone);
+    }
+
+    #[test]
+    fn probe_releases_its_lock_even_if_a_forked_child_still_holds_the_fd() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("probe.lock");
+        let file = open(&path).unwrap();
+        // Stands in for a forked child's copy of the fd, kept alive past the probe.
+        let clone = file.try_clone().unwrap();
+        assert!(probe(&file, &path).unwrap());
+        drop(file);
+        let fresh = open(&path).unwrap();
+        assert!(take(&fresh, &path, false, 1).unwrap());
+        drop(clone);
     }
 
     #[test]
