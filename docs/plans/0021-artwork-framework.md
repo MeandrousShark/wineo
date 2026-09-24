@@ -100,7 +100,9 @@ desktop entries is plan 0022, and showing posters and heroes is for
   art, `rm` prints `Removed art` and the clone and copy reviews show `art:
   copied`. An environment without art gets no extra line.
 - Removing a target also removes its art directory and its records in
-  `art.toml`, so a later target with the same name starts clean.
+  `art.toml`, so a later target with the same name starts clean. A snapshot
+  restore that drops a target keeps its art, since snapshots do not include
+  art and a later restore may bring the target back. `art list` warns about it.
 
 ### Manual files
 
@@ -183,8 +185,13 @@ desktop entries is plan 0022, and showing posters and heroes is for
     logo  none
   hades.server
     icon  icon.svg   manual, from server.svg
-  warning: grid.png is ignored because grid.jpg is recorded
+  warning: grid.png ignored, grid.jpg is recorded
   ```
+
+  The other warnings read `warning: server/hero.jpg ignored, server/hero.png
+  takes precedence`, `warning: server/logo.png is missing`, and `warning: art
+  for unknown target `old``. A target's files are shown relative to the
+  environment's art directory.
 - `wineo art rm ENV[.TARGET] KIND` removes one piece of art.
 - `art set` and `art rm` print one line on success, such as `Set icon for
   hades.server` or `Removed grid from hades`.
