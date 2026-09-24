@@ -11,7 +11,7 @@ use wineo_core::art_fetch::{self, Fetched, Mode};
 use wineo_core::download::Https;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
-use wineo_core::steamgriddb::{self, Api, KEY_VAR, Keyring, Saved};
+use wineo_core::steamgriddb::{self, Api, Game, KEY_VAR, Keyring, Saved};
 
 use crate::prompt::{Canceled, Prompt, Reply, Terminal, numbered};
 use crate::{prompt, style};
@@ -129,7 +129,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                     eprintln!("Canceled.");
                     Ok(ExitCode::from(CANCELED))
                 }
-                other => other.map(|()| ExitCode::SUCCESS),
+                Ok(true) => Ok(ExitCode::SUCCESS),
+                Ok(false) => Ok(ExitCode::FAILURE),
+                Err(err) => Err(err),
             };
         }
         Command::Rm { spot, kind } => {
@@ -187,7 +189,7 @@ struct FetchRequest<'a> {
     mode: Mode,
 }
 
-fn fetch(paths: &Paths, request: &FetchRequest) -> anyhow::Result<()> {
+fn fetch(paths: &Paths, request: &FetchRequest) -> anyhow::Result<bool> {
     let (env, target) = split(request.spot);
     art::check_spot(paths, env, target)?;
     let key = steamgriddb::require_key(paths, |var| std::env::var_os(var), &*keyring())?;
@@ -202,24 +204,51 @@ fn fetch(paths: &Paths, request: &FetchRequest) -> anyhow::Result<()> {
         art::save_game(paths, env, game)?;
     }
     let language = steamgriddb::language(|var| std::env::var_os(var));
+    let spot = Spot { paths, env, target };
+    fetch_kinds(&spot, request, &api, game, &language, &mut io::stdout())
+}
+
+/// Where fetched art goes.
+struct Spot<'a> {
+    paths: &'a Paths,
+    env: &'a str,
+    target: Option<&'a str>,
+}
+
+/// Fetches each kind the request asks for, printing a line per kind as it
+/// goes, so the kinds already fetched show before any error. Returns false
+/// when `--only` named a kind that found nothing.
+fn fetch_kinds(
+    spot: &Spot,
+    request: &FetchRequest,
+    api: &Api,
+    game: u64,
+    language: &str,
+    out: &mut dyn io::Write,
+) -> anyhow::Result<bool> {
     let kinds = match request.only {
         Some(kind) => vec![kind],
         None => Kind::ALL.to_vec(),
     };
+    let mut found = true;
     for kind in kinds {
-        match art_fetch::fetch_kind(
-            paths,
-            env,
-            target,
+        let fetched = art_fetch::fetch_kind(
+            spot.paths,
+            spot.env,
+            spot.target,
             kind,
-            &api,
+            api,
             game,
-            &language,
+            language,
             request.mode,
-        )? {
-            Fetched::Stored { asset, .. } => println!("{kind}: fetched SteamGridDB {asset}"),
-            Fetched::Skipped { .. } => println!("{kind}: skipped, it already has art"),
-            Fetched::NoneFound => println!("{kind}: nothing found"),
+        )?;
+        match fetched {
+            Fetched::Stored { asset, .. } => writeln!(out, "{kind}: fetched SteamGridDB {asset}")?,
+            Fetched::Skipped { .. } => writeln!(out, "{kind}: skipped, it already has art")?,
+            Fetched::NoneFound => {
+                writeln!(out, "{kind}: nothing found")?;
+                found = request.only.is_none();
+            }
             Fetched::AssetNotFound => {
                 let Mode::Asset(asset) = request.mode else {
                     unreachable!("only an asset fetch looks for one")
@@ -228,7 +257,15 @@ fn fetch(paths: &Paths, request: &FetchRequest) -> anyhow::Result<()> {
             }
         }
     }
-    Ok(())
+    Ok(found)
+}
+
+/// A search result as the pick list shows it.
+fn game_label(game: &Game) -> String {
+    match game.year {
+        Some(year) => format!("{} ({year}), {}", game.name, game.id),
+        None => format!("{}, {}", game.name, game.id),
+    }
 }
 
 /// Searches for `term` and asks which match is the game.
@@ -240,13 +277,7 @@ fn pick_game(api: &Api, term: &str) -> anyhow::Result<u64> {
     if !prompt::interactive() {
         bail!("picking a game needs a terminal, pass --game instead");
     }
-    let choices = numbered(games.into_iter().map(|game| {
-        let label = match game.year {
-            Some(year) => format!("{} ({year})", game.name),
-            None => game.name,
-        };
-        (label, game.id)
-    }));
+    let choices = numbered(games.iter().map(|game| (game_label(game), game.id)));
     let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
     match prompt.choose("Which game is it?", "Game", &choices, Some("1"), false)? {
         Reply::Value(game) => Ok(game),
@@ -349,7 +380,14 @@ fn source(source: Option<&Source>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::split;
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::io::{Cursor, Read};
+
+    use wineo_core::download::{Response, Transport};
+
+    use super::*;
 
     #[test]
     fn a_spot_splits_at_its_first_dot() {
@@ -357,5 +395,129 @@ mod tests {
         assert_eq!(split("hades.server"), ("hades", Some("server")));
         assert_eq!(split("hades.a.b"), ("hades", Some("a.b")));
         assert_eq!(split("hades."), ("hades", Some("")));
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+    /// Canned answers by URL. Anything else is a failed request.
+    #[derive(Default)]
+    struct Fake(HashMap<String, (u16, Vec<u8>)>);
+
+    impl Fake {
+        fn page(&mut self, kind: Kind, ids: &[u64]) {
+            let data: Vec<String> = ids
+                .iter()
+                .map(|id| format!("{{\"id\":{id},\"url\":\"https://cdn.example/{id}\"}}"))
+                .collect();
+            let body = format!("{{\"success\":true,\"data\":[{}]}}", data.join(","));
+            self.0
+                .insert(Api::images_url(7, kind, 0), (200, body.into_bytes()));
+            self.0.insert(
+                Api::images_url(7, kind, 1),
+                (200, b"{\"success\":true,\"data\":[]}".to_vec()),
+            );
+        }
+    }
+
+    impl Transport for Fake {
+        fn get(&self, url: &str) -> anyhow::Result<Box<dyn Read>> {
+            bail!("unexpected request to {url}")
+        }
+
+        fn request(&self, url: &str, _: Option<&str>) -> anyhow::Result<Response> {
+            let Some((status, body)) = self.0.get(url) else {
+                bail!("connection to {url} failed");
+            };
+            Ok(Response {
+                status: *status,
+                body: Box::new(Cursor::new(body.clone())),
+            })
+        }
+    }
+
+    fn paths() -> (tempfile::TempDir, Paths) {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_owned();
+        let paths = Paths::from_lookup(move |key| {
+            (key == "HOME").then(|| OsString::from(home.as_os_str()))
+        })
+        .unwrap();
+        let config = paths.environment_config("hades");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        fs::write(
+            config,
+            "prefix = \"~/p\"\nrunner = \"wine\"\narch = \"win64\"\n",
+        )
+        .unwrap();
+        (root, paths)
+    }
+
+    fn run(paths: &Paths, fake: &Fake, only: Option<Kind>) -> (anyhow::Result<bool>, String) {
+        let request = FetchRequest {
+            spot: "hades",
+            search: None,
+            game: None,
+            only,
+            mode: Mode::Fill,
+        };
+        let spot = Spot {
+            paths,
+            env: "hades",
+            target: None,
+        };
+        let mut out = Vec::new();
+        let result = fetch_kinds(&spot, &request, &Api::new(fake, "k"), 7, "en", &mut out);
+        (result, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn games_are_listed_with_their_year_and_id() {
+        let game = |year| Game {
+            id: 1234,
+            name: "Hades".into(),
+            year,
+        };
+        assert_eq!(game_label(&game(Some(2020))), "Hades (2020), 1234");
+        assert_eq!(game_label(&game(None)), "Hades, 1234");
+    }
+
+    #[test]
+    fn each_kind_gets_a_line_and_only_an_empty_only_fails() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.page(Kind::Icon, &[1]);
+        fake.0
+            .insert("https://cdn.example/1".into(), (200, PNG.to_vec()));
+        fake.page(Kind::Grid, &[]);
+        fake.page(Kind::Hero, &[]);
+        fake.page(Kind::Logo, &[]);
+        let (result, out) = run(&paths, &fake, None);
+        assert!(result.unwrap());
+        assert_eq!(
+            out,
+            "icon: fetched SteamGridDB 1\ngrid: nothing found\nhero: nothing found\nlogo: nothing found\n"
+        );
+
+        let (result, out) = run(&paths, &fake, Some(Kind::Icon));
+        assert!(result.unwrap());
+        assert_eq!(out, "icon: skipped, it already has art\n");
+        let (result, out) = run(&paths, &fake, Some(Kind::Hero));
+        assert!(!result.unwrap());
+        assert_eq!(out, "hero: nothing found\n");
+    }
+
+    #[test]
+    fn kinds_fetched_before_an_error_are_shown_and_kept() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.page(Kind::Icon, &[1]);
+        fake.0
+            .insert("https://cdn.example/1".into(), (200, PNG.to_vec()));
+        fake.page(Kind::Grid, &[2]);
+        let (result, out) = run(&paths, &fake, None);
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("cdn.example/2"), "{err}");
+        assert_eq!(out, "icon: fetched SteamGridDB 1\n");
+        assert!(paths.art_dir("hades").join("icon.png").exists());
     }
 }

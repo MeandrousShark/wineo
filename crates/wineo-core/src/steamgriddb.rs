@@ -287,6 +287,7 @@ impl<'a> Api<'a> {
     /// to `MAX_PAGES`. An image seen on an earlier page is not repeated.
     pub fn images(&self, game: u64, kind: Kind) -> anyhow::Result<Vec<Image>> {
         let mut images: Vec<Image> = Vec::new();
+        // Pages start at 0, as SteamGridDB's own Decky plugin requests them.
         for page in 0..MAX_PAGES {
             let data = self.data(&Self::images_url(game, kind, page))?;
             if data.is_empty() {
