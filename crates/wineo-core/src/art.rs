@@ -11,10 +11,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use toml_edit::{DocumentMut, Item, Table, Value};
 
-use crate::config::{self, SCHEMA_VERSION};
-use crate::error::{IoContext, Result};
+use crate::config;
+use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
 use crate::name;
 
@@ -350,12 +351,6 @@ impl ArtConfig {
             .map_err(|message| config::invalid(path, message))
     }
 
-    /// Writes `art.toml` into `art_dir`, as the current version.
-    pub fn save(&self, art_dir: &Path) -> Result<()> {
-        let text = toml::to_string(&RawArt::from(self)).expect("art records always serialize");
-        write_atomic(&art_dir.join(ART_FILE), &text)
-    }
-
     /// The records for `target`, or the environment's for None.
     pub fn records(&self, target: Option<&str>) -> Option<&Records> {
         match target {
@@ -367,62 +362,216 @@ impl ArtConfig {
     pub fn record(&self, target: Option<&str>, kind: Kind) -> Option<&Record> {
         self.records(target)?.get(&kind)
     }
+}
 
-    /// Records `kind` for `target`, or forgets it when `record` is None.
-    pub fn set(&mut self, target: Option<&str>, kind: Kind, record: Option<Record>) {
+/// An `art.toml` open for editing. Edits keep the comments and formatting of
+/// everything they don't touch. Hold the file's config lock from `open`
+/// through `save`, so a concurrent change is never overwritten.
+#[derive(Debug)]
+pub struct ArtFile {
+    path: PathBuf,
+    doc: DocumentMut,
+    /// The text as read, or a new document's for a missing file.
+    original: String,
+    config: ArtConfig,
+}
+
+impl ArtFile {
+    pub fn open(art_dir: &Path) -> Result<Self> {
+        let path = art_dir.join(ART_FILE);
+        let (doc, config) = match fs::read_to_string(&path) {
+            Ok(text) => {
+                let config = ArtConfig::parse(&path, &text)?;
+                let doc = text.parse().map_err(|source| Error::ConfigParse {
+                    path: path.clone(),
+                    source: Box::new(source),
+                })?;
+                (doc, config)
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                (config::new_document(), ArtConfig::default())
+            }
+            Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
+        };
+        Ok(Self {
+            original: doc.to_string(),
+            path,
+            doc,
+            config,
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The records as edited so far.
+    pub fn config(&self) -> &ArtConfig {
+        &self.config
+    }
+
+    pub fn set_game(&mut self, game: Option<u64>) -> Result<()> {
+        match game {
+            Some(game) => {
+                let value = Value::from(self.integer("game", game)?);
+                crate::edit::store_value(self.doc.as_table_mut(), "game", value);
+            }
+            None => {
+                self.doc.remove("game");
+            }
+        }
+        self.config.game = game;
+        Ok(())
+    }
+
+    /// Records `kind` for `target`, or the environment for None.
+    pub fn set(&mut self, target: Option<&str>, kind: Kind, record: Record) -> Result<()> {
+        let source = match &record.source {
+            Source::SteamGridDb(asset) => (
+                "steamgriddb",
+                Value::from(self.integer(kind.as_str(), *asset)?),
+            ),
+            Source::Manual(original) => ("manual", Value::from(original.as_str())),
+        };
+        let mut parent = self.doc.as_table_mut();
+        if let Some(target) = target {
+            parent = child_table(child_table(parent, "targets"), target);
+        }
+        let table = parent
+            .entry(kind.as_str())
+            .or_insert_with(|| Item::Table(Table::new()));
+        as_table(table);
+        let table = table.as_table_mut().expect("just made a table");
+        crate::edit::store_value(table, "file", Value::from(kind.file_name(record.format)));
+        for key in ["steamgriddb", "manual"] {
+            if key != source.0 {
+                table.remove(key);
+            }
+        }
+        crate::edit::store_value(table, source.0, source.1);
         let records = match target {
-            Some(target) => self.targets.entry(target.to_owned()).or_default(),
-            None => &mut self.kinds,
+            Some(target) => self.config.targets.entry(target.to_owned()).or_default(),
+            None => &mut self.config.kinds,
         };
-        match record {
-            Some(record) => records.insert(kind, record),
-            None => records.remove(&kind),
+        records.insert(kind, record);
+        Ok(())
+    }
+
+    /// Forgets `kind` for `target`, dropping a target table left empty.
+    /// Returns whether there was a record.
+    pub fn remove(&mut self, target: Option<&str>, kind: Kind) -> bool {
+        let root = self.doc.as_table_mut();
+        let removed = match target {
+            None => root.remove(kind.as_str()).is_some(),
+            Some(target) => {
+                let Some(targets) = root.get_mut("targets").and_then(Item::as_table_like_mut)
+                else {
+                    return false;
+                };
+                let Some(table) = targets.get_mut(target).and_then(Item::as_table_like_mut) else {
+                    return false;
+                };
+                let removed = table.remove(kind.as_str()).is_some();
+                if table.is_empty() {
+                    targets.remove(target);
+                }
+                if targets.is_empty() {
+                    root.remove("targets");
+                }
+                removed
+            }
         };
-        self.targets.retain(|_, records| !records.is_empty());
+        match target {
+            None => {
+                self.config.kinds.remove(&kind);
+            }
+            Some(target) => {
+                if let Some(records) = self.config.targets.get_mut(target) {
+                    records.remove(&kind);
+                    if records.is_empty() {
+                        self.config.targets.remove(target);
+                    }
+                }
+            }
+        }
+        removed
+    }
+
+    /// Writes the file if anything changed, marking it as the current version.
+    /// Returns whether it wrote.
+    pub fn save(&mut self) -> Result<bool> {
+        if self.doc.to_string() == self.original {
+            return Ok(false);
+        }
+        config::stamp_schema(&mut self.doc);
+        let text = self.doc.to_string();
+        self.config = ArtConfig::parse(&self.path, &text)?;
+        write_atomic(&self.path, &text)?;
+        self.original = text;
+        Ok(true)
+    }
+
+    fn integer(&self, key: &str, id: u64) -> Result<i64> {
+        i64::try_from(id)
+            .map_err(|_| config::invalid(&self.path, format!("`{key}` is out of range: {id}")))
     }
 }
 
-#[derive(Serialize, Deserialize)]
+/// `key` in `parent` as a table, created implicit so it only shows up as part
+/// of its children's headers.
+fn child_table<'a>(parent: &'a mut Table, key: &str) -> &'a mut Table {
+    let item = parent.entry(key).or_insert_with(|| {
+        let mut table = Table::new();
+        table.set_implicit(true);
+        Item::Table(table)
+    });
+    as_table(item);
+    item.as_table_mut()
+        .expect("art.toml was validated, so this is a table")
+}
+
+/// Turns a hand-written inline table into a regular one, so it can be edited
+/// like any other.
+fn as_table(item: &mut Item) {
+    if !item.is_table() {
+        let taken = std::mem::take(item);
+        *item = match taken.into_table() {
+            Ok(table) => Item::Table(table),
+            Err(other) => other,
+        };
+    }
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawArt {
     #[serde(default)]
     schema_version: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
     game: Option<u64>,
     // Spelled out rather than a flattened `RawKinds`, since serde can't
     // refuse unknown keys through `flatten`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     icon: Option<RawRecord>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     grid: Option<RawRecord>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     hero: Option<RawRecord>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     logo: Option<RawRecord>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     targets: BTreeMap<String, RawKinds>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawKinds {
-    #[serde(skip_serializing_if = "Option::is_none")]
     icon: Option<RawRecord>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     grid: Option<RawRecord>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     hero: Option<RawRecord>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     logo: Option<RawRecord>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawRecord {
     file: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     steamgriddb: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     manual: Option<String>,
 }
 
@@ -450,26 +599,6 @@ impl RawArt {
             kinds: kinds.validate("")?,
             targets,
         })
-    }
-}
-
-impl From<&ArtConfig> for RawArt {
-    fn from(config: &ArtConfig) -> Self {
-        let kinds = RawKinds::from(&config.kinds);
-        Self {
-            schema_version: SCHEMA_VERSION,
-            game: config.game,
-            icon: kinds.icon,
-            grid: kinds.grid,
-            hero: kinds.hero,
-            logo: kinds.logo,
-            targets: config
-                .targets
-                .iter()
-                .filter(|(_, records)| !records.is_empty())
-                .map(|(name, records)| (name.clone(), RawKinds::from(records)))
-                .collect(),
-        }
     }
 }
 
@@ -513,26 +642,6 @@ impl RawKinds {
             records.insert(kind, Record { format, source });
         }
         Ok(records)
-    }
-}
-
-impl From<&Records> for RawKinds {
-    fn from(records: &Records) -> Self {
-        let mut raw = Self::default();
-        for (kind, slot) in raw.slots() {
-            *slot = records.get(&kind).map(|record| {
-                let (steamgriddb, manual) = match &record.source {
-                    Source::SteamGridDb(asset) => (Some(*asset), None),
-                    Source::Manual(original) => (None, Some(original.clone())),
-                };
-                RawRecord {
-                    file: kind.file_name(record.format),
-                    steamgriddb,
-                    manual,
-                }
-            });
-        }
-        raw
     }
 }
 
@@ -791,40 +900,138 @@ manual = \"server.svg\"
         assert_eq!(config.record(Some("other"), Kind::Icon), None);
     }
 
-    #[test]
-    fn saving_writes_the_current_version_and_round_trips() {
-        let root = tempfile::tempdir().unwrap();
-        let art = root.path().join("hades");
-        let mut config = example();
-        config.save(&art).unwrap();
-        let text = fs::read_to_string(art.join(ART_FILE)).unwrap();
-        assert_eq!(text, EXAMPLE);
-        assert_eq!(ArtConfig::load(&art).unwrap(), config);
-
-        config.schema_version = 0;
-        config.set(Some("server"), Kind::Icon, None);
-        config.save(&art).unwrap();
-        let text = fs::read_to_string(art.join(ART_FILE)).unwrap();
-        assert!(text.starts_with("schema_version = 1\n"), "{text}");
-        assert!(!text.contains("targets"), "{text}");
+    fn read(art: &Path) -> String {
+        fs::read_to_string(art.join(ART_FILE)).unwrap()
     }
 
     #[test]
-    fn set_records_and_forgets_kinds() {
-        let mut config = ArtConfig::default();
-        config.set(
+    fn a_new_file_matches_the_plan_example() {
+        let root = tempfile::tempdir().unwrap();
+        let art = root.path().join("hades");
+        let mut file = ArtFile::open(&art).unwrap();
+        assert!(!file.save().unwrap());
+        assert!(!art.exists());
+
+        file.set_game(Some(5247)).unwrap();
+        let icon = Record {
+            format: Format::Png,
+            source: Source::SteamGridDb(36952),
+        };
+        file.set(None, Kind::Icon, icon).unwrap();
+        file.set(None, Kind::Grid, manual(Format::Jpeg, "poster final.jpg"))
+            .unwrap();
+        file.set(
             Some("server"),
-            Kind::Logo,
-            Some(manual(Format::Webp, "l.webp")),
+            Kind::Icon,
+            manual(Format::Svg, "server.svg"),
+        )
+        .unwrap();
+        assert_eq!(
+            file.config(),
+            &ArtConfig {
+                schema_version: 0,
+                ..example()
+            }
+        );
+        assert!(file.save().unwrap());
+        assert_eq!(read(&art), EXAMPLE);
+        assert_eq!(ArtConfig::load(&art).unwrap(), example());
+        assert!(!ArtFile::open(&art).unwrap().save().unwrap());
+    }
+
+    #[test]
+    fn comments_survive_a_set_and_a_forget() {
+        let root = tempfile::tempdir().unwrap();
+        let art = root.path();
+        let original = "# Art for hades
+schema_version = 1
+
+[icon] # the official one
+file = \"icon.png\" # keep this
+steamgriddb = 36952
+
+[targets.server.logo]
+file = \"logo.png\"
+manual = \"logo.png\"
+";
+        fs::write(art.join(ART_FILE), original).unwrap();
+        let mut file = ArtFile::open(art).unwrap();
+        file.set(None, Kind::Icon, manual(Format::Png, "mine.png"))
+            .unwrap();
+        file.set(None, Kind::Hero, manual(Format::Jpeg, "wide.jpg"))
+            .unwrap();
+        assert!(file.remove(Some("server"), Kind::Logo));
+        assert!(!file.remove(Some("server"), Kind::Logo));
+        assert!(!file.remove(None, Kind::Grid));
+        assert!(file.save().unwrap());
+        let text = read(art);
+        assert!(text.starts_with("# Art for hades\n"), "{text}");
+        assert!(text.contains("[icon] # the official one\n"), "{text}");
+        assert!(text.contains("file = \"icon.png\" # keep this\n"), "{text}");
+        assert!(text.contains("schema_version = 1\n"), "{text}");
+        assert!(!text.contains("steamgriddb"), "{text}");
+        assert!(!text.contains("targets"), "{text}");
+
+        let config = ArtConfig::load(art).unwrap();
+        assert_eq!(
+            config.record(None, Kind::Icon),
+            Some(&manual(Format::Png, "mine.png"))
         );
         assert_eq!(
-            config.record(Some("server"), Kind::Logo),
-            Some(&manual(Format::Webp, "l.webp"))
+            config.record(None, Kind::Hero),
+            Some(&manual(Format::Jpeg, "wide.jpg"))
         );
-        config.set(Some("server"), Kind::Logo, None);
         assert!(config.targets.is_empty());
-        config.set(None, Kind::Hero, Some(manual(Format::Png, "h.png")));
-        assert_eq!(config.kinds.len(), 1);
+
+        let mut file = ArtFile::open(art).unwrap();
+        assert!(file.remove(None, Kind::Hero));
+        assert!(file.save().unwrap());
+        let text = read(art);
+        assert!(text.starts_with("# Art for hades\n"), "{text}");
+        assert!(text.contains("# keep this"), "{text}");
+        assert!(!text.contains("hero"), "{text}");
+    }
+
+    #[test]
+    fn inline_tables_can_be_edited() {
+        let root = tempfile::tempdir().unwrap();
+        let art = root.path();
+        fs::write(
+            art.join(ART_FILE),
+            "schema_version = 1\nicon = { file = \"icon.png\", manual = \"a.png\" }\n\
+             targets = { server = { grid = { file = \"grid.png\", manual = \"b.png\" } } }\n",
+        )
+        .unwrap();
+        let mut file = ArtFile::open(art).unwrap();
+        let asset = |format| Record {
+            format,
+            source: Source::SteamGridDb(7),
+        };
+        file.set(None, Kind::Icon, asset(Format::Ico)).unwrap();
+        file.set(Some("server"), Kind::Logo, asset(Format::Webp))
+            .unwrap();
+        file.save().unwrap();
+        let config = ArtConfig::load(art).unwrap();
+        assert_eq!(config.record(None, Kind::Icon), Some(&asset(Format::Ico)));
+        assert_eq!(
+            config.record(Some("server"), Kind::Logo),
+            Some(&asset(Format::Webp))
+        );
+        assert!(config.record(Some("server"), Kind::Grid).is_some());
+    }
+
+    #[test]
+    fn an_edited_legacy_file_gets_the_version() {
+        let root = tempfile::tempdir().unwrap();
+        let art = root.path();
+        fs::write(art.join(ART_FILE), "game = 1\n").unwrap();
+        let mut file = ArtFile::open(art).unwrap();
+        assert!(!file.save().unwrap());
+        assert_eq!(read(art), "game = 1\n");
+        file.set_game(Some(2)).unwrap();
+        file.save().unwrap();
+        assert_eq!(read(art), "game = 2\nschema_version = 1\n");
+        assert_eq!(file.config().schema_version, 1);
     }
 
     #[test]
