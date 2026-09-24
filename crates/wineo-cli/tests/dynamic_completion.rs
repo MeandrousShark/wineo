@@ -9,16 +9,24 @@ fn write_environment(root: &Path, name: &str, contents: &str) {
 }
 
 fn complete(root: &Path, shell: &str, words: &[&str]) -> Vec<String> {
+    complete_with(root, None, shell, words)
+}
+
+fn complete_with(root: &Path, portable: Option<&Path>, shell: &str, words: &[&str]) -> Vec<String> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_wineo"));
     command
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_STATE_HOME", root.join("state"))
+        .env_remove("WINEO_PORTABLE_DIR")
         .env("COMPLETE", shell)
         .env("_CLAP_COMPLETE_INDEX", (words.len() - 1).to_string())
         .env("_CLAP_IFS", "\n")
         .arg("--")
         .args(words);
+    if let Some(dir) = portable {
+        command.env("WINEO_PORTABLE_DIR", dir);
+    }
     let output = command.output().unwrap();
     assert!(
         output.status.success(),
@@ -223,6 +231,7 @@ fn fish_shell_sources_live_environment_and_target_completion() {
         .env("XDG_CONFIG_HOME", root.path().join("config"))
         .env("XDG_DATA_HOME", root.path().join("data"))
         .env("XDG_STATE_HOME", root.path().join("state"))
+        .env_remove("WINEO_PORTABLE_DIR")
         .output()
         .unwrap();
     assert!(
@@ -233,4 +242,79 @@ fn fish_shell_sources_live_environment_and_target_completion() {
     let lines = String::from_utf8(output.stdout).unwrap();
     assert!(lines.lines().any(|line| line == "hades"), "{lines}");
     assert!(lines.lines().any(|line| line == "game"), "{lines}");
+}
+
+fn write_portable(dir: &Path, name: &str, contents: &str) {
+    let dir = dir.join("config/environments");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(format!("{name}.toml")), contents).unwrap();
+}
+
+#[test]
+fn completion_reads_the_selected_portable_folder() {
+    let root = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    let one = root.path().join("one");
+    let two = root.path().join("two");
+    write_portable(
+        &one,
+        "hermes",
+        "prefix = 'prefixes/hermes'\nrunner = 'wine'\narch = 'win64'\n[targets.boat]\nexe = 'boat.exe'\n",
+    );
+    write_portable(
+        &two,
+        "helios",
+        "prefix = 'prefixes/helios'\nrunner = 'wine'\narch = 'win64'\n",
+    );
+    let one_arg = one.to_str().unwrap();
+    let two_arg = format!("--portable={}", two.display());
+
+    let names = complete(
+        root.path(),
+        "fish",
+        &["wineo", "--portable", one_arg, "start", "he"],
+    );
+    assert_eq!(names, ["hermes"]);
+    let names = complete(root.path(), "fish", &["wineo", "start", &two_arg, "he"]);
+    assert_eq!(names, ["helios"]);
+    let names = complete_with(root.path(), Some(&two), "fish", &["wineo", "start", "he"]);
+    assert_eq!(names, ["helios"]);
+    let names = complete_with(
+        root.path(),
+        Some(&two),
+        "fish",
+        &["wineo", "--portable", one_arg, "start", "he"],
+    );
+    assert_eq!(names, ["hermes"]);
+    let names = complete(
+        root.path(),
+        "fish",
+        &[
+            "wineo",
+            "--portable",
+            one_arg,
+            "run",
+            "hermes",
+            "--target",
+            "",
+        ],
+    );
+    assert_eq!(names, ["boat"]);
+    let names = complete(root.path(), "fish", &["wineo", "start", "h"]);
+    assert!(names.contains(&"hades".to_owned()), "{names:?}");
+    assert!(!names.contains(&"hermes".to_owned()), "{names:?}");
+    assert!(!one.join("config/templates").exists());
+    assert!(!root.path().join("missing").exists());
+    complete(
+        root.path(),
+        "fish",
+        &[
+            "wineo",
+            "--portable",
+            root.path().join("missing").to_str().unwrap(),
+            "start",
+            "h",
+        ],
+    );
+    assert!(!root.path().join("missing").exists());
 }

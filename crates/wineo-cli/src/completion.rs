@@ -1,4 +1,5 @@
 use std::ffi::{OsStr, OsString};
+use std::path::PathBuf;
 
 use clap_complete::CompletionCandidate;
 use wineo_core::environment::{self, Environment};
@@ -9,7 +10,7 @@ pub fn environments(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(prefix) = current.to_str() else {
         return Vec::new();
     };
-    let words = words_before_current();
+    let (portable, words) = split_portable(words_before_current());
     let Some((command, args)) = command_args(&words) else {
         return Vec::new();
     };
@@ -19,7 +20,7 @@ pub fn environments(current: &OsStr) -> Vec<CompletionCandidate> {
     if command == "winetricks" && !first_winetricks_value(args) {
         return Vec::new();
     }
-    let Ok(paths) = Paths::from_env(None) else {
+    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
         return Vec::new();
     };
     environment::names(&paths)
@@ -34,7 +35,7 @@ pub fn targets(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(prefix) = current.to_str() else {
         return Vec::new();
     };
-    let words = words_before_current();
+    let (portable, words) = split_portable(words_before_current());
     let Some((command, args)) = command_args(&words) else {
         return Vec::new();
     };
@@ -44,7 +45,7 @@ pub fn targets(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(name) = selected_environment(args) else {
         return Vec::new();
     };
-    let Ok(paths) = Paths::from_env(None) else {
+    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
         return Vec::new();
     };
     let Ok(environment) = Environment::load(&paths, name) else {
@@ -64,7 +65,7 @@ pub fn snapshots(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(prefix) = current.to_str() else {
         return Vec::new();
     };
-    let words = words_before_current();
+    let (portable, words) = split_portable(words_before_current());
     let Some(("snapshot", args)) = command_args(&words) else {
         return Vec::new();
     };
@@ -74,7 +75,7 @@ pub fn snapshots(current: &OsStr) -> Vec<CompletionCandidate> {
     if !matches!(action.as_str(), "restore" | "delete") {
         return Vec::new();
     }
-    let Ok(paths) = Paths::from_env(None) else {
+    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
         return Vec::new();
     };
     snapshot::list(&paths, name)
@@ -100,6 +101,40 @@ fn words_before_current() -> Vec<String> {
         .take(index)
         .map(|word| word.to_string_lossy().into_owned())
         .collect()
+}
+
+/// Takes the global `--portable DIR` out of the words, wherever it appears
+/// before a `--`, so completion reads the same folder the command would.
+fn split_portable(words: Vec<String>) -> (Option<PathBuf>, Vec<String>) {
+    let mut portable = None;
+    let mut kept = Vec::with_capacity(words.len());
+    let mut words = words.into_iter();
+    let mut value_next = false;
+    while let Some(word) = words.next() {
+        if value_next {
+            value_next = false;
+            kept.push(word);
+            continue;
+        }
+        if word == "--" {
+            kept.push(word);
+            kept.extend(words);
+            break;
+        }
+        if word == "--portable" {
+            if let Some(dir) = words.next() {
+                portable = Some(PathBuf::from(dir));
+            }
+            continue;
+        }
+        if let Some(dir) = word.strip_prefix("--portable=") {
+            portable = Some(PathBuf::from(dir));
+            continue;
+        }
+        value_next = matches!(word.as_str(), "--env" | "-e" | "--target" | "-t");
+        kept.push(word);
+    }
+    (portable, kept)
 }
 
 fn command_args(words: &[String]) -> Option<(&str, &[String])> {
@@ -159,7 +194,9 @@ fn first_winetricks_value(args: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{first_winetricks_value, selected_environment};
+    use std::path::PathBuf;
+
+    use super::{first_winetricks_value, selected_environment, split_portable};
 
     fn strings(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
@@ -184,6 +221,45 @@ mod tests {
             let args = strings(&args);
             assert_eq!(selected_environment(&args), None);
         }
+    }
+
+    #[test]
+    fn portable_is_taken_out_of_the_words() {
+        let (portable, words) = split_portable(strings(&[
+            "wineo",
+            "--portable",
+            "/mnt/a",
+            "start",
+            "--portable=/mnt/b",
+            "hades",
+        ]));
+        assert_eq!(portable, Some(PathBuf::from("/mnt/b")));
+        assert_eq!(words, strings(&["wineo", "start", "hades"]));
+
+        let (portable, words) = split_portable(strings(&[
+            "wineo",
+            "run",
+            "-e",
+            "--portable",
+            "hades",
+            "--",
+            "--portable",
+            "x",
+        ]));
+        assert_eq!(portable, None);
+        assert_eq!(
+            words,
+            strings(&[
+                "wineo",
+                "run",
+                "-e",
+                "--portable",
+                "hades",
+                "--",
+                "--portable",
+                "x"
+            ])
+        );
     }
 
     #[test]
