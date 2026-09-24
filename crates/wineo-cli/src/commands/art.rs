@@ -1,13 +1,16 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use anyhow::bail;
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Subcommand, ValueHint};
 use clap_complete::ArgValueCompleter;
 use wineo_core::art::{self, Kind, Listing, Resolved, Source, Warning};
+use wineo_core::download::Https;
 use wineo_core::paths::Paths;
+use wineo_core::steamgriddb::{self, Keyring, NoKeyring, Saved};
 
-use crate::style;
+use crate::{prompt, style};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -30,6 +33,12 @@ enum Command {
     List {
         #[arg(add = ArgValueCompleter::new(crate::completion::environments))]
         env: String,
+    },
+    /// Save a SteamGridDB API key, or remove it
+    Key {
+        /// Delete the saved key from the keyring and the key file
+        #[arg(long)]
+        remove: bool,
     },
     /// Remove one piece of art
     Rm {
@@ -70,6 +79,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 eprintln!("{}", style::warning_stderr(format!("warning: {warning}")));
             }
         }
+        Command::Key { remove } => key(paths, &*keyring(), remove)?,
         Command::Rm { spot, kind } => {
             let (env, target) = split(&spot);
             art::remove(paths, env, target, kind)?;
@@ -77,6 +87,41 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The keyring the key is saved to. None is wired up yet, so the key file
+/// stands in until the keyring crate is chosen.
+fn keyring() -> Box<dyn Keyring> {
+    Box::new(NoKeyring)
+}
+
+fn key(paths: &Paths, keyring: &dyn Keyring, remove: bool) -> anyhow::Result<()> {
+    if remove {
+        let removed = steamgriddb::remove_key(paths, keyring)?;
+        if removed.keyring || removed.file {
+            println!("Removed the SteamGridDB key");
+        } else {
+            println!("No SteamGridDB key was saved");
+        }
+        return Ok(());
+    }
+    let Some(key) = prompt::secret("SteamGridDB API key: ")?.filter(|key| !key.is_empty()) else {
+        bail!("no key entered");
+    };
+    if !steamgriddb::check_key(&Https::new()?, &key)? {
+        bail!("SteamGridDB rejected the key");
+    }
+    match steamgriddb::save_key(paths, keyring, &key)? {
+        Saved::Keyring => println!("Saved the SteamGridDB key to the keyring"),
+        Saved::File(path) => eprintln!(
+            "{}",
+            style::warning_stderr(format!(
+                "warning: no keyring, so the key is stored in plain text in {}",
+                path.display()
+            ))
+        ),
+    }
+    Ok(())
 }
 
 /// The lines `art list` prints, and its warnings.

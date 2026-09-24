@@ -160,3 +160,29 @@ warning: art for unknown target `old`
     let missing = f.run(&["art", "list", "nope"]);
     assert!(!missing.status.success());
 }
+
+#[test]
+fn key_removal_and_empty_input_never_reach_the_network() {
+    let f = Fixture::new();
+    let file = f.root.path().join("data/wineo/steamgriddb.key");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, "abc\n").unwrap();
+
+    let removed = f.run(&["art", "key", "--remove"]);
+    assert_success(&removed);
+    assert_eq!(stdout(&removed), "Removed the SteamGridDB key\n");
+    assert!(!file.exists());
+    let again = f.run(&["art", "key", "--remove"]);
+    assert_success(&again);
+    assert_eq!(stdout(&again), "No SteamGridDB key was saved\n");
+
+    let empty = f
+        .wineo()
+        .args(["art", "key"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!empty.status.success());
+    assert_eq!(stderr(&empty), "error: no key entered\n");
+    assert!(!file.exists());
+}

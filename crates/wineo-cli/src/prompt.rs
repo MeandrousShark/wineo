@@ -3,13 +3,13 @@
 //! flow can be driven by a script in tests as well as by a terminal.
 
 use std::fmt;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
+use rustix::termios::{LocalModes, OptionalActions, Termios, tcgetattr, tcsetattr};
 use rustyline::error::ReadlineError;
 use rustyline::{
     Cmd, ConditionalEventHandler, Config, DefaultEditor, Event as KeyBindingEvent, EventContext,
@@ -80,6 +80,46 @@ pub trait Input {
 /// Whether both ends are a terminal, which every guided flow needs.
 pub fn interactive() -> bool {
     io::stdin().is_terminal() && io::stdout().is_terminal()
+}
+
+/// Reads one line without echoing it, for a secret like an API key. A signal
+/// puts the terminal back before wineo exits, so echo is never left off.
+/// Piped input is read as is, without a prompt. None is the end of input.
+pub fn secret(label: &str) -> anyhow::Result<Option<String>> {
+    let stdin = io::stdin();
+    let saved = if stdin.is_terminal() {
+        tcgetattr(&stdin).ok()
+    } else {
+        None
+    };
+    let mut guard = None;
+    if let Some(saved) = &saved {
+        print!("{label}");
+        io::stdout().flush()?;
+        let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP])?;
+        guard = Some(signals.handle());
+        let restore = saved.clone();
+        thread::spawn(move || {
+            if signals.forever().next().is_some() {
+                let _ = tcsetattr(io::stdin(), OptionalActions::Now, &restore);
+                println!();
+                std::process::exit(130);
+            }
+        });
+        let mut quiet = saved.clone();
+        quiet.local_modes.remove(LocalModes::ECHO);
+        tcsetattr(&stdin, OptionalActions::Now, &quiet)?;
+    }
+    let mut line = String::new();
+    let read = stdin.lock().read_line(&mut line);
+    if let Some(saved) = &saved {
+        let _ = tcsetattr(&stdin, OptionalActions::Now, saved);
+        println!();
+    }
+    if let Some(guard) = guard {
+        guard.close();
+    }
+    Ok((read? > 0).then(|| line.trim().to_owned()))
 }
 
 /// One entry of a menu. Keys are numbers for the usual entries and letters
