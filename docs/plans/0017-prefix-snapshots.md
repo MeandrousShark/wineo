@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0017: Prefix snapshots
 
@@ -130,3 +130,23 @@ Snapshots are local restore points for one registered environment. They do not
 include external game folders, runners, downloads, runtime state, or desktop
 entries. They do not provide portable archives, cross-filesystem backups,
 retention policies, automatic schedules, or native filesystem snapshots.
+
+## Acceptance results
+
+- Independent QA reviewed the snapshot core and CLI. Its findings on atomic
+  marker publication, restore identity, saved config rechecks, review output,
+  and `set` validation order were fixed and rechecked.
+- `cargo fmt --all -- --check`,
+  `cargo clippy --offline --all-targets -- -D warnings`, and
+  `TERM=xterm-256color cargo test --offline --quiet -- --test-threads=1`
+  passed. The full test run used local loopback access for existing download
+  tests. Focused snapshot core and CLI tests also passed.
+- A disposable prefix initialized by the installed Wine was snapshotted and
+  restored. Restore removed a file added afterward and recovered the saved
+  config; the snapshot was then deleted, and the test environment and prefix
+  were removed. Wine reported headless display warnings during initialization,
+  but produced a valid prefix. No game or target was launched.
+- A disposable Btrfs subvolume prefix was snapshotted and restored after a
+  config-only change. Restore printed the retained old subvolume's exact path;
+  the live prefix and config matched the snapshot. Both copies and the test
+  environment were cleaned up afterward.
