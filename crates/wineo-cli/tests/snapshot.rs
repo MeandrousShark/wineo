@@ -119,3 +119,17 @@ fn interrupted_restore_blocks_config_edits_and_removal() {
     assert_eq!(f.created_config("game"), config);
     assert!(prefix.exists());
 }
+
+#[test]
+fn removing_environment_leaves_snapshot_and_reports_where_it_is() {
+    let Some(f) = fixture() else { return };
+    let (prefix, _) = environment(&f);
+    assert_success(&f.run(&["snapshot", "create", "game", "saved"]));
+    let root = prefix.parent().unwrap().join(".wineo-snapshots/game");
+
+    let output = f.run(&["rm", "game", "--delete-prefix"]);
+    assert_success(&output);
+    assert!(stdout(&output).contains(root.to_str().unwrap()));
+    assert!(!prefix.exists());
+    assert!(root.join("saved/prefix/system.reg").exists());
+}
