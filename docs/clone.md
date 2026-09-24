@@ -18,6 +18,8 @@ the prefix; it does not adopt, merge, overwrite, or create a new Wine prefix.
 Wineo reviews the source, destination, runner, prefix layout, targets, external
 dependencies, and settings that change before copying. It copies the entire
 configured prefix root, including Proton compatdata and adjacent metadata.
+When a prefix has many external links, the review shows the first 12 and their
+total count; add `-v` to see every link.
 Regular files use reflinks when supported, with a normal copy as fallback.
 Symlinks, hardlinks, and file metadata are preserved. Runtime records, logs,
 import logs, and desktop files are not copied.

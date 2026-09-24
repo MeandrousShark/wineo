@@ -103,7 +103,7 @@ fn run() -> anyhow::Result<ExitCode> {
     let verbose = cli.verbose;
     match cli.command {
         Command::New(args) => commands::new::run(&paths, args),
-        Command::Clone(args) => commands::clone::run(&paths, args),
+        Command::Clone(args) => commands::clone::run(&paths, args, verbose),
         Command::Set(args) => commands::set::run(&paths, args),
         Command::Setup(args) => commands::setup::run(&paths, args),
         Command::Config(args) => commands::config::run(&paths, args),

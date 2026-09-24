@@ -25,7 +25,7 @@ pub struct Args {
     dir: Option<String>,
 }
 
-pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
+pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let destination: Option<PathBuf> = args
         .dir
@@ -39,7 +39,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         &args.name,
         destination.as_deref(),
     )?;
-    print_review(&reviewed);
+    print_review(&reviewed, verbose);
 
     let cancellation = Cancellation::new()?;
     let mut copied = 0_u64;
@@ -64,7 +64,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     }
 }
 
-fn print_review(reviewed: &CloneInspection) {
+fn print_review(reviewed: &CloneInspection, verbose: bool) {
     println!(
         "Clone {} as {}\n  source: {}\n  copy to: {}\n  runner: {}\n  layout: {:?}\n  targets: {}",
         reviewed.source_name,
@@ -88,7 +88,19 @@ fn print_review(reviewed: &CloneInspection) {
     for path in &reviewed.external_target_paths {
         println!("  external target path: {path} (kept in place)");
     }
-    for link in &reviewed.external_dependencies {
+    let count = reviewed.external_dependencies.len();
+    if count > 0 {
+        if !verbose && count > 12 {
+            println!("  external links: {count} (showing first 12; use -v for all)");
+        } else {
+            println!("  external links: {count}");
+        }
+    }
+    for link in reviewed
+        .external_dependencies
+        .iter()
+        .take(if verbose { count } else { 12 })
+    {
         println!(
             "  external: {} -> {} (kept in place)",
             link.source.display(),

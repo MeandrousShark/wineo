@@ -1,8 +1,9 @@
 mod common;
 
 use std::fs;
+use std::os::unix::fs::symlink;
 
-use common::{Fixture, assert_success, stderr};
+use common::{Fixture, assert_success, stderr, stdout};
 
 fn source(f: &Fixture) -> std::path::PathBuf {
     let prefix = f.root.path().join("source-prefix");
@@ -100,4 +101,27 @@ fn clone_accepts_an_explicit_destination() {
     assert!(!f.root.path().join("data/wineo/prefixes/custom").exists());
     assert_success(&f.run(&["rm", "custom", "--delete-prefix"]));
     assert!(!destination.exists());
+}
+
+#[test]
+fn clone_review_summarizes_external_links_unless_verbose() {
+    let f = Fixture::new();
+    let prefix = source(&f);
+    let external = f.root.path().join("external");
+    fs::create_dir(&external).unwrap();
+    for index in 0..15 {
+        symlink(&external, prefix.join(format!("external-{index}"))).unwrap();
+    }
+
+    let normal = f.run(&["clone", "zomboid", "normal"]);
+    assert_success(&normal);
+    let normal = stdout(&normal);
+    assert!(normal.contains("external links: 15 (showing first 12"));
+    assert_eq!(normal.matches("  external:").count(), 12);
+
+    let verbose = f.run(&["-v", "clone", "zomboid", "verbose"]);
+    assert_success(&verbose);
+    let verbose = stdout(&verbose);
+    assert!(verbose.contains("external links: 15"));
+    assert_eq!(verbose.matches("  external:").count(), 15);
 }
