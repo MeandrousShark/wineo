@@ -78,7 +78,8 @@ Support both new environments and copying existing ones into the directory.
   target paths, prefix symlinks, and portable config paths. When the
   destination is a portable folder (copy, import, or clone), write links that
   point inside the copied prefix or its snapshots as relative links so they
-  survive a folder move; XDG copies keep absolute rebasing. Preserve Windows
+  survive a folder move. Snapshot create and restore in a portable folder
+  follow the same rule. XDG copies and snapshots keep absolute rebasing. Preserve Windows
   paths and external paths. Do not rewrite arbitrary strings in arguments,
   environment variables, registry data, or files; report literal old-prefix
   paths for manual review. Reuse clone/import coordination, validation, and
