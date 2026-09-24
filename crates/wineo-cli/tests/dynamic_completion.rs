@@ -318,3 +318,23 @@ fn completion_reads_the_selected_portable_folder() {
     );
     assert!(!root.path().join("missing").exists());
 }
+
+#[test]
+fn art_completes_environments_targets_and_kinds() {
+    let root = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    for action in ["set", "rm"] {
+        let names = complete(root.path(), "fish", &["wineo", "art", action, "ha"]);
+        assert_eq!(names, ["hades", "halo"], "{action}");
+        let names = complete(root.path(), "fish", &["wineo", "art", action, "hades."]);
+        assert_eq!(names, ["hades.game", "hades.launcher"], "{action}");
+        let names = complete(root.path(), "fish", &["wineo", "art", action, "hades.l"]);
+        assert_eq!(names, ["hades.launcher"], "{action}");
+        let kinds: Vec<String> =
+            complete(root.path(), "fish", &["wineo", "art", action, "hades", ""])
+                .into_iter()
+                .filter(|word| !word.starts_with('-'))
+                .collect();
+        assert_eq!(kinds, ["icon", "grid", "hero", "logo"], "{action}");
+    }
+}

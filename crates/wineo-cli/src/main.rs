@@ -64,6 +64,8 @@ enum Command {
     Programs(commands::programs::Args),
     /// List the desktop entries wineo has written
     Desktop(commands::desktop::Args),
+    /// Set or remove an environment's artwork
+    Art(commands::art::Args),
     /// Remove an environment
     Rm(commands::rm::Args),
     /// Show whether environments are running
@@ -128,6 +130,7 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Templates(args) => commands::templates::run(&paths, args),
         Command::Programs(args) => commands::programs::run(&paths, args),
         Command::Desktop(args) => commands::desktop::run(&paths, args),
+        Command::Art(args) => commands::art::run(&paths, args),
         Command::Rm(args) => commands::rm::run(&paths, args),
         Command::Status(args) => commands::status::run(&paths, args),
         Command::List(args) => commands::list::run(&paths, args),

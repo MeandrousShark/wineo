@@ -61,6 +61,35 @@ pub fn targets(current: &OsStr) -> Vec<CompletionCandidate> {
         .collect()
 }
 
+/// Completes `ENV`, and `ENV.TARGET` once a dot is typed.
+pub fn spots(current: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(prefix) = current.to_str() else {
+        return Vec::new();
+    };
+    let (portable, _) = split_portable(words_before_current());
+    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
+        return Vec::new();
+    };
+    let Some((name, target)) = prefix.split_once('.') else {
+        return environment::names(&paths)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|name| name.starts_with(prefix))
+            .map(CompletionCandidate::new)
+            .collect();
+    };
+    let Ok(environment) = Environment::load(&paths, name) else {
+        return Vec::new();
+    };
+    environment
+        .config
+        .targets
+        .keys()
+        .filter(|candidate| candidate.starts_with(target))
+        .map(|candidate| CompletionCandidate::new(format!("{name}.{candidate}")))
+        .collect()
+}
+
 pub fn snapshots(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(prefix) = current.to_str() else {
         return Vec::new();
