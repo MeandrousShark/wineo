@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -15,9 +15,12 @@ use serde::Deserialize;
 use toml_edit::{DocumentMut, Item, Table, Value};
 
 use crate::config;
+use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
 use crate::name;
+use crate::operation::Locks;
+use crate::paths::Paths;
 
 /// The largest art file wineo accepts.
 pub const MAX_BYTES: u64 = 32 * 1024 * 1024;
@@ -296,6 +299,321 @@ pub fn resolve(
         }
     }
     lookup(Origin::Environment, art_dir, None)
+}
+
+/// The dir art for `target`, or the environment for None, is stored in.
+pub fn spot_dir(art_dir: &Path, target: Option<&str>) -> PathBuf {
+    match target {
+        Some(target) => target_dir(art_dir, target),
+        None => art_dir.to_owned(),
+    }
+}
+
+/// How messages name an environment or one of its targets.
+fn spot_name(env: &str, target: Option<&str>) -> String {
+    match target {
+        Some(target) => format!("{env}.{target}"),
+        None => env.to_owned(),
+    }
+}
+
+/// What `set_manual` stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stored {
+    pub path: PathBuf,
+    pub format: Format,
+    /// Files the kind had in other formats, now removed.
+    pub removed: Vec<PathBuf>,
+}
+
+/// Copies `file` into the store as `kind` for `target`, or the environment for
+/// None, and records it as manual. Its format comes from its contents, and its
+/// bytes are kept as they are.
+pub fn set_manual(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    file: &Path,
+) -> Result<Stored> {
+    check_spot(paths, env, target)?;
+    let bytes = read_art(file)?;
+    let format = detect(&bytes)
+        .filter(|format| kind.accepts(*format))
+        .ok_or_else(|| Error::ArtFormat {
+            path: file.to_owned(),
+            accepted: accepted(kind),
+        })?;
+    let original = file
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let art_dir = paths.art_dir(env);
+    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    // Checked again under the lock, so art never outlives a concurrent `rm`.
+    Environment::ensure_exists(paths, env)?;
+    let mut art = ArtFile::open(&art_dir)?;
+    let dir = spot_dir(&art_dir, target);
+    fs::create_dir_all(&dir).context(|| format!("failed to create {}", dir.display()))?;
+    let path = dir.join(kind.file_name(format));
+    let tmp = dir.join(format!(".{}.tmp", kind.file_name(format)));
+    fs::write(&tmp, &bytes).context(|| format!("failed to write {}", path.display()))?;
+    fs::rename(&tmp, &path).context(|| format!("failed to write {}", path.display()))?;
+    art.set(
+        target,
+        kind,
+        Record {
+            format,
+            source: Source::Manual(original),
+        },
+    )?;
+    art.save()?;
+    // Only once the new file is recorded, so a failure leaves a duplicate the
+    // record already outranks rather than no art at all.
+    let mut removed = Vec::new();
+    if let Some(found) = find(&dir, kind, Some(format))? {
+        for old in found.duplicates {
+            fs::remove_file(&old).context(|| format!("failed to remove {}", old.display()))?;
+            removed.push(old);
+        }
+    }
+    Ok(Stored {
+        path,
+        format,
+        removed,
+    })
+}
+
+/// What `remove` took away.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Removed {
+    pub files: Vec<PathBuf>,
+    /// Whether `art.toml` had a record, even one whose file was gone.
+    pub record: bool,
+}
+
+/// Removes `kind` for `target`, or the environment for None: every file it
+/// has and its record. A target's removal never touches the environment's art
+/// it falls back to. The target itself need not exist, so art left behind by
+/// one that was removed can still be cleaned up.
+pub fn remove(paths: &Paths, env: &str, target: Option<&str>, kind: Kind) -> Result<Removed> {
+    if let Some(target) = target
+        && !name::is_valid(target)
+    {
+        return Err(Error::InvalidName(target.to_owned()));
+    }
+    Environment::ensure_exists(paths, env)?;
+    let art_dir = paths.art_dir(env);
+    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    Environment::ensure_exists(paths, env)?;
+    let mut art = ArtFile::open(&art_dir)?;
+    let dir = spot_dir(&art_dir, target);
+    let mut files = Vec::new();
+    if let Some(found) = find(&dir, kind, None)? {
+        files.push(found.path);
+        files.extend(found.duplicates);
+    }
+    let record = art.remove(target, kind);
+    if files.is_empty() && !record {
+        return Err(Error::NoArt {
+            spot: spot_name(env, target),
+            kind,
+        });
+    }
+    // The record goes first, so a failure leaves unrecorded files rather than
+    // a record claiming a file that is gone.
+    art.save()?;
+    for file in &files {
+        fs::remove_file(file).context(|| format!("failed to remove {}", file.display()))?;
+    }
+    if target.is_some() {
+        // Only an empty dir goes, so anything a user put there stays.
+        let _ = fs::remove_dir(&dir);
+    }
+    Ok(Removed { files, record })
+}
+
+/// Removes an environment's whole art dir, for `rm`. Returns whether there was one.
+pub fn remove_all(paths: &Paths, env: &str) -> Result<bool> {
+    let art_dir = paths.art_dir(env);
+    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    match fs::symlink_metadata(&art_dir) {
+        Ok(_) => {
+            fs::remove_dir_all(&art_dir)
+                .context(|| format!("failed to remove {}", art_dir.display()))?;
+            Ok(true)
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err).context(|| format!("failed to read {}", art_dir.display())),
+    }
+}
+
+/// Something `art list` warns about. None of them change the store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Warning {
+    /// Files that lose to the one a kind resolves to.
+    Duplicates {
+        target: Option<String>,
+        kind: Kind,
+        used: PathBuf,
+        ignored: Vec<PathBuf>,
+    },
+    /// A record whose file is gone.
+    MissingFile {
+        target: Option<String>,
+        kind: Kind,
+        path: PathBuf,
+    },
+    /// A `[targets.<target>]` table for a target the environment doesn't have.
+    UnknownTarget(String),
+}
+
+/// Everything `art list` shows for an environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listing {
+    pub game: Option<u64>,
+    /// Every kind, in `Kind::ALL` order, with the environment's art for it.
+    pub kinds: Vec<(Kind, Option<Resolved>)>,
+    /// Each of the environment's targets that overrides at least one kind,
+    /// with just its overrides.
+    pub targets: Vec<(String, Vec<Resolved>)>,
+    pub warnings: Vec<Warning>,
+}
+
+pub fn list(paths: &Paths, env: &str) -> Result<Listing> {
+    let environment = Environment::load(paths, env)?;
+    let art_dir = paths.art_dir(env);
+    let config = ArtConfig::load(&art_dir)?;
+    let mut warnings = Vec::new();
+    let mut kinds = Vec::new();
+    for kind in Kind::ALL {
+        let resolved = resolve(&art_dir, &config, None, kind)?;
+        check(
+            &art_dir,
+            &config,
+            None,
+            kind,
+            resolved.as_ref(),
+            &mut warnings,
+        );
+        kinds.push((kind, resolved));
+    }
+    let mut targets = Vec::new();
+    for target in environment.config.targets.keys() {
+        let mut overrides = Vec::new();
+        for kind in Kind::ALL {
+            let dir = target_dir(&art_dir, target);
+            let record = config.record(Some(target), kind);
+            let resolved = find(&dir, kind, record.map(|r| r.format))?.map(|found| Resolved {
+                origin: Origin::Target,
+                source: record
+                    .filter(|r| r.format == found.format)
+                    .map(|r| r.source.clone()),
+                found,
+            });
+            check(
+                &art_dir,
+                &config,
+                Some(target),
+                kind,
+                resolved.as_ref(),
+                &mut warnings,
+            );
+            overrides.extend(resolved);
+        }
+        if !overrides.is_empty() {
+            targets.push((target.clone(), overrides));
+        }
+    }
+    for target in config.targets.keys() {
+        if !environment.config.targets.contains_key(target) {
+            warnings.push(Warning::UnknownTarget(target.clone()));
+        }
+    }
+    Ok(Listing {
+        game: config.game,
+        kinds,
+        targets,
+        warnings,
+    })
+}
+
+fn check(
+    art_dir: &Path,
+    config: &ArtConfig,
+    target: Option<&str>,
+    kind: Kind,
+    resolved: Option<&Resolved>,
+    warnings: &mut Vec<Warning>,
+) {
+    let owned = target.map(str::to_owned);
+    if let Some(record) = config.record(target, kind) {
+        let path = spot_dir(art_dir, target).join(kind.file_name(record.format));
+        if !fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) {
+            warnings.push(Warning::MissingFile {
+                target: owned.clone(),
+                kind,
+                path,
+            });
+        }
+    }
+    if let Some(resolved) = resolved
+        && !resolved.found.duplicates.is_empty()
+    {
+        warnings.push(Warning::Duplicates {
+            target: owned,
+            kind,
+            used: resolved.found.path.clone(),
+            ignored: resolved.found.duplicates.clone(),
+        });
+    }
+}
+
+/// Refuses art for an environment or target that doesn't exist.
+fn check_spot(paths: &Paths, env: &str, target: Option<&str>) -> Result<()> {
+    match target {
+        None => Environment::ensure_exists(paths, env),
+        Some(target) => {
+            let environment = Environment::load(paths, env)?;
+            if environment.config.targets.contains_key(target) {
+                Ok(())
+            } else {
+                Err(Error::UnknownTarget {
+                    environment: env.to_owned(),
+                    target: target.to_owned(),
+                })
+            }
+        }
+    }
+}
+
+/// Reads an art file, refusing one over the cap without reading all of it.
+fn read_art(file: &Path) -> Result<Vec<u8>> {
+    let context = || format!("failed to read {}", file.display());
+    let mut bytes = Vec::new();
+    fs::File::open(file)
+        .context(context)?
+        .take(MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .context(context)?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err(Error::ArtTooLarge(file.to_owned()));
+    }
+    Ok(bytes)
+}
+
+/// The formats `kind` accepts, for a message, like "PNG, SVG, or JPEG".
+fn accepted(kind: Kind) -> String {
+    let names: Vec<String> = Format::ALL
+        .into_iter()
+        .filter(|format| kind.accepts(*format))
+        .map(|format| format.to_string())
+        .collect();
+    match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{}, or {last}", rest.join(", ")),
+        _ => names.concat(),
+    }
 }
 
 /// The file in an environment's art dir that records where its art came from.
@@ -1150,5 +1468,226 @@ manual = \"logo.png\"
             .unwrap()
             .unwrap();
         assert_eq!((icon.origin, icon.source), (Origin::Target, None));
+    }
+
+    fn store() -> (tempfile::TempDir, Paths) {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_owned();
+        let paths = Paths::from_lookup(move |key| {
+            (key == "HOME").then(|| std::ffi::OsString::from(home.as_os_str()))
+        })
+        .unwrap();
+        let config = paths.environment_config("hades");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        fs::write(
+            config,
+            "prefix = \"~/p\"\nrunner = \"wine\"\narch = \"win64\"\n\
+             [targets.server]\nexe = \"server.exe\"\n",
+        )
+        .unwrap();
+        (root, paths)
+    }
+
+    fn source(root: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = root.join("from").join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn set_keeps_the_bytes_and_records_the_original_name() {
+        let (root, paths) = store();
+        let file = source(root.path(), "My Poster.webp", WEBP);
+        let stored = set_manual(&paths, "hades", None, Kind::Grid, &file).unwrap();
+        let art = paths.art_dir("hades");
+        assert_eq!(stored.path, art.join("grid.webp"));
+        assert_eq!(stored.format, Format::Webp);
+        assert_eq!(fs::read(&stored.path).unwrap(), WEBP);
+        let text = read(&art);
+        assert!(text.starts_with("schema_version = 1\n"), "{text}");
+        assert_eq!(
+            ArtConfig::load(&art).unwrap().record(None, Kind::Grid),
+            Some(&manual(Format::Webp, "My Poster.webp"))
+        );
+        let listing = list(&paths, "hades").unwrap();
+        let (_, grid) = &listing.kinds[1];
+        assert_eq!(
+            grid.as_ref().unwrap().source,
+            Some(Source::Manual("My Poster.webp".into()))
+        );
+    }
+
+    #[test]
+    fn set_refuses_by_content_kind_and_size() {
+        let (root, paths) = store();
+        let text = source(root.path(), "icon.png", b"not an image");
+        let icon = ico();
+        let truncated = source(root.path(), "short.ico", &icon[..icon.len() - 1]);
+        let svg = source(root.path(), "page.svg", b"<?xml version=\"1.0\"?><html/>");
+        let webp = source(root.path(), "icon.webp", WEBP);
+        for (file, kind) in [
+            (&text, Kind::Icon),
+            (&truncated, Kind::Icon),
+            (&svg, Kind::Logo),
+            (&webp, Kind::Icon),
+        ] {
+            let err = set_manual(&paths, "hades", None, kind, file).unwrap_err();
+            assert!(matches!(err, Error::ArtFormat { .. }), "{err}");
+        }
+        let err = set_manual(
+            &paths,
+            "hades",
+            None,
+            Kind::Grid,
+            &source(root.path(), "x.ico", &icon),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "{} is not a PNG, SVG, JPEG, or WebP image",
+                root.path().join("from/x.ico").display()
+            )
+        );
+
+        let mut big = PNG.to_vec();
+        big.resize(MAX_BYTES as usize + 1, 0);
+        let big = source(root.path(), "big.png", &big);
+        let err = set_manual(&paths, "hades", None, Kind::Hero, &big).unwrap_err();
+        assert!(matches!(err, Error::ArtTooLarge(_)), "{err}");
+        let mut limit = PNG.to_vec();
+        limit.resize(MAX_BYTES as usize, 0);
+        let limit = source(root.path(), "limit.png", &limit);
+        set_manual(&paths, "hades", None, Kind::Hero, &limit).unwrap();
+
+        let ok = source(root.path(), "ok.png", PNG);
+        let err = set_manual(&paths, "hades", Some("nope"), Kind::Icon, &ok).unwrap_err();
+        assert!(matches!(err, Error::UnknownTarget { .. }), "{err}");
+        let err = set_manual(&paths, "nope", None, Kind::Icon, &ok).unwrap_err();
+        assert!(matches!(err, Error::UnknownEnvironment(_)), "{err}");
+        let art = paths.art_dir("hades");
+        assert!(!art.join("icon.png").exists());
+        assert!(!art.join("grid.ico").exists());
+    }
+
+    #[test]
+    fn set_replaces_a_kind_that_changes_format() {
+        let (root, paths) = store();
+        let art = paths.art_dir("hades");
+        let unrecorded = touch(&art, "icon.svg");
+        let first = source(root.path(), "a.png", PNG);
+        let stored = set_manual(&paths, "hades", None, Kind::Icon, &first).unwrap();
+        assert_eq!(stored.removed, vec![unrecorded.clone()]);
+        let second = source(root.path(), "b.ico", &ico());
+        let stored = set_manual(&paths, "hades", None, Kind::Icon, &second).unwrap();
+        assert_eq!(stored.path, art.join("icon.ico"));
+        assert_eq!(stored.removed, vec![art.join("icon.png")]);
+        let names: Vec<_> = fs::read_dir(&art)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names.contains(&"icon.ico".to_owned()));
+    }
+
+    #[test]
+    fn a_target_override_is_set_and_removed_on_its_own() {
+        let (root, paths) = store();
+        let art = paths.art_dir("hades");
+        let env_icon = source(root.path(), "env.png", PNG);
+        set_manual(&paths, "hades", None, Kind::Icon, &env_icon).unwrap();
+        let svg = source(root.path(), "server.svg", b"<svg/>");
+        let stored = set_manual(&paths, "hades", Some("server"), Kind::Icon, &svg).unwrap();
+        assert_eq!(stored.path, art.join("server/icon.svg"));
+        let listing = list(&paths, "hades").unwrap();
+        assert_eq!(listing.targets.len(), 1);
+        assert_eq!(listing.targets[0].1[0].found.path, stored.path);
+
+        let removed = remove(&paths, "hades", Some("server"), Kind::Icon).unwrap();
+        assert_eq!(removed.files, vec![stored.path]);
+        assert!(removed.record);
+        assert!(!art.join("server").exists());
+        assert!(art.join("icon.png").exists());
+        let config = ArtConfig::load(&art).unwrap();
+        assert!(config.targets.is_empty());
+        assert!(config.record(None, Kind::Icon).is_some());
+
+        let err = remove(&paths, "hades", Some("server"), Kind::Icon).unwrap_err();
+        assert_eq!(err.to_string(), "`hades.server` has no icon art");
+        let err = remove(&paths, "hades", None, Kind::Logo).unwrap_err();
+        assert_eq!(err.to_string(), "`hades` has no logo art");
+    }
+
+    #[test]
+    fn remove_takes_unrecorded_files_and_stale_records() {
+        let (_root, paths) = store();
+        let art = paths.art_dir("hades");
+        let png = touch(&art, "hero.png");
+        let jpg = touch(&art, "hero.jpg");
+        let removed = remove(&paths, "hades", None, Kind::Hero).unwrap();
+        assert_eq!((removed.files, removed.record), (vec![png, jpg], false));
+        assert!(!art.join(ART_FILE).exists());
+
+        fs::write(
+            art.join(ART_FILE),
+            "schema_version = 1\n[logo]\nfile = \"logo.png\"\nsteamgriddb = 3\n",
+        )
+        .unwrap();
+        let removed = remove(&paths, "hades", None, Kind::Logo).unwrap();
+        assert_eq!((removed.files.len(), removed.record), (0, true));
+        assert_eq!(read(&art), "schema_version = 1\n");
+    }
+
+    #[test]
+    fn list_warns_without_changing_anything() {
+        let (_root, paths) = store();
+        let art = paths.art_dir("hades");
+        let text = "schema_version = 1
+[icon]
+file = \"icon.svg\"
+manual = \"a.svg\"
+
+[targets.gone.logo]
+file = \"logo.png\"
+manual = \"b.png\"
+";
+        fs::create_dir_all(&art).unwrap();
+        fs::write(art.join(ART_FILE), text).unwrap();
+        let png = touch(&art, "grid.png");
+        let jpg = touch(&art, "grid.jpg");
+        touch(&target_dir(&art, "gone"), "logo.png");
+
+        let listing = list(&paths, "hades").unwrap();
+        assert_eq!(
+            listing.warnings,
+            vec![
+                Warning::MissingFile {
+                    target: None,
+                    kind: Kind::Icon,
+                    path: art.join("icon.svg"),
+                },
+                Warning::Duplicates {
+                    target: None,
+                    kind: Kind::Grid,
+                    used: png,
+                    ignored: vec![jpg],
+                },
+                Warning::UnknownTarget("gone".into()),
+            ]
+        );
+        assert_eq!(listing.kinds[0], (Kind::Icon, None));
+        assert!(listing.targets.is_empty());
+        assert_eq!(read(&art), text);
+    }
+
+    #[test]
+    fn remove_all_takes_the_whole_dir() {
+        let (root, paths) = store();
+        assert!(!remove_all(&paths, "hades").unwrap());
+        let file = source(root.path(), "a.png", PNG);
+        set_manual(&paths, "hades", Some("server"), Kind::Icon, &file).unwrap();
+        assert!(remove_all(&paths, "hades").unwrap());
+        assert!(!paths.art_dir("hades").exists());
     }
 }

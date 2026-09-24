@@ -159,6 +159,18 @@ pub enum Error {
     )]
     GamemodeMissing(String),
 
+    #[error("{} is larger than 32 MiB", .0.display())]
+    ArtTooLarge(PathBuf),
+
+    #[error("{} is not a {accepted} image", .path.display())]
+    ArtFormat { path: PathBuf, accepted: String },
+
+    #[error("`{spot}` has no {kind} art")]
+    NoArt {
+        spot: String,
+        kind: crate::art::Kind,
+    },
+
     #[error("environment `{environment}` has no target `{target}`")]
     UnknownTarget { environment: String, target: String },
 
