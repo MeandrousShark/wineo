@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+dbus-secret-service.workspace = true
 filetime.workspace = true
 flate2.workspace = true
 reqwest.workspace = true

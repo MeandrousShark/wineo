@@ -6,7 +6,7 @@ pkgdesc='Wine environment manager with live shell completions'
 arch=('x86_64')
 url='https://git.hannoncloud.com/mphannon/wineo'
 license=('GPL-3.0-or-later')
-depends=('glibc' 'libgcc' 'xz')
+depends=('dbus' 'glibc' 'libgcc' 'xz')
 makedepends=('cargo' 'git')
 optdepends=(
   'bash-completion: load Bash completions'

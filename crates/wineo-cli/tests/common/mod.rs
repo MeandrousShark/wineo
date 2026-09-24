@@ -260,6 +260,12 @@ impl Fixture {
             .env("XDG_DATA_HOME", root.join("data"))
             .env("XDG_STATE_HOME", root.join("state"))
             .env_remove("WINEO_PORTABLE_DIR")
+            .env_remove("WINEO_STEAMGRIDDB_KEY")
+            // No session bus, so nothing a test runs can reach the real keyring.
+            .env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                format!("unix:path={}", root.join("no-bus").display()),
+            )
             .env("PATH", &self.path_var)
             .stdin(Stdio::null());
         command

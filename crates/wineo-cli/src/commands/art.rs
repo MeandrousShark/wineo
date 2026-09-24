@@ -8,7 +8,8 @@ use clap_complete::ArgValueCompleter;
 use wineo_core::art::{self, Kind, Listing, Resolved, Source, Warning};
 use wineo_core::download::Https;
 use wineo_core::paths::Paths;
-use wineo_core::steamgriddb::{self, Keyring, NoKeyring, Saved};
+use wineo_core::secret_service::SecretServiceKeyring;
+use wineo_core::steamgriddb::{self, Keyring, Saved};
 
 use crate::{prompt, style};
 
@@ -89,10 +90,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The keyring the key is saved to. None is wired up yet, so the key file
-/// stands in until the keyring crate is chosen.
 fn keyring() -> Box<dyn Keyring> {
-    Box::new(NoKeyring)
+    Box::new(SecretServiceKeyring::steamgriddb())
 }
 
 fn key(paths: &Paths, keyring: &dyn Keyring, remove: bool) -> anyhow::Result<()> {
