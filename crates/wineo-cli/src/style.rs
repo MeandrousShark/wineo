@@ -14,13 +14,21 @@ const WARNING: Style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Yellow)
 const ERROR: Style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Red)));
 const DIM: Style = Style::new().effects(Effects::DIMMED);
 
-/// Whether stdout should carry ANSI styling right now.
+/// Whether stdout should carry ANSI styling right now. Unit tests compare
+/// plain text even when run from a terminal, so they only see real detection
+/// through the stream probe.
 pub fn stdout_enabled() -> bool {
+    if cfg!(test) && std::env::var_os("WINEO_STYLE_STREAM_PROBE").is_none() {
+        return false;
+    }
     anstream::AutoStream::choice(&std::io::stdout()) != anstream::ColorChoice::Never
 }
 
 /// Whether stderr should carry ANSI styling right now.
 pub fn stderr_enabled() -> bool {
+    if cfg!(test) && std::env::var_os("WINEO_STYLE_STREAM_PROBE").is_none() {
+        return false;
+    }
     anstream::AutoStream::choice(&std::io::stderr()) != anstream::ColorChoice::Never
 }
 
@@ -143,8 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn styling_is_off_when_not_a_terminal() {
-        // Test binaries never run with a real terminal on stdout.
+    fn styling_is_off_in_unit_tests() {
         assert_eq!(title("Heading"), "Heading");
         assert_eq!(warning("careful"), "careful");
         assert_eq!(error("failed"), "failed");
