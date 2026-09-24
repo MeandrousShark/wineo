@@ -114,7 +114,7 @@ fn create(paths: &Paths, env: &str, label: &str, verbose: bool) -> anyhow::Resul
 fn restore(paths: &Paths, env: &str, label: &str, yes: bool) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let reviewed = snapshot::inspect_restore(paths, &global, env, label)?;
-    print_restore_review(&reviewed);
+    print_restore_review(paths, &reviewed);
     if !yes {
         if !prompt::interactive() {
             bail!("restore needs an interactive terminal or --yes");
@@ -190,13 +190,14 @@ fn print_create_review(reviewed: &CreateInspection, verbose: bool) {
     println!("The prefix and any external launcher must be idle.");
 }
 
-fn print_restore_review(reviewed: &RestoreInspection) {
+fn print_restore_review(paths: &Paths, reviewed: &RestoreInspection) {
     println!(
-        "Restore {} from {}\n  snapshot: {}\n  replace prefix: {}\n  layout: {:?}\n  current runner: {}\n  saved runner: {}\n  config: {}",
+        "Restore {} from {}\n  snapshot: {}\n  replace prefix: {}\n  restore config: {}\n  layout: {:?}\n  current runner: {}\n  saved runner: {}\n  config: {}",
         reviewed.name,
         reviewed.label,
         reviewed.snapshot.display(),
         reviewed.prefix.display(),
+        paths.environment_config(&reviewed.name).display(),
         reviewed.layout,
         reviewed.current_runner,
         reviewed.saved_runner,
