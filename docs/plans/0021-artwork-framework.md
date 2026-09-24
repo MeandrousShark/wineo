@@ -179,6 +179,39 @@ desktop entries is plan 0022, and showing posters and heroes is for
   write, the same way component downloads are. A download over 32 MiB is
   abandoned.
 
+- The game list shows each match's name, release year when known, and ID,
+  so the ID can be reused with `--game`:
+
+  ```
+  Which game is it?
+    1) Hades (2020), 1234
+    2) Hades II (2024), 5678
+    3) Hades Demo, 9012
+  Ctrl+C cancel
+  Game [1]:
+  ```
+- Picking a game needs a terminal. Without one, a fetch that would search
+  fails with `picking a game needs a terminal, pass --game instead`.
+  `--game`, a saved game, and `--asset` work without one.
+- `--search` searches again even when a game is saved, and `--game` or a new
+  pick replaces the saved game. `art.toml` has one game, so a target fetch
+  uses and changes the environment's game.
+- A target fetch fills only the target's own overrides. Art it inherits from
+  the environment does not count as present.
+- Fetch prints one line per kind:
+
+  ```
+  icon: fetched SteamGridDB 36952
+  grid: skipped, it already has art
+  hero: nothing found
+  ```
+- A kind with nothing left after the filters exits 1 when `--only` named it,
+  and 0 otherwise. A download or API error stops the fetch, keeping the kinds
+  already fetched, so a rerun fills the rest.
+- `--asset` requires `--only` and looks for the ID in that kind's filtered
+  results, so it cannot fetch animated, NSFW, or humor art either. An ID not
+  found there fails with `asset 999 is not among this game's icon art`.
+
 ### Other commands
 
 - `wineo art list ENV` shows the environment's kinds, then a block for each
