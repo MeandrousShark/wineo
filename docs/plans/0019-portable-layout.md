@@ -75,7 +75,10 @@ Support both new environments and copying existing ones into the directory.
   overlap the source. Review external paths and destination storage before
   copying.
 - Use a staged copy and publish without replacement. Rebase internal Unix
-  target paths, prefix symlinks, and portable config paths. Preserve Windows
+  target paths, prefix symlinks, and portable config paths. When the
+  destination is a portable folder (copy, import, or clone), write links that
+  point inside the copied prefix or its snapshots as relative links so they
+  survive a folder move; XDG copies keep absolute rebasing. Preserve Windows
   paths and external paths. Do not rewrite arbitrary strings in arguments,
   environment variables, registry data, or files; report literal old-prefix
   paths for manual review. Reuse clone/import coordination, validation, and
