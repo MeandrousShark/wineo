@@ -43,10 +43,14 @@ pub struct CopyInspection {
     pub changed_settings: Vec<String>,
     pub literal_source_paths: Vec<String>,
     pub storage: Storage,
-    /// The source global config is copied, since the folder has none yet.
+    /// The folder has no config dir yet, so the source global config and
+    /// templates come along. Otherwise the folder's own are kept.
+    pub first_copy: bool,
     pub copies_global_config: bool,
-    /// The source templates are copied, since the folder has none yet.
     pub copied_templates: Vec<String>,
+    /// Links in snapshots that point outside the prefix and its snapshots,
+    /// so they keep pointing at the source.
+    pub snapshot_links: Vec<ExternalDependency>,
     source_config: String,
     prefix: import::Inspection,
     config_text: String,
@@ -124,6 +128,12 @@ pub fn inspect(
     check_sharing(from, name, &source_root)?;
 
     let snapshots = snapshot::list(from, name)?;
+    let resolved_snapshots = paths::resolve(&source_snapshots);
+    let moved = [source_root.as_path(), &resolved_snapshots];
+    let mut snapshot_links = Vec::new();
+    for item in &snapshots {
+        snapshot_links.extend(import::external_links(&item.path, &moved)?);
+    }
     let snapshot_fingerprints = snapshots
         .iter()
         .map(|item| import::fingerprint(&item.path))
@@ -144,7 +154,13 @@ pub fn inspect(
         true,
     )?;
 
-    let global_text = if to.global_config().exists() {
+    let config_dir = to
+        .environments_dir()
+        .parent()
+        .ok_or_else(|| anyhow!("config dir has no parent"))?
+        .to_owned();
+    let first_copy = fs::symlink_metadata(&config_dir).is_err();
+    let global_text = if !first_copy {
         None
     } else {
         match fs::read_to_string(from.global_config()) {
@@ -156,18 +172,18 @@ pub fn inspect(
             }
         }
     };
-    let (copied_templates, templates_fingerprint) =
-        if fs::symlink_metadata(to.templates_dir()).is_ok() || !from.templates_dir().is_dir() {
-            (Vec::new(), None)
-        } else {
-            let mut names: Vec<String> = fs::read_dir(from.templates_dir())?
-                .filter_map(|entry| entry.ok())
-                .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
-                .filter_map(|file| file.strip_suffix(".toml").map(str::to_owned))
-                .collect();
-            names.sort();
-            (names, Some(import::fingerprint(&from.templates_dir())?))
-        };
+    let (copied_templates, templates_fingerprint) = if !first_copy || !from.templates_dir().is_dir()
+    {
+        (Vec::new(), None)
+    } else {
+        let mut names: Vec<String> = fs::read_dir(from.templates_dir())?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .filter_map(|file| file.strip_suffix(".toml").map(str::to_owned))
+            .collect();
+        names.sort();
+        (names, Some(import::fingerprint(&from.templates_dir())?))
+    };
 
     Ok(CopyInspection {
         name: name.to_owned(),
@@ -179,11 +195,18 @@ pub fn inspect(
         layout: prefix.layout,
         targets: config.targets.keys().cloned().collect(),
         snapshots: snapshots.into_iter().map(|item| item.label).collect(),
-        external_dependencies: prefix.external_dependencies.clone(),
+        external_dependencies: prefix
+            .external_dependencies
+            .iter()
+            .filter(|link| !link.target.starts_with(&resolved_snapshots))
+            .cloned()
+            .collect(),
         external_target_paths,
         changed_settings,
         literal_source_paths,
+        first_copy,
         copies_global_config: global_text.is_some(),
+        snapshot_links,
         copied_templates,
         source_config,
         prefix,
@@ -254,26 +277,38 @@ pub fn execute_reviewed(
         })?;
     let _publish_lock = InstallLock::acquire(&reviewed.destination)?;
 
+    let destination_snapshots = to.snapshot_root(&reviewed.destination, name);
+    let source_snapshots = from.snapshot_root(&reviewed.source_root, name);
+    let snapshots_moved = (
+        paths::resolve(&source_snapshots),
+        destination_snapshots.clone(),
+    );
     let staged_prefix = staging.path().join("prefix");
-    import::copy_tree(
+    import::copy_tree_moving(
         &reviewed.source_root,
         &staged_prefix,
         &reviewed.destination,
+        std::slice::from_ref(&snapshots_moved),
         cancel,
         &mut progress,
     )?;
-    let destination_snapshots = to.snapshot_root(&reviewed.destination, name);
-    let source_snapshots = from.snapshot_root(&reviewed.source_root, name);
+    // A snapshot becomes the live prefix again on restore, so its links into
+    // the prefix or its other snapshots follow the copy too.
+    let moved = [
+        (reviewed.source_root.clone(), reviewed.destination.clone()),
+        snapshots_moved,
+    ];
     let staged_snapshots = staging.path().join("snapshots");
     if !reviewed.snapshots.is_empty() {
         fs::create_dir(&staged_snapshots)?;
     }
     for label in &reviewed.snapshots {
         let staged = staged_snapshots.join(label);
-        import::copy_tree(
+        import::copy_tree_moving(
             &source_snapshots.join(label),
             &staged,
             &destination_snapshots.join(label),
+            &moved,
             cancel,
             &mut progress,
         )?;

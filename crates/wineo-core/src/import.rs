@@ -718,7 +718,45 @@ pub(crate) fn copy_tree(
     cancel: &AtomicBool,
     progress: &mut impl FnMut(ImportProgress),
 ) -> Result<()> {
-    copy_tree_with_reflink_mode(source, destination, final_root, cancel, progress, false)
+    copy_tree_with_reflink_mode(
+        source,
+        destination,
+        final_root,
+        &[],
+        cancel,
+        progress,
+        false,
+    )
+}
+
+/// Like `copy_tree`, but a link into one of the other trees `moved` names, as
+/// `(from, to)`, follows it to where that tree is copied, the way a link into
+/// the copied tree itself does.
+pub(crate) fn copy_tree_moving(
+    source: &Path,
+    destination: &Path,
+    final_root: &Path,
+    moved: &[(PathBuf, PathBuf)],
+    cancel: &AtomicBool,
+    progress: &mut impl FnMut(ImportProgress),
+) -> Result<()> {
+    copy_tree_with_reflink_mode(
+        source,
+        destination,
+        final_root,
+        moved,
+        cancel,
+        progress,
+        false,
+    )
+}
+
+/// Links under `root` that point outside it and outside every tree in `moved`.
+pub(crate) fn external_links(root: &Path, moved: &[&Path]) -> Result<Vec<ExternalDependency>> {
+    Ok(find_external_dependencies(root)?
+        .into_iter()
+        .filter(|link| !moved.iter().any(|tree| link.target.starts_with(tree)))
+        .collect())
 }
 
 pub(crate) fn copy_tree_strict_reflink(
@@ -728,13 +766,14 @@ pub(crate) fn copy_tree_strict_reflink(
     cancel: &AtomicBool,
     progress: &mut impl FnMut(ImportProgress),
 ) -> Result<()> {
-    copy_tree_with_reflink_mode(source, destination, final_root, cancel, progress, true)
+    copy_tree_with_reflink_mode(source, destination, final_root, &[], cancel, progress, true)
 }
 
 fn copy_tree_with_reflink_mode(
     source: &Path,
     destination: &Path,
     final_root: &Path,
+    moved: &[(PathBuf, PathBuf)],
     cancel: &AtomicBool,
     progress: &mut impl FnMut(ImportProgress),
     strict_reflink: bool,
@@ -747,6 +786,7 @@ fn copy_tree_with_reflink_mode(
     let options = CopyOptions {
         source_root: source,
         final_root,
+        moved,
         cancel,
         strict_reflink,
     };
@@ -757,6 +797,7 @@ fn copy_tree_with_reflink_mode(
 struct CopyOptions<'a> {
     source_root: &'a Path,
     final_root: &'a Path,
+    moved: &'a [(PathBuf, PathBuf)],
     cancel: &'a AtomicBool,
     strict_reflink: bool,
 }
@@ -785,6 +826,13 @@ fn copy_entry(
             } else {
                 target
             }
+        } else if let Some((from, to)) = options
+            .moved
+            .iter()
+            .find(|(from, _)| resolved.starts_with(from))
+        {
+            let relative = resolved.strip_prefix(from).unwrap_or(Path::new(""));
+            lexical_normalize(&to.join(relative))
         } else {
             // An external link would point somewhere else after copying when
             // it is relative, or through an internal link that is re-rooted.

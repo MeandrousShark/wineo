@@ -102,11 +102,15 @@ fn print_review(reviewed: &CopyInspection, verbose: bool) {
     for setting in &reviewed.changed_settings {
         println!("  change: {setting}");
     }
-    if reviewed.copies_global_config {
-        println!("  global config: copied, prefix_root follows the folder");
-    }
-    if !reviewed.copied_templates.is_empty() {
-        println!("  templates: {}", reviewed.copied_templates.join(", "));
+    if reviewed.first_copy {
+        if reviewed.copies_global_config {
+            println!("  global config: copied, prefix_root follows the folder");
+        }
+        if !reviewed.copied_templates.is_empty() {
+            println!("  templates: {}", reviewed.copied_templates.join(", "));
+        }
+    } else {
+        println!("  global config and templates: the folder's own are kept");
     }
     for path in &reviewed.literal_source_paths {
         println!("  source path in settings: {path} (check after copying)");
@@ -129,6 +133,13 @@ fn print_review(reviewed: &CopyInspection, verbose: bool) {
     {
         println!(
             "  external: {} -> {} (kept in place)",
+            link.source.display(),
+            link.target.display()
+        );
+    }
+    for link in &reviewed.snapshot_links {
+        println!(
+            "  snapshot external: {} -> {} (kept in place)",
             link.source.display(),
             link.target.display()
         );

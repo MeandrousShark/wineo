@@ -147,8 +147,12 @@ fn later_copies_keep_the_folders_global_config_and_templates() {
 
     let copied = copy(&f, "other", &dir);
     assert_success(&copied);
-    assert!(!stdout(&copied).contains("global config"));
-    assert!(!stdout(&copied).contains("templates:"));
+    assert!(
+        stdout(&copied).contains("global config and templates: the folder's own are kept"),
+        "{}",
+        stdout(&copied)
+    );
+    assert!(!stdout(&copied).contains("templates: gaming"));
     assert_eq!(read(dir.join("config/config.toml")), "# mine\n");
     assert!(!dir.join("config/templates/gaming.toml").exists());
     assert!(read(dir.join("config/environments/other.toml")).contains("prefixes/other"));
@@ -264,4 +268,67 @@ fn names(output: &std::process::Output) -> Vec<String> {
         .filter_map(|line| line.split_whitespace().next())
         .map(str::to_owned)
         .collect()
+}
+
+#[test]
+fn a_folder_with_a_config_dir_keeps_its_own_even_without_a_global_config() {
+    let Some((f, _)) = fixture() else { return };
+    let dir = f.root.path().join("usb");
+    assert_success(&portable(&f, &dir, &["new", "-n", "fresh"]));
+    assert!(dir.join("config").is_dir());
+    assert!(!dir.join("config/config.toml").exists());
+
+    let copied = copy(&f, "game", &dir);
+    assert_success(&copied);
+    let review = stdout(&copied);
+    assert!(
+        review.contains("global config and templates: the folder's own are kept"),
+        "{review}"
+    );
+    assert!(!dir.join("config/config.toml").exists());
+    assert!(!dir.join("config/templates").exists());
+}
+
+#[test]
+fn links_in_snapshots_follow_the_copied_prefix() {
+    let Some((f, prefix)) = fixture() else { return };
+    assert_success(&f.run(&["snapshot", "create", "game", "one"]));
+    let saved = prefix
+        .parent()
+        .unwrap()
+        .join(".wineo-snapshots/game/one/prefix/drive_c");
+    std::os::unix::fs::symlink(prefix.join("drive_c/game.exe"), saved.join("live")).unwrap();
+    std::os::unix::fs::symlink("/opt/external/thing", saved.join("outside")).unwrap();
+    let dir = f.root.path().join("usb");
+
+    let copied = copy(&f, "game", &dir);
+    assert_success(&copied);
+    let review = stdout(&copied);
+    assert!(
+        review.contains("snapshot external:") && review.contains("-> /opt/external/thing"),
+        "{review}"
+    );
+    assert!(
+        !review.contains(&format!("-> {}", prefix.join("drive_c/game.exe").display())),
+        "{review}"
+    );
+
+    assert_success(&portable(
+        &f,
+        &dir,
+        &["snapshot", "restore", "game", "one", "--yes"],
+    ));
+    let live = dir.join("prefixes/game/drive_c");
+    assert_eq!(
+        fs::read_link(live.join("live")).unwrap(),
+        live.join("game.exe")
+    );
+    assert_eq!(
+        fs::read_link(live.join("outside")).unwrap(),
+        Path::new("/opt/external/thing")
+    );
+    assert_eq!(
+        fs::read_link(saved.join("live")).unwrap(),
+        prefix.join("drive_c/game.exe")
+    );
 }
