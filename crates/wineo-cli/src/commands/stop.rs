@@ -103,7 +103,7 @@ pub fn stop(paths: &Paths, name: &str, force: bool) -> anyhow::Result<Outcome> {
 /// Stops whatever an installer left running when wineo could not confirm it
 /// was done, which is what other commands are refused over until then.
 fn clean_up_installer(paths: &Paths, name: &str) -> anyhow::Result<Option<Cleaned>> {
-    let global = GlobalConfig::load(paths).unwrap_or_default();
+    let global = GlobalConfig::load_or_default(paths)?;
     let timeout = Duration::from_secs(u64::from(global.stop_timeout) + 10);
     let record = Runtime::new(paths, name).operation_path();
     let cleaned = installer::clean_up(paths, &global, name, timeout).with_context(|| {

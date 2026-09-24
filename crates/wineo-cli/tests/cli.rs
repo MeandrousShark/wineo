@@ -117,6 +117,62 @@ fn set_global_takes_settings_without_a_name() {
     );
 }
 
+fn write_global(root: &Path, text: &str) -> PathBuf {
+    let path = root.join("config/wineo/config.toml");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, text).unwrap();
+    path
+}
+
+#[test]
+fn set_refuses_to_use_defaults_for_an_unsupported_global_config() {
+    let root = tempfile::tempdir().unwrap();
+    let global = write_global(root.path(), "schema_version = 2\n");
+    let path = write_environment(root.path(), "notepad", MINIMAL_ENVIRONMENT);
+    let result = output(wineo(root.path()).args(["set", "notepad", "gamemode=true"]));
+    assert!(!result.status.success());
+    assert!(
+        stderr(&result).contains(&format!(
+            "unsupported schema_version 2 in {}",
+            global.display()
+        )),
+        "{}",
+        stderr(&result)
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), MINIMAL_ENVIRONMENT);
+    assert_eq!(fs::read_to_string(&global).unwrap(), "schema_version = 2\n");
+}
+
+#[test]
+fn set_still_falls_back_to_defaults_for_a_broken_global_config() {
+    let root = tempfile::tempdir().unwrap();
+    write_global(root.path(), "stop_timeout = [\n");
+    let path = write_environment(root.path(), "notepad", MINIMAL_ENVIRONMENT);
+    let result = output(wineo(root.path()).args(["set", "notepad", "gamemode=true"]));
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .contains("gamemode = true")
+    );
+}
+
+#[test]
+fn run_refuses_an_unsupported_environment_version() {
+    let root = tempfile::tempdir().unwrap();
+    let text = format!("schema_version = 0\n{}", env_toml("notepad"));
+    let path = write_environment(root.path(), "notepad", &text);
+    let result = output(wineo(root.path()).args(["run", "notepad"]));
+    assert!(!result.status.success());
+    assert!(
+        stderr(&result).contains("unsupported schema_version 0"),
+        "{}",
+        stderr(&result)
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    assert!(!runtime_dir(root.path(), "notepad").exists());
+}
+
 #[test]
 fn set_needs_a_name_or_global_and_something_to_change() {
     let root = tempfile::tempdir().unwrap();

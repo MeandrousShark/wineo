@@ -157,7 +157,7 @@ fn apply_desktop(paths: &Paths, name: &str, held: bool) -> anyhow::Result<()> {
         .flatten();
     let may_run_wine =
         held || (launch.is_some() && Runtime::new(paths, name).check_resolved(name).is_ok());
-    let global = GlobalConfig::load(paths).unwrap_or_default();
+    let global = GlobalConfig::load_or_default(paths)?;
     let runner = may_run_wine
         .then(|| Runners::new(paths, &global).ok())
         .flatten()
@@ -317,7 +317,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // Checked under the lock, so a typo never gets written and the runner
     // cannot be removed between the check and the write.
     if let ConfigFile::Environment(name) = file {
-        let global = GlobalConfig::load(paths).unwrap_or_default();
+        let global = GlobalConfig::load_or_default(paths)?;
         let runner = check_runner(paths, &global, name, &pairs)?;
         check_desktop(paths, name, &pairs, &unset)?;
         apply_components(paths, &global, name, runner.as_ref(), &pairs, &unset)?;

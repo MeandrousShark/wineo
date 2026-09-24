@@ -182,6 +182,15 @@ impl GlobalConfig {
         }
     }
 
+    /// Like `load`, but a broken file means defaults. A file in a format this
+    /// wineo doesn't know is still an error, so nothing acts on guessed settings.
+    pub fn load_or_default(paths: &Paths) -> Result<Self> {
+        match Self::load(paths) {
+            Err(err @ Error::SchemaVersion { .. }) => Err(err),
+            result => Ok(result.unwrap_or_default()),
+        }
+    }
+
     /// `path` is only used for error messages.
     pub fn parse(path: &Path, text: &str) -> Result<Self> {
         check_schema(path, text)?;
@@ -536,6 +545,12 @@ mod tests {
     fn a_missing_global_config_stays_missing() {
         let (_root, paths) = temp_paths();
         assert_eq!(GlobalConfig::load(&paths).unwrap().schema_version, 0);
+        assert_eq!(
+            GlobalConfig::load_or_default(&paths)
+                .unwrap()
+                .schema_version,
+            0
+        );
         assert!(!paths.global_config().exists());
     }
 
@@ -549,6 +564,25 @@ mod tests {
         assert_eq!(GlobalConfig::load(&paths).unwrap().stop_timeout, 3);
         assert_eq!(fs::read_to_string(&path).unwrap(), text);
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+    }
+
+    #[test]
+    fn load_or_default_only_forgives_a_broken_file() {
+        let (_root, paths) = temp_paths();
+        write_global(&paths, "stop_timeout = [\n");
+        let config = GlobalConfig::load_or_default(&paths).unwrap();
+        assert_eq!(config.stop_timeout, DEFAULT_STOP_TIMEOUT);
+
+        for version in ["0", "2", "\"1\""] {
+            write_global(
+                &paths,
+                &format!("schema_version = {version}\nstop_timeout = 3\n"),
+            );
+            assert!(matches!(
+                GlobalConfig::load_or_default(&paths),
+                Err(Error::SchemaVersion { .. })
+            ));
+        }
     }
 
     #[test]
