@@ -32,6 +32,11 @@ regular files when supported, with a normal copy when they are not.
   the command works without a terminal. Shell completion offers existing
   environments for SOURCE. The destination defaults to the configured prefix
   root plus NEW_NAME. `--dir` selects a different new prefix directory.
+- For example, `wineo clone zomboid zomboid_modded` copies to
+  `~/.local/share/wineo/prefixes/zomboid_modded` when the prefix root has its
+  default value. Use `--dir ~/somewhere/zomboid_modded` only to override that
+  destination. A bare `.local/share/...` path is relative to the current
+  directory, not the home directory.
 - This command always copies. It does not adopt, merge, overwrite, change the
   runner, or create a new Wine prefix. Refuse an existing environment name,
   existing destination, or overlapping source and destination paths.
