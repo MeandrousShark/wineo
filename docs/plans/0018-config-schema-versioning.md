@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0018: Config schema versioning
 
