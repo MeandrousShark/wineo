@@ -391,7 +391,7 @@ pub struct Spec {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claim {
     pub name: String,
-    pub locks_dir: PathBuf,
+    pub locks: Locks,
     pub config: PathBuf,
 }
 
@@ -515,8 +515,10 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
 
     // `start` holds a lock of its own until this one is taken, but it lets go
     // when it exits, so the run keeps its protection here instead.
-    let locks = Locks::at(spec.claim.locks_dir.clone());
-    let _claim = locks.acquire(Operation::Launch, &spec.claim.name, &[&spec.launch.prefix])?;
+    let _claim =
+        spec.claim
+            .locks
+            .acquire(Operation::Launch, &spec.claim.name, &[&spec.launch.prefix])?;
     // The spec was prepared before the lock, so it can be stale by now.
     if !spec.claim.config.is_file() {
         return Err(Error::UnknownEnvironment(spec.claim.name.clone()));
@@ -713,7 +715,7 @@ mod tests {
         let spec = Spec {
             claim: Claim {
                 name: "app".to_owned(),
-                locks_dir: PathBuf::from("/state/wineo/.locks"),
+                locks: Locks::at(PathBuf::from("/state/wineo/.locks")),
                 config: PathBuf::from("/config/wineo/environments/app.toml"),
             },
             runtime_dir: PathBuf::from("/state/wineo/app"),

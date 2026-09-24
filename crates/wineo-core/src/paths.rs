@@ -16,6 +16,8 @@ pub struct Paths {
     config: PathBuf,
     data: PathBuf,
     state: PathBuf,
+    /// The XDG state dir, shared by every root, for locks that have to be.
+    host_state: PathBuf,
     portable: Option<PathBuf>,
 }
 
@@ -48,10 +50,12 @@ impl Paths {
                 .unwrap_or_else(|| home.join(fallback))
                 .join("wineo")
         };
+        let state = base("XDG_STATE_HOME", ".local/state");
         let mut paths = Self {
             config: base("XDG_CONFIG_HOME", ".config"),
             data: base("XDG_DATA_HOME", ".local/share"),
-            state: base("XDG_STATE_HOME", ".local/state"),
+            host_state: state.clone(),
+            state,
             home,
             portable: None,
         };
@@ -115,7 +119,7 @@ impl Paths {
         prefix
             .parent()
             .expect("a prefix root has a parent")
-            .join(".wineo-snapshots")
+            .join(SNAPSHOTS)
             .join(name)
     }
 
@@ -166,6 +170,18 @@ impl Paths {
     /// dir of an environment, and stable, so removing one leaves it alone.
     pub fn locks_dir(&self) -> PathBuf {
         self.state.join(".locks")
+    }
+
+    /// Prefix lock files. Host-wide rather than per root, so environments in
+    /// different roots that touch the same prefix still coordinate.
+    pub fn prefix_locks_dir(&self) -> PathBuf {
+        self.host_state.join(".locks")
+    }
+
+    /// Where an interrupted snapshot restore of `name` leaves its marker. A
+    /// portable one sits beside the snapshots, so it moves with the folder.
+    pub fn restore_marker(&self, name: &str) -> PathBuf {
+        restore_marker(&self.locks_dir(), self.portable.as_deref(), name)
     }
 
     pub fn runtime_dir(&self, name: &str) -> PathBuf {
@@ -226,24 +242,89 @@ impl Paths {
         self.contract(path)
     }
 
-    /// Resolves a path read from a config file. A portable folder resolves
-    /// relative paths from its root, independent of the current directory.
-    /// Windows paths are left to wine, so they give None.
+    /// Resolves a Unix path read from a config file. A portable folder
+    /// resolves relative paths from its root, independent of the current
+    /// directory. Elsewhere this is `absolute`.
+    pub fn config_path(&self, value: &str) -> Result<PathBuf> {
+        match &self.portable {
+            Some(root) => {
+                let path = self.expand(value);
+                Ok(if path.is_absolute() {
+                    path
+                } else {
+                    root.join(path)
+                })
+            }
+            None => self.absolute(value),
+        }
+    }
+
+    /// Like `config_path`, but Windows paths are left to wine, so they give None.
     pub fn resolve_stored(&self, value: &str) -> Result<Option<PathBuf>> {
         if winpath::is_windows_path(value) {
             return Ok(None);
         }
-        match &self.portable {
-            Some(root) => {
-                let path = self.expand(value);
-                Ok(Some(if path.is_absolute() {
-                    path
-                } else {
-                    root.join(path)
-                }))
-            }
-            None => self.absolute(value).map(Some),
+        self.config_path(value).map(Some)
+    }
+
+    /// The config form of a target path. In a portable folder, a Unix path
+    /// inside it becomes relative to the root. Anything else, and every value
+    /// outside portable mode, is kept as written.
+    pub fn store_value(&self, value: &str) -> Result<String> {
+        if self.portable.is_none() || winpath::is_windows_path(value) {
+            return Ok(value.to_owned());
         }
+        let path = self.expand(value);
+        if path.is_absolute() && self.portable_relative(&path).is_some() {
+            return self.store(&path);
+        }
+        Ok(value.to_owned())
+    }
+
+    /// `path` relative to the portable root, when a folder is selected and the
+    /// path is inside it.
+    pub fn portable_relative(&self, path: &Path) -> Option<PathBuf> {
+        let root = self.portable.as_ref()?;
+        resolve(path).strip_prefix(root).ok().map(Path::to_owned)
+    }
+
+    /// Refuses a prefix a portable folder can't carry. Always passes outside
+    /// portable mode.
+    pub fn check_prefix(&self, prefix: &Path) -> Result<()> {
+        let Some(root) = &self.portable else {
+            return Ok(());
+        };
+        let prefixes = root.join("prefixes");
+        let inside = resolve(prefix)
+            .strip_prefix(&prefixes)
+            .ok()
+            .and_then(|rest| rest.components().next())
+            .is_some_and(|first| first.as_os_str() != SNAPSHOTS);
+        if inside {
+            Ok(())
+        } else {
+            Err(Error::PrefixOutsidePortable(prefixes))
+        }
+    }
+
+    /// The config form of a prefix, refusing one outside a portable folder.
+    pub fn store_prefix(&self, prefix: &Path) -> Result<String> {
+        self.check_prefix(prefix)?;
+        self.store(prefix)
+    }
+}
+
+/// The directory beside prefixes that holds their snapshots.
+pub(crate) const SNAPSHOTS: &str = ".wineo-snapshots";
+
+pub(crate) fn restore_marker(locks_dir: &Path, portable: Option<&Path>, name: &str) -> PathBuf {
+    match portable {
+        Some(root) => root
+            .join("prefixes")
+            .join(SNAPSHOTS)
+            .join(name)
+            .join("restore.json"),
+        None => locks_dir.join(format!("snapshot-restore-{name}-restore.json")),
     }
 }
 

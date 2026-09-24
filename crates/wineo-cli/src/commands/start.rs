@@ -75,7 +75,7 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
     let spec = Spec {
         claim: Claim {
             name: name.to_owned(),
-            locks_dir: paths.locks_dir(),
+            locks: Locks::new(paths),
             config: environment.path.clone(),
         },
         runtime_dir: runtime.dir().to_owned(),

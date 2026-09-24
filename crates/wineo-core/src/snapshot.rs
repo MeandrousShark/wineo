@@ -20,7 +20,6 @@ use crate::runtime::Runtime;
 
 const VERSION: u32 = 1;
 const MANIFEST: &str = "manifest.json";
-const MARKER: &str = "restore.json";
 
 pub use crate::import::Cancelled as Canceled;
 
@@ -570,11 +569,7 @@ fn ensure_regular(path: &Path) -> Result<()> {
 }
 
 fn marker_path(paths: &Paths, name: &str) -> PathBuf {
-    paths.locks_dir().join(marker_name(name))
-}
-
-pub(crate) fn marker_name(name: &str) -> String {
-    format!("snapshot-restore-{name}-{MARKER}")
+    paths.restore_marker(name)
 }
 
 fn write_marker(path: &Path, marker: &RestoreMarker) -> Result<()> {

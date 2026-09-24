@@ -99,9 +99,12 @@ impl Operation {
 /// The lock files coordinating operations. They live outside the per-environment
 /// runtime dirs, so removing an environment never deletes a lock file another
 /// command still holds.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Locks {
     dir: PathBuf,
+    prefix_dir: PathBuf,
+    /// The portable root, which decides where restore markers are.
+    portable: Option<PathBuf>,
 }
 
 /// Holds an operation's locks until it is dropped. The kernel drops the flocks
@@ -155,11 +158,19 @@ struct Target {
 
 impl Locks {
     pub fn new(paths: &Paths) -> Self {
-        Self::at(paths.locks_dir())
+        Self {
+            dir: paths.locks_dir(),
+            prefix_dir: paths.prefix_locks_dir(),
+            portable: paths.portable_root().map(Path::to_owned),
+        }
     }
 
     pub fn at(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            prefix_dir: dir.clone(),
+            dir,
+            portable: None,
+        }
     }
 
     /// Takes every lock `operation` needs on `name` and each prefix. Targets are
@@ -179,8 +190,9 @@ impl Locks {
         targets.sort_by(|left, right| left.path.cmp(&right.path));
         targets.dedup_by(|left, right| left.path == right.path);
 
-        fs::create_dir_all(&self.dir)
-            .context(|| format!("failed to create {}", self.dir.display()))?;
+        for dir in [&self.dir, &self.prefix_dir] {
+            fs::create_dir_all(dir).context(|| format!("failed to create {}", dir.display()))?;
+        }
         let mut files = Vec::with_capacity(targets.len());
         for target in &targets {
             let file = open(&target.path)?;
@@ -193,7 +205,7 @@ impl Locks {
             files.push((file, target.path.clone()));
         }
         if operation != Operation::Snapshot {
-            let marker = self.dir.join(crate::snapshot::marker_name(name));
+            let marker = paths::restore_marker(&self.dir, self.portable.as_deref(), name);
             match marker.symlink_metadata() {
                 Ok(_) => {
                     return Err(Error::Busy {
@@ -274,23 +286,23 @@ impl Locks {
     }
 
     fn prefix_path(&self, prefix: &Path) -> PathBuf {
-        self.keyed_path("prefix", prefix)
+        keyed_path(&self.prefix_dir, "prefix", prefix)
     }
 
     fn config_path(&self, config: &Path) -> PathBuf {
-        self.keyed_path("config", config)
+        keyed_path(&self.dir, "config", config)
     }
+}
 
-    fn keyed_path(&self, kind: &str, path: &Path) -> PathBuf {
-        let resolved = paths::resolve(path);
-        let label = resolved
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(label)
-            .unwrap_or_default();
-        let hash = fnv1a(resolved.as_os_str().as_bytes());
-        self.dir.join(format!("{kind}-{label}-{hash:016x}.lock"))
-    }
+fn keyed_path(dir: &Path, kind: &str, path: &Path) -> PathBuf {
+    let resolved = paths::resolve(path);
+    let label = resolved
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(label)
+        .unwrap_or_default();
+    let hash = fnv1a(resolved.as_os_str().as_bytes());
+    dir.join(format!("{kind}-{label}-{hash:016x}.lock"))
 }
 
 fn open(path: &Path) -> Result<File> {
@@ -619,6 +631,68 @@ mod tests {
         drop(
             locks
                 .acquire(Operation::Snapshot, "game", &[&prefix])
+                .unwrap(),
+        );
+    }
+
+    fn rooted(root: &Path, portable: Option<&Path>) -> Paths {
+        let home = root.to_owned();
+        Paths::select(
+            move |key| (key == "HOME").then(|| home.clone().into_os_string()),
+            portable,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn prefix_locks_are_shared_across_roots_and_name_locks_are_not() {
+        let root = tempfile::tempdir().unwrap();
+        let xdg = Locks::new(&rooted(root.path(), None));
+        let portable = Locks::new(&rooted(root.path(), Some(&root.path().join("usb"))));
+        let prefix = root.path().join("prefix");
+        let other = root.path().join("other");
+
+        let held = xdg
+            .acquire(Operation::Winetricks, "game", &[&prefix])
+            .unwrap();
+        let err = portable
+            .acquire(Operation::Remove, "else", &[&prefix])
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Busy { subject, .. } if subject.starts_with("prefix ")),
+            "{err}"
+        );
+        // The same name in another root is a different environment.
+        drop(
+            portable
+                .acquire(Operation::Remove, "game", &[&other])
+                .unwrap(),
+        );
+        drop(held);
+    }
+
+    #[test]
+    fn a_portable_restore_marker_is_found_inside_the_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let usb = root.path().join("usb");
+        let paths = rooted(root.path(), Some(&usb));
+        let marker = paths.restore_marker("game");
+        assert_eq!(
+            marker,
+            usb.join("prefixes/.wineo-snapshots/game/restore.json")
+        );
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        fs::write(&marker, "marker").unwrap();
+        let locks = Locks::new(&paths);
+        let prefix = usb.join("prefixes/game");
+        assert!(
+            locks
+                .acquire(Operation::Launch, "game", &[&prefix])
+                .is_err()
+        );
+        drop(
+            Locks::new(&rooted(root.path(), None))
+                .acquire(Operation::Launch, "game", &[&root.path().join("xdg")])
                 .unwrap(),
         );
     }
