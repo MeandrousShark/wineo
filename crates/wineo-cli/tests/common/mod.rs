@@ -7,7 +7,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -191,7 +191,14 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new() -> Self {
-        let root = tempfile::tempdir().unwrap();
+        Self::from_root(tempfile::tempdir().unwrap())
+    }
+
+    pub fn new_in(parent: &Path) -> Self {
+        Self::from_root(tempfile::tempdir_in(parent).unwrap())
+    }
+
+    fn from_root(root: tempfile::TempDir) -> Self {
         let write_bin = |dir: &str, scripts: &[(&str, &str)]| {
             let bin = root.path().join(dir);
             fs::create_dir_all(&bin).unwrap();

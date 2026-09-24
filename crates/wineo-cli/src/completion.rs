@@ -3,6 +3,7 @@ use std::ffi::{OsStr, OsString};
 use clap_complete::CompletionCandidate;
 use wineo_core::environment::{self, Environment};
 use wineo_core::paths::Paths;
+use wineo_core::snapshot;
 
 pub fn environments(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(prefix) = current.to_str() else {
@@ -56,6 +57,31 @@ pub fn targets(current: &OsStr) -> Vec<CompletionCandidate> {
         .filter(|target| target.starts_with(prefix))
         .cloned()
         .map(CompletionCandidate::new)
+        .collect()
+}
+
+pub fn snapshots(current: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(prefix) = current.to_str() else {
+        return Vec::new();
+    };
+    let words = words_before_current();
+    let Some(("snapshot", args)) = command_args(&words) else {
+        return Vec::new();
+    };
+    let [action, name, ..] = args else {
+        return Vec::new();
+    };
+    if !matches!(action.as_str(), "restore" | "delete") {
+        return Vec::new();
+    }
+    let Ok(paths) = Paths::from_env() else {
+        return Vec::new();
+    };
+    snapshot::list(&paths, name)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|item| item.label.starts_with(prefix))
+        .map(|item| CompletionCandidate::new(item.label))
         .collect()
 }
 

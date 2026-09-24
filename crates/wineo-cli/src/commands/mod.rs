@@ -19,6 +19,7 @@ pub mod run;
 pub mod runners;
 pub mod set;
 pub mod setup;
+pub mod snapshot;
 pub mod start;
 pub mod status;
 pub mod stop;

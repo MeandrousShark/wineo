@@ -91,6 +91,12 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         ),
         (None, false) => println!("Removed environment {name}; its prefix was left untouched"),
     }
+    if let Some(prefix) = &prefix {
+        let snapshots = paths.snapshot_root(prefix, name);
+        if fs::symlink_metadata(&snapshots).is_ok() {
+            println!("Snapshots remain at {}", snapshots.display());
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 

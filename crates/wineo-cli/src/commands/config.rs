@@ -3,6 +3,7 @@ use std::io;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
+use wineo_core::environment::Environment;
 use wineo_core::name;
 use wineo_core::paths::Paths;
 
@@ -22,6 +23,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let file = match &args.name {
         Some(env) if !name::is_valid(env) => bail!(wineo_core::Error::InvalidName(env.clone())),
         Some(env) => {
+            Environment::ensure_exists(paths, env)?;
             let file = paths.environment_config(env);
             if !file.exists() {
                 bail!(wineo_core::Error::UnknownEnvironment(env.clone()));
