@@ -44,6 +44,12 @@ Support both new environments and copying existing ones into the directory.
   isolate runtime state by portable root so same-named XDG and portable
   environments cannot share state or locks accidentally. Explain that moving
   the folder can require runner and external game paths to be updated.
+- Key per-root host state by the resolved root path. Prefix locks are the
+  exception: keep them in one host-wide directory keyed by the resolved
+  prefix path, so XDG and portable environments that touch the same prefix
+  still coordinate.
+- An empty `WINEO_PORTABLE_DIR` counts as unset, an empty `--portable` is an
+  error, and a leading `~/` in either selector expands to the home directory.
 
 ### New and existing environments
 
@@ -82,7 +88,10 @@ Support both new environments and copying existing ones into the directory.
 - Do not carry an interrupted restore marker into a portable copy. Refuse to
   copy while a restore needs recovery. Store portable restore marker paths
   relative to the portable root so recovery still finds the right files if
-  the entire folder moves during an interrupted restore.
+  the entire folder moves during an interrupted restore. Keep a portable
+  restore marker inside the folder, beside that prefix's snapshots under
+  `DIR/prefixes/.wineo-snapshots/<name>/`, so it moves with them. XDG
+  markers stay where they are.
 
 ## Implementation sequence
 
