@@ -9,7 +9,8 @@ Enter picks it through `Choice [1]`. The keys line sits at the bottom, so the
 way to accept is easy to miss. Move the accept action out of the list and into
 the keys line, right above the prompt, so every review menu says what Enter
 does in the same place. Also, after adding a target, go back to the menu
-that opened the program list instead of showing the list again.
+that opened the program list instead of showing the list again, and let
+Finish save without asking a second time.
 
 ## Menus that change
 
@@ -72,6 +73,20 @@ the change, and Enter is still the fastest way to accept.
 - Since the list is never shown again after an add, `s)` always reads `skip
   for now`, and `done adding` goes away.
 
+## Saving without a second confirm
+
+- `setup::save` asks "Save these changes?" after listing the changes. Finish
+  on the "What next?" menu already means save, and the installer path has
+  already asked "Save and run the installer", so both now save straight away
+  and print `Saved <env>.` without listing the changes.
+- Guided `new` keeps its review, since its Keep editing is the way into the
+  setup menu. It gets the Enter hint above: `Enter save them`.
+- The default target question stays everywhere. When there are several
+  targets and none is the default, it is still asked before saving, and Esc
+  still goes back to "What next?".
+- If the config changed meanwhile and the changes were rebased, the review
+  and its confirm come back once, since the result has not been seen.
+
 ## Implementation sequence
 
 1. Give `Prompt` one menu form for this, built from `choose_or_enter`, that
@@ -81,6 +96,8 @@ the change, and Enter is still the fastest way to accept.
    it, and update the tests that expect `Choice [1]: `.
 3. Return from `picker::pick` after a round that adds a target, and drop
    `done adding`.
+4. Let `setup::save` skip the confirm for Finish and the installer path,
+   keeping it for guided `new` and after a rebase.
 
 This starts after plan 0021 step 4 lands, since both touch `prompt.rs`.
 
@@ -90,6 +107,9 @@ This starts after plan 0021 step 4 lands, since both touch `prompt.rs`.
   line, an empty list, Enter accepting, and a typed number picking an edit.
 - Picker tests: an add returns to the caller, several picks in one round are
   all added, and a backed out card shows the list again.
+- Save tests: Finish and the installer path save with no confirm, the
+  default target question is still asked when needed, guided `new` still
+  reviews, and a rebase brings the confirm back.
 - The pty tests in `crates/wineo-cli/tests/guided.rs` pass with the new
   output.
 - The maintainer adds a target in `wineo setup`, lands back on its menu, and
