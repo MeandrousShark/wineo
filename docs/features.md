@@ -15,6 +15,8 @@ See [Shell completion](shell-completion.md) for setup and supported values.
 Completed: [0015: Arch package for Wineo and shell completions](plans/0015-arch-package.md).
 Completed: [0016: Clone an environment](plans/0016-clone-environment.md).
 See [Clone an environment](clone.md) for command behavior and limits.
+Completed: [0017: Prefix snapshots](plans/0017-prefix-snapshots.md).
+See [Prefix snapshots](snapshots.md) for command behavior and limits.
 
 **Category**
 
@@ -35,7 +37,6 @@ See [Clone an environment](clone.md) for command behavior and limits.
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| Prefix snapshots | Portability/Data | **3** | | Cheap where the filesystem supports it, so it can sit next to `clone` | Only offered on filesystems with reflinks or native snapshots, like btrfs. Everyone else waits for full backup and restore. |
 | Portable layout | Portability/Data | **3** | Config schema versioning | Nice design feature, but standard layout should stabilize first | |
 | Import from Lutris/Bottles and Heroic store metadata | Compatibility | **3** | 0008 | Extends generic import and Heroic sideloaded-game import | 0008 covers manually added Heroic games only. Store integration and other launchers remain separate work. |
 | Managed copying of portable application folders | Portability/Data | **3** | 0007, 0008 | Optional organization for applications used in place today | 0008 copies prefixes but leaves external game folders where they are. Storage layout and removal semantics need a later plan. |
