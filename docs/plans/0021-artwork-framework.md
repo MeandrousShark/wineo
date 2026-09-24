@@ -20,6 +20,10 @@ desktop entries is plan 0022, and showing posters and heroes is for
   `hicolor/<size>/apps/wineo-<env>-<target>.png`. This plan does not change
   that.
 - There is no image decoding crate in the workspace.
+- `Paths` resolves `$XDG_CONFIG_HOME`, `$XDG_DATA_HOME`, and
+  `$XDG_STATE_HOME`, falling back to `~/.config`, `~/.local/share`, and
+  `~/.local/state` when a variable is unset or relative. In a portable folder
+  only `host_state` still points at the host.
 
 ## SteamGridDB facts
 
@@ -28,64 +32,111 @@ desktop entries is plan 0022, and showing posters and heroes is for
 - `GET /search/autocomplete/{term}` returns games with `id`, `name`,
   `release_date`, and `verified`.
 - `GET /{icons,grids,heroes,logos}/game/{id}` returns images with `id`,
-  `score`, `style`, `url`, `thumb`, `width`, `height`, and `mime`. Filters:
-  `styles`, `dimensions`, `mimes`, `types` (static or animated), `nsfw`, and
-  `humor`.
-- Icons are PNG or `.ico` from 16 to 1024 px, styled `official` or `custom`.
-  Grids are PNG, JPEG, or WebP, with 600x900 as the common poster size. Heroes
-  are 1920x620 or larger. Logos are PNG or WebP.
+  `score`, `style`, `language`, `url`, `thumb`, `width`, `height`, and `mime`.
+  Filters: `styles`, `dimensions`, `mimes`, `types` (static or animated),
+  `nsfw`, and `humor`. There is no language filter. Results are paginated
+  with a `page` parameter.
+- The official Node wrapper's types do not match the API exactly (it types
+  `style` as an array and leaves out `mime`), so no field beyond the IDs, the
+  name, and the URL is treated as guaranteed.
+- Icons are PNG or ICO from 16 to 1024 px, styled `official` or `custom`.
+  Grids are PNG, JPEG, or WebP, and include horizontal capsules (460x215,
+  920x430) and squares as well as portrait posters (600x900, 342x482,
+  660x930). Heroes are 1920x620 or larger. Logos are PNG or WebP, styled
+  `official`, `white`, `black`, or `custom`.
 
 ## Proposed decisions for maintainer approval
 
 ### Store
 
-- Art lives in `~/.local/share/wineo/art/<env>/`, or `DIR/art/<env>/` in a
+- Art lives in `$XDG_DATA_HOME/wineo/art/<env>/`, or `DIR/art/<env>/` in a
   portable folder so it moves with the folder. Each kind is one file named for
-  its kind and real format: `icon.png`, `icon.svg`, `grid.jpg`, and so on.
+  its kind and real format: `icon.png`, `icon.ico`, `icon.svg`, `grid.jpg`,
+  and so on.
 - A target can override any kind in `art/<env>/<target>/`. A kind the target
   does not override falls back to the environment's.
 - `art/<env>/art.toml` records the SteamGridDB game ID and, for each kind,
   where the file came from: a SteamGridDB asset ID, or `manual` plus the
   original file name. It carries `schema_version = 1` under 0018's rules.
   Environment configs do not change, so this needs no config schema bump.
+- An art file that `art.toml` does not record, including every file when
+  `art.toml` is absent, is treated as manual with an unknown origin. `art
+  list` shows it as unrecorded, and `art fetch` does not replace it without
+  `--replace`.
+- If more than one file exists for a kind, the one `art.toml` records wins.
+  With no record, the first in the order PNG, SVG, ICO, JPEG, WebP wins, and
+  `art list` warns about the others. `art set` and `art fetch` remove the old
+  file when a kind changes format.
 - `clone` and `portable copy` copy the art directory to the new name.
   `rm` removes it. Snapshots do not include art.
 
 ### Manual files
 
 - `wineo art set ENV[.TARGET] KIND FILE` copies the file into the store. It
-  accepts PNG, JPEG, and SVG for every kind, plus WebP for grids, heroes, and
-  logos. The type comes from the file's contents, not its extension. Anything
-  else is refused.
-- The original file is kept as is. Converting JPEG to PNG for icon themes is
-  plan 0022's concern, so this plan adds no image decoding crate.
-- A manual file is never overwritten by `art fetch` unless `--replace` is
-  given.
+  accepts PNG, JPEG, and SVG for every kind, ICO for icons, and WebP for
+  grids, heroes, and logos. The type comes from the file's contents, not its
+  extension. Anything else is refused, as is any file over 32 MiB.
+- ICO needs a nonzero image count and a directory that fits inside the file,
+  since its four magic bytes alone are weak.
+- SVG has no magic bytes. After an optional BOM, whitespace, XML declaration,
+  comments, and doctype, the first element must be `<svg`. This is a sniff,
+  not a parse, so it adds no XML crate. A full well-formedness check with
+  `roxmltree` can replace it later if bad files turn up.
+- The original file is kept as is. Converting JPEG and ICO to PNG for icon
+  themes is plan 0022's concern, so this plan adds no image decoding crate.
 
 ### SteamGridDB key
 
 - Lookup order: `WINEO_STEAMGRIDDB_KEY`, then the system keyring through the
-  Secret Service API, then a `0600` file at `~/.config/wineo/steamgriddb.key`.
-  The key file always lives in the host XDG config dir, never in a portable
-  folder, and is never shown by `wineo config`.
+  Secret Service API, then a `0600` file at
+  `$XDG_DATA_HOME/wineo/steamgriddb.key`. The file sits in the data dir
+  rather than the config dir because config dirs are often published as
+  dotfiles. It always lives in the host data dir, never in a portable folder,
+  so `Paths` gains a `host_data` path.
 - `wineo art key` prompts for the key without echoing it, checks it against
   the API, and saves it to the keyring. With no keyring it saves the `0600`
-  file and says so. `wineo art key --remove` deletes it from both.
+  file and warns in one line that the key is stored in plain text, naming the
+  file. `wineo art key --remove` deletes it from both.
 - A command that needs the key and finds none says to run `wineo art key` or
   set the variable, in one short line.
 
 ### Fetching
 
 - `wineo art fetch ENV[.TARGET]` searches SteamGridDB with the environment
-  name, or `--search TERM`. It shows the matches as a numbered list and saves
-  the pick in `art.toml`. Later fetches reuse the saved game. `--game ID`
-  skips the search for scripts.
-- For each kind it downloads the highest-scoring static image with `nsfw` and
-  `humor` off. Icons prefer `official` PNG, grids prefer 600x900, and heroes
-  prefer 1920x620. `--only KIND` limits the fetch to one kind, and `--asset ID`
-  picks a specific image found on the website.
+  name, or `--search TERM`. It shows the matches as a numbered list, with the
+  release year when the result has one, and saves the pick in `art.toml`.
+  Later fetches reuse the saved game. `--game ID` skips the search for
+  scripts.
+- Responses are parsed leniently: a game needs only `id` and `name`, and an
+  image only `id` and `url`. Anything else missing counts as unknown. The
+  format of a downloaded file comes from its bytes, like manual files, not
+  from `mime`.
+- Every request filters to static images with `nsfw` and `humor` off. These
+  are hard filters, so fetch never falls back to animated, NSFW, or humor
+  art. Grid requests also filter `dimensions` to the portrait sizes 600x900,
+  342x482, and 660x930.
+- Fetch walks result pages until one comes back empty, up to 10 pages, and
+  ranks everything it got. Each kind sorts by these keys in order, where
+  "largest" is width times height and the lowest asset ID makes the order
+  total:
+  - icon: at least 128 px on its short side, then `official`, then the user's
+    language, then PNG over ICO, then highest score, then largest, then lowest
+    ID
+  - grid: user's language, then highest score, then largest, then lowest ID
+  - hero: highest score, then largest, then lowest ID
+  - logo: `official`, then the user's language, then PNG over WebP, then
+    highest score, then largest, then lowest ID
+- The user's language is the two-letter code from the first of `LC_ALL`,
+  `LC_MESSAGES`, and `LANG` that is set, with `C` and `POSIX` meaning `en`. An
+  image in that language ranks first, then `en`, then any other or none.
+- Fetch fills gaps. A kind that already has art is skipped with a short note,
+  and `--replace` re-ranks and replaces every kind it fetches, manual files
+  included. `--only KIND` limits the fetch to one kind. `--asset ID` picks a
+  specific image found on the website and replaces whatever that kind has,
+  since the user named it.
 - Downloads are staged and published without replacing a file wineo did not
-  write, the same way component downloads are.
+  write, the same way component downloads are. A download over 32 MiB is
+  abandoned.
 
 ### Other commands
 
@@ -97,27 +148,35 @@ desktop entries is plan 0022, and showing posters and heroes is for
 ## Implementation sequence
 
 1. Add the art store: paths for XDG and portable folders, `art.toml` with its
-   schema check, content-type detection, and target fallback.
+   schema check, content-type detection, unrecorded and duplicate files, and
+   target fallback.
 2. Add `art set`, `art list`, and `art rm`, then carry the art directory
    through `clone`, `portable copy`, and `rm`.
-3. Add the key lookup and `art key`, with keyring access behind a small trait
-   so tests never touch a real keyring.
+3. Add `host_data`, the key lookup, and `art key`, with keyring access behind
+   a small trait so tests never touch a real keyring.
 4. Add the SteamGridDB client on the existing transport, plus `art fetch`
-   with search, picking, image selection, and staged publishing.
+   with search, picking, paging, ranking, and staged publishing.
 5. Document the commands and update the feature backlog.
 
 ## Verification and acceptance
 
-- Unit tests use the fixture transport and a fake keyring: search results,
-  image selection preferences, filters, a key that fails the check, the key
-  lookup order, and a missing key.
-- `art set` accepts PNG, JPEG, SVG, and WebP by content, refuses a renamed
-  text file, and keeps the original bytes. Target overrides fall back
-  correctly.
-- `art fetch` never replaces a manual file without `--replace`, and an
-  interrupted download leaves no partial file.
+- Unit tests use the fixture transport and a fake keyring: search results
+  with and without `release_date`, each kind's ranking order including the
+  icon size floor and ties broken by ID, language fallback, filters, paging,
+  a key that fails the check, the key lookup order, the plain text warning,
+  and a missing key.
+- `art set` accepts PNG, JPEG, SVG, and WebP by content, and ICO only for
+  icons. It refuses a renamed text file, a truncated ICO, an XML file whose
+  root is not `svg`, and a file over the size cap, and keeps the original
+  bytes. Target overrides fall back correctly.
+- An unrecorded file, including one with `art.toml` absent, is listed as
+  unrecorded and survives `art fetch`. Duplicate files for a kind resolve in
+  the stated order.
+- `art fetch` skips kinds that have art, never replaces a manual file without
+  `--replace` or `--asset`, and an interrupted download leaves no partial
+  file.
 - Art follows `clone`, `portable copy`, and a moved portable folder, and `rm`
-  removes it.
+  removes it. In a portable folder the key file is still the host's.
 - A real run on this machine: save a key to GNOME Keyring with `art key`,
   fetch art for one real game, and set one manual icon.
 - Run `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo
