@@ -325,6 +325,14 @@ fn art_completes_environments_targets_and_kinds() {
     fixture(root.path());
     let names = complete(root.path(), "fish", &["wineo", "art", "list", "ha"]);
     assert_eq!(names, ["hades", "halo"]);
+    let names = complete(root.path(), "fish", &["wineo", "art", "fetch", "hades.g"]);
+    assert_eq!(names, ["hades.game"]);
+    let kinds = complete(
+        root.path(),
+        "fish",
+        &["wineo", "art", "fetch", "hades", "--only", ""],
+    );
+    assert_eq!(kinds, ["icon", "grid", "hero", "logo"]);
     for action in ["set", "rm"] {
         let names = complete(root.path(), "fish", &["wineo", "art", action, "ha"]);
         assert_eq!(names, ["hades", "halo"], "{action}");

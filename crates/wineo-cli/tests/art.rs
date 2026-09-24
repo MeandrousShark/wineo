@@ -219,3 +219,53 @@ fn key_notes_a_variable_that_overrides_the_saved_key() {
         .unwrap();
     assert_eq!(stderr(&unset), "");
 }
+
+#[test]
+fn fetch_stops_before_the_network_without_a_key_or_a_spot() {
+    let f = Fixture::new();
+    f.environment("hades", "[targets.server]\nexe = \"server.exe\"\n");
+    let missing = f.run(&["art", "fetch", "hades"]);
+    assert!(!missing.status.success());
+    assert_eq!(
+        stderr(&missing),
+        "error: no SteamGridDB key, run `wineo art key` or set WINEO_STEAMGRIDDB_KEY\n"
+    );
+    assert!(!art(&f).exists());
+
+    let bad = f
+        .wineo()
+        .args(["art", "fetch", "hades.nope"])
+        .env("WINEO_STEAMGRIDDB_KEY", "abc")
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+    assert!(
+        stderr(&bad).contains("has no target `nope`"),
+        "{}",
+        stderr(&bad)
+    );
+
+    for args in [
+        &["art", "fetch", "hades", "--asset", "5"][..],
+        &["art", "fetch", "hades", "--game", "1", "--search", "x"],
+        &[
+            "art",
+            "fetch",
+            "hades",
+            "--only",
+            "icon",
+            "--asset",
+            "5",
+            "--replace",
+        ],
+        &["art", "fetch", "hades", "--only", "banner"],
+    ] {
+        let refused = f.run(args);
+        assert!(!refused.status.success(), "{args:?}");
+        assert!(
+            stderr(&refused).contains("Usage:") || stderr(&refused).contains("invalid value"),
+            "{args:?}: {}",
+            stderr(&refused)
+        );
+    }
+}

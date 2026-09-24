@@ -1,3 +1,4 @@
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -6,11 +7,13 @@ use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Subcommand, ValueHint};
 use clap_complete::ArgValueCompleter;
 use wineo_core::art::{self, Kind, Listing, Resolved, Source, Warning};
+use wineo_core::art_fetch::{self, Fetched, Mode};
 use wineo_core::download::Https;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
-use wineo_core::steamgriddb::{self, KEY_VAR, Keyring, Saved};
+use wineo_core::steamgriddb::{self, Api, KEY_VAR, Keyring, Saved};
 
+use crate::prompt::{Canceled, Prompt, Reply, Terminal, numbered};
 use crate::{prompt, style};
 
 #[derive(clap::Args)]
@@ -34,6 +37,26 @@ enum Command {
     List {
         #[arg(add = ArgValueCompleter::new(crate::completion::environments))]
         env: String,
+    },
+    /// Fetch art from SteamGridDB for kinds that have none
+    Fetch {
+        #[arg(value_name = "ENV[.TARGET]", add = ArgValueCompleter::new(crate::completion::spots))]
+        spot: String,
+        /// Search for TERM instead of the environment's name
+        #[arg(long, value_name = "TERM", conflicts_with = "game")]
+        search: Option<String>,
+        /// Use this SteamGridDB game ID instead of searching
+        #[arg(long, value_name = "ID")]
+        game: Option<u64>,
+        /// Fetch only this kind
+        #[arg(long, value_name = "KIND", value_parser = kind_parser())]
+        only: Option<Kind>,
+        /// Replace art the kinds already have, manual files included
+        #[arg(long, conflicts_with = "asset")]
+        replace: bool,
+        /// Fetch this SteamGridDB asset ID for the --only kind, replacing its art
+        #[arg(long, value_name = "ID", requires = "only")]
+        asset: Option<u64>,
     },
     /// Save a SteamGridDB API key, or remove it
     Key {
@@ -81,6 +104,34 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             }
         }
         Command::Key { remove } => key(paths, &*keyring(), remove)?,
+        Command::Fetch {
+            spot,
+            search,
+            game,
+            only,
+            replace,
+            asset,
+        } => {
+            let mode = match (asset, replace) {
+                (Some(asset), _) => Mode::Asset(asset),
+                (None, true) => Mode::Replace,
+                (None, false) => Mode::Fill,
+            };
+            let request = FetchRequest {
+                spot: &spot,
+                search: search.as_deref(),
+                game,
+                only,
+                mode,
+            };
+            return match fetch(paths, &request) {
+                Err(err) if err.is::<Canceled>() => {
+                    eprintln!("Canceled.");
+                    Ok(ExitCode::from(CANCELED))
+                }
+                other => other.map(|()| ExitCode::SUCCESS),
+            };
+        }
         Command::Rm { spot, kind } => {
             let (env, target) = split(&spot);
             art::remove(paths, env, target, kind)?;
@@ -124,6 +175,83 @@ fn key(paths: &Paths, keyring: &dyn Keyring, remove: bool) -> anyhow::Result<()>
         ),
     }
     Ok(())
+}
+
+const CANCELED: u8 = 130;
+
+struct FetchRequest<'a> {
+    spot: &'a str,
+    search: Option<&'a str>,
+    game: Option<u64>,
+    only: Option<Kind>,
+    mode: Mode,
+}
+
+fn fetch(paths: &Paths, request: &FetchRequest) -> anyhow::Result<()> {
+    let (env, target) = split(request.spot);
+    art::check_spot(paths, env, target)?;
+    let key = steamgriddb::require_key(paths, |var| std::env::var_os(var), &*keyring())?;
+    let transport = Https::new()?;
+    let api = Api::new(&transport, &key.value);
+    let game = match (request.game, request.search, art::saved_game(paths, env)?) {
+        (Some(game), ..) => game,
+        (None, None, Some(saved)) => saved,
+        (None, search, _) => pick_game(&api, search.unwrap_or(env))?,
+    };
+    if art::saved_game(paths, env)? != Some(game) {
+        art::save_game(paths, env, game)?;
+    }
+    let language = steamgriddb::language(|var| std::env::var_os(var));
+    let kinds = match request.only {
+        Some(kind) => vec![kind],
+        None => Kind::ALL.to_vec(),
+    };
+    for kind in kinds {
+        match art_fetch::fetch_kind(
+            paths,
+            env,
+            target,
+            kind,
+            &api,
+            game,
+            &language,
+            request.mode,
+        )? {
+            Fetched::Stored { asset, .. } => println!("{kind}: fetched SteamGridDB {asset}"),
+            Fetched::Skipped { .. } => println!("{kind}: skipped, it already has art"),
+            Fetched::NoneFound => println!("{kind}: nothing found"),
+            Fetched::AssetNotFound => {
+                let Mode::Asset(asset) = request.mode else {
+                    unreachable!("only an asset fetch looks for one")
+                };
+                bail!("asset {asset} is not among this game's {kind} art");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Searches for `term` and asks which match is the game.
+fn pick_game(api: &Api, term: &str) -> anyhow::Result<u64> {
+    let games = api.search(term)?;
+    if games.is_empty() {
+        bail!("no SteamGridDB games match `{term}`");
+    }
+    if !prompt::interactive() {
+        bail!("picking a game needs a terminal, pass --game instead");
+    }
+    let choices = numbered(games.into_iter().map(|game| {
+        let label = match game.year {
+            Some(year) => format!("{} ({year})", game.name),
+            None => game.name,
+        };
+        (label, game.id)
+    }));
+    let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
+    match prompt.choose("Which game is it?", "Game", &choices, Some("1"), false)? {
+        Reply::Value(game) => Ok(game),
+        Reply::Back => unreachable!("the first question has no back"),
+    }
 }
 
 /// The lines `art list` prints, and its warnings.

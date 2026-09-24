@@ -739,7 +739,7 @@ fn check(
 }
 
 /// Refuses art for an environment or target that doesn't exist.
-pub(crate) fn check_spot(paths: &Paths, env: &str, target: Option<&str>) -> Result<()> {
+pub fn check_spot(paths: &Paths, env: &str, target: Option<&str>) -> Result<()> {
     match target {
         None => Environment::ensure_exists(paths, env),
         Some(target) => {
