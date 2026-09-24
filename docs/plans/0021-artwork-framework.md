@@ -96,7 +96,11 @@ desktop entries is plan 0022, and showing posters and heroes is for
   `art list` warns about the others. `art set` and `art fetch` remove the old
   file when a kind changes format.
 - `clone` and `portable copy` copy the art directory to the new name.
-  `rm` removes it. Snapshots do not include art.
+  `rm` removes it. Snapshots do not include art. When the environment has
+  art, `rm` prints `Removed art` and the clone and copy reviews show `art:
+  copied`. An environment without art gets no extra line.
+- Removing a target also removes its art directory and its records in
+  `art.toml`, so a later target with the same name starts clean.
 
 ### Manual files
 
@@ -168,9 +172,22 @@ desktop entries is plan 0022, and showing posters and heroes is for
 
 ### Other commands
 
-- `wineo art list ENV` shows each kind, its source, and whether a target
-  override exists.
+- `wineo art list ENV` shows the environment's kinds, then a block for each
+  target that overrides something. Warnings go to stderr.
+
+  ```
+  hades (SteamGridDB game 5247)
+    icon  icon.png   SteamGridDB 36952
+    grid  grid.jpg   manual, from poster final.jpg
+    hero  hero.webp  unrecorded
+    logo  none
+  hades.server
+    icon  icon.svg   manual, from server.svg
+  warning: grid.png is ignored because grid.jpg is recorded
+  ```
 - `wineo art rm ENV[.TARGET] KIND` removes one piece of art.
+- `art set` and `art rm` print one line on success, such as `Set icon for
+  hades.server` or `Removed grid from hades`.
 - `list`, `status`, and JSON output do not change in this plan.
 
 ## Implementation sequence
