@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0016: Clone an environment
 
