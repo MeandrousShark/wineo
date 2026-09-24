@@ -386,6 +386,7 @@ mod tests {
     use std::io::{Cursor, Read};
 
     use wineo_core::download::{Response, Transport};
+    use wineo_core::steamgriddb::Filters;
 
     use super::*;
 
@@ -410,10 +411,12 @@ mod tests {
                 .map(|id| format!("{{\"id\":{id},\"url\":\"https://cdn.example/{id}\"}}"))
                 .collect();
             let body = format!("{{\"success\":true,\"data\":[{}]}}", data.join(","));
-            self.0
-                .insert(Api::images_url(7, kind, 0), (200, body.into_bytes()));
             self.0.insert(
-                Api::images_url(7, kind, 1),
+                Api::images_url(7, kind, 0, Filters::Ranked),
+                (200, body.into_bytes()),
+            );
+            self.0.insert(
+                Api::images_url(7, kind, 1, Filters::Ranked),
                 (200, b"{\"success\":true,\"data\":[]}".to_vec()),
             );
         }

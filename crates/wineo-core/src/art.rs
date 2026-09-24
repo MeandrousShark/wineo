@@ -772,7 +772,7 @@ fn read_art(file: &Path) -> Result<Vec<u8>> {
 }
 
 /// The formats `kind` accepts, for a message, like "PNG, SVG, or JPEG".
-fn accepted(kind: Kind) -> String {
+pub(crate) fn accepted(kind: Kind) -> String {
     let names: Vec<String> = Format::ALL
         .into_iter()
         .filter(|format| kind.accepts(*format))

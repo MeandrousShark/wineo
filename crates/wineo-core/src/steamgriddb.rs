@@ -239,6 +239,15 @@ pub struct Image {
     pub format: Option<Format>,
 }
 
+/// Which filters an image list request carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Filters {
+    /// Static only, no NSFW or humor, and portrait grids: what ranking picks from.
+    Ranked,
+    /// Nothing filtered out, for an image the user named.
+    None,
+}
+
 /// The most result pages fetch walks for one kind.
 pub const MAX_PAGES: u32 = 10;
 
@@ -265,31 +274,35 @@ impl<'a> Api<'a> {
         Ok(self.data(url.as_str())?.iter().filter_map(game).collect())
     }
 
-    /// The URL of one page of a game's images of `kind`, with the hard
-    /// filters every request carries.
-    pub fn images_url(game: u64, kind: Kind, page: u32) -> String {
+    /// The URL of one page of a game's images of `kind`, with or without the
+    /// hard filters.
+    pub fn images_url(game: u64, kind: Kind, page: u32, filters: Filters) -> String {
         let path = match kind {
             Kind::Icon => "icons",
             Kind::Grid => "grids",
             Kind::Hero => "heroes",
             Kind::Logo => "logos",
         };
-        let dimensions = match kind {
-            Kind::Grid => format!("&dimensions={GRID_DIMENSIONS}"),
-            _ => String::new(),
+        let query = match (filters, kind) {
+            (Filters::Ranked, Kind::Grid) => {
+                format!("types=static&nsfw=false&humor=false&dimensions={GRID_DIMENSIONS}")
+            }
+            (Filters::Ranked, _) => "types=static&nsfw=false&humor=false".to_owned(),
+            // Every value spelled out, so no API default can hide an image.
+            (Filters::None, _) => {
+                "types=static,animated&nsfw=any&humor=any&epilepsy=any".to_owned()
+            }
         };
-        format!(
-            "{API}/{path}/game/{game}?types=static&nsfw=false&humor=false{dimensions}&page={page}"
-        )
+        format!("{API}/{path}/game/{game}?{query}&page={page}")
     }
 
     /// Every image of `kind` for `game`, walking pages until one is empty, up
     /// to `MAX_PAGES`. An image seen on an earlier page is not repeated.
-    pub fn images(&self, game: u64, kind: Kind) -> anyhow::Result<Vec<Image>> {
+    pub fn images(&self, game: u64, kind: Kind, filters: Filters) -> anyhow::Result<Vec<Image>> {
         let mut images: Vec<Image> = Vec::new();
         // Pages start at 0, as SteamGridDB's own Decky plugin requests them.
         for page in 0..MAX_PAGES {
-            let data = self.data(&Self::images_url(game, kind, page))?;
+            let data = self.data(&Self::images_url(game, kind, page, filters))?;
             if data.is_empty() {
                 break;
             }
@@ -846,7 +859,7 @@ mod tests {
 
     #[test]
     fn every_request_carries_the_hard_filters() {
-        let grid = Api::images_url(9, Kind::Grid, 2);
+        let grid = Api::images_url(9, Kind::Grid, 2, Filters::Ranked);
         assert_eq!(
             grid,
             format!(
@@ -859,8 +872,25 @@ mod tests {
             (Kind::Logo, "logos"),
         ] {
             assert_eq!(
-                Api::images_url(9, kind, 0),
+                Api::images_url(9, kind, 0, Filters::Ranked),
                 format!("{API}/{path}/game/9?types=static&nsfw=false&humor=false&page=0")
+            );
+        }
+    }
+
+    #[test]
+    fn an_unfiltered_request_leaves_nothing_out() {
+        for (kind, path) in [
+            (Kind::Icon, "icons"),
+            (Kind::Grid, "grids"),
+            (Kind::Hero, "heroes"),
+            (Kind::Logo, "logos"),
+        ] {
+            assert_eq!(
+                Api::images_url(9, kind, 3, Filters::None),
+                format!(
+                    "{API}/{path}/game/9?types=static,animated&nsfw=any&humor=any&epilepsy=any&page=3"
+                )
             );
         }
     }
@@ -869,15 +899,20 @@ mod tests {
     fn pages_are_walked_until_one_is_empty() {
         let api = FakeApi::default();
         api.json(
-            Api::images_url(9, Kind::Hero, 0),
+            Api::images_url(9, Kind::Hero, 0, Filters::Ranked),
             json!([image_json(1), image_json(2)]),
         );
         api.json(
-            Api::images_url(9, Kind::Hero, 1),
+            Api::images_url(9, Kind::Hero, 1, Filters::Ranked),
             json!([image_json(2), image_json(3), { "id": 4 }]),
         );
-        api.json(Api::images_url(9, Kind::Hero, 2), json!([]));
-        let images = Api::new(&api, "k").images(9, Kind::Hero).unwrap();
+        api.json(
+            Api::images_url(9, Kind::Hero, 2, Filters::Ranked),
+            json!([]),
+        );
+        let images = Api::new(&api, "k")
+            .images(9, Kind::Hero, Filters::Ranked)
+            .unwrap();
         let ids: Vec<u64> = images.iter().map(|image| image.id).collect();
         assert_eq!(ids, [1, 2, 3]);
         assert_eq!(api.urls().len(), 3);
@@ -888,11 +923,13 @@ mod tests {
         let api = FakeApi::default();
         for page in 0..MAX_PAGES + 2 {
             api.json(
-                Api::images_url(9, Kind::Logo, page),
+                Api::images_url(9, Kind::Logo, page, Filters::Ranked),
                 json!([image_json(u64::from(page))]),
             );
         }
-        let images = Api::new(&api, "k").images(9, Kind::Logo).unwrap();
+        let images = Api::new(&api, "k")
+            .images(9, Kind::Logo, Filters::Ranked)
+            .unwrap();
         assert_eq!(images.len(), MAX_PAGES as usize);
         assert_eq!(api.urls().len(), MAX_PAGES as usize);
     }
@@ -900,18 +937,26 @@ mod tests {
     #[test]
     fn a_rejected_key_and_other_failures_are_errors() {
         let api = FakeApi::default();
-        api.answer(Api::images_url(9, Kind::Icon, 0), 401, || {
-            Box::new(io::empty())
-        });
-        let err = Api::new(&api, "k").images(9, Kind::Icon).unwrap_err();
+        api.answer(
+            Api::images_url(9, Kind::Icon, 0, Filters::Ranked),
+            401,
+            || Box::new(io::empty()),
+        );
+        let err = Api::new(&api, "k")
+            .images(9, Kind::Icon, Filters::Ranked)
+            .unwrap_err();
         assert_eq!(err.to_string(), "SteamGridDB rejected the key");
         api.json(format!("{API}/search/autocomplete/x"), json!(null));
         assert!(Api::new(&api, "k").search("x").unwrap().is_empty());
         let text = json!({ "success": false, "errors": ["Game not found"] }).to_string();
-        api.answer(Api::images_url(8, Kind::Icon, 0), 200, move || {
-            Box::new(io::Cursor::new(text.clone().into_bytes()))
-        });
-        let err = Api::new(&api, "k").images(8, Kind::Icon).unwrap_err();
+        api.answer(
+            Api::images_url(8, Kind::Icon, 0, Filters::Ranked),
+            200,
+            move || Box::new(io::Cursor::new(text.clone().into_bytes())),
+        );
+        let err = Api::new(&api, "k")
+            .images(8, Kind::Icon, Filters::Ranked)
+            .unwrap_err();
         assert_eq!(
             err.to_string(),
             "SteamGridDB refused the request: Game not found"

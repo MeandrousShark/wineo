@@ -1,10 +1,10 @@
 //! Fetching an environment's art from SteamGridDB, one kind at a time.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use crate::art::{self, Downloaded, Kind, Source, Stored, detect, find, spot_dir};
 use crate::paths::Paths;
-use crate::steamgriddb::{Api, rank};
+use crate::steamgriddb::{Api, Filters, rank};
 
 /// Which kinds a fetch may change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +54,12 @@ pub fn fetch_kind(
     {
         return Ok(skipped);
     }
-    let mut images = api.images(game, kind)?;
+    // The user picked an asset by hand, so none of ranking's filters apply.
+    let filters = match mode {
+        Mode::Asset(_) => Filters::None,
+        Mode::Fill | Mode::Replace => Filters::Ranked,
+    };
+    let mut images = api.images(game, kind, filters)?;
     if let Mode::Asset(asset) = mode {
         images.retain(|image| image.id == asset);
         if images.is_empty() {
@@ -65,6 +70,9 @@ pub fn fetch_kind(
     for image in images {
         let bytes = api.download(&image.url)?;
         let Some(format) = detect(&bytes).filter(|format| kind.accepts(*format)) else {
+            if let Mode::Asset(asset) = mode {
+                bail!("asset {asset} is not a {} image", art::accepted(kind));
+            }
             continue;
         };
         let image = Downloaded {
@@ -137,12 +145,16 @@ mod tests {
     /// Serves `images` as the only page for `kind` of game 7, each image's
     /// download answering with its bytes.
     fn serve(api: &FakeApi, kind: Kind, images: &[(u64, &[u8])]) {
+        serve_with(api, kind, Filters::Ranked, images);
+    }
+
+    fn serve_with(api: &FakeApi, kind: Kind, filters: Filters, images: &[(u64, &[u8])]) {
         let listed: Vec<_> = images
             .iter()
             .map(|(id, _)| json!({ "id": id, "url": format!("https://cdn.example/{id}"), "score": -(*id as i64) }))
             .collect();
-        api.json(Api::images_url(7, kind, 0), json!(listed));
-        api.json(Api::images_url(7, kind, 1), json!([]));
+        api.json(Api::images_url(7, kind, 0, filters), json!(listed));
+        api.json(Api::images_url(7, kind, 1, filters), json!([]));
         for (id, bytes) in images {
             api.bytes(format!("https://cdn.example/{id}"), bytes);
         }
@@ -270,28 +282,97 @@ mod tests {
     }
 
     #[test]
-    fn an_asset_is_taken_even_when_it_ranks_lower() {
+    fn an_asset_is_looked_up_without_any_filter() {
         let (_root, paths) = setup();
         let api = FakeApi::default();
-        serve(&api, Kind::Logo, &[(1, PNG), (9, PNG)]);
-        manual(&paths, "logo.png", b"mine");
-        let fetched = fetch(&paths, &api, None, Kind::Logo, Mode::Asset(9)).unwrap();
+        // A landscape or NSFW grid that only the unfiltered list has.
+        serve_with(&api, Kind::Grid, Filters::Ranked, &[(1, PNG)]);
+        serve_with(&api, Kind::Grid, Filters::None, &[(1, PNG), (9, JPEG)]);
+        manual(&paths, "grid.png", b"mine");
+        let fetched = fetch(&paths, &api, None, Kind::Grid, Mode::Asset(9)).unwrap();
         assert!(
             matches!(fetched, Fetched::Stored { asset: 9, .. }),
             "{fetched:?}"
         );
+        let art = paths.art_dir("hades");
+        assert_eq!(names(&art), ["art.toml", "grid.jpg"]);
         assert_eq!(
-            fetch(&paths, &api, None, Kind::Logo, Mode::Asset(2)).unwrap(),
-            Fetched::AssetNotFound
-        );
-        assert_eq!(
-            ArtConfig::load(&paths.art_dir("hades"))
+            ArtConfig::load(&art)
                 .unwrap()
-                .record(None, Kind::Logo)
+                .record(None, Kind::Grid)
                 .unwrap()
                 .source,
             Source::SteamGridDb(9)
         );
+        let lists: Vec<String> = api
+            .urls()
+            .into_iter()
+            .filter(|url| url.contains("/grids/"))
+            .collect();
+        assert!(!lists.is_empty());
+        for url in &lists {
+            assert!(
+                url.contains("?types=static,animated&nsfw=any&humor=any&epilepsy=any&page="),
+                "{url}"
+            );
+            assert!(!url.contains("dimensions"), "{url}");
+        }
+        assert_eq!(
+            fetch(&paths, &api, None, Kind::Grid, Mode::Asset(2)).unwrap(),
+            Fetched::AssetNotFound
+        );
+    }
+
+    #[test]
+    fn ranked_fetches_keep_every_filter() {
+        let (_root, paths) = setup();
+        let api = FakeApi::default();
+        serve(&api, Kind::Grid, &[(1, PNG)]);
+        fetch(&paths, &api, None, Kind::Grid, Mode::Replace).unwrap();
+        let lists: Vec<String> = api
+            .urls()
+            .into_iter()
+            .filter(|url| url.contains("/grids/"))
+            .collect();
+        assert!(!lists.is_empty());
+        for url in &lists {
+            assert!(
+                url.contains(
+                    "?types=static&nsfw=false&humor=false&dimensions=600x900,342x482,660x930&page="
+                ),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_asset_the_kind_cannot_store_is_refused_and_leaves_nothing() {
+        let (_root, paths) = setup();
+        let api = FakeApi::default();
+        // A WebM video, which sniffs as nothing art can be.
+        let webm: &[u8] = b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81";
+        serve_with(&api, Kind::Grid, Filters::None, &[(9, webm)]);
+        manual(&paths, "grid.png", b"mine");
+        let err = fetch(&paths, &api, None, Kind::Grid, Mode::Asset(9)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "asset 9 is not a PNG, SVG, JPEG, or WebP image"
+        );
+        let art = paths.art_dir("hades");
+        assert_eq!(names(&art), ["grid.png"]);
+        assert_eq!(fs::read(art.join("grid.png")).unwrap(), b"mine");
+
+        // An ICO is an image, just not one a grid can be.
+        let ico: &[u8] = &[
+            0, 0, 1, 0, 1, 0, 16, 16, 0, 0, 1, 0, 32, 0, 4, 0, 0, 0, 22, 0, 0, 0, 1, 2, 3, 4,
+        ];
+        serve_with(&api, Kind::Grid, Filters::None, &[(9, ico)]);
+        let err = fetch(&paths, &api, None, Kind::Grid, Mode::Asset(9)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "asset 9 is not a PNG, SVG, JPEG, or WebP image"
+        );
+        assert_eq!(names(&art), ["grid.png"]);
     }
 
     #[test]
