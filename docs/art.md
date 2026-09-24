@@ -163,21 +163,26 @@ hero: nothing found
 nothing (a plain fetch without `--only` exits 0 even if some kinds found
 nothing). `--replace` re-ranks and replaces every kind it fetches, manual
 files included. `--asset ID` requires `--only` and picks a specific image by
-ID, replacing whatever that kind currently has; an ID not among that kind's
-filtered results fails with `asset 999 is not among this game's icon art`.
+ID, replacing whatever that kind currently has. It looks the ID up in that
+kind's results with no filters, since you picked that exact image, so
+animated, NSFW, humor, and landscape grids are all allowed. The downloaded
+file must still be a format the kind can store, or it is refused with `asset
+999 is not a PNG, SVG, JPEG, or WebP image`. An ID not among that kind's
+results fails with `asset 999 is not among this game's icon art`.
 
 A fetch on a target only fills the target's own overrides; art it inherits
 from the environment does not count as present.
 
-Every request filters to static images with NSFW and humor off, and grids
-to the portrait sizes 600x900, 342x482, and 660x930; `--asset` cannot bypass
-these filters. Icons must be at least 128 px on their short side to rank
-first, and icons and logos prefer the official style. Ranking then prefers
-your language (from `LC_ALL`, `LC_MESSAGES`, or `LANG`, with `C` or `POSIX`
-meaning `en`, and `en` next), higher score, and larger images. An error during a fetch stops it but keeps the
-kinds already fetched, so running it again fills the rest. An interrupted
-download leaves no partial file. A search with no matches fails with `` no
-SteamGridDB games match `term` ``.
+Every ranked request filters to static images with NSFW and humor off, and
+grids to the portrait sizes 600x900, 342x482, and 660x930. `--asset` skips
+all of these filters. Icons must be at least 128 px on their short side to
+rank first, and icons and logos prefer the official style. Ranking then
+prefers your language (from `LC_ALL`, `LC_MESSAGES`, or `LANG`, with `C` or
+`POSIX` meaning `en`, and `en` next), higher score, and larger images. An
+error during a fetch stops it but keeps the kinds already fetched, so
+running it again fills the rest. An interrupted download leaves no partial
+file. A search with no matches fails with `` no SteamGridDB games match
+`term` ``.
 
 ## Lifecycle
 
