@@ -150,22 +150,15 @@ fn render(env: &str, art_dir: &Path, listing: &Listing) -> (Vec<String>, Vec<Str
                     "takes precedence"
                 };
                 for path in ignored {
-                    warnings.push(format!(
-                        "{} is ignored because {} {reason}",
-                        shown(path),
-                        shown(used)
-                    ));
+                    warnings.push(format!("{} ignored, {} {reason}", shown(path), shown(used)));
                 }
             }
             Warning::MissingFile { path, .. } => {
-                warnings.push(format!(
-                    "art.toml records {}, which is missing",
-                    shown(path)
-                ));
+                warnings.push(format!("{} is missing", shown(path)));
             }
-            Warning::UnknownTarget(target) => warnings.push(format!(
-                "art.toml has art for target `{target}`, which {env} doesn't have"
-            )),
+            Warning::UnknownTarget(target) => {
+                warnings.push(format!("art for unknown target `{target}`"));
+            }
         }
     }
     (lines, warnings)

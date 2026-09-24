@@ -136,3 +136,24 @@ fn removing_environment_leaves_snapshot_and_reports_where_it_is() {
     assert!(!prefix.exists());
     assert!(root.join("saved/prefix/system.reg").exists());
 }
+
+#[test]
+fn a_restore_that_drops_a_target_keeps_its_art() {
+    let Some(f) = fixture() else { return };
+    environment(&f);
+    assert_success(&f.run(&["snapshot", "create", "game", "one"]));
+    assert_success(&f.run(&["set", "game", "targets.server.exe=server.exe"]));
+    let icon = f.root.path().join("server.svg");
+    fs::write(&icon, b"<svg/>").unwrap();
+    assert_success(&f.run(&["art", "set", "game.server", "icon", icon.to_str().unwrap()]));
+
+    assert_success(&f.run(&["snapshot", "restore", "game", "one", "--yes"]));
+    let art = f.root.path().join("data/wineo/art/game");
+    assert_eq!(fs::read(art.join("server/icon.svg")).unwrap(), b"<svg/>");
+    let listed = f.run(&["art", "list", "game"]);
+    assert_success(&listed);
+    assert_eq!(
+        stderr(&listed),
+        "warning: art for unknown target `server`\n"
+    );
+}

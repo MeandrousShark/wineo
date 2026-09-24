@@ -119,7 +119,7 @@ hades.server
     );
     assert_eq!(
         stderr(&listed),
-        "warning: grid.png is ignored because grid.jpg is recorded\n"
+        "warning: grid.png ignored, grid.jpg is recorded\n"
     );
 }
 
@@ -150,9 +150,9 @@ hades.server
     );
     assert_eq!(
         stderr(&listed),
-        "warning: server/hero.jpg is ignored because server/hero.png takes precedence
-warning: art.toml records server/logo.png, which is missing
-warning: art.toml has art for target `old`, which hades doesn't have
+        "warning: server/hero.jpg ignored, server/hero.png takes precedence
+warning: server/logo.png is missing
+warning: art for unknown target `old`
 "
     );
     assert_eq!(fs::read_to_string(dir.join("art.toml")).unwrap(), record);
