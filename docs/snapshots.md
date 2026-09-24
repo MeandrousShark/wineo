@@ -44,6 +44,10 @@ wineo snapshot recover Zomboid
 If the old prefix was a Btrfs subvolume, restore leaves it at the path printed
 by Wineo. Remove that subvolume manually when it is no longer needed.
 
+In a portable folder, links written by create and restore are relative and
+the interrupted-restore marker sits beside the snapshots instead of in host
+state; see [Portable layout](portable.md).
+
 Snapshots do not include external game files or other files outside the
 configured prefix root, external symlink targets, runners, downloads, runtime
 records, logs, import logs, or desktop files. External files remain in place.

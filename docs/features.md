@@ -19,6 +19,8 @@ Completed: [0017: Prefix snapshots](plans/0017-prefix-snapshots.md).
 See [Prefix snapshots](snapshots.md) for command behavior and limits.
 Completed: [0018: Config schema versioning](plans/0018-config-schema-versioning.md).
 See [Config file versioning](config-files.md) for the key and compatibility rules.
+Completed: [0019: Portable layout](plans/0019-portable-layout.md).
+See [Portable layout](portable.md) for selecting a folder, its layout, and moving it.
 
 **Category**
 
@@ -48,7 +50,6 @@ See [Config file versioning](config-files.md) for the key and compatibility rule
 | Tags and `wineo list --tag` | UX | **3** | 0018 | Sort a long environment list into groups like game, work, or creative | e.g. `tags = ["game"]` in the environment config. Could also filter `status` and completion. |
 | Steam shortcuts | UX | **3** | | Add wineo targets to Steam as non-Steam games, for Big Picture and Steam Deck | Steam's `shortcuts.vdf` is binary and Steam must be closed while it's edited. |
 | Integrity checking | Portability/Data | **4** | | Detect damaged or tampered files | Scope still open: prefix or game files, snapshots, or re-verifying downloads (already sha256-checked on install). |
-| Portable layout | Portability/Data | **3** | 0018 | Nice design feature, but standard layout should stabilize first | |
 | Import from Lutris/Bottles and Heroic store metadata | Compatibility | **3** | 0008 | Extends generic import and Heroic sideloaded-game import | 0008 covers manually added Heroic games only. Store integration and other launchers remain separate work. |
 | Managed copying of portable application folders | Portability/Data | **3** | 0007, 0008 | Optional organization for applications used in place today | 0008 copies prefixes but leaves external game folders where they are. Storage layout and removal semantics need a later plan. |
 | wineo-gui | UX | **4** | | Explicitly not the main product; let the CLI mature first | |

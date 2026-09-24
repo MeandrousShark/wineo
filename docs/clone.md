@@ -45,3 +45,6 @@ delete its copied prefix with `wineo rm NAME --delete-prefix`.
 Clone copies local prefix data only. It does not copy external game folders,
 downloads, runners, runtime state, or desktop entries, and it does not migrate
 registry paths.
+
+Cloning into a portable folder writes relative links instead of the absolute
+rebasing described above; see [Portable layout](portable.md).
