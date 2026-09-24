@@ -235,6 +235,11 @@ impl Drop for RunLock {
         // Best effort. `stop` only trusts the pid while the lock is held, and
         // a cleared file keeps it from ever reading a pid that was reused.
         let _ = self.file.set_len(0);
+        // A forked child can hold a copy of the fd, which keeps a flock held on
+        // the open file description until it exits or execs. Unlocking
+        // explicitly frees it the moment this holder is done, whatever copies
+        // still exist.
+        let _ = flock(&self.file, FlockOperation::Unlock);
     }
 }
 
@@ -276,8 +281,18 @@ impl Runtime {
             return Ok(false);
         }
         let file = self.open_lock()?;
+        Ok(!self.probe(&file)?)
+    }
+
+    /// A single shared attempt, released explicitly the instant it succeeds so
+    /// a forked child holding a copy of the fd can never keep it held.
+    fn probe(&self, file: &File) -> Result<bool> {
         // Shared, so probes running at the same time never see each other as a run.
-        Ok(!self.flock(&file, FlockOperation::NonBlockingLockShared)?)
+        let acquired = self.flock(file, FlockOperation::NonBlockingLockShared)?;
+        if acquired {
+            let _ = flock(file, FlockOperation::Unlock);
+        }
+        Ok(acquired)
     }
 
     /// The pid the lock holder recorded. None while a new holder is still
@@ -538,6 +553,62 @@ mod tests {
         assert!(runtime.try_lock().unwrap().is_none());
         drop(first);
         assert!(runtime.try_lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn run_lock_releases_even_if_a_forked_child_still_holds_the_fd() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime(root.path());
+        let lock = runtime.try_lock().unwrap().unwrap();
+        // Stands in for a forked child's copy of the fd, kept alive past the drop.
+        let clone = lock.file.try_clone().unwrap();
+        drop(lock);
+        assert!(runtime.try_lock().unwrap().is_some());
+        drop(clone);
+    }
+
+    #[test]
+    fn is_running_probe_releases_its_lock_even_if_a_forked_child_still_holds_the_fd() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime(root.path());
+        let file = runtime.open_lock().unwrap();
+        // Stands in for a forked child's copy of the fd, kept alive past the probe.
+        let clone = file.try_clone().unwrap();
+        assert!(runtime.probe(&file).unwrap());
+        drop(file);
+        let fresh = runtime.open_lock().unwrap();
+        assert!(
+            runtime
+                .flock(&fresh, FlockOperation::NonBlockingLockExclusive)
+                .unwrap()
+        );
+        drop(clone);
+    }
+
+    #[test]
+    fn dropping_and_retaking_the_run_lock_survives_concurrent_forks() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime(root.path());
+        let stop = Arc::new(AtomicBool::new(false));
+        let forkers: Vec<_> = (0..4)
+            .map(|_| {
+                let stop = stop.clone();
+                thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = std::process::Command::new("true").status();
+                    }
+                })
+            })
+            .collect();
+        for _ in 0..500 {
+            let lock = runtime.try_lock().unwrap();
+            assert!(lock.is_some(), "the previous drop should have freed it");
+            drop(lock);
+        }
+        stop.store(true, Ordering::Relaxed);
+        for forker in forkers {
+            forker.join().unwrap();
+        }
     }
 
     #[test]
