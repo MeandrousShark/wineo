@@ -97,10 +97,11 @@ wineo portable copy hades --to ~/usb/wineo
 ```
 
 `portable copy` copies an environment from the standard XDG layout into a
-portable folder: its config, its full configured prefix tree, and every
-snapshot for that prefix. The source is only read and is left unchanged.
-Like `clone`, it prints its review and then copies without a confirmation
-prompt.
+portable folder: its config, its full configured prefix tree, its art store,
+and every snapshot for that prefix. The source is only read and is left
+unchanged. Like `clone`, it prints its review, showing `art: copied` when
+the environment has art (see [Artwork](art.md)), and then copies without a
+confirmation prompt.
 
 Wineo reviews the source and destination, runner, prefix layout, targets,
 snapshots, external dependencies, and settings that change before copying,

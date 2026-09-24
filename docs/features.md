@@ -21,6 +21,8 @@ Completed: [0018: Config schema versioning](plans/0018-config-schema-versioning.
 See [Config file versioning](config-files.md) for the key and compatibility rules.
 Completed: [0019: Portable layout](plans/0019-portable-layout.md).
 See [Portable layout](portable.md) for selecting a folder, its layout, and moving it.
+Completed: [0021: Artwork framework](plans/0021-artwork-framework.md).
+See [Artwork](art.md) for the art store, key, and `wineo art` commands.
 
 **Category**
 
@@ -55,6 +57,6 @@ See [Portable layout](portable.md) for selecting a folder, its layout, and movin
 | Import from Lutris/Bottles and Heroic store metadata | Compatibility | **3** | 0008 | Extends generic import and Heroic sideloaded-game import | 0008 covers manually added Heroic games only. Store integration and other launchers remain separate work. |
 | Managed copying of portable application folders | Portability/Data | **3** | 0007, 0008 | Optional organization for applications used in place today | 0008 copies prefixes but leaves external game folders where they are. Storage layout and removal semantics need a later plan. |
 | wineo-gui | UX | **4** | | Explicitly not the main product; let the CLI mature first | |
-| Artwork from SteamGridDB | UX | **4** | wineo-gui | Posters, backgrounds, and icons for games, which a GUI can show | Could also fill in desktop entry icons for games whose exe has no shortcut to take one from. |
+| Artwork from SteamGridDB | UX | **4** | 0023, wineo-gui | Posters, backgrounds, and icons for games, which a GUI can show | 0021 landed the art store, the `wineo art` commands, and SteamGridDB fetching; see [Artwork](art.md). Remaining: using the stored icon for desktop entries (next plan, 0023) and showing posters and heroes in wineo-gui. |
 | Full backup and restore | Portability/Data | **4** | 0018 | Great eventually, but this could become a whole subsystem | Covers filesystems without snapshot support. |
 | Event-driven supervisor exit watch | Core | **4** | | Only if there's literally nothing else to do | The supervisor polls `waitid` every 20 ms while a game runs. A pidfd plus a wakeup fd would make it sleep until the exit or a release request. Overhead today is already negligible. |
