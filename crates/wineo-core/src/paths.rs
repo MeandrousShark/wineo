@@ -154,6 +154,15 @@ impl Paths {
         }
     }
 
+    /// An environment's artwork. A portable folder carries it, so it moves
+    /// with the folder.
+    pub fn art_dir(&self, name: &str) -> PathBuf {
+        match &self.portable {
+            Some(root) => root.join("art").join(name),
+            None => self.data.join("art").join(name),
+        }
+    }
+
     pub fn default_runner_root(&self) -> PathBuf {
         self.data.join("runners")
     }
@@ -427,6 +436,10 @@ mod tests {
             Path::new("/home/me/.local/share/wineo/prefixes")
         );
         assert_eq!(
+            paths.art_dir("notepad"),
+            Path::new("/home/me/.local/share/wineo/art/notepad")
+        );
+        assert_eq!(
             paths.runtime_dir("notepad"),
             Path::new("/home/me/.local/state/wineo/notepad")
         );
@@ -451,6 +464,7 @@ mod tests {
             Path::new("/data/wineo/prefixes")
         );
         assert_eq!(paths.runtime_dir("x"), Path::new("/state/wineo/x"));
+        assert_eq!(paths.art_dir("x"), Path::new("/data/wineo/art/x"));
     }
 
     #[test]
@@ -574,6 +588,10 @@ mod tests {
             Path::new("/home/me/.local/share/applications")
         );
         assert_eq!(paths.icons_dir(), Path::new("/home/me/.local/share/icons"));
+        assert_eq!(
+            paths.art_dir("hades"),
+            Path::new("/mnt/usb/wineo/art/hades")
+        );
         let state = Path::new("/home/me/.local/state/wineo/.portable");
         assert!(paths.runtime_dir("hades").starts_with(state));
         assert!(paths.locks_dir().starts_with(state));
