@@ -93,7 +93,12 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     }
     if let Some(prefix) = &prefix {
         let snapshots = paths.snapshot_root(prefix, name);
-        if fs::symlink_metadata(&snapshots).is_ok() {
+        let has_snapshots = match fs::read_dir(&snapshots) {
+            Ok(mut entries) => entries.next().is_some(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => fs::symlink_metadata(&snapshots).is_ok(),
+        };
+        if has_snapshots {
             println!("Snapshots remain at {}", snapshots.display());
         }
     }

@@ -82,6 +82,9 @@ fn create_restore_and_delete_keep_the_saved_state_independent() {
     assert_success(&f.run(&["snapshot", "delete", "game", "before-update"]));
     assert!(!snapshot.exists());
     assert!(prefix.exists());
+    let removed = f.run(&["rm", "game", "--delete-prefix"]);
+    assert_success(&removed);
+    assert!(!stdout(&removed).contains("Snapshots remain"));
 }
 
 #[test]
