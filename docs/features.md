@@ -13,7 +13,8 @@ See [JSON output](json-output.md) for the command schema and examples.
 Completed: [0014: Dynamic environment and target completion](plans/0014-dynamic-shell-completion.md).
 See [Shell completion](shell-completion.md) for setup and supported values.
 Completed: [0015: Arch package for Wineo and shell completions](plans/0015-arch-package.md).
-Clone an environment is queued after 0015 and will get its own plan.
+Clone an environment is in progress under [0016: Clone an environment](plans/0016-clone-environment.md).
+See [Clone an environment](clone.md) for command behavior and limits.
 
 **Category**
 
@@ -34,7 +35,7 @@ Clone an environment is queued after 0015 and will get its own plan.
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| `clone` an environment | Portability/Data | **1** | | Queued next after 0015 | Use reflink copies where the filesystem supports them, and a normal copy everywhere else. Settle config and target behavior in its own plan. |
+| `clone` an environment | Portability/Data | **1** | | In progress under 0016 | Use reflink copies where supported, with a normal copy fallback. |
 | Prefix snapshots | Portability/Data | **3** | | Cheap where the filesystem supports it, so it can sit next to `clone` | Only offered on filesystems with reflinks or native snapshots, like btrfs. Everyone else waits for full backup and restore. |
 | Portable layout | Portability/Data | **3** | Config schema versioning | Nice design feature, but standard layout should stabilize first | |
 | Import from Lutris/Bottles and Heroic store metadata | Compatibility | **3** | 0008 | Extends generic import and Heroic sideloaded-game import | 0008 covers manually added Heroic games only. Store integration and other launchers remain separate work. |
