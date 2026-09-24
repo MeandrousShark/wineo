@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use toml_edit::DocumentMut;
 
-use crate::art;
+use crate::art::TargetCleanup;
 use crate::config::{self, EnvironmentConfig, GlobalConfig};
 use crate::edit::{self, Scope};
 use crate::error::{Error, IoContext, Result};
@@ -115,14 +115,23 @@ pub fn update(
             EnvironmentConfig::parse(&path, &updated)?;
         }
     }
+    let cleanup = match file {
+        ConfigFile::Environment(env) => {
+            let targets_after = target_names(&doc);
+            let removed: Vec<String> = targets_before.difference(&targets_after).cloned().collect();
+            if removed.is_empty() {
+                None
+            } else {
+                Some(TargetCleanup::prepare(paths, env, removed)?)
+            }
+        }
+        ConfigFile::Global => None,
+    };
     if changed {
         write_atomic(&path, &updated)?;
     }
-    if let ConfigFile::Environment(env) = file {
-        let targets_after = target_names(&doc);
-        for target in targets_before.difference(&targets_after) {
-            art::remove_target(paths, env, target)?;
-        }
+    if let Some(cleanup) = cleanup {
+        cleanup.finish()?;
     }
     Ok(missing)
 }
@@ -463,5 +472,37 @@ mod tests {
         .unwrap();
         assert!(!art.join("a").exists());
         assert!(art.join("b/icon.png").exists());
+    }
+
+    #[test]
+    fn an_invalid_art_toml_stops_a_target_removal_first() {
+        let (_root, paths) = setup();
+        let text = format!("{NOTEPAD}[targets.a]\nexe = \"a\"\n");
+        write_env(&paths, &text);
+        let art = paths.art_dir("notepad");
+        fs::create_dir_all(art.join("a")).unwrap();
+        fs::write(art.join("art.toml"), "schema_version = 1\ncolor = 1\n").unwrap();
+        let err = update(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[],
+            &["targets.a"],
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::ConfigSyntax { .. }), "{err}");
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("notepad")).unwrap(),
+            text
+        );
+        assert!(art.join("a").exists());
+
+        // Nothing to clean up means art.toml is not read at all.
+        update(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[("targets.a.cwd", "C:\\")],
+            &[],
+        )
+        .unwrap();
     }
 }

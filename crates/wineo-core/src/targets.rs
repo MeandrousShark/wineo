@@ -13,7 +13,7 @@ use std::io;
 
 use toml_edit::{Array, DocumentMut, Value};
 
-use crate::art;
+use crate::art::TargetCleanup;
 use crate::config::{self, EnvironmentConfig, Target};
 use crate::edit::{ensure_table, existing_table, store_value};
 use crate::error::{Error, IoContext, Result};
@@ -419,13 +419,22 @@ pub fn write(paths: &Paths, environment: &str, batch: &Batch) -> Result<Written>
         updated = doc.to_string();
     }
     let written = EnvironmentConfig::parse(&path, &updated)?;
+    let removed: Vec<String> = current
+        .targets
+        .keys()
+        .filter(|target| !written.targets.contains_key(*target))
+        .cloned()
+        .collect();
+    let cleanup = if removed.is_empty() {
+        None
+    } else {
+        Some(TargetCleanup::prepare(paths, environment, removed)?)
+    };
     if updated != text {
         write_atomic(&path, &updated)?;
     }
-    for target in current.targets.keys() {
-        if !written.targets.contains_key(target) {
-            art::remove_target(paths, environment, target)?;
-        }
+    if let Some(cleanup) = cleanup {
+        cleanup.finish()?;
     }
     Ok(Written::Saved)
 }
@@ -874,5 +883,19 @@ mod tests {
             fs::read_to_string(art.join("art.toml")).unwrap(),
             "schema_version = 1\n"
         );
+    }
+
+    #[test]
+    fn an_invalid_art_toml_stops_a_batch_that_removes_a_target() {
+        let f = Fixture::new(&format!("{HEADER}\n[targets.old]\nexe = \"old\"\n"));
+        let art = target_art(&f.paths, "old");
+        fs::write(art.join("art.toml"), "schema_version = 2\n").unwrap();
+        let before = f.text();
+        let mut batch = Batch::new(f.targets());
+        batch.remove("old");
+        let err = write(&f.paths, "hades", &batch).unwrap_err();
+        assert!(matches!(err, Error::SchemaVersion { .. }), "{err}");
+        assert_eq!(f.text(), before);
+        assert!(art.join("old/icon.png").exists());
     }
 }

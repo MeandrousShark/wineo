@@ -452,22 +452,62 @@ pub fn remove_all(paths: &Paths, env: &str) -> Result<bool> {
 /// Removes a removed target's art dir and records, so a later target with the
 /// same name starts clean. Returns whether it had any.
 pub fn remove_target(paths: &Paths, env: &str, target: &str) -> Result<bool> {
-    if !name::is_valid(target) {
-        return Err(Error::InvalidName(target.to_owned()));
-    }
-    let art_dir = paths.art_dir(env);
-    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
-    let mut art = ArtFile::open(&art_dir)?;
-    let recorded = art.remove_target(target);
-    art.save()?;
-    let dir = target_dir(&art_dir, target);
-    match fs::symlink_metadata(&dir) {
-        Ok(_) => {
-            fs::remove_dir_all(&dir).context(|| format!("failed to remove {}", dir.display()))?;
-            Ok(true)
+    TargetCleanup::prepare(paths, env, [target.to_owned()])?.finish()
+}
+
+/// The art cleanup for targets a config write removes. Prepared before the
+/// write, so an invalid `art.toml` stops the command before anything changes,
+/// and the art lock is held from then until it is finished.
+pub(crate) struct TargetCleanup {
+    art_dir: PathBuf,
+    art: ArtFile,
+    targets: Vec<String>,
+    _guard: ConfigGuard,
+}
+
+impl TargetCleanup {
+    pub(crate) fn prepare(
+        paths: &Paths,
+        env: &str,
+        targets: impl IntoIterator<Item = String>,
+    ) -> Result<Self> {
+        let targets: Vec<String> = targets.into_iter().collect();
+        if let Some(bad) = targets.iter().find(|target| !name::is_valid(target)) {
+            return Err(Error::InvalidName(bad.clone()));
         }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(recorded),
-        Err(err) => Err(err).context(|| format!("failed to read {}", dir.display())),
+        let art_dir = paths.art_dir(env);
+        let guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+        let art = ArtFile::open(&art_dir)?;
+        Ok(Self {
+            art_dir,
+            art,
+            targets,
+            _guard: guard,
+        })
+    }
+
+    /// Returns whether any of the targets had art.
+    pub(crate) fn finish(mut self) -> Result<bool> {
+        let mut had = false;
+        for target in &self.targets {
+            had |= self.art.remove_target(target);
+        }
+        self.art.save()?;
+        for target in &self.targets {
+            let dir = target_dir(&self.art_dir, target);
+            match fs::symlink_metadata(&dir) {
+                Ok(_) => {
+                    fs::remove_dir_all(&dir)
+                        .context(|| format!("failed to remove {}", dir.display()))?;
+                    had = true;
+                }
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(err).context(|| format!("failed to read {}", dir.display()));
+                }
+            }
+        }
+        Ok(had)
     }
 }
 
