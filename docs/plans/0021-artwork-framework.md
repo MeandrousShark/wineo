@@ -59,6 +59,29 @@ desktop entries is plan 0022, and showing posters and heroes is for
   where the file came from: a SteamGridDB asset ID, or `manual` plus the
   original file name. It carries `schema_version = 1` under 0018's rules.
   Environment configs do not change, so this needs no config schema bump.
+- `art.toml` layout: a top-level `game` holds the SteamGridDB game ID. Each
+  kind is a table with `file`, the stored file name, and exactly one source
+  key: `steamgriddb` with the asset ID, or `manual` with the original file
+  name. Target overrides live in the same file as `[targets.<target>.<kind>]`
+  with the same fields, so the game ID is shared. Unknown keys are refused,
+  like other configs.
+
+  ```toml
+  schema_version = 1
+  game = 5247
+
+  [icon]
+  file = "icon.png"
+  steamgriddb = 36952
+
+  [grid]
+  file = "grid.jpg"
+  manual = "poster final.jpg"
+
+  [targets.server.icon]
+  file = "icon.svg"
+  manual = "server.svg"
+  ```
 - An art file that `art.toml` does not record, including every file when
   `art.toml` is absent, is treated as manual with an unknown origin. `art
   list` shows it as unrecorded, and `art fetch` does not replace it without
