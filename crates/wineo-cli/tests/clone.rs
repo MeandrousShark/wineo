@@ -138,13 +138,25 @@ fn clone_copies_art_and_rm_removes_only_the_clones() {
     fs::write(original.join("icon.png"), b"icon").unwrap();
     fs::write(original.join("game/grid.jpg"), b"grid").unwrap();
 
-    assert_success(&f.run(&["clone", "zomboid", "zomboid_modded"]));
+    let output = f.run(&["clone", "zomboid", "zomboid_modded"]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("\n  art: copied\n"),
+        "{}",
+        stdout(&output)
+    );
     let copy = art.join("zomboid_modded");
     assert_eq!(fs::read_to_string(copy.join("art.toml")).unwrap(), record);
     assert_eq!(fs::read(copy.join("icon.png")).unwrap(), b"icon");
     assert_eq!(fs::read(copy.join("game/grid.jpg")).unwrap(), b"grid");
 
-    assert_success(&f.run(&["rm", "zomboid_modded", "--delete-prefix"]));
+    let removed = f.run(&["rm", "zomboid_modded", "--delete-prefix"]);
+    assert_success(&removed);
+    assert!(
+        stderr(&removed).contains("Removed art\n"),
+        "{}",
+        stderr(&removed)
+    );
     assert!(!copy.exists());
     assert_eq!(fs::read(original.join("icon.png")).unwrap(), b"icon");
     let mut names: Vec<_> = fs::read_dir(&art)
@@ -179,8 +191,13 @@ fn clone_refuses_leftover_art_under_the_new_name() {
     );
     assert_eq!(fs::read(leftover.join("icon.png")).unwrap(), b"old");
 
-    // A clone with no art to copy writes none.
+    // A clone with no art to copy writes and mentions none.
     fs::remove_dir_all(&leftover).unwrap();
-    assert_success(&f.run(&["clone", "zomboid", "zomboid_modded"]));
+    let output = f.run(&["clone", "zomboid", "zomboid_modded"]);
+    assert_success(&output);
+    assert!(!stdout(&output).contains("art:"), "{}", stdout(&output));
     assert!(!leftover.exists());
+    let removed = f.run(&["rm", "zomboid_modded"]);
+    assert_success(&removed);
+    assert!(!stderr(&removed).contains("art"), "{}", stderr(&removed));
 }

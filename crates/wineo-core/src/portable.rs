@@ -52,6 +52,8 @@ pub struct CopyInspection {
     /// Links in snapshots that point outside the prefix and its snapshots,
     /// so they keep pointing at the source.
     pub snapshot_links: Vec<ExternalDependency>,
+    /// Whether the source has art, which is copied along.
+    pub art: bool,
     source_config: String,
     prefix: import::Inspection,
     config_text: String,
@@ -209,6 +211,7 @@ pub fn inspect(
         copies_global_config: global_text.is_some(),
         snapshot_links,
         copied_templates,
+        art: fs::symlink_metadata(from.art_dir(name)).is_ok(),
         source_config,
         prefix,
         config_text,

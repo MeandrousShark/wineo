@@ -34,6 +34,8 @@ pub struct CloneInspection {
     pub external_target_paths: Vec<String>,
     pub changed_settings: Vec<String>,
     pub literal_source_paths: Vec<String>,
+    /// Whether the source has art, which is copied along.
+    pub art: bool,
     source_config: String,
     prefix: import::Inspection,
     config_text: String,
@@ -134,6 +136,7 @@ pub fn inspect(
         external_target_paths,
         changed_settings,
         literal_source_paths,
+        art: fs::symlink_metadata(paths.art_dir(source_name)).is_ok(),
         source_config,
         prefix,
         config_text,

@@ -112,6 +112,9 @@ fn print_review(reviewed: &CopyInspection, verbose: bool) {
     } else {
         println!("  global config and templates: the folder's own are kept");
     }
+    if reviewed.art {
+        println!("  art: copied");
+    }
     for path in &reviewed.literal_source_paths {
         println!("  source path in settings: {path} (check after copying)");
     }

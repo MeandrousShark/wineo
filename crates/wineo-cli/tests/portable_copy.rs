@@ -84,6 +84,7 @@ fn a_copy_carries_targets_and_snapshots_and_leaves_the_source_alone() {
     let copied = copy(&f, "game", &dir);
     assert_success(&copied);
     let review = stdout(&copied);
+    assert!(!review.contains("art:"), "{review}");
     for expected in [
         "snapshots: one, two",
         "change: targets.game.desktop disabled",
@@ -358,14 +359,26 @@ fn art_follows_the_copy_and_a_move() {
     assert!(!dir.join("config/environments/game.toml").exists());
 
     fs::remove_dir(dir.join("art/game")).unwrap();
-    assert_success(&copy(&f, "game", &dir));
+    let copied = copy(&f, "game", &dir);
+    assert_success(&copied);
+    assert!(
+        stdout(&copied).contains("\n  art: copied\n"),
+        "{}",
+        stdout(&copied)
+    );
     assert_eq!(read(dir.join("art/game/hero.png")), "hero");
     assert_eq!(read(dir.join("art/game/game/icon.svg")), "<svg/>");
     assert_eq!(read(source.join("hero.png")), "hero");
 
     let moved = f.root.path().join("moved");
     fs::rename(&dir, &moved).unwrap();
-    assert_success(&portable(&f, &moved, &["rm", "game"]));
+    let removed = portable(&f, &moved, &["rm", "game"]);
+    assert_success(&removed);
+    assert!(
+        stderr(&removed).contains("Removed art\n"),
+        "{}",
+        stderr(&removed)
+    );
     assert!(!moved.join("art/game").exists());
     assert_eq!(read(source.join("hero.png")), "hero");
 }

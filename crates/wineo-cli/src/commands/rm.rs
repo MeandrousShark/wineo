@@ -75,13 +75,15 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // After the config, so a failure here cannot leave an environment that is
     // half removed. A leftover entry is listed by `wineo desktop` as a stray.
     let removed = desktop::remove_all(paths, name)?;
-    art::remove_all(paths, name)?;
     if !removed.is_empty() {
         eprintln!(
             "Removed {} desktop entr{}",
             removed.len(),
             if removed.len() == 1 { "y" } else { "ies" }
         );
+    }
+    if art::remove_all(paths, name)? {
+        eprintln!("Removed art");
     }
 
     match (&environment, args.delete_prefix) {

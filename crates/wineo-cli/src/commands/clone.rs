@@ -79,6 +79,9 @@ fn print_review(reviewed: &CloneInspection, verbose: bool) {
             reviewed.targets.join(", ")
         }
     );
+    if reviewed.art {
+        println!("  art: copied");
+    }
     for setting in &reviewed.changed_settings {
         println!("  change: {setting}");
     }
