@@ -152,10 +152,10 @@ desktop entries is plan 0023, and showing posters and heroes is for
   image only `id` and `url`. Anything else missing counts as unknown. The
   format of a downloaded file comes from its bytes, like manual files, not
   from `mime`.
-- Every request filters to static images with `nsfw` and `humor` off. These
-  are hard filters, so fetch never falls back to animated, NSFW, or humor
-  art. Grid requests also filter `dimensions` to the portrait sizes 600x900,
-  342x482, and 660x930.
+- Every ranked request filters to static images with `nsfw` and `humor`
+  off. These are hard filters, so ranking never falls back to animated, NSFW,
+  or humor art. Grid requests also filter `dimensions` to the portrait sizes
+  600x900, 342x482, and 660x930. `--asset` skips all of these filters.
 - Fetch walks result pages until one comes back empty, up to 10 pages, and
   ranks everything it got. Each kind sorts by these keys in order, where
   "largest" is width times height and the lowest asset ID makes the order
@@ -208,9 +208,11 @@ desktop entries is plan 0023, and showing posters and heroes is for
 - A kind with nothing left after the filters exits 1 when `--only` named it,
   and 0 otherwise. A download or API error stops the fetch, keeping the kinds
   already fetched, so a rerun fills the rest.
-- `--asset` requires `--only` and looks for the ID in that kind's filtered
-  results, so it cannot fetch animated, NSFW, or humor art either. An ID not
-  found there fails with `asset 999 is not among this game's icon art`.
+- `--asset` requires `--only` and looks for the ID in that kind's results
+  with no filters, since the user picked that exact image. Content detection
+  still applies, so a file the kind cannot store, like a WebM video, is
+  refused with the same message `art set` gives. An ID not found fails with
+  `asset 999 is not among this game's icon art`.
 
 ### Other commands
 
