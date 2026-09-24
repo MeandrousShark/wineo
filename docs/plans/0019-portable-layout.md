@@ -67,8 +67,9 @@ Support both new environments and copying existing ones into the directory.
 - Add `wineo portable copy NAME --to DIR` to copy an environment from the
   standard XDG layout into a portable folder. Keep the source unchanged. Copy
   its config, full configured prefix tree, and every snapshot for that prefix.
-  On first copy, copy the source global config and user templates too; later
-  copies retain the portable folder's versions. Rebase the copied global
+  When `DIR/config/` does not exist yet, copy the source global config and
+  user templates too; otherwise keep the portable folder's versions, even if
+  one of them is missing. Rebase the copied global
   `defaults.prefix_root` into `DIR/prefixes/`; preserve external runner and
   component roots. Refuse name or path collisions and any operation that would
   overlap the source. Review external paths and destination storage before
