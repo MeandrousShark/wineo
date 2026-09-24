@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicBool;
 use anyhow::{Context, Result, anyhow, bail};
 use toml_edit::{DocumentMut, TableLike, Value};
 
+use crate::art::StagedArt;
 use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::download::{InstallLock, publish};
 use crate::edit;
@@ -91,6 +92,13 @@ pub fn inspect(
     }
     if paths.environment_config(new_name).exists() {
         bail!("environment `{new_name}` already exists");
+    }
+    let art = paths.art_dir(new_name);
+    if fs::symlink_metadata(&art).is_ok() {
+        bail!(
+            "{} already exists; move it aside if a clone was interrupted",
+            art.display()
+        );
     }
     check_shared_configs(paths, new_name, [&source_root, &destination])?;
 
@@ -229,12 +237,30 @@ pub fn execute_reviewed(
         entries: reviewed.prefix.fingerprint.entries,
     });
 
-    let config_path = paths.environment_config(&reviewed.new_name);
-    let recovery = || {
-        format!(
-            "copied prefix remains at {}; move it aside and retry clone, or register it manually",
+    let art = StagedArt::stage(
+        &locks,
+        &paths.art_dir(&reviewed.source_name),
+        &paths.art_dir(&reviewed.new_name),
+    )
+    .and_then(StagedArt::publish)
+    .map_err(|err| {
+        anyhow!(
+            "{err}; copied prefix remains at {}; move it aside and retry clone, or register it manually",
             reviewed.destination.display()
         )
+    })?;
+
+    let config_path = paths.environment_config(&reviewed.new_name);
+    let recovery = || match &art {
+        Some(art) => format!(
+            "copied prefix remains at {} and its art at {}; move them aside and retry clone, or register it manually",
+            reviewed.destination.display(),
+            art.display()
+        ),
+        None => format!(
+            "copied prefix remains at {}; move it aside and retry clone, or register it manually",
+            reviewed.destination.display()
+        ),
     };
     let _config_lock = locks.config(&config_path).map_err(|err| {
         anyhow!(

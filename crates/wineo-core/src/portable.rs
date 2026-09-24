@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicBool;
 use anyhow::{Context, Result, anyhow, bail};
 use toml_edit::{DocumentMut, Value};
 
+use crate::art::StagedArt;
 use crate::clone::{self, ConfigReview};
 use crate::config::{self, EnvironmentConfig, GlobalConfig};
 use crate::download::{InstallLock, publish};
@@ -117,7 +118,7 @@ pub fn inspect(
         );
     }
     let destination_snapshots = to.snapshot_root(&destination, name);
-    for path in [&destination, &destination_snapshots] {
+    for path in [&destination, &destination_snapshots, &to.art_dir(name)] {
         if fs::symlink_metadata(path).is_ok() {
             bail!(
                 "{} already exists; move it aside if a copy was interrupted",
@@ -411,6 +412,9 @@ pub fn execute_reviewed(
             publish(&staged_templates, &to.templates_dir())?;
             published.push(to.templates_dir());
         }
+        let art = StagedArt::stage(&source_locks, &from.art_dir(name), &to.art_dir(name))
+            .and_then(StagedArt::publish)?;
+        published.extend(art);
         if let Some(text) = &reviewed.global_text {
             let path = to.global_config();
             let _guard = locks.config(&path).map_err(|err| anyhow!(err))?;

@@ -125,3 +125,62 @@ fn clone_review_summarizes_external_links_unless_verbose() {
     assert!(verbose.contains("external links: 15"));
     assert_eq!(verbose.matches("  external:").count(), 15);
 }
+
+#[test]
+fn clone_copies_art_and_rm_removes_only_the_clones() {
+    let f = Fixture::new();
+    source(&f);
+    let art = f.root.path().join("data/wineo/art");
+    let original = art.join("zomboid");
+    fs::create_dir_all(original.join("game")).unwrap();
+    let record = "# mine\nschema_version = 1\n[icon]\nfile = \"icon.png\"\nmanual = \"a.png\"\n";
+    fs::write(original.join("art.toml"), record).unwrap();
+    fs::write(original.join("icon.png"), b"icon").unwrap();
+    fs::write(original.join("game/grid.jpg"), b"grid").unwrap();
+
+    assert_success(&f.run(&["clone", "zomboid", "zomboid_modded"]));
+    let copy = art.join("zomboid_modded");
+    assert_eq!(fs::read_to_string(copy.join("art.toml")).unwrap(), record);
+    assert_eq!(fs::read(copy.join("icon.png")).unwrap(), b"icon");
+    assert_eq!(fs::read(copy.join("game/grid.jpg")).unwrap(), b"grid");
+
+    assert_success(&f.run(&["rm", "zomboid_modded", "--delete-prefix"]));
+    assert!(!copy.exists());
+    assert_eq!(fs::read(original.join("icon.png")).unwrap(), b"icon");
+    let mut names: Vec<_> = fs::read_dir(&art)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["zomboid"]);
+}
+
+#[test]
+fn clone_refuses_leftover_art_under_the_new_name() {
+    let f = Fixture::new();
+    source(&f);
+    let leftover = f.root.path().join("data/wineo/art/zomboid_modded");
+    fs::create_dir_all(&leftover).unwrap();
+    fs::write(leftover.join("icon.png"), b"old").unwrap();
+    let output = f.run(&["clone", "zomboid", "zomboid_modded"]);
+    assert!(!output.status.success());
+    let error = stderr(&output);
+    assert!(error.contains("move it aside"), "{error}");
+    assert!(
+        !f.root
+            .path()
+            .join("data/wineo/prefixes/zomboid_modded")
+            .exists()
+    );
+    assert!(
+        !f.config_dir()
+            .join("environments/zomboid_modded.toml")
+            .exists()
+    );
+    assert_eq!(fs::read(leftover.join("icon.png")).unwrap(), b"old");
+
+    // A clone with no art to copy writes none.
+    fs::remove_dir_all(&leftover).unwrap();
+    assert_success(&f.run(&["clone", "zomboid", "zomboid_modded"]));
+    assert!(!leftover.exists());
+}

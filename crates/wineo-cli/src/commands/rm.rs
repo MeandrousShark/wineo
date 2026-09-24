@@ -3,12 +3,12 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use wineo_core::desktop;
 use wineo_core::environment::{self, Environment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::prefix;
 use wineo_core::runtime::Runtime;
+use wineo_core::{art, desktop};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -75,6 +75,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // After the config, so a failure here cannot leave an environment that is
     // half removed. A leftover entry is listed by `wineo desktop` as a stray.
     let removed = desktop::remove_all(paths, name)?;
+    art::remove_all(paths, name)?;
     if !removed.is_empty() {
         eprintln!(
             "Removed {} desktop entr{}",

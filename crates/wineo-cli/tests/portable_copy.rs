@@ -338,3 +338,34 @@ fn links_in_snapshots_follow_the_copied_prefix() {
         prefix.join("drive_c/game.exe")
     );
 }
+
+#[test]
+fn art_follows_the_copy_and_a_move() {
+    let Some((f, _)) = fixture() else { return };
+    let source = f.root.path().join("data/wineo/art/game");
+    fs::create_dir_all(source.join("game")).unwrap();
+    fs::write(source.join("hero.png"), b"hero").unwrap();
+    fs::write(source.join("game/icon.svg"), b"<svg/>").unwrap();
+    let dir = f.root.path().join("usb");
+    fs::create_dir_all(dir.join("art/game")).unwrap();
+    let blocked = copy(&f, "game", &dir);
+    assert!(!blocked.status.success());
+    assert!(
+        stderr(&blocked).contains("move it aside"),
+        "{}",
+        stderr(&blocked)
+    );
+    assert!(!dir.join("config/environments/game.toml").exists());
+
+    fs::remove_dir(dir.join("art/game")).unwrap();
+    assert_success(&copy(&f, "game", &dir));
+    assert_eq!(read(dir.join("art/game/hero.png")), "hero");
+    assert_eq!(read(dir.join("art/game/game/icon.svg")), "<svg/>");
+    assert_eq!(read(source.join("hero.png")), "hero");
+
+    let moved = f.root.path().join("moved");
+    fs::rename(&dir, &moved).unwrap();
+    assert_success(&portable(&f, &moved, &["rm", "game"]));
+    assert!(!moved.join("art/game").exists());
+    assert_eq!(read(source.join("hero.png")), "hero");
+}

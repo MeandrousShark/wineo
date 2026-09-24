@@ -19,7 +19,7 @@ use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
 use crate::name;
-use crate::operation::Locks;
+use crate::operation::{ConfigGuard, Locks};
 use crate::paths::Paths;
 
 /// The largest art file wineo accepts.
@@ -614,6 +614,93 @@ fn accepted(kind: Kind) -> String {
         Some((last, rest)) if !rest.is_empty() => format!("{}, or {last}", rest.join(", ")),
         _ => names.concat(),
     }
+}
+
+/// A copy of an environment's art, staged beside where it will be published,
+/// for `clone` and `portable copy`. The source's art lock is held until it is
+/// published or dropped, so the copy can't go stale in between.
+pub(crate) struct StagedArt {
+    staging: Option<(tempfile::TempDir, PathBuf)>,
+    destination: PathBuf,
+    _guard: ConfigGuard,
+}
+
+impl StagedArt {
+    /// Stages a copy of `source` for `destination`. Nothing is staged when
+    /// the source has no art.
+    pub(crate) fn stage(locks: &Locks, source: &Path, destination: &Path) -> Result<Self> {
+        let guard = locks.config(&source.join(ART_FILE))?;
+        let staging = if fs::symlink_metadata(source).is_ok() {
+            let parent = destination
+                .parent()
+                .expect("an art dir always has a parent");
+            fs::create_dir_all(parent)
+                .context(|| format!("failed to create {}", parent.display()))?;
+            let dir = tempfile::Builder::new()
+                .prefix(".wineo-art-")
+                .tempdir_in(parent)
+                .context(|| format!("failed to create a staging dir in {}", parent.display()))?;
+            // A subdir rather than the temp dir itself, which is private.
+            let staged = dir.path().join("art");
+            copy_tree(source, &staged)?;
+            Some((dir, staged))
+        } else {
+            None
+        };
+        Ok(Self {
+            staging,
+            destination: destination.to_owned(),
+            _guard: guard,
+        })
+    }
+
+    /// Publishes the copy without replacing anything. Returns where it went,
+    /// or None when there was no art to copy.
+    pub(crate) fn publish(self) -> Result<Option<PathBuf>> {
+        let Some((_dir, staged)) = &self.staging else {
+            return Ok(None);
+        };
+        rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            staged,
+            rustix::fs::CWD,
+            &self.destination,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(io::Error::from)
+        .context(|| {
+            format!(
+                "cannot publish without replacing {}",
+                self.destination.display()
+            )
+        })?;
+        Ok(Some(self.destination.clone()))
+    }
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    fs::create_dir(to).context(|| format!("failed to create {}", to.display()))?;
+    let entries = fs::read_dir(from).context(|| format!("failed to read {}", from.display()))?;
+    for entry in entries {
+        let entry = entry.context(|| format!("failed to read {}", from.display()))?;
+        let source = entry.path();
+        let destination = to.join(entry.file_name());
+        let kind = entry
+            .file_type()
+            .context(|| format!("failed to read {}", source.display()))?;
+        if kind.is_dir() {
+            copy_tree(&source, &destination)?;
+        } else if kind.is_symlink() {
+            let link = fs::read_link(&source)
+                .context(|| format!("failed to read {}", source.display()))?;
+            std::os::unix::fs::symlink(link, &destination)
+                .context(|| format!("failed to create {}", destination.display()))?;
+        } else {
+            fs::copy(&source, &destination)
+                .context(|| format!("failed to copy {}", source.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// The file in an environment's art dir that records where its art came from.
@@ -1689,5 +1776,38 @@ manual = \"b.png\"
         set_manual(&paths, "hades", Some("server"), Kind::Icon, &file).unwrap();
         assert!(remove_all(&paths, "hades").unwrap());
         assert!(!paths.art_dir("hades").exists());
+    }
+
+    #[test]
+    fn staged_art_is_copied_and_never_replaces_anything() {
+        let (root, paths) = store();
+        let file = source(root.path(), "a.png", PNG);
+        set_manual(&paths, "hades", Some("server"), Kind::Icon, &file).unwrap();
+        set_manual(&paths, "hades", None, Kind::Grid, &file).unwrap();
+        let locks = Locks::new(&paths);
+        let source_dir = paths.art_dir("hades");
+        let copy = paths.art_dir("copy");
+        let staged = StagedArt::stage(&locks, &source_dir, &copy).unwrap();
+        assert_eq!(staged.publish().unwrap(), Some(copy.clone()));
+        for name in [ART_FILE, "grid.png", "server/icon.png"] {
+            assert_eq!(
+                fs::read(copy.join(name)).unwrap(),
+                fs::read(source_dir.join(name)).unwrap(),
+                "{name}"
+            );
+        }
+        let staged = StagedArt::stage(&locks, &source_dir, &copy).unwrap();
+        assert!(staged.publish().is_err());
+        let art_root = copy.parent().unwrap();
+        let mut names: Vec<_> = fs::read_dir(art_root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["copy", "hades"]);
+
+        let none = StagedArt::stage(&locks, &paths.art_dir("absent"), &paths.art_dir("x")).unwrap();
+        assert_eq!(none.publish().unwrap(), None);
+        assert!(!paths.art_dir("x").exists());
     }
 }
