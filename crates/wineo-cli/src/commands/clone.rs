@@ -20,7 +20,7 @@ pub struct Args {
     #[arg(value_name = "NEW_NAME")]
     name: String,
 
-    /// Copy destination, defaults to the configured prefix root
+    /// Copy destination, defaults to the configured prefix root, or DIR/prefixes with --portable
     #[arg(long, value_name = "PATH")]
     dir: Option<String>,
 }

@@ -35,7 +35,7 @@ pub struct Args {
     #[arg(long)]
     interactive: bool,
 
-    /// Prefix directory, defaults to ~/.local/share/wineo/prefixes/<name>
+    /// Prefix directory, defaults to ~/.local/share/wineo/prefixes/<name>, or DIR/prefixes/<name> with --portable
     #[arg(long, value_name = "PATH")]
     dir: Option<String>,
 

@@ -48,7 +48,7 @@ pub struct Args {
     /// Keep the Heroic prefix at its original location
     #[arg(long, conflicts_with = "dir")]
     pub adopt: bool,
-    /// Copy destination, defaults to the configured prefix root
+    /// Copy destination, defaults to the configured prefix root, or DIR/prefixes with --portable
     #[arg(long)]
     pub dir: Option<String>,
     /// Resolve a missing registry architecture marker
