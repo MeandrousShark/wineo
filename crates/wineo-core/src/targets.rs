@@ -13,7 +13,7 @@ use std::io;
 
 use toml_edit::{Array, DocumentMut, Value};
 
-use crate::config::{EnvironmentConfig, Target};
+use crate::config::{self, EnvironmentConfig, Target};
 use crate::edit::{ensure_table, existing_table, store_value};
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
@@ -401,7 +401,11 @@ pub fn write(paths: &Paths, environment: &str, batch: &Batch) -> Result<Written>
         source: Box::new(source),
     })?;
     batch.apply(&mut doc)?;
-    let updated = doc.to_string();
+    let mut updated = doc.to_string();
+    if updated != text {
+        config::stamp_schema(&mut doc);
+        updated = doc.to_string();
+    }
     EnvironmentConfig::parse(&path, &updated)?;
     if updated != text {
         write_atomic(&path, &updated)?;
@@ -593,6 +597,19 @@ mod tests {
     }
 
     #[test]
+    fn writing_refuses_an_unsupported_version() {
+        let text = format!("schema_version = 2\n{HEADER}");
+        let f = Fixture::new(&text);
+        let mut batch = Batch::new(BTreeMap::new());
+        batch.add("game", spec("game.exe")).unwrap();
+        assert!(matches!(
+            write(&f.paths, "hades", &batch),
+            Err(Error::SchemaVersion { .. })
+        ));
+        assert_eq!(f.text(), text);
+    }
+
+    #[test]
     fn writing_keeps_everything_the_batch_does_not_touch() {
         let f = Fixture::new(&format!(
             "{HEADER}\n[targets.hades]\n# the real game\nexe = 'C:\\Hades\\Hades.exe' # keep me\ngamemode = false\ndefault = true\n\n[targets.old]\nexe = 'old.exe'\n"
@@ -619,7 +636,8 @@ mod tests {
         ));
 
         let text = f.text();
-        assert!(text.starts_with(HEADER), "{text}");
+        let stamped = HEADER.replace("gamemode = true\n", "gamemode = true\nschema_version = 1\n");
+        assert!(text.starts_with(&stamped), "{text}");
         assert!(text.contains("# the real game\n"), "{text}");
         assert!(
             text.contains("exe = 'C:\\Hades\\Hades.exe' # keep me\n"),

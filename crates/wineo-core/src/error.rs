@@ -37,6 +37,9 @@ pub enum Error {
         source: Box<toml_edit::TomlError>,
     },
 
+    #[error("unsupported schema_version {found} in {}", .path.display())]
+    SchemaVersion { path: PathBuf, found: String },
+
     #[error(transparent)]
     Edit(#[from] crate::edit::EditError),
 

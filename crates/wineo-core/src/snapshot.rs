@@ -740,6 +740,74 @@ mod tests {
     }
 
     #[test]
+    fn restoring_a_legacy_config_keeps_it_unversioned_until_edited() {
+        let (_root, paths, _prefix, config) = fixture(false);
+        let global = GlobalConfig::default();
+        let review = inspect_create(&paths, &global, "game", "legacy").unwrap();
+        create_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+        crate::settings::update(
+            &paths,
+            crate::settings::ConfigFile::Environment("game"),
+            &[("runner", "other")],
+            &[],
+        )
+        .unwrap();
+        let current = fs::read_to_string(paths.environment_config("game")).unwrap();
+        assert!(current.contains("schema_version = 1\n"), "{current}");
+
+        let restore = inspect_restore(&paths, &global, "game", "legacy").unwrap();
+        restore_reviewed(&paths, &global, &restore, &AtomicBool::new(false), |_| {}).unwrap();
+        let restored = fs::read_to_string(paths.environment_config("game")).unwrap();
+        assert_eq!(restored, config);
+        let path = paths.environment_config("game");
+        assert_eq!(
+            EnvironmentConfig::parse(&path, &restored)
+                .unwrap()
+                .schema_version,
+            0
+        );
+
+        crate::settings::update(
+            &paths,
+            crate::settings::ConfigFile::Environment("game"),
+            &[("gamemode", "true")],
+            &[],
+        )
+        .unwrap();
+        let edited = fs::read_to_string(&path).unwrap();
+        assert!(edited.starts_with("# keep this comment\n"), "{edited}");
+        assert_eq!(
+            EnvironmentConfig::parse(&path, &edited)
+                .unwrap()
+                .schema_version,
+            1
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_snapshot_with_an_unsupported_version() {
+        let (_root, paths, _prefix, config) = fixture(false);
+        let global = GlobalConfig::default();
+        let review = inspect_create(&paths, &global, "game", "future").unwrap();
+        let info =
+            create_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+        let saved = info.path.join("config.toml");
+        fs::write(&saved, format!("schema_version = 2\n{config}")).unwrap();
+        let err = inspect_restore(&paths, &global, "game", "future").unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::Error>(),
+                Some(crate::error::Error::SchemaVersion { .. })
+            ),
+            "{err}"
+        );
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("game")).unwrap(),
+            config
+        );
+    }
+
+    #[test]
     fn create_restore_and_delete_preserve_config_and_links() {
         for proton in [false, true] {
             let (_root, paths, prefix, config) = fixture(proton);

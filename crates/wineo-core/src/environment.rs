@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, Value, value};
 
-use crate::config::{Arch, EnvironmentConfig, GlobalConfig};
+use crate::config::{self, Arch, EnvironmentConfig, GlobalConfig};
 use crate::edit;
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
@@ -168,7 +168,7 @@ impl Environment {
         };
 
         // A finished prefix is kept even if this write fails, so a retry adopts it.
-        let mut doc = DocumentMut::new();
+        let mut doc = config::new_document();
         doc["prefix"] = value(prefix_value);
         doc["runner"] = value(runner.selection());
         doc["arch"] = value(arch.as_str());
@@ -238,6 +238,7 @@ impl Environment {
             "heroic_id",
             Value::from(heroic_id.to_owned()),
         );
+        config::stamp_schema(&mut doc);
         let updated = doc.to_string();
         EnvironmentConfig::parse(&path, &updated)?;
         if updated != text {
@@ -393,7 +394,7 @@ mod tests {
         assert_eq!(env.config.arch, Arch::Win64);
         assert_eq!(
             fs::read_to_string(paths.environment_config("thing")).unwrap(),
-            "prefix = \"~/Apps/Thing\"\nrunner = \"wine\"\narch = \"win64\"\n"
+            "schema_version = 1\nprefix = \"~/Apps/Thing\"\nrunner = \"wine\"\narch = \"win64\"\n"
         );
         assert_eq!(env.prefix(&paths).unwrap(), prefix);
         assert!(paths.runtime_dir("thing").join("create.log").exists());
@@ -444,7 +445,10 @@ mod tests {
         let (_, snapshot) = Environment::load_for_heroic_match(&paths, "game").unwrap();
         Environment::record_heroic_id(&paths, "game", "abc123", &snapshot).unwrap();
         let text = fs::read_to_string(&path).unwrap();
-        assert_eq!(text, format!("{original}heroic_id = \"abc123\"\n"));
+        assert_eq!(
+            text,
+            format!("{original}heroic_id = \"abc123\"\nschema_version = 1\n")
+        );
         let config = EnvironmentConfig::parse(&path, &text).unwrap();
         assert_eq!(config.heroic_id.as_deref(), Some("abc123"));
 
@@ -522,6 +526,47 @@ mod tests {
         assert!(matches!(
             Environment::record_heroic_id(&paths, "game", "abc123", &snapshot),
             Err(Error::ConfigInvalid { .. })
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn loading_a_legacy_config_leaves_it_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let path = paths.environment_config("game");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = "# mine\nprefix = \"~/Games/Game\"\nrunner = \"wine\"\narch = \"win64\"\n";
+        fs::write(&path, original).unwrap();
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(
+            Environment::load(&paths, "game")
+                .unwrap()
+                .config
+                .schema_version,
+            0
+        );
+        Environment::load_for_heroic_match(&paths, "game").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+    }
+
+    #[test]
+    fn heroic_matching_refuses_an_unsupported_version() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let path = paths.environment_config("game");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original =
+            "schema_version = 2\nprefix = \"~/Games/Game\"\nrunner = \"wine\"\narch = \"win64\"\n";
+        fs::write(&path, original).unwrap();
+        assert!(matches!(
+            Environment::load_for_heroic_match(&paths, "game"),
+            Err(Error::SchemaVersion { .. })
+        ));
+        assert!(matches!(
+            Environment::load(&paths, "game"),
+            Err(Error::SchemaVersion { .. })
         ));
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
     }

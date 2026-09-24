@@ -6,6 +6,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use toml_edit::{DocumentMut, value};
 
 use crate::error::{Error, IoContext, Result};
 use crate::name;
@@ -15,6 +16,9 @@ pub const DEFAULT_RUNNER: &str = "wine";
 pub const DEFAULT_STOP_TIMEOUT: u32 = 10;
 /// Megabytes of session log kept before it is cleared. 0 turns the cap off.
 pub const DEFAULT_LOG_LIMIT_MB: u32 = 50;
+/// The format version wineo writes into global, environment, and template files.
+/// A file without the key is legacy version 0 and reads the same as version 1.
+pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -55,6 +59,9 @@ impl FromStr for Arch {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalConfig {
+    /// 0 for a legacy file without the key. Checked by `parse`.
+    #[serde(default)]
+    pub schema_version: u32,
     #[serde(default = "default_stop_timeout")]
     pub stop_timeout: u32,
     #[serde(default = "default_log_limit_mb")]
@@ -84,6 +91,9 @@ pub struct Defaults {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentConfig {
+    /// 0 for a legacy file without the key. Checked by `parse`.
+    #[serde(default)]
+    pub schema_version: u32,
     pub prefix: String,
     pub runner: String,
     pub arch: Arch,
@@ -138,6 +148,7 @@ fn default_runner() -> String {
 impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
+            schema_version: 0,
             stop_timeout: DEFAULT_STOP_TIMEOUT,
             log_limit_mb: DEFAULT_LOG_LIMIT_MB,
             gamemode: None,
@@ -173,6 +184,7 @@ impl GlobalConfig {
 
     /// `path` is only used for error messages.
     pub fn parse(path: &Path, text: &str) -> Result<Self> {
+        check_schema(path, text)?;
         let config: Self = parse_toml(path, text)?;
         validate_env(&config.env).map_err(|message| invalid(path, message))?;
         Ok(config)
@@ -196,6 +208,7 @@ impl GlobalConfig {
 impl EnvironmentConfig {
     /// `path` is only used for error messages.
     pub fn parse(path: &Path, text: &str) -> Result<Self> {
+        check_schema(path, text)?;
         let config: Self = parse_toml(path, text)?;
         config
             .validate()
@@ -223,6 +236,40 @@ impl EnvironmentConfig {
             ));
         }
         Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct SchemaProbe {
+    schema_version: Option<toml::Value>,
+}
+
+/// Checks `schema_version` before anything else is read, so a file from a
+/// newer wineo is reported as such rather than as unknown keys.
+pub(crate) fn check_schema(path: &Path, text: &str) -> Result<()> {
+    let probe: SchemaProbe = parse_toml(path, text)?;
+    match probe.schema_version {
+        None => Ok(()),
+        Some(toml::Value::Integer(version)) if version == i64::from(SCHEMA_VERSION) => Ok(()),
+        Some(found) => Err(Error::SchemaVersion {
+            path: path.to_owned(),
+            found: found.to_string(),
+        }),
+    }
+}
+
+/// An empty config document for a new file, with the version on its first line.
+pub(crate) fn new_document() -> DocumentMut {
+    let mut doc = DocumentMut::new();
+    doc["schema_version"] = value(i64::from(SCHEMA_VERSION));
+    doc
+}
+
+/// Marks a document wineo changed as the current version. A legacy file gets
+/// the key after its other top-level values, so a leading comment stays on top.
+pub(crate) fn stamp_schema(doc: &mut DocumentMut) {
+    if !doc.contains_key("schema_version") {
+        doc["schema_version"] = value(i64::from(SCHEMA_VERSION));
     }
 }
 
@@ -415,6 +462,114 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("invalid target name"), "{err}");
+    }
+
+    const ENV: &str = "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n";
+
+    #[test]
+    fn a_missing_schema_version_is_legacy() {
+        assert_eq!(global("").unwrap().schema_version, 0);
+        assert_eq!(environment(ENV).unwrap().schema_version, 0);
+    }
+
+    #[test]
+    fn schema_version_one_parses() {
+        assert_eq!(global("schema_version = 1").unwrap().schema_version, 1);
+        let config = environment(&format!("schema_version = 1\n{ENV}")).unwrap();
+        assert_eq!(config.schema_version, 1);
+    }
+
+    #[test]
+    fn unsupported_schema_versions_are_rejected() {
+        for (value, found) in [
+            ("0", "0"),
+            ("2", "2"),
+            ("-1", "-1"),
+            ("\"1\"", "\"1\""),
+            ("1.0", "1.0"),
+            ("true", "true"),
+        ] {
+            let text = format!("schema_version = {value}\n");
+            let err = global(&text).unwrap_err();
+            assert!(matches!(err, Error::SchemaVersion { .. }), "{value}: {err}");
+            assert_eq!(
+                err.to_string(),
+                format!("unsupported schema_version {found} in {PATH}")
+            );
+            let err = environment(&format!("{text}{ENV}")).unwrap_err();
+            assert!(matches!(err, Error::SchemaVersion { .. }), "{value}: {err}");
+        }
+    }
+
+    // A newer format may add keys, and the version is what should be reported.
+    #[test]
+    fn a_newer_version_is_reported_before_unknown_keys() {
+        let err = environment(&format!("schema_version = 2\n{ENV}new_key = 1\n")).unwrap_err();
+        assert!(matches!(err, Error::SchemaVersion { .. }), "{err}");
+    }
+
+    #[test]
+    fn a_nested_schema_version_is_an_unknown_key() {
+        assert!(matches!(
+            global("[defaults]\nschema_version = 1"),
+            Err(Error::ConfigSyntax { .. })
+        ));
+    }
+
+    fn temp_paths() -> (tempfile::TempDir, Paths) {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_owned();
+        let paths = Paths::from_lookup(move |key| {
+            (key == "HOME").then(|| std::ffi::OsString::from(home.as_os_str()))
+        })
+        .unwrap();
+        (root, paths)
+    }
+
+    fn write_global(paths: &Paths, text: &str) {
+        let path = paths.global_config();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn a_missing_global_config_stays_missing() {
+        let (_root, paths) = temp_paths();
+        assert_eq!(GlobalConfig::load(&paths).unwrap().schema_version, 0);
+        assert!(!paths.global_config().exists());
+    }
+
+    #[test]
+    fn loading_a_legacy_global_config_leaves_it_alone() {
+        let (_root, paths) = temp_paths();
+        let text = "# mine\nstop_timeout = 3\n";
+        write_global(&paths, text);
+        let path = paths.global_config();
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(GlobalConfig::load(&paths).unwrap().stop_timeout, 3);
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+    }
+
+    #[test]
+    fn stamping_keeps_a_leading_comment_on_top() {
+        let text = "# mine\nstop_timeout = 3 # short\n\n[defaults]\nrunner = \"x\"\n";
+        let mut doc: DocumentMut = text.parse().unwrap();
+        stamp_schema(&mut doc);
+        assert_eq!(
+            doc.to_string(),
+            "# mine\nstop_timeout = 3 # short\nschema_version = 1\n\n[defaults]\nrunner = \"x\"\n"
+        );
+        let stamped = doc.to_string();
+        stamp_schema(&mut doc);
+        assert_eq!(doc.to_string(), stamped);
+    }
+
+    #[test]
+    fn a_new_document_starts_with_the_version() {
+        let mut doc = new_document();
+        doc["prefix"] = value("/p");
+        assert_eq!(doc.to_string(), "schema_version = 1\nprefix = \"/p\"\n");
     }
 
     #[test]

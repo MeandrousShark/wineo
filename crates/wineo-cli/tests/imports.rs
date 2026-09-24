@@ -84,7 +84,7 @@ fn heroic_bulk_backfills_a_legacy_environment_only_once_per_invocation() {
         "{}",
         stdout(&output)
     );
-    let expected = format!("{original}heroic_id = \"a\"\n");
+    let expected = format!("{original}heroic_id = \"a\"\nschema_version = 1\n");
     assert_eq!(
         fs::read_to_string(configs.join("legacy.toml")).unwrap(),
         expected

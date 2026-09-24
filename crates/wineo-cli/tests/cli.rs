@@ -113,7 +113,7 @@ fn set_global_takes_settings_without_a_name() {
     assert!(result.status.success(), "{}", stderr(&result));
     assert_eq!(
         fs::read_to_string(root.path().join("config/wineo/config.toml")).unwrap(),
-        "stop_timeout = 5\n\n[env]\nWINEDEBUG = \"-all\"\n"
+        "schema_version = 1\nstop_timeout = 5\n\n[env]\nWINEDEBUG = \"-all\"\n"
     );
 }
 
@@ -156,7 +156,7 @@ fn set_edits_an_environment_and_reports_unset_keys_that_were_missing() {
     assert!(stderr(&result).contains("`env.NOPE` was not set"));
     assert_eq!(
         fs::read_to_string(&path).unwrap(),
-        "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n\n[targets.notepad]\nexe = \"notepad\"\n"
+        "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\nschema_version = 1\n\n[targets.notepad]\nexe = \"notepad\"\n"
     );
 
     let result = output(wineo(root.path()).args(["set", "notepad", "arch=win32"]));

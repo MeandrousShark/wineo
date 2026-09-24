@@ -24,7 +24,7 @@ use crate::runners::Runners;
 /// gaming runs on it and its DXVK and vkd3d picks drop out.
 const BUILT_IN: [(&str, &str); 1] = [(
     "gaming",
-    "runner = \"proton\"\ndxvk = \"latest\"\nvkd3d = \"latest\"\ngamemode = true\n",
+    "schema_version = 1\nrunner = \"proton\"\ndxvk = \"latest\"\nvkd3d = \"latest\"\ngamemode = true\n",
 )];
 
 /// What a template's `runner` can be besides a runner's name: the newest
@@ -199,7 +199,8 @@ impl Templates {
 }
 
 fn parse(path: &Path, text: &str) -> Result<Template> {
-    let table: toml::Table = toml::from_str(text).map_err(|source| Error::ConfigSyntax {
+    crate::config::check_schema(path, text)?;
+    let mut table: toml::Table = toml::from_str(text).map_err(|source| Error::ConfigSyntax {
         path: path.to_owned(),
         source: Box::new(source),
     })?;
@@ -213,6 +214,7 @@ fn parse(path: &Path, text: &str) -> Result<Template> {
             });
         }
     }
+    table.remove("schema_version");
     table.try_into().map_err(|source| Error::ConfigSyntax {
         path: path.to_owned(),
         source: Box::new(source),
@@ -305,6 +307,45 @@ mod tests {
             assert!(
                 err.to_string().contains("belongs to an environment"),
                 "{key}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_template_may_carry_the_schema_version() {
+        let root = tempfile::tempdir().unwrap();
+        write(root.path(), "v1", "schema_version = 1\ngamemode = true\n");
+        write(root.path(), "legacy", "gamemode = true\n");
+        let v1 = templates(root.path()).resolve("v1").unwrap();
+        assert_eq!(v1, templates(root.path()).resolve("legacy").unwrap());
+        assert_eq!(v1.gamemode, Some(true));
+    }
+
+    #[test]
+    fn reading_a_template_leaves_it_alone() {
+        let root = tempfile::tempdir().unwrap();
+        write(root.path(), "legacy", "# mine\ngamemode = true\n");
+        let path = root.path().join("templates/legacy.toml");
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+        templates(root.path()).resolve("legacy").unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# mine\ngamemode = true\n"
+        );
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+    }
+
+    #[test]
+    fn unsupported_template_versions_are_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        for value in ["0", "2", "\"1\""] {
+            write(root.path(), "t", &format!("schema_version = {value}\n"));
+            assert!(
+                matches!(
+                    templates(root.path()).resolve("t"),
+                    Err(Error::SchemaVersion { .. })
+                ),
+                "{value}"
             );
         }
     }

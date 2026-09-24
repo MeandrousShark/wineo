@@ -310,6 +310,7 @@ fn transform_config(
             }
         }
     }
+    crate::config::stamp_schema(&mut doc);
     let text = doc.to_string();
     EnvironmentConfig::parse(Path::new("<clone>"), &text).map_err(|err| anyhow!(err))?;
     Ok(text)
@@ -516,6 +517,61 @@ mod tests {
                 Path::new("/some/external/game")
             );
         }
+    }
+
+    #[test]
+    fn cloning_a_legacy_config_versions_only_the_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, _source, original) = setup(root.path(), false);
+        let source_config = paths.environment_config("source");
+        let before = fs::metadata(&source_config).unwrap().modified().unwrap();
+        let global = GlobalConfig::default();
+        let destination = root.path().join("copy");
+        let review = inspect(&paths, &global, "source", "copy", Some(&destination)).unwrap();
+        let clone =
+            execute_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!(clone.config.schema_version, 1);
+        let text = fs::read_to_string(paths.environment_config("copy")).unwrap();
+        assert!(text.starts_with("# source comment\n"), "{text}");
+        assert!(
+            text.contains("store = 'steam'\nschema_version = 1\n\n[env]"),
+            "{text}"
+        );
+        assert_eq!(fs::read_to_string(&source_config).unwrap(), original);
+        assert_eq!(
+            fs::metadata(&source_config).unwrap().modified().unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn cloning_refuses_an_unsupported_version() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, _source, original) = setup(root.path(), false);
+        let text = format!("schema_version = 2\n{original}");
+        fs::write(paths.environment_config("source"), &text).unwrap();
+        let destination = root.path().join("copy");
+        let err = inspect(
+            &paths,
+            &GlobalConfig::default(),
+            "source",
+            "copy",
+            Some(&destination),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::Error>(),
+                Some(crate::error::Error::SchemaVersion { .. })
+            ),
+            "{err}"
+        );
+        assert!(!destination.exists());
+        assert!(!paths.environment_config("copy").exists());
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("source")).unwrap(),
+            text
+        );
     }
 
     #[test]

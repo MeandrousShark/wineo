@@ -18,7 +18,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use rustix::fs::ioctl_ficlone;
 use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
-use toml_edit::{Array, DocumentMut, Item, Table, Value, value};
+use toml_edit::{Array, Item, Table, Value, value};
 
 use crate::config::{Arch, EnvironmentConfig, GlobalConfig, Target, validate_env_var};
 use crate::download::{InstallLock, publish};
@@ -941,7 +941,7 @@ fn config_text(
     arch: Arch,
     settings: Option<&ImportedSettings>,
 ) -> Result<String> {
-    let mut doc = DocumentMut::new();
+    let mut doc = crate::config::new_document();
     doc["prefix"] = value(prefix);
     doc["runner"] = value(runner);
     doc["arch"] = value(arch.as_str());
@@ -1760,6 +1760,23 @@ mod tests {
         );
         assert!(prefix_root.join("game/system.reg").is_file());
         assert!(paths.environment_config("game").is_file());
+    }
+
+    #[test]
+    fn imported_configs_start_with_the_version() {
+        let heroic = ImportedSettings {
+            heroic_id: Some("abc".to_owned()),
+            ..ImportedSettings::default()
+        };
+        for settings in [None, Some(&heroic)] {
+            let text = config_text("~/p", "wine", Arch::Win64, settings).unwrap();
+            assert!(
+                text.starts_with("schema_version = 1\nprefix = \"~/p\"\n"),
+                "{text}"
+            );
+            let config = EnvironmentConfig::parse(Path::new("/x.toml"), &text).unwrap();
+            assert_eq!(config.schema_version, 1);
+        }
     }
 
     #[test]
