@@ -630,6 +630,86 @@ mod tests {
     }
 
     #[test]
+    fn prefix_locks_are_host_wide() {
+        let xdg = portable(&[("HOME", "/home/me")], None).unwrap();
+        let one = portable(&[("HOME", "/home/me")], Some("/mnt/a/wineo")).unwrap();
+        assert_eq!(xdg.prefix_locks_dir(), xdg.locks_dir());
+        assert_eq!(one.prefix_locks_dir(), xdg.prefix_locks_dir());
+        assert_eq!(
+            xdg.restore_marker("hades"),
+            Path::new("/home/me/.local/state/wineo/.locks/snapshot-restore-hades-restore.json")
+        );
+        assert_eq!(
+            one.restore_marker("hades"),
+            Path::new("/mnt/a/wineo/prefixes/.wineo-snapshots/hades/restore.json")
+        );
+    }
+
+    #[test]
+    fn config_paths_resolve_from_the_root_only_in_portable_mode() {
+        let paths = portable(&[("HOME", "/home/me")], Some("/mnt/usb/wineo")).unwrap();
+        assert_eq!(
+            paths.config_path("prefixes/x").unwrap(),
+            Path::new("/mnt/usb/wineo/prefixes/x")
+        );
+        assert_eq!(paths.config_path("~/x").unwrap(), Path::new("/home/me/x"));
+        let xdg = portable(&[("HOME", "/home/me")], None).unwrap();
+        assert_eq!(
+            xdg.config_path("some/dir").unwrap(),
+            xdg.absolute("some/dir").unwrap()
+        );
+    }
+
+    #[test]
+    fn target_values_only_change_inside_a_portable_folder() {
+        let paths = portable(&[("HOME", "/home/me")], Some("/mnt/usb/wineo")).unwrap();
+        let store = |value| paths.store_value(value).unwrap();
+        assert_eq!(store("/mnt/usb/wineo/games/x.exe"), "games/x.exe");
+        assert_eq!(store("/opt/x.exe"), "/opt/x.exe");
+        assert_eq!(store("~/Games/x.exe"), "~/Games/x.exe");
+        assert_eq!(store("C:\\Games\\x.exe"), "C:\\Games\\x.exe");
+        assert_eq!(store("notepad"), "notepad");
+        let xdg = portable(&[("HOME", "/home/me")], None).unwrap();
+        assert_eq!(
+            xdg.store_value("/home/me/Games/x.exe").unwrap(),
+            "/home/me/Games/x.exe"
+        );
+    }
+
+    #[test]
+    fn portable_prefixes_must_be_inside_its_prefixes_dir() {
+        let paths = portable(&[("HOME", "/home/me")], Some("/mnt/usb/wineo")).unwrap();
+        assert!(
+            paths
+                .check_prefix(Path::new("/mnt/usb/wineo/prefixes/x"))
+                .is_ok()
+        );
+        for outside in [
+            "/mnt/usb/wineo/prefixes",
+            "/mnt/usb/wineo/prefixes/.wineo-snapshots/x",
+            "/mnt/usb/wineo/config/x",
+            "/mnt/usb/wineo/prefixes/../x",
+            "/home/me/prefix",
+        ] {
+            assert!(
+                matches!(
+                    paths.check_prefix(Path::new(outside)),
+                    Err(Error::PrefixOutsidePortable(_))
+                ),
+                "{outside}"
+            );
+        }
+        assert_eq!(
+            paths
+                .store_prefix(Path::new("/mnt/usb/wineo/prefixes/x"))
+                .unwrap(),
+            "prefixes/x"
+        );
+        let xdg = portable(&[("HOME", "/home/me")], None).unwrap();
+        assert!(xdg.check_prefix(Path::new("/anywhere")).is_ok());
+    }
+
+    #[test]
     fn absolute_resolves_relative_paths() {
         let paths = paths(&[("HOME", "/home/me")]).unwrap();
         let cwd = std::env::current_dir().unwrap();

@@ -917,6 +917,155 @@ mod tests {
         assert!(inspect_restore(&paths, &global, "game", "one").is_err());
     }
 
+    fn portable(home: &Path, root: &Path) -> Paths {
+        let home = home.to_owned();
+        Paths::select(
+            move |key| (key == "HOME").then(|| home.clone().into_os_string()),
+            Some(root),
+        )
+        .unwrap()
+    }
+
+    /// A portable folder holding one environment whose config paths are all
+    /// relative to the root.
+    fn portable_fixture() -> (tempfile::TempDir, PathBuf, String) {
+        let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let usb = root.path().join("usb");
+        let prefix = usb.join("prefixes/game");
+        fs::create_dir_all(prefix.join("drive_c")).unwrap();
+        fs::write(
+            prefix.join("system.reg"),
+            "WINE REGISTRY Version 2\n#arch=win64\n",
+        )
+        .unwrap();
+        fs::write(prefix.join("drive_c/game.exe"), "before").unwrap();
+        let config = "prefix = 'prefixes/game'\nrunner = 'wine'\narch = 'win64'\n[targets.game]\nexe = 'prefixes/game/drive_c/game.exe'\n".to_owned();
+        fs::create_dir_all(usb.join("config/environments")).unwrap();
+        fs::write(usb.join("config/environments/game.toml"), &config).unwrap();
+        (root, usb, config)
+    }
+
+    #[test]
+    fn portable_snapshots_survive_moving_the_folder() {
+        let (root, usb, config) = portable_fixture();
+        let global = GlobalConfig::default();
+        let paths = portable(root.path(), &usb);
+        let review = inspect_create(&paths, &global, "game", "one").unwrap();
+        create_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+        let manifest = usb
+            .join("prefixes/.wineo-snapshots/game/one")
+            .join(MANIFEST);
+        let manifest: Manifest = serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap();
+        assert_eq!(manifest.prefix, Path::new("prefixes/game"));
+
+        let moved = root.path().join("moved");
+        fs::rename(&usb, &moved).unwrap();
+        let paths = portable(root.path(), &moved);
+        fs::write(moved.join("prefixes/game/drive_c/game.exe"), "after").unwrap();
+        assert_eq!(list(&paths, "game").unwrap().len(), 1);
+        let restore = inspect_restore(&paths, &global, "game", "one").unwrap();
+        assert_eq!(restore.prefix, moved.join("prefixes/game"));
+        restore_reviewed(&paths, &global, &restore, &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!(
+            fs::read_to_string(moved.join("prefixes/game/drive_c/game.exe")).unwrap(),
+            "before"
+        );
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("game")).unwrap(),
+            config
+        );
+    }
+
+    #[test]
+    fn a_portable_manifest_for_another_prefix_is_refused() {
+        let (root, usb, _) = portable_fixture();
+        let global = GlobalConfig::default();
+        let paths = portable(root.path(), &usb);
+        let review = inspect_create(&paths, &global, "game", "one").unwrap();
+        create_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+        let path = usb
+            .join("prefixes/.wineo-snapshots/game/one")
+            .join(MANIFEST);
+        let text = fs::read_to_string(&path).unwrap();
+        fs::write(&path, text.replace("prefixes/game", "prefixes/other")).unwrap();
+        assert!(inspect_restore(&paths, &global, "game", "one").is_err());
+    }
+
+    #[test]
+    fn a_portable_restore_interrupted_before_a_move_recovers_after_it() {
+        let (root, usb, config) = portable_fixture();
+        let global = GlobalConfig::default();
+        let paths = portable(root.path(), &usb);
+        let prefix = usb.join("prefixes/game");
+        let review = inspect_create(&paths, &global, "game", "one").unwrap();
+        create_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+        fs::write(prefix.join("drive_c/game.exe"), "later").unwrap();
+        let old_fingerprint = import::fingerprint(&prefix).unwrap();
+        let restore = inspect_restore(&paths, &global, "game", "one").unwrap();
+        let stage = tempfile::Builder::new()
+            .prefix(".wineo-restore-")
+            .tempdir_in(prefix.parent().unwrap())
+            .unwrap();
+        import::copy_tree_strict_reflink(
+            &restore.snapshot.join("prefix"),
+            stage.path(),
+            &prefix,
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+        .unwrap();
+        let stage = stage.keep();
+        let marker = RestoreMarker {
+            version: VERSION,
+            environment: "game".to_owned(),
+            prefix: prefix.clone(),
+            staging: stage.clone(),
+            old_directory: directory_identity(&prefix).unwrap(),
+            old_fingerprint,
+            old_config: config.clone(),
+        };
+        let marker_path = marker_path(&paths, "game");
+        assert!(marker_path.starts_with(usb.join("prefixes/.wineo-snapshots/game")));
+        write_marker(&marker_path, &stored_marker(&paths, &marker).unwrap()).unwrap();
+        exchange(&prefix, &stage).unwrap();
+        let text = fs::read_to_string(&marker_path).unwrap();
+        assert!(!text.contains(usb.to_str().unwrap()), "{text}");
+
+        let moved = root.path().join("moved");
+        fs::rename(&usb, &moved).unwrap();
+        let paths = portable(root.path(), &moved);
+        assert!(Environment::load(&paths, "game").is_err());
+        recover(&paths, "game").unwrap();
+        assert_eq!(
+            fs::read_to_string(moved.join("prefixes/game/drive_c/game.exe")).unwrap(),
+            "later"
+        );
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("game")).unwrap(),
+            config
+        );
+        assert!(!paths.restore_marker("game").exists());
+        assert!(Environment::load(&paths, "game").is_ok());
+    }
+
+    #[test]
+    fn a_portable_prefix_outside_the_folder_is_refused() {
+        let (root, usb, _) = portable_fixture();
+        let outside = root.path().join("outside");
+        fs::rename(usb.join("prefixes/game"), &outside).unwrap();
+        fs::write(
+            usb.join("config/environments/game.toml"),
+            format!(
+                "prefix = '{}'\nrunner = 'wine'\narch = 'win64'\n",
+                outside.display()
+            ),
+        )
+        .unwrap();
+        let paths = portable(root.path(), &usb);
+        let err = inspect_create(&paths, &GlobalConfig::default(), "game", "one").unwrap_err();
+        assert!(err.to_string().contains("portable prefixes"), "{err}");
+    }
+
     #[test]
     fn recovery_restores_original_after_interrupted_exchange() {
         let (_root, paths, prefix, original_config) = fixture(false);

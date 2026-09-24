@@ -1455,6 +1455,47 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn imported_targets_inside_a_portable_folder_are_stored_relative() {
+        let paths = Paths::select(
+            |key| (key == "HOME").then(|| OsString::from("/home/me")),
+            Some(Path::new("/mnt/usb/wineo")),
+        )
+        .unwrap();
+        let target = |exe: &str, cwd: &str| Target {
+            exe: exe.to_owned(),
+            args: Vec::new(),
+            cwd: Some(cwd.to_owned()),
+            default: false,
+            gamemode: None,
+            desktop: false,
+            name: None,
+        };
+        let settings = ImportedSettings {
+            targets: BTreeMap::from([
+                (
+                    "inside".to_owned(),
+                    target(
+                        "/mnt/usb/wineo/prefixes/game/drive_c/game.exe",
+                        "/mnt/usb/wineo/prefixes/game/drive_c",
+                    ),
+                ),
+                (
+                    "outside".to_owned(),
+                    target("/home/me/Games/game.exe", "C:\\Games"),
+                ),
+            ]),
+            ..ImportedSettings::default()
+        };
+        let stored = stored_settings(&paths, &settings).unwrap();
+        let inside = &stored.targets["inside"];
+        assert_eq!(inside.exe, "prefixes/game/drive_c/game.exe");
+        assert_eq!(inside.cwd.as_deref(), Some("prefixes/game/drive_c"));
+        let outside = &stored.targets["outside"];
+        assert_eq!(outside.exe, "/home/me/Games/game.exe");
+        assert_eq!(outside.cwd.as_deref(), Some("C:\\Games"));
+    }
+
     fn prefix(root: &Path, arch: &str) {
         fs::create_dir_all(root.join("drive_c")).unwrap();
         fs::write(

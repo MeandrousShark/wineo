@@ -123,7 +123,7 @@ fn a_relative_folder_resolves_from_where_wineo_starts() {
 }
 
 /// Stops the portable run even when an assertion fails first.
-struct StopOnDrop<'a>(&'a Fixture, PathBuf);
+struct StopOnDrop<'a>(&'a Fixture, PathBuf, &'a str);
 
 impl Drop for StopOnDrop<'_> {
     fn drop(&mut self) {
@@ -132,7 +132,7 @@ impl Drop for StopOnDrop<'_> {
             .wineo()
             .arg("--portable")
             .arg(&self.1)
-            .args(["stop", "--force", "hades"])
+            .args(["stop", "--force", self.2])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
@@ -145,7 +145,7 @@ fn same_named_environments_keep_separate_runs() {
     f.environment("hades", APP);
     let dir = f.root.path().join("portable");
     let prefix = portable_environment(&dir, "hades");
-    let _stop = StopOnDrop(&f, dir.clone());
+    let _stop = StopOnDrop(&f, dir.clone(), "hades");
     let portable = |args: &[&str]| {
         f.wineo()
             .arg("--portable")
@@ -180,4 +180,148 @@ fn same_named_environments_keep_separate_runs() {
     assert_success(&portable(&["stop", "hades"]));
     assert!(!prefix.join("fake-pids").exists());
     assert!(!stdout(&portable(&["status", "hades"])).contains("running"));
+}
+
+fn reflink_supported(dir: &Path) -> bool {
+    let source = dir.join("reflink-source");
+    let destination = dir.join("reflink-destination");
+    fs::write(&source, b"probe").unwrap();
+    let input = fs::File::open(&source).unwrap();
+    let output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+        .unwrap();
+    let supported = rustix::fs::ioctl_ficlone(&output, &input).is_ok();
+    fs::remove_file(source).unwrap();
+    fs::remove_file(destination).unwrap();
+    supported
+}
+
+fn config(dir: &Path, name: &str) -> String {
+    fs::read_to_string(dir.join("config/environments").join(format!("{name}.toml")))
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_portable_environment_keeps_working_after_the_folder_moves() {
+    let f = Fixture::new_in(Path::new(env!("CARGO_MANIFEST_DIR")));
+    let snapshots = reflink_supported(f.root.path());
+    let dir = f.root.path().join("usb");
+    let elsewhere = f.root.path().join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let wineo = |dir: &Path, args: &[&str]| {
+        f.wineo()
+            .current_dir(&elsewhere)
+            .arg("--portable")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    assert_success(&wineo(&dir, &["new", "-n", "app"]));
+    assert!(config(&dir, "app").contains("prefix = \"prefixes/app\""));
+    let exe = dir.join("prefixes/app/drive_c/app.exe");
+    fs::write(&exe, "").unwrap();
+    assert_success(&wineo(
+        &dir,
+        &["set", "app", &format!("targets.app.exe={}", exe.display())],
+    ));
+    assert!(
+        config(&dir, "app").contains("exe = \"prefixes/app/drive_c/app.exe\""),
+        "{}",
+        config(&dir, "app")
+    );
+    let outside = f.root.path().join("outside");
+    let refused = wineo(
+        &dir,
+        &["set", "app", &format!("prefix={}", outside.display())],
+    );
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("portable prefixes must be inside"));
+    let refused = wineo(
+        &dir,
+        &["new", "-n", "stray", "--dir", outside.to_str().unwrap()],
+    );
+    assert!(!refused.status.success());
+    assert!(!outside.exists());
+    assert_eq!(config(&dir, "stray"), "");
+
+    assert_success(&wineo(&dir, &["clone", "app", "copy"]));
+    let copied = config(&dir, "copy");
+    assert!(copied.contains("prefix = \"prefixes/copy\""), "{copied}");
+    assert!(
+        copied.contains("exe = \"prefixes/copy/drive_c/app.exe\""),
+        "{copied}"
+    );
+    if snapshots {
+        assert_success(&wineo(&dir, &["snapshot", "create", "app", "clean"]));
+    }
+
+    let moved = f.root.path().join("moved");
+    fs::rename(&dir, &moved).unwrap();
+    let _stop = StopOnDrop(&f, moved.clone(), "app");
+    assert_eq!(names(&wineo(&moved, &["list"])), ["app", "copy"]);
+
+    let started = wineo(&moved, &["start", "app"]);
+    assert_success(&started);
+    let prefix = moved.join("prefixes/app");
+    wait_for("the moved program", || prefix.join("fake-pids").exists());
+    assert_success(&wineo(&moved, &["stop", "app"]));
+    assert!(!prefix.join("fake-pids").exists());
+
+    assert_success(&wineo(&moved, &["set", "app", "env.FAKE_VAR=1"]));
+    assert!(config(&moved, "app").contains("FAKE_VAR"));
+
+    if snapshots {
+        fs::write(prefix.join("drive_c/save.dat"), "later").unwrap();
+        let listed = stdout(&wineo(&moved, &["snapshot", "list", "app"]));
+        assert!(listed.contains("clean"), "{listed}");
+        assert_success(&wineo(
+            &moved,
+            &["snapshot", "restore", "app", "clean", "--yes"],
+        ));
+        assert!(!prefix.join("drive_c/save.dat").exists());
+        assert!(!config(&moved, "app").contains("FAKE_VAR"));
+    }
+
+    assert_success(&wineo(&moved, &["rm", "app", "--delete-prefix"]));
+    assert!(!prefix.exists());
+    assert_eq!(names(&wineo(&moved, &["list"])), ["copy"]);
+}
+
+#[test]
+fn imports_land_inside_the_folder_and_adopting_outside_is_refused() {
+    let f = Fixture::new();
+    let dir = f.root.path().join("usb");
+    let source = f.root.path().join("source");
+    fs::create_dir_all(source.join("drive_c")).unwrap();
+    fs::write(
+        source.join("system.reg"),
+        "WINE REGISTRY Version 2\n\n#arch=win64\n",
+    )
+    .unwrap();
+    let wineo = |args: &[&str]| {
+        f.wineo()
+            .arg("--portable")
+            .arg(&dir)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let source_arg = source.to_str().unwrap();
+
+    let adopted = wineo(&[
+        "import", "prefix", source_arg, "-n", "kept", "--runner", "wine", "--adopt",
+    ]);
+    assert!(!adopted.status.success());
+    assert!(stderr(&adopted).contains("portable prefixes must be inside"));
+    assert_eq!(config(&dir, "kept"), "");
+
+    assert_success(&wineo(&[
+        "import", "prefix", source_arg, "-n", "copied", "--runner", "wine",
+    ]));
+    assert!(config(&dir, "copied").contains("prefix = \"prefixes/copied\""));
+    assert!(dir.join("prefixes/copied/system.reg").exists());
 }
