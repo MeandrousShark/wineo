@@ -94,38 +94,26 @@ pub fn inspect(
     }
     check_shared_configs(paths, new_name, [&source_root, &destination])?;
 
-    let mut changed_settings = vec!["prefix".to_owned()];
+    let mut review = review_config(paths, &config, &source_root);
     if config.heroic_id.is_some() {
-        changed_settings.push("heroic_id removed".to_owned());
+        review
+            .changed_settings
+            .insert(1, "heroic_id removed".to_owned());
     }
-    let mut external_target_paths = Vec::new();
-    let mut literal_source_paths = Vec::new();
-    let source_path = source_root.to_string_lossy();
-    for (key, value) in &config.env {
-        if value.contains(source_path.as_ref()) {
-            literal_source_paths.push(format!("env.{key}"));
-        }
-    }
-    for (key, target) in &config.targets {
-        for (field, raw) in [("exe", Some(&target.exe)), ("cwd", target.cwd.as_ref())] {
-            let Some(raw) = raw else { continue };
-            let Some(path) = stored_path(paths, raw) else {
-                continue;
-            };
-            if !paths::resolve(&path).starts_with(&source_root) {
-                external_target_paths.push(format!("targets.{key}.{field}: {raw}"));
-            }
-        }
-        for (index, arg) in target.args.iter().enumerate() {
-            if arg.contains(source_path.as_ref()) {
-                literal_source_paths.push(format!("targets.{key}.args[{index}]"));
-            }
-        }
-        if target.desktop {
-            changed_settings.push(format!("targets.{key}.desktop disabled"));
-        }
-    }
-    let config_text = transform_config(paths, &source_config, &config, &source_root, &destination)?;
+    let ConfigReview {
+        changed_settings,
+        external_target_paths,
+        literal_source_paths,
+    } = review;
+    let config_text = transform_config(
+        paths,
+        paths,
+        &source_config,
+        &config,
+        &source_root,
+        &destination,
+        false,
+    )?;
     Ok(CloneInspection {
         source_name: source_name.to_owned(),
         new_name: new_name.to_owned(),
@@ -285,19 +273,72 @@ fn ensure_same(expected: &CloneInspection, actual: &CloneInspection) -> Result<(
     Ok(())
 }
 
-fn transform_config(
-    paths: &Paths,
+/// What copying a config changes or leaves pointing elsewhere, for a review.
+pub(crate) struct ConfigReview {
+    pub changed_settings: Vec<String>,
+    pub external_target_paths: Vec<String>,
+    pub literal_source_paths: Vec<String>,
+}
+
+/// Reviews `config` read through `from` for a copy of the prefix at `source_root`.
+pub(crate) fn review_config(
+    from: &Paths,
+    config: &EnvironmentConfig,
+    source_root: &Path,
+) -> ConfigReview {
+    let mut changed_settings = vec!["prefix".to_owned()];
+    let mut external_target_paths = Vec::new();
+    let mut literal_source_paths = Vec::new();
+    let source_path = source_root.to_string_lossy();
+    for (key, value) in &config.env {
+        if value.contains(source_path.as_ref()) {
+            literal_source_paths.push(format!("env.{key}"));
+        }
+    }
+    for (key, target) in &config.targets {
+        for (field, raw) in [("exe", Some(&target.exe)), ("cwd", target.cwd.as_ref())] {
+            let Some(raw) = raw else { continue };
+            let Some(path) = stored_path(from, raw) else {
+                continue;
+            };
+            if !paths::resolve(&path).starts_with(source_root) {
+                external_target_paths.push(format!("targets.{key}.{field}: {raw}"));
+            }
+        }
+        for (index, arg) in target.args.iter().enumerate() {
+            if arg.contains(source_path.as_ref()) {
+                literal_source_paths.push(format!("targets.{key}.args[{index}]"));
+            }
+        }
+        if target.desktop {
+            changed_settings.push(format!("targets.{key}.desktop disabled"));
+        }
+    }
+    ConfigReview {
+        changed_settings,
+        external_target_paths,
+        literal_source_paths,
+    }
+}
+
+/// `source`, read through `from`, rewritten for a copy at `destination`
+/// written through `to`. Internal target paths follow the copy and desktop
+/// entries are turned off.
+pub(crate) fn transform_config(
+    from: &Paths,
+    to: &Paths,
     source: &str,
     config: &EnvironmentConfig,
     source_root: &Path,
     destination: &Path,
+    keep_heroic_id: bool,
 ) -> Result<String> {
     let mut doc: DocumentMut = source.parse()?;
-    let prefix = paths
-        .store_prefix(destination)
-        .map_err(|err| anyhow!(err))?;
+    let prefix = to.store_prefix(destination).map_err(|err| anyhow!(err))?;
     edit::store_value(doc.as_table_mut(), "prefix", Value::from(prefix));
-    doc.as_table_mut().remove("heroic_id");
+    if !keep_heroic_id {
+        doc.as_table_mut().remove("heroic_id");
+    }
     if let Some(targets) = doc
         .get_mut("targets")
         .and_then(|item| item.as_table_like_mut())
@@ -309,7 +350,7 @@ fn transform_config(
                 .ok_or_else(|| anyhow!("target `{name}` has an unsupported TOML shape"))?;
             for (field, old) in [("exe", Some(&target.exe)), ("cwd", target.cwd.as_ref())] {
                 if let Some(old) = old
-                    .map(|old| rebase(paths, old, source_root, destination))
+                    .map(|old| rebase(from, to, old, source_root, destination))
                     .transpose()?
                     .flatten()
                 {
@@ -348,15 +389,16 @@ fn stored_path(paths: &Paths, value: &str) -> Option<PathBuf> {
 }
 
 fn rebase(
-    paths: &Paths,
+    from: &Paths,
+    to: &Paths,
     value: &str,
     source_root: &Path,
     destination: &Path,
 ) -> Result<Option<String>> {
-    if paths.portable_root().is_none() && !Path::new(value).is_absolute() {
+    if from.portable_root().is_none() && !Path::new(value).is_absolute() {
         return Ok(None);
     }
-    let Some(path) = stored_path(paths, value) else {
+    let Some(path) = stored_path(from, value) else {
         return Ok(None);
     };
     let Ok(relative) = paths::resolve(&path)
@@ -366,8 +408,8 @@ fn rebase(
         return Ok(None);
     };
     let rebased = destination.join(relative);
-    if paths.portable_root().is_some() {
-        return paths.store(&rebased).map(Some).map_err(|err| anyhow!(err));
+    if to.portable_root().is_some() {
+        return to.store(&rebased).map(Some).map_err(|err| anyhow!(err));
     }
     Ok(Some(rebased.to_string_lossy().into_owned()))
 }
