@@ -189,8 +189,8 @@ desktop entries is plan 0022, and showing posters and heroes is for
   ```
 
   The other warnings read `warning: server/hero.jpg ignored, server/hero.png
-  takes precedence`, `warning: server/logo.png is missing`, and `warning: art
-  for unknown target `old``. A target's files are shown relative to the
+  takes precedence`, `warning: server/logo.png is missing`, and ``warning: art
+  for unknown target `old` ``. A target's files are shown relative to the
   environment's art directory.
 - `wineo art rm ENV[.TARGET] KIND` removes one piece of art.
 - `art set` and `art rm` print one line on success, such as `Set icon for
