@@ -85,8 +85,10 @@ game files or replace full backup and restore.
   marker exists, ordinary commands must refuse to use that environment.
   Provide `wineo snapshot recover ENV` to roll back an interrupted restore.
   Clear the marker only after the new prefix and config are both committed;
-  remove the old prefix after the marker is clear. If atomic exchange is not
-  available, fail before changing the live environment.
+  remove the old prefix after the marker is clear. If the old prefix is a Btrfs
+  subvolume, leave it in place and show its exact cleanup path rather than
+  invoking Btrfs deletion. If atomic exchange is not available, fail before
+  changing the live environment.
 - If restore fails after exchange, roll back under the same locks. If automatic
   rollback fails, retain the marker and both copies, and print their paths plus
   the recovery command. Never delete the selected snapshot during restore.
