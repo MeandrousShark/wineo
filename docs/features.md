@@ -17,6 +17,8 @@ Completed: [0016: Clone an environment](plans/0016-clone-environment.md).
 See [Clone an environment](clone.md) for command behavior and limits.
 Completed: [0017: Prefix snapshots](plans/0017-prefix-snapshots.md).
 See [Prefix snapshots](snapshots.md) for command behavior and limits.
+Completed: [0018: Config schema versioning](plans/0018-config-schema-versioning.md).
+See [Config file versioning](config-files.md) for the key and compatibility rules.
 
 **Category**
 
@@ -37,10 +39,9 @@ See [Prefix snapshots](snapshots.md) for command behavior and limits.
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| Portable layout | Portability/Data | **3** | Config schema versioning | Nice design feature, but standard layout should stabilize first | |
+| Portable layout | Portability/Data | **3** | 0018 | Nice design feature, but standard layout should stabilize first | |
 | Import from Lutris/Bottles and Heroic store metadata | Compatibility | **3** | 0008 | Extends generic import and Heroic sideloaded-game import | 0008 covers manually added Heroic games only. Store integration and other launchers remain separate work. |
 | Managed copying of portable application folders | Portability/Data | **3** | 0007, 0008 | Optional organization for applications used in place today | 0008 copies prefixes but leaves external game folders where they are. Storage layout and removal semantics need a later plan. |
-| Config schema versioning | Portability/Data | **3** | | Probably becomes necessary before first stable release, not necessarily now | Portable layout and full backup and restore wait on this, since that's when configs start outliving the machine or wineo version that wrote them. |
 | wineo-gui | UX | **4** | | Explicitly not the main product; let the CLI mature first | |
 | Artwork from SteamGridDB | UX | **4** | wineo-gui | Posters, backgrounds, and icons for games, which a GUI can show | Could also fill in desktop entry icons for games whose exe has no shortcut to take one from. |
-| Full backup and restore | Portability/Data | **4** | Config schema versioning | Great eventually, but this could become a whole subsystem | Covers filesystems without snapshot support. |
+| Full backup and restore | Portability/Data | **4** | 0018 | Great eventually, but this could become a whole subsystem | Covers filesystems without snapshot support. |
