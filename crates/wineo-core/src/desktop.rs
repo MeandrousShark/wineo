@@ -188,7 +188,6 @@ fn write(
         .unwrap_or_else(|| target_name.to_owned());
     let gaming = runner.is_some_and(Runner::is_proton)
         || launch::gamemode(global, environment, Some(target));
-    let portable = paths.portable_root().map(exec_arg).transpose()?;
 
     let rendered = |icon: bool| {
         render(&Desired {
@@ -196,7 +195,6 @@ fn write(
             target: target_name,
             name: &name,
             exe: &target.exe,
-            portable: portable.as_deref(),
             gaming,
             icon,
         })
@@ -240,8 +238,6 @@ struct Desired<'a> {
     target: &'a str,
     name: &'a str,
     exe: &'a str,
-    /// The portable folder, already quoted for `Exec`.
-    portable: Option<&'a str>,
     gaming: bool,
     icon: bool,
 }
@@ -252,7 +248,6 @@ fn render(desired: &Desired) -> String {
         target,
         name,
         exe,
-        portable,
         gaming,
         icon,
     } = desired;
@@ -269,11 +264,8 @@ fn render(desired: &Desired) -> String {
     text.push_str(&format!(
         "Comment=Runs in the wineo environment {environment}\n"
     ));
-    let selector = portable
-        .map(|root| format!("--portable {root} "))
-        .unwrap_or_default();
     text.push_str(&format!(
-        "Exec=wineo {selector}start {environment} --target {target}\n"
+        "Exec=wineo start {environment} --target {target}\n"
     ));
     if *icon {
         text.push_str(&format!("Icon={}\n", icon_name(environment, target)));
@@ -288,32 +280,6 @@ fn render(desired: &Desired) -> String {
     text.push_str(&format!("{ENVIRONMENT_KEY}={environment}\n"));
     text.push_str(&format!("{TARGET_KEY}={target}\n"));
     text
-}
-
-/// Quotes a path as one `Exec` argument, following the desktop entry spec:
-/// reserved characters need double quotes, `"`, `` ` ``, `$`, and `\` are
-/// escaped inside them, and the value's own escaping doubles every `\`.
-fn exec_arg(path: &Path) -> Result<String> {
-    let text = path
-        .to_str()
-        .ok_or_else(|| Error::NonUtf8Path(path.to_owned()))?;
-    if text.chars().any(char::is_control) {
-        return Err(Error::DesktopPath(path.to_owned()));
-    }
-    let plain = |c: char| c.is_ascii_alphanumeric() || "/._-+,:@".contains(c);
-    let text = text.replace('%', "%%");
-    if text.chars().all(|c| plain(c) || c == '%') {
-        return Ok(text);
-    }
-    let mut quoted = String::from("\"");
-    for c in text.chars() {
-        if matches!(c, '"' | '`' | '$' | '\\') {
-            quoted.push('\\');
-        }
-        quoted.push(c);
-    }
-    quoted.push('"');
-    Ok(quoted.replace('\\', "\\\\"))
 }
 
 /// A desktop entry value is a single line, so anything that would break out of
@@ -631,57 +597,6 @@ mod tests {
                 "X-Wineo-Target=hades\n",
             )
         );
-    }
-
-    #[test]
-    fn a_portable_entry_starts_wineo_with_its_folder() {
-        let root = tempfile::tempdir().unwrap();
-        let home = root.path().to_owned();
-        let usb = root.path().join("My Games $1");
-        let paths = Paths::select(
-            move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
-            Some(&usb),
-        )
-        .unwrap();
-        let prefix = usb.join("prefixes/hades");
-        fs::create_dir_all(prefix.join("drive_c")).unwrap();
-        fs::write(prefix.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
-        let config = paths.environment_config("hades");
-        fs::create_dir_all(config.parent().unwrap()).unwrap();
-        fs::write(
-            &config,
-            "prefix = 'prefixes/hades'\nrunner = 'wine'\narch = 'win64'\n\n[targets.hades]\nexe = 'notepad'\ndesktop = true\n",
-        )
-        .unwrap();
-        let environment = Environment::load(&paths, "hades").unwrap();
-        reconcile(
-            &paths,
-            &GlobalConfig::default(),
-            &environment,
-            None,
-            &prefix,
-        )
-        .unwrap();
-        let entry = fs::read_to_string(entry_path(&paths, "hades", "hades")).unwrap();
-        let exec = format!(
-            "Exec=wineo --portable \"{}/My Games \\\\$1\" start hades --target hades\n",
-            root.path().display()
-        );
-        assert!(entry.contains(&exec), "{entry}");
-    }
-
-    #[test]
-    fn exec_arguments_are_quoted_only_when_needed() {
-        assert_eq!(
-            exec_arg(Path::new("/mnt/usb/wineo")).unwrap(),
-            "/mnt/usb/wineo"
-        );
-        assert_eq!(exec_arg(Path::new("/mnt/100%")).unwrap(), "/mnt/100%%");
-        assert_eq!(
-            exec_arg(Path::new("/mnt/a b\"c\\d")).unwrap(),
-            "\"/mnt/a b\\\\\"c\\\\\\\\d\""
-        );
-        assert!(exec_arg(Path::new("/mnt/a\nb")).is_err());
     }
 
     // Reconciliation runs on every launch, so an entry that already matches has
