@@ -21,6 +21,13 @@ wineo is a Wine environment manager written in Rust, organized as a Cargo worksp
 - The primary session handles all release work, including pushes, merges, tags, releases, publishing, and deployments.
 - Do not delegate release work to the `release` subagent or any other subagent.
 
+## Versioning
+
+- The version lives in `[workspace.package]` in `Cargo.toml`, and wineo stays on `0.x` until the maintainer calls it stable.
+- Marking a plan `Status: done` bumps the minor version (`0.2.0` to `0.3.0`). Fixes that land between plans bump the patch version.
+- Each bump gets a section in `CHANGELOG.md` with the date and a short list of changes, linking the plan when there is one, and an annotated `vX.Y.Z` tag.
+- The primary session does the bump, changelog, and tag as release work, and pushes tags with the commits.
+
 ## Plans
 
 - One file per plan: `docs/plans/NNNN-short-name.md`, numbered in order.
