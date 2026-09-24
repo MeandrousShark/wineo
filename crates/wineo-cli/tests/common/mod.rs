@@ -259,6 +259,7 @@ impl Fixture {
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("XDG_DATA_HOME", root.join("data"))
             .env("XDG_STATE_HOME", root.join("state"))
+            .env_remove("WINEO_PORTABLE_DIR")
             .env("PATH", &self.path_var)
             .stdin(Stdio::null());
         command

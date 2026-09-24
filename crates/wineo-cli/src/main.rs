@@ -5,9 +5,10 @@ mod prompt;
 mod style;
 mod wizard;
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueHint};
 use wineo_core::components::Component;
 use wineo_core::paths::Paths;
 use wineo_core::supervisor;
@@ -18,6 +19,9 @@ struct Cli {
     /// Show full detail that lists normally leave out, like installed names
     #[arg(short, long, global = true)]
     verbose: bool,
+    /// Keep config and prefixes in DIR instead of the standard locations
+    #[arg(long, global = true, value_name = "DIR", value_hint = ValueHint::DirPath)]
+    portable: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -101,7 +105,7 @@ fn run() -> anyhow::Result<ExitCode> {
     clap_complete::CompleteEnv::with_factory(Cli::command).complete();
 
     let cli = Cli::parse();
-    let paths = Paths::from_env()?;
+    let paths = Paths::from_env(cli.portable.as_deref())?;
     let verbose = cli.verbose;
     match cli.command {
         Command::New(args) => commands::new::run(&paths, args),

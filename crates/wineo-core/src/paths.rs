@@ -1,25 +1,41 @@
 use std::ffi::OsString;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::{Error, IoContext, Result};
+use crate::winpath;
 
-/// Where wineo keeps its files, following the XDG base directory spec.
+/// Selects a portable folder when `--portable` is not given.
+pub const PORTABLE_VAR: &str = "WINEO_PORTABLE_DIR";
+
+/// Where wineo keeps its files, following the XDG base directory spec unless a
+/// portable folder is selected.
 #[derive(Debug, Clone)]
 pub struct Paths {
     home: PathBuf,
     config: PathBuf,
     data: PathBuf,
     state: PathBuf,
+    portable: Option<PathBuf>,
 }
 
 impl Paths {
-    pub fn from_env() -> Result<Self> {
-        Self::from_lookup(|key| std::env::var_os(key))
+    /// Resolves paths from the process environment. `portable` is the
+    /// `--portable` option, which wins over `WINEO_PORTABLE_DIR`.
+    pub fn from_env(portable: Option<&Path>) -> Result<Self> {
+        Self::select(|key| std::env::var_os(key), portable)
     }
 
     /// Resolves paths from an arbitrary variable source, so tests don't have
     /// to mutate the process environment.
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<OsString>) -> Result<Self> {
+        Self::select(lookup, None)
+    }
+
+    pub fn select(
+        lookup: impl Fn(&str) -> Option<OsString>,
+        portable: Option<&Path>,
+    ) -> Result<Self> {
         let home = lookup("HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
@@ -32,12 +48,49 @@ impl Paths {
                 .unwrap_or_else(|| home.join(fallback))
                 .join("wineo")
         };
-        Ok(Self {
+        let mut paths = Self {
             config: base("XDG_CONFIG_HOME", ".config"),
             data: base("XDG_DATA_HOME", ".local/share"),
             state: base("XDG_STATE_HOME", ".local/state"),
             home,
-        })
+            portable: None,
+        };
+        let selected = match portable {
+            Some(root) if root.as_os_str().is_empty() => return Err(Error::EmptyPortable),
+            Some(root) => Some(root.to_owned()),
+            None => lookup(PORTABLE_VAR)
+                .filter(|root| !root.is_empty())
+                .map(PathBuf::from),
+        };
+        if let Some(root) = selected {
+            let root = match root.to_str() {
+                Some(text) => paths.expand(text),
+                None => root,
+            };
+            let root = resolve(
+                &std::path::absolute(&root)
+                    .context(|| format!("failed to resolve {}", root.display()))?,
+            );
+            // Dotted, so it never collides with the runtime dir of an XDG
+            // environment, and keyed by root so two folders never share state.
+            let key = format!(
+                "{}-{:016x}",
+                root.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(label)
+                    .unwrap_or_default(),
+                fnv1a(root.as_os_str().as_bytes())
+            );
+            paths.state = paths.state.join(".portable").join(key);
+            paths.config = root.join("config");
+            paths.portable = Some(root);
+        }
+        Ok(paths)
+    }
+
+    /// The selected portable folder, if any.
+    pub fn portable_root(&self) -> Option<&Path> {
+        self.portable.as_deref()
     }
 
     pub fn global_config(&self) -> PathBuf {
@@ -91,7 +144,10 @@ impl Paths {
     }
 
     pub fn default_prefix_root(&self) -> PathBuf {
-        self.data.join("prefixes")
+        match &self.portable {
+            Some(root) => root.join("prefixes"),
+            None => self.data.join("prefixes"),
+        }
     }
 
     pub fn default_runner_root(&self) -> PathBuf {
@@ -151,6 +207,61 @@ impl Paths {
             Err(_) => text(path),
         }
     }
+
+    /// The config form of a path. Inside a portable folder it is relative to
+    /// the root, so the folder can move. Elsewhere it is `contract`.
+    pub fn store(&self, path: &Path) -> Result<String> {
+        if let Some(root) = &self.portable {
+            let resolved = resolve(path);
+            if let Ok(rest) = resolved.strip_prefix(root) {
+                if rest.as_os_str().is_empty() {
+                    return Ok(".".to_owned());
+                }
+                return rest
+                    .to_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| Error::NonUtf8Path(resolved.clone()));
+            }
+        }
+        self.contract(path)
+    }
+
+    /// Resolves a path read from a config file. A portable folder resolves
+    /// relative paths from its root, independent of the current directory.
+    /// Windows paths are left to wine, so they give None.
+    pub fn resolve_stored(&self, value: &str) -> Result<Option<PathBuf>> {
+        if winpath::is_windows_path(value) {
+            return Ok(None);
+        }
+        match &self.portable {
+            Some(root) => {
+                let path = self.expand(value);
+                Ok(Some(if path.is_absolute() {
+                    path
+                } else {
+                    root.join(path)
+                }))
+            }
+            None => self.absolute(value).map(Some),
+        }
+    }
+}
+
+pub(crate) fn label(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(32)
+        .collect()
+}
+
+/// FNV-1a, so the same path always maps to the same key, in any build.
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// Canonicalizes as much of `path` as exists, so two spellings of the same
@@ -277,6 +388,164 @@ mod tests {
             paths.contract(Path::new("/home/meow/x")).unwrap(),
             "/home/meow/x"
         );
+    }
+
+    fn portable(vars: &[(&str, &str)], option: Option<&str>) -> Result<Paths> {
+        let vars: HashMap<String, OsString> = vars
+            .iter()
+            .map(|(key, value)| (key.to_string(), OsString::from(value)))
+            .collect();
+        Paths::select(|key| vars.get(key).cloned(), option.map(Path::new))
+    }
+
+    #[test]
+    fn option_wins_over_the_variable() {
+        let home = [("HOME", "/home/me"), (PORTABLE_VAR, "/env/folder")];
+        let paths = portable(&home, Some("/opt/folder")).unwrap();
+        assert_eq!(paths.portable_root(), Some(Path::new("/opt/folder")));
+        let paths = portable(&home, None).unwrap();
+        assert_eq!(paths.portable_root(), Some(Path::new("/env/folder")));
+    }
+
+    #[test]
+    fn no_selector_keeps_xdg_and_an_empty_one_is_handled() {
+        let paths = portable(&[("HOME", "/home/me")], None).unwrap();
+        assert_eq!(paths.portable_root(), None);
+        let paths = portable(&[("HOME", "/home/me"), (PORTABLE_VAR, "")], None).unwrap();
+        assert_eq!(paths.portable_root(), None);
+        assert_eq!(
+            paths.global_config(),
+            Path::new("/home/me/.config/wineo/config.toml")
+        );
+        assert!(matches!(
+            portable(&[("HOME", "/home/me")], Some("")),
+            Err(Error::EmptyPortable)
+        ));
+    }
+
+    #[test]
+    fn selected_roots_become_absolute() {
+        let cwd = std::env::current_dir().unwrap();
+        let paths = portable(&[("HOME", "/home/me")], Some("rel/folder")).unwrap();
+        assert_eq!(
+            paths.portable_root(),
+            Some(cwd.join("rel/folder").as_path())
+        );
+        let paths = portable(&[("HOME", "/home/me"), (PORTABLE_VAR, "~/folder")], None).unwrap();
+        assert_eq!(paths.portable_root(), Some(Path::new("/home/me/folder")));
+    }
+
+    #[test]
+    fn portable_layout_keeps_host_data_and_runtime_on_the_host() {
+        let paths = portable(&[("HOME", "/home/me")], Some("/mnt/usb/wineo")).unwrap();
+        assert_eq!(
+            paths.global_config(),
+            Path::new("/mnt/usb/wineo/config/config.toml")
+        );
+        assert_eq!(
+            paths.environment_config("hades"),
+            Path::new("/mnt/usb/wineo/config/environments/hades.toml")
+        );
+        assert_eq!(
+            paths.templates_dir(),
+            Path::new("/mnt/usb/wineo/config/templates")
+        );
+        assert_eq!(
+            paths.default_prefix_root(),
+            Path::new("/mnt/usb/wineo/prefixes")
+        );
+        assert_eq!(
+            paths.snapshot_root(&paths.default_prefix_root().join("hades"), "hades"),
+            Path::new("/mnt/usb/wineo/prefixes/.wineo-snapshots/hades")
+        );
+        assert_eq!(
+            paths.default_runner_root(),
+            Path::new("/home/me/.local/share/wineo/runners")
+        );
+        assert_eq!(
+            paths.applications_dir(),
+            Path::new("/home/me/.local/share/applications")
+        );
+        assert_eq!(paths.icons_dir(), Path::new("/home/me/.local/share/icons"));
+        let state = Path::new("/home/me/.local/state/wineo/.portable");
+        assert!(paths.runtime_dir("hades").starts_with(state));
+        assert!(paths.locks_dir().starts_with(state));
+        assert!(paths.import_log("hades").starts_with(state));
+    }
+
+    #[test]
+    fn runtime_state_is_isolated_per_root() {
+        let xdg = portable(&[("HOME", "/home/me")], None).unwrap();
+        let one = portable(&[("HOME", "/home/me")], Some("/mnt/a/wineo")).unwrap();
+        let two = portable(&[("HOME", "/home/me")], Some("/mnt/b/wineo")).unwrap();
+        let again = portable(&[("HOME", "/home/me")], Some("/mnt/a/wineo")).unwrap();
+        for (left, right) in [(&xdg, &one), (&xdg, &two), (&one, &two)] {
+            assert_ne!(left.runtime_dir("hades"), right.runtime_dir("hades"));
+            assert_ne!(left.locks_dir(), right.locks_dir());
+            assert_ne!(left.import_log("hades"), right.import_log("hades"));
+            assert!(
+                !right
+                    .runtime_dir("hades")
+                    .starts_with(left.runtime_dir("hades"))
+            );
+        }
+        assert_eq!(one.runtime_dir("hades"), again.runtime_dir("hades"));
+        assert_eq!(one.locks_dir(), again.locks_dir());
+    }
+
+    #[test]
+    fn portable_paths_are_stored_relative_to_the_root() {
+        let paths = portable(&[("HOME", "/home/me")], Some("/mnt/usb/wineo")).unwrap();
+        assert_eq!(
+            paths
+                .store(Path::new("/mnt/usb/wineo/prefixes/hades"))
+                .unwrap(),
+            "prefixes/hades"
+        );
+        assert_eq!(paths.store(Path::new("/mnt/usb/wineo")).unwrap(), ".");
+        assert_eq!(
+            paths.store(Path::new("/home/me/Games/x")).unwrap(),
+            "~/Games/x"
+        );
+        assert_eq!(paths.store(Path::new("/opt/game")).unwrap(), "/opt/game");
+        assert_eq!(
+            paths.store(Path::new("/mnt/usb/wineo2/x")).unwrap(),
+            "/mnt/usb/wineo2/x"
+        );
+
+        let xdg = portable(&[("HOME", "/home/me")], None).unwrap();
+        assert_eq!(
+            xdg.store(Path::new("/home/me/.local/share/wineo/prefixes/x"))
+                .unwrap(),
+            "~/.local/share/wineo/prefixes/x"
+        );
+    }
+
+    #[test]
+    fn stored_paths_resolve_from_the_root_not_the_current_dir() {
+        let paths = portable(&[("HOME", "/home/me")], Some("/mnt/usb/wineo")).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        assert_ne!(cwd, Path::new("/mnt/usb/wineo"));
+        let resolve = |value| paths.resolve_stored(value).unwrap();
+        assert_eq!(
+            resolve("prefixes/hades"),
+            Some(PathBuf::from("/mnt/usb/wineo/prefixes/hades"))
+        );
+        assert_eq!(resolve("."), Some(PathBuf::from("/mnt/usb/wineo/.")));
+        assert_eq!(resolve("/opt/game"), Some(PathBuf::from("/opt/game")));
+        assert_eq!(
+            resolve("~/Games/x"),
+            Some(PathBuf::from("/home/me/Games/x"))
+        );
+        assert_eq!(resolve("C:\\Games\\x.exe"), None);
+        assert_eq!(resolve("c:/Games/x.exe"), None);
+
+        let xdg = portable(&[("HOME", "/home/me")], None).unwrap();
+        assert_eq!(
+            xdg.resolve_stored("some/dir").unwrap(),
+            Some(cwd.join("some/dir"))
+        );
+        assert_eq!(xdg.resolve_stored("C:\\x.exe").unwrap(), None);
     }
 
     #[test]

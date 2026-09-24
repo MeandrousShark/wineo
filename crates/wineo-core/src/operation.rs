@@ -14,7 +14,7 @@ use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, IoContext, Result};
-use crate::paths::{self, Paths};
+use crate::paths::{self, Paths, fnv1a, label};
 
 /// A probe holds a shared lock for a moment, so taking one retries for about
 /// this long before deciding another command really holds it.
@@ -344,23 +344,6 @@ fn record(file: &File, path: &Path, operation: Operation) -> Result<()> {
 }
 
 /// A readable hint in the lock's file name. The hash is what makes it unique.
-fn label(name: &str) -> String {
-    name.chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .take(32)
-        .collect()
-}
-
-/// FNV-1a, so the same prefix always maps to the same file, in any build.
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
-}
-
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::symlink;

@@ -19,7 +19,7 @@ pub fn environments(current: &OsStr) -> Vec<CompletionCandidate> {
     if command == "winetricks" && !first_winetricks_value(args) {
         return Vec::new();
     }
-    let Ok(paths) = Paths::from_env() else {
+    let Ok(paths) = Paths::from_env(None) else {
         return Vec::new();
     };
     environment::names(&paths)
@@ -44,7 +44,7 @@ pub fn targets(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(name) = selected_environment(args) else {
         return Vec::new();
     };
-    let Ok(paths) = Paths::from_env() else {
+    let Ok(paths) = Paths::from_env(None) else {
         return Vec::new();
     };
     let Ok(environment) = Environment::load(&paths, name) else {
@@ -74,7 +74,7 @@ pub fn snapshots(current: &OsStr) -> Vec<CompletionCandidate> {
     if !matches!(action.as_str(), "restore" | "delete") {
         return Vec::new();
     }
-    let Ok(paths) = Paths::from_env() else {
+    let Ok(paths) = Paths::from_env(None) else {
         return Vec::new();
     };
     snapshot::list(&paths, name)

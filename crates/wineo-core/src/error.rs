@@ -17,6 +17,9 @@ pub enum Error {
     #[error("HOME is not set to an absolute path")]
     NoHome,
 
+    #[error("the portable folder path is empty")]
+    EmptyPortable,
+
     #[error("{} is not valid UTF-8, which config files require", .0.display())]
     NonUtf8Path(PathBuf),
 

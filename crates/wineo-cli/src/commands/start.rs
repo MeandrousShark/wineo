@@ -86,7 +86,9 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
         overrides,
     };
     let exe = std::env::current_exe().context("failed to find the wineo binary")?;
-    match supervisor::start(&exe, &spec).with_context(|| format!("failed to start {name}"))? {
+    match supervisor::start(&exe, paths.portable_root(), &spec)
+        .with_context(|| format!("failed to start {name}"))?
+    {
         Started::Running(_) => Ok(true),
         Started::AlreadyRunning => {
             already_running(name, &spec.overrides);

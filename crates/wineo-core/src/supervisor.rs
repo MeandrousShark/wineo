@@ -435,12 +435,12 @@ impl Report {
 }
 
 /// Starts a detached supervisor by running `exe __supervise`, then waits for it
-/// to report whether wine is running.
-pub fn start(exe: &Path, spec: &Spec) -> Result<Started> {
+/// to report whether wine is running. A portable folder is passed along with
+/// `--portable`, so the run stays tied to the folder it was started from.
+pub fn start(exe: &Path, portable: Option<&Path>, spec: &Spec) -> Result<Started> {
     let text = toml::to_string(spec)
         .map_err(|err| Error::StartFailed(format!("failed to prepare the run: {err}")))?;
-    let mut child = Command::new(exe)
-        .arg(SUPERVISE_COMMAND)
+    let mut child = supervise_command(exe, portable)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -480,6 +480,15 @@ pub fn start(exe: &Path, spec: &Spec) -> Result<Started> {
             )))
         }
     }
+}
+
+fn supervise_command(exe: &Path, portable: Option<&Path>) -> Command {
+    let mut command = Command::new(exe);
+    command.arg(SUPERVISE_COMMAND);
+    if let Some(root) = portable {
+        command.arg("--portable").arg(root);
+    }
+    command
 }
 
 /// Runs a detached supervisor: reads a `Spec` from stdin, reports to `start`
@@ -682,6 +691,21 @@ mod tests {
         assert_eq!(Report::parse("started nope\n"), None);
         assert_eq!(Report::parse(""), None);
         assert_eq!(Report::parse("what\n"), None);
+    }
+
+    #[test]
+    fn detached_runs_carry_the_portable_folder() {
+        let args = |portable: Option<&Path>| {
+            supervise_command(Path::new("/usr/bin/wineo"), portable)
+                .get_args()
+                .map(|arg| arg.to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(args(None), [SUPERVISE_COMMAND]);
+        assert_eq!(
+            args(Some(Path::new("/mnt/usb/wineo"))),
+            [SUPERVISE_COMMAND, "--portable", "/mnt/usb/wineo"]
+        );
     }
 
     #[test]
