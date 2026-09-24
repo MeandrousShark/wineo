@@ -1,3 +1,4 @@
+pub mod art;
 pub mod clone;
 pub mod components;
 pub mod config;
