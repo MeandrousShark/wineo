@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0016: Clone an environment
 
@@ -124,3 +124,25 @@ regular files when supported, with a normal copy when they are not.
 This is a local environment copy, not a snapshot or portable backup. It does
 not copy external game folders, downloads, runners, runtime state, or desktop
 entries. It does not migrate registry paths or rewrite arbitrary strings.
+
+## Acceptance results
+
+- Independent QA passed after a fix for inline TOML target tables. Both table
+  forms now rebase internal paths and disable copied desktop entries.
+- An authorized `Zomboid` smoke test copied its Proton root with `pfx -> .` to
+  a temporary `/tmp` destination. The clone kept the runner and external game
+  executable path, removed `heroic_id`, disabled its desktop entry, and kept
+  the source prefix intact. The temporary clone and registration were removed.
+- The smoke test exposed an ambiguous direct/pfx layout. Clone now resolves
+  the configured runner when both layouts appear, without changing the
+  configured copy root. It also reports `~/Games/...` target paths as external.
+- A Proton prefix produced over a thousand external-link review lines. Normal
+  output now shows a count and the first 12; `-v` shows all. A CLI regression
+  covers both modes.
+- `cargo fmt --all -- --check`,
+  `cargo clippy --offline --all-targets -- -D warnings`, and
+  `TERM=xterm-256color cargo test --offline --quiet -- --test-threads=1` pass.
+  The full suite needed local loopback access for existing download tests and
+  serial execution to avoid an existing parallel lock-test collision. No
+  clone-specific ignored tests exist; the real-prefix smoke test covers the
+  planned local runtime check.
