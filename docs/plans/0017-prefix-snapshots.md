@@ -55,10 +55,12 @@ game files or replace full backup and restore.
   staged snapshot with a clear filesystem error. Clone and import retain their
   current full-copy fallback. Reuse the copier's hardlink, symlink, metadata,
   cancellation, source-change, and staged-validation checks.
-- Use reflinks in this first version. Native filesystem snapshot APIs can be
-  added later. Do not silently fall back to a full copy, and do not claim that
-  snapshots are backups. Snapshot storage and the live prefix can fail
-  together; external symlink targets and external game files remain external.
+- Use the same strict reflink path on Btrfs, whether the prefix is an ordinary
+  directory or a subvolume. Wineo does not create, convert, or manage Btrfs
+  subvolumes for snapshots. Do not silently fall back to a full copy, and do
+  not claim that snapshots are backups. Snapshot storage and the live prefix
+  can fail together; external symlink targets and external game files remain
+  external.
 - Publish the completed snapshot without replacing an existing label. A
   canceled or failed create removes only its staging directory. Keep the
   source environment and any existing snapshots unchanged.
