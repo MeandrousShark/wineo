@@ -257,6 +257,20 @@ fn member_is_recorded(pid: u32, group: u32, start_time: u64) -> bool {
     matches!(read_stat(pid), ProcRead::Found(stat) if stat.start_time == start_time && stat.group == group)
 }
 
+/// Whether a group whose leader has exited has nothing left that can run.
+/// Killing a group can reap its leader before the rest, and a group number
+/// is not reused while any member, zombie or not, remains. `None` means the
+/// leader is not gone or the group could not be inspected.
+pub fn leaderless_group_settled(group: u32) -> Option<bool> {
+    if !matches!(read_stat(group), ProcRead::Gone) {
+        return None;
+    }
+    match group_exists(group)? {
+        false => Some(true),
+        true => group_has_live_members(group).map(|live| !live),
+    }
+}
+
 /// Returns whether a group has a process that can still run or fork.
 pub fn group_has_live_members(group: u32) -> Option<bool> {
     let processes = fs::read_dir("/proc").ok()?;
@@ -492,6 +506,41 @@ mod tests {
         assert!(start_time(child_pid).is_some());
         let child_pid = Pid::from_raw(child_pid as i32).unwrap();
         let _ = rustix::process::kill_process(child_pid, Signal::KILL);
+    }
+
+    #[test]
+    fn a_leaderless_group_settles_once_only_zombies_are_left() {
+        let mut leader = process_group(&mut Command::new("sleep"))
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let group = leader.id();
+        let mut member = Command::new("sleep")
+            .arg("30")
+            .process_group(group as i32)
+            .spawn()
+            .unwrap();
+        assert_eq!(leaderless_group_settled(group), None);
+
+        leader.kill().unwrap();
+        leader.wait().unwrap();
+        assert_eq!(leaderless_group_settled(group), Some(false));
+
+        // Killed but not yet reaped, the member is a zombie still in the group.
+        let member_pid = Pid::from_raw(member.id() as i32).unwrap();
+        rustix::process::kill_process(member_pid, Signal::KILL).unwrap();
+        let options = WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while waitid(WaitId::Pid(member_pid), options).unwrap().is_none()
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(group_exists(group), Some(true));
+        assert_eq!(leaderless_group_settled(group), Some(true));
+
+        member.wait().unwrap();
+        assert_eq!(leaderless_group_settled(group), Some(true));
     }
 
     #[test]

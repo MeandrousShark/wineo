@@ -3,7 +3,7 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustix::io::Errno;
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
@@ -15,6 +15,10 @@ use crate::error::{Error, IoContext, Result};
 const UMU: &str = "umu-run";
 /// How often `wait_settled` checks whether a Proton process group is gone.
 const GROUP_POLL: Duration = Duration::from_millis(100);
+/// How long a killed group that lost its leader first gets to finish exiting.
+/// Long enough for killed members to become zombies, and too short to wait
+/// out anything still running, which stays unconfirmed.
+const LEADERLESS_GRACE: Duration = Duration::from_millis(200);
 
 /// What ending a lost run found to kill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -485,27 +489,10 @@ fn wait_for_recorded_group(
             "no process group was recorded to check".to_owned(),
         ));
     };
-    loop {
-        match crate::process::group_ownership(Some(group), boot_id, leader_start) {
-            crate::process::GroupOwnership::Gone => return Ok(()),
-            crate::process::GroupOwnership::Owned => {
-                match crate::process::group_has_live_members(group) {
-                    Some(false) => return Ok(()),
-                    Some(true) => std::thread::sleep(GROUP_POLL),
-                    None => {
-                        return Err(Error::Unsettled(
-                            "process-group members could not be inspected".to_owned(),
-                        ));
-                    }
-                }
-            }
-            crate::process::GroupOwnership::Unknown => {
-                return Err(Error::Unsettled(
-                    "process-group ownership could not be confirmed".to_owned(),
-                ));
-            }
-        }
-    }
+    let identified = boot_id.is_some() && leader_start.is_some();
+    wait_for_owned_group(group, identified, || {
+        crate::process::group_ownership(Some(group), boot_id, leader_start)
+    })
 }
 
 fn wait_for_live_group(
@@ -518,8 +505,22 @@ fn wait_for_live_group(
             "no complete process identity was recorded".to_owned(),
         ));
     };
+    wait_for_owned_group(group, true, || {
+        crate::process::live_group_ownership(group, boot_id, leader_start)
+    })
+}
+
+/// Polls until an owned group has nothing live left. A killed group can lose
+/// its leader a moment before the rest, which leaves ownership unknown, so a
+/// fully identified group gets `LEADERLESS_GRACE` to finish exiting.
+fn wait_for_owned_group(
+    group: u32,
+    identified: bool,
+    ownership: impl Fn() -> crate::process::GroupOwnership,
+) -> Result<()> {
+    let leaderless_deadline = Instant::now() + LEADERLESS_GRACE;
     loop {
-        match crate::process::live_group_ownership(group, boot_id, leader_start) {
+        match ownership() {
             crate::process::GroupOwnership::Gone => return Ok(()),
             crate::process::GroupOwnership::Owned => {
                 match crate::process::group_has_live_members(group) {
@@ -533,9 +534,17 @@ fn wait_for_live_group(
                 }
             }
             crate::process::GroupOwnership::Unknown => {
-                return Err(Error::Unsettled(
-                    "process-group ownership could not be confirmed".to_owned(),
-                ));
+                match identified.then(|| crate::process::leaderless_group_settled(group)) {
+                    Some(Some(true)) => return Ok(()),
+                    Some(Some(false)) if Instant::now() < leaderless_deadline => {
+                        std::thread::sleep(GROUP_POLL);
+                    }
+                    _ => {
+                        return Err(Error::Unsettled(
+                            "process-group ownership could not be confirmed".to_owned(),
+                        ));
+                    }
+                }
             }
         }
     }
@@ -669,5 +678,31 @@ mod tests {
             with_menu_builder_disabled(Some("extrawinemenubuilder.exe=n")),
             "extrawinemenubuilder.exe=n;winemenubuilder.exe=d"
         );
+    }
+
+    #[test]
+    fn a_killed_group_that_loses_its_leader_first_still_settles() {
+        use std::os::unix::process::CommandExt;
+
+        let mut leader = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let group = leader.id();
+        let boot = crate::process::boot_id().unwrap();
+        let leader_start = crate::process::start_time(group).unwrap();
+        let mut member = Command::new("sleep")
+            .arg("30")
+            .process_group(group as i32)
+            .spawn()
+            .unwrap();
+        leader.kill().unwrap();
+        leader.wait().unwrap();
+        member.kill().unwrap();
+
+        let settled = wait_for_recorded_group(Some(group), Some(&boot), Some(leader_start));
+        member.wait().unwrap();
+        settled.unwrap();
     }
 }
