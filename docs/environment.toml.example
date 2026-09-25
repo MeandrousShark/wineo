@@ -5,8 +5,9 @@
 schema_version = 1
 
 # Required. The prefix directory, built on first `wineo start` (or offered by
-# `wineo setup`) if it doesn't exist.
-prefix = "~/.local/share/wineo/prefixes/palworld"
+# `wineo setup`) if it doesn't exist. Must be absolute or start with ~/, for
+# example ~/.local/share/wineo/prefixes/<name>.
+prefix = "[PREFIX-DIR]"
 # Required. A runner name from `wineo runners`, `wine` for the system wine, or
 # an alias like `GE-Proton-Latest` or `Proton-CachyOS-Latest`.
 runner = "GE-Proton-Latest"
@@ -44,13 +45,13 @@ arch = "win64"
 # Only one target can be the default.
 
 # [targets.game]
-# exe = 'C:\Program Files\Palworld\Palworld.exe'  # Required.
+# exe = 'C:\Program Files\Game\Game.exe'  # Required.
 # args = ["-nosplash"]  # Arguments for the exe. Any given on the command line come after.
-# cwd = 'C:\Program Files\Palworld'  # Default: the exe's own directory.
+# cwd = 'C:\Program Files\Game'  # Default: the exe's own directory.
 # default = true  # What `wineo start <env>` launches when there are several targets.
 # gamemode = true  # Overrides the environment's own gamemode setting for this target.
 # desktop = true  # Whether this target gets a desktop entry. Default: false.
-# name = "Palworld"  # What the desktop entry is called. Default: the target's own name.
+# name = "My Game"  # What the desktop entry is called. Default: the target's own name.
 
 # [targets.launcher]
-# exe = "~/Games/palworld/launcher.exe"  # A Unix path works too, and can start with ~ for your home.
+# exe = "~/Games/game/launcher.exe"  # A Unix path works too, and can start with ~ for your home.

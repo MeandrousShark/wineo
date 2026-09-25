@@ -644,7 +644,7 @@ mod tests {
     fn example_config_parses_as_shipped() {
         let config = environment(EXAMPLE).unwrap();
         assert_eq!(config.schema_version, 1);
-        assert_eq!(config.prefix, "~/.local/share/wineo/prefixes/palworld");
+        assert_eq!(config.prefix, "[PREFIX-DIR]");
         assert_eq!(config.runner, "GE-Proton-Latest");
         assert_eq!(config.arch, Arch::Win64);
         assert!(config.gamemode.is_none());
