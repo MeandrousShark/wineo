@@ -58,6 +58,8 @@ package() {
 
   install -Dm755 target/release/wineo "$pkgdir/usr/bin/wineo"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 docs/environment.toml.example \
+    "$pkgdir/usr/share/doc/wineo/environment.toml.example"
 
   "$pkgdir/usr/bin/wineo" completions bash > "$srcdir/wineo.bash"
   "$pkgdir/usr/bin/wineo" completions zsh > "$srcdir/wineo.zsh"
