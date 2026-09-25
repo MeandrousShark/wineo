@@ -9,6 +9,10 @@ prefix and no runner, so native games sit next to Wine ones in `list`,
 `status`, desktop entries, art, and later the GUI library. Heroic's sideloaded
 native games become importable too.
 
+The rule for every feature: only what is specifically for Wine or Proton is
+refused for a native environment. Everything else, including gamemode today
+and Gamescope and MangoHud when they land, works for both kinds.
+
 This is GUI entry criterion 1. It lands before `validate`, trash, wrappers,
 and the rest so those features are built knowing some environments have no
 prefix.
@@ -36,8 +40,13 @@ prefix.
 - Heroic import already detects native sideloaded games
   (`HeroicGameKind::Native`, from `install.platform = "linux"`) and refuses
   them as `native games are not Windows prefix imports`. The maintainer's
-  Heroic library has one: Ship of Harkinian, with
-  `executable = "/usr/bin/soh"`.
+  Heroic library has one, Ship of Harkinian (`/usr/bin/soh`), whose exe is
+  currently not installed.
+- The maintainer's test game is Dusklight, from the `dusklight-bin` package:
+  `/usr/bin/dusklight` is a shell script that runs
+  `/opt/dusklight/dusklight.AppImage`, so it covers a `PATH` lookup, a
+  shebang script, and an AppImage whose FUSE helper runs alongside the game.
+  The package also installs its own `dev.twilitrealm.dusk.desktop`.
 - `wineo list` and `status --json` without a name show no runner or prefix,
   so they work as is. `status <name>`, its JSON, and `EnvironmentReport`
   always show both.
@@ -57,14 +66,14 @@ kind = "native"
 gamemode = true
 
 [targets.game]
-exe = "/usr/bin/soh"
+exe = "/usr/bin/dusklight"
 default = true
 desktop = true
-name = "Ship of Harkinian"
+name = "Dusklight"
 ```
 
 ```
-native environment soh can't set runner
+native environment dusklight can't set runner
 ```
 
 Alternatives, doing the same thing:
@@ -75,7 +84,7 @@ runner = "native"
 
 # C: no prefix and no runner means native
 [targets.game]
-exe = "/usr/bin/soh"
+exe = "/usr/bin/dusklight"
 ```
 
 B reads naturally but makes `runner` mean two things, and a runner
@@ -96,6 +105,14 @@ Recommended: stay at `schema_version = 1`. `kind` is a new optional key, and
 config with `unknown field kind` instead of misreading it. Wine configs never
 write `kind`, so they stay readable by older wineo.
 
+When a bump is needed: when a file that is valid for the older wineo would
+mean something different to the newer one. That covers a key that is renamed
+or removed, a value whose type or meaning changes, or a default that changes
+for a key left out. Those need `schema_version = 2` plus a migration, since
+the older wineo would otherwise read the file wrongly without an error. A new
+optional key never needs one, because the older wineo refuses the file
+outright rather than misreading it.
+
 Alternative: native configs are written as version 2. An older wineo would
 then say `unsupported schema_version 2`, which is clearer, but it splits
 versions by kind rather than by format, and 0018 has no rule for that.
@@ -106,9 +123,9 @@ Recommended:
 
 | `exe` | Meaning |
 |---|---|
-| `/usr/bin/soh`, `~/Games/Celeste/Celeste` | That file. It must exist and be executable. |
-| `soh` (no `/`) | Looked up on `PATH` at launch, like a shell would |
-| `C:\...` or anything ending in `.exe`, `.msi`, `.bat`, `.lnk` | Refused: `soh is native, so its target can't be a Windows program` |
+| `/usr/bin/dusklight`, `~/Games/Celeste/Celeste` | That file. It must exist and be executable. |
+| `dusklight` (no `/`) | Looked up on `PATH` at launch, like a shell would |
+| `C:\...` or anything ending in `.exe`, `.msi`, `.bat`, `.lnk` | Refused: `dusklight is native, so its target can't be a Windows program` |
 | A relative path like `bin/game` | Refused outside portable mode, as for prefixes. In a portable folder it resolves against the folder, as Unix target paths do today. |
 
 The file runs directly, not through `sh`, so a script needs its shebang and
@@ -136,13 +153,8 @@ directory instead.
 
 ### 5. Creating one
 
-Recommended: `new --native`, and a first question in guided `new`.
-
-```
-$ wineo new -n soh --native
-Created native environment soh
-Add a target with: wineo set soh targets.<target>.exe=<path>
-```
+Settled: `new --native`, and a first question in guided `new`. See decision
+6a for whether `--native` takes the exe.
 
 `--native` refuses `--runner`, `--arch`, `--dir`, `--template`, and
 `--install-exe`. `--art` works as it does today.
@@ -163,11 +175,6 @@ existing path editor, then the target name, desktop entry, and art, the
 same way the "already installed" branch does today. It skips location,
 runner, arch, and installer.
 
-Alternative: `new -n soh --exe /usr/bin/soh`, where giving an `--exe` with
-no `--runner` means native and creates a `game` target in one step. That's
-shorter, but it adds a second way to make targets from `new`, and guided
-`new` would still need the question.
-
 A hand-written native config works with no build step, since there's no
 prefix to build.
 
@@ -181,18 +188,47 @@ prefix to build.
 | `desktop`, `art` | Work. The icon comes from art only, since `winemenubuilder` can't read a Linux binary, and an entry with no art uses the theme's generic icon |
 | `clone` | Copies the config and art under the new name, with desktop entries off as today. No prefix to copy |
 | `portable copy` | Copies the config and art. Absolute `exe` paths stay host paths and are listed as external dependencies in the review |
-| `rm` | Works. `--delete-prefix` is refused: `soh has no prefix. Run wineo rm soh` |
-| `exec`, `winetricks`, `programs`, `snapshot` | Refused: `soh is a native environment, so it has no prefix` |
+| `rm` | Works. `--delete-prefix` is refused: `dusklight has no prefix. Run wineo rm dusklight` |
+| `exec`, `winetricks`, `programs`, `snapshot` | Refused: `dusklight is a native environment, so it has no prefix` |
 | `import` (a prefix) | Can't make a native environment, unchanged |
 | `templates` | Wine only. `--native` refuses `--template` |
 
 Desktop entry categories follow today's rule minus the Proton part:
 `Game;` when gamemode is on, otherwise `Utility;`.
 
-`status soh` prints `kind: native` in place of the runner and prefix lines.
-`status soh --json` gains `"kind": "wine"` or `"native"`, and for native,
+`status dusklight` prints `kind: native` in place of the runner and prefix lines.
+`status dusklight --json` gains `"kind": "wine"` or `"native"`, and for native,
 `runner` and `prefix` are `null`. That's an additive change plus two newly
 nullable fields, which `json-output.md` documents.
+
+### 6a. Whether a native environment needs a target
+
+A Wine environment without a target is still useful, since `exec`,
+`winetricks`, and `setup` work on its prefix. A native one has nothing else,
+so an empty one only waits for a target.
+
+Recommended: creating one needs the exe, but a config with no targets stays
+valid.
+
+```
+$ wineo new -n dusklight --native dusklight
+Created native environment dusklight with target dusklight
+```
+
+- `--native <EXE>` takes the exe, and the target is named from it with the
+  existing `targets::suggest_name` and made the default. Guided `new` always
+  asks for it. Heroic import always has one.
+- The exe is checked by `new`, `set`, and import when it is written, and
+  again at launch. Reading a config never checks it, so `list` and `status`
+  still work while a game's drive is unmounted.
+- A hand-written config with no targets, or one whose last target was removed
+  with `set`, stays valid. `start` gives today's `environment dusklight has
+  no targets` error with the `wineo set` hint, the same as for Wine.
+
+Alternative: refuse a native config with no targets when it's read. It
+guarantees every native environment can launch, but removing the last target
+would then need a special refusal, and a half-written config would break
+`list` instead of only `start`.
 
 ### 7. Heroic import
 
@@ -211,11 +247,15 @@ environment:
 ```
 $ wineo import heroic
 ...
-Import Ship of Harkinian as soh
+Import Dusklight as dusklight
   kind: native
-  exe: /usr/bin/soh
+  exe: /usr/bin/dusklight
   gamemode: off
 ```
+
+A native game whose exe is missing, like Ship of Harkinian today, is listed
+as not importable with `executable not found: /usr/bin/soh`, since decision
+6a checks the exe when it's written. `--all` skips it with that line.
 
 Alternative: leave Heroic native import for a follow-up plan and keep today's
 refusal.
@@ -261,15 +301,19 @@ PKGBUILD installs both.
 - Pty tests for guided `new`'s native branch.
 - Heroic tests: a native sideloaded game imports with its exe, gamemode, and
   env; `--all` includes it.
-- The maintainer imports Ship of Harkinian from Heroic, launches it from its
-  desktop entry, stops it with `wineo stop`, and makes one native
-  environment by hand from the example file.
+- The maintainer creates Dusklight with `new --native dusklight`, launches it
+  from its desktop entry, checks that `wineo status` tracks it until the game
+  window closes, and stops a second run with `wineo stop`. Then they add
+  Dusklight to Heroic as a native sideload and import it, confirm Ship of
+  Harkinian's missing exe is reported, and write one native environment by
+  hand from the example file.
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
 
 ## Scope limits
 
-- No wrappers beyond gamemode. Gamescope and MangoHud are GUI criterion 4
-  and will apply to both kinds.
+- Gamescope and MangoHud aren't added here. They are GUI criterion 4, and
+  that plan must support both kinds. Wine Wayland and declarative winetricks
+  dependencies are Wine only and will refuse native environments.
 - No icons read from Linux binaries, `.desktop` files, or AppStream. Art is
   the only icon source for native targets.
 - No Steam, Lutris, or Flatpak app discovery. Games in other launchers are
