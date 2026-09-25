@@ -38,8 +38,12 @@ Desktop entry icons from art move from 0023 to plan 0024.
 
 ### 1. Which commands build a missing prefix
 
-Recommended: `start`, `run`, `exec`, and `winetricks` build it, then carry on
-as if it had always been there. These are the commands that would hand the
+Recommended: `start`, `run`, `exec`, `winetricks`, and `restart` build it,
+then carry on as if it had always been there. `restart` checks everything
+before it stops a run, and a missing prefix means nothing can be running in
+it, so it builds like `start`. Checks that fail fast, like an unknown target
+or winetricks missing from PATH, come before the build, so a typo never waits
+on one. These are the commands that would hand the
 prefix to wine, and the backlog row already leans toward `start`.
 
 ```
@@ -180,7 +184,7 @@ arch = "win64"
    2 into a result, and `Environment::build_prefix`, which takes the lock,
    builds, and cleans up. Reuse `prepare_dir` and `prefix::create`, and
    factor the shared part out of `Environment::create`.
-2. CLI: `start`, `run`, `exec`, and `winetricks` call it when the prefix is
+2. CLI: `start`, `run`, `exec`, `winetricks`, and `restart` call it when the prefix is
    missing, print the note, then go on as today. `setup` offers it before its
    menu. Split `MissingPrefix` so
    the remaining commands can keep their message.
