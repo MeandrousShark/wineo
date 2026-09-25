@@ -87,6 +87,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         bail!("{key} is managed by wineo for this command and can't be overridden");
     }
 
+    crate::commands::build::ensure_prefix(paths, &global, &environment, &runner)?;
     let prefix = environment.prefix(paths)?;
     let locks = Locks::new(paths);
     // Held until winetricks is done and the prefix is idle. Several winetricks

@@ -1712,7 +1712,7 @@ fn winetricks_refuses_a_missing_prefix() {
         "notepad",
         &format!(
             "prefix = \"{}\"\nrunner = \"wine\"\narch = \"win64\"\n",
-            root.path().join("gone").display()
+            root.path().join("gone/prefix").display()
         ),
     );
     let out = output(
@@ -1722,10 +1722,14 @@ fn winetricks_refuses_a_missing_prefix() {
     );
     assert!(!out.status.success());
     assert!(
-        stderr(&out).contains("is not a wine prefix"),
+        stderr(&out).contains(&format!(
+            "is missing, and so is {}",
+            root.path().join("gone").display()
+        )),
         "{}",
         stderr(&out)
     );
+    assert!(!root.path().join("gone").exists());
 }
 
 #[test]

@@ -1,4 +1,5 @@
 pub mod art;
+mod build;
 pub mod builds;
 pub mod clone;
 pub mod completions;

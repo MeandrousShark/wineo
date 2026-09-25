@@ -9,6 +9,7 @@ use wineo_core::paths::Paths;
 use wineo_core::runtime::{RunStatus, Runtime};
 use wineo_core::supervisor::{self, Claim, Spec, Started};
 
+use crate::commands::build;
 use crate::commands::components;
 use crate::commands::desktop;
 use crate::commands::run::LaunchArgs;
@@ -35,6 +36,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<bool> {
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, name)?;
+    let runner = build::runner(paths, &global, &environment)?;
+    build::ensure_prefix(paths, &global, &environment, &runner)?;
     let launch = Launch::target(paths, &global, &environment, &overrides)?;
     let locks = Locks::new(paths);
     let _guard = locks.acquire(Operation::Launch, name, &[&launch.prefix])?;

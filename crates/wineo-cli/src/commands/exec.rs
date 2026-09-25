@@ -11,6 +11,7 @@ use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::{Runtime, exit_code};
 
+use crate::commands::build;
 use crate::commands::components;
 use crate::commands::desktop;
 
@@ -36,6 +37,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, &args.name)?;
     let env = args.env.into_iter().collect();
+    let runner = build::runner(paths, &global, &environment)?;
+    build::ensure_prefix(paths, &global, &environment, &runner)?;
     let launch = Launch::exec(
         paths,
         &global,
