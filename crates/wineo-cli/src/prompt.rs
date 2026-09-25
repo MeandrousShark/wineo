@@ -269,24 +269,42 @@ impl<I: Input, W: Write> Prompt<I, W> {
         }
     }
 
-    /// A menu whose numbered entries are edited in place rather than chosen
-    /// once: picking one returns it to edit, and a bare Enter returns `None`
-    /// to run the menu's own default action (importing, in practice). `note`
-    /// prints after the choices and before the question, if given.
-    pub fn choose_or_enter<T: Clone>(
+    /// A review menu whose numbered entries are edited in place. Enter runs
+    /// the named action, while picking an entry returns it to edit.
+    pub fn review<T: Clone>(
         &mut self,
         heading: &str,
         note: Option<&str>,
-        label: &str,
+        enter_action: &str,
         choices: &[Choice<T>],
         back: bool,
     ) -> anyhow::Result<Reply<Option<T>>> {
-        self.menu(heading, choices, back)?;
+        writeln!(
+            self.out,
+            "{}",
+            crate::style::title_with_color(heading, self.color)
+        )?;
+        for choice in choices {
+            writeln!(self.out, "  {}) {}", choice.key, choice.label)?;
+        }
         if let Some(note) = note {
             self.say(note)?;
         }
+        if back {
+            self.say(format!("Enter {enter_action}, Esc back, Ctrl+C cancel"))?;
+        } else {
+            self.say(format!("Enter {enter_action}, Ctrl+C cancel"))?;
+        }
+        self.choose_or_enter(choices, back)
+    }
+
+    fn choose_or_enter<T: Clone>(
+        &mut self,
+        choices: &[Choice<T>],
+        back: bool,
+    ) -> anyhow::Result<Reply<Option<T>>> {
         loop {
-            let answer = match self.read(&format!("{label}: "))? {
+            let answer = match self.read("Choice: ")? {
                 Reply::Value(answer) => answer,
                 Reply::Back if back => return Ok(Reply::Back),
                 Reply::Back => continue,
@@ -784,13 +802,13 @@ mod tests {
     }
 
     #[test]
-    fn choose_or_enter_returns_none_on_a_bare_enter_and_prints_a_trailing_note() {
+    fn review_accepts_enter_and_prints_note_above_keys() {
         let mut p = prompt(&[""]);
         let reply = p
-            .choose_or_enter(
+            .review(
                 "Review:",
                 Some("Close the game first."),
-                "Choice, or Enter to import",
+                "import",
                 &menu(),
                 true,
             )
@@ -798,17 +816,44 @@ mod tests {
         assert_eq!(reply, Reply::Value(None));
         assert_eq!(
             printed(&p),
-            "Review:\n  1) None, choose each setting\n  2) gaming\n  p) enter a path\nEsc back, Ctrl+C cancel\nClose the game first.\nChoice, or Enter to import: "
+            "Review:\n  1) None, choose each setting\n  2) gaming\n  p) enter a path\nClose the game first.\nEnter import, Esc back, Ctrl+C cancel\nChoice: "
         );
     }
 
     #[test]
-    fn choose_or_enter_picks_a_numbered_entry_to_edit() {
+    fn review_picks_a_numbered_entry_to_edit() {
         let mut p = prompt(&["2"]);
         let reply = p
-            .choose_or_enter("Review:", None, "Choice", &menu(), true)
+            .review("Review:", None, "save them", &menu(), true)
             .unwrap();
         assert_eq!(reply, Reply::Value(Some("gaming")));
+    }
+
+    #[test]
+    fn review_supports_an_empty_list_without_back() {
+        let mut p = prompt(&[""]);
+        let reply = p
+            .review::<()>("Review:", None, "create it", &[], false)
+            .unwrap();
+        assert_eq!(reply, Reply::Value(None));
+        assert_eq!(
+            printed(&p),
+            "Review:\nEnter create it, Ctrl+C cancel\nChoice: "
+        );
+    }
+
+    #[test]
+    fn review_keeps_typed_back_and_cancel() {
+        let mut p = prompt(&["b"]);
+        assert_eq!(
+            p.review("Review:", None, "done", &menu(), true).unwrap(),
+            Reply::Back
+        );
+        let mut p = prompt(&["q"]);
+        let err = p
+            .review("Review:", None, "done", &menu(), true)
+            .unwrap_err();
+        assert!(err.is::<Canceled>());
     }
 
     #[test]

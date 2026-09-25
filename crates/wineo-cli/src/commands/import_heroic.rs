@@ -1539,10 +1539,10 @@ fn final_review<I: Input, W: Write>(
                 .into_iter()
                 .map(|(label, value, field)| (format!("{label:width$}{value}"), field)),
         );
-        let choice = prompt.choose_or_enter(
+        let choice = prompt.review(
             &heading,
             Some("Close Heroic and the game first."),
-            "Choice, or Enter to import",
+            "import",
             &choices,
             true,
         )?;
@@ -3542,7 +3542,9 @@ mod tests {
         assert!(printed.contains("Game -> game"), "{printed}");
         assert!(printed.contains("  8) desktop      yes"), "{printed}");
         assert!(
-            printed.contains("Close Heroic and the game first.\nChoice, or Enter to import: "),
+            printed.contains(
+                "Close Heroic and the game first.\nEnter import, Esc back, Ctrl+C cancel\nChoice: "
+            ),
             "{printed}"
         );
     }

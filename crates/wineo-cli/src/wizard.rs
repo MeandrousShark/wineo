@@ -783,10 +783,10 @@ fn review<I: Input, W: Write>(
             "\nThe first umu run downloads the Steam Linux Runtime, which takes a while.",
         );
     }
-    let choices = numbered([("Create it".to_owned(), ())]);
     Ok(
-        match prompt.choose(&heading, "Choice", &choices, Some("1"), true)? {
-            Reply::Value(()) => Reply::Value((runner, arch, dir)),
+        match prompt.review::<()>(&heading, None, "create it", &[], true)? {
+            Reply::Value(None) => Reply::Value((runner, arch, dir)),
+            Reply::Value(Some(())) => unreachable!("the review has no edit choices"),
             Reply::Back => Reply::Back,
         },
     )
@@ -889,7 +889,7 @@ fn create<I: Input, W: Write>(
     if batch.is_empty() {
         return setup::finish(paths, global, &name, prompt, &batch);
     }
-    match setup::save(paths, global, &name, prompt, &mut batch)? {
+    match setup::save(paths, global, &name, prompt, &mut batch, true)? {
         Reply::Value(()) => setup::finish(paths, global, &name, prompt, &batch),
         // Keeping on editing is what `setup` is for.
         Reply::Back => setup::menu(paths, global, &name, prompt, &place, batch),

@@ -174,12 +174,17 @@ pub(crate) fn menu<I: Input, W: Write>(
                     for line in picker::review(&batch) {
                         prompt.say(line)?;
                     }
-                    let choices = numbered([("Save and run the installer".to_owned(), ())]);
-                    let heading = "They are saved before the installer runs.";
-                    if prompt.choose(heading, "Choice", &choices, Some("1"), true)? == Reply::Back {
+                    if prompt.review::<()>(
+                        "They are saved before the installer runs.",
+                        None,
+                        "save and run the installer",
+                        &[],
+                        true,
+                    )? == Reply::Back
+                    {
                         continue;
                     }
-                    if save(paths, global, name, prompt, &mut batch)? == Reply::Back {
+                    if save(paths, global, name, prompt, &mut batch, false)? == Reply::Back {
                         continue;
                     }
                 }
@@ -195,7 +200,7 @@ pub(crate) fn menu<I: Input, W: Write>(
             }
             Action::Finish => {
                 if !batch.is_empty()
-                    && save(paths, global, name, prompt, &mut batch)? == Reply::Back
+                    && save(paths, global, name, prompt, &mut batch, false)? == Reply::Back
                 {
                     continue;
                 }
@@ -355,7 +360,9 @@ pub(crate) fn save<I: Input, W: Write>(
     name: &str,
     prompt: &mut Prompt<I, W>,
     batch: &mut Batch,
+    review_before_save: bool,
 ) -> anyhow::Result<Reply<()>> {
+    let mut review_before_save = review_before_save;
     loop {
         if batch.targets().len() > 1 && batch.default().is_none() {
             let heading = format!("Which target should `wineo start {name}` launch?");
@@ -363,18 +370,17 @@ pub(crate) fn save<I: Input, W: Write>(
                 return Ok(Reply::Back);
             }
         }
-        prompt.say(format!("Changes to {name}:"))?;
-        for line in picker::review(batch) {
-            prompt.say(line)?;
-        }
-        let choices = numbered([
-            ("Save them".to_owned(), true),
-            ("Keep editing".to_owned(), false),
-        ]);
-        if prompt.choose("Save these changes?", "Choice", &choices, Some("1"), false)?
-            != Reply::Value(true)
-        {
-            return Ok(Reply::Back);
+        if review_before_save {
+            prompt.say(format!("Changes to {name}:"))?;
+            for line in picker::review(batch) {
+                prompt.say(line)?;
+            }
+            let choices = numbered([("Keep editing".to_owned(), ())]);
+            if prompt.review("Save these changes?", None, "save them", &choices, false)?
+                != Reply::Value(None)
+            {
+                return Ok(Reply::Back);
+            }
         }
         match wineo_core::targets::write(paths, name, batch)? {
             Written::Saved => {
@@ -386,6 +392,7 @@ pub(crate) fn save<I: Input, W: Write>(
             Written::Changed(current) => {
                 let (rebased, dropped) = batch.rebase(current);
                 *batch = rebased;
+                review_before_save = true;
                 prompt.say("The config changed meanwhile. Review again:")?;
                 for note in dropped {
                     prompt.say(note)?;

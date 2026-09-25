@@ -75,8 +75,8 @@ enum Pick {
     Done,
 }
 
-/// Adds targets from what the prefix has installed, or from a path, until
-/// the user is done. Back means leave without adding anything more.
+/// Adds targets from what the prefix has installed, or from a path. Back
+/// means leave without adding anything more.
 pub fn pick<I: Input, W: Write>(
     prompt: &mut Prompt<I, W>,
     place: &Place,
@@ -92,7 +92,6 @@ pub fn pick<I: Input, W: Write>(
         prompt.say(format!("Skipped the shortcut {shortcut}: {reason}"))?;
     }
     let mut all = false;
-    let mut added = false;
     loop {
         let shown = if all {
             listing.all()
@@ -120,11 +119,7 @@ pub fn pick<I: Input, W: Write>(
             ));
         }
         choices.push(Choice::letter('p', "enter a path", Pick::Path));
-        choices.push(Choice::letter(
-            's',
-            if added { "done adding" } else { "skip for now" },
-            Pick::Done,
-        ));
+        choices.push(Choice::letter('s', "skip for now", Pick::Done));
         let label = if shown.is_empty() {
             "Choice"
         } else {
@@ -150,8 +145,12 @@ pub fn pick<I: Input, W: Write>(
                 .collect(),
             Reply::Value(Picked::One(Pick::Program(program))) => vec![program],
         };
+        let mut added = false;
         for program in picked {
             added |= add_program(prompt, place, batch, &program)?;
+        }
+        if added {
+            return Ok(Reply::Value(()));
         }
     }
 }
@@ -376,7 +375,6 @@ struct Card<'a> {
 
 #[derive(Clone, Copy)]
 enum Field {
-    Accept,
     Name,
     Exe,
     Args,
@@ -414,14 +412,7 @@ impl Card<'_> {
                 heading.push('\n');
                 heading.push_str(note);
             }
-            let mut fields = vec![(
-                if self.adding.is_some() {
-                    "Add it"
-                } else {
-                    "Done"
-                },
-                Field::Accept,
-            )];
+            let mut fields = Vec::new();
             if self.adding.is_some() {
                 fields.push(("Change the target name", Field::Name));
             } else {
@@ -440,12 +431,22 @@ impl Card<'_> {
                     .into_iter()
                     .map(|(label, field)| (label.to_owned(), field)),
             );
-            let field = match prompt.choose(&heading, "Choice", &choices, Some("1"), true)? {
-                Reply::Value(field) => field,
+            let field = match prompt.review(
+                &heading,
+                None,
+                if self.adding.is_some() {
+                    "add it"
+                } else {
+                    "done"
+                },
+                &choices,
+                true,
+            )? {
+                Reply::Value(Some(field)) => field,
+                Reply::Value(None) => return Ok(Reply::Value((target, spec, default))),
                 Reply::Back => return Ok(Reply::Back),
             };
             match field {
-                Field::Accept => return Ok(Reply::Value((target, spec, default))),
                 Field::Name => {
                     let reply = prompt.text("Target name", Some(&target), |answer| {
                         if let Some(problem) = name_problem(answer) {
@@ -774,10 +775,15 @@ mod tests {
     fn picking_programs_adds_them_with_suggested_settings() {
         let f = Fixture::new();
         let mut batch = batch("");
-        let (result, printed) = run(&["1 2", "", "", "s"], |prompt| {
+        let (result, printed) = run(&["1 2", "", ""], |prompt| {
             pick(prompt, &f.place(), &mut batch)
         });
         result.unwrap();
+        assert_eq!(
+            printed.matches("Programs in hades:").count(),
+            1,
+            "{printed}"
+        );
         // Noise is held back, and named in the menu rather than listed.
         assert!(
             printed.contains("a) show 1 held back as noise"),
@@ -794,26 +800,41 @@ mod tests {
     }
 
     #[test]
+    fn backing_out_of_a_card_shows_the_programs_again() {
+        let f = Fixture::new();
+        let mut batch = batch("");
+        let (result, printed) = run(&["1", "b", "s"], |prompt| {
+            pick(prompt, &f.place(), &mut batch)
+        });
+        assert_eq!(result.unwrap(), Reply::Value(()));
+        assert!(batch.is_empty());
+        assert_eq!(
+            printed.matches("Programs in hades:").count(),
+            2,
+            "{printed}"
+        );
+    }
+
+    #[test]
     fn a_card_changes_one_field_at_a_time() {
         let f = Fixture::new();
         let mut batch = batch("");
         let answers = [
             "1",
             // Rename it, then give it two arguments, one with spaces.
-            "2",
+            "1",
             "game",
-            "3",
+            "2",
             "-config",
             r"C:\My Games\settings.ini",
             "",
             // Working directory as a Unix path inside drive_c.
-            "4",
+            "3",
             &format!("{}/drive_c/Games", f.wine_prefix.display()),
             // No desktop entry after all.
-            "5",
+            "4",
             "n",
-            "1",
-            "s",
+            "",
         ];
         let (result, printed) = run(&answers, |prompt| pick(prompt, &f.place(), &mut batch));
         result.unwrap();
@@ -834,10 +855,15 @@ mod tests {
         let f = Fixture::new();
         let mut batch = batch("[targets.hades]\nexe = 'C:\\Games\\Hades\\Hades.exe'\n");
         // Say no to the duplicate, then yes, which suggests a free name.
-        let (result, printed) = run(&["2", "", "2", "y", "", "s"], |prompt| {
+        let (result, printed) = run(&["2", "", "2", "y", ""], |prompt| {
             pick(prompt, &f.place(), &mut batch)
         });
         result.unwrap();
+        assert_eq!(
+            printed.matches("Programs in hades:").count(),
+            2,
+            "{printed}"
+        );
         assert!(printed.contains("(target hades)"), "{printed}");
         assert!(
             printed.contains(r"C:\Games\Hades\Hades.exe is already target hades"),
@@ -865,13 +891,7 @@ mod tests {
         fs::create_dir_all(outside.parent().unwrap()).unwrap();
         fs::write(&outside, b"").unwrap();
         let mut batch = batch("");
-        let answers = [
-            "p",
-            "/nowhere/nothing.exe",
-            outside.to_str().unwrap(),
-            "",
-            "s",
-        ];
+        let answers = ["p", "/nowhere/nothing.exe", outside.to_str().unwrap(), ""];
         let (result, printed) = run(&answers, |prompt| pick(prompt, &f.place(), &mut batch));
         result.unwrap();
         assert!(
@@ -924,7 +944,7 @@ mod tests {
         let mut batch = batch(
             "[targets.a]\nexe = 'a'\ndefault = true\n[targets.b]\nexe = 'b'\ndesktop = true\nname = \"Bee\"\n",
         );
-        let (result, printed) = run(&["2", "3", "-x", "", "6", "1"], |prompt| {
+        let (result, printed) = run(&["2", "2", "-x", "", "5", ""], |prompt| {
             edit(prompt, &f.place(), &mut batch)
         });
         result.unwrap();
@@ -946,7 +966,7 @@ mod tests {
     fn back_leaves_the_batch_as_it_was() {
         let f = Fixture::new();
         let mut batch = batch("[targets.a]\nexe = 'a'\n");
-        let (result, _) = run(&["1", "3", "-x", "", "b"], |prompt| {
+        let (result, _) = run(&["1", "2", "-x", "", "b"], |prompt| {
             edit(prompt, &f.place(), &mut batch)
         });
         assert_eq!(result.unwrap(), Reply::Back);
