@@ -54,14 +54,23 @@ See [Artwork](art.md) for the art store, key, and `wineo art` commands.
 | Wine Wayland support | Compatibility | **2** | 0018 | Make the native Wayland driver an opt-in launch setting instead of requiring manual environment variables | Define behavior for supported Wine and Proton runners and report unsupported combinations. Heroic import currently omits its Wine Wayland setting; carry it over when supported. GE-Proton can already be tried with `env.PROTON_ENABLE_WAYLAND=1`. |
 | ProtonDB lookup in the CLI | UX | **3** | | Check a game's compatibility information before launching or changing runners | Resolve a wineo environment to the right ProtonDB game, handle missing matches, and make the result reusable by the future GUI. The command shape and online behavior need a plan. |
 | Trash prefixes instead of deleting, plus `prune` | Portability/Data | **2** | | Make `rm --delete-prefix` recoverable, with `wineo prune` doing the real delete | Needs a trash location (XDG Trash or wineo's own), a restore path, and rules for snapshots and portable folders. |
+| GUI-facing core API review | Core | **2** | GUI entry criteria 1-4 | Keep GUI actions on shared core operations | Review setup, import, launch, stop, and validation entry points for useful progress, cancellation, and errors. Resolve blockers found in the review before GUI work starts. |
 | Tags and `wineo list --tag` | UX | **3** | 0018 | Sort a long environment list into groups like game, work, or creative | e.g. `tags = ["game"]` in the environment config. Could also filter `status` and completion. |
 | Manpages | UX | **3** | 0015 | `man wineo` is the first thing many Linux users try | Generate them from the clap definitions with `clap_mangen`, like completions, so they never drift from `--help`. The PKGBUILD installs them to `/usr/share/man/man1`. |
 | Steam shortcuts | UX | **3** | | Add wineo targets to Steam as non-Steam games, for Big Picture and Steam Deck | Steam's `shortcuts.vdf` is binary and Steam must be closed while it's edited. |
 | Integrity checking | Portability/Data | **4** | | Detect damaged or tampered files | Scope still open: prefix or game files, snapshots, or re-verifying downloads (already sha256-checked on install). |
 | Import from Lutris/Bottles and Heroic store metadata | Compatibility | **3** | 0008 | Extends generic import and Heroic sideloaded-game import | 0008 covers manually added Heroic games only. Store integration and other launchers remain separate work. |
 | Managed copying of portable application folders | Portability/Data | **3** | 0007, 0008 | Optional organization for applications used in place today | 0008 copies prefixes but leaves external game folders where they are. Storage layout and removal semantics need a later plan. |
-| wineo-gui | UX | **4** | | Explicitly not the main product; let the CLI mature first | |
+| wineo-gui | UX | **3** | [GUI entry criteria](#gui-entry-criteria) | Build on a mature CLI and shared core operations | |
 | Artwork from SteamGridDB | UX | **4** | 0023, wineo-gui | Posters, backgrounds, and icons for games, which a GUI can show | 0021 landed the art store, the `wineo art` commands, and SteamGridDB fetching; see [Artwork](art.md). Remaining: using the stored icon for desktop entries (next plan, 0023) and showing posters and heroes in wineo-gui. |
 | Native Linux games | UX | **4** | wineo-gui, 0018 | Let a GUI library show native games next to Wine ones, so everything launches from one place | Needs an environment kind with no prefix or runner, which is a config schema change. Targets, art, gamemode, and desktop entries would carry over. Wine-only commands like `winetricks`, `exec`, and snapshots don't apply. |
 | Full backup and restore | Portability/Data | **4** | 0018 | Great eventually, but this could become a whole subsystem | Covers filesystems without snapshot support. |
 | Event-driven supervisor exit watch | Core | **4** | | Only if there's literally nothing else to do | The supervisor polls `waitid` every 20 ms while a game runs. A pidfd plus a wakeup fd would make it sleep until the exit or a release request. Overhead today is already negligible. |
+
+## GUI entry criteria
+
+1. Finish plan 0022's guided menu polish and both lingering wineserver fixes.
+2. Add `wineo validate`.
+3. Add Wine Wayland and Gamescope/MangoHud support, including supported Heroic import settings.
+4. Make prefix deletion recoverable with trash and `prune`.
+5. Complete the GUI-facing core API review and resolve any blockers it finds.
