@@ -228,6 +228,10 @@ pub enum Error {
     #[error("prefix {} is empty", .0.display())]
     EmptyPrefix(PathBuf),
 
+    /// Same reason as `EmptyPrefix`: an empty parent could be the mount point.
+    #[error("prefix {} is missing, and {} is empty", .prefix.display(), .parent.display())]
+    EmptyPrefixParent { prefix: PathBuf, parent: PathBuf },
+
     #[error("prefix {} is {actual}, not {requested}", .path.display())]
     ArchMismatch {
         path: PathBuf,

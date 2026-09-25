@@ -58,6 +58,7 @@ pub enum BuildPlan {
 /// that just isn't reachable, like one on an unmounted drive. Changes nothing
 /// on disk. An empty dir outside `prefix_root` can't be told apart from a
 /// mount point, so it is refused with `EmptyPrefix` unless `empty_confirmed`.
+/// So is a missing dir outside `prefix_root` whose parent is empty.
 pub fn build_plan(
     paths: &Paths,
     prefix_root: &Path,
@@ -103,12 +104,19 @@ pub fn build_plan(
             }
             if let Some(parent) = dir.parent()
                 && !under_root
-                && !parent.exists()
             {
-                return Err(Error::PrefixParentMissing {
-                    prefix: dir.to_owned(),
-                    parent: parent.to_owned(),
-                });
+                if !parent.exists() {
+                    return Err(Error::PrefixParentMissing {
+                        prefix: dir.to_owned(),
+                        parent: parent.to_owned(),
+                    });
+                }
+                if !empty_confirmed && is_empty_dir(parent) {
+                    return Err(Error::EmptyPrefixParent {
+                        prefix: dir.to_owned(),
+                        parent: parent.to_owned(),
+                    });
+                }
             }
         }
         Err(err) if err.kind() == io::ErrorKind::NotADirectory => {
@@ -117,6 +125,10 @@ pub fn build_plan(
         Err(err) => return Err(err).context(|| format!("failed to read {}", dir.display())),
     }
     Ok(BuildPlan::Build)
+}
+
+fn is_empty_dir(dir: &Path) -> bool {
+    fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none())
 }
 
 /// Makes sure `dir` can hold a new prefix. Returns true if this call created it.
@@ -364,14 +376,47 @@ mod tests {
     }
 
     #[test]
-    fn build_plan_builds_a_missing_dir_whose_parent_exists() {
+    fn build_plan_builds_a_missing_dir_whose_parent_holds_something() {
         let l = layout();
+        fs::create_dir_all(l.outside.join("other")).unwrap();
         let dir = l.outside.join("palworld");
         assert_eq!(
             plan(&l, &Runner::fake("wine"), &dir, false).unwrap(),
             BuildPlan::Build
         );
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn build_plan_needs_confirmation_for_an_empty_parent_outside_the_prefix_root() {
+        let l = layout();
+        let games = l.outside.join("games");
+        fs::create_dir_all(&games).unwrap();
+        let dir = games.join("palworld");
+        let err = plan(&l, &Runner::fake("wine"), &dir, false).unwrap_err();
+        assert!(matches!(err, Error::EmptyPrefixParent { .. }), "{err}");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "prefix {} is missing, and {} is empty",
+                dir.display(),
+                games.display()
+            )
+        );
+        assert_eq!(
+            plan(&l, &Runner::fake("wine"), &dir, true).unwrap(),
+            BuildPlan::Build
+        );
+    }
+
+    #[test]
+    fn build_plan_builds_under_an_empty_prefix_root() {
+        let l = layout();
+        fs::create_dir_all(&l.root).unwrap();
+        assert_eq!(
+            plan(&l, &Runner::fake("wine"), &l.root.join("palworld"), false).unwrap(),
+            BuildPlan::Build
+        );
     }
 
     #[test]
