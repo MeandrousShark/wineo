@@ -12,8 +12,8 @@ wineo art list hades
 wineo art rm hades grid
 ```
 
-Wineo stores and manages art here. Using the icon for desktop entries and
-showing posters or heroes in a GUI are separate, later work.
+Wineo stores and manages art here. Showing posters or heroes in a GUI is
+later work.
 
 ## The store
 
@@ -33,8 +33,9 @@ contents, not its extension:
 | hero | PNG, JPEG, SVG, WebP |
 | logo | PNG, JPEG, SVG, WebP |
 
-Files are capped at 32 MiB. The original bytes are kept as is; wineo does
-not convert or resize anything.
+Files are capped at 32 MiB. The original bytes are kept as is in the store;
+wineo does not convert or resize anything there. A desktop entry's icon is a
+converted copy; see [Desktop entries](#desktop-entries) below.
 
 `art/<env>/art.toml` records where each file came from: a SteamGridDB asset
 ID, or a manual file with its original name. See [Config file
@@ -183,6 +184,32 @@ error during a fetch stops it but keeps the kinds already fetched, so
 running it again fills the rest. An interrupted download leaves no partial
 file. A search with no matches fails with `` no SteamGridDB games match
 `term` ``.
+
+## Desktop entries
+
+A target with `desktop = true` uses icon art for its entry, in the same
+order as any other icon lookup: the target's own icon first, then the
+environment's, then the icon wine's menu builder pulls out of the exe.
+
+SVG is installed as is, under
+`$XDG_DATA_HOME/icons/hicolor/scalable/apps/`. PNG, JPEG, and ICO are
+converted to one PNG, at the largest standard hicolor size that fits the
+image, up to 512x512. A non-square image is padded to a square with
+transparency first. An image is never upscaled, except one under 16 px,
+which goes to 16. An ICO with several images uses its largest one.
+
+`wineo art set`, `wineo art rm`, and `wineo art fetch` update the affected
+entries right away, printing the usual `Updated the desktop entry for
+<target> in <env>` line, but only when the icon itself changed. A launch
+also picks up an icon file swapped by hand. The entry records where its icon
+came from in an `X-Wineo-Icon` key (`art:<hash>` or `exe`), so an unchanged
+icon costs nothing on the next reconcile.
+
+Icon art that wineo can't decode falls back to the exe's icon, when there
+is one, printing
+`Icon art for <target> in <env> could not be read` once per bad file.
+
+Portable environments still get no desktop entries.
 
 ## Lifecycle
 

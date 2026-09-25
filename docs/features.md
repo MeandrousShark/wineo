@@ -25,6 +25,8 @@ Completed: [0021: Artwork framework](plans/0021-artwork-framework.md).
 See [Artwork](art.md) for the art store, key, and `wineo art` commands.
 Completed: [0023: Create a prefix from a hand-written config](plans/0023-config-first-creation.md).
 See [Creating an environment by hand](config-files.md#creating-an-environment-by-hand) for the behavior and safety rules.
+Completed: [0024: Desktop entry icons from art](plans/0024-desktop-entry-icons.md).
+See [Desktop entries](art.md#desktop-entries) for the behavior.
 
 **Category**
 
@@ -64,7 +66,7 @@ See [Creating an environment by hand](config-files.md#creating-an-environment-by
 | Import from Lutris/Bottles and Heroic store metadata | Compatibility | **3** | 0008 | Extends generic import and Heroic sideloaded-game import | 0008 covers manually added Heroic games only. Store integration and other launchers remain separate work. |
 | Managed copying of portable application folders | Portability/Data | **3** | 0007, 0008 | Optional organization for applications used in place today | 0008 copies prefixes but leaves external game folders where they are. Storage layout and removal semantics need a later plan. |
 | wineo-gui | UX | **3** | [GUI entry criteria](#gui-entry-criteria) | Build on a mature CLI and shared core operations | |
-| Artwork from SteamGridDB | UX | **4** | 0024, wineo-gui | Posters, backgrounds, and icons for games, which a GUI can show | 0021 landed the art store, the `wineo art` commands, and SteamGridDB fetching; see [Artwork](art.md). Remaining: using the stored icon for desktop entries (next plan, 0024) and showing posters and heroes in wineo-gui. |
+| Artwork from SteamGridDB | UX | **4** | wineo-gui | Posters, backgrounds, and icons for games, which a GUI can show | 0021 landed the art store, the `wineo art` commands, and SteamGridDB fetching, and 0024 landed desktop entry icons; see [Artwork](art.md). Remaining: showing posters and heroes in wineo-gui. |
 | Native Linux games | UX | **2** | 0018 | Let a GUI library show native games next to Wine ones, so everything launches from one place | Launches a binary or script directly. Needs an environment kind with no prefix or runner, which is a config schema change, so it lands before the GUI builds on the data model. Targets, art, gamemode, and desktop entries would carry over. Wine-only commands like `winetricks`, `exec`, and snapshots don't apply. |
 | Full backup and restore | Portability/Data | **4** | 0018 | Great eventually, but this could become a whole subsystem | Covers filesystems without snapshot support. |
 | Event-driven supervisor exit watch | Core | **4** | | Only if there's literally nothing else to do | The supervisor polls `waitid` every 20 ms while a game runs. A pidfd plus a wakeup fd would make it sleep until the exit or a release request. Overhead today is already negligible. |
