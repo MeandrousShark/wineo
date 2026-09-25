@@ -5,6 +5,7 @@ use std::process::Stdio;
 
 use crate::config::Arch;
 use crate::error::{Error, IoContext, Result};
+use crate::paths::{self, Paths};
 use crate::runner::Runner;
 
 pub fn is_prefix(dir: &Path) -> bool {
@@ -42,6 +43,80 @@ pub fn detect_arch(dir: &Path) -> Result<Option<Arch>> {
         }
     }
     Ok(None)
+}
+
+/// What a configured prefix dir needs before wine can use it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildPlan {
+    /// It already holds a prefix of the runner's layout.
+    Ready,
+    /// It is missing or empty, and safe to build a prefix in.
+    Build,
+}
+
+/// Decides whether a prefix can be built in `dir` without hiding a real one
+/// that just isn't reachable, like one on an unmounted drive. Changes nothing
+/// on disk. An empty dir outside `prefix_root` can't be told apart from a
+/// mount point, so it is refused with `EmptyPrefix` unless `empty_confirmed`.
+pub fn build_plan(
+    paths: &Paths,
+    prefix_root: &Path,
+    runner: &Runner,
+    dir: &Path,
+    empty_confirmed: bool,
+) -> Result<BuildPlan> {
+    if is_prefix(&runner.wine_prefix(dir)) {
+        return Ok(BuildPlan::Ready);
+    }
+    if holds_prefix(dir) {
+        let (found, needed) = if runner.is_proton() {
+            ("Wine", "Proton")
+        } else {
+            ("Proton", "Wine")
+        };
+        return Err(Error::PrefixLayout {
+            path: dir.to_owned(),
+            runner: runner.name().to_owned(),
+            found,
+            needed,
+        });
+    }
+    paths.check_prefix(dir)?;
+
+    let under_root = paths::resolve(dir)
+        .strip_prefix(paths::resolve(prefix_root))
+        .is_ok_and(|rest| !rest.as_os_str().is_empty());
+    match fs::read_dir(dir) {
+        Ok(mut entries) => {
+            if entries.next().is_some() {
+                return Err(Error::NotAPrefix(dir.to_owned()));
+            }
+            if !under_root && !empty_confirmed {
+                return Err(Error::EmptyPrefix(dir.to_owned()));
+            }
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            // A dangling symlink points at something unreachable, and
+            // building through it would hide whatever was there.
+            if dir.symlink_metadata().is_ok() {
+                return Err(Error::MissingPrefix(dir.to_owned()));
+            }
+            if let Some(parent) = dir.parent()
+                && !under_root
+                && !parent.exists()
+            {
+                return Err(Error::PrefixParentMissing {
+                    prefix: dir.to_owned(),
+                    parent: parent.to_owned(),
+                });
+            }
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotADirectory => {
+            return Err(Error::NotAPrefix(dir.to_owned()));
+        }
+        Err(err) => return Err(err).context(|| format!("failed to read {}", dir.display())),
+    }
+    Ok(BuildPlan::Build)
 }
 
 /// Makes sure `dir` can hold a new prefix. Returns true if this call created it.
@@ -200,6 +275,239 @@ mod tests {
             Err(Error::NotAPrefix(_))
         ));
         assert!(prepare_dir(&root.path().join("file")).is_err());
+    }
+
+    struct Layout {
+        _temp: tempfile::TempDir,
+        paths: Paths,
+        root: PathBuf,
+        outside: PathBuf,
+    }
+
+    fn layout() -> Layout {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let paths = Paths::from_lookup(|key| match key {
+            "HOME" => Some(home.clone().into()),
+            _ => None,
+        })
+        .unwrap();
+        let outside = temp.path().join("mnt");
+        fs::create_dir_all(&outside).unwrap();
+        Layout {
+            root: paths.default_prefix_root(),
+            _temp: temp,
+            paths,
+            outside,
+        }
+    }
+
+    fn plan(layout: &Layout, runner: &Runner, dir: &Path, confirmed: bool) -> Result<BuildPlan> {
+        build_plan(&layout.paths, &layout.root, runner, dir, confirmed)
+    }
+
+    fn fake_prefix(dir: &Path) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+    }
+
+    #[test]
+    fn build_plan_finds_a_prefix_of_the_runners_layout_ready() {
+        let l = layout();
+        let wine = l.outside.join("wine");
+        fake_prefix(&wine);
+        let proton = l.outside.join("proton");
+        fake_prefix(&proton.join("pfx"));
+        for confirmed in [false, true] {
+            assert_eq!(
+                plan(&l, &Runner::fake("wine"), &wine, confirmed).unwrap(),
+                BuildPlan::Ready
+            );
+            assert_eq!(
+                plan(
+                    &l,
+                    &Runner::fake_proton("GE-Proton10-4"),
+                    &proton,
+                    confirmed
+                )
+                .unwrap(),
+                BuildPlan::Ready
+            );
+        }
+    }
+
+    #[test]
+    fn build_plan_refuses_a_prefix_of_the_other_layout() {
+        let l = layout();
+        let wine = l.root.join("wine");
+        fake_prefix(&wine);
+        let proton = l.root.join("proton");
+        fake_prefix(&proton.join("pfx"));
+
+        let err = plan(&l, &Runner::fake_proton("GE-Proton10-4"), &wine, true).unwrap_err();
+        assert!(matches!(err, Error::PrefixLayout { .. }), "{err}");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "{} holds a Wine prefix, but runner GE-Proton10-4 needs a Proton one",
+                wine.display()
+            )
+        );
+        let err = plan(&l, &Runner::fake("wine"), &proton, true).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "{} holds a Proton prefix, but runner wine needs a Wine one",
+                proton.display()
+            )
+        );
+    }
+
+    #[test]
+    fn build_plan_builds_a_missing_dir_whose_parent_exists() {
+        let l = layout();
+        let dir = l.outside.join("palworld");
+        assert_eq!(
+            plan(&l, &Runner::fake("wine"), &dir, false).unwrap(),
+            BuildPlan::Build
+        );
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn build_plan_builds_under_a_missing_prefix_root() {
+        let l = layout();
+        assert!(!l.root.exists());
+        for dir in [l.root.join("palworld"), l.root.join("games/palworld")] {
+            assert_eq!(
+                plan(&l, &Runner::fake("wine"), &dir, false).unwrap(),
+                BuildPlan::Build
+            );
+        }
+        assert!(!l.root.exists());
+    }
+
+    #[test]
+    fn build_plan_refuses_a_missing_parent_outside_the_prefix_root() {
+        let l = layout();
+        let dir = l.outside.join("games/prefixes/palworld");
+        let err = plan(&l, &Runner::fake("wine"), &dir, true).unwrap_err();
+        assert!(matches!(err, Error::PrefixParentMissing { .. }), "{err}");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "prefix {} is missing, and so is {}",
+                dir.display(),
+                l.outside.join("games/prefixes").display()
+            )
+        );
+    }
+
+    #[test]
+    fn build_plan_builds_in_an_empty_dir_under_the_prefix_root() {
+        let l = layout();
+        let dir = l.root.join("palworld");
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            plan(&l, &Runner::fake("wine"), &dir, false).unwrap(),
+            BuildPlan::Build
+        );
+    }
+
+    #[test]
+    fn build_plan_needs_confirmation_for_an_empty_dir_outside_the_prefix_root() {
+        let l = layout();
+        let dir = l.outside.join("game-ssd");
+        fs::create_dir_all(&dir).unwrap();
+        let err = plan(&l, &Runner::fake("wine"), &dir, false).unwrap_err();
+        assert!(matches!(err, Error::EmptyPrefix(_)), "{err}");
+        assert_eq!(
+            err.to_string(),
+            format!("prefix {} is empty", dir.display())
+        );
+        assert_eq!(
+            plan(&l, &Runner::fake("wine"), &dir, true).unwrap(),
+            BuildPlan::Build
+        );
+
+        // The root itself isn't under the root.
+        fs::create_dir_all(&l.root).unwrap();
+        assert!(matches!(
+            plan(&l, &Runner::fake("wine"), &l.root, false),
+            Err(Error::EmptyPrefix(_))
+        ));
+    }
+
+    #[test]
+    fn build_plan_compares_the_prefix_root_resolved() {
+        let l = layout();
+        let real = l.outside.join("real-root");
+        fs::create_dir_all(real.join("palworld")).unwrap();
+        fs::create_dir_all(l.root.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real, &l.root).unwrap();
+        for dir in [real.join("palworld"), l.root.join("palworld")] {
+            assert_eq!(
+                plan(&l, &Runner::fake("wine"), &dir, false).unwrap(),
+                BuildPlan::Build
+            );
+        }
+    }
+
+    #[test]
+    fn build_plan_refuses_non_empty_dirs_and_files() {
+        let l = layout();
+        let dir = l.root.join("stuff");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("notes.txt"), "keep me").unwrap();
+        let file = l.root.join("file");
+        fs::write(&file, "").unwrap();
+        for path in [&dir, &file] {
+            assert!(
+                matches!(
+                    plan(&l, &Runner::fake("wine"), path, true),
+                    Err(Error::NotAPrefix(_))
+                ),
+                "{}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn build_plan_refuses_a_dangling_symlink() {
+        let l = layout();
+        fs::create_dir_all(&l.root).unwrap();
+        let dir = l.root.join("palworld");
+        std::os::unix::fs::symlink(l.outside.join("unmounted/palworld"), &dir).unwrap();
+        assert!(matches!(
+            plan(&l, &Runner::fake("wine"), &dir, true),
+            Err(Error::MissingPrefix(_))
+        ));
+    }
+
+    #[test]
+    fn build_plan_keeps_portable_prefixes_direct_children() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let folder = temp.path().join("usb");
+        let paths = Paths::select(
+            |key| match key {
+                "HOME" => Some(home.clone().into()),
+                _ => None,
+            },
+            Some(&folder),
+        )
+        .unwrap();
+        let root = paths.default_prefix_root();
+        let runner = Runner::fake("wine");
+        assert_eq!(
+            build_plan(&paths, &root, &runner, &root.join("palworld"), false).unwrap(),
+            BuildPlan::Build
+        );
+        assert!(matches!(
+            build_plan(&paths, &root, &runner, &root.join("games/palworld"), false),
+            Err(Error::PrefixOutsidePortable(_))
+        ));
     }
 
     #[test]

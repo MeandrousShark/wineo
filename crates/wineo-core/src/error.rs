@@ -212,6 +212,22 @@ pub enum Error {
     #[error("prefix {} is missing or is not a wine prefix", .0.display())]
     MissingPrefix(PathBuf),
 
+    #[error("{} holds a {found} prefix, but runner {runner} needs a {needed} one", .path.display())]
+    PrefixLayout {
+        path: PathBuf,
+        runner: String,
+        found: &'static str,
+        needed: &'static str,
+    },
+
+    #[error("prefix {} is missing, and so is {}", .prefix.display(), .parent.display())]
+    PrefixParentMissing { prefix: PathBuf, parent: PathBuf },
+
+    /// An empty prefix dir outside the prefix root could be an unmounted
+    /// drive's mount point, so it is only built in once the user confirms.
+    #[error("prefix {} is empty", .0.display())]
+    EmptyPrefix(PathBuf),
+
     #[error("prefix {} is {actual}, not {requested}", .path.display())]
     ArchMismatch {
         path: PathBuf,
