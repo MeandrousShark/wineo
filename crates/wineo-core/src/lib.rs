@@ -1,5 +1,6 @@
 pub mod art;
 pub mod art_fetch;
+pub mod art_icon;
 pub mod clone;
 pub mod components;
 pub mod config;

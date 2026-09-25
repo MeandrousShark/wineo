@@ -246,7 +246,7 @@ fn write(
             )
             .is_some()
         });
-    write_atomic(&path, &rendered(icon))?;
+    write_atomic(&path, rendered(icon))?;
     Ok(Some(match existing {
         Some(_) => Change::Updated {
             target: target_name.to_owned(),

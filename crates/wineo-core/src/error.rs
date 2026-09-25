@@ -165,6 +165,13 @@ pub enum Error {
     #[error("{} is not a {accepted} image", .path.display())]
     ArtFormat { path: PathBuf, accepted: String },
 
+    #[error("{} could not be decoded as an image", .path.display())]
+    IconDecode {
+        path: PathBuf,
+        #[source]
+        source: Box<image::ImageError>,
+    },
+
     #[error("`{spot}` has no {kind} art")]
     NoArt {
         spot: String,

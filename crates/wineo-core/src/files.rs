@@ -4,13 +4,13 @@ use std::path::Path;
 use crate::error::{IoContext, Result};
 
 /// Writes through a temp file and a rename, so readers never see a half-written file.
-pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).context(|| format!("failed to create {}", dir.display()))?;
     }
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
-    fs::write(&tmp, contents).context(|| format!("failed to write {}", path.display()))?;
+    fs::write(&tmp, contents.as_ref()).context(|| format!("failed to write {}", path.display()))?;
     fs::rename(&tmp, path).context(|| format!("failed to write {}", path.display()))
 }
 
