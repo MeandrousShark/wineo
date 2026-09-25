@@ -48,13 +48,30 @@ Creating a Proton prefix for palworld in ~/Games/prefixes/palworld, this takes a
 Started palworld
 ```
 
-Everything else keeps refusing with today's error: `programs`, `setup`, `set`,
+`setup` offers to build it instead, then shows its normal menu. Today it
+says `Its prefix is missing, so there is nothing installed to pick from.` and
+goes on with only the path entry, so that line becomes an offer in the review
+menu form from plan 0022:
+
+```
+palworld: runs on GE-Proton-Latest, prefix ~/Games/prefixes/palworld
+Its prefix doesn't exist yet.
+  1) Skip for now
+Enter create it, Ctrl+C cancel
+Choice: 
+```
+
+Enter builds it, prints the same note as `start`, and continues to the
+setup menu with the new prefix to pick programs from. `Skip for now` keeps
+today's behavior. When decision 2 refuses the path, `setup` prints the
+reason and goes on as today, with no offer.
+
+Everything else keeps refusing with today's error: `programs`, `set`,
 `clone`, `snapshot`, `portable copy`, and `rm`. They read or copy a prefix,
 and an empty fresh one gives them nothing useful.
 
-Alternative: a separate step, like `wineo build palworld`, and `start` keeps
-refusing but names it: `prefix ~/Games/prefixes/palworld is missing, run
-wineo build palworld`. Safer against surprises, but one more command to know.
+Considered and dropped: a separate `wineo build` command. `start` building
+on its own and `setup` offering it cover the same ground.
 
 ### 2. When a missing prefix is safe to build
 
@@ -69,12 +86,16 @@ real one. Recommended rule, checked before anything is created:
 | Nothing, and its parent exists | Built |
 | Nothing, the parent is missing too, and the path is under the prefix root | Built, making the parent dirs |
 | Nothing, the parent is missing too, and the path is outside the prefix root | Refused: `prefix /mnt/games/prefixes/palworld is missing, and so is /mnt/games/prefixes.` |
-| An empty dir | Built in it, and left in place if the build fails |
+| An empty dir under the prefix root | Built in it, and left in place if the build fails |
+| An empty dir outside the prefix root | `start` and the others refuse: `prefix /mnt/game-ssd is empty. Run wineo setup palworld to create it there.` `setup` offers to build it |
 | Anything else | Refused, with today's `is not empty and is not a wine prefix` |
 
 The parent rule is what catches an unmounted drive: `/mnt/games` is an empty
 mount point, so `/mnt/games/prefixes` is missing, and wineo refuses rather
-than build under it. The prefix root is wineo's own, so a fresh machine
+than build under it. When the prefix dir is itself the mount point, an
+unmounted drive looks like an empty dir, which can't be told from one the
+user made on purpose, so outside the prefix root only `setup` builds there,
+after asking. The prefix root is wineo's own, so a fresh machine
 restoring dotfiles can still build `~/.local/share/wineo/prefixes/palworld`
 before that dir exists.
 
@@ -83,7 +104,8 @@ A portable environment's prefix must still be a direct child of
 
 ### 3. Keep `prefix` required
 
-Recommended: `prefix`, `runner`, and `arch` stay required. The example config
+Recommended: `prefix`, `runner`, and `arch` stay required. Revisit this when
+native app support gets planned, since those environments may have no prefix. The example config
 shows the default location, so writing it by hand is one copied line, and
 `~/` keeps it working across machines:
 
@@ -155,7 +177,8 @@ arch = "win64"
    builds, and cleans up. Reuse `prepare_dir` and `prefix::create`, and
    factor the shared part out of `Environment::create`.
 2. CLI: `start`, `run`, `exec`, and `winetricks` call it when the prefix is
-   missing, print the note, then go on as today. Split `MissingPrefix` so
+   missing, print the note, then go on as today. `setup` offers it before its
+   menu. Split `MissingPrefix` so
    the remaining commands can keep their message.
 3. The example config, its test, the PKGBUILD install line, and docs:
    `config-files.md` replaces "`wineo start` refuses it" with the new
@@ -168,13 +191,17 @@ arch = "win64"
   direct-child rule and a failed build leaving a pre-existing empty dir.
 - CLI tests: `start`, `run`, `exec`, and `winetricks` on a hand-written
   config with a fake runner build the prefix and print the note; `programs`
-  and `setup` still refuse; the config file is byte for byte unchanged.
+  still refuses; an empty dir outside the prefix root is refused with the
+  `setup` hint; the config file is byte for byte unchanged.
+- Pty tests for `setup`: Enter builds the prefix and lists its programs,
+  `Skip for now` keeps today's message, and a refused path shows its reason
+  with no offer.
 - An ignored real-wine test builds a Wine prefix from a hand-written config
   through `exec`.
 - The example config test from decision 5.
 - The maintainer writes a config by hand from the example, runs `wineo start`
   on it with a Wine runner and with a Proton runner, and sees the prefix get
-  built once and reused after.
+  built once and reused after. Then another through `wineo setup`.
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
 
 ## Scope limits
