@@ -538,10 +538,6 @@ fn settings<I: Input, W: Write>(
             entries.push(("Use these".to_owned(), Change::Accept));
         }
         entries.push(("Change the runner".to_owned(), Change::Runner));
-        entries.push((
-            "Download a runner or graphics tool".to_owned(),
-            Change::Download,
-        ));
         if adopted.is_none() {
             entries.push(("Change the arch".to_owned(), Change::Arch));
         }
