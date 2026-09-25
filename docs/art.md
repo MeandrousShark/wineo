@@ -194,9 +194,11 @@ environment's, then the icon wine's menu builder pulls out of the exe.
 SVG is installed as is, under
 `$XDG_DATA_HOME/icons/hicolor/scalable/apps/`. PNG, JPEG, and ICO are
 converted to one PNG, at the largest standard hicolor size that fits the
-image, up to 512x512. A non-square image is padded to a square with
+image, up to 256x256. A non-square image is padded to a square with
 transparency first. An image is never upscaled, except one under 16 px,
-which goes to 16. An ICO with several images uses its largest one.
+which goes to 16. An ICO with several images uses its largest one. The cap
+is 256 rather than 512 because some launchers, such as Noctalia, never look
+in `512x512`.
 
 `wineo art set`, `wineo art rm`, and `wineo art fetch` update the affected
 entries right away, printing the usual `Updated the desktop entry for

@@ -63,15 +63,19 @@ Add `image` to wineo-core with `default-features = false` and only the
 ### 3. One size
 
 Write one PNG, at the largest standard hicolor size that fits the square's
-side: 512, 256, 192, 128, 96, 72, 64, 48, 36, 32, 24, 22, or 16. An image
+side: 256, 192, 128, 96, 72, 64, 48, 36, 32, 24, 22, or 16. An image
 is never upscaled, except one smaller than 16 px, which goes to 16. The
 desktop scales down from there.
 
+Amended during acceptance: the cap was 512, but Noctalia's launcher never
+looks in `512x512` under `~/.local/share/icons`, so a 512 px icon showed
+blank. 256 is also the largest size wine and Steam write.
+
 | Source      | Written to          |
 |-------------|---------------------|
-| 1024x1024   | `512x512/apps/`     |
+| 1024x1024   | `256x256/apps/`     |
 | 300x300     | `256x256/apps/`     |
-| 640x480     | `512x512/apps/`, padded to 640x640 first |
+| 640x480     | `256x256/apps/`, padded to 640x640 first |
 | 40x40       | `36x36/apps/`       |
 | icon.svg    | `scalable/apps/`    |
 
@@ -110,7 +114,7 @@ skips extraction, and that stays true for `exe`.
 
 Whenever the source changes, every icon file for that entry is removed
 first (all sizes, `.png` and `.svg`), so a switch from a 48 px exe icon to
-a 512 px art icon, or from SVG to PNG, leaves nothing stale behind.
+a 256 px art icon, or from SVG to PNG, leaves nothing stale behind.
 `remove_icons` learns about `scalable/apps/*.svg` for the same reason.
 
 ### 6. Art that can't be decoded
@@ -154,7 +158,7 @@ point. An entry that already has an exe icon on disk and no art gets
    after `art set` and `art rm`.
 4. **Docs.** `docs/art.md` loses the line saying desktop icons are later
    work and gains a short "Desktop entries" section (precedence, one PNG at
-   up to 512 px, SVG as is). Update the `features.md` artwork row to leave
+   up to 256 px, SVG as is). Update the `features.md` artwork row to leave
    only the GUI work. README mention if it lists desktop entry features.
 
 ## Verification and acceptance
@@ -165,7 +169,7 @@ point. An entry that already has an exe icon on disk and no art gets
   key, and the `desktop_wine.rs` ignored tests still cover it.
 - The maintainer's acceptance, on a machine with a display:
   - `palworld` (1024x1024 PNG art) shows its art icon in the launcher after
-    one `wineo start`, installed at `512x512`.
+    one `wineo start`, installed at `256x256`.
   - `subverse` (ICO art) shows an icon, or prints the decision 6 line.
   - `wineo art rm <env> icon` on an env with a Start Menu shortcut brings
     the exe icon back right away.
