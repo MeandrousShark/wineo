@@ -3,6 +3,18 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.4.0 - 2026-09-24
+
+- `start`, `run`, `exec`, `winetricks`, and `restart` build a missing prefix
+  from a hand-written config, and `setup` offers to
+  ([0023](docs/plans/0023-config-first-creation.md)).
+- Launch checks that need no prefix run before the build, so a bad config
+  fails fast.
+- An example environment config, installed to
+  `/usr/share/doc/wineo/environment.toml.example` by the Arch package.
+- A relative `prefix` is refused outside portable mode instead of resolving
+  against the current directory.
+
 ## 0.3.0 - 2026-09-24
 
 - Review menus say what Enter does in the keys line, above a plain
