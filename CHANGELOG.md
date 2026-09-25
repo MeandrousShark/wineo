@@ -3,6 +3,17 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.6.0 - 2026-09-25
+
+- `wineo new` and `wineo import heroic` offer to fetch SteamGridDB art for
+  the environment they create, with `--art` for the unguided flows
+  ([0025](docs/plans/0025-art-in-new-and-import.md)).
+- `[art] fetch = "icon"` in the global config limits those flows to the icon.
+- Prompts spell out their keys, like `Press Enter to create it, Esc to go
+  back, Ctrl+C to cancel.`, and a review with no rows asks `Create it?`
+  instead of `Choice:`.
+- Guided `new` no longer lists "Download a runner or graphics tool" twice.
+
 ## 0.5.0 - 2026-09-25
 
 - Desktop entries use icon art, the target's first, then the environment's,

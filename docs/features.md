@@ -27,6 +27,8 @@ Completed: [0023: Create a prefix from a hand-written config](plans/0023-config-
 See [Creating an environment by hand](config-files.md#creating-an-environment-by-hand) for the behavior and safety rules.
 Completed: [0024: Desktop entry icons from art](plans/0024-desktop-entry-icons.md).
 See [Desktop entries](art.md#desktop-entries) for the behavior.
+Completed: [0025: Fetch art during new and Heroic import](plans/0025-art-in-new-and-import.md).
+See [Fetching during new and import](art.md#fetching-during-new-and-import) for the flows and flags.
 
 **Category**
 

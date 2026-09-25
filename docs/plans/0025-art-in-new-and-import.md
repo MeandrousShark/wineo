@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0025: Fetch art during new and Heroic import
 
