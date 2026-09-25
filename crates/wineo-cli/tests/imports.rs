@@ -698,3 +698,64 @@ fn adopted_prefix_deletion_refuses_registered_aliases_and_retains_failed_removal
     assert_success(&f.run(&["rm", "adopted"]));
     assert!(prefix.exists());
 }
+
+fn heroic_import(f: &Fixture, config: &Path, extra: &[&str]) -> std::process::Output {
+    let mut args = vec![
+        "import",
+        "heroic",
+        "--config-dir",
+        config.to_str().unwrap(),
+        "--runner",
+        "wine",
+    ];
+    args.extend(extra);
+    f.run(&args)
+}
+
+fn steamgriddb_lines(output: &std::process::Output) -> Vec<String> {
+    format!("{}{}", stdout(output), stderr(output))
+        .lines()
+        .filter(|line| line.contains("SteamGridDB"))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn heroic_art_without_a_key_notes_it_once_and_succeeds() {
+    const NOTE: &str = "note: run `wineo art key` to fetch art from SteamGridDB";
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+
+    let single = heroic_import(&f, &heroic, &["--game", "a", "-n", "alpha", "--art"]);
+    assert_success(&single);
+    assert_eq!(steamgriddb_lines(&single), [NOTE]);
+    assert!(
+        stdout(&single).contains("Imported alpha."),
+        "{}",
+        stdout(&single)
+    );
+
+    let bulk = heroic_import(&f, &heroic, &["--all", "--yes", "--art"]);
+    assert_success(&bulk);
+    assert_eq!(steamgriddb_lines(&bulk), [NOTE]);
+    assert!(
+        stdout(&bulk).contains("Imported 1 of 1 games."),
+        "{}",
+        stdout(&bulk)
+    );
+}
+
+#[test]
+fn heroic_imports_without_art_say_nothing_about_it() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+
+    let single = heroic_import(&f, &heroic, &["--game", "a", "-n", "alpha"]);
+    assert_success(&single);
+    assert!(steamgriddb_lines(&single).is_empty());
+    let bulk = heroic_import(&f, &heroic, &["--all", "--yes"]);
+    assert_success(&bulk);
+    assert!(steamgriddb_lines(&bulk).is_empty());
+}

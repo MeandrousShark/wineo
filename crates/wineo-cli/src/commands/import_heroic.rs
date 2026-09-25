@@ -18,7 +18,9 @@ use wineo_core::install::{self, Wanted};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
+use wineo_core::steamgriddb::Key;
 
+use super::art::{Access, AutoFetch, KeyCheck, Pick};
 use super::components;
 use super::desktop;
 use super::download;
@@ -66,6 +68,9 @@ pub struct Args {
     /// Skip the confirmation and allow running without a terminal
     #[arg(short, long)]
     pub yes: bool,
+    /// Fetch art from SteamGridDB, searching the Heroic title
+    #[arg(long)]
+    pub art: bool,
 }
 
 struct OutputOnly;
@@ -83,6 +88,86 @@ impl Input for OutputOnly {
 struct DesktopChoice {
     enabled: bool,
     name: String,
+}
+
+/// Whether to fetch SteamGridDB art once the import is registered, and the
+/// search for it. Kept apart from `HeroicImport` like `DesktopChoice`.
+struct ArtChoice {
+    /// Art can only be turned on when a key was found.
+    key: Option<Key>,
+    enabled: bool,
+    term: String,
+}
+
+impl ArtChoice {
+    fn off() -> Self {
+        Self {
+            key: None,
+            enabled: false,
+            term: String::new(),
+        }
+    }
+
+    /// On when the check found a key.
+    fn checked(check: KeyCheck, term: &str) -> Self {
+        let key = match check {
+            KeyCheck::Found(key) => Some(key),
+            KeyCheck::Missing | KeyCheck::Failed(_) => None,
+        };
+        Self {
+            enabled: key.is_some(),
+            key,
+            term: term.to_owned(),
+        }
+    }
+
+    fn display(&self) -> String {
+        if self.enabled {
+            format!("fetch from SteamGridDB, searching \"{}\"", self.term)
+        } else {
+            "none".to_owned()
+        }
+    }
+
+    fn log_line(&self) -> String {
+        format!("  art: {}\n", self.display())
+    }
+}
+
+/// Checks for a key once, before the review, saying why art is off without one.
+fn review_art<I: Input, W: Write>(
+    access: &Access,
+    prompt: &mut Prompt<I, W>,
+    title: &str,
+) -> io::Result<ArtChoice> {
+    let check = (access.check_key)();
+    if let Some(line) = check.skip_line() {
+        prompt.say(line)?;
+    }
+    Ok(ArtChoice::checked(check, title))
+}
+
+/// Fetches art for a registered import. Callers run it before the desktop
+/// reconcile, so the entry has the art icon from the start. Only a canceled
+/// pick list is an error.
+fn fetch_art<I: Input, W: Write>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    access: &Access,
+    env: &str,
+    art: &ArtChoice,
+    pick: Pick<I, W>,
+    err: &mut dyn Write,
+) -> Result<(), Canceled> {
+    let Some(key) = art.key.as_ref().filter(|_| art.enabled) else {
+        return Ok(());
+    };
+    let request = AutoFetch {
+        env,
+        term: &art.term,
+        kinds: global.art.fetch,
+    };
+    access.fetch(paths, key, &request, pick, err)
 }
 
 #[derive(Clone, Default)]
@@ -126,6 +211,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         wineo_core::desktop::supported(paths)?;
     }
     let global = GlobalConfig::load(paths)?;
+    let access = Access::steamgriddb(paths);
     if args.list {
         let sources = sources(paths, args.config_dir.as_deref())?;
         for (index, source) in sources.iter().enumerate() {
@@ -137,7 +223,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         return Ok(ExitCode::SUCCESS);
     }
     if args.all {
-        return match run_all(paths, &global, args, verbose) {
+        return match run_all(paths, &global, &access, args, verbose) {
             Ok(code) => Ok(code),
             Err(error) if error.is::<Canceled>() => {
                 eprintln!("Import canceled");
@@ -157,6 +243,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         let name = args.name.clone().unwrap();
         let runner_name = args.runner.clone().unwrap();
         let desktop_enabled = args.desktop;
+        let args_art = args.art;
         let runner = Runners::new(paths, &global)?.resolve(&runner_name)?;
         let inspection = prefix_inspection(&imported, &runner, args.arch)?;
         clear_runner_dependency(&mut imported);
@@ -189,6 +276,13 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
             enabled: desktop_enabled,
             name: imported.title.clone(),
         };
+        let art = if args_art {
+            let check = (access.check_key)();
+            check.print_skip();
+            ArtChoice::checked(check, &imported.title)
+        } else {
+            ArtChoice::off()
+        };
         let mut output = Prompt::new(OutputOnly, io::stdout());
         show_game_summary_with_evidence(&mut output, paths, &imported, &evidence, verbose)?;
         let resolved = Runners::new(paths, &global)?.resolve(&request.runner)?;
@@ -197,6 +291,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
             global: &global,
             source: &source,
             evidence: &evidence,
+            verbose,
         };
         output.say(final_facts_text(
             &ctx,
@@ -218,11 +313,35 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
                 &inspection,
                 &request,
                 &desktop_choice,
-            )
+            ) + &art.log_line()
         });
         let destination = resolved_destination(paths, &global, &request, &inspection)?;
         let environment = import_reviewed(paths, &global, request, &inspection, Some(&settings))?;
+        let mut prompt = (art.enabled && prompt::interactive())
+            .then(|| Terminal::open().ok())
+            .flatten()
+            .map(|input| Prompt::new(input, io::stdout()));
+        let mut stdout = io::stdout();
+        let pick = match &mut prompt {
+            Some(prompt) => Pick::Ask(prompt),
+            None => Pick::Top(&mut stdout),
+        };
+        let fetched = fetch_art(
+            paths,
+            &global,
+            &access,
+            &environment.name,
+            &art,
+            pick,
+            &mut io::stderr(),
+        );
+        drop(prompt);
         desktop::reconcile(paths, &global, &environment, Some(&resolved), &destination)?;
+        if fetched.is_err() {
+            let name = &environment.name;
+            eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
+            return Ok(ExitCode::from(130));
+        }
         println!(
             "Imported {}. Add or edit targets with wineo setup {}",
             environment.name, environment.name
@@ -254,7 +373,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
     let mut prompt =
         Prompt::new(Terminal::open()?, io::stdout()).with_color(style::stdout_enabled());
     let source = source_guided(paths, args.config_dir.as_deref(), &mut prompt)?;
-    match guided(paths, &global, source, args, &mut prompt, verbose) {
+    match guided(paths, &global, &access, source, args, &mut prompt, verbose) {
         Ok(code) => Ok(code),
         Err(error) if error.is::<Canceled>() => {
             eprintln!("Import canceled");
@@ -342,6 +461,7 @@ fn list(source: &HeroicSource) -> anyhow::Result<ExitCode> {
 fn guided<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
+    access: &Access,
     source: HeroicSource,
     args: Args,
     prompt: &mut Prompt<I, W>,
@@ -480,11 +600,13 @@ fn guided<I: Input, W: Write>(
         enabled: paths.portable_root().is_none(),
         name: imported.title.clone(),
     };
+    let mut art = review_art(access, prompt, &imported.title)?;
     let ctx = ReviewContext {
         paths,
         global,
         source: &source,
         evidence: &evidence,
+        verbose,
     };
     final_review(
         &ctx,
@@ -492,8 +614,8 @@ fn guided<I: Input, W: Write>(
         &inspection,
         &mut request,
         &mut desktop_choice,
+        &mut art,
         prompt,
-        verbose,
     )?;
     let settings = imported_settings(&imported, &inspection, &request, &desktop_choice);
     let log_body = verbose.then(|| {
@@ -505,12 +627,28 @@ fn guided<I: Input, W: Write>(
             &inspection,
             &request,
             &desktop_choice,
-        )
+        ) + &art.log_line()
     });
     ensure_source_unchanged(&source, &imported)?;
     let destination = resolved_destination(paths, global, &request, &inspection)?;
     let environment = import_reviewed(paths, global, request, &inspection, Some(&settings))?;
+    let fetched = fetch_art(
+        paths,
+        global,
+        access,
+        &environment.name,
+        &art,
+        Pick::Ask(prompt),
+        &mut io::stderr(),
+    );
     desktop::reconcile(paths, global, &environment, Some(&resolved), &destination)?;
+    if fetched.is_err() {
+        prompt.say(format!(
+            "Kept {} and its prefix. Continue with `wineo setup {}`",
+            environment.name, environment.name
+        ))?;
+        return Err(Canceled.into());
+    }
     if let Some(body) = log_body {
         print_log_path(paths, &environment.name, &body);
     }
@@ -563,6 +701,7 @@ struct PendingGame {
 fn run_all(
     paths: &Paths,
     global: &GlobalConfig,
+    access: &Access,
     args: Args,
     verbose: bool,
 ) -> anyhow::Result<ExitCode> {
@@ -633,6 +772,8 @@ fn run_all(
         }
     };
 
+    let art = bulk_art(access, args.art, args.yes, prompt.as_mut())?;
+
     if !args.yes {
         let prompt = prompt.as_mut().expect("interactive was checked above");
         match prompt.confirm(&format!("Import {} games?", ready.len()), true)? {
@@ -641,15 +782,49 @@ fn run_all(
         }
     }
 
-    import_all(
+    let bulk = Bulk {
         paths,
         global,
-        &source,
-        &runner,
-        ready,
-        desktop_enabled,
+        access,
+        source: &source,
+        runner: &runner,
+        desktop: desktop_enabled,
+        art,
         verbose,
-    )
+    };
+    import_all(&bulk, ready)
+}
+
+/// The key `--all` fetches art with, or None for no art. `--art` answers yes
+/// ahead of time and `--yes` without it answers no, as with desktop entries.
+/// A missing key is only noted when art was asked for or would be asked about.
+fn bulk_art<I: Input, W: Write>(
+    access: &Access,
+    art_flag: bool,
+    yes_flag: bool,
+    mut prompt: Option<&mut Prompt<I, W>>,
+) -> anyhow::Result<Option<Key>> {
+    if yes_flag && !art_flag {
+        return Ok(None);
+    }
+    let key = match (access.check_key)() {
+        KeyCheck::Found(key) => key,
+        check => {
+            match (prompt.as_mut(), check.skip_line()) {
+                (Some(prompt), Some(line)) => prompt.say(line)?,
+                _ => check.print_skip(),
+            }
+            return Ok(None);
+        }
+    };
+    if art_flag {
+        return Ok(Some(key));
+    }
+    let prompt = prompt.expect("interactive was checked above");
+    match prompt.confirm("Fetch art for these games?", true)? {
+        Reply::Value(wanted) => Ok(wanted.then_some(key)),
+        Reply::Back => Err(Canceled.into()),
+    }
 }
 
 /// Confirms once, then downloads the newest stable GE-Proton release with
@@ -1347,15 +1522,22 @@ fn render_bulk_table(
     out
 }
 
-fn import_all(
-    paths: &Paths,
-    global: &GlobalConfig,
-    source: &HeroicSource,
-    runner: &Runner,
-    ready: Vec<ReadyGame>,
-    desktop_enabled: bool,
+/// What every game in `--all` is imported with.
+struct Bulk<'a> {
+    paths: &'a Paths,
+    global: &'a GlobalConfig,
+    access: &'a Access<'a>,
+    source: &'a HeroicSource,
+    runner: &'a Runner,
+    desktop: bool,
+    /// The key to fetch art with, or None for no art.
+    art: Option<Key>,
     verbose: bool,
-) -> anyhow::Result<ExitCode> {
+}
+
+fn import_all(bulk: &Bulk, ready: Vec<ReadyGame>) -> anyhow::Result<ExitCode> {
+    let paths = bulk.paths;
+    let verbose = bulk.verbose;
     let total = ready.len();
     let mut done = 0usize;
     let mut failed = Vec::new();
@@ -1370,13 +1552,14 @@ fn import_all(
                 verbose,
             )?;
         }
-        let desktop = DesktopChoice {
-            enabled: desktop_enabled,
-            name: game.title.clone(),
-        };
-        match import_progress(&mut io::stdout().lock(), &game.name, || {
-            import_one(paths, global, source, runner, &game, &desktop, verbose)
-        })? {
+        // Art lines wait for the progress line to end.
+        let (mut art_out, mut art_err) = (Vec::new(), Vec::new());
+        let imported = import_progress(&mut io::stdout().lock(), &game.name, || {
+            import_one(bulk, &game, &mut art_out, &mut art_err)
+        })?;
+        io::stdout().write_all(&art_out)?;
+        io::stderr().write_all(&art_err)?;
+        match imported {
             Ok(log_body) => {
                 if let Some(body) = log_body {
                     print_log_path(paths, &game.name, &body);
@@ -1420,27 +1603,36 @@ fn import_progress<W: Write, T>(
     Ok(result)
 }
 
+/// Imports one game of `--all`. Art is fetched with the top match, and its
+/// lines and warnings go to `out` and `err`. Art failures never fail the game.
 fn import_one(
-    paths: &Paths,
-    global: &GlobalConfig,
-    source: &HeroicSource,
-    runner: &Runner,
+    bulk: &Bulk,
     game: &ReadyGame,
-    desktop: &DesktopChoice,
-    verbose: bool,
+    out: &mut Vec<u8>,
+    err: &mut Vec<u8>,
 ) -> anyhow::Result<Option<String>> {
-    ensure_source_unchanged(source, &game.imported)?;
+    let (paths, global, runner) = (bulk.paths, bulk.global, bulk.runner);
+    let desktop = &DesktopChoice {
+        enabled: bulk.desktop,
+        name: game.title.clone(),
+    };
+    let art = ArtChoice {
+        key: bulk.art.clone(),
+        enabled: bulk.art.is_some(),
+        term: game.title.clone(),
+    };
+    ensure_source_unchanged(bulk.source, &game.imported)?;
     let settings = imported_settings(&game.imported, &game.inspection, &game.request, desktop);
-    let log_body = verbose.then(|| {
+    let log_body = bulk.verbose.then(|| {
         log_text_with_evidence(
             global,
-            source,
+            bulk.source,
             &game.imported,
             &game.evidence,
             &game.inspection,
             &game.request,
             desktop,
-        )
+        ) + &art.log_line()
     });
     let destination = resolved_destination(paths, global, &game.request, &game.inspection)?;
     let environment = import_reviewed(
@@ -1450,6 +1642,17 @@ fn import_one(
         &game.inspection,
         Some(&settings),
     )?;
+    let top = Pick::<OutputOnly, Vec<u8>>::Top(out);
+    // A top match can't be canceled.
+    let _ = fetch_art(
+        paths,
+        global,
+        bulk.access,
+        &environment.name,
+        &art,
+        top,
+        err,
+    );
     desktop::reconcile(paths, global, &environment, Some(runner), &destination)?;
     Ok(log_body)
 }
@@ -1464,6 +1667,7 @@ enum EditField {
     Name,
     Destination,
     Desktop,
+    Art,
 }
 
 /// Bundles what every review function needs but doesn't itself change, to
@@ -1473,6 +1677,7 @@ struct ReviewContext<'a> {
     global: &'a GlobalConfig,
     source: &'a HeroicSource,
     evidence: &'a ReviewEvidence,
+    verbose: bool,
 }
 
 fn final_review<I: Input, W: Write>(
@@ -1481,11 +1686,12 @@ fn final_review<I: Input, W: Write>(
     inspection: &Inspection,
     request: &mut ImportRequest,
     desktop: &mut DesktopChoice,
+    art: &mut ArtChoice,
     prompt: &mut Prompt<I, W>,
-    verbose: bool,
 ) -> anyhow::Result<()> {
     let paths = ctx.paths;
     let global = ctx.global;
+    let verbose = ctx.verbose;
     loop {
         let resolved = Runners::new(paths, global)?.resolve(&request.runner)?;
         let destination = resolved_destination(paths, global, request, inspection)?;
@@ -1502,7 +1708,7 @@ fn final_review<I: Input, W: Write>(
             style::path(paths, &destination)
         };
         let desktop_display = if desktop.enabled { "yes" } else { "no" }.to_owned();
-        let items: [(&str, String, EditField); 8] = [
+        let mut items: Vec<(&str, String, EditField)> = vec![
             (
                 "exe",
                 style::path(paths, &imported.exe),
@@ -1528,24 +1734,27 @@ fn final_review<I: Input, W: Write>(
             ("copy to", copy_to_display, EditField::Destination),
             ("desktop", desktop_display, EditField::Desktop),
         ];
+        let mut note = "Close Heroic and the game first.".to_owned();
+        if art.key.is_some() {
+            items.push(("art", art.display(), EditField::Art));
+        }
         let width = items
             .iter()
             .map(|(label, _, _)| label.len())
             .max()
             .unwrap_or(0)
             + 2;
+        if art.key.is_none() {
+            // Unnumbered without a key, lined up with the numbered rows.
+            let indent = " ".repeat(items.len().to_string().len() + 4);
+            note = format!("{indent}{:width$}{}\n{note}", "art", art.display());
+        }
         let choices = numbered(
             items
                 .into_iter()
                 .map(|(label, value, field)| (format!("{label:width$}{value}"), field)),
         );
-        let choice = prompt.review(
-            &heading,
-            Some("Close Heroic and the game first."),
-            "import",
-            &choices,
-            true,
-        )?;
+        let choice = prompt.review(&heading, Some(&note), "import", &choices, true)?;
         match choice {
             Reply::Value(None) => return Ok(()),
             Reply::Value(Some(field)) => match field {
@@ -1557,6 +1766,7 @@ fn final_review<I: Input, W: Write>(
                 EditField::Name => edit_name(paths, global, request, prompt)?,
                 EditField::Destination => edit_destination(paths, global, request, prompt)?,
                 EditField::Desktop => edit_desktop(paths, imported, desktop, prompt)?,
+                EditField::Art => edit_art(art, prompt)?,
             },
             Reply::Back => return Err(Canceled.into()),
         }
@@ -1767,6 +1977,32 @@ fn edit_desktop<I: Input, W: Write>(
             }
         }
         Reply::Value(false) => desktop.enabled = false,
+        Reply::Back => {}
+    }
+    Ok(())
+}
+
+fn edit_art<I: Input, W: Write>(
+    art: &mut ArtChoice,
+    prompt: &mut Prompt<I, W>,
+) -> anyhow::Result<()> {
+    match prompt.confirm("Fetch art from SteamGridDB?", art.enabled)? {
+        Reply::Value(true) => {
+            match prompt.text("Search for", Some(&art.term), |value| {
+                if value.is_empty() {
+                    Err("Enter a search term.".to_owned())
+                } else {
+                    Ok(value.to_owned())
+                }
+            })? {
+                Reply::Value(term) => {
+                    art.enabled = true;
+                    art.term = term;
+                }
+                Reply::Back => {}
+            }
+        }
+        Reply::Value(false) => art.enabled = false,
         Reply::Back => {}
     }
     Ok(())
@@ -3112,6 +3348,7 @@ mod tests {
     use wineo_core::import;
 
     use super::*;
+    use crate::commands::art::fake::Fake;
     use crate::prompt::Script;
 
     fn paths(home: &Path) -> Paths {
@@ -3220,13 +3457,14 @@ mod tests {
                 global: &global,
                 source: &source,
                 evidence: &ReviewEvidence::default(),
+                verbose: false,
             },
             &mut imported,
             &inspection,
             &mut request,
             &mut desktop,
+            &mut ArtChoice::off(),
             &mut prompt,
-            false,
         )
         .unwrap();
         assert_eq!(imported.exe, root.path().join("drive_c/edited.exe"));
@@ -3498,13 +3736,14 @@ mod tests {
                 global: &global,
                 source: &source,
                 evidence: &ReviewEvidence::default(),
+                verbose: false,
             },
             &mut imported,
             &inspection,
             &mut request,
             &mut desktop,
+            &mut ArtChoice::off(),
             &mut prompt,
-            false,
         )
         .unwrap_err();
         assert!(error.is::<Canceled>());
@@ -3529,13 +3768,14 @@ mod tests {
                 global: &global,
                 source: &source,
                 evidence: &ReviewEvidence::default(),
+                verbose: false,
             },
             &mut imported,
             &inspection,
             &mut request,
             &mut desktop,
+            &mut ArtChoice::off(),
             &mut prompt,
-            false,
         )
         .unwrap();
         let printed = String::from_utf8_lossy(prompt.output()).into_owned();
@@ -3567,13 +3807,14 @@ mod tests {
                 global: &global,
                 source: &source,
                 evidence: &ReviewEvidence::default(),
+                verbose: false,
             },
             &mut imported,
             &inspection,
             &mut request,
             &mut desktop,
+            &mut ArtChoice::off(),
             &mut prompt,
-            false,
         )
         .unwrap();
         assert!(!desktop.enabled);
@@ -4042,13 +4283,14 @@ mod tests {
                 global: &global,
                 source: &source,
                 evidence: &ReviewEvidence::default(),
+                verbose: false,
             },
             &mut imported,
             &inspection,
             &mut request,
             &mut desktop,
+            &mut ArtChoice::off(),
             &mut prompt,
-            false,
         )
         .unwrap();
         let printed = String::from_utf8_lossy(prompt.output()).into_owned();
@@ -4779,5 +5021,289 @@ mod tests {
         // One question covering both games, not one each.
         assert_eq!(printed.matches("Download the latest release?").count(), 1);
         assert!(printed.contains("for 2 games"), "{printed}");
+    }
+
+    // -- art --
+
+    fn key_check(found: bool) -> KeyCheck {
+        if found {
+            KeyCheck::Found(Key {
+                value: "k".into(),
+                source: wineo_core::steamgriddb::KeySource::Variable,
+            })
+        } else {
+            KeyCheck::Missing
+        }
+    }
+
+    /// An access whose key check answers `found` and counts its calls.
+    fn access<'a>(found: bool, lookups: &'a std::cell::Cell<usize>, fake: Fake) -> Access<'a> {
+        Access {
+            check_key: Box::new(move || {
+                lookups.set(lookups.get() + 1);
+                key_check(found)
+            }),
+            transport: Box::new(move || Ok(Box::new(fake.clone()))),
+        }
+    }
+
+    /// Runs the final review on `answers` with `art`, returning the transcript.
+    fn review_with_art(root: &Path, art: &mut ArtChoice, answers: &[&str]) -> String {
+        let paths = paths(root);
+        let global = GlobalConfig::default();
+        let source = heroic_source(root);
+        let (mut imported, inspection, mut request) = reviewed_import(root);
+        let mut desktop = DesktopChoice {
+            enabled: true,
+            name: imported.title.clone(),
+        };
+        let mut prompt = Prompt::new(Script::new(answers), Vec::new());
+        final_review(
+            &ReviewContext {
+                paths: &paths,
+                global: &global,
+                source: &source,
+                evidence: &ReviewEvidence::default(),
+                verbose: false,
+            },
+            &mut imported,
+            &inspection,
+            &mut request,
+            &mut desktop,
+            art,
+            &mut prompt,
+        )
+        .unwrap();
+        String::from_utf8_lossy(prompt.output()).into_owned()
+    }
+
+    #[test]
+    fn guided_review_without_a_key_notes_it_and_shows_art_none() {
+        let root = tempdir().unwrap();
+        let lookups = std::cell::Cell::new(0);
+        let access = access(false, &lookups, Fake::default());
+        let mut prompt = Prompt::new(Script::new(&[]), Vec::new());
+        let mut art = review_art(&access, &mut prompt, "Game").unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(prompt.output()),
+            "note: run `wineo art key` to fetch art from SteamGridDB\n"
+        );
+        assert!(!art.enabled);
+
+        // 9 is not a choice, since the row can't be edited without a key.
+        let printed = review_with_art(root.path(), &mut art, &["9", ""]);
+        assert!(printed.contains("8) desktop      yes\n"), "{printed}");
+        assert!(
+            printed.contains("\n     art          none\nClose Heroic and the game first.\n"),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("`9` is not one of the choices"),
+            "{printed}"
+        );
+        assert!(!art.enabled);
+    }
+
+    #[test]
+    fn guided_review_with_a_key_fetches_by_default_and_edits_the_row() {
+        let root = tempdir().unwrap();
+        let lookups = std::cell::Cell::new(0);
+        let access = access(true, &lookups, Fake::default());
+        let mut prompt = Prompt::new(Script::new(&[]), Vec::new());
+        let mut art = review_art(&access, &mut prompt, "Game").unwrap();
+        assert_eq!(prompt.output().len(), 0);
+        assert!(art.enabled);
+
+        let printed = review_with_art(root.path(), &mut art, &["9", "n", ""]);
+        assert!(
+            printed.contains("9) art          fetch from SteamGridDB, searching \"Game\"\n"),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("Fetch art from SteamGridDB? [Y/n]: "),
+            "{printed}"
+        );
+        assert!(printed.contains("9) art          none\n"), "{printed}");
+        assert!(!art.enabled);
+
+        let printed = review_with_art(root.path(), &mut art, &["9", "y", "Game Two", ""]);
+        assert!(printed.contains("Search for [Game]: "), "{printed}");
+        assert!(
+            printed.contains("9) art          fetch from SteamGridDB, searching \"Game Two\"\n"),
+            "{printed}"
+        );
+        assert!(art.enabled);
+        assert_eq!(art.term, "Game Two");
+        assert_eq!(
+            art.log_line(),
+            "  art: fetch from SteamGridDB, searching \"Game Two\"\n"
+        );
+    }
+
+    #[test]
+    fn bulk_art_asks_only_with_a_key_and_follows_the_flags() {
+        let lookups = std::cell::Cell::new(0);
+        let ask = |found: bool, art: bool, yes: bool, answers: &[&str]| {
+            let access = access(found, &lookups, Fake::default());
+            let mut prompt = Prompt::new(Script::new(answers), Vec::new());
+            let key = bulk_art(&access, art, yes, (!yes).then_some(&mut prompt)).unwrap();
+            (
+                key.is_some(),
+                String::from_utf8_lossy(prompt.output()).into_owned(),
+            )
+        };
+
+        let (fetch, printed) = ask(true, false, false, &[""]);
+        assert!(fetch);
+        assert_eq!(printed, "Fetch art for these games? [Y/n]: ");
+        let (fetch, _) = ask(true, false, false, &["n"]);
+        assert!(!fetch);
+
+        let (fetch, printed) = ask(false, false, false, &[]);
+        assert!(!fetch);
+        assert_eq!(
+            printed,
+            "note: run `wineo art key` to fetch art from SteamGridDB\n"
+        );
+
+        let (fetch, printed) = ask(true, true, false, &[]);
+        assert!(fetch);
+        assert_eq!(printed, "");
+        let (fetch, _) = ask(true, true, true, &[]);
+        assert!(fetch);
+
+        lookups.set(0);
+        let (fetch, _) = ask(true, false, true, &[]);
+        assert!(!fetch);
+        assert_eq!(lookups.get(), 0);
+    }
+
+    /// A Heroic config with one sideloaded game, Alpha, and a fake wine
+    /// runner, classified the way `--all` does.
+    fn bulk_fixture(root: &Path) -> (Paths, GlobalConfig, HeroicSource, Runner, ReadyGame) {
+        let paths = paths(root);
+        let prefix = root.join("heroic-prefix");
+        fs::create_dir_all(prefix.join("drive_c/Games")).unwrap();
+        fs::write(
+            prefix.join("system.reg"),
+            "WINE REGISTRY Version 2\n#arch=win64\n",
+        )
+        .unwrap();
+        let exe = prefix.join("drive_c/Games/Game.exe");
+        fs::write(&exe, "game executable").unwrap();
+        let config = root.join("heroic");
+        fs::create_dir_all(config.join("sideload_apps")).unwrap();
+        fs::create_dir_all(config.join("GamesConfig")).unwrap();
+        fs::write(
+            config.join("config.json"),
+            format!(
+                r#"{{"defaultSettings":{{"winePrefix":"{}","wineVersion":{{"type":"wine","name":"System","bin":"wine"}}}}}}"#,
+                prefix.display()
+            ),
+        )
+        .unwrap();
+        fs::write(config.join("GamesConfig/a.json"), r#"{"a":{}}"#).unwrap();
+        fs::write(
+            config.join("sideload_apps/library.json"),
+            format!(
+                r#"{{"games":[{{"app_name":"a","title":"Alpha","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}}]}}"#,
+                exe.display()
+            ),
+        )
+        .unwrap();
+        let runner_root = root.join("runners");
+        let runner = fake_wine_runner(&runner_root, "fake");
+        let global = GlobalConfig {
+            defaults: wineo_core::config::Defaults {
+                runner_root: Some(runner_root.display().to_string()),
+                prefix_root: Some(root.join("prefixes").display().to_string()),
+                ..wineo_core::config::Defaults::default()
+            },
+            ..GlobalConfig::default()
+        };
+        let source = heroic_source(root);
+        let listing = source.list_candidates().unwrap();
+        let args = Args {
+            runner: Some("fake".to_owned()),
+            ..Args::default()
+        };
+        let (_, mut ready, _, _) = classify_candidates(
+            &paths,
+            &global,
+            &source,
+            &listing.candidates,
+            &[],
+            "fake",
+            &runner,
+            &args,
+        )
+        .unwrap();
+        assert_eq!(ready.len(), 1);
+        let game = ready.remove(0);
+        (paths, global, source, runner, game)
+    }
+
+    fn import_bulk_game(
+        root: &Path,
+        fake: Fake,
+    ) -> (anyhow::Result<Option<String>>, String, String, Paths) {
+        let (paths, global, source, runner, game) = bulk_fixture(root);
+        let lookups = std::cell::Cell::new(0);
+        let access = access(true, &lookups, fake);
+        let bulk = Bulk {
+            paths: &paths,
+            global: &global,
+            access: &access,
+            source: &source,
+            runner: &runner,
+            desktop: true,
+            art: Some(Key {
+                value: "k".into(),
+                source: wineo_core::steamgriddb::KeySource::Variable,
+            }),
+            verbose: false,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let result = import_one(&bulk, &game, &mut out, &mut err);
+        (
+            result,
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+            paths,
+        )
+    }
+
+    #[test]
+    fn bulk_art_uses_the_heroic_title_before_the_desktop_entry() {
+        let root = tempdir().unwrap();
+        let mut fake = Fake::default();
+        fake.search("Alpha", true);
+        fake.icon_only();
+        let (result, out, err, paths) = import_bulk_game(root.path(), fake);
+        result.unwrap();
+        assert!(
+            out.starts_with(
+                "alpha: art from SteamGridDB game 7, Hades (2020)\nicon: fetched SteamGridDB 1\n"
+            ),
+            "{out}"
+        );
+        assert_eq!(err, "");
+        assert!(paths.art_dir("alpha").join("icon.png").exists());
+        let entries: Vec<String> = fs::read_dir(paths.applications_dir())
+            .unwrap()
+            .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].contains("\nX-Wineo-Icon=art:"), "{}", entries[0]);
+    }
+
+    #[test]
+    fn a_failed_bulk_art_fetch_warns_without_failing_the_game() {
+        let root = tempdir().unwrap();
+        let (result, out, err, paths) = import_bulk_game(root.path(), Fake::default());
+        result.unwrap();
+        assert_eq!(out, "");
+        assert!(err.contains("warning: art fetch failed:"), "{err}");
+        assert!(paths.environment_config("alpha").exists());
     }
 }
