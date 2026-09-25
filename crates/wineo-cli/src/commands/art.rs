@@ -330,7 +330,6 @@ impl KeyCheck {
         }
     }
 
-    #[allow(dead_code, reason = "unguided new calls this from plan 0025 step 4 on")]
     /// Prints `skip_line` to stderr, styled as a warning when the lookup failed.
     pub fn print_skip(&self) {
         match (self, self.skip_line()) {
@@ -370,7 +369,6 @@ pub enum Pick<'a, I, W> {
     /// The numbered list, with a last entry that skips art.
     Ask(&'a mut Prompt<I, W>),
     /// The first result, for when nobody is there to pick, named on the writer.
-    #[allow(dead_code, reason = "unguided new calls this from plan 0025 step 4 on")]
     Top(&'a mut dyn Write),
 }
 

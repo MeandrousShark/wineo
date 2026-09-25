@@ -361,3 +361,31 @@ fn portable_art_says_nothing_about_desktop_entries() {
     assert_eq!(stderr(&removed), "");
     assert!(!f.root.path().join("data/applications").exists());
 }
+
+#[test]
+fn new_with_art_and_no_key_notes_it_and_succeeds() {
+    let f = Fixture::new();
+    let created = f.run(&["new", "-n", "hades", "--art"]);
+    assert_success(&created);
+    assert!(
+        stdout(&created).contains("Created environment hades"),
+        "{}",
+        stdout(&created)
+    );
+    assert_eq!(
+        stderr(&created)
+            .lines()
+            .filter(|line| line.contains("SteamGridDB"))
+            .collect::<Vec<_>>(),
+        ["note: run `wineo art key` to fetch art from SteamGridDB"]
+    );
+    assert!(!art(&f).join("art.toml").exists());
+
+    let plain = f.run(&["new", "-n", "zagreus"]);
+    assert_success(&plain);
+    assert!(
+        !stderr(&plain).contains("SteamGridDB") && !stdout(&plain).contains("SteamGridDB"),
+        "{}",
+        stderr(&plain)
+    );
+}

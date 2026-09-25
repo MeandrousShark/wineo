@@ -18,7 +18,7 @@ use wineo_core::runtime::Runtime;
 use wineo_core::supervisor::{Notice, Watched};
 use wineo_core::templates::Templates;
 
-use super::art::Access;
+use super::art::{Access, AutoFetch, KeyCheck, Pick};
 use super::{components, desktop, programs, setup};
 use crate::prompt::{self, Canceled, Prompt, Terminal};
 use crate::wizard::{self, Guided, Prefill};
@@ -55,6 +55,10 @@ pub struct Args {
     /// Run an installer after creating the environment
     #[arg(long, value_name = "PATH")]
     install_exe: Option<String>,
+
+    /// Fetch art from SteamGridDB, searching the environment's name
+    #[arg(long)]
+    art: bool,
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
@@ -161,6 +165,12 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         &environment.prefix(paths)?,
     )?;
     desktop::reconcile(paths, &global, &environment, Some(&runner), &prefix)?;
+    // Before the installer, so the pick list isn't left waiting behind it.
+    if args.art && fetch_art(paths, &global, &environment.name).is_err() {
+        let name = &environment.name;
+        eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
+        return Ok(ExitCode::from(CANCELED));
+    }
 
     let Some(program) = &args.install_exe else {
         println!(
@@ -287,6 +297,34 @@ fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
         other => other,
     }
+}
+
+/// Fetches art searching the environment's name, with the pick list when
+/// there is a terminal and the top match otherwise.
+fn fetch_art(paths: &Paths, global: &GlobalConfig, name: &str) -> Result<(), Canceled> {
+    let access = Access::steamgriddb(paths);
+    let key = match (access.check_key)() {
+        KeyCheck::Found(key) => key,
+        check => {
+            check.print_skip();
+            return Ok(());
+        }
+    };
+    let request = AutoFetch {
+        env: name,
+        term: name,
+        kinds: global.art.fetch,
+    };
+    let mut prompt = prompt::interactive()
+        .then(|| Terminal::open().ok())
+        .flatten()
+        .map(|input| Prompt::new(input, io::stdout()));
+    let mut stdout = io::stdout();
+    let pick = match &mut prompt {
+        Some(prompt) => Pick::Ask(prompt),
+        None => Pick::Top(&mut stdout),
+    };
+    access.fetch(paths, &key, &request, pick, &mut io::stderr())
 }
 
 /// The terminal may already be gone after a SIGHUP, and a failed write must
