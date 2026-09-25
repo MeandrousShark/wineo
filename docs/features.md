@@ -74,10 +74,10 @@ These change the config schema or core entry points the GUI builds on, so
 they land first.
 
 1. Both lingering wineserver fixes.
-2. Add `wineo validate`.
-3. Make prefix deletion recoverable with trash and `prune`.
-4. Add Wine Wayland and Gamescope/MangoHud support, including supported Heroic import settings.
-5. Add declarative winetricks dependencies.
-6. Add tags and `wineo list --tag`.
-7. Add native Linux games.
+2. Add native Linux games, so the features after it know some environments have no prefix.
+3. Add `wineo validate`.
+4. Make prefix deletion recoverable with trash and `prune`.
+5. Add Wine Wayland and Gamescope/MangoHud support, including supported Heroic import settings.
+6. Add declarative winetricks dependencies.
+7. Add tags and `wineo list --tag`.
 8. Complete the GUI-facing core API review and resolve any blockers it finds.
