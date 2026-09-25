@@ -11,9 +11,9 @@ use crate::edit;
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
 use crate::name;
-use crate::operation::Locks;
+use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
-use crate::prefix;
+use crate::prefix::{self, BuildPlan};
 use crate::runner::Runner;
 use crate::templates::Template;
 
@@ -151,19 +151,7 @@ impl Environment {
             arch
         } else {
             let arch = new.arch.unwrap_or(global.defaults.arch);
-            let created = prefix::prepare_dir(&dir)?;
-            on_create_prefix(&dir);
-            let runtime = paths.runtime_dir(&new.name);
-            let result = fs::create_dir_all(&runtime)
-                .context(|| format!("failed to create {}", runtime.display()))
-                .and_then(|()| prefix::create(runner, &dir, arch, &runtime.join("create.log")));
-            if let Err(err) = result {
-                if created {
-                    // Best effort, the error that got us here matters more.
-                    let _ = fs::remove_dir_all(&dir);
-                }
-                return Err(err);
-            }
+            build_new_prefix(paths, &new.name, runner, &dir, arch, on_create_prefix)?;
             arch
         };
 
@@ -182,6 +170,43 @@ impl Environment {
 
     pub fn prefix(&self, paths: &Paths) -> Result<PathBuf> {
         paths.config_path(&self.config.prefix)
+    }
+
+    /// Builds the prefix of an environment whose config already exists, when
+    /// `prefix::build_plan` says it is safe to. Never writes the config.
+    /// `runner` is the one the config names, already resolved. Returns true if
+    /// it built one, false if the prefix was already there.
+    /// `on_create_prefix` runs just before the prefix is initialized.
+    pub fn build_prefix(
+        &self,
+        paths: &Paths,
+        global: &GlobalConfig,
+        runner: &Runner,
+        empty_confirmed: bool,
+        on_create_prefix: impl FnOnce(&Path),
+    ) -> Result<bool> {
+        let dir = self.prefix(paths)?;
+        let root = global.prefix_root(paths)?;
+        let plan = || prefix::build_plan(paths, &root, runner, &dir, empty_confirmed);
+        if plan()? == BuildPlan::Ready {
+            return Ok(false);
+        }
+        let _guard = Locks::new(paths).acquire(Operation::Create, &self.name, &[&dir])?;
+        // Another command could have removed the environment or built the
+        // prefix before the lock was taken.
+        Self::ensure_exists(paths, &self.name)?;
+        if plan()? == BuildPlan::Ready {
+            return Ok(false);
+        }
+        build_new_prefix(
+            paths,
+            &self.name,
+            runner,
+            &dir,
+            self.config.arch,
+            on_create_prefix,
+        )?;
+        Ok(true)
     }
 
     /// Writes `heroic_id` onto an environment's config, keeping the rest of
@@ -328,6 +353,32 @@ fn adopted_arch(dir: &Path, fallback: Arch, requested: Option<Arch>) -> Result<A
         (Some(actual), _) => Ok(actual),
         (None, _) => Ok(fallback),
     }
+}
+
+/// Initializes a prefix in `dir`, logging to the environment's create.log. A
+/// failed build removes `dir` only if this made it.
+fn build_new_prefix(
+    paths: &Paths,
+    name: &str,
+    runner: &Runner,
+    dir: &Path,
+    arch: Arch,
+    on_create_prefix: impl FnOnce(&Path),
+) -> Result<()> {
+    let created = prefix::prepare_dir(dir)?;
+    on_create_prefix(dir);
+    let runtime = paths.runtime_dir(name);
+    let result = fs::create_dir_all(&runtime)
+        .context(|| format!("failed to create {}", runtime.display()))
+        .and_then(|()| prefix::create(runner, dir, arch, &runtime.join("create.log")));
+    if let Err(err) = result {
+        if created {
+            // Best effort, the error that got us here matters more.
+            let _ = fs::remove_dir_all(dir);
+        }
+        return Err(err);
+    }
+    Ok(())
 }
 
 fn write_new(path: &Path, contents: &str) -> Result<()> {
@@ -607,6 +658,172 @@ mod tests {
             Err(Error::NotAPrefix(_))
         ));
         assert!(dir.join("notes.txt").exists());
+    }
+
+    fn hand_written(paths: &Paths, name: &str, prefix: &Path) -> (Environment, String) {
+        let path = paths.environment_config(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let text = format!(
+            "# mine\nprefix = \"{}\"\nrunner = \"wine\"\narch = \"win32\"\n",
+            prefix.display()
+        );
+        fs::write(&path, &text).unwrap();
+        (Environment::load(paths, name).unwrap(), text)
+    }
+
+    /// Stands in for wine, which the fake runner doesn't run, by writing the
+    /// registry file `prefix::create` checks for.
+    fn wine_builds_it(dir: &Path) {
+        fs::write(dir.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+    }
+
+    #[test]
+    fn build_prefix_builds_once_and_never_writes_the_config() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let global = GlobalConfig::default();
+        let prefix = global.prefix_root(&paths).unwrap().join("palworld");
+        let (env, text) = hand_written(&paths, "palworld", &prefix);
+        let config = paths.environment_config("palworld");
+        let before = fs::metadata(&config).unwrap().modified().unwrap();
+
+        let mut announced = None;
+        let built = env
+            .build_prefix(&paths, &global, &Runner::fake("wine"), false, |dir| {
+                announced = Some(dir.to_owned());
+                wine_builds_it(dir);
+            })
+            .unwrap();
+        assert!(built);
+        assert_eq!(announced.as_deref(), Some(prefix.as_path()));
+        assert!(prefix::is_prefix(&prefix));
+        assert!(paths.runtime_dir("palworld").join("create.log").exists());
+        assert_eq!(fs::read_to_string(&config).unwrap(), text);
+        assert_eq!(fs::metadata(&config).unwrap().modified().unwrap(), before);
+
+        let built = env
+            .build_prefix(&paths, &global, &Runner::fake("wine"), false, |_| {
+                panic!("already built")
+            })
+            .unwrap();
+        assert!(!built);
+        assert_eq!(fs::read_to_string(&config).unwrap(), text);
+    }
+
+    #[test]
+    fn failed_build_removes_a_dir_it_made() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let global = GlobalConfig::default();
+        let prefix = global.prefix_root(&paths).unwrap().join("palworld");
+        let (env, text) = hand_written(&paths, "palworld", &prefix);
+
+        let err = env
+            .build_prefix(&paths, &global, &Runner::fake("wine"), false, |_| {})
+            .unwrap_err();
+        assert!(matches!(err, Error::PrefixCreation { .. }), "{err}");
+        assert!(!prefix.exists());
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("palworld")).unwrap(),
+            text
+        );
+    }
+
+    #[test]
+    fn failed_build_keeps_an_empty_dir_it_found() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let global = GlobalConfig::default();
+        let prefix = global.prefix_root(&paths).unwrap().join("palworld");
+        fs::create_dir_all(&prefix).unwrap();
+        let (env, _) = hand_written(&paths, "palworld", &prefix);
+
+        let err = env
+            .build_prefix(&paths, &global, &Runner::fake("wine"), false, |_| {})
+            .unwrap_err();
+        assert!(matches!(err, Error::PrefixCreation { .. }), "{err}");
+        assert!(prefix.is_dir());
+    }
+
+    #[test]
+    fn build_prefix_refuses_before_touching_anything() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let global = GlobalConfig::default();
+        let prefix = root.path().join("mnt/game-ssd");
+        fs::create_dir_all(&prefix).unwrap();
+        let (env, _) = hand_written(&paths, "palworld", &prefix);
+
+        assert!(matches!(
+            env.build_prefix(&paths, &global, &Runner::fake("wine"), false, |_| {
+                panic!("refused")
+            }),
+            Err(Error::EmptyPrefix(_))
+        ));
+        assert!(!paths.runtime_dir("palworld").exists());
+
+        let built = env
+            .build_prefix(&paths, &global, &Runner::fake("wine"), true, wine_builds_it)
+            .unwrap();
+        assert!(built);
+        assert!(prefix::is_prefix(&prefix));
+    }
+
+    #[test]
+    fn build_prefix_reports_a_busy_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let global = GlobalConfig::default();
+        let prefix = global.prefix_root(&paths).unwrap().join("palworld");
+        let (env, _) = hand_written(&paths, "palworld", &prefix);
+
+        let _held = Locks::new(&paths)
+            .acquire(Operation::Create, "palworld", &[&prefix])
+            .unwrap();
+        assert!(matches!(
+            env.build_prefix(&paths, &global, &Runner::fake("wine"), false, |_| {
+                panic!("busy")
+            }),
+            Err(Error::Busy { .. })
+        ));
+        assert!(!prefix.exists());
+    }
+
+    #[test]
+    fn build_prefix_refuses_a_removed_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let global = GlobalConfig::default();
+        let prefix = global.prefix_root(&paths).unwrap().join("palworld");
+        let (env, _) = hand_written(&paths, "palworld", &prefix);
+        fs::remove_file(paths.environment_config("palworld")).unwrap();
+
+        assert!(matches!(
+            env.build_prefix(&paths, &global, &Runner::fake("wine"), false, |_| {
+                panic!("removed")
+            }),
+            Err(Error::UnknownEnvironment(_))
+        ));
+        assert!(!prefix.exists());
+    }
+
+    #[test]
+    fn failed_create_removes_the_dir_it_made() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let prefix = root.path().join("home/prefixes/fails");
+
+        let err = Environment::create(
+            &paths,
+            &GlobalConfig::default(),
+            &Runner::fake("wine"),
+            &new("fails", &prefix),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::PrefixCreation { .. }), "{err}");
+        assert!(!prefix.exists());
+        assert!(!paths.environment_config("fails").exists());
     }
 
     #[test]
