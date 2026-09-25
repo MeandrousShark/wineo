@@ -25,7 +25,9 @@ Symlinks, hardlinks, and file metadata are preserved. Runtime records, logs,
 import logs, and desktop files are not copied.
 
 The source and any external launcher using it must be idle during the copy.
-Wineo checks its own operations, but external launchers do not use Wineo locks.
+Before reviewing, wineo waits for wine to exit in the source prefix, since
+wineserver lingers for a few seconds after the last program exits. Wineo checks
+its own operations, but external launchers do not use Wineo locks.
 Clone does not run Wine or launch the game. External game folders and other
 dependencies stay in place and are listed during review.
 

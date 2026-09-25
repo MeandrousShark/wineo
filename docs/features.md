@@ -49,8 +49,6 @@ See [Fetching during new and import](art.md#fetching-during-new-and-import) for 
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| Wait for a lingering wineserver before snapshots | Core | **2** | 0017 | `snapshot create` right after `exec` fails with a vague "reviewed environment changed; inspect it again" | wineserver stays up about 3 seconds after the program exits and keeps writing the registry, so fingerprints differ. Wait for idle first, or say the prefix is still busy. Found in 0019's real-wine smoke test; XDG does the same. |
-| Wait for a lingering wineserver before `rm --delete-prefix` | Core | **2** | | Deleting under a live wineserver makes it fail to save the registry | Seen as `wineserver: could not save registry branch to system.reg` after rm. `runner.wait_idle` already exists. Found in 0019's real-wine smoke test. |
 | `wineo validate` | Core | **2** | 0018 | Find config mistakes before a launch fails, and offer safe fixes | Checks syntax, unknown keys, and `schema_version`, plus that prefixes, runners, target executables, and working dirs exist. Also stale locks, lost runs, and dangling desktop entries. Only safe fixes are offered; an unsupported version or a missing prefix is reported, never rewritten. |
 | `--dry-run` for `import` and non-guided `new` | Automation | **2** | | Preview what would be created, copied, or registered without touching disk | Import already builds a review before writing, which a dry run could print and stop at. |
 | Pre-launch and post-exit hooks | Core | **2** | | Run a user command before a target starts or after it exits, e.g. mounting a drive or syncing saves | The supervisor already owns the process lifetime, so post-exit fits there. Needs decisions on failure handling, env vars passed in, and per-environment versus per-target hooks. |
@@ -59,7 +57,7 @@ See [Fetching during new and import](art.md#fetching-during-new-and-import) for 
 | Wine Wayland support | Compatibility | **2** | 0018 | Make the native Wayland driver an opt-in launch setting instead of requiring manual environment variables | Define behavior for supported Wine and Proton runners and report unsupported combinations. Heroic import currently omits its Wine Wayland setting; carry it over when supported. GE-Proton can already be tried with `env.PROTON_ENABLE_WAYLAND=1`. |
 | ProtonDB lookup in the CLI | UX | **3** | | Check a game's compatibility information before launching or changing runners | Resolve a wineo environment to the right ProtonDB game, handle missing matches, and make the result reusable by the future GUI. The command shape and online behavior need a plan. |
 | Trash prefixes instead of deleting, plus `prune` | Portability/Data | **2** | | Make `rm --delete-prefix` recoverable, with `wineo prune` doing the real delete | Needs a trash location (XDG Trash or wineo's own), a restore path, and rules for snapshots and portable folders. |
-| GUI-facing core API review | Core | **2** | GUI entry criteria 1-8 | Keep GUI actions on shared core operations | Review setup, import, launch, stop, and validation entry points for useful progress, cancellation, and errors. Resolve blockers found in the review before GUI work starts. |
+| GUI-facing core API review | Core | **2** | GUI entry criteria 1-7 | Keep GUI actions on shared core operations | Review setup, import, launch, stop, and validation entry points for useful progress, cancellation, and errors. Resolve blockers found in the review before GUI work starts. |
 | Playtime statistics | UX | **2** | | Track launch count, total and per-session play time, and when a game was first and last played, for `status`, `list`, and a GUI library | The supervisor already owns the process lifetime, so it can record start and exit. Stats aren't config, so they don't touch the schema. Store them under `$XDG_DATA_HOME/wineo` (and the portable folder) rather than `$XDG_STATE_HOME`, since people often skip `~/.local/state` in backups and lost playtime can't be rebuilt; clone, copy, and rm rules would follow art's. Needs decisions on per-target versus per-environment totals, how a lost or crashed run counts, JSON output, and extras like longest session or recently played sorting. |
 | Tags and `wineo list --tag` | UX | **2** | 0018 | Sort a long environment list into groups like game, work, or creative | e.g. `tags = ["game"]` in the environment config. Could also filter `status` and completion. |
 | Manpages | UX | **3** | 0015 | `man wineo` is the first thing many Linux users try | Generate them from the clap definitions with `clap_mangen`, like completions, so they never drift from `--help`. The PKGBUILD installs them to `/usr/share/man/man1`. |
@@ -78,12 +76,11 @@ See [Fetching during new and import](art.md#fetching-during-new-and-import) for 
 These change the config schema or core entry points the GUI builds on, so
 they land first.
 
-1. Both lingering wineserver fixes.
-2. Add native Linux games, so the features after it know some environments have no prefix.
-3. Add `wineo validate`.
-4. Make prefix deletion recoverable with trash and `prune`.
-5. Add Wine Wayland and Gamescope/MangoHud support, including supported Heroic import settings.
-6. Add declarative winetricks dependencies.
-7. Add tags and `wineo list --tag`.
-8. Add playtime statistics.
-9. Complete the GUI-facing core API review and resolve any blockers it finds.
+1. Add native Linux games, so the features after it know some environments have no prefix.
+2. Add `wineo validate`.
+3. Make prefix deletion recoverable with trash and `prune`.
+4. Add Wine Wayland and Gamescope/MangoHud support, including supported Heroic import settings.
+5. Add declarative winetricks dependencies.
+6. Add tags and `wineo list --tag`.
+7. Add playtime statistics.
+8. Complete the GUI-facing core API review and resolve any blockers it finds.

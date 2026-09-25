@@ -54,8 +54,12 @@ records, logs, import logs, desktop files, or an environment's art store; see
 [Artwork](art.md). A restore that drops a target keeps that target's art on
 disk, since a later restore may bring the target back; `wineo art list` warns
 about it. External files remain in place.
-Wineo checks its own locks and run state, but external launchers do not use
-Wineo locks; stop them before creating or restoring a snapshot. Snapshots are
+wineserver stays up for a few seconds after the last program exits and keeps
+writing the registry, so `snapshot create` and `snapshot restore` first wait
+for wine to exit in the prefix, printing `Waiting for wine to exit in NAME`
+if it takes more than a moment. Wineo checks its own locks and run state, but
+external launchers do not use Wineo locks; stop them before creating or
+restoring a snapshot. Snapshots are
 stored beside the live prefix and are not backups against filesystem or device
 failure. They do not support automatic retention or cross-filesystem restore.
 
