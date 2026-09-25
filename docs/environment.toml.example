@@ -1,5 +1,6 @@
-# Example environments/<name>.toml. Copy it, or use `wineo new`, then fill
-# in the required keys and uncomment whatever else applies.
+# Example environment config. Copy it to
+# ~/.config/wineo/environments/<name>.toml, fill in the required keys, and
+# uncomment whatever else applies.
 
 schema_version = 1
 
@@ -39,14 +40,14 @@ arch = "win64"
 # [env]
 # DXVK_HUD = "1"
 
-# One [targets.<name>] table per launchable program, run with `wineo run
-# <name>`. Only one target can be `default`.
+# One table per program to launch, started with `wineo start <env>.<target>`.
+# Only one target can be the default.
 
 # [targets.game]
 # exe = 'C:\Program Files\Palworld\Palworld.exe'  # Required.
-# args = ["-nosplash"]  # Extra arguments, appended after any given on the command line.
+# args = ["-nosplash"]  # Arguments for the exe. Any given on the command line come after.
 # cwd = 'C:\Program Files\Palworld'  # Default: the exe's own directory.
-# default = true  # Run when `wineo run` or `wineo exec` gets no target name.
+# default = true  # What `wineo start <env>` launches when there are several targets.
 # gamemode = true  # Overrides the environment's own gamemode setting for this target.
 # desktop = true  # Whether this target gets a desktop entry. Default: false.
 # name = "Palworld"  # What the desktop entry is called. Default: the target's own name.
