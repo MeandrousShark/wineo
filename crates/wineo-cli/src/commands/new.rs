@@ -18,6 +18,7 @@ use wineo_core::runtime::Runtime;
 use wineo_core::supervisor::{Notice, Watched};
 use wineo_core::templates::Templates;
 
+use super::art::Access;
 use super::{components, desktop, programs, setup};
 use crate::prompt::{self, Canceled, Prompt, Terminal};
 use crate::wizard::{self, Guided, Prefill};
@@ -273,7 +274,8 @@ fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     };
     let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
     let mut guided = Guided { registered: None };
-    match wizard::run(paths, &global, &prefill, &mut prompt, &mut guided) {
+    let access = Access::steamgriddb(paths);
+    match wizard::run(paths, &global, &prefill, &mut prompt, &mut guided, &access) {
         Err(err) if err.is::<Canceled>() => {
             match guided.registered {
                 Some(name) => {

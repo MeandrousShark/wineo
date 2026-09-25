@@ -310,17 +310,9 @@ fn game_name(game: &Game) -> String {
 }
 
 /// Printed by `new` and `import` in place of offering art when no key is saved.
-#[allow(
-    dead_code,
-    reason = "new and import call these from plan 0025 step 3 on"
-)]
 pub const NO_KEY_NOTE: &str = "note: run `wineo art key` to fetch art from SteamGridDB";
 
 /// Whether `new` and `import` can offer art.
-#[allow(
-    dead_code,
-    reason = "new and import call these from plan 0025 step 3 on"
-)]
 pub enum KeyCheck {
     Found(Key),
     Missing,
@@ -328,10 +320,6 @@ pub enum KeyCheck {
     Failed(anyhow::Error),
 }
 
-#[allow(
-    dead_code,
-    reason = "new and import call these from plan 0025 step 3 on"
-)]
 impl KeyCheck {
     /// The unstyled line to print instead of offering art, or None with a key.
     pub fn skip_line(&self) -> Option<String> {
@@ -342,6 +330,7 @@ impl KeyCheck {
         }
     }
 
+    #[allow(dead_code, reason = "unguided new calls this from plan 0025 step 4 on")]
     /// Prints `skip_line` to stderr, styled as a warning when the lookup failed.
     pub fn print_skip(&self) {
         match (self, self.skip_line()) {
@@ -353,10 +342,6 @@ impl KeyCheck {
 }
 
 /// Looks up the SteamGridDB key without checking it against the API.
-#[allow(
-    dead_code,
-    reason = "new and import call these from plan 0025 step 3 on"
-)]
 pub fn check_key(paths: &Paths) -> KeyCheck {
     check_key_with(paths, |var| std::env::var_os(var), &*keyring())
 }
@@ -374,10 +359,6 @@ fn check_key_with(
 }
 
 /// Art `new` and `import` fetch for the environment they made.
-#[allow(
-    dead_code,
-    reason = "new and import call these from plan 0025 step 3 on"
-)]
 pub struct AutoFetch<'a> {
     pub env: &'a str,
     pub term: &'a str,
@@ -385,39 +366,71 @@ pub struct AutoFetch<'a> {
 }
 
 /// How the game is picked from the search results.
-#[allow(
-    dead_code,
-    reason = "new and import call these from plan 0025 step 3 on"
-)]
 pub enum Pick<'a, I, W> {
     /// The numbered list, with a last entry that skips art.
     Ask(&'a mut Prompt<I, W>),
-    /// The first result, for when nobody is there to pick.
-    Top,
+    /// The first result, for when nobody is there to pick, named on the writer.
+    #[allow(dead_code, reason = "unguided new calls this from plan 0025 step 4 on")]
+    Top(&'a mut dyn Write),
 }
 
-/// Fetches art into the environment's store with `Mode::Fill`. Any failure is
-/// a warning on `err` and kinds already stored stay, so art never changes how
+/// The key lookup and connection guided flows fetch art with, which tests
+/// stand in for.
+pub struct Access<'a> {
+    pub check_key: Box<dyn Fn() -> KeyCheck + 'a>,
+    pub transport: Box<dyn Fn() -> anyhow::Result<Box<dyn Transport>> + 'a>,
+}
+
+impl<'a> Access<'a> {
+    pub fn steamgriddb(paths: &'a Paths) -> Self {
+        Self {
+            check_key: Box::new(|| check_key(paths)),
+            transport: Box::new(|| Ok(Box::new(Https::new()?))),
+        }
+    }
+
+    /// `fetch_new` over this access's transport, which failing to set up is
+    /// one more warning.
+    pub fn fetch<I: Input, W: Write>(
+        &self,
+        paths: &Paths,
+        key: &Key,
+        request: &AutoFetch,
+        pick: Pick<I, W>,
+        err: &mut dyn Write,
+    ) -> Result<(), Canceled> {
+        match (self.transport)() {
+            Ok(transport) => fetch_new(paths, &*transport, key, request, pick, err),
+            Err(error) => {
+                warn_failed(&error, err);
+                Ok(())
+            }
+        }
+    }
+}
+
+fn warn_failed(error: &anyhow::Error, err: &mut dyn Write) {
+    let line = format!("warning: art fetch failed: {error:#}");
+    let _ = writeln!(err, "{}", style::warning_stderr(line));
+}
+
+/// Fetches art into the environment's store with `Mode::Fill`, printing its
+/// lines through the prompt or the `Top` writer. Any failure is a warning on
+/// `err` and kinds already stored stay, so art never changes how
 /// `new` or `import` ends. Only canceling the pick list is an error.
-#[allow(
-    dead_code,
-    reason = "new and import call these from plan 0025 step 3 on"
-)]
 pub fn fetch_new<I: Input, W: Write>(
     paths: &Paths,
     transport: &dyn Transport,
     key: &Key,
     request: &AutoFetch,
     pick: Pick<I, W>,
-    out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), Canceled> {
-    match try_fetch_new(paths, transport, key, request, pick, out) {
+    match try_fetch_new(paths, transport, key, request, pick) {
         Ok(()) => Ok(()),
         Err(error) if error.is::<Canceled>() => Err(Canceled),
         Err(error) => {
-            let line = format!("warning: art fetch failed: {error:#}");
-            let _ = writeln!(err, "{}", style::warning_stderr(line));
+            warn_failed(&error, err);
             Ok(())
         }
     }
@@ -429,7 +442,6 @@ fn try_fetch_new<I: Input, W: Write>(
     key: &Key,
     request: &AutoFetch,
     pick: Pick<I, W>,
-    out: &mut dyn Write,
 ) -> anyhow::Result<()> {
     let env = request.env;
     let api = Api::new(transport, &key.value);
@@ -437,15 +449,15 @@ fn try_fetch_new<I: Input, W: Write>(
     let Some(top) = games.first() else {
         bail!("no SteamGridDB games match `{}`", request.term);
     };
-    let game = match pick {
-        Pick::Top => {
+    let (game, out): (u64, &mut dyn Write) = match pick {
+        Pick::Top(out) => {
             writeln!(
                 out,
                 "{env}: art from SteamGridDB game {}, {}",
                 top.id,
                 game_name(top)
             )?;
-            top.id
+            (top.id, out)
         }
         Pick::Ask(prompt) => {
             let entries = games
@@ -454,10 +466,10 @@ fn try_fetch_new<I: Input, W: Write>(
                 .chain([("None of these, skip art".to_owned(), None)]);
             let choices = numbered(entries);
             match prompt.choose("Which game is it?", "Game", &choices, Some("1"), false)? {
-                Reply::Value(Some(game)) => game,
+                Reply::Value(Some(game)) => (game, prompt.writer()),
                 Reply::Value(None) => {
                     writeln!(
-                        out,
+                        prompt.writer(),
                         "Skipped art. Fetch later with: wineo art fetch {env} --search <term>"
                     )?;
                     return Ok(());
@@ -604,35 +616,25 @@ fn source(source: Option<&Source>) -> String {
     }
 }
 
+/// A SteamGridDB stand-in for tests here and in the flows that fetch art.
 #[cfg(test)]
-mod tests {
+pub(crate) mod fake {
     use std::collections::HashMap;
-    use std::ffi::OsString;
-    use std::fs;
     use std::io::{Cursor, Read};
 
-    use wineo_core::download::Response;
-    use wineo_core::steamgriddb::{Filters, KeySource, KeyringError, NoKeyring};
+    use anyhow::bail;
+    use wineo_core::art::Kind;
+    use wineo_core::download::{Response, Transport};
+    use wineo_core::steamgriddb::{self, Api, Filters};
 
-    use super::*;
-    use crate::prompt::Script;
-
-    #[test]
-    fn a_spot_splits_at_its_first_dot() {
-        assert_eq!(split("hades"), ("hades", None));
-        assert_eq!(split("hades.server"), ("hades", Some("server")));
-        assert_eq!(split("hades.a.b"), ("hades", Some("a.b")));
-        assert_eq!(split("hades."), ("hades", Some("")));
-    }
-
-    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+    pub(crate) const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
 
     /// Canned answers by URL. Anything else is a failed request.
-    #[derive(Default)]
-    struct Fake(HashMap<String, (u16, Vec<u8>)>);
+    #[derive(Default, Clone)]
+    pub(crate) struct Fake(pub(crate) HashMap<String, (u16, Vec<u8>)>);
 
     impl Fake {
-        fn page(&mut self, kind: Kind, ids: &[u64]) {
+        pub(crate) fn page(&mut self, kind: Kind, ids: &[u64]) {
             let data: Vec<String> = ids
                 .iter()
                 .map(|id| format!("{{\"id\":{id},\"url\":\"https://cdn.example/{id}\"}}"))
@@ -649,7 +651,7 @@ mod tests {
         }
 
         /// Hades, 2020, as game 7, and Hades II without a year as game 8.
-        fn search(&mut self, term: &str, found: bool) {
+        pub(crate) fn search(&mut self, term: &str, found: bool) {
             let data = if found {
                 r#"[{"id":7,"name":"Hades","release_date":1600000000},{"id":8,"name":"Hades II"}]"#
             } else {
@@ -665,7 +667,7 @@ mod tests {
         }
 
         /// An icon for game 7 and nothing for the other kinds.
-        fn icon_only(&mut self) {
+        pub(crate) fn icon_only(&mut self) {
             self.page(Kind::Icon, &[1]);
             self.0
                 .insert("https://cdn.example/1".into(), (200, PNG.to_vec()));
@@ -689,6 +691,26 @@ mod tests {
                 body: Box::new(Cursor::new(body.clone())),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::fs;
+
+    use wineo_core::steamgriddb::{KeySource, KeyringError, NoKeyring};
+
+    use super::fake::{Fake, PNG};
+    use super::*;
+    use crate::prompt::Script;
+
+    #[test]
+    fn a_spot_splits_at_its_first_dot() {
+        assert_eq!(split("hades"), ("hades", None));
+        assert_eq!(split("hades.server"), ("hades", Some("server")));
+        assert_eq!(split("hades.a.b"), ("hades", Some("a.b")));
+        assert_eq!(split("hades."), ("hades", Some("")));
     }
 
     fn paths() -> (tempfile::TempDir, Paths) {
@@ -797,7 +819,6 @@ mod tests {
         result: Result<(), Canceled>,
         out: String,
         err: String,
-        prompt: Option<String>,
     }
 
     fn fetch_new_with(
@@ -815,14 +836,16 @@ mod tests {
         let mut prompt = answers.map(|answers| Prompt::new(Script::new(answers), Vec::new()));
         let pick = match &mut prompt {
             Some(prompt) => Pick::Ask(prompt),
-            None => Pick::Top,
+            None => Pick::Top(&mut out),
         };
-        let result = fetch_new(paths, fake, &key(), &request, pick, &mut out, &mut err);
+        let result = fetch_new(paths, fake, &key(), &request, pick, &mut err);
+        if let Some(prompt) = prompt {
+            out = prompt.output().clone();
+        }
         Outcome {
             result,
             out: String::from_utf8(out).unwrap(),
             err: String::from_utf8(err).unwrap(),
-            prompt: prompt.map(|prompt| String::from_utf8_lossy(prompt.output()).into_owned()),
         }
     }
 
@@ -890,14 +913,17 @@ mod tests {
         fake.icon_only();
         let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, Some(&["3"]));
         assert!(outcome.result.is_ok());
-        let prompt = outcome.prompt.unwrap();
-        assert!(prompt.contains("1) Hades (2020), 7"), "{prompt}");
-        assert!(prompt.contains("2) Hades II, 8"), "{prompt}");
-        assert!(prompt.contains("3) None of these, skip art"), "{prompt}");
-        assert_eq!(
-            outcome.out,
-            "Skipped art. Fetch later with: wineo art fetch hades --search <term>\n"
+        let out = &outcome.out;
+        assert!(out.contains("1) Hades (2020), 7"), "{out}");
+        assert!(out.contains("2) Hades II, 8"), "{out}");
+        assert!(out.contains("3) None of these, skip art"), "{out}");
+        assert!(
+            out.ends_with(
+                "Game [1]: Skipped art. Fetch later with: wineo art fetch hades --search <term>\n"
+            ),
+            "{out}"
         );
+        assert!(!out.contains("icon:"), "{out}");
         assert_eq!(art::saved_game(&paths, "hades").unwrap(), None);
         assert!(!paths.art_dir("hades").join("icon.png").exists());
     }
@@ -911,7 +937,9 @@ mod tests {
         let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, Some(&["1"]));
         assert!(outcome.result.is_ok());
         assert!(
-            outcome.out.starts_with("icon: fetched SteamGridDB 1\n"),
+            outcome
+                .out
+                .contains("Game [1]: icon: fetched SteamGridDB 1\n"),
             "{}",
             outcome.out
         );
@@ -985,7 +1013,6 @@ mod tests {
             "{}",
             outcome.err
         );
-        assert_eq!(outcome.prompt.unwrap(), "");
         assert_eq!(art::saved_game(&paths, "hades").unwrap(), None);
     }
 

@@ -188,6 +188,11 @@ impl<I: Input, W: Write> Prompt<I, W> {
         &mut self.input
     }
 
+    /// Where the conversation is written, for output that isn't a question.
+    pub fn writer(&mut self) -> &mut W {
+        &mut self.out
+    }
+
     #[cfg(test)]
     pub fn output(&self) -> &W {
         &self.out

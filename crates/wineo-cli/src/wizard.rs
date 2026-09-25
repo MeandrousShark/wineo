@@ -17,10 +17,12 @@ use wineo_core::prefix;
 use wineo_core::programs::{Program, Source};
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
+use wineo_core::steamgriddb::Key;
 use wineo_core::targets::Batch;
 use wineo_core::templates::{NEWEST_PROTON, Template, Templates};
 use wineo_core::winpath;
 
+use crate::commands::art::{Access, AutoFetch, KeyCheck, Pick};
 use crate::commands::setup::{self, Ran};
 use crate::commands::{components, desktop};
 use crate::picker::{self, Place};
@@ -53,6 +55,7 @@ enum Step {
     Location,
     Settings,
     How,
+    Art,
     Review,
 }
 
@@ -67,6 +70,11 @@ struct Answers {
     /// prefix may not quietly override.
     arch_asked: bool,
     how: Option<How>,
+    /// The search term, or None for no art.
+    art: Option<String>,
+    /// Whether the art question was answered, so going back to it starts
+    /// from that answer.
+    art_asked: bool,
 }
 
 /// What guided creation came to, for the exit code and the last words.
@@ -82,6 +90,7 @@ pub fn run<I: Input, W: Write>(
     prefill: &Prefill,
     prompt: &mut Prompt<I, W>,
     guided: &mut Guided,
+    access: &Access,
 ) -> anyhow::Result<ExitCode> {
     let templates = Templates::new(paths);
     let template = match &prefill.template {
@@ -97,7 +106,11 @@ pub fn run<I: Input, W: Write>(
         dir: prefill.dir.clone(),
         runner: prefill.runner.clone(),
         how: prefill.install_exe.clone().map(How::Installer),
+        art: None,
+        art_asked: false,
     };
+    // Looked up once, so going back and forth never raises a keyring prompt again.
+    let mut key: Option<Option<Key>> = None;
     // A template from the command line isn't asked about, but going back
     // still reaches the question.
     let mut step = if prefill.template.is_some() {
@@ -146,12 +159,41 @@ pub fn run<I: Input, W: Write>(
             Step::How => match ask_how(prompt, paths, &answers)? {
                 Reply::Value(how) => {
                     answers.how = Some(how);
-                    step = Step::Review;
+                    step = Step::Art;
                 }
                 Reply::Back => step = Step::Settings,
             },
+            Step::Art => {
+                let found = match &key {
+                    Some(found) => found,
+                    None => {
+                        let check = (access.check_key)();
+                        if let Some(line) = check.skip_line() {
+                            prompt.say(line)?;
+                        }
+                        key.insert(match check {
+                            KeyCheck::Found(found) => Some(found),
+                            KeyCheck::Missing | KeyCheck::Failed(_) => None,
+                        })
+                    }
+                };
+                if found.is_none() {
+                    step = Step::Review;
+                    continue;
+                }
+                let name = answers.name.as_deref().expect("named before this");
+                match ask_art(prompt, name, &answers)? {
+                    Reply::Value(term) => {
+                        answers.art = term;
+                        answers.art_asked = true;
+                        step = Step::Review;
+                    }
+                    Reply::Back => step = Step::How,
+                }
+            }
             Step::Review => match review(prompt, paths, global, &answers)? {
                 Reply::Value(chosen) => break chosen,
+                Reply::Back if key.as_ref().is_some_and(Option::is_some) => step = Step::Art,
                 Reply::Back => step = Step::How,
             },
         }
@@ -159,6 +201,7 @@ pub fn run<I: Input, W: Write>(
 
     let name = answers.name.clone().expect("named before the review");
     let how = answers.how.clone().expect("chosen before the review");
+    let art = key.flatten().zip(answers.art);
     let template = answers
         .template
         .map(|(_, template)| template.for_runner(&runner).0);
@@ -167,6 +210,7 @@ pub fn run<I: Input, W: Write>(
         global,
         prompt,
         guided,
+        access,
         Creating {
             name,
             dir,
@@ -174,8 +218,47 @@ pub fn run<I: Input, W: Write>(
             arch,
             template,
             how,
+            art,
         },
     )
+}
+
+/// Whether to fetch art, and the search for it. None is no art.
+fn ask_art<I: Input, W: Write>(
+    prompt: &mut Prompt<I, W>,
+    name: &str,
+    answers: &Answers,
+) -> anyhow::Result<Reply<Option<String>>> {
+    let choices = numbered([("Yes".to_owned(), true), ("No".to_owned(), false)]);
+    loop {
+        let default = if answers.art_asked && answers.art.is_none() {
+            "2"
+        } else {
+            "1"
+        };
+        match prompt.choose(
+            "Fetch art from SteamGridDB?",
+            "Art",
+            &choices,
+            Some(default),
+            true,
+        )? {
+            Reply::Back => return Ok(Reply::Back),
+            Reply::Value(false) => return Ok(Reply::Value(None)),
+            Reply::Value(true) => {}
+        }
+        let current = answers.art.as_deref().unwrap_or(name);
+        let reply = prompt.text("Search for", Some(current), |answer| {
+            if answer.is_empty() {
+                Err("Enter a search term.".to_owned())
+            } else {
+                Ok(answer.to_owned())
+            }
+        })?;
+        if let Reply::Value(term) = reply {
+            return Ok(Reply::Value(Some(term)));
+        }
+    }
 }
 
 enum Name {
@@ -734,6 +817,8 @@ struct Creating {
     arch: Arch,
     template: Option<Template>,
     how: How,
+    /// The key and search term when art is to be fetched.
+    art: Option<(Key, String)>,
 }
 
 fn review<I: Input, W: Write>(
@@ -778,6 +863,13 @@ fn review<I: Input, W: Write>(
             How::Nothing => "none for now".to_owned(),
         }
     ));
+    heading.push_str(&format!(
+        "\n  art       {}",
+        match &answers.art {
+            Some(term) => format!("fetch from SteamGridDB, searching \"{term}\""),
+            None => "none".to_owned(),
+        }
+    ));
     if runner.is_proton() {
         heading.push_str(
             "\nThe first umu run downloads the Steam Linux Runtime, which takes a while.",
@@ -797,6 +889,7 @@ fn create<I: Input, W: Write>(
     global: &GlobalConfig,
     prompt: &mut Prompt<I, W>,
     guided: &mut Guided,
+    access: &Access,
     creating: Creating,
 ) -> anyhow::Result<ExitCode> {
     let Creating {
@@ -806,6 +899,7 @@ fn create<I: Input, W: Write>(
         arch,
         template,
         how,
+        art,
     } = creating;
     let new = NewEnvironment {
         name: name.clone(),
@@ -846,6 +940,10 @@ fn create<I: Input, W: Write>(
     })?;
     components::reconcile_config(paths, global, &environment, &runner, &dir)?;
     desktop::reconcile(paths, global, &environment, Some(&runner), &dir)?;
+    // Before the installer, so every question is answered before the wait.
+    if let Some((key, term)) = &art {
+        fetch_art(paths, global, prompt, access, &name, key, term)?;
+    }
 
     let place = Place {
         paths,
@@ -896,9 +994,264 @@ fn create<I: Input, W: Write>(
     }
 }
 
+fn fetch_art<I: Input, W: Write>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    prompt: &mut Prompt<I, W>,
+    access: &Access,
+    name: &str,
+    key: &Key,
+    term: &str,
+) -> anyhow::Result<()> {
+    let request = AutoFetch {
+        env: name,
+        term,
+        kinds: global.art.fetch,
+    };
+    access.fetch(paths, key, &request, Pick::Ask(prompt), &mut io::stderr())?;
+    Ok(())
+}
+
 fn file_stem(path: &str) -> String {
     let file = path.rsplit(['\\', '/']).next().unwrap_or(path);
     file.rsplit_once('.')
         .map_or(file, |(stem, _)| stem)
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
+
+    use wineo_core::art::Kind;
+    use wineo_core::config::Defaults;
+    use wineo_core::steamgriddb::KeySource;
+
+    use super::*;
+    use crate::commands::art::NO_KEY_NOTE;
+    use crate::commands::art::fake::{Fake, PNG};
+    use crate::prompt::Script;
+
+    struct World {
+        _root: tempfile::TempDir,
+        paths: Paths,
+        global: GlobalConfig,
+    }
+
+    /// A fake wine runner and an existing prefix at the suggested location,
+    /// so creating `hades` adopts it without building one.
+    fn world() -> World {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_owned();
+        let paths = Paths::from_lookup(move |key| {
+            (key == "HOME").then(|| OsString::from(home.as_os_str()))
+        })
+        .unwrap();
+        let runners = root.path().join("runners");
+        let bin = runners.join("fake/bin");
+        fs::create_dir_all(&bin).unwrap();
+        for executable in ["wine", "wineserver"] {
+            let path = bin.join(executable);
+            fs::write(&path, "#!/bin/sh\n").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let prefixes = root.path().join("prefixes");
+        fs::create_dir_all(prefixes.join("hades")).unwrap();
+        fs::write(prefixes.join("hades/system.reg"), "#arch=win64\n").unwrap();
+        let global = GlobalConfig {
+            defaults: Defaults {
+                runner: "fake".to_owned(),
+                runner_root: Some(runners.display().to_string()),
+                prefix_root: Some(prefixes.display().to_string()),
+                ..Defaults::default()
+            },
+            ..GlobalConfig::default()
+        };
+        World {
+            _root: root,
+            paths,
+            global,
+        }
+    }
+
+    fn fake() -> Fake {
+        let mut fake = Fake::default();
+        for term in ["hades", "Hades"] {
+            fake.search(term, true);
+        }
+        fake.page(Kind::Icon, &[1]);
+        fake.0
+            .insert("https://cdn.example/1".into(), (200, PNG.to_vec()));
+        for kind in [Kind::Grid, Kind::Hero, Kind::Logo] {
+            fake.page(kind, &[]);
+        }
+        fake
+    }
+
+    /// Runs guided `new` on `answers`, returning the result, the transcript,
+    /// and how many times the key was looked up.
+    fn wizard(
+        world: &World,
+        key: fn() -> KeyCheck,
+        answers: &[&str],
+    ) -> (anyhow::Result<ExitCode>, String, usize) {
+        let lookups = Cell::new(0);
+        let fake = fake();
+        let access = Access {
+            check_key: Box::new(|| {
+                lookups.set(lookups.get() + 1);
+                key()
+            }),
+            transport: Box::new(move || Ok(Box::new(fake.clone()))),
+        };
+        let mut prompt = Prompt::new(Script::new(answers), Vec::new());
+        let mut guided = Guided { registered: None };
+        let result = run(
+            &world.paths,
+            &world.global,
+            &Prefill::default(),
+            &mut prompt,
+            &mut guided,
+            &access,
+        );
+        let transcript = String::from_utf8_lossy(prompt.output()).into_owned();
+        (result, transcript, lookups.get())
+    }
+
+    fn found() -> KeyCheck {
+        KeyCheck::Found(Key {
+            value: "k".into(),
+            source: KeySource::Variable,
+        })
+    }
+
+    fn missing() -> KeyCheck {
+        KeyCheck::Missing
+    }
+
+    fn saved_game(world: &World) -> Option<u64> {
+        wineo_core::art::saved_game(&world.paths, "hades").unwrap()
+    }
+
+    const BEFORE_ART: [&str; 5] = ["1", "hades", "", "1", "3"];
+
+    fn answers(rest: &[&'static str]) -> Vec<&'static str> {
+        BEFORE_ART.iter().chain(rest).copied().collect()
+    }
+
+    #[test]
+    fn no_key_notes_it_once_and_asks_nothing() {
+        let world = world();
+        // Back from the review goes to How, then forward again.
+        let (result, transcript, lookups) = wizard(&world, missing, &answers(&["b", "3", ""]));
+        assert!(result.is_ok(), "{result:?}\n{transcript}");
+        assert_eq!(lookups, 1);
+        assert_eq!(transcript.matches(NO_KEY_NOTE).count(), 1, "{transcript}");
+        assert!(!transcript.contains("Fetch art"), "{transcript}");
+        assert!(transcript.contains("\n  art       none\n"), "{transcript}");
+        assert_eq!(transcript.matches("How does hades").count(), 2);
+        assert!(world.paths.environment_config("hades").exists());
+        assert_eq!(saved_game(&world), None);
+    }
+
+    #[test]
+    fn a_failed_key_lookup_warns_and_skips() {
+        let world = world();
+        let failed = || KeyCheck::Failed(anyhow::anyhow!("the keyring failed: dismissed"));
+        let (result, transcript, _) = wizard(&world, failed, &answers(&[""]));
+        assert!(result.is_ok(), "{result:?}\n{transcript}");
+        assert!(
+            transcript.contains("warning: the keyring failed: dismissed, skipping art\n"),
+            "{transcript}"
+        );
+        assert!(!transcript.contains("Fetch art"), "{transcript}");
+    }
+
+    #[test]
+    fn yes_searches_the_term_after_creating() {
+        let world = world();
+        let (result, transcript, _) = wizard(&world, found, &answers(&["1", "Hades", "", "1"]));
+        assert!(result.is_ok(), "{result:?}\n{transcript}");
+        assert!(transcript.contains("Fetch art from SteamGridDB?\n  1) Yes\n  2) No\n"));
+        assert!(
+            transcript.contains("Art [1]: Search for [hades]: "),
+            "{transcript}"
+        );
+        assert!(
+            transcript.contains("\n  art       fetch from SteamGridDB, searching \"Hades\"\n"),
+            "{transcript}"
+        );
+        let created = transcript.find("Created hades").unwrap();
+        let picked = transcript.find("Which game is it?").unwrap();
+        assert!(created < picked, "{transcript}");
+        assert!(
+            transcript.contains("icon: fetched SteamGridDB 1\n"),
+            "{transcript}"
+        );
+        assert_eq!(saved_game(&world), Some(7));
+        assert!(world.paths.art_dir("hades").join("icon.png").exists());
+    }
+
+    #[test]
+    fn no_fetches_nothing() {
+        let world = world();
+        let (result, transcript, _) = wizard(&world, found, &answers(&["2", ""]));
+        assert!(result.is_ok(), "{result:?}\n{transcript}");
+        assert!(transcript.contains("\n  art       none\n"), "{transcript}");
+        assert!(!transcript.contains("Which game is it?"), "{transcript}");
+        assert_eq!(saved_game(&world), None);
+    }
+
+    #[test]
+    fn back_moves_between_how_art_and_the_review() {
+        let world = world();
+        let (result, transcript, lookups) = wizard(
+            &world,
+            found,
+            // Art back to How, then yes, the search back to Art, yes again with
+            // a term, the review back to Art keeping it, back again, and no.
+            &answers(&["b", "3", "1", "<", "1", "Hades", "b", "1", "", "b", "2", ""]),
+        );
+        assert!(result.is_ok(), "{result:?}\n{transcript}");
+        assert_eq!(lookups, 1);
+        assert_eq!(transcript.matches("How does hades").count(), 2);
+        assert_eq!(transcript.matches("Fetch art from SteamGridDB?").count(), 5);
+        // After a yes the question defaults to yes, and the search to the term.
+        assert!(transcript.contains("Search for [Hades]: "), "{transcript}");
+        assert!(transcript.contains("searching \"Hades\""), "{transcript}");
+        let last = transcript.rfind("Ready to create hades:").unwrap();
+        assert!(
+            transcript[last..].contains("\n  art       none\n"),
+            "{transcript}"
+        );
+        assert_eq!(saved_game(&world), None);
+    }
+
+    #[test]
+    fn the_skip_entry_fetches_nothing() {
+        let world = world();
+        let (result, transcript, _) = wizard(&world, found, &answers(&["1", "", "", "3"]));
+        assert!(result.is_ok(), "{result:?}\n{transcript}");
+        assert!(
+            transcript.contains("  3) None of these, skip art\n"),
+            "{transcript}"
+        );
+        assert!(
+            transcript
+                .contains("Skipped art. Fetch later with: wineo art fetch hades --search <term>\n"),
+            "{transcript}"
+        );
+        assert_eq!(saved_game(&world), None);
+        assert!(world.paths.environment_config("hades").exists());
+    }
+
+    #[test]
+    fn canceling_the_pick_list_keeps_the_environment() {
+        let world = world();
+        let (result, transcript, _) = wizard(&world, found, &answers(&["1", "", "", "q"]));
+        assert!(result.unwrap_err().is::<Canceled>(), "{transcript}");
+        assert!(world.paths.environment_config("hades").exists());
+    }
 }

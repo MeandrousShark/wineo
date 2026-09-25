@@ -739,9 +739,11 @@ fn guided_new_makes_an_empty_environment_with_nothing_switched_on() {
     let f = Fixture::new();
     let mut pty = f.new_guided(&[]);
     plain_answers(&mut pty, "game", "3");
+    pty.expect("note: run `wineo art key` to fetch art from SteamGridDB");
     pty.expect("Ready to create game:");
     pty.expect("  template  none");
     pty.expect("  program   none for now");
+    pty.expect("  art       none");
     pty.expect("Enter create it, Esc back, Ctrl+C cancel");
     pty.expect("Choice: ");
     pty.send("");
@@ -749,6 +751,7 @@ fn guided_new_makes_an_empty_environment_with_nothing_switched_on() {
     pty.expect("Add a target later with: wineo setup game");
     let (status, output) = pty.finish();
     assert!(status.success(), "{output}");
+    assert!(!output.contains("Fetch art"), "{output}");
     let config = f.config("game");
     assert!(config.contains("runner = \"wine\""), "{config}");
     for key in ["dxvk", "vkd3d", "gamemode", "gameid", "[targets"] {
