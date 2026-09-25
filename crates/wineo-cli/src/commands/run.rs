@@ -62,6 +62,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let environment = Environment::load(paths, &args.name)?;
     let overrides = args.launch.into_overrides();
     let runner = build::runner(paths, &global, &environment)?;
+    Launch::check_target(paths, &global, &environment, &runner, &overrides)?;
     build::ensure_prefix(paths, &global, &environment, &runner)?;
     let launch = Launch::target(paths, &global, &environment, &overrides)?;
     let locks = Locks::new(paths);

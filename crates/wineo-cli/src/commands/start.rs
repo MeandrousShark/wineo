@@ -37,6 +37,7 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, name)?;
     let runner = build::runner(paths, &global, &environment)?;
+    Launch::check_target(paths, &global, &environment, &runner, &overrides)?;
     build::ensure_prefix(paths, &global, &environment, &runner)?;
     let launch = Launch::target(paths, &global, &environment, &overrides)?;
     let locks = Locks::new(paths);

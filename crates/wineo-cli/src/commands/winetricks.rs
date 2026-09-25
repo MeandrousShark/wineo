@@ -87,8 +87,13 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         bail!("{key} is managed by wineo for this command and can't be overridden");
     }
 
-    crate::commands::build::ensure_prefix(paths, &global, &environment, &runner)?;
     let prefix = environment.prefix(paths)?;
+    // Only ahead of a build, so a typo never waits on one. Otherwise the
+    // checks below come first, as they report what to clean up.
+    if !runner.is_proton() && !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
+        runner::find_on_path("winetricks").ok_or(Error::ProgramNotFound("winetricks"))?;
+    }
+    crate::commands::build::ensure_prefix(paths, &global, &environment, &runner)?;
     let locks = Locks::new(paths);
     // Held until winetricks is done and the prefix is idle. Several winetricks
     // verbs wait for every wine process to exit, so nothing else may start one.

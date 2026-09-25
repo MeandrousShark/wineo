@@ -246,6 +246,86 @@ fn an_uninstalled_runner_fails_before_anything_is_built() {
 }
 
 #[test]
+fn restart_builds_a_missing_prefix() {
+    let f = Fixture::new();
+    let prefix = f.prefix_root().join("app");
+    let text = f.hand_written("app", "wine", &prefix, APP);
+
+    let restarted = f.run(&["restart", "app"]);
+    assert_success(&restarted);
+    assert_eq!(stdout(&restarted), "Started app\n");
+    assert!(
+        stderr(&restarted).starts_with(&wine_note("app", &prefix)),
+        "{}",
+        stderr(&restarted)
+    );
+    assert_eq!(stderr(&restarted).matches("Creating").count(), 1);
+    assert!(prefix.join("system.reg").is_file());
+    assert_eq!(f.config_text("app"), text);
+    assert_success(&f.run(&["stop", "app"]));
+}
+
+#[test]
+fn a_refused_prefix_stops_restart_before_anything_is_stopped() {
+    let f = Fixture::new();
+    f.environment("app", APP);
+    assert_success(&f.run(&["start", "app"]));
+    let prefix = f.root.path().join("mnt/game-ssd");
+    fs::create_dir_all(&prefix).unwrap();
+    let config = f.config_dir().join("environments/app.toml");
+    let text = f.config_text("app");
+    let old = f.root.path().join("prefixes/app");
+    fs::write(
+        &config,
+        text.replace(&old.display().to_string(), &prefix.display().to_string()),
+    )
+    .unwrap();
+
+    let refused = f.run(&["restart", "app"]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("Run `wineo setup app` to create it there."),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(f.state("app").contains("status = \"running\""));
+    assert_eq!(fs::read_dir(&prefix).unwrap().count(), 0);
+}
+
+#[test]
+fn fast_checks_fail_before_anything_is_built() {
+    let f = Fixture::new();
+    let prefix = f.prefix_root().join("app");
+    f.hand_written("app", "wine", &prefix, APP);
+
+    for (args, message) in [
+        (
+            &["start", "app", "--target", "nope"][..],
+            "has no target `nope`",
+        ),
+        (&["run", "app", "--target", "nope"], "has no target `nope`"),
+        (
+            &["restart", "app", "--target", "nope"],
+            "has no target `nope`",
+        ),
+        (
+            &["exec", "app", "/nonexistent/setup.exe"],
+            "`/nonexistent/setup.exe` does not exist",
+        ),
+        (
+            &["winetricks", "app", "list-installed"],
+            "`winetricks` was not found on PATH",
+        ),
+    ] {
+        let refused = f.run_sandboxed(args);
+        assert!(!refused.status.success(), "{args:?}");
+        assert!(stderr(&refused).contains(message), "{}", stderr(&refused));
+        assert!(!stderr(&refused).contains("Creating"), "{args:?}");
+        assert!(!prefix.exists(), "{args:?}");
+    }
+}
+
+#[test]
 #[ignore = "runs wine"]
 fn exec_builds_a_real_wine_prefix_from_a_hand_written_config() {
     let f = Fixture::real();

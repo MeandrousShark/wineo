@@ -7,7 +7,7 @@ use wineo_core::paths::Paths;
 use wineo_core::runtime::Runtime;
 
 use crate::commands::run::LaunchArgs;
-use crate::commands::{start, stop};
+use crate::commands::{build, start, stop};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -32,7 +32,11 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         args.launch.into_overrides()
     };
     // Checked before stopping, so a bad config or a missing target doesn't
-    // leave the environment stopped.
+    // leave the environment stopped. A missing prefix has nothing running in
+    // it, so it is built here like `start` would.
+    let runner = build::runner(paths, &global, &environment)?;
+    Launch::check_target(paths, &global, &environment, &runner, &overrides)?;
+    build::ensure_prefix(paths, &global, &environment, &runner)?;
     Launch::target(paths, &global, &environment, &overrides)?;
 
     let was_running = matches!(stop::stop(paths, name, false)?, stop::Outcome::Stopped);

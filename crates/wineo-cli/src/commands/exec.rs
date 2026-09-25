@@ -38,6 +38,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let environment = Environment::load(paths, &args.name)?;
     let env = args.env.into_iter().collect();
     let runner = build::runner(paths, &global, &environment)?;
+    Launch::check_exec(paths, &global, &environment, &runner, &args.program, &env)?;
     build::ensure_prefix(paths, &global, &environment, &runner)?;
     let launch = Launch::exec(
         paths,
