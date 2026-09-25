@@ -75,14 +75,7 @@ impl Launch {
         args.extend(overrides.args.iter().cloned());
         // Resolved here rather than at spawn time, so `start` refuses before it
         // hands anything to a supervisor.
-        let gamemode = if gamemode(global, environment, Some(target)) {
-            Some(
-                runner::find_on_path(GAMEMODE)
-                    .ok_or_else(|| Error::GamemodeMissing(environment.name.clone()))?,
-            )
-        } else {
-            None
-        };
+        let gamemode = gamemode_path(global, environment, target)?;
         Ok(Self {
             env: merge_env(&runner, global, environment, &overrides.env)?,
             gameid: runner
@@ -100,6 +93,42 @@ impl Launch {
             cwd,
             gamemode,
         })
+    }
+
+    /// What `target` checks that doesn't need the prefix, so a typo or a bad
+    /// config fails before a missing prefix is built.
+    pub fn check_target(
+        paths: &Paths,
+        global: &GlobalConfig,
+        environment: &Environment,
+        runner: &Runner,
+        overrides: &Overrides,
+    ) -> Result<()> {
+        let (_, target) = resolve_target(environment, overrides.target.as_deref())?;
+        check_unix_program(paths, &target.exe, false)?;
+        if let Some(cwd) = &target.cwd
+            && !winpath::is_windows_path(cwd)
+            && !paths.config_path(cwd)?.is_dir()
+        {
+            return Err(Error::CwdNotFound(cwd.to_owned()));
+        }
+        gamemode_path(global, environment, target)?;
+        merge_env(runner, global, environment, &overrides.env)?;
+        Ok(())
+    }
+
+    /// What `exec` checks that doesn't need the prefix, like `check_target`.
+    pub fn check_exec(
+        paths: &Paths,
+        global: &GlobalConfig,
+        environment: &Environment,
+        runner: &Runner,
+        program: &str,
+        env: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        check_unix_program(paths, program, true)?;
+        merge_env(runner, global, environment, env)?;
+        Ok(())
     }
 
     /// Runs an arbitrary program. Relative paths are resolved against the
@@ -162,6 +191,19 @@ pub fn gamemode(global: &GlobalConfig, environment: &Environment, target: Option
         .or(environment.config.gamemode)
         .or(global.gamemode)
         .unwrap_or(false)
+}
+
+fn gamemode_path(
+    global: &GlobalConfig,
+    environment: &Environment,
+    target: &Target,
+) -> Result<Option<PathBuf>> {
+    if !gamemode(global, environment, Some(target)) {
+        return Ok(None);
+    }
+    runner::find_on_path(GAMEMODE)
+        .map(Some)
+        .ok_or_else(|| Error::GamemodeMissing(environment.name.clone()))
 }
 
 /// Parses a `-e KEY=VALUE` flag.
@@ -296,14 +338,23 @@ fn is_path(exe: &str, relative_to_cwd: bool) -> bool {
 /// created. Windows paths and bare names aren't resolvable yet, so they pass;
 /// `resolve_program` checks those for real once the prefix is open.
 pub fn check_program_path(paths: &Paths, program: &str) -> Result<()> {
-    if winpath::is_windows_path(program) || !is_path(program, true) {
+    check_unix_program(paths, program, true)
+}
+
+/// The Unix path half of `resolve_program`, which needs no prefix.
+fn check_unix_program(paths: &Paths, exe: &str, relative_to_cwd: bool) -> Result<()> {
+    if winpath::is_windows_path(exe) || !is_path(exe, relative_to_cwd) {
         return Ok(());
     }
-    let unix = paths.absolute(program)?;
+    let unix = if relative_to_cwd {
+        paths.absolute(exe)?
+    } else {
+        paths.config_path(exe)?
+    };
     if unix.is_file() {
         Ok(())
     } else {
-        Err(Error::ExeNotFound(program.to_owned()))
+        Err(Error::ExeNotFound(exe.to_owned()))
     }
 }
 
@@ -590,6 +641,57 @@ mod tests {
         let missing = home.join("nope.exe");
         assert!(matches!(
             check_program_path(&f.paths, missing.to_str().unwrap()),
+            Err(Error::ExeNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn target_checks_need_no_prefix() {
+        let f = fixture();
+        let global = GlobalConfig::default();
+        let runner = Runner::fake("wine");
+        let check = |text: &str, target: Option<&str>| {
+            let overrides = Overrides {
+                target: target.map(str::to_owned),
+                ..Default::default()
+            };
+            Launch::check_target(&f.paths, &global, &environment(text), &runner, &overrides)
+        };
+        let windows = "[targets.app]\nexe = 'C:\\Games\\app.exe'\ncwd = 'C:\\Games'\n";
+        assert!(check(windows, None).is_ok());
+        assert!(check("[targets.app]\nexe = \"~/setup.exe\"\n", None).is_ok());
+        assert!(matches!(check("", None), Err(Error::NoTargets(_))));
+        assert!(matches!(
+            check(windows, Some("nope")),
+            Err(Error::UnknownTarget { .. })
+        ));
+        assert!(matches!(
+            check("[targets.app]\nexe = \"~/missing.exe\"\n", None),
+            Err(Error::ExeNotFound(_))
+        ));
+        assert!(matches!(
+            check("[targets.app]\nexe = \"app\"\ncwd = \"~/missing\"\n", None),
+            Err(Error::CwdNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn exec_checks_need_no_prefix() {
+        let f = fixture();
+        let check = |program: &str| {
+            Launch::check_exec(
+                &f.paths,
+                &GlobalConfig::default(),
+                &environment(""),
+                &Runner::fake("wine"),
+                program,
+                &BTreeMap::new(),
+            )
+        };
+        assert!(check("notepad").is_ok());
+        assert!(check(r"C:\missing.exe").is_ok());
+        assert!(matches!(
+            check("/nonexistent/setup.exe"),
             Err(Error::ExeNotFound(_))
         ));
     }
