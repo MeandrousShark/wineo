@@ -200,7 +200,7 @@ impl Fixture {
 /// with no template, the suggested location and settings, and `how`.
 fn plain_answers(pty: &mut Pty, name: &str, how: &str) {
     pty.expect("Start from a template?");
-    pty.expect("Ctrl+C cancel");
+    pty.expect("Ctrl+C to cancel.");
     pty.expect("Template [1]: ");
     pty.send("1");
     pty.expect("Install name: ");
@@ -208,11 +208,11 @@ fn plain_answers(pty: &mut Pty, name: &str, how: &str) {
     pty.expect("Prefix location [");
     pty.send("");
     pty.expect(&format!("Settings for {name}:"));
-    pty.expect("Esc back, Ctrl+C cancel");
+    pty.expect("Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice [1]: ");
     pty.send("1");
     pty.expect(&format!("How does {name} get its program?"));
-    pty.expect("Esc back, Ctrl+C cancel");
+    pty.expect("Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice [1]: ");
     pty.send(how);
 }
@@ -354,7 +354,7 @@ fn heroic_runner_copy_preserves_dependencies_and_survives_later_cancellation() {
         pty.send("");
         pty.expect("This runner copy is retained if the prefix import is canceled.");
         pty.expect("Close Heroic and the game first.");
-        pty.expect("Enter import, Esc back, Ctrl+C cancel");
+        pty.expect("Press Enter to import, or pick a number. Esc to go back, Ctrl+C to cancel.");
         pty.expect("Choice: ");
         if cancel {
             pty.ctrl_c();
@@ -410,11 +410,11 @@ fn setup_adds_targets_from_what_is_installed() {
     pty.expect("Add which, like 1 3: ");
     pty.send("1 2");
     pty.expect("Adding \"Config\":");
-    pty.expect("Enter add it, Esc back, Ctrl+C cancel");
+    pty.expect("Press Enter to add it, or pick a number. Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice: ");
     pty.send("");
     pty.expect("Adding \"Hades\":");
-    pty.expect("Enter add it, Esc back, Ctrl+C cancel");
+    pty.expect("Press Enter to add it, or pick a number. Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice: ");
     pty.send("");
     pty.expect("What next?");
@@ -468,7 +468,7 @@ fn ctrl_c_at_a_question_cancels_without_saving() {
     pty.send("1");
     pty.expect("Add which, like 1 3: ");
     pty.send("2");
-    pty.expect("Enter add it, Esc back, Ctrl+C cancel");
+    pty.expect("Press Enter to add it, or pick a number. Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice: ");
     pty.send("");
     pty.expect("What next?");
@@ -504,13 +504,13 @@ fn a_change_made_while_a_question_waits_refreshes_the_review() {
     pty.send("2");
     pty.expect("Target: ");
     pty.send("1");
-    pty.expect("Enter done, Esc back, Ctrl+C cancel");
+    pty.expect("Press Enter to done, or pick a number. Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice: ");
     // The working directory, which is all this setup changes.
     pty.send("3");
     pty.expect("Working directory, or empty for the executable's folder: ");
     pty.send(r"C:\Games");
-    pty.expect("Enter done, Esc back, Ctrl+C cancel");
+    pty.expect("Press Enter to done, or pick a number. Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice: ");
     pty.send("");
     pty.expect("Choice [5]: ");
@@ -522,7 +522,7 @@ fn a_change_made_while_a_question_waits_refreshes_the_review() {
     pty.send("1");
     pty.expect("The config changed meanwhile. Review again:");
     pty.expect(r"  ~ app  working dir: the executable's folder -> C:\Games");
-    pty.expect("Enter save them, Ctrl+C cancel");
+    pty.expect("Press Enter to save them, or pick a number. Ctrl+C to cancel.");
     pty.expect("Choice: ");
     pty.send("");
     pty.expect("Saved app.");
@@ -619,7 +619,7 @@ fn staged_changes_are_saved_before_an_installer_runs() {
     pty.send("1");
     pty.expect("Add which, like 1 3: ");
     pty.send("2");
-    pty.expect("Enter add it, Esc back, Ctrl+C cancel");
+    pty.expect("Press Enter to add it, or pick a number. Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice: ");
     pty.send("");
     pty.expect("What next?");
@@ -627,8 +627,8 @@ fn staged_changes_are_saved_before_an_installer_runs() {
     pty.send("4");
     pty.expect("You have unsaved changes:");
     pty.expect("They are saved before the installer runs.");
-    pty.expect("Enter save and run the installer, Esc back, Ctrl+C cancel");
-    pty.expect("Choice: ");
+    pty.expect("Press Enter to save and run the installer, Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Save and run the installer? ");
     pty.send("");
     pty.expect("Saved app.");
     pty.expect("Installer or updater, as a Unix path or a Windows one: ");
@@ -744,8 +744,8 @@ fn guided_new_makes_an_empty_environment_with_nothing_switched_on() {
     pty.expect("  template  none");
     pty.expect("  program   none for now");
     pty.expect("  art       none");
-    pty.expect("Enter create it, Esc back, Ctrl+C cancel");
-    pty.expect("Choice: ");
+    pty.expect("Press Enter to create it, Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Create it? ");
     pty.send("");
     pty.expect("Created game.");
     pty.expect("Add a target later with: wineo setup game");
@@ -770,7 +770,7 @@ fn esc_goes_back_in_guided_new_and_q_and_b_remain_text() {
     let f = Fixture::new();
     let mut pty = f.new_guided(&[]);
     pty.expect("Start from a template?");
-    pty.expect("Ctrl+C cancel");
+    pty.expect("Ctrl+C to cancel.");
     pty.expect("Template [1]: ");
     pty.send("1");
     pty.expect("Install name: ");
@@ -783,7 +783,7 @@ fn esc_goes_back_in_guided_new_and_q_and_b_remain_text() {
     pty.ctrl_c();
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
-    assert!(output.contains("Ctrl+C cancel"), "{output}");
+    assert!(output.contains("Ctrl+C to cancel."), "{output}");
     assert!(!f.registered("b"));
     assert!(!f.registered("q"));
 }
@@ -831,7 +831,7 @@ fn esc_backs_out_of_the_heroic_game_selection() {
     command.args(["import", "heroic", "--config-dir", heroic.to_str().unwrap()]);
     let mut pty = Pty::spawn(command);
     pty.expect("Which Heroic game?");
-    pty.expect("Esc back, Ctrl+C cancel");
+    pty.expect("Esc to go back, Ctrl+C to cancel.");
     pty.esc();
     let (status, output) = pty.finish();
     assert!(status.success(), "{output}");
@@ -850,8 +850,8 @@ fn guided_adoption_preserves_content_and_detects_the_existing_architecture() {
     let mut pty = f.new_guided(&["--dir", prefix.to_str().unwrap()]);
     plain_answers(&mut pty, "adopted", "3");
     pty.expect("Ready to create adopted:");
-    pty.expect("Enter create it, Esc back, Ctrl+C cancel");
-    pty.expect("Choice: ");
+    pty.expect("Press Enter to create it, Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Create it? ");
     pty.send("");
     pty.expect("Created adopted, using the prefix already at");
     let (status, output) = pty.finish();
@@ -881,11 +881,11 @@ fn guided_existing_executable_keeps_external_paths_and_argument_boundaries() {
     pty.expect("Executable: ");
     pty.send(&format!("'{}'", exe.display()));
     pty.expect("Ready to create external:");
-    pty.expect("Enter create it, Esc back, Ctrl+C cancel");
-    pty.expect("Choice: ");
+    pty.expect("Press Enter to create it, Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Create it? ");
     pty.send("");
     pty.expect("Adding \"My Game\":");
-    pty.expect("Enter add it, Esc back, Ctrl+C cancel");
+    pty.expect("Press Enter to add it, or pick a number. Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice: ");
     pty.send("2");
     pty.expect("One argument per line");
@@ -895,16 +895,16 @@ fn guided_existing_executable_keeps_external_paths_and_argument_boundaries() {
     pty.send("two words");
     pty.expect("argument 3: ");
     pty.send("");
-    pty.expect("Enter add it, Esc back, Ctrl+C cancel");
+    pty.expect("Press Enter to add it, or pick a number. Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice: ");
     pty.send("3");
     pty.expect("Working directory, or empty for the executable's folder");
     pty.send(directory.to_str().unwrap());
-    pty.expect("Enter add it, Esc back, Ctrl+C cancel");
+    pty.expect("Press Enter to add it, or pick a number. Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice: ");
     pty.send("");
     pty.expect("Save these changes?");
-    pty.expect("Enter save them, Ctrl+C cancel");
+    pty.expect("Press Enter to save them, or pick a number. Ctrl+C to cancel.");
     pty.expect("Choice: ");
     pty.send("");
     let (status, output) = pty.finish();
@@ -953,8 +953,8 @@ fn a_template_from_either_flag_is_prefilled_and_shown() {
         pty.expect("Choice [1]: ");
         pty.send("3");
         pty.expect("Ready to create");
-        pty.expect("Enter create it, Esc back, Ctrl+C cancel");
-        pty.expect("Choice: ");
+        pty.expect("Press Enter to create it, Esc to go back, Ctrl+C to cancel.");
+        pty.expect("Create it? ");
         pty.send("");
         pty.expect("Add a target later with");
         let (status, output) = pty.finish();
@@ -979,11 +979,11 @@ fn a_missing_build_is_explained_with_a_way_back() {
     pty.expect("Can't use the gaming template: no dxvk builds are installed");
     // Nothing that can't work is offered, but going back is.
     pty.expect("  1) Change the runner");
-    pty.expect("Esc back, Ctrl+C cancel");
+    pty.expect("Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice [1]: ");
     pty.send("b");
     pty.expect("Start from a template?");
-    pty.expect("Ctrl+C cancel");
+    pty.expect("Ctrl+C to cancel.");
     pty.expect("Template [2]: ");
     pty.send("q");
     pty.expect("Canceled. Nothing was created.");
@@ -1036,8 +1036,8 @@ fn enter_takes_the_global_suggestions() {
     pty.send("");
     pty.expect("Choice [1]: ");
     pty.send("3");
-    pty.expect("Enter create it, Esc back, Ctrl+C cancel");
-    pty.expect("Choice: ");
+    pty.expect("Press Enter to create it, Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Create it? ");
     pty.send("");
     pty.expect("Add a target later with");
     let (status, output) = pty.finish();
@@ -1056,8 +1056,8 @@ fn guided_new_runs_the_installer_then_picks_what_it_installed() {
     pty.expect("Installer: ");
     pty.send(installer.to_str().unwrap());
     pty.expect("  program   run the installer ");
-    pty.expect("Enter create it, Esc back, Ctrl+C cancel");
-    pty.expect("Choice: ");
+    pty.expect("Press Enter to create it, Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Create it? ");
     pty.send("");
     pty.expect("Created game.");
     pty.expect("The installer finished and the prefix is idle.");
@@ -1065,12 +1065,12 @@ fn guided_new_runs_the_installer_then_picks_what_it_installed() {
     pty.expect("Add which, like 1 3: ");
     pty.send("1");
     pty.expect("Adding \"Game\":");
-    pty.expect("Enter add it, Esc back, Ctrl+C cancel");
+    pty.expect("Press Enter to add it, or pick a number. Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice: ");
     pty.send("");
     pty.expect("  + game  C:\\Games\\Game\\Game.exe, desktop entry \"Game\"");
     pty.expect("Save these changes?");
-    pty.expect("Enter save them, Ctrl+C cancel");
+    pty.expect("Press Enter to save them, or pick a number. Ctrl+C to cancel.");
     pty.expect("Choice: ");
     pty.send("");
     pty.expect("Saved game.");
@@ -1097,8 +1097,8 @@ fn guided_new_reports_recovery_when_the_installer_disappears_after_creation() {
     pty.expect("Installer [");
     pty.send("");
     pty.expect("  program   run the installer");
-    pty.expect("Enter create it, Esc back, Ctrl+C cancel");
-    pty.expect("Choice: ");
+    pty.expect("Press Enter to create it, Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Create it? ");
     pty.send("");
     pty.expect("Created game.");
     pty.expect("error:");
@@ -1130,8 +1130,8 @@ fn guided_new_reports_recovery_when_the_installer_cannot_spawn_after_creation() 
     pty.expect("Installer [");
     pty.send("");
     pty.expect("  program   run the installer");
-    pty.expect("Enter create it, Esc back, Ctrl+C cancel");
-    pty.expect("Choice: ");
+    pty.expect("Press Enter to create it, Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Create it? ");
     pty.send("");
     pty.expect("Created game.");
     assert!(!f.root.path().join("bin/wine").exists());
@@ -1160,8 +1160,8 @@ fn canceling_after_creation_keeps_the_environment() {
     plain_answers(&mut pty, "game", "1");
     pty.expect("Installer: ");
     pty.send(installer.to_str().unwrap());
-    pty.expect("Enter create it, Esc back, Ctrl+C cancel");
-    pty.expect("Choice: ");
+    pty.expect("Press Enter to create it, Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Create it? ");
     pty.send("");
     pty.expect("Add which, like 1 3: ");
     pty.send("q");
@@ -1179,7 +1179,7 @@ fn canceling_after_creation_keeps_the_environment() {
     pty.expect("Add which, like 1 3: ");
     pty.send("1");
     pty.expect("Adding \"Game\":");
-    pty.expect("Enter add it, Esc back, Ctrl+C cancel");
+    pty.expect("Press Enter to add it, or pick a number. Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice: ");
     pty.send("");
     pty.expect("What next?");
@@ -1241,8 +1241,8 @@ fn a_failed_creation_says_nothing_was_registered() {
     }
     let mut pty = f.new_guided(&["--runner", "broken"]);
     plain_answers(&mut pty, "game", "3");
-    pty.expect("Enter create it, Esc back, Ctrl+C cancel");
-    pty.expect("Choice: ");
+    pty.expect("Press Enter to create it, Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Create it? ");
     pty.send("");
     pty.expect("error: wine failed to create the prefix: could not load kernel32.dll");
     pty.expect("game wasn't created.");
@@ -1287,8 +1287,8 @@ fn a_proton_runner_leaves_the_templates_dxvk_and_vkd3d_out() {
     pty.expect("Choice [1]: ");
     pty.send("3");
     pty.expect("no DXVK or vkd3d-proton, Proton has its own");
-    pty.expect("Enter create it, Esc back, Ctrl+C cancel");
-    pty.expect("Choice: ");
+    pty.expect("Press Enter to create it, Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Create it? ");
     pty.send("");
     pty.expect("Add a target later with");
     let (status, output) = pty.finish();
@@ -1336,7 +1336,7 @@ fn setup_builds_a_missing_prefix_and_picks_from_it() {
     let prefix = f.root.path().join("data/wineo/prefixes/app");
     let text = hand_written(&f, &prefix);
     let mut pty = f.setup("app");
-    pty.expect("Its prefix doesn't exist yet.\n  1) Skip for now\nEnter create it, Ctrl+C cancel\nChoice: ");
+    pty.expect("Its prefix doesn't exist yet.\n  1) Skip for now\n\nPress Enter to create it, or pick a number. Ctrl+C to cancel.\nChoice: ");
     pty.send("");
     pty.expect(&format!(
         "Creating a wine prefix for app in {}, this takes a few seconds",

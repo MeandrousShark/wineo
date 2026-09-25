@@ -295,21 +295,37 @@ impl<I: Input, W: Write> Prompt<I, W> {
         if let Some(note) = note {
             self.say(note)?;
         }
-        if back {
-            self.say(format!("Enter {enter_action}, Esc back, Ctrl+C cancel"))?;
+        writeln!(self.out)?;
+        let enter = if choices.is_empty() {
+            format!("Press Enter to {enter_action},")
         } else {
-            self.say(format!("Enter {enter_action}, Ctrl+C cancel"))?;
-        }
-        self.choose_or_enter(choices, back)
+            format!("Press Enter to {enter_action}, or pick a number.")
+        };
+        let rest = if back {
+            "Esc to go back, Ctrl+C to cancel."
+        } else {
+            "Ctrl+C to cancel."
+        };
+        self.say(format!("{enter} {rest}"))?;
+        // "Choice:" with nothing numbered to choose reads like a missing list.
+        let label = if choices.is_empty() {
+            let mut chars = enter_action.chars();
+            let first = chars.next().map(|c| c.to_uppercase().to_string());
+            format!("{}{}? ", first.unwrap_or_default(), chars.as_str())
+        } else {
+            "Choice: ".to_owned()
+        };
+        self.choose_or_enter(choices, back, &label)
     }
 
     fn choose_or_enter<T: Clone>(
         &mut self,
         choices: &[Choice<T>],
         back: bool,
+        label: &str,
     ) -> anyhow::Result<Reply<Option<T>>> {
         loop {
-            let answer = match self.read("Choice: ")? {
+            let answer = match self.read(label)? {
                 Reply::Value(answer) => answer,
                 Reply::Back if back => return Ok(Reply::Back),
                 Reply::Back => continue,
@@ -396,9 +412,9 @@ impl<I: Input, W: Write> Prompt<I, W> {
             writeln!(self.out, "  {}) {}", choice.key, choice.label)?;
         }
         if back {
-            writeln!(self.out, "Esc back, Ctrl+C cancel")
+            writeln!(self.out, "Esc to go back, Ctrl+C to cancel.")
         } else {
-            writeln!(self.out, "Ctrl+C cancel")
+            writeln!(self.out, "Ctrl+C to cancel.")
         }
     }
 
@@ -720,7 +736,7 @@ mod tests {
         assert_eq!(reply, Reply::Value("none"));
         assert_eq!(
             printed(&p),
-            "Choose a template:\n  1) None, choose each setting\n  2) gaming\n  p) enter a path\nEsc back, Ctrl+C cancel\nTemplate [1]: "
+            "Choose a template:\n  1) None, choose each setting\n  2) gaming\n  p) enter a path\nEsc to go back, Ctrl+C to cancel.\nTemplate [1]: "
         );
     }
 
@@ -768,7 +784,7 @@ mod tests {
             .choose("Pick:", "Template", &menu(), None, false)
             .unwrap_err();
         assert!(err.is::<Canceled>());
-        assert!(printed(&p).contains("Ctrl+C cancel\n"));
+        assert!(printed(&p).contains("Ctrl+C to cancel.\n"));
         assert!(!printed(&p).contains("b) back"));
 
         // Running out of input is Ctrl+D, which cancels too.
@@ -821,7 +837,7 @@ mod tests {
         assert_eq!(reply, Reply::Value(None));
         assert_eq!(
             printed(&p),
-            "Review:\n  1) None, choose each setting\n  2) gaming\n  p) enter a path\nClose the game first.\nEnter import, Esc back, Ctrl+C cancel\nChoice: "
+            "Review:\n  1) None, choose each setting\n  2) gaming\n  p) enter a path\nClose the game first.\n\nPress Enter to import, or pick a number. Esc to go back, Ctrl+C to cancel.\nChoice: "
         );
     }
 
@@ -843,7 +859,7 @@ mod tests {
         assert_eq!(reply, Reply::Value(None));
         assert_eq!(
             printed(&p),
-            "Review:\nEnter create it, Ctrl+C cancel\nChoice: "
+            "Review:\n\nPress Enter to create it, Ctrl+C to cancel.\nCreate it? "
         );
     }
 

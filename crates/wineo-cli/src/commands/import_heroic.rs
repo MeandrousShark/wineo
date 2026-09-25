@@ -3783,7 +3783,7 @@ mod tests {
         assert!(printed.contains("  8) desktop      yes"), "{printed}");
         assert!(
             printed.contains(
-                "Close Heroic and the game first.\nEnter import, Esc back, Ctrl+C cancel\nChoice: "
+                "Close Heroic and the game first.\n\nPress Enter to import, or pick a number. Esc to go back, Ctrl+C to cancel.\nChoice: "
             ),
             "{printed}"
         );
