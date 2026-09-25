@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0024: Desktop entry icons from art
 

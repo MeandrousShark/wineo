@@ -3,6 +3,15 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.5.0 - 2026-09-25
+
+- Desktop entries use icon art, the target's first, then the environment's,
+  then the exe's ([0024](docs/plans/0024-desktop-entry-icons.md)).
+- Art icons are converted to one PNG of up to 256x256, since some launchers
+  never look in `512x512`. SVG is installed as is.
+- `art set`, `art rm`, and `art fetch` update the affected desktop entries
+  right away.
+
 ## 0.4.0 - 2026-09-24
 
 - `start`, `run`, `exec`, `winetricks`, and `restart` build a missing prefix
