@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0022: Review menu polish
 
