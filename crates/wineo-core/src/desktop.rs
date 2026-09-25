@@ -16,6 +16,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use sha2::{Digest, Sha256};
+
+use crate::art::{self, ArtConfig};
+use crate::art_icon;
 use crate::config::{GlobalConfig, Target};
 use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
@@ -28,6 +32,9 @@ use crate::winpath;
 
 const ENVIRONMENT_KEY: &str = "X-Wineo-Environment";
 const TARGET_KEY: &str = "X-Wineo-Target";
+/// Where the icon files on disk came from, so a changed or removed art file
+/// is noticed without decoding anything.
+const ICON_KEY: &str = "X-Wineo-Icon";
 /// Prefixed so wineo's entries never collide with anything else installed, and
 /// so a stray one is recognizable before its contents are read.
 const FILE_PREFIX: &str = "wineo-";
@@ -43,6 +50,11 @@ pub enum Change {
         target: String,
     },
     Removed {
+        target: String,
+    },
+    /// The target's icon art could not be decoded, so the exe's icon is used.
+    /// Reported once per art file, alongside the entry's own change.
+    IconArtUnreadable {
         target: String,
     },
     /// A target asked for an entry that cannot be made. Reported rather than
@@ -106,8 +118,7 @@ pub fn reconcile(
             target_name,
             target,
         ) {
-            Ok(Some(change)) => changes.push(change),
-            Ok(None) => {}
+            Ok(written) => changes.extend(written),
             Err(reason) => changes.push(Change::Skipped {
                 target: target_name.clone(),
                 reason: reason.to_string(),
@@ -202,11 +213,12 @@ fn write(
     prefix: &Path,
     target_name: &str,
     target: &Target,
-) -> Result<Option<Change>> {
+) -> Result<Vec<Change>> {
     check(paths, prefix, &target.exe)?;
 
     let path = entry_path(paths, &environment.name, target_name);
     let existing = fs::read_to_string(&path).ok();
+    let existing_stamp = existing.as_deref().and_then(stamp_of);
     let name = target
         .name
         .clone()
@@ -214,7 +226,7 @@ fn write(
     let gaming = runner.is_some_and(Runner::is_proton)
         || launch::gamemode(global, environment, Some(target));
 
-    let rendered = |icon: bool| {
+    let rendered = |icon: bool, stamp: Option<&str>| {
         render(&Desired {
             environment: &environment.name,
             target: target_name,
@@ -222,20 +234,27 @@ fn write(
             exe: &target.exe,
             gaming,
             icon,
+            stamp,
         })
     };
 
+    let art = icon_art(paths, &environment.name, target_name)?;
+    let art_stamp = art.as_ref().map(|art| format!("art:{}", art.hash));
+    let had_icon = has_icon(paths, &environment.name, target_name);
+    // Icons from art that has since gone are the art's, not the exe's.
+    let stale_art = art.is_none() && existing_stamp.is_some_and(|stamp| stamp.starts_with("art:"));
+
     // An icon that is already there is what makes a reconcile on every launch
     // cheap: the text below then matches and nothing runs.
-    let had_icon = has_icon(paths, &environment.name, target_name);
-    if existing.as_deref() == Some(rendered(had_icon).as_str()) {
-        return Ok(None);
+    if !stale_art {
+        let stamp = art_stamp.as_deref().or(had_icon.then_some("exe"));
+        if existing.as_deref() == Some(rendered(had_icon, stamp).as_str()) {
+            return Ok(Vec::new());
+        }
     }
 
-    // Only attempted when the entry is being written anyway, so a target with
-    // no icon to find does not pay for wine starting up on every launch.
-    let icon = had_icon
-        || runner.is_some_and(|runner| {
+    let extract = || {
+        runner.is_some_and(|runner| {
             extract_icon(
                 paths,
                 runner,
@@ -245,9 +264,61 @@ fn write(
                 &target.exe,
             )
             .is_some()
-        });
-    write_atomic(&path, rendered(icon))?;
-    Ok(Some(match existing {
+        })
+    };
+    let mut unreadable = false;
+    let (icon, stamp) = match &art {
+        Some(art) => {
+            let changed = existing_stamp != art_stamp.as_deref();
+            let icon = if changed || !had_icon {
+                match art_icon::install(
+                    &art.path,
+                    art.format,
+                    &paths.icons_dir(),
+                    &icon_name(&environment.name, target_name),
+                ) {
+                    Ok(written) => {
+                        // Another size or format left behind would win over
+                        // the new one in some lookups.
+                        for stale in icon_files(paths, &environment.name, target_name) {
+                            if stale != written {
+                                remove_file(&stale)?;
+                            }
+                        }
+                        true
+                    }
+                    Err(Error::IconDecode { .. }) => {
+                        // Only said when the file is new to this entry, so a bad
+                        // file is not reported on every launch.
+                        unreadable = changed;
+                        let art_made =
+                            existing_stamp.is_some_and(|stamp| stamp.starts_with("art:"));
+                        if art_made {
+                            remove_icons(paths, &environment.name, target_name)?;
+                        }
+                        (had_icon && !art_made) || extract()
+                    }
+                    Err(err) => return Err(err),
+                }
+            } else {
+                true
+            };
+            (icon, art_stamp.as_deref())
+        }
+        None => {
+            if stale_art {
+                remove_icons(paths, &environment.name, target_name)?;
+            }
+            // Only attempted when the entry is being written anyway, so a
+            // target with no icon to find does not pay for wine starting up
+            // on every launch.
+            let icon = (had_icon && !stale_art) || extract();
+            (icon, icon.then_some("exe"))
+        }
+    };
+    write_atomic(&path, rendered(icon, stamp))?;
+
+    let mut changes = vec![match existing {
         Some(_) => Change::Updated {
             target: target_name.to_owned(),
         },
@@ -255,7 +326,48 @@ fn write(
             target: target_name.to_owned(),
             icon,
         },
+    }];
+    if unreadable {
+        changes.push(Change::IconArtUnreadable {
+            target: target_name.to_owned(),
+        });
+    }
+    Ok(changes)
+}
+
+/// The icon art a target's entry uses, and the stamp that tells whether it
+/// changed.
+struct IconArt {
+    path: PathBuf,
+    format: art::Format,
+    hash: String,
+}
+
+/// A bad `art.toml` counts as no art. The art commands already report it, and
+/// a launch is not the place to.
+fn icon_art(paths: &Paths, environment: &str, target: &str) -> Result<Option<IconArt>> {
+    let art_dir = paths.art_dir(environment);
+    let Ok(config) = ArtConfig::load(&art_dir) else {
+        return Ok(None);
+    };
+    let Some(resolved) = art::resolve(&art_dir, &config, Some(target), art::Kind::Icon)? else {
+        return Ok(None);
+    };
+    let path = resolved.found.path;
+    let bytes = fs::read(&path).context(|| format!("failed to read {}", path.display()))?;
+    let mut hash = format!("{:x}", Sha256::digest(&bytes));
+    hash.truncate(16);
+    Ok(Some(IconArt {
+        path,
+        format: resolved.found.format,
+        hash,
     }))
+}
+
+/// The `X-Wineo-Icon` value an existing entry was written with.
+fn stamp_of(text: &str) -> Option<&str> {
+    text.lines()
+        .find_map(|line| line.strip_prefix(ICON_KEY)?.strip_prefix('='))
 }
 
 struct Desired<'a> {
@@ -265,6 +377,7 @@ struct Desired<'a> {
     exe: &'a str,
     gaming: bool,
     icon: bool,
+    stamp: Option<&'a str>,
 }
 
 fn render(desired: &Desired) -> String {
@@ -275,6 +388,7 @@ fn render(desired: &Desired) -> String {
         exe,
         gaming,
         icon,
+        stamp,
     } = desired;
     // `Software` is not a registered XDG category, so a registered one leads
     // and keeps the entry out of a catch-all menu group.
@@ -294,6 +408,9 @@ fn render(desired: &Desired) -> String {
     ));
     if *icon {
         text.push_str(&format!("Icon={}\n", icon_name(environment, target)));
+    }
+    if let Some(stamp) = stamp {
+        text.push_str(&format!("{ICON_KEY}={stamp}\n"));
     }
     text.push_str("Terminal=false\n");
     text.push_str(&format!("Categories={categories}\n"));
@@ -356,12 +473,14 @@ fn remove_file(path: &Path) -> Result<()> {
 /// depends on what the executable carried, so they are discovered, not assumed.
 fn icon_files(paths: &Paths, environment: &str, target: &str) -> Vec<PathBuf> {
     let hicolor = paths.icons_dir().join("hicolor");
-    let name = format!("{}.png", icon_name(environment, target));
+    let name = icon_name(environment, target);
     let mut found = Vec::new();
     for size in fs::read_dir(&hicolor).into_iter().flatten().flatten() {
-        let candidate = size.path().join("apps").join(&name);
-        if candidate.is_file() {
-            found.push(candidate);
+        for extension in ["png", "svg"] {
+            let candidate = size.path().join("apps").join(format!("{name}.{extension}"));
+            if candidate.is_file() {
+                found.push(candidate);
+            }
         }
     }
     found.sort();
@@ -592,6 +711,60 @@ mod tests {
         fn entry(&self, target: &str) -> Option<String> {
             fs::read_to_string(entry_path(&self.paths, "hades", target)).ok()
         }
+
+        /// Stores `bytes` as icon art for the environment, or `target`.
+        fn art(&self, target: Option<&str>, file: &str, bytes: &[u8]) {
+            let dir = art::spot_dir(&self.paths.art_dir("hades"), target);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(file), bytes).unwrap();
+        }
+
+        fn clear_art(&self, target: Option<&str>) {
+            let dir = art::spot_dir(&self.paths.art_dir("hades"), target);
+            for format in art::Format::ALL {
+                let _ = fs::remove_file(dir.join(art::Kind::Icon.file_name(format)));
+            }
+        }
+
+        fn icons(&self) -> Vec<String> {
+            let hicolor = self.paths.icons_dir().join("hicolor");
+            icon_files(&self.paths, "hades", "hades")
+                .into_iter()
+                .map(|path| path.strip_prefix(&hicolor).unwrap().display().to_string())
+                .collect()
+        }
+
+        /// Stands in for what wine's menu builder would have written.
+        fn exe_icon(&self, size: &str) {
+            let icon = self
+                .paths
+                .icons_dir()
+                .join("hicolor")
+                .join(size)
+                .join("apps/wineo-hades-hades.png");
+            fs::create_dir_all(icon.parent().unwrap()).unwrap();
+            fs::write(icon, b"png").unwrap();
+        }
+    }
+
+    fn png(side: u32, shade: u8) -> Vec<u8> {
+        let image = image::RgbaImage::from_pixel(side, side, image::Rgba([shade, 0, 0, 255]));
+        let mut bytes = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        bytes
+    }
+
+    const SVG: &[u8] = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+
+    fn updated() -> Vec<Change> {
+        vec![Change::Updated {
+            target: "hades".to_owned(),
+        }]
     }
 
     const ASKS: &str = "\n[targets.hades]\nexe = 'C:\\Hades\\Hades.exe'\ndesktop = true\n";
@@ -936,5 +1109,271 @@ mod tests {
 
         remove_all(&fixture.paths, "hades").unwrap();
         assert!(!icon.exists());
+    }
+
+    #[test]
+    fn environment_icon_art_is_used() {
+        let fixture = Fixture::new();
+        fixture.art(None, "icon.png", &png(64, 1));
+        let environment = fixture.environment(ASKS);
+        assert_eq!(
+            fixture.reconcile(&environment),
+            [Change::Wrote {
+                target: "hades".to_owned(),
+                icon: true,
+            }]
+        );
+        let hash = format!("{:x}", Sha256::digest(png(64, 1)));
+        let entry = fixture.entry("hades").unwrap();
+        assert!(
+            entry.contains(&format!(
+                "\nIcon=wineo-hades-hades\nX-Wineo-Icon=art:{}\n",
+                &hash[..16]
+            )),
+            "{entry}"
+        );
+        assert_eq!(fixture.icons(), ["64x64/apps/wineo-hades-hades.png"]);
+
+        // The stamp matches, so a second pass writes nothing.
+        assert!(fixture.reconcile(&environment).is_empty());
+    }
+
+    #[test]
+    fn target_icon_art_beats_the_environments() {
+        let fixture = Fixture::new();
+        fixture.art(None, "icon.png", &png(64, 1));
+        fixture.art(Some("hades"), "icon.png", &png(32, 2));
+        let environment = fixture.environment(ASKS);
+        fixture.reconcile(&environment);
+        let hash = format!("{:x}", Sha256::digest(png(32, 2)));
+        assert_eq!(
+            stamp_of(&fixture.entry("hades").unwrap()),
+            Some(format!("art:{}", &hash[..16]).as_str())
+        );
+        assert_eq!(fixture.icons(), ["32x32/apps/wineo-hades-hades.png"]);
+    }
+
+    #[test]
+    fn changed_icon_art_replaces_the_icon() {
+        let fixture = Fixture::new();
+        fixture.art(None, "icon.png", &png(64, 1));
+        let environment = fixture.environment(ASKS);
+        fixture.reconcile(&environment);
+        let before = stamp_of(&fixture.entry("hades").unwrap())
+            .unwrap()
+            .to_owned();
+
+        fixture.art(None, "icon.png", &png(64, 2));
+        assert_eq!(fixture.reconcile(&environment), updated());
+        let after = fixture.entry("hades").unwrap();
+        assert_ne!(stamp_of(&after).unwrap(), before);
+        let icon = fixture
+            .paths
+            .icons_dir()
+            .join("hicolor/64x64/apps/wineo-hades-hades.png");
+        let written = image::open(icon).unwrap().to_rgba8();
+        assert_eq!(written.get_pixel(0, 0).0, [2, 0, 0, 255]);
+        assert!(fixture.reconcile(&environment).is_empty());
+    }
+
+    #[test]
+    fn switching_formats_leaves_no_stale_icon() {
+        let fixture = Fixture::new();
+        fixture.art(None, "icon.svg", SVG);
+        let environment = fixture.environment(ASKS);
+        fixture.reconcile(&environment);
+        assert_eq!(fixture.icons(), ["scalable/apps/wineo-hades-hades.svg"]);
+
+        fixture.clear_art(None);
+        fixture.art(None, "icon.png", &png(48, 1));
+        assert_eq!(fixture.reconcile(&environment), updated());
+        assert_eq!(fixture.icons(), ["48x48/apps/wineo-hades-hades.png"]);
+
+        fixture.clear_art(None);
+        fixture.art(None, "icon.svg", SVG);
+        assert_eq!(fixture.reconcile(&environment), updated());
+        assert_eq!(fixture.icons(), ["scalable/apps/wineo-hades-hades.svg"]);
+    }
+
+    #[test]
+    fn art_replaces_every_size_of_an_exe_icon() {
+        let fixture = Fixture::new();
+        fixture.exe_icon("32x32");
+        fixture.exe_icon("48x48");
+        let environment = fixture.environment(ASKS);
+        fixture.reconcile(&environment);
+        assert_eq!(stamp_of(&fixture.entry("hades").unwrap()), Some("exe"));
+
+        fixture.art(None, "icon.png", &png(256, 1));
+        assert_eq!(fixture.reconcile(&environment), updated());
+        assert_eq!(fixture.icons(), ["256x256/apps/wineo-hades-hades.png"]);
+    }
+
+    #[test]
+    fn removing_the_art_removes_its_icon() {
+        let fixture = Fixture::new();
+        fixture.art(None, "icon.png", &png(64, 1));
+        let environment = fixture.environment(ASKS);
+        fixture.reconcile(&environment);
+
+        fixture.clear_art(None);
+        assert_eq!(fixture.reconcile(&environment), updated());
+        assert!(fixture.icons().is_empty());
+        let entry = fixture.entry("hades").unwrap();
+        assert!(!entry.contains("Icon="), "{entry}");
+        assert!(fixture.reconcile(&environment).is_empty());
+    }
+
+    #[test]
+    fn removing_a_target_override_falls_back_to_the_environments_art() {
+        let fixture = Fixture::new();
+        fixture.art(None, "icon.png", &png(64, 1));
+        fixture.art(Some("hades"), "icon.svg", SVG);
+        let environment = fixture.environment(ASKS);
+        fixture.reconcile(&environment);
+        assert_eq!(fixture.icons(), ["scalable/apps/wineo-hades-hades.svg"]);
+
+        fixture.clear_art(Some("hades"));
+        assert_eq!(fixture.reconcile(&environment), updated());
+        assert_eq!(fixture.icons(), ["64x64/apps/wineo-hades-hades.png"]);
+    }
+
+    // Entries written before the stamp existed are rewritten once, and an exe
+    // icon already on disk is kept without running wine.
+    #[test]
+    fn an_old_entry_with_an_exe_icon_is_stamped_once() {
+        let fixture = Fixture::new();
+        fixture.exe_icon("48x48");
+        let old = concat!(
+            "[Desktop Entry]\n",
+            "Type=Application\n",
+            "Name=hades\n",
+            "Comment=Runs in the wineo environment hades\n",
+            "Exec=wineo start hades --target hades\n",
+            "Icon=wineo-hades-hades\n",
+            "Terminal=false\n",
+            "Categories=Utility;Software;\n",
+            "StartupWMClass=Hades.exe\n",
+            "X-Wineo-Environment=hades\n",
+            "X-Wineo-Target=hades\n",
+        );
+        let path = entry_path(&fixture.paths, "hades", "hades");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, old).unwrap();
+        let environment = fixture.environment(ASKS);
+
+        assert_eq!(fixture.reconcile(&environment), updated());
+        assert_eq!(
+            fixture.entry("hades").unwrap(),
+            old.replace(
+                "Icon=wineo-hades-hades\n",
+                "Icon=wineo-hades-hades\nX-Wineo-Icon=exe\n"
+            )
+        );
+        assert_eq!(fixture.icons(), ["48x48/apps/wineo-hades-hades.png"]);
+        assert!(fixture.reconcile(&environment).is_empty());
+    }
+
+    #[test]
+    fn unreadable_art_is_reported_once() {
+        let fixture = Fixture::new();
+        // Passes the store's format check but does not decode.
+        let mut bad = b"\x89PNG\r\n\x1a\n".to_vec();
+        bad.extend_from_slice(b"not really a png");
+        fixture.art(None, "icon.png", &bad);
+        let environment = fixture.environment(ASKS);
+        assert_eq!(
+            fixture.reconcile(&environment),
+            [
+                Change::Wrote {
+                    target: "hades".to_owned(),
+                    icon: false,
+                },
+                Change::IconArtUnreadable {
+                    target: "hades".to_owned(),
+                },
+            ]
+        );
+        let entry = fixture.entry("hades").unwrap();
+        assert!(!entry.contains("\nIcon="), "{entry}");
+        assert!(stamp_of(&entry).unwrap().starts_with("art:"));
+        assert!(fixture.reconcile(&environment).is_empty());
+
+        // Replacing the file tries again.
+        bad.push(b'!');
+        fixture.art(None, "icon.png", &bad);
+        assert_eq!(
+            fixture.reconcile(&environment),
+            [
+                Change::Updated {
+                    target: "hades".to_owned(),
+                },
+                Change::IconArtUnreadable {
+                    target: "hades".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn unreadable_art_keeps_an_exe_icon() {
+        let fixture = Fixture::new();
+        fixture.exe_icon("48x48");
+        let environment = fixture.environment(ASKS);
+        fixture.reconcile(&environment);
+
+        fixture.art(None, "icon.png", b"\x89PNG\r\n\x1a\nbroken");
+        assert_eq!(
+            fixture.reconcile(&environment),
+            [
+                Change::Updated {
+                    target: "hades".to_owned(),
+                },
+                Change::IconArtUnreadable {
+                    target: "hades".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(fixture.icons(), ["48x48/apps/wineo-hades-hades.png"]);
+        assert!(
+            fixture
+                .entry("hades")
+                .unwrap()
+                .contains("\nIcon=wineo-hades-hades\nX-Wineo-Icon=art:")
+        );
+        assert!(fixture.reconcile(&environment).is_empty());
+    }
+
+    #[test]
+    fn a_bad_art_toml_counts_as_no_art() {
+        let fixture = Fixture::new();
+        fixture.art(None, "icon.png", &png(64, 1));
+        fs::write(
+            fixture.paths.art_dir("hades").join(art::ART_FILE),
+            "schema_version = 1\ngame = \"not a number\"\n",
+        )
+        .unwrap();
+        assert!(ArtConfig::load(&fixture.paths.art_dir("hades")).is_err());
+        let environment = fixture.environment(ASKS);
+        assert_eq!(
+            fixture.reconcile(&environment),
+            [Change::Wrote {
+                target: "hades".to_owned(),
+                icon: false,
+            }]
+        );
+        assert!(!fixture.entry("hades").unwrap().contains("Icon"));
+        assert!(fixture.icons().is_empty());
+    }
+
+    #[test]
+    fn remove_all_takes_an_svg_icon_too() {
+        let fixture = Fixture::new();
+        fixture.art(None, "icon.svg", SVG);
+        let environment = fixture.environment(ASKS);
+        fixture.reconcile(&environment);
+        assert_eq!(fixture.icons().len(), 1);
+        remove_all(&fixture.paths, "hades").unwrap();
+        assert!(fixture.icons().is_empty());
     }
 }

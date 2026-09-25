@@ -88,6 +88,9 @@ fn describe(change: &Change, name: &str) -> String {
         }
         Change::Updated { target } => format!("Updated the desktop entry for {target} in {name}"),
         Change::Removed { target } => format!("Removed the desktop entry for {target} in {name}"),
+        Change::IconArtUnreadable { target } => {
+            format!("Icon art for {target} in {name} could not be read")
+        }
         Change::Skipped { target, reason } => {
             format!("No desktop entry for {target} in {name}: {reason}")
         }
