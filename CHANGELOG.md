@@ -3,6 +3,15 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.3.0 - 2026-09-24
+
+- Review menus say what Enter does in the keys line, above a plain
+  `Choice: ` prompt, instead of listing the accept action as `1)`
+  ([0022](docs/plans/0022-review-menu-polish.md)).
+- Adding a target returns to the menu that opened the program list.
+- `setup`'s Finish and the installer path save without a second confirm.
+- A README, and docs for creating an environment from a template.
+
 ## 0.2.0 - 2026-09-24
 
 - Artwork store and `wineo art key`, `set`, `list`, `rm`, and `fetch`, with
