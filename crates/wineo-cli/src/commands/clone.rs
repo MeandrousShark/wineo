@@ -7,7 +7,7 @@ use wineo_core::config::GlobalConfig;
 use wineo_core::import::ImportProgress;
 use wineo_core::paths::Paths;
 
-use super::transfer::Cancellation;
+use super::transfer::{self, Cancellation};
 use crate::picker;
 
 #[derive(clap::Args)]
@@ -32,6 +32,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         .as_deref()
         .map(|dir| paths.absolute(&picker::clean_path(dir)))
         .transpose()?;
+    transfer::wait_idle(paths, &global, &args.source)?;
     let reviewed = clone::inspect(
         paths,
         &global,

@@ -3,12 +3,15 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
+use wineo_core::config::GlobalConfig;
 use wineo_core::environment::{self, Environment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::prefix;
 use wineo_core::runtime::Runtime;
 use wineo_core::{art, desktop};
+
+use super::transfer;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -149,6 +152,11 @@ fn delete_prefix(paths: &Paths, name: &str, prefix: &Path) -> anyhow::Result<()>
         bail!(
             "{shown} is not a wine prefix, so it was not deleted. Look at what is there, clean it up yourself if it's what's left of a partly deleted prefix, then run `wineo rm {name}` to remove the registration"
         );
+    }
+
+    // A broken global config must not block removal, so waiting is skipped then.
+    if let Ok(global) = GlobalConfig::load(paths) {
+        transfer::wait_idle(paths, &global, name)?;
     }
 
     // remove_dir_all removes symlinks rather than following them, so a prefix's

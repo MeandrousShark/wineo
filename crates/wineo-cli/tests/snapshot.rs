@@ -2,6 +2,7 @@ mod common;
 
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 use common::{Fixture, assert_success, stderr, stdout};
 
@@ -39,6 +40,49 @@ fn environment(f: &Fixture) -> (PathBuf, String) {
     );
     fs::write(config_dir.join("game.toml"), &config).unwrap();
     (prefix, config)
+}
+
+#[test]
+fn create_and_restore_wait_for_wine_to_exit() {
+    let Some(f) = fixture() else { return };
+    let (prefix, _) = environment(&f);
+    let handoff = |f: &Fixture| {
+        // Null output, so only the wait on the prefix can outlast the handoff.
+        let exec = f
+            .wineo()
+            .args(["exec", "game", "handoff"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(exec.success());
+    };
+
+    handoff(&f);
+    let created = f.run(&["snapshot", "create", "game", "after-exec"]);
+    assert_success(&created);
+    assert!(
+        stderr(&created).contains("Waiting for wine to exit in game"),
+        "{}",
+        stderr(&created)
+    );
+    assert!(
+        prefix
+            .parent()
+            .unwrap()
+            .join(".wineo-snapshots/game/after-exec/prefix/handoff-done")
+            .exists()
+    );
+
+    fs::remove_file(prefix.join("handoff-done")).unwrap();
+    handoff(&f);
+    let restored = f.run(&["snapshot", "restore", "game", "after-exec", "--yes"]);
+    assert_success(&restored);
+    assert!(
+        stderr(&restored).contains("Waiting for wine to exit in game"),
+        "{}",
+        stderr(&restored)
+    );
 }
 
 #[test]

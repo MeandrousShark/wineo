@@ -8,7 +8,7 @@ use wineo_core::import::ImportProgress;
 use wineo_core::paths::Paths;
 use wineo_core::portable::{self, CopyInspection, Storage};
 
-use super::transfer::Cancellation;
+use super::transfer::{self, Cancellation};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -43,6 +43,7 @@ fn copy(
 ) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let folder = Paths::from_env(Some(to))?;
+    transfer::wait_idle(paths, &global, name)?;
     let reviewed = portable::inspect(paths, &folder, &global, name)?;
     print_review(&reviewed, verbose);
 

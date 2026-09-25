@@ -3,6 +3,7 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use rustix::io::Errno;
@@ -19,6 +20,9 @@ const GROUP_POLL: Duration = Duration::from_millis(100);
 /// Long enough for killed members to become zombies, and too short to wait
 /// out anything still running, which stays unconfirmed.
 const LEADERLESS_GRACE: Duration = Duration::from_millis(200);
+/// How long `wait_idle_noting` waits quietly. A prefix with nothing running
+/// answers well within this.
+const IDLE_NOTE_AFTER: Duration = Duration::from_millis(250);
 
 /// What ending a lost run found to kill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +212,33 @@ impl Runner {
         quietly(command.arg("-w"))
             .status()
             .context(|| "failed to run wineserver -w".to_owned())?;
+        Ok(())
+    }
+
+    /// Like `wait_idle`, but runs `on_wait` if wine is still up after a moment,
+    /// so a caller can say why it paused.
+    pub fn wait_idle_noting(&self, prefix: &Path, on_wait: impl FnOnce()) -> Result<()> {
+        let Some(mut command) = self.wineserver(prefix) else {
+            return Ok(());
+        };
+        let mut child = quietly(command.arg("-w"))
+            .spawn()
+            .context(|| "failed to run wineserver -w".to_owned())?;
+        let deadline = Instant::now() + IDLE_NOTE_AFTER;
+        while Instant::now() < deadline {
+            if child
+                .try_wait()
+                .context(|| "failed to wait for wineserver -w".to_owned())?
+                .is_some()
+            {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        on_wait();
+        child
+            .wait()
+            .context(|| "failed to wait for wineserver -w".to_owned())?;
         Ok(())
     }
 

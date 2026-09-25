@@ -3,6 +3,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use signal_hook::SigId;
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+use wineo_core::config::GlobalConfig;
+use wineo_core::environment::Environment;
+use wineo_core::paths::Paths;
+
+/// Waits for wine to exit in `name`'s prefix before it is copied, replaced,
+/// or deleted. A config that can't be loaded is left for the command to report.
+pub fn wait_idle(paths: &Paths, global: &GlobalConfig, name: &str) -> anyhow::Result<()> {
+    let Ok(environment) = Environment::load(paths, name) else {
+        return Ok(());
+    };
+    environment.wait_idle(paths, global, || {
+        eprintln!("Waiting for wine to exit in {name}");
+    })?;
+    Ok(())
+}
 
 pub struct Cancellation {
     pub flag: Arc<AtomicBool>,

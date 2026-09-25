@@ -9,7 +9,7 @@ use wineo_core::import::ImportProgress;
 use wineo_core::paths::Paths;
 use wineo_core::snapshot::{self, CreateInspection, RestoreInspection};
 
-use super::transfer::Cancellation;
+use super::transfer::{self, Cancellation};
 use crate::prompt;
 
 #[derive(clap::Args)]
@@ -85,6 +85,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
 
 fn create(paths: &Paths, env: &str, label: &str, verbose: bool) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
+    transfer::wait_idle(paths, &global, env)?;
     let reviewed = snapshot::inspect_create(paths, &global, env, label)?;
     print_create_review(&reviewed, verbose);
     let cancellation = Cancellation::new()?;
@@ -113,6 +114,7 @@ fn create(paths: &Paths, env: &str, label: &str, verbose: bool) -> anyhow::Resul
 
 fn restore(paths: &Paths, env: &str, label: &str, yes: bool) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
+    transfer::wait_idle(paths, &global, env)?;
     let reviewed = snapshot::inspect_restore(paths, &global, env, label)?;
     print_restore_review(paths, &reviewed);
     if !yes {

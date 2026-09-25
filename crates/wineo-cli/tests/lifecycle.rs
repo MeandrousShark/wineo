@@ -1144,6 +1144,31 @@ fn rm_refuses_a_compatdata_dir_that_holds_no_prefix() {
     assert!(f.config_dir().join("environments/hades.toml").exists());
 }
 
+#[test]
+fn rm_delete_prefix_waits_for_wine_to_exit() {
+    let f = Fixture::new();
+    f.environment("game", "");
+    // Null output, so only the wait on the prefix can outlast the handoff.
+    let exec = f
+        .wineo()
+        .args(["exec", "game", "handoff"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(exec.success());
+    assert!(f.fake_program_running("game"));
+
+    let removed = f.run(&["rm", "game", "--delete-prefix"]);
+    assert_success(&removed);
+    assert!(
+        stderr(&removed).contains("Waiting for wine to exit in game"),
+        "{}",
+        stderr(&removed)
+    );
+    assert!(!f.root.path().join("prefixes/game").exists());
+}
+
 /// Installs the Proton build `WINEO_TEST_PROTON` names into the fixture's
 /// runners root and returns its name. For the ignored tests only, which say
 /// what to set rather than passing quietly when it is missing.

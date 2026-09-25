@@ -15,6 +15,8 @@ use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::prefix::{self, BuildPlan};
 use crate::runner::Runner;
+use crate::runners::Runners;
+use crate::runtime::{Runtime, State};
 use crate::templates::Template;
 
 #[derive(Debug)]
@@ -176,6 +178,34 @@ impl Environment {
             return Err(Error::RelativePrefix(prefix.clone()));
         }
         paths.config_path(prefix)
+    }
+
+    /// Waits for wine to exit in the prefix before something copies, replaces,
+    /// or deletes it. wineserver lingers a few seconds after the last program
+    /// exits and keeps writing the registry until it does. A supervised run,
+    /// or a runner or prefix that can't be resolved, is left to the caller's
+    /// own checks to report. `on_wait` runs if wine is still up after a moment.
+    pub fn wait_idle(
+        &self,
+        paths: &Paths,
+        global: &GlobalConfig,
+        on_wait: impl FnOnce(),
+    ) -> Result<()> {
+        let quiet = Runtime::new(paths, &self.name)
+            .status()
+            .is_ok_and(|status| status.state != State::Running && !status.lost);
+        if !quiet {
+            return Ok(());
+        }
+        let Ok(runner) =
+            Runners::new(paths, global).and_then(|runners| runners.resolve(&self.config.runner))
+        else {
+            return Ok(());
+        };
+        let Ok(prefix) = self.prefix(paths) else {
+            return Ok(());
+        };
+        runner.wait_idle_noting(&prefix, on_wait)
     }
 
     /// Builds the prefix of an environment whose config already exists, when
