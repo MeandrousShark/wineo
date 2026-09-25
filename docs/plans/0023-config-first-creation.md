@@ -83,7 +83,9 @@ real one. Recommended rule, checked before anything is created:
 |---|---|
 | A prefix of the runner's layout | Nothing to build |
 | A prefix of the other layout (a Wine prefix with a Proton runner, or `pfx/` with a Wine runner) | Refused: `~/Games/prefixes/palworld holds a Wine prefix, but runner GE-Proton10-4 needs a Proton one.` |
-| Nothing, and its parent exists | Built |
+| Nothing, and its parent exists and isn't empty | Built |
+| Nothing, its parent is empty, and the path is outside the prefix root | `start` and the others refuse: `prefix /mnt/games/palworld is missing, and /mnt/games is empty. Run wineo setup palworld to create it there.` `setup` offers to build it |
+| Nothing, its parent is empty, and the path is under the prefix root | Built |
 | Nothing, the parent is missing too, and the path is under the prefix root | Built, making the parent dirs |
 | Nothing, the parent is missing too, and the path is outside the prefix root | Refused: `prefix /mnt/games/prefixes/palworld is missing, and so is /mnt/games/prefixes.` |
 | An empty dir under the prefix root | Built in it, and left in place if the build fails |
@@ -95,7 +97,9 @@ mount point, so `/mnt/games/prefixes` is missing, and wineo refuses rather
 than build under it. When the prefix dir is itself the mount point, an
 unmounted drive looks like an empty dir, which can't be told from one the
 user made on purpose, so outside the prefix root only `setup` builds there,
-after asking. The prefix root is wineo's own, so a fresh machine
+after asking. The same goes for a prefix directly under the mount point,
+like `/mnt/games/palworld`: an unmounted `/mnt/games` is an empty parent. A
+user who sets up an empty dir by hand after that has made their choice. The prefix root is wineo's own, so a fresh machine
 restoring dotfiles can still build `~/.local/share/wineo/prefixes/palworld`
 before that dir exists.
 
