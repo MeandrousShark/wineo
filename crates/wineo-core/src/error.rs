@@ -206,6 +206,9 @@ pub enum Error {
     #[error("{0}")]
     InvalidEnv(String),
 
+    #[error("invalid prefix `{0}`: use an absolute path or one starting with ~/")]
+    RelativePrefix(String),
+
     #[error("{} is not empty and is not a wine prefix", .0.display())]
     NotAPrefix(PathBuf),
 

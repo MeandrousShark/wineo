@@ -169,7 +169,13 @@ impl Environment {
     }
 
     pub fn prefix(&self, paths: &Paths) -> Result<PathBuf> {
-        paths.config_path(&self.config.prefix)
+        let prefix = &self.config.prefix;
+        // Outside a portable folder a relative prefix would land in whatever
+        // directory wineo happened to run from.
+        if paths.portable_root().is_none() && !paths.expand(prefix).is_absolute() {
+            return Err(Error::RelativePrefix(prefix.clone()));
+        }
+        paths.config_path(prefix)
     }
 
     /// Builds the prefix of an environment whose config already exists, when
@@ -669,6 +675,19 @@ mod tests {
         );
         fs::write(&path, &text).unwrap();
         (Environment::load(paths, name).unwrap(), text)
+    }
+
+    #[test]
+    fn a_relative_prefix_is_refused_outside_portable_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let (env, _) = hand_written(&paths, "game", Path::new("[PREFIX-DIR]"));
+        assert!(matches!(env.prefix(&paths), Err(Error::RelativePrefix(_))));
+        let (env, _) = hand_written(&paths, "home", Path::new("~/Games/Game"));
+        assert_eq!(
+            env.prefix(&paths).unwrap(),
+            root.path().join("home/Games/Game")
+        );
     }
 
     /// Stands in for wine, which the fake runner doesn't run, by writing the
