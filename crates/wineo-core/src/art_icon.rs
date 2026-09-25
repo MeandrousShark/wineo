@@ -15,8 +15,9 @@ use crate::art;
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
 
-/// The standard hicolor sizes wineo writes to, largest first.
-const SIZES: [u32; 13] = [512, 256, 192, 128, 96, 72, 64, 48, 36, 32, 24, 22, 16];
+/// The standard hicolor sizes wineo writes to, largest first. Capped at 256
+/// because some launchers, such as Noctalia, never look in `512x512`.
+const SIZES: [u32; 12] = [256, 192, 128, 96, 72, 64, 48, 36, 32, 24, 22, 16];
 
 /// The width and height decoding refuses beyond, so a small file that claims
 /// a huge image can't exhaust memory.
@@ -157,9 +158,8 @@ mod tests {
     #[test]
     fn pick_size_picks_the_largest_that_fits() {
         let cases = [
-            (1024, 512),
-            (513, 512),
-            (512, 512),
+            (1024, 256),
+            (512, 256),
             (300, 256),
             (256, 256),
             (200, 192),
@@ -183,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn a_1024_png_downscales_to_512() {
+    fn a_1024_png_downscales_to_256() {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("icon.png");
         write_png(&source, 1024, 1024);
@@ -191,9 +191,9 @@ mod tests {
         let path = install(&source, art::Format::Png, &icons, "wineo-hades-hades").unwrap();
         assert_eq!(
             path,
-            icons.join("hicolor/512x512/apps/wineo-hades-hades.png")
+            icons.join("hicolor/256x256/apps/wineo-hades-hades.png")
         );
-        assert_eq!(read_png(&path).dimensions(), (512, 512));
+        assert_eq!(read_png(&path).dimensions(), (256, 256));
     }
 
     #[test]
@@ -214,15 +214,15 @@ mod tests {
         write_jpeg(&source, 640, 480);
         let icons = root.path().join("icons");
         let path = install(&source, art::Format::Jpeg, &icons, "app").unwrap();
-        assert_eq!(path, icons.join("hicolor/512x512/apps/app.png"));
+        assert_eq!(path, icons.join("hicolor/256x256/apps/app.png"));
         let image = read_png(&path).to_rgba8();
-        assert_eq!(image.dimensions(), (512, 512));
+        assert_eq!(image.dimensions(), (256, 256));
         // The 640x480 source was padded to 640x640, so the top and bottom
         // bands of the downscaled square are still fully transparent.
-        assert_eq!(image.get_pixel(256, 0).0[3], 0);
-        assert_eq!(image.get_pixel(256, 511).0[3], 0);
+        assert_eq!(image.get_pixel(128, 0).0[3], 0);
+        assert_eq!(image.get_pixel(128, 255).0[3], 0);
         // The middle is well inside the original image, so it stays opaque.
-        assert_eq!(image.get_pixel(256, 256).0[3], 255);
+        assert_eq!(image.get_pixel(128, 128).0[3], 255);
     }
 
     #[test]
