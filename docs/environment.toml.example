@@ -1,0 +1,55 @@
+# Example environments/<name>.toml. Copy it, or use `wineo new`, then fill
+# in the required keys and uncomment whatever else applies.
+
+schema_version = 1
+
+# Required. The prefix directory, built on first `wineo start` (or offered by
+# `wineo setup`) if it doesn't exist.
+prefix = "~/.local/share/wineo/prefixes/palworld"
+# Required. A runner name from `wineo runners`, `wine` for the system wine, or
+# an alias like `GE-Proton-Latest` or `Proton-CachyOS-Latest`.
+runner = "GE-Proton-Latest"
+# Required. `win64` or `win32`. Proton is always win64.
+arch = "win64"
+
+# Run under gamemode. Default: the global setting.
+# gamemode = true
+
+# The umu id protonfixes looks this game up by. Default: no fixes applied.
+# gameid = "umu-1234567890"
+
+# The store the game came from; some protonfixes branch on it. Default: unset.
+# store = "steam"
+
+# The DXVK build for this prefix, or "latest" for the newest installed. Needs
+# a Wine runner; refused on Proton. Default: none installed.
+# dxvk = "latest"
+
+# The vkd3d-proton build for this prefix. Needs dxvk set too, since
+# vkd3d-proton has no DXGI of its own. Needs a Wine runner; refused on Proton.
+# Default: none installed.
+# vkd3d = "latest"
+
+# The Heroic game id this environment was imported from. Only a Heroic import
+# sets this. Default: unset.
+# heroic_id = "abcdef0123456789"
+
+# Extra environment variables for every launch in this prefix. WINEPREFIX is
+# managed by wineo and can't be set here. Default: none.
+# [env]
+# DXVK_HUD = "1"
+
+# One [targets.<name>] table per launchable program, run with `wineo run
+# <name>`. Only one target can be `default`.
+
+# [targets.game]
+# exe = 'C:\Program Files\Palworld\Palworld.exe'  # Required.
+# args = ["-nosplash"]  # Extra arguments, appended after any given on the command line.
+# cwd = 'C:\Program Files\Palworld'  # Default: the exe's own directory.
+# default = true  # Run when `wineo run` or `wineo exec` gets no target name.
+# gamemode = true  # Overrides the environment's own gamemode setting for this target.
+# desktop = true  # Whether this target gets a desktop entry. Default: false.
+# name = "Palworld"  # What the desktop entry is called. Default: the target's own name.
+
+# [targets.launcher]
+# exe = "~/Games/palworld/launcher.exe"  # A Unix path works too, and can start with ~ for your home.
