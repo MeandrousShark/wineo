@@ -3,6 +3,14 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.6.1 - 2026-09-25
+
+- `snapshot create`, `snapshot restore`, `clone`, `portable copy`, and
+  `rm --delete-prefix` wait for wine to exit in the prefix first, since
+  wineserver lingers a few seconds after the last program and keeps writing
+  the registry. A snapshot right after `exec` no longer fails with "reviewed
+  environment changed".
+
 ## 0.6.0 - 2026-09-25
 
 - `wineo new` and `wineo import heroic` offer to fetch SteamGridDB art for
