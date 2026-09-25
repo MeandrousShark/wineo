@@ -78,7 +78,7 @@ reports its location so it can be registered with `--adopt`.
 wineo import heroic --list
 wineo import heroic
 wineo import heroic --config-dir /path/to/heroic
-wineo import heroic --game <id> -n my-game --runner <installed-runner>
+wineo import heroic --game <id> -n my-game --runner <installed-runner> [--art]
 ```
 
 wineo reads local Heroic settings once. It supports manually added Windows games,
@@ -102,10 +102,15 @@ imports leave them out. When no local build exists, guided imports offer to
 download the latest release. Noninteractive imports stop and name the
 `wineo download` command to run.
 
+With a SteamGridDB key, the guided review has an `art` row that fetches art
+searching the Heroic title, and the fully specified flow fetches it with
+`--art`. See [Fetching during new and
+import](art.md#fetching-during-new-and-import).
+
 ### Import every Heroic game
 
 ```sh
-wineo import heroic --all [--runner <name>] [--adopt] [--desktop] [--yes]
+wineo import heroic --all [--runner <name>] [--adopt] [--desktop] [--art] [--yes]
 ```
 
 Every game uses `--runner`, or the newest installed Proton. Games already in
@@ -117,7 +122,10 @@ dropped, and settings needing attention are kept, each noted in the table.
 
 `--desktop` creates a desktop entry for every game without asking. `--yes`
 skips the confirmation, works without a terminal, and creates no desktop
-entries unless `--desktop` is also given. Failed games don't stop the rest, and
+entries unless `--desktop` is also given. With a SteamGridDB key, `--all`
+also asks `Fetch art for these games?`, which `--art` answers the same way;
+each game takes the top search match for its Heroic title, and an art
+failure never fails the game. Failed games don't stop the rest, and
 the command exits nonzero if any failed. `-v` prints each game's full summary
 and writes its import log.
 

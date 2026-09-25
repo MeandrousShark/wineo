@@ -185,6 +185,84 @@ running it again fills the rest. An interrupted download leaves no partial
 file. A search with no matches fails with `` no SteamGridDB games match
 `term` ``.
 
+## Fetching during new and import
+
+`wineo new` and `wineo import heroic` can fetch art for the environment they
+create, so a new game gets its art without a separate `art fetch`. Each flow
+looks for a SteamGridDB key before offering art. With none, it prints one
+line and asks nothing:
+
+```
+note: run `wineo art key` to fetch art from SteamGridDB
+```
+
+A key lookup that fails, such as a dismissed keyring prompt, prints a
+warning instead and skips art the same way.
+
+Guided `wineo new` asks right before its review, defaulting to yes, then asks
+for the search term, starting from the environment name:
+
+```
+Fetch art from SteamGridDB?
+  1) Yes
+  2) No
+Esc back, Ctrl+C cancel
+Art [1]: 1
+Search for [the-sims-4]: The Sims 4
+```
+
+The review shows `art  fetch from SteamGridDB, searching "The Sims 4"`, or
+`art  none`. The search and pick list run right after the environment is
+created and before the installer, so every question comes before the wait.
+Guided `wineo import heroic` has an `art` row on its review instead,
+searching the Heroic title, and editing it asks the same two questions.
+
+The pick list in these flows ends with `None of these, skip art`, which
+fetches nothing and prints how to fetch later:
+
+```
+Skipped art. Fetch later with: wineo art fetch the-sims-4 --search <term>
+```
+
+Unguided flows fetch nothing unless given `--art`:
+
+- `wineo new -n NAME --art` searches the environment name.
+- `wineo import heroic --game ID -n NAME --art` searches the Heroic title.
+- `wineo import heroic --all` asks `Fetch art for these games?` after the
+  desktop question. `--art` answers yes ahead of time, and `--yes` without
+  `--art` means no.
+
+With no terminal to show the pick list, and for every game in `--all`, the
+first search result is used and named in one line:
+
+```
+hades: art from SteamGridDB game 1234, Hades (2020)
+```
+
+`wineo art fetch --search` or `--game` replaces a wrong pick later. Only
+kinds with no art are fetched, as with a plain `art fetch`.
+
+Failures never stop the flow. A search with no matches, a rejected key, or a
+failed download prints a warning such as `warning: art fetch failed: ...`
+and the command carries on; kinds fetched before the error stay. Art never
+changes the exit code of `new` or `import`, and in `--all` it never counts
+as a failed game. Ctrl+C at the pick list cancels the rest of the command
+and keeps the environment.
+
+### Which kinds
+
+By default these flows fetch all four kinds. The global config can limit
+them to the icon:
+
+```toml
+# ~/.config/wineo/config.toml
+[art]
+fetch = "icon"   # or "all", the default
+```
+
+This only applies to `new` and `import`. `wineo art fetch` always fetches
+every kind unless `--only` says otherwise.
+
 ## Desktop entries
 
 A target with `desktop = true` uses icon art for its entry, in the same

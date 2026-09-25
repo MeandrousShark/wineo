@@ -14,9 +14,9 @@ wineo stop hades
 
 ## Features
 
-- **Guided setup.** `wineo new` walks through the runner, a template, and an
-  installer or existing executable, then offers the programs it finds as
-  launch targets.
+- **Guided setup.** `wineo new` walks through the runner, a template, an
+  installer or existing executable, and SteamGridDB art, then offers the
+  programs it finds as launch targets.
 - **Wine and Proton.** Use system Wine, downloaded Wine builds, or Proton
   through `umu-launcher`. `wineo download` fetches runners, DXVK, and
   vkd3d-proton with checksum verification.
