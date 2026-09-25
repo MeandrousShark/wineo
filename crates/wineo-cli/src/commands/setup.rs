@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -8,13 +9,13 @@ use wineo_core::environment::Environment;
 use wineo_core::installer::{self, Cleaned, Installer, Outcome, Output};
 use wineo_core::operation::Locks;
 use wineo_core::paths::Paths;
-use wineo_core::prefix;
+use wineo_core::prefix::{self, BuildPlan};
 use wineo_core::runners::Runners;
 use wineo_core::runtime::Runtime;
 use wineo_core::supervisor::{Notice, Watched};
 use wineo_core::targets::{Batch, Written};
 
-use super::{components, desktop};
+use super::{build, components, desktop};
 use crate::picker::{self, Place};
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
 
@@ -105,19 +106,20 @@ pub(crate) fn setup<I: Input, W: Write>(
     }
     let environment = Environment::load(paths, name)?;
     let dir = environment.prefix(paths)?;
-    let place = Place {
-        paths,
-        name,
-        wine_prefix: prefix::wine_prefix_in(&dir),
-    };
     prompt.say(format!(
         "{name}: runs on {}, prefix {}",
         environment.config.runner,
         paths.shown(&environment.config.prefix)
     ))?;
-    if place.wine_prefix.is_none() {
-        prompt.say("Its prefix is missing, so there is nothing installed to pick from.")?;
-    }
+    let wine_prefix = match prefix::wine_prefix_in(&dir) {
+        Some(wine_prefix) => Some(wine_prefix),
+        None => offer_build(paths, global, &environment, prompt)?,
+    };
+    let place = Place {
+        paths,
+        name,
+        wine_prefix,
+    };
     menu(
         paths,
         global,
@@ -126,6 +128,53 @@ pub(crate) fn setup<I: Input, W: Write>(
         &place,
         Batch::new(environment.config.targets),
     )
+}
+
+/// Offers to build a missing prefix, so there is something to pick programs
+/// from. Returns the wine prefix once there is one.
+fn offer_build<I: Input, W: Write>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    prompt: &mut Prompt<I, W>,
+) -> anyhow::Result<Option<PathBuf>> {
+    let name = &environment.name;
+    let dir = environment.prefix(paths)?;
+    let checked = build::runner(paths, global, environment).and_then(|runner| {
+        let root = global.prefix_root(paths)?;
+        let plan = prefix::build_plan(paths, &root, &runner, &dir, true)?;
+        Ok((runner, plan))
+    });
+    let runner = match checked {
+        Ok((_, BuildPlan::Ready)) => return Ok(prefix::wine_prefix_in(&dir)),
+        Ok((runner, BuildPlan::Build)) => runner,
+        Err(err) => {
+            prompt.say(format!("{err:#}"))?;
+            return Ok(None);
+        }
+    };
+    let skip = numbered([("Skip for now".to_owned(), ())]);
+    if prompt.review(
+        "Its prefix doesn't exist yet.",
+        None,
+        "create it",
+        &skip,
+        false,
+    )? != Reply::Value(None)
+    {
+        prompt.say("Its prefix is missing, so there is nothing installed to pick from.")?;
+        return Ok(None);
+    }
+    let built = environment.build_prefix(paths, global, &runner, true, |dir| {
+        let _ = prompt.say(build::creating_note(paths, name, &runner, dir));
+    });
+    if let Err(err) = built {
+        if prompt.input().interrupted() {
+            return Err(Canceled.into());
+        }
+        return Err(err.into());
+    }
+    Ok(prefix::wine_prefix_in(&dir))
 }
 
 /// The setup menu, from a batch that may already hold changes, like the

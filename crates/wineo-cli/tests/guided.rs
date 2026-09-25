@@ -1314,3 +1314,114 @@ fn the_arrow_keys_and_word_deletion_edit_an_answer() {
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
 }
+
+/// A config written by hand for `app`, pointing at `prefix` whatever is there.
+fn hand_written(f: &Fixture, prefix: &std::path::Path) -> String {
+    let text = format!(
+        "# written by hand\nprefix = \"{}\"\nrunner = \"wine\"\narch = \"win64\"\n",
+        prefix.display()
+    );
+    let path = f.config_dir().join("environments/app.toml");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, &text).unwrap();
+    text
+}
+
+#[test]
+fn setup_builds_a_missing_prefix_and_picks_from_it() {
+    let f = Fixture::new();
+    let prefix = f.root.path().join("data/wineo/prefixes/app");
+    let text = hand_written(&f, &prefix);
+    let mut pty = f.setup("app");
+    pty.expect("Its prefix doesn't exist yet.\n  1) Skip for now\nEnter create it, Ctrl+C cancel\nChoice: ");
+    pty.send("");
+    pty.expect(&format!(
+        "Creating a wine prefix for app in {}, this takes a few seconds",
+        prefix.display()
+    ));
+    pty.expect("No targets yet.");
+    pty.expect("Choice [1]: ");
+    assert!(prefix.join("system.reg").is_file());
+    assert_eq!(f.config("app"), text);
+
+    // Installed after the build, so only a rescan of the new prefix finds it.
+    fs::create_dir_all(prefix.join("dosdevices")).unwrap();
+    symlink("../drive_c", prefix.join("dosdevices/c:")).unwrap();
+    let game = prefix.join("drive_c/Games/Hades/Hades.exe");
+    fs::create_dir_all(game.parent().unwrap()).unwrap();
+    fs::write(&game, b"").unwrap();
+    pty.send("1");
+    pty.expect("Programs in app:");
+    pty.expect("Hades");
+    pty.expect("Add which, like 1 3: ");
+    pty.send("s");
+    pty.expect("Choice [1]: ");
+    pty.send("5");
+    pty.expect("Add a target later with: wineo setup app");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(
+        !output.contains("nothing installed to pick from"),
+        "{output}"
+    );
+    assert_eq!(f.config("app"), text);
+}
+
+#[test]
+fn setup_can_skip_building_a_missing_prefix() {
+    let f = Fixture::new();
+    let prefix = f.root.path().join("data/wineo/prefixes/app");
+    let text = hand_written(&f, &prefix);
+    let mut pty = f.setup("app");
+    pty.expect("Its prefix doesn't exist yet.");
+    pty.expect("Choice: ");
+    pty.send("1");
+    pty.expect("Its prefix is missing, so there is nothing installed to pick from.");
+    pty.expect("No targets yet.");
+    pty.expect("Choice [1]: ");
+    pty.send("5");
+    pty.expect("Add a target later with: wineo setup app");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(!output.contains("Creating a wine prefix"), "{output}");
+    assert!(!prefix.exists());
+    assert_eq!(f.config("app"), text);
+}
+
+#[test]
+fn setup_builds_in_an_empty_dir_outside_the_prefix_root_once_asked() {
+    let f = Fixture::new();
+    let prefix = f.root.path().join("mnt/game-ssd");
+    fs::create_dir_all(&prefix).unwrap();
+    hand_written(&f, &prefix);
+    let mut pty = f.setup("app");
+    pty.expect("Its prefix doesn't exist yet.");
+    pty.expect("Choice: ");
+    pty.send("");
+    pty.expect("Creating a wine prefix for app in");
+    pty.expect("Choice [1]: ");
+    pty.send("5");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(prefix.join("system.reg").is_file());
+}
+
+#[test]
+fn setup_explains_a_prefix_it_cant_build_without_offering() {
+    let f = Fixture::new();
+    let prefix = f.root.path().join("mnt/games/prefixes/app");
+    hand_written(&f, &prefix);
+    let mut pty = f.setup("app");
+    pty.expect(&format!(
+        "prefix {} is missing, and so is {}",
+        prefix.display(),
+        prefix.parent().unwrap().display()
+    ));
+    pty.expect("No targets yet.");
+    pty.expect("Choice [1]: ");
+    pty.send("5");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(!output.contains("doesn't exist yet"), "{output}");
+    assert!(!f.root.path().join("mnt").exists());
+}
