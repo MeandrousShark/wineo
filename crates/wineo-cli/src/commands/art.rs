@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -8,13 +8,14 @@ use clap::{Subcommand, ValueHint};
 use clap_complete::ArgValueCompleter;
 use wineo_core::art::{self, Kind, Listing, Resolved, Source, Warning};
 use wineo_core::art_fetch::{self, Fetched, Mode};
-use wineo_core::download::Https;
+use wineo_core::config::ArtFetch;
+use wineo_core::download::{Https, Transport};
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
-use wineo_core::steamgriddb::{self, Api, Game, KEY_VAR, Keyring, Saved};
+use wineo_core::steamgriddb::{self, Api, Game, KEY_VAR, Key, Keyring, Saved};
 
 use crate::commands::desktop;
-use crate::prompt::{Canceled, Prompt, Reply, Terminal, numbered};
+use crate::prompt::{Canceled, Input, Prompt, Reply, Terminal, numbered};
 use crate::{prompt, style};
 
 #[derive(clap::Args)]
@@ -297,10 +298,200 @@ fn fetch_kinds(
 
 /// A search result as the pick list shows it.
 fn game_label(game: &Game) -> String {
+    format!("{}, {}", game_name(game), game.id)
+}
+
+/// A game's name, with its year when known.
+fn game_name(game: &Game) -> String {
     match game.year {
-        Some(year) => format!("{} ({year}), {}", game.name, game.id),
-        None => format!("{}, {}", game.name, game.id),
+        Some(year) => format!("{} ({year})", game.name),
+        None => game.name.clone(),
     }
+}
+
+/// Printed by `new` and `import` in place of offering art when no key is saved.
+#[allow(
+    dead_code,
+    reason = "new and import call these from plan 0025 step 3 on"
+)]
+pub const NO_KEY_NOTE: &str = "note: run `wineo art key` to fetch art from SteamGridDB";
+
+/// Whether `new` and `import` can offer art.
+#[allow(
+    dead_code,
+    reason = "new and import call these from plan 0025 step 3 on"
+)]
+pub enum KeyCheck {
+    Found(Key),
+    Missing,
+    /// The lookup failed, like a dismissed keyring prompt.
+    Failed(anyhow::Error),
+}
+
+#[allow(
+    dead_code,
+    reason = "new and import call these from plan 0025 step 3 on"
+)]
+impl KeyCheck {
+    /// The unstyled line to print instead of offering art, or None with a key.
+    pub fn skip_line(&self) -> Option<String> {
+        match self {
+            KeyCheck::Found(_) => None,
+            KeyCheck::Missing => Some(NO_KEY_NOTE.to_owned()),
+            KeyCheck::Failed(err) => Some(format!("warning: {err:#}, skipping art")),
+        }
+    }
+
+    /// Prints `skip_line` to stderr, styled as a warning when the lookup failed.
+    pub fn print_skip(&self) {
+        match (self, self.skip_line()) {
+            (KeyCheck::Failed(_), Some(line)) => eprintln!("{}", style::warning_stderr(line)),
+            (_, Some(line)) => eprintln!("{line}"),
+            (_, None) => {}
+        }
+    }
+}
+
+/// Looks up the SteamGridDB key without checking it against the API.
+#[allow(
+    dead_code,
+    reason = "new and import call these from plan 0025 step 3 on"
+)]
+pub fn check_key(paths: &Paths) -> KeyCheck {
+    check_key_with(paths, |var| std::env::var_os(var), &*keyring())
+}
+
+fn check_key_with(
+    paths: &Paths,
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+    keyring: &dyn Keyring,
+) -> KeyCheck {
+    match steamgriddb::find_key(paths, lookup, keyring) {
+        Ok(Some(key)) => KeyCheck::Found(key),
+        Ok(None) => KeyCheck::Missing,
+        Err(err) => KeyCheck::Failed(err.into()),
+    }
+}
+
+/// Art `new` and `import` fetch for the environment they made.
+#[allow(
+    dead_code,
+    reason = "new and import call these from plan 0025 step 3 on"
+)]
+pub struct AutoFetch<'a> {
+    pub env: &'a str,
+    pub term: &'a str,
+    pub kinds: ArtFetch,
+}
+
+/// How the game is picked from the search results.
+#[allow(
+    dead_code,
+    reason = "new and import call these from plan 0025 step 3 on"
+)]
+pub enum Pick<'a, I, W> {
+    /// The numbered list, with a last entry that skips art.
+    Ask(&'a mut Prompt<I, W>),
+    /// The first result, for when nobody is there to pick.
+    Top,
+}
+
+/// Fetches art into the environment's store with `Mode::Fill`. Any failure is
+/// a warning on `err` and kinds already stored stay, so art never changes how
+/// `new` or `import` ends. Only canceling the pick list is an error.
+#[allow(
+    dead_code,
+    reason = "new and import call these from plan 0025 step 3 on"
+)]
+pub fn fetch_new<I: Input, W: Write>(
+    paths: &Paths,
+    transport: &dyn Transport,
+    key: &Key,
+    request: &AutoFetch,
+    pick: Pick<I, W>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<(), Canceled> {
+    match try_fetch_new(paths, transport, key, request, pick, out) {
+        Ok(()) => Ok(()),
+        Err(error) if error.is::<Canceled>() => Err(Canceled),
+        Err(error) => {
+            let line = format!("warning: art fetch failed: {error:#}");
+            let _ = writeln!(err, "{}", style::warning_stderr(line));
+            Ok(())
+        }
+    }
+}
+
+fn try_fetch_new<I: Input, W: Write>(
+    paths: &Paths,
+    transport: &dyn Transport,
+    key: &Key,
+    request: &AutoFetch,
+    pick: Pick<I, W>,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let env = request.env;
+    let api = Api::new(transport, &key.value);
+    let games = api.search(request.term)?;
+    let Some(top) = games.first() else {
+        bail!("no SteamGridDB games match `{}`", request.term);
+    };
+    let game = match pick {
+        Pick::Top => {
+            writeln!(
+                out,
+                "{env}: art from SteamGridDB game {}, {}",
+                top.id,
+                game_name(top)
+            )?;
+            top.id
+        }
+        Pick::Ask(prompt) => {
+            let entries = games
+                .iter()
+                .map(|game| (game_label(game), Some(game.id)))
+                .chain([("None of these, skip art".to_owned(), None)]);
+            let choices = numbered(entries);
+            match prompt.choose("Which game is it?", "Game", &choices, Some("1"), false)? {
+                Reply::Value(Some(game)) => game,
+                Reply::Value(None) => {
+                    writeln!(
+                        out,
+                        "Skipped art. Fetch later with: wineo art fetch {env} --search <term>"
+                    )?;
+                    return Ok(());
+                }
+                Reply::Back => unreachable!("the pick list has no back"),
+            }
+        }
+    };
+    if art::saved_game(paths, env)? != Some(game) {
+        art::save_game(paths, env, game)?;
+    }
+    let fetch = FetchRequest {
+        spot: env,
+        search: Some(request.term),
+        game: Some(game),
+        only: match request.kinds {
+            ArtFetch::All => None,
+            ArtFetch::Icon => Some(Kind::Icon),
+        },
+        mode: Mode::Fill,
+    };
+    let spot = Spot {
+        paths,
+        env,
+        target: None,
+    };
+    let language = steamgriddb::language(|var| std::env::var_os(var));
+    let mut icon = false;
+    let fetched = fetch_kinds(&spot, &fetch, &api, game, &language, &mut icon, out);
+    // An icon fetched before a later kind failed is still in the store.
+    if icon {
+        apply_desktop(paths, env)?;
+    }
+    fetched.map(drop)
 }
 
 /// Searches for `term` and asks which match is the game.
@@ -420,10 +611,11 @@ mod tests {
     use std::fs;
     use std::io::{Cursor, Read};
 
-    use wineo_core::download::{Response, Transport};
-    use wineo_core::steamgriddb::Filters;
+    use wineo_core::download::Response;
+    use wineo_core::steamgriddb::{Filters, KeySource, KeyringError, NoKeyring};
 
     use super::*;
+    use crate::prompt::Script;
 
     #[test]
     fn a_spot_splits_at_its_first_dot() {
@@ -454,6 +646,32 @@ mod tests {
                 Api::images_url(7, kind, 1, Filters::Ranked),
                 (200, b"{\"success\":true,\"data\":[]}".to_vec()),
             );
+        }
+
+        /// Hades, 2020, as game 7, and Hades II without a year as game 8.
+        fn search(&mut self, term: &str, found: bool) {
+            let data = if found {
+                r#"[{"id":7,"name":"Hades","release_date":1600000000},{"id":8,"name":"Hades II"}]"#
+            } else {
+                "[]"
+            };
+            self.0.insert(
+                format!("{}/search/autocomplete/{term}", steamgriddb::API),
+                (
+                    200,
+                    format!("{{\"success\":true,\"data\":{data}}}").into_bytes(),
+                ),
+            );
+        }
+
+        /// An icon for game 7 and nothing for the other kinds.
+        fn icon_only(&mut self) {
+            self.page(Kind::Icon, &[1]);
+            self.0
+                .insert("https://cdn.example/1".into(), (200, PNG.to_vec()));
+            for kind in [Kind::Grid, Kind::Hero, Kind::Logo] {
+                self.page(kind, &[]);
+            }
         }
     }
 
@@ -566,5 +784,225 @@ mod tests {
         assert!(err.to_string().contains("cdn.example/2"), "{err}");
         assert_eq!(out, "icon: fetched SteamGridDB 1\n");
         assert!(paths.art_dir("hades").join("icon.png").exists());
+    }
+
+    fn key() -> Key {
+        Key {
+            value: "k".into(),
+            source: KeySource::Variable,
+        }
+    }
+
+    struct Outcome {
+        result: Result<(), Canceled>,
+        out: String,
+        err: String,
+        prompt: Option<String>,
+    }
+
+    fn fetch_new_with(
+        paths: &Paths,
+        fake: &Fake,
+        kinds: ArtFetch,
+        answers: Option<&[&str]>,
+    ) -> Outcome {
+        let request = AutoFetch {
+            env: "hades",
+            term: "hades",
+            kinds,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut prompt = answers.map(|answers| Prompt::new(Script::new(answers), Vec::new()));
+        let pick = match &mut prompt {
+            Some(prompt) => Pick::Ask(prompt),
+            None => Pick::Top,
+        };
+        let result = fetch_new(paths, fake, &key(), &request, pick, &mut out, &mut err);
+        Outcome {
+            result,
+            out: String::from_utf8(out).unwrap(),
+            err: String::from_utf8(err).unwrap(),
+            prompt: prompt.map(|prompt| String::from_utf8_lossy(prompt.output()).into_owned()),
+        }
+    }
+
+    struct FailingKeyring;
+
+    impl Keyring for FailingKeyring {
+        fn get(&self) -> Result<Option<String>, KeyringError> {
+            Err(KeyringError::Failed("dismissed".into()))
+        }
+
+        fn set(&self, _key: &str) -> Result<(), KeyringError> {
+            unreachable!()
+        }
+
+        fn delete(&self) -> Result<bool, KeyringError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_missing_key_notes_how_to_add_one() {
+        let (_root, paths) = paths();
+        let check = check_key_with(&paths, |_| None, &NoKeyring);
+        assert!(matches!(check, KeyCheck::Missing));
+        assert_eq!(
+            check.skip_line().unwrap(),
+            "note: run `wineo art key` to fetch art from SteamGridDB"
+        );
+
+        let check = check_key_with(&paths, |_| None, &FailingKeyring);
+        assert!(matches!(check, KeyCheck::Failed(_)));
+        assert_eq!(
+            check.skip_line().unwrap(),
+            "warning: the keyring failed: dismissed, skipping art"
+        );
+
+        let check = check_key_with(&paths, |_| Some("k".into()), &FailingKeyring);
+        assert!(matches!(check, KeyCheck::Found(_)));
+        assert_eq!(check.skip_line(), None);
+    }
+
+    #[test]
+    fn top_takes_the_first_match_and_names_it() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        fake.icon_only();
+        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, None);
+        assert!(outcome.result.is_ok());
+        assert_eq!(
+            outcome.out,
+            "hades: art from SteamGridDB game 7, Hades (2020)\n\
+             icon: fetched SteamGridDB 1\ngrid: nothing found\nhero: nothing found\nlogo: nothing found\n"
+        );
+        assert_eq!(outcome.err, "");
+        assert_eq!(art::saved_game(&paths, "hades").unwrap(), Some(7));
+        assert!(paths.art_dir("hades").join("icon.png").exists());
+    }
+
+    #[test]
+    fn asking_offers_a_skip_entry_that_fetches_nothing() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        fake.icon_only();
+        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, Some(&["3"]));
+        assert!(outcome.result.is_ok());
+        let prompt = outcome.prompt.unwrap();
+        assert!(prompt.contains("1) Hades (2020), 7"), "{prompt}");
+        assert!(prompt.contains("2) Hades II, 8"), "{prompt}");
+        assert!(prompt.contains("3) None of these, skip art"), "{prompt}");
+        assert_eq!(
+            outcome.out,
+            "Skipped art. Fetch later with: wineo art fetch hades --search <term>\n"
+        );
+        assert_eq!(art::saved_game(&paths, "hades").unwrap(), None);
+        assert!(!paths.art_dir("hades").join("icon.png").exists());
+    }
+
+    #[test]
+    fn asking_fetches_the_picked_game() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        fake.icon_only();
+        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, Some(&["1"]));
+        assert!(outcome.result.is_ok());
+        assert!(
+            outcome.out.starts_with("icon: fetched SteamGridDB 1\n"),
+            "{}",
+            outcome.out
+        );
+        assert_eq!(art::saved_game(&paths, "hades").unwrap(), Some(7));
+    }
+
+    #[test]
+    fn canceling_the_pick_list_is_an_error() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, Some(&["q"]));
+        assert!(outcome.result.is_err());
+        assert_eq!(outcome.err, "");
+    }
+
+    #[test]
+    fn the_icon_setting_fetches_only_the_icon() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        fake.page(Kind::Icon, &[1]);
+        fake.0
+            .insert("https://cdn.example/1".into(), (200, PNG.to_vec()));
+        let outcome = fetch_new_with(&paths, &fake, ArtFetch::Icon, None);
+        assert!(outcome.result.is_ok());
+        assert_eq!(
+            outcome.out,
+            "hades: art from SteamGridDB game 7, Hades (2020)\nicon: fetched SteamGridDB 1\n"
+        );
+        assert_eq!(outcome.err, "");
+    }
+
+    #[test]
+    fn a_failed_download_warns_and_keeps_earlier_kinds() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        fake.page(Kind::Icon, &[1]);
+        fake.0
+            .insert("https://cdn.example/1".into(), (200, PNG.to_vec()));
+        fake.page(Kind::Grid, &[2]);
+        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, None);
+        assert!(outcome.result.is_ok());
+        assert!(
+            outcome.out.ends_with("icon: fetched SteamGridDB 1\n"),
+            "{}",
+            outcome.out
+        );
+        assert!(
+            outcome.err.contains("warning: art fetch failed:"),
+            "{}",
+            outcome.err
+        );
+        assert!(outcome.err.contains("cdn.example/2"), "{}", outcome.err);
+        assert!(paths.art_dir("hades").join("icon.png").exists());
+    }
+
+    #[test]
+    fn no_matches_warns_and_fetches_nothing() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.search("hades", false);
+        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, Some(&["1"]));
+        assert!(outcome.result.is_ok());
+        assert_eq!(outcome.out, "");
+        assert!(
+            outcome
+                .err
+                .contains("warning: art fetch failed: no SteamGridDB games match `hades`"),
+            "{}",
+            outcome.err
+        );
+        assert_eq!(outcome.prompt.unwrap(), "");
+        assert_eq!(art::saved_game(&paths, "hades").unwrap(), None);
+    }
+
+    #[test]
+    fn a_rejected_key_warns() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.0.insert(
+            format!("{}/search/autocomplete/hades", steamgriddb::API),
+            (401, Vec::new()),
+        );
+        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, None);
+        assert!(outcome.result.is_ok());
+        assert!(
+            outcome.err.contains("SteamGridDB rejected the key"),
+            "{}",
+            outcome.err
+        );
     }
 }
