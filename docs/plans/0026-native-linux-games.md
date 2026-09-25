@@ -47,6 +47,12 @@ prefix.
   `/opt/dusklight/dusklight.AppImage`, so it covers a `PATH` lookup, a
   shebang script, and an AppImage whose FUSE helper runs alongside the game.
   The package also installs its own `dev.twilitrealm.dusk.desktop`.
+- The second test game is RimWorld in `~/Games/RimWorld`, a GOG Linux build
+  installed by Heroic from the store. Its `start.sh` is GOG's bash wrapper,
+  which changes to its own directory, sources `support/gog_com.shlib`, and
+  runs `game/start_RimWorld.sh`, so it covers the `cwd` default and a chain
+  of scripts in one process group. Being a store install, not a sideload, it
+  is added by path.
 - `wineo list` and `status --json` without a name show no runner or prefix,
   so they work as is. `status <name>`, its JSON, and `EnvironmentReport`
   always show both.
@@ -305,8 +311,9 @@ PKGBUILD installs both.
   from its desktop entry, checks that `wineo status` tracks it until the game
   window closes, and stops a second run with `wineo stop`. Then they add
   Dusklight to Heroic as a native sideload and import it, confirm Ship of
-  Harkinian's missing exe is reported, and write one native environment by
-  hand from the example file.
+  Harkinian's missing exe is reported, and write a native environment for
+  RimWorld by hand from the example file, with
+  `exe = "~/Games/RimWorld/start.sh"` and no `cwd`, then launch and stop it.
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
 
 ## Scope limits
