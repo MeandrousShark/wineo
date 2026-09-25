@@ -5,8 +5,11 @@ use std::process::ExitCode;
 use wineo_core::config::GlobalConfig;
 use wineo_core::desktop::{self, Change};
 use wineo_core::environment::{self, Environment};
+use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
+use wineo_core::runners::Runners;
+use wineo_core::runtime::Runtime;
 
 #[derive(clap::Args)]
 pub struct Args {}
@@ -62,6 +65,37 @@ pub fn run(paths: &Paths, _args: Args) -> anyhow::Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Writes the entries a config now asks for. Run after the write, so an entry
+/// is built from the config as it ends up rather than as it was. `held` says
+/// this command already has the environment to itself.
+pub fn apply(paths: &Paths, name: &str, held: bool) -> anyhow::Result<()> {
+    let Ok(environment) = Environment::load(paths, name) else {
+        return Ok(());
+    };
+    let Ok(prefix) = environment.prefix(paths) else {
+        return Ok(());
+    };
+    // Pulling out an icon runs wine in the prefix, which has to wait for
+    // whatever holds it exclusively, like an installer, and for what an
+    // unresolved one may have left running. The entry is still written, and
+    // gets its icon on a later launch.
+    let launch = (!held)
+        .then(|| {
+            Locks::new(paths)
+                .acquire(Operation::Launch, name, &[&prefix])
+                .ok()
+        })
+        .flatten();
+    let may_run_wine =
+        held || (launch.is_some() && Runtime::new(paths, name).check_resolved(name).is_ok());
+    let global = GlobalConfig::load_or_default(paths)?;
+    let runner = may_run_wine
+        .then(|| Runners::new(paths, &global).ok())
+        .flatten()
+        .and_then(|runners| runners.resolve(&environment.config.runner).ok());
+    reconcile(paths, &global, &environment, runner.as_ref(), &prefix)
 }
 
 /// Brings an environment's desktop entries in line with its config and says

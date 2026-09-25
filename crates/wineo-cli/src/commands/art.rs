@@ -13,6 +13,7 @@ use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game, KEY_VAR, Keyring, Saved};
 
+use crate::commands::desktop;
 use crate::prompt::{Canceled, Prompt, Reply, Terminal, numbered};
 use crate::{prompt, style};
 
@@ -92,6 +93,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             let (env, target) = split(&spot);
             art::set_manual(paths, env, target, kind, &file)?;
             println!("Set {kind} for {spot}");
+            if kind == Kind::Icon {
+                apply_desktop(paths, env)?;
+            }
         }
         Command::List { env } => {
             let listing = art::list(paths, &env)?;
@@ -138,9 +142,21 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             let (env, target) = split(&spot);
             art::remove(paths, env, target, kind)?;
             println!("Removed {kind} from {spot}");
+            if kind == Kind::Icon {
+                apply_desktop(paths, env)?;
+            }
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Brings the entries in line with a changed icon. Portable environments have
+/// none, so they get nothing said about them either.
+fn apply_desktop(paths: &Paths, env: &str) -> anyhow::Result<()> {
+    if wineo_core::desktop::supported(paths).is_err() {
+        return Ok(());
+    }
+    desktop::apply(paths, env, false)
 }
 
 fn keyring() -> Box<dyn Keyring> {
@@ -205,7 +221,21 @@ fn fetch(paths: &Paths, request: &FetchRequest) -> anyhow::Result<bool> {
     }
     let language = steamgriddb::language(|var| std::env::var_os(var));
     let spot = Spot { paths, env, target };
-    fetch_kinds(&spot, request, &api, game, &language, &mut io::stdout())
+    let mut icon = false;
+    let fetched = fetch_kinds(
+        &spot,
+        request,
+        &api,
+        game,
+        &language,
+        &mut icon,
+        &mut io::stdout(),
+    );
+    // An icon fetched before a later kind failed is still in the store.
+    if icon {
+        apply_desktop(paths, env)?;
+    }
+    fetched
 }
 
 /// Where fetched art goes.
@@ -217,13 +247,15 @@ struct Spot<'a> {
 
 /// Fetches each kind the request asks for, printing a line per kind as it
 /// goes, so the kinds already fetched show before any error. Returns false
-/// when `--only` named a kind that found nothing.
+/// when `--only` named a kind that found nothing. Sets `icon` when the icon
+/// was stored.
 fn fetch_kinds(
     spot: &Spot,
     request: &FetchRequest,
     api: &Api,
     game: u64,
     language: &str,
+    icon: &mut bool,
     out: &mut dyn io::Write,
 ) -> anyhow::Result<bool> {
     let kinds = match request.only {
@@ -243,7 +275,10 @@ fn fetch_kinds(
             request.mode,
         )?;
         match fetched {
-            Fetched::Stored { asset, .. } => writeln!(out, "{kind}: fetched SteamGridDB {asset}")?,
+            Fetched::Stored { asset, .. } => {
+                *icon |= kind == Kind::Icon;
+                writeln!(out, "{kind}: fetched SteamGridDB {asset}")?;
+            }
             Fetched::Skipped { .. } => writeln!(out, "{kind}: skipped, it already has art")?,
             Fetched::NoneFound => {
                 writeln!(out, "{kind}: nothing found")?;
@@ -469,7 +504,16 @@ mod tests {
             target: None,
         };
         let mut out = Vec::new();
-        let result = fetch_kinds(&spot, &request, &Api::new(fake, "k"), 7, "en", &mut out);
+        let mut icon = false;
+        let result = fetch_kinds(
+            &spot,
+            &request,
+            &Api::new(fake, "k"),
+            7,
+            "en",
+            &mut icon,
+            &mut out,
+        );
         (result, String::from_utf8(out).unwrap())
     }
 

@@ -269,3 +269,95 @@ fn fetch_stops_before_the_network_without_a_key_or_a_spot() {
         );
     }
 }
+
+/// A 1x1 PNG that decodes, unlike `PNG`, which only has the magic.
+const REAL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89\0\0\0\rIDAT\x78\x9c\x63\xf8\xcf\xc0\xf0\x1f\0\x05\0\x01\xff\x89\x99\x3d\x1d\0\0\0\0IEND\xae\x42\x60\x82";
+
+#[test]
+fn icon_art_reaches_the_desktop_entry_right_away() {
+    let f = Fixture::new();
+    f.environment(
+        "hades",
+        "[targets.game]\nexe = \"game.exe\"\ndesktop = true\n",
+    );
+    let entry = f
+        .root
+        .path()
+        .join("data/applications/wineo-hades-game.desktop");
+    let icon = f
+        .root
+        .path()
+        .join("data/icons/hicolor/16x16/apps/wineo-hades-game.png");
+    let png = image(&f, "icon.png", REAL_PNG);
+
+    let set = f.run(&["art", "set", "hades", "icon", &png]);
+    assert_success(&set);
+    assert_eq!(stdout(&set), "Set icon for hades\n");
+    assert_eq!(stderr(&set), "Added a desktop entry for game in hades\n");
+    let text = fs::read_to_string(&entry).unwrap();
+    assert!(
+        text.contains("\nIcon=wineo-hades-game\nX-Wineo-Icon=art:"),
+        "{text}"
+    );
+    assert!(icon.is_file());
+
+    // Setting the same file again changes nothing, so nothing is said.
+    let again = f.run(&["art", "set", "hades", "icon", &png]);
+    assert_success(&again);
+    assert_eq!(stderr(&again), "");
+
+    let removed = f.run(&["art", "rm", "hades", "icon"]);
+    assert_success(&removed);
+    assert_eq!(
+        stderr(&removed),
+        "Updated the desktop entry for game in hades\n"
+    );
+    let text = fs::read_to_string(&entry).unwrap();
+    assert!(!text.contains("Icon="), "{text}");
+    assert!(!icon.exists());
+}
+
+#[test]
+fn an_env_without_entries_says_nothing_about_them() {
+    let f = Fixture::new();
+    f.environment("hades", "[targets.game]\nexe = \"game.exe\"\n");
+    let png = image(&f, "icon.png", REAL_PNG);
+    let set = f.run(&["art", "set", "hades", "icon", &png]);
+    assert_success(&set);
+    assert_eq!(stderr(&set), "");
+    let removed = f.run(&["art", "rm", "hades", "icon"]);
+    assert_success(&removed);
+    assert_eq!(stderr(&removed), "");
+    assert!(!f.root.path().join("data/applications").exists());
+}
+
+#[test]
+fn portable_art_says_nothing_about_desktop_entries() {
+    let f = Fixture::new();
+    let dir = f.root.path().join("usb");
+    let config = dir.join("config/environments/hades.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        &config,
+        "prefix = 'prefixes/hades'\nrunner = 'wine'\narch = 'win64'\n\n[targets.game]\nexe = 'game.exe'\ndesktop = true\n",
+    )
+    .unwrap();
+    let png = image(&f, "icon.png", REAL_PNG);
+    let portable = |args: &[&str]| {
+        f.wineo()
+            .arg("--portable")
+            .arg(&dir)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let set = portable(&["art", "set", "hades", "icon", &png]);
+    assert_success(&set);
+    assert_eq!(stdout(&set), "Set icon for hades\n");
+    assert_eq!(stderr(&set), "");
+    let removed = portable(&["art", "rm", "hades", "icon"]);
+    assert_success(&removed);
+    assert_eq!(stderr(&removed), "");
+    assert!(!f.root.path().join("data/applications").exists());
+}
