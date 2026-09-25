@@ -62,7 +62,8 @@ missing prefix that isn't refused outright:
 ```
 Its prefix doesn't exist yet.
   1) Skip for now
-Enter create it, Ctrl+C cancel
+
+Press Enter to create it, or pick a number. Ctrl+C to cancel.
 Choice:
 ```
 

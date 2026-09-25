@@ -139,7 +139,7 @@ Which game is it?
   1) Hades (2020), 1234
   2) Hades II (2024), 5678
   3) Hades Demo, 9012
-Ctrl+C cancel
+Ctrl+C to cancel.
 Game [1]:
 ```
 
@@ -206,7 +206,7 @@ for the search term, starting from the environment name:
 Fetch art from SteamGridDB?
   1) Yes
   2) No
-Esc back, Ctrl+C cancel
+Esc to go back, Ctrl+C to cancel.
 Art [1]: 1
 Search for [the-sims-4]: The Sims 4
 ```
