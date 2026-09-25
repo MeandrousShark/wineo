@@ -155,6 +155,13 @@ one.
   commented out, each with one short comment saying what it does and the
   default when left out. Targets get one example with a `C:\` path and one
   with a Unix path.
+- `prefix` is the placeholder `[PREFIX-DIR]`, with an example path in its
+  comment, so a copy that isn't filled in fails instead of pointing at some
+  game's prefix. Target examples use a generic game name.
+- Outside portable mode, a relative `prefix` is refused with an
+  `invalid prefix` error asking for an absolute path or one starting with
+  `~/`. It used to resolve against the current directory, which would have
+  built the placeholder as `./[PREFIX-DIR]`.
 - The PKGBUILD installs it to `/usr/share/doc/wineo/environment.toml.example`,
   and `docs/config-files.md` and the README point at it.
 - A test keeps it honest: the file parses as it is, and it also parses with
@@ -167,7 +174,9 @@ Excerpt:
 schema_version = 1
 
 # Required. The prefix directory, built on first start if it doesn't exist.
-prefix = "~/.local/share/wineo/prefixes/palworld"
+# Must be absolute or start with ~/, for example
+# ~/.local/share/wineo/prefixes/<name>.
+prefix = "[PREFIX-DIR]"
 # Required. A runner name from `wineo runners`, `wine` for the system wine,
 # or an alias like `GE-Proton-Latest`.
 runner = "GE-Proton-Latest"
