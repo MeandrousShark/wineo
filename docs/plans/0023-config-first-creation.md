@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0023: Create a prefix from a hand-written config
 
