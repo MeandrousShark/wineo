@@ -606,6 +606,87 @@ mod tests {
         assert_eq!(doc.to_string(), "schema_version = 1\nprefix = \"/p\"\n");
     }
 
+    const EXAMPLE: &str = include_str!("../../../docs/environment.toml.example");
+
+    /// A commented-out setting is a line `# key = value` or `# [table]`; a
+    /// prose comment never starts a key right after `# `, so this tells the
+    /// two apart without having to track table context.
+    fn is_example_setting(line: &str) -> bool {
+        let Some(rest) = line.strip_prefix("# ") else {
+            return false;
+        };
+        if rest.starts_with('[') {
+            return true;
+        }
+        let key_end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'))
+            .unwrap_or(rest.len());
+        key_end > 0 && rest[key_end..].trim_start().starts_with('=')
+    }
+
+    /// Uncomments every setting line in the example, leaving prose comments
+    /// and blank lines alone.
+    fn uncommented_example() -> String {
+        EXAMPLE
+            .lines()
+            .map(|line| {
+                if is_example_setting(line) {
+                    &line[2..]
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn example_config_parses_as_shipped() {
+        let config = environment(EXAMPLE).unwrap();
+        assert_eq!(config.schema_version, 1);
+        assert_eq!(config.prefix, "~/.local/share/wineo/prefixes/palworld");
+        assert_eq!(config.runner, "GE-Proton-Latest");
+        assert_eq!(config.arch, Arch::Win64);
+        assert!(config.gamemode.is_none());
+        assert!(config.gameid.is_none());
+        assert!(config.store.is_none());
+        assert!(config.dxvk.is_none());
+        assert!(config.vkd3d.is_none());
+        assert!(config.heroic_id.is_none());
+        assert!(config.env.is_empty());
+        assert!(config.targets.is_empty());
+    }
+
+    /// Every optional field of `EnvironmentConfig` and `Target` must have an
+    /// example line, so a new field with no line here fails this test.
+    #[test]
+    fn example_config_parses_with_every_setting_uncommented() {
+        let text = uncommented_example();
+        let config = environment(&text)
+            .unwrap_or_else(|err| panic!("uncommented example did not parse: {err}\n---\n{text}"));
+
+        assert!(config.gamemode.unwrap());
+        assert!(config.gameid.is_some());
+        assert!(config.store.is_some());
+        assert!(config.dxvk.is_some());
+        assert!(config.vkd3d.is_some());
+        assert!(config.heroic_id.is_some());
+        assert!(!config.env.is_empty());
+        assert_eq!(config.env["DXVK_HUD"], "1");
+
+        let game = &config.targets["game"];
+        assert!(!game.exe.is_empty());
+        assert!(!game.args.is_empty());
+        assert!(game.cwd.is_some());
+        assert!(game.default);
+        assert!(game.gamemode.unwrap());
+        assert!(game.desktop);
+        assert!(game.name.is_some());
+
+        let launcher = &config.targets["launcher"];
+        assert!(!launcher.exe.is_empty());
+    }
+
     #[test]
     fn arch_round_trips_through_strings() {
         assert_eq!("win64".parse::<Arch>().unwrap(), Arch::Win64);
