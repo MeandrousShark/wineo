@@ -8,7 +8,7 @@ Give each environment a store of artwork: an icon, a grid (poster), a hero
 (banner), and a logo. Art can come from SteamGridDB or from files the user
 already has, and manual files never need an API key. This plan builds the
 store, the commands, and the SteamGridDB client. Using the stored icon for
-desktop entries is plan 0023, and showing posters and heroes is for
+desktop entries is plan 0024, and showing posters and heroes is for
 `wineo-gui`.
 
 ## Existing foundation
@@ -117,7 +117,7 @@ desktop entries is plan 0023, and showing posters and heroes is for
   not a parse, so it adds no XML crate. A full well-formedness check with
   `roxmltree` can replace it later if bad files turn up.
 - The original file is kept as is. Converting JPEG and ICO to PNG for icon
-  themes is plan 0023's concern, so this plan adds no image decoding crate.
+  themes is plan 0024's concern, so this plan adds no image decoding crate.
 
 ### SteamGridDB key
 
@@ -279,5 +279,5 @@ desktop entries is plan 0023, and showing posters and heroes is for
 ## Scope limits
 
 This plan stores art and does not display it. It does not change desktop
-entries or icons (plan 0023), resize or convert images, show thumbnails in the
+entries or icons (plan 0024), resize or convert images, show thumbnails in the
 terminal, or browse images interactively. Animated art is out of scope.

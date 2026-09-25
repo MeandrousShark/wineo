@@ -79,7 +79,7 @@ Every command has `--help`. The common ones:
 
 | Task | Command |
 |---|---|
-| Create an environment | `wineo new` (guided) |
+| Create an environment | `wineo new` (guided), or write `environments/<name>.toml` by hand from [`docs/environment.toml.example`](docs/environment.toml.example) |
 | List environments | `wineo list` |
 | Launch the default target, or a named one | `wineo start hades`, `wineo start hades.server` |
 | Launch attached to the terminal | `wineo run hades` |

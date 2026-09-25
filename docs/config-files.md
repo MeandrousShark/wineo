@@ -18,13 +18,64 @@ arch = "win64"
 - `environments/<name>.toml`
 - `templates/<name>.toml`, including the built-in `gaming` template
 
+## Creating an environment by hand
+
+Write `environments/<name>.toml` yourself, or restore one from a dotfiles
+repo, and `wineo start`, `run`, `exec`, `winetricks`, or `restart` builds the
+missing prefix from the config's `runner` and `arch` before it does anything
+else. `docs/environment.toml.example` in the repo (installed to
+`/usr/share/doc/wineo/environment.toml.example` by the Arch package) is a
+commented starting point with every key.
+
+```
+$ wineo start palworld
+Creating a Proton prefix for palworld in ~/Games/prefixes/palworld, this takes a while
+Started palworld
+```
+
+The config file itself is never written; DXVK, vkd3d, and desktop entries
+come from the normal start that follows. Checks that fail fast, like an
+unknown target or winetricks missing from PATH, still run before the build.
+`programs`, `set`, `clone`, `snapshot`, `portable copy`, and `rm` keep
+refusing a missing prefix, since they read or copy one and a fresh empty
+prefix gives them nothing to work with.
+
+Building is refused when the prefix path isn't safely empty, mainly to avoid
+hiding a real prefix on an unmounted drive:
+
+| What's at the prefix path | Result |
+|---|---|
+| A prefix of the runner's own layout | Nothing to build, already there |
+| A prefix of the other layout (Wine vs. Proton) | Refused |
+| Missing, but its parent exists and isn't empty | Built |
+| Missing, under wineo's prefix root | Built, making parent dirs if needed |
+| Missing, outside the prefix root, and its parent is missing too | Refused |
+| Missing, outside the prefix root, and its parent is empty | Refused, with a hint to use `wineo setup` |
+| An empty dir under the prefix root | Built in it |
+| An empty dir outside the prefix root | Refused, with a hint to use `wineo setup` |
+| Anything else non-empty | Refused as not a prefix |
+
+An empty dir looks exactly like an unmounted drive's mount point, so those
+rows with a hint are left to `wineo setup`, which asks first. It offers to build any
+missing prefix that isn't refused outright:
+
+```
+Its prefix doesn't exist yet.
+  1) Skip for now
+Enter create it, Ctrl+C cancel
+Choice:
+```
+
+Enter builds it and moves on to the setup menu with the new prefix's
+programs; `Skip for now` leaves things as they are. When the path itself is
+refused (the wrong prefix layout, say), `setup` prints the reason and
+continues with no offer.
+
 ## Creating an environment from a template
 
-Wineo creates prefixes itself, so an environment config written by hand
-has no prefix behind it, and `wineo start` refuses it. To describe an
-environment in a file, write a template instead and create from it. A user
-template lives in `templates/<name>.toml` in the config directory and can
-set:
+To reuse the same settings across environments instead of writing each one by
+hand, write a template and create from it. A user template lives in
+`templates/<name>.toml` in the config directory and can set:
 
 ```toml
 schema_version = 1
