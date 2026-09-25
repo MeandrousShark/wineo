@@ -71,7 +71,26 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub defaults: Defaults,
     #[serde(default)]
+    pub art: ArtConfig,
+    #[serde(default)]
     pub env: BTreeMap<String, String>,
+}
+
+/// Art fetched while `new` and `import` create an environment.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtConfig {
+    #[serde(default)]
+    pub fetch: ArtFetch,
+}
+
+/// Which kinds `new` and `import` fetch. `art fetch` ignores this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArtFetch {
+    #[default]
+    All,
+    Icon,
 }
 
 /// Values `wineo new` falls back to.
@@ -153,6 +172,7 @@ impl Default for GlobalConfig {
             log_limit_mb: DEFAULT_LOG_LIMIT_MB,
             gamemode: None,
             defaults: Defaults::default(),
+            art: ArtConfig::default(),
             env: BTreeMap::new(),
         }
     }
@@ -361,6 +381,34 @@ mod tests {
         assert_eq!(config.defaults.arch, Arch::Win32);
         assert_eq!(config.defaults.prefix_root.as_deref(), Some("~/Games"));
         assert_eq!(config.env["WINEDEBUG"], "-all");
+    }
+
+    #[test]
+    fn art_fetch_defaults_to_all() {
+        assert_eq!(global("").unwrap().art.fetch, ArtFetch::All);
+        assert_eq!(global("[art]").unwrap().art.fetch, ArtFetch::All);
+    }
+
+    #[test]
+    fn art_fetch_can_narrow_to_the_icon() {
+        let config = global("[art]\nfetch = \"icon\"").unwrap();
+        assert_eq!(config.art.fetch, ArtFetch::Icon);
+        assert_eq!(
+            global("[art]\nfetch = \"all\"").unwrap().art.fetch,
+            ArtFetch::All
+        );
+    }
+
+    #[test]
+    fn unknown_art_fetch_values_and_keys_are_errors() {
+        assert!(matches!(
+            global("[art]\nfetch = \"grid\""),
+            Err(Error::ConfigSyntax { .. })
+        ));
+        assert!(matches!(
+            global("[art]\nfecth = \"icon\""),
+            Err(Error::ConfigSyntax { .. })
+        ));
     }
 
     #[test]
