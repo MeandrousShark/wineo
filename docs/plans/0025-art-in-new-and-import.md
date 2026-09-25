@@ -66,8 +66,17 @@ The review card gains a row, and Back from Review returns here:
 
 The search and pick list run right after "Created the-sims-4.", before the
 installer, so the user answers everything before walking away. The pick
-list gains a last entry, `None of these, skip art`. Any targets added later
-in the picker get the art icon on their first desktop entry write.
+list gains a last entry, `None of these, skip art`, which prints one line
+and carries on:
+
+```
+Skipped art. Fetch later with: wineo art fetch the-sims-4 --search <term>
+```
+
+Ctrl+C at the pick list still cancels the rest of the flow and keeps the
+environment, as it does today. Any targets added later in the picker get
+the art icon on their first desktop entry write. Every pick list these
+flows show has the skip entry; `wineo art fetch` keeps its list as is.
 
 ### 3. Display name as the search
 
@@ -75,7 +84,8 @@ in the picker get the art icon on their first desktop entry write.
 - Guided `import heroic`: the Heroic title.
 - `import heroic --game ... --art` and `--all`: the Heroic title.
 - Unguided `new --art`: the environment name, since there is no display
-  name. `wineo art fetch --search` fixes a poor match afterward.
+  name. There is no `--art-search` flag; `wineo art fetch --search` fixes a
+  poor match afterward.
 
 ### 4. Unguided and bulk: off unless asked
 
@@ -175,10 +185,3 @@ with the art icon the first time.
   `portable copy`. `clone` and `portable copy` already copy art.
 - No Steam app ID or store ID lookups. Every flow searches by name.
 - No per-target art during new or import; art goes to the environment.
-
-## Open questions
-
-- Decision 3: is the environment name right for unguided `new --art`, or
-  should there be an `--art-search TERM` flag?
-- Decision 2: should the pick list's skip entry exist, or is Ctrl+C there
-  enough? Ctrl+C after creation keeps the environment, as it does today.
