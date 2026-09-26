@@ -468,7 +468,9 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert_eq!(text.lines().count(), 4, "{text}");
         assert_eq!(
-            text.lines().filter(|line| line.contains("imported")).count(),
+            text.lines()
+                .filter(|line| line.contains("imported"))
+                .count(),
             2,
             "{text}"
         );

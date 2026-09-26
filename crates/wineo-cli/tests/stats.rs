@@ -208,11 +208,7 @@ fn import_heroic_is_fail_soft_and_exits_1_if_any_environment_failed() {
         "{}",
         stdout(&output)
     );
-    assert!(
-        stderr(&output).contains("warning:"),
-        "{}",
-        stderr(&output)
-    );
+    assert!(stderr(&output).contains("warning:"), "{}", stderr(&output));
     // "good" still got its import despite "bad" failing.
     assert!(f.read_stats_log("good").contains("\"seconds\":3600"));
 }

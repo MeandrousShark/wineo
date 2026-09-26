@@ -1076,6 +1076,9 @@ mod tests {
         let log = fs::read_to_string(&stats_log).unwrap();
         assert_eq!(log.lines().count(), 1, "{log}");
         assert!(log.contains("\"end\":\"lost\""), "{log}");
-        assert!(log.contains("\"ended_at\":\"2026-09-16T21:03:00Z\""), "{log}");
+        assert!(
+            log.contains("\"ended_at\":\"2026-09-16T21:03:00Z\""),
+            "{log}"
+        );
     }
 }
