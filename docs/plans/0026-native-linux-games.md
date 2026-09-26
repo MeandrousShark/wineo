@@ -249,6 +249,9 @@ environment:
   desktop entry following today's import rules.
 - `gamemode` from `useGameMode`, `[env]` from `enviromentOptions`, launch
   arguments as today, and `heroic_id` so a re-import is recognized.
+- Heroic's `nvidiaPrime` is carried into `[env]` as for Windows imports.
+  Variables wineo manages for Wine (`WINEPREFIX`, `PROTONPATH`, and the
+  rest) are kept as written, since wineo manages none of them for native.
 - Heroic's `winePrefix`, `wineVersion`, DXVK, and other Wine settings are
   ignored. Heroic stores them for native games too, but never uses them.
 - `import heroic --all` includes native games, one line each as today.
