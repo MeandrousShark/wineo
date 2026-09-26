@@ -301,7 +301,7 @@ fn new_native(paths: &Paths, name: &str, exe: &str, art: bool) -> anyhow::Result
 fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     if !prompt::interactive() {
         bail!(
-            "wineo new needs a terminal without -n. Use: wineo new -n <name> [-t <template>] [--install-exe <path>]"
+            "wineo new needs a terminal without -n. Use: wineo new -n <name> [-t <template>] [--install-exe <path>] [--native <exe>]"
         );
     }
     let global = GlobalConfig::load(paths)?;
