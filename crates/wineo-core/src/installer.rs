@@ -395,6 +395,21 @@ pub fn clean_up(
     Ok(Some(cleaned))
 }
 
+/// How long `clean_up` waits, the way `wineo stop` runs it: the stop timeout,
+/// plus room for the kill and the prefix shutting down.
+pub fn clean_up_timeout(global: &GlobalConfig) -> Duration {
+    Duration::from_secs(u64::from(global.stop_timeout) + 10)
+}
+
+/// What to tell someone when cleanup after an installer could not be confirmed.
+pub fn unresolved_message(paths: &Paths, name: &str) -> String {
+    let record = Runtime::new(paths, name).operation_path();
+    format!(
+        "wineo could not confirm cleanup after {name}'s last installer. Check the prefix, then remove {} only after confirming nothing it started is still running",
+        record.display()
+    )
+}
+
 /// The record cleanup acts on. An unreadable record cannot identify what is
 /// safe to stop, so it remains unresolved.
 fn cleanup_target(

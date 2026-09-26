@@ -100,7 +100,7 @@ pub fn stop(paths: &Paths, name: &str, force: bool) -> anyhow::Result<Outcome> {
 /// was done, which is what other commands are refused over until then.
 fn clean_up_installer(paths: &Paths, name: &str) -> anyhow::Result<Option<Cleaned>> {
     let global = GlobalConfig::load_or_default(paths)?;
-    let timeout = Duration::from_secs(u64::from(global.stop_timeout) + 10);
+    let timeout = installer::clean_up_timeout(&global);
     let record = Runtime::new(paths, name).operation_path();
     let cleaned = installer::clean_up(paths, &global, name, timeout).with_context(|| {
         format!(
@@ -112,11 +112,7 @@ fn clean_up_installer(paths: &Paths, name: &str) -> anyhow::Result<Option<Cleane
 }
 
 fn report_unresolved_installer(paths: &Paths, name: &str) {
-    let record = Runtime::new(paths, name).operation_path();
-    eprintln!(
-        "wineo could not confirm cleanup after {name}'s last installer. Check the prefix, then remove {} only after confirming nothing it started is still running",
-        record.display()
-    );
+    eprintln!("{}", installer::unresolved_message(paths, name));
 }
 
 /// Cleans up after a lost run and says what happened.
