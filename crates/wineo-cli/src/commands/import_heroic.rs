@@ -3460,8 +3460,44 @@ fn print_log_path(paths: &Paths, name: &str, body: &str) {
     }
 }
 
+/// Test helpers shared with `native`'s tests.
+#[cfg(test)]
+mod test_access {
+    use super::{Access, KeyCheck};
+    use crate::commands::art::fake::Fake;
+    use wineo_core::steamgriddb::{Key, KeySource};
+
+    fn key_check(found: bool) -> KeyCheck {
+        if found {
+            KeyCheck::Found(Key {
+                value: "k".into(),
+                source: KeySource::Variable,
+            })
+        } else {
+            KeyCheck::Missing
+        }
+    }
+
+    /// An access whose key check answers `found` and counts its calls, and
+    /// whose SteamGridDB is `fake`.
+    pub(super) fn access<'a>(
+        found: bool,
+        lookups: &'a std::cell::Cell<usize>,
+        fake: Fake,
+    ) -> Access<'a> {
+        Access {
+            check_key: Box::new(move || {
+                lookups.set(lookups.get() + 1);
+                key_check(found)
+            }),
+            transport: Box::new(move || Ok(Box::new(fake.clone()))),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_access::access;
     use std::collections::VecDeque;
     use std::fs;
 
@@ -5146,28 +5182,6 @@ mod tests {
     }
 
     // -- art --
-
-    fn key_check(found: bool) -> KeyCheck {
-        if found {
-            KeyCheck::Found(Key {
-                value: "k".into(),
-                source: wineo_core::steamgriddb::KeySource::Variable,
-            })
-        } else {
-            KeyCheck::Missing
-        }
-    }
-
-    /// An access whose key check answers `found` and counts its calls.
-    fn access<'a>(found: bool, lookups: &'a std::cell::Cell<usize>, fake: Fake) -> Access<'a> {
-        Access {
-            check_key: Box::new(move || {
-                lookups.set(lookups.get() + 1);
-                key_check(found)
-            }),
-            transport: Box::new(move || Ok(Box::new(fake.clone()))),
-        }
-    }
 
     /// Runs the final review on `answers` with `art`, returning the transcript.
     fn review_with_art(root: &Path, art: &mut ArtChoice, answers: &[&str]) -> String {

@@ -531,3 +531,85 @@ pub(super) fn list_lines(candidate: &HeroicCandidate) {
         print_issue("  issue", issue);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    use wineo_core::steamgriddb::{Key, KeySource};
+
+    use super::*;
+    use crate::commands::art::fake::Fake;
+    use crate::commands::import_heroic::test_access::access;
+
+    /// A Heroic library holding one native sideload, Dusklight, whose script
+    /// is in the home directory `root`.
+    fn dusklight(root: &Path) -> (Paths, HeroicSource) {
+        let heroic = root.join("heroic");
+        fs::create_dir_all(heroic.join("sideload_apps")).unwrap();
+        let exe = root.join("games/dusklight");
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        fs::write(&exe, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(
+            heroic.join("sideload_apps/library.json"),
+            format!(
+                r#"{{"games":[{{"app_name":"dusk","title":"Alpha","runner":"sideload","install":{{"platform":"linux","executable":"{}"}}}}]}}"#,
+                exe.display()
+            ),
+        )
+        .unwrap();
+        let home = root.to_owned();
+        let paths =
+            Paths::from_lookup(move |key| (key == "HOME").then(|| home.as_os_str().to_owned()))
+                .unwrap();
+        let source = HeroicSource::from_config_dir_with_home(heroic, root.to_owned());
+        (paths, source)
+    }
+
+    #[test]
+    fn a_native_import_fetches_art_before_its_desktop_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, source) = dusklight(root.path());
+        let global = GlobalConfig::default();
+        let mut fake = Fake::default();
+        fake.search("Alpha", true);
+        fake.icon_only();
+        let lookups = Cell::new(0);
+        let access = access(true, &lookups, fake);
+
+        let listing = listing(&paths, &global, &source).unwrap();
+        let (row, game) = classify(&paths, &global, &source, &listing.candidates[0], |_| false);
+        assert!(matches!(row.status, RowStatus::ReadyNative { .. }));
+        let game = game.unwrap();
+        let bulk = Bulk {
+            paths: &paths,
+            global: &global,
+            access: &access,
+            source: &source,
+            runner: None,
+            desktop: true,
+            art: Some(Key {
+                value: "k".into(),
+                source: KeySource::Variable,
+            }),
+            verbose: false,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        import_one(&bulk, &game, &mut out, &mut err).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.starts_with(
+                "alpha: art from SteamGridDB game 7, Hades (2020)\nicon: fetched SteamGridDB 1\n"
+            ),
+            "{out}"
+        );
+        assert_eq!(String::from_utf8(err).unwrap(), "");
+        assert!(paths.art_dir("alpha").join("icon.png").exists());
+        let entry =
+            fs::read_to_string(paths.applications_dir().join("wineo-alpha-game.desktop")).unwrap();
+        assert!(entry.contains("\nX-Wineo-Icon=art:"), "{entry}");
+    }
+}
