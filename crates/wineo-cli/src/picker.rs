@@ -286,7 +286,7 @@ pub fn edit<I: Input, W: Write>(
     place: &Place,
     batch: &mut Batch,
 ) -> anyhow::Result<Reply<()>> {
-    let Reply::Value(target) = which(prompt, place, batch, "Edit which target?")? else {
+    let Reply::Value(target) = which(prompt, place, batch, "Edit which target?", true)? else {
         return Ok(Reply::Back);
     };
     let spec = batch
@@ -316,7 +316,7 @@ pub fn remove<I: Input, W: Write>(
     place: &Place,
     batch: &mut Batch,
 ) -> anyhow::Result<Reply<()>> {
-    let Reply::Value(target) = which(prompt, place, batch, "Remove which target?")? else {
+    let Reply::Value(target) = which(prompt, place, batch, "Remove which target?", false)? else {
         return Ok(Reply::Back);
     };
     let spec = batch
@@ -373,6 +373,7 @@ fn which<I: Input, W: Write>(
     place: &Place,
     batch: &Batch,
     heading: &str,
+    default_single: bool,
 ) -> anyhow::Result<Reply<String>> {
     let targets = batch.targets();
     if targets.is_empty() {
@@ -385,7 +386,8 @@ fn which<I: Input, W: Write>(
             .iter()
             .map(|(target, spec)| (format!("{target:width$}  {}", spec.exe), target.clone())),
     );
-    prompt.choose(heading, "Target", &choices, None, true)
+    let default = (default_single && choices.len() == 1).then_some("1");
+    prompt.choose(heading, "Target", &choices, default, true)
 }
 
 /// One target's settings with its suggestions filled in, accepted as they
@@ -1013,6 +1015,17 @@ mod tests {
             review(&batch),
             ["  ~ b  arguments: none -> -x", "  default: b (was a)"]
         );
+    }
+
+    #[test]
+    fn editing_a_lone_target_picks_it_by_default() {
+        let f = Fixture::new();
+        let mut batch = batch("[targets.a]\nexe = 'a'\n");
+        let (result, _) = run(&["", "2", "-x", "", ""], |prompt| {
+            edit(prompt, &f.place(), &mut batch)
+        });
+        result.unwrap();
+        assert_eq!(batch.targets()["a"].args, ["-x"]);
     }
 
     #[test]
