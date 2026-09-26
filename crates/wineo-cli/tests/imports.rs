@@ -196,6 +196,27 @@ fn heroic_bulk_copy_and_adopt_register_all_games_with_explicit_desktop_entries()
 }
 
 #[test]
+fn heroic_import_dash_d_is_the_same_as_desktop() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    let single = heroic_import(&f, &heroic, &["--game", "a", "-n", "alpha", "-d"]);
+    assert_success(&single);
+    let path = f.config_dir().join("environments/alpha.toml");
+    let config =
+        wineo_core::config::EnvironmentConfig::parse(&path, &fs::read_to_string(&path).unwrap())
+            .unwrap();
+    let target = config.targets.get("alpha").unwrap();
+    assert!(target.desktop);
+    assert!(
+        f.root
+            .path()
+            .join("data/applications/wineo-alpha-alpha.desktop")
+            .is_file()
+    );
+}
+
+#[test]
 fn heroic_bulk_imports_absolute_pfx_self_links_and_recognizes_completed_games() {
     let f = Fixture::new();
     f.install_proton("GE-Proton11-7");
