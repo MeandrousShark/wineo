@@ -81,8 +81,8 @@ wineo import heroic --config-dir /path/to/heroic
 wineo import heroic --game <id> -n my-game --runner <installed-runner> [--art]
 ```
 
-wineo reads local Heroic settings once. It supports manually added Windows games,
-with source selection when native and Flatpak libraries are both present.
+wineo reads local Heroic settings once. It supports manually added Windows games
+and [native Linux games](#native-heroic-games), with source selection when native and Flatpak libraries are both present.
 Heroic files are never edited. Store libraries and credentials are not imported.
 
 The guided flow can copy Heroic's runner, choose an installed runner, or download
@@ -113,7 +113,8 @@ import](art.md#fetching-during-new-and-import).
 wineo import heroic --all [--runner <name>] [--adopt] [--desktop] [--art] [--yes]
 ```
 
-Every game uses `--runner`, or the newest installed Proton. Games already in
+Every Windows game uses `--runner`, or the newest installed Proton. A library
+of only native games needs no runner. Games already in
 wineo are skipped, matched by recorded Heroic id, adopted prefix, name, or
 target executable. A table lists each game as copied, adopted, or skipped with
 a reason, and one confirmation covers them all. Review items take the guided
@@ -128,6 +129,35 @@ each game takes the top search match for its Heroic title, and an art
 failure never fails the game. Failed games don't stop the rest, and
 the command exits nonzero if any failed. `-v` prints each game's full summary
 and writes its import log.
+
+### Native Heroic games
+
+A native game added to Heroic (platform `linux`) imports as a [native
+environment](native.md), with no runner, prefix, or copy question:
+
+```
+Import Dusklight as dusklight
+  kind: native
+  exe: /usr/bin/dusklight
+  gamemode: off
+```
+
+It gets one default `game` target from Heroic's executable, plus its launch
+arguments, environment variables, gamemode, and `nvidiaPrime`. Variables that
+wineo manages for Wine, like `WINEPREFIX`, are kept as written, since wineo
+manages none of them for native. Heroic's Wine version, prefix, DXVK, and
+other Wine settings are ignored, and wrappers are reported as not imported,
+the same as for Windows games. `--runner`, `--adopt`, `--dir`, and `--arch`
+are refused for a native game.
+
+A native game whose executable is missing can't be imported, and `--all`
+skips it:
+
+```
+skip: executable not found: /usr/bin/soh
+```
+
+Mac games are still refused, since wineo only runs Linux ones.
 
 ## Removal
 

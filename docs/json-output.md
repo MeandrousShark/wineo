@@ -41,8 +41,8 @@ nullable. `busy` is a lowercase operation value such as `launch` or
 `winetricks`. `state` reports runtime state independently of `busy` and
 `unresolved`.
 
-Named status also includes `runner` with `configured`, `resolved`, and
-`version`; `prefix`; nullable `target_exe`, `gameid`, and `store`; `gamemode`;
+Named status also includes `kind`, `wine` or `native`; `runner` with
+`configured`, `resolved`, and `version`; `prefix`; nullable `target_exe`, `gameid`, and `store`; `gamemode`;
 `desktop`, an array of target names; and nullable `dxvk` and `vkd3d` component
 objects. Each component object has `wanted`, nullable `resolved`, nullable
 `installed`, and `current`.
@@ -51,6 +51,9 @@ objects. Each component object has `wanted`, nullable `resolved`, nullable
 same precedence as human status: the active operation's runner, then the
 runner saved with the last run, then resolution of the configured value. It
 is `null` if no runner can be resolved.
+
+A [native environment](native.md) has no runner or prefix, so `runner` and
+`prefix` are `null`, along with `gameid`, `store`, `dxvk`, and `vkd3d`.
 
 ## Collections
 

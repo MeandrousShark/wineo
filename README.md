@@ -80,6 +80,7 @@ Every command has `--help`. The common ones:
 | Task | Command |
 |---|---|
 | Create an environment | `wineo new` (guided), or write `environments/<name>.toml` by hand from [`docs/environment.toml.example`](docs/environment.toml.example) |
+| Add a native Linux game | `wineo new -n dusklight --native dusklight`, or by hand from [`docs/native-environment.toml.example`](docs/native-environment.toml.example) |
 | List environments | `wineo list` |
 | Launch the default target, or a named one | `wineo start hades`, `wineo start hades.server` |
 | Launch attached to the terminal | `wineo run hades` |
@@ -101,6 +102,7 @@ you pass `--portable DIR` or set it up for a portable folder.
 ### More documentation
 
 - [Config files](docs/config-files.md)
+- [Native Linux games](docs/native.md)
 - [Downloads and imports](docs/downloads-and-imports.md)
 - [Clone an environment](docs/clone.md)
 - [Prefix snapshots](docs/snapshots.md)

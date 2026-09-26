@@ -72,6 +72,16 @@ programs; `Skip for now` leaves things as they are. When the path itself is
 refused (the wrong prefix layout, say), `setup` prints the reason and
 continues with no offer.
 
+## Native environments
+
+A top-level `kind = "native"` makes an environment launch a Linux program
+directly, with no prefix or runner. A config without `kind` is a Wine
+environment, so adding the key needed no schema bump: an older wineo refuses
+a native config with `unknown field kind` rather than misreading it, and Wine
+configs never get the key written. `docs/native-environment.toml.example`
+(installed next to the Wine example) lists every key a native config can
+hold. See [Native Linux games](native.md).
+
 ## Creating an environment from a template
 
 To reuse the same settings across environments instead of writing each one by
