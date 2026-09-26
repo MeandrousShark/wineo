@@ -139,11 +139,22 @@ Which game is it?
   1) Hades (2020), 1234
   2) Hades II (2024), 5678
   3) Hades Demo, 9012
+  4) Search for something else
 Ctrl+C to cancel.
 Game [1]:
 ```
 
-Ctrl+C cancels the fetch with exit code 130. The pick is saved in art.toml
+`Search for something else` asks for a new term and shows its matches,
+until a game is picked. Esc at `Search for:` goes back to the list. A search
+with no matches says so and asks for another term:
+
+```
+No SteamGridDB games match `dusk`.
+Search for: Dusklight
+```
+
+Esc there ends the fetch without fetching anything. Ctrl+C cancels the fetch
+with exit code 130. The pick is saved in art.toml
 and reused by later fetches. `--search` searches again even when a game is
 already saved; `--game ID` skips the search and overwrites the saved game.
 art.toml has one game per environment, shared by all its targets. Picking a
@@ -182,8 +193,8 @@ prefers your language (from `LC_ALL`, `LC_MESSAGES`, or `LANG`, with `C` or
 `POSIX` meaning `en`, and `en` next), higher score, and larger images. An
 error during a fetch stops it but keeps the kinds already fetched, so
 running it again fills the rest. An interrupted download leaves no partial
-file. A search with no matches fails with `` no SteamGridDB games match
-`term` ``.
+file. Without a terminal, a search with no matches fails with `` no
+SteamGridDB games match `term` ``.
 
 ## Fetching during new and import
 
@@ -217,8 +228,10 @@ created and before the installer, so every question comes before the wait.
 Guided `wineo import heroic` has an `art` row on its review instead,
 searching the Heroic title, and editing it asks the same two questions.
 
-The pick list in these flows ends with `None of these, skip art`, which
-fetches nothing and prints how to fetch later:
+The pick list in these flows has the same `Search for something else`
+entry and asks again after a search with no matches, as `art fetch` does. It
+ends with `None of these, skip art`, which fetches nothing and prints how to
+fetch later. Esc after a search with no matches does the same:
 
 ```
 Skipped art. Fetch later with: wineo art fetch the-sims-4 --search <term>
@@ -242,9 +255,9 @@ hades: art from SteamGridDB game 1234, Hades (2020)
 `wineo art fetch --search` or `--game` replaces a wrong pick later. Only
 kinds with no art are fetched, as with a plain `art fetch`.
 
-Failures never stop the flow. A search with no matches, a rejected key, or a
-failed download prints a warning such as `warning: art fetch failed: ...`
-and the command carries on; kinds fetched before the error stay. Art never
+Failures never stop the flow. A rejected key, a failed download, or a
+search with no matches when there's no pick list prints a warning such as
+`warning: art fetch failed: ...` and the command carries on; kinds fetched before the error stay. Art never
 changes the exit code of `new` or `import`, and in `--all` it never counts
 as a failed game. Ctrl+C at the pick list cancels the rest of the command
 and keeps the environment.
