@@ -3,6 +3,14 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.7.1 - 2026-09-25
+
+- SteamGridDB pick lists in `art fetch`, guided `new`, and `import heroic`
+  have a `Search for something else` entry, and a search with no matches
+  asks for another term instead of failing when there's a terminal.
+- Shell completion offers paths for path arguments like `new --native`,
+  `--install-exe`, and `--dir`, which completed nothing before.
+
 ## 0.7.0 - 2026-09-25
 
 - Native Linux games: `kind = "native"` environments launch a Linux binary
