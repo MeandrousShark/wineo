@@ -1588,3 +1588,50 @@ fn setup_of_a_native_environment_adds_targets_by_path() {
         f.config("dusk")
     );
 }
+
+#[test]
+fn guided_heroic_import_of_a_native_game_asks_no_prefix_questions() {
+    let f = Fixture::new();
+    let heroic = f.root.path().join("heroic");
+    fs::create_dir_all(heroic.join("sideload_apps")).unwrap();
+    fs::create_dir_all(heroic.join("GamesConfig")).unwrap();
+    let exe = native_game(&f);
+    fs::write(
+        heroic.join("GamesConfig/dusk.json"),
+        r#"{"dusk":{"useGameMode":false}}"#,
+    )
+    .unwrap();
+    fs::write(
+        heroic.join("sideload_apps/library.json"),
+        format!(
+            r#"{{"games":[{{"app_name":"dusk","title":"Dusklight","runner":"sideload","install":{{"platform":"linux","executable":"{}"}}}}]}}"#,
+            exe.display()
+        ),
+    )
+    .unwrap();
+    let mut command = f.wineo();
+    command.args(["import", "heroic", "--config-dir", heroic.to_str().unwrap()]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Which Heroic game?");
+    pty.expect("Dusklight (dusk)");
+    pty.expect("Game: ");
+    pty.send("1");
+    pty.expect("Environment name [dusklight]: ");
+    pty.send("dusk");
+    pty.expect("Import Dusklight as dusk");
+    pty.expect("native");
+    pty.expect("Press Enter to import, or pick a number. Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Choice: ");
+    pty.send("");
+    pty.expect("Set up launch targets now? [Y/n]: ");
+    pty.send("n");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    for wine in ["Runner", "prefix be imported", "Copy it into wineo"] {
+        assert!(!output.contains(wine), "{wine}: {output}");
+    }
+    let config = f.config("dusk");
+    assert!(config.contains("kind = \"native\""), "{config}");
+    assert!(config.contains("heroic_id = \"dusk\""), "{config}");
+    assert!(config.contains("gamemode = false"), "{config}");
+}

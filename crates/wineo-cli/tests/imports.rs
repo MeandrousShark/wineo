@@ -759,3 +759,243 @@ fn heroic_imports_without_art_say_nothing_about_it() {
     assert_success(&bulk);
     assert!(steamgriddb_lines(&bulk).is_empty());
 }
+
+/// A Heroic library of native Linux sideloads: Dusklight, whose script is
+/// there, and Ship of Harkinian, whose exe isn't. Heroic keeps Wine settings
+/// for native games too, which the import ignores.
+fn native_heroic(f: &Fixture) -> (std::path::PathBuf, std::path::PathBuf) {
+    let config = f.root.path().join("heroic");
+    fs::create_dir_all(config.join("sideload_apps")).unwrap();
+    fs::create_dir_all(config.join("GamesConfig")).unwrap();
+    let exe = f.root.path().join("games/dusklight");
+    fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        config.join("config.json"),
+        r#"{"defaultSettings":{"winePrefix":"/nonexistent/prefix","wineVersion":{"type":"wine","name":"System","bin":"wine"},"autoInstallDxvk":true}}"#,
+    )
+    .unwrap();
+    fs::write(
+        config.join("GamesConfig/dusk.json"),
+        r#"{"dusk":{"useGameMode":true,"launcherArgs":"-x \"two words\"","enviromentOptions":[{"key":"FOO","value":"bar"}],"wrapperOptions":[{"exe":"mangohud","args":""}]}}"#,
+    )
+    .unwrap();
+    fs::write(config.join("GamesConfig/soh.json"), r#"{"soh":{}}"#).unwrap();
+    fs::write(
+        config.join("sideload_apps/library.json"),
+        format!(
+            r#"{{"games":[{{"app_name":"dusk","title":"Dusklight","runner":"sideload","install":{{"platform":"linux","executable":"{}"}}}},{{"app_name":"soh","title":"Ship of Harkinian","runner":"sideload","install":{{"platform":"linux","executable":"/nonexistent/soh"}}}}]}}"#,
+            exe.display()
+        ),
+    )
+    .unwrap();
+    (config, exe)
+}
+
+fn heroic_native(f: &Fixture, config: &Path, extra: &[&str]) -> std::process::Output {
+    let mut args = vec!["import", "heroic", "--config-dir", config.to_str().unwrap()];
+    args.extend(extra);
+    f.run(&args)
+}
+
+#[test]
+fn a_native_heroic_game_imports_as_a_native_environment() {
+    let f = Fixture::new();
+    let (heroic, exe) = native_heroic(&f);
+
+    let output = heroic_native(&f, &heroic, &["--game", "dusk", "-n", "dusk"]);
+    assert_success(&output);
+    let out = stdout(&output);
+    assert!(out.contains("Import Dusklight as dusk"), "{out}");
+    let row = |label: &str| {
+        out.lines()
+            .find_map(|line| {
+                let mut words = line.split_whitespace();
+                (words.next() == Some(label)).then(|| words.collect::<Vec<_>>().join(" "))
+            })
+            .unwrap_or_default()
+    };
+    assert_eq!(row("kind"), "native", "{out}");
+    assert_eq!(row("exe"), exe.display().to_string(), "{out}");
+    assert_eq!(row("gamemode"), "on", "{out}");
+    assert!(
+        out.contains("wrapperOptions: Heroic wrappers require manual setup"),
+        "{out}"
+    );
+    for wine in ["runner", "prefix", "dxvk", "vkd3d", "autoInstallDxvk"] {
+        assert!(!out.contains(wine), "{wine}: {out}");
+    }
+    assert!(out.contains("Imported dusk."), "{out}");
+
+    let path = f.root.path().join("config/wineo/environments/dusk.toml");
+    let text = fs::read_to_string(&path).unwrap();
+    let config = wineo_core::config::EnvironmentConfig::parse(&path, &text).unwrap();
+    assert!(config.wine().is_none(), "{text}");
+    assert_eq!(config.heroic_id.as_deref(), Some("dusk"));
+    assert_eq!(config.gamemode, Some(true));
+    assert_eq!(config.env["FOO"], "bar");
+    let game = &config.targets["game"];
+    assert_eq!(game.exe, exe.to_str().unwrap());
+    assert_eq!(game.args, ["-x", "two words"]);
+    assert!(game.default);
+    assert!(!game.desktop);
+
+    // It runs like any native environment.
+    assert_success(&f.run(&["run", "dusk"]));
+}
+
+#[test]
+fn a_native_heroic_game_refuses_wine_flags_and_a_missing_exe() {
+    let f = Fixture::new();
+    let (heroic, _) = native_heroic(&f);
+
+    let refused = heroic_native(
+        &f,
+        &heroic,
+        &["--game", "dusk", "-n", "dusk", "--runner", "wine"],
+    );
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("Dusklight is a native game, so --runner can't be used"),
+        "{}",
+        stderr(&refused)
+    );
+
+    let missing = heroic_native(&f, &heroic, &["--game", "soh", "-n", "soh"]);
+    assert!(!missing.status.success());
+    assert!(
+        stderr(&missing).contains("executable not found: /nonexistent/soh"),
+        "{}",
+        stderr(&missing)
+    );
+    assert!(
+        !f.root
+            .path()
+            .join("config/wineo/environments/dusk.toml")
+            .exists()
+    );
+    assert!(
+        !f.root
+            .path()
+            .join("config/wineo/environments/soh.toml")
+            .exists()
+    );
+
+    let listed = heroic_native(&f, &heroic, &["--list"]);
+    assert_success(&listed);
+    assert!(
+        stderr(&listed).contains("  issue: executable: executable not found: /nonexistent/soh"),
+        "{}",
+        stderr(&listed)
+    );
+}
+
+#[test]
+fn heroic_all_imports_native_games_and_recognizes_them_again() {
+    let f = Fixture::new();
+    let (heroic, _) = native_heroic(&f);
+
+    // No runner is needed when every game is native.
+    let output = heroic_native(&f, &heroic, &["--all", "--yes"]);
+    assert_success(&output);
+    let out = stdout(&output);
+    assert!(out.contains("Import 2 Heroic games:"), "{out}");
+    assert!(out.contains("dusklight"), "{out}");
+    assert!(out.contains("native"), "{out}");
+    assert!(
+        out.contains("skip: executable not found: /nonexistent/soh"),
+        "{out}"
+    );
+    assert!(out.contains("Imported 1 of 1 games."), "{out}");
+    let text = fs::read_to_string(
+        f.root
+            .path()
+            .join("config/wineo/environments/dusklight.toml"),
+    )
+    .unwrap();
+    assert!(text.contains("kind = \"native\""), "{text}");
+    assert!(text.contains("heroic_id = \"dusk\""), "{text}");
+
+    let again = heroic_native(&f, &heroic, &["--all", "--yes"]);
+    assert_success(&again);
+    assert!(
+        stdout(&again).contains("Already imported: dusklight"),
+        "{}",
+        stdout(&again)
+    );
+}
+
+#[test]
+fn heroic_all_backfills_a_native_environment_matched_by_its_exe() {
+    let f = Fixture::new();
+    let (heroic, exe) = native_heroic(&f);
+    let path = f.root.path().join("config/wineo/environments/mine.toml");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        format!(
+            "kind = \"native\"\n\n[targets.play]\nexe = {:?}\n",
+            exe.display()
+        ),
+    )
+    .unwrap();
+
+    let output = heroic_native(&f, &heroic, &["--all", "--yes"]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("Already imported: mine"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .contains("heroic_id = \"dusk\"")
+    );
+    assert!(
+        !f.root
+            .path()
+            .join("config/wineo/environments/dusklight.toml")
+            .exists()
+    );
+}
+
+#[test]
+fn heroic_all_imports_windows_and_native_games_together() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    let (_, exe) = {
+        // Adds Dusklight next to the Windows games.
+        let exe = f.root.path().join("games/dusklight");
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        let library = heroic.join("sideload_apps/library.json");
+        let text = fs::read_to_string(&library).unwrap().replace(
+            "]}",
+            &format!(
+                r#",{{"app_name":"dusk","title":"Dusklight","runner":"sideload","install":{{"platform":"linux","executable":"{}"}}}}]}}"#,
+                exe.display()
+            ),
+        );
+        fs::write(&library, text).unwrap();
+        (heroic.clone(), exe)
+    };
+    let output = bulk_heroic(&f, &heroic);
+    assert_success(&output);
+    let out = stdout(&output);
+    assert!(out.contains("Imported 3 of 3 games."), "{out}");
+    let dusk = fs::read_to_string(
+        f.root
+            .path()
+            .join("config/wineo/environments/dusklight.toml"),
+    )
+    .unwrap();
+    assert!(
+        dusk.contains(&format!("exe = \"{}\"", exe.display())),
+        "{dusk}"
+    );
+    assert!(!dusk.contains("prefix"), "{dusk}");
+}

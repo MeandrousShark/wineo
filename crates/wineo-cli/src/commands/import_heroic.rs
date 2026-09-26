@@ -30,6 +30,8 @@ use crate::picker;
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
 use crate::style;
 
+mod native;
+
 #[derive(clap::Args, Default)]
 pub struct Args {
     /// Read Heroic's config from this directory
@@ -218,7 +220,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
             if index > 0 {
                 println!();
             }
-            list(source)?;
+            list(paths, &global, source)?;
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -231,6 +233,19 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
             }
             Err(error) => Err(error),
         };
+    }
+    if !args.interactive
+        && let (Some(game), Some(_)) = (&args.game, &args.name)
+    {
+        let source = source(paths, args.config_dir.as_deref())?;
+        let is_native = source
+            .list_candidates()?
+            .candidates
+            .iter()
+            .any(|candidate| candidate.id == *game && candidate.kind == HeroicGameKind::Native);
+        if is_native {
+            return native::direct(paths, &global, &access, &source, &args);
+        }
     }
     let needs_guided =
         args.interactive || args.game.is_none() || args.name.is_none() || args.runner.is_none();
@@ -430,8 +445,8 @@ fn source_guided<I: Input, W: Write>(
     }
 }
 
-fn list(source: &HeroicSource) -> anyhow::Result<ExitCode> {
-    let listing = source.list_candidates()?;
+fn list(paths: &Paths, global: &GlobalConfig, source: &HeroicSource) -> anyhow::Result<ExitCode> {
+    let listing = native::listing(paths, global, source)?;
     println!(
         "Heroic source: {} ({:?})",
         source.config_dir().display(),
@@ -445,6 +460,10 @@ fn list(source: &HeroicSource) -> anyhow::Result<ExitCode> {
             "{}  {}  {:?}",
             candidate.id, candidate.title, candidate.kind
         );
+        if candidate.kind == HeroicGameKind::Native {
+            native::list_lines(&candidate);
+            continue;
+        }
         if let Some(prefix) = candidate.prefix {
             println!("  prefix: {}", prefix.display());
         }
@@ -467,7 +486,7 @@ fn guided<I: Input, W: Write>(
     prompt: &mut Prompt<I, W>,
     verbose: bool,
 ) -> anyhow::Result<ExitCode> {
-    let listing = source.list_candidates()?;
+    let listing = native::listing(paths, global, &source)?;
     let candidates: Vec<_> = listing
         .candidates
         .iter()
@@ -476,7 +495,7 @@ fn guided<I: Input, W: Write>(
         .collect();
     anyhow::ensure!(
         !candidates.is_empty(),
-        "Heroic has no importable Windows sideloads in {}",
+        "Heroic has no importable sideloads in {}",
         source.config_dir().display()
     );
     let game = if let Some(game) = args.game.clone() {
@@ -502,6 +521,9 @@ fn guided<I: Input, W: Write>(
             .find(|candidate| candidate.id == game_id)
             .unwrap()
     };
+    if game.kind == HeroicGameKind::Native {
+        return native::guided(paths, global, access, &source, &game, &args, prompt);
+    }
     let imported = source.inspect(&game.id)?;
     let mut imported = imported;
     let mut evidence = ReviewEvidence::new(&imported, source.shared_prefix_candidates(&game.id)?);
@@ -666,7 +688,13 @@ struct BulkRow {
 }
 
 enum RowStatus {
-    Ready { warn: Option<String> },
+    Ready {
+        warn: Option<String>,
+    },
+    /// A native game, which has no prefix to copy or adopt.
+    ReadyNative {
+        warn: Option<String>,
+    },
     Skipped(String),
 }
 
@@ -717,45 +745,105 @@ fn run_all(
         Some(Prompt::new(Terminal::open()?, io::stdout()).with_color(style::stdout_enabled()))
     };
 
-    let (runner_name, runner) = match &args.runner {
-        Some(name) => (name.clone(), runners.resolve(name)?),
-        None => match runners.newest_proton()? {
-            Some(runner) => (runner.selection().to_owned(), runner),
-            None => {
-                anyhow::ensure!(
-                    !args.yes,
-                    "no Proton runner is installed; pass --runner or download one first"
-                );
-                let prompt = prompt.as_mut().expect("interactive was checked above");
-                download_latest_ge_proton(paths, global, &runners, prompt)?
-            }
-        },
+    let listing = native::listing(paths, global, &source)?;
+    let (natives, windows): (Vec<HeroicCandidate>, Vec<HeroicCandidate>) = listing
+        .candidates
+        .iter()
+        .cloned()
+        .partition(|candidate| candidate.kind == HeroicGameKind::Native);
+    // Native games need no runner, so a library of only those never asks for one.
+    let runner = if windows.is_empty() && args.runner.is_none() {
+        None
+    } else {
+        Some(match &args.runner {
+            Some(name) => (name.clone(), runners.resolve(name)?),
+            None => match runners.newest_proton()? {
+                Some(runner) => (runner.selection().to_owned(), runner),
+                None => {
+                    anyhow::ensure!(
+                        !args.yes,
+                        "no Proton runner is installed; pass --runner or download one first"
+                    );
+                    let prompt = prompt.as_mut().expect("interactive was checked above");
+                    download_latest_ge_proton(paths, global, &runners, prompt)?
+                }
+            },
+        })
     };
 
-    let listing = source.list_candidates()?;
     println!("Checking {} Heroic games...", listing.candidates.len());
-    let existing = existing_environments(paths)?;
-    let (mut rows, mut ready, already, pending) = classify_candidates(
-        paths,
-        global,
-        &source,
-        &listing.candidates,
-        &existing,
-        &runner_name,
-        &runner,
-        &args,
-    )?;
-    let (pending_rows, pending_ready) =
-        resolve_pending(paths, global, &runner, pending, args.yes, prompt.as_mut())?;
-    rows.extend(pending_rows);
-    ready.extend(pending_ready);
+    let mut existing = existing_environments(paths)?;
+    let mut rows = Vec::new();
+    let mut already = Vec::new();
+    let mut ready_native = Vec::new();
+    for candidate in &natives {
+        let default_name = default_name_for(&candidate.title, candidate.executable.as_deref());
+        if let Some(matched) = match_existing(
+            &existing,
+            &candidate.id,
+            None,
+            candidate.executable.as_deref(),
+            &default_name,
+        ) {
+            if matched.needs_id {
+                backfill_match(paths, &mut existing, &matched, &candidate.id)?;
+            }
+            already.push(matched.name);
+            continue;
+        }
+        let taken = |name: &str| {
+            existing.iter().any(|environment| environment.name == name)
+                || ready_native
+                    .iter()
+                    .any(|game: &native::ReadyNative| game.name == name)
+        };
+        let (row, game) = native::classify(paths, global, &source, candidate, taken);
+        rows.push(row);
+        ready_native.extend(game);
+    }
+    // Stands in for the native games about to be imported, so a Windows game
+    // can't take one of their names. The id keeps them from being matched.
+    let mut claimed = existing.clone();
+    for game in &ready_native {
+        claimed.push(ExistingEnvironment {
+            name: game.name.clone(),
+            heroic_id: Some(game.id().to_owned()),
+            snapshot: None,
+            prefix: None,
+            target_exes: Vec::new(),
+        });
+    }
+    let mut ready = Vec::new();
+    if let Some((runner_name, runner)) = &runner {
+        let (windows_rows, windows_ready, windows_already, pending) = classify_candidates(
+            paths,
+            global,
+            &source,
+            &windows,
+            &claimed,
+            runner_name,
+            runner,
+            &args,
+        )?;
+        rows.extend(windows_rows);
+        ready.extend(windows_ready);
+        already.extend(windows_already);
+        let (pending_rows, pending_ready) =
+            resolve_pending(paths, global, runner, pending, args.yes, prompt.as_mut())?;
+        rows.extend(pending_rows);
+        ready.extend(pending_ready);
+    }
+    let runner_name = runner
+        .as_ref()
+        .map(|(name, _)| name.as_str())
+        .unwrap_or_default();
 
     let mode_label = if args.adopt { "adopt" } else { "copy" };
     println!(
         "{}",
-        render_bulk_table(&runner_name, mode_label, &rows, &already)
+        render_bulk_table(runner_name, mode_label, &rows, &already)
     );
-    if ready.is_empty() {
+    if ready.is_empty() && ready_native.is_empty() {
         println!("No Heroic games are ready to import.");
         return Ok(ExitCode::SUCCESS);
     }
@@ -776,7 +864,8 @@ fn run_all(
 
     if !args.yes {
         let prompt = prompt.as_mut().expect("interactive was checked above");
-        match prompt.confirm(&format!("Import {} games?", ready.len()), true)? {
+        let count = ready.len() + ready_native.len();
+        match prompt.confirm(&format!("Import {count} games?"), true)? {
             Reply::Value(true) => {}
             _ => return Err(Canceled.into()),
         }
@@ -787,12 +876,12 @@ fn run_all(
         global,
         access,
         source: &source,
-        runner: &runner,
+        runner: runner.as_ref().map(|(_, runner)| runner),
         desktop: desktop_enabled,
         art,
         verbose,
     };
-    import_all(&bulk, ready)
+    import_all(&bulk, ready, ready_native)
 }
 
 /// The key `--all` fetches art with, or None for no art. `--art` answers yes
@@ -854,7 +943,8 @@ struct ExistingEnvironment {
     name: String,
     heroic_id: Option<String>,
     snapshot: Option<HeroicIdSnapshot>,
-    prefix: PathBuf,
+    /// None for a native environment.
+    prefix: Option<PathBuf>,
     /// Every target's exe, expanded and resolved the same way as `prefix`.
     target_exes: Vec<PathBuf>,
 }
@@ -865,8 +955,10 @@ fn existing_environments(paths: &Paths) -> anyhow::Result<Vec<ExistingEnvironmen
         let Ok((loaded, snapshot)) = Environment::load_for_heroic_match(paths, &name) else {
             continue;
         };
-        let Ok(prefix) = loaded.prefix(paths) else {
-            continue;
+        let prefix = match loaded.prefix(paths) {
+            Ok(prefix) => Some(prefix),
+            Err(wineo_core::error::Error::NoPrefix(_)) => None,
+            Err(_) => continue,
         };
         let target_exes = loaded
             .config
@@ -879,7 +971,7 @@ fn existing_environments(paths: &Paths) -> anyhow::Result<Vec<ExistingEnvironmen
             name,
             heroic_id: loaded.config.heroic_id.clone(),
             snapshot: Some(snapshot),
-            prefix: wineo_core::paths::resolve(&prefix),
+            prefix: prefix.as_deref().map(wineo_core::paths::resolve),
             target_exes,
         });
     }
@@ -915,10 +1007,9 @@ fn match_existing(
     }
     if let Some(prefix) = candidate_prefix {
         let resolved = wineo_core::paths::resolve(prefix);
-        if let Some(environment) = existing
-            .iter()
-            .find(|environment| environment.heroic_id.is_none() && environment.prefix == resolved)
-        {
+        if let Some(environment) = existing.iter().find(|environment| {
+            environment.heroic_id.is_none() && environment.prefix.as_ref() == Some(&resolved)
+        }) {
             return Some(ExistingMatch {
                 name: environment.name.clone(),
                 needs_id: true,
@@ -1469,7 +1560,7 @@ fn bulk_desktop_choice(desktop_flag: bool, yes_flag: bool) -> Option<bool> {
 fn shared_ready_warning(rows: &[BulkRow]) -> Option<&str> {
     let mut ready_warnings = rows.iter().filter_map(|row| match &row.status {
         RowStatus::Ready { warn } => Some(warn.as_deref()),
-        RowStatus::Skipped(_) => None,
+        RowStatus::ReadyNative { .. } | RowStatus::Skipped(_) => None,
     });
     let first = ready_warnings.next()??;
     ready_warnings
@@ -1486,16 +1577,19 @@ fn render_bulk_table(
     let shared_warning = shared_ready_warning(rows);
     let name_width = rows.iter().map(|row| row.name.len()).max().unwrap_or(0);
     let title_width = rows.iter().map(|row| row.title.len()).max().unwrap_or(0);
-    let mut out = format!(
-        "{}\n",
-        style::title(format!(
-            "Import {} Heroic games with {runner_name}:",
-            rows.len()
-        ))
-    );
+    let heading = if runner_name.is_empty() {
+        format!("Import {} Heroic games:", rows.len())
+    } else {
+        format!("Import {} Heroic games with {runner_name}:", rows.len())
+    };
+    let mut out = format!("{}\n", style::title(heading));
     for row in rows {
         let status = match &row.status {
             RowStatus::Skipped(reason) => format!("skip: {reason}"),
+            RowStatus::ReadyNative { warn } => match warn {
+                None => "native".to_owned(),
+                Some(warning) => format!("native   {}", style::warning(format!("warn: {warning}"))),
+            },
             RowStatus::Ready { warn } => {
                 match warn.as_deref().filter(|_| shared_warning.is_none()) {
                     None => mode_label.to_owned(),
@@ -1528,17 +1622,22 @@ struct Bulk<'a> {
     global: &'a GlobalConfig,
     access: &'a Access<'a>,
     source: &'a HeroicSource,
-    runner: &'a Runner,
+    /// None when every game is native.
+    runner: Option<&'a Runner>,
     desktop: bool,
     /// The key to fetch art with, or None for no art.
     art: Option<Key>,
     verbose: bool,
 }
 
-fn import_all(bulk: &Bulk, ready: Vec<ReadyGame>) -> anyhow::Result<ExitCode> {
+fn import_all(
+    bulk: &Bulk,
+    ready: Vec<ReadyGame>,
+    ready_native: Vec<native::ReadyNative>,
+) -> anyhow::Result<ExitCode> {
     let paths = bulk.paths;
     let verbose = bulk.verbose;
-    let total = ready.len();
+    let total = ready.len() + ready_native.len();
     let mut done = 0usize;
     let mut failed = Vec::new();
     for game in ready {
@@ -1569,6 +1668,18 @@ fn import_all(bulk: &Bulk, ready: Vec<ReadyGame>) -> anyhow::Result<ExitCode> {
             Err(_) => {
                 failed.push(game.name);
             }
+        }
+    }
+    for game in ready_native {
+        let (mut art_out, mut art_err) = (Vec::new(), Vec::new());
+        let imported = import_progress(&mut io::stdout().lock(), &game.name, || {
+            native::import_one(bulk, &game, &mut art_out, &mut art_err)
+        })?;
+        io::stdout().write_all(&art_out)?;
+        io::stderr().write_all(&art_err)?;
+        match imported {
+            Ok(()) => done += 1,
+            Err(_) => failed.push(game.name),
         }
     }
     if failed.is_empty() {
@@ -1611,7 +1722,10 @@ fn import_one(
     out: &mut Vec<u8>,
     err: &mut Vec<u8>,
 ) -> anyhow::Result<Option<String>> {
-    let (paths, global, runner) = (bulk.paths, bulk.global, bulk.runner);
+    let (paths, global) = (bulk.paths, bulk.global);
+    let runner = bulk
+        .runner
+        .expect("a Windows game is only ready once a runner is chosen");
     let desktop = &DesktopChoice {
         enabled: bulk.desktop,
         name: game.title.clone(),
@@ -1765,7 +1879,7 @@ fn final_review<I: Input, W: Write>(
                 EditField::GameMode => edit_gamemode(imported, prompt)?,
                 EditField::Name => edit_name(paths, global, request, prompt)?,
                 EditField::Destination => edit_destination(paths, global, request, prompt)?,
-                EditField::Desktop => edit_desktop(paths, imported, desktop, prompt)?,
+                EditField::Desktop => edit_desktop(paths, &imported.title, desktop, prompt)?,
                 EditField::Art => edit_art(art, prompt)?,
             },
             Reply::Back => return Err(Canceled.into()),
@@ -1946,7 +2060,7 @@ fn edit_destination<I: Input, W: Write>(
 
 fn edit_desktop<I: Input, W: Write>(
     paths: &Paths,
-    imported: &HeroicImport,
+    title: &str,
     desktop: &mut DesktopChoice,
     prompt: &mut Prompt<I, W>,
 ) -> anyhow::Result<()> {
@@ -1958,7 +2072,7 @@ fn edit_desktop<I: Input, W: Write>(
     match prompt.confirm("Create a desktop entry?", desktop.enabled)? {
         Reply::Value(true) => {
             let current = if desktop.name.is_empty() {
-                imported.title.clone()
+                title.to_owned()
             } else {
                 desktop.name.clone()
             };
@@ -2383,6 +2497,14 @@ fn drop_runner_conflicts(imported: &mut HeroicImport) {
 /// selection and `--all` both filter candidates by. `None` means it can be
 /// imported.
 fn candidate_filter_issue(candidate: &HeroicCandidate) -> Option<&HeroicIssue> {
+    if candidate.kind == HeroicGameKind::Native
+        && !candidate
+            .issues
+            .iter()
+            .any(|issue| issue.field.as_deref() == Some("platform"))
+    {
+        return native::filter_issue(candidate);
+    }
     if candidate.kind != HeroicGameKind::Windows {
         return candidate
             .issues
@@ -4466,7 +4588,7 @@ mod tests {
             name: name.to_owned(),
             heroic_id: heroic_id.map(str::to_owned),
             snapshot: None,
-            prefix: prefix.to_owned(),
+            prefix: Some(prefix.to_owned()),
             target_exes: target_exes.iter().map(|exe| exe.to_path_buf()).collect(),
         }
     }
@@ -5255,7 +5377,7 @@ mod tests {
             global: &global,
             access: &access,
             source: &source,
-            runner: &runner,
+            runner: Some(&runner),
             desktop: true,
             art: Some(Key {
                 value: "k".into(),

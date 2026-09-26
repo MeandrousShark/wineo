@@ -18,7 +18,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use rustix::fs::ioctl_ficlone;
 use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
-use toml_edit::{Array, Item, Table, Value, value};
+use toml_edit::{Array, DocumentMut, Item, Table, Value, value};
 
 use crate::config::{Arch, EnvironmentConfig, GlobalConfig, Target, validate_env_var};
 use crate::download::{InstallLock, publish};
@@ -1106,6 +1106,17 @@ fn config_text(
     doc["prefix"] = value(prefix);
     doc["runner"] = value(runner);
     doc["arch"] = value(arch.as_str());
+    finish_config(doc, settings)
+}
+
+/// A native environment's config, with nothing about a prefix or runner.
+fn native_config_text(settings: &ImportedSettings) -> Result<String> {
+    let mut doc = crate::config::new_document();
+    doc["kind"] = value("native");
+    finish_config(doc, Some(settings))
+}
+
+fn finish_config(mut doc: DocumentMut, settings: Option<&ImportedSettings>) -> Result<String> {
     if let Some(settings) = settings {
         for (key, env_value) in &settings.env {
             validate_env_var(key, env_value).map_err(|message| anyhow!(message))?;
@@ -1171,6 +1182,31 @@ fn config_text(
     let path = Path::new("<import>");
     EnvironmentConfig::parse(path, &text).map_err(|err| anyhow!(err))?;
     Ok(text)
+}
+
+/// Registers a native environment from imported settings, which has no
+/// prefix to copy or adopt. The config is written once, so an environment
+/// that appeared meanwhile is never replaced.
+pub fn register_native(
+    paths: &Paths,
+    name: &str,
+    settings: &ImportedSettings,
+) -> Result<Environment> {
+    if !name::is_valid(name) {
+        bail!("invalid environment name `{name}`");
+    }
+    let config_path = paths.environment_config(name);
+    if config_path.exists() {
+        bail!("environment `{name}` already exists");
+    }
+    let text = native_config_text(&stored_settings(paths, settings)?)?;
+    let locks = Locks::new(paths);
+    let _operation = locks
+        .acquire(Operation::Create, name, &[])
+        .map_err(|err| anyhow!(err))?;
+    let _config = locks.config(&config_path).map_err(|err| anyhow!(err))?;
+    write_config_once(&config_path, &text)?;
+    Environment::load(paths, name).map_err(|err| anyhow!(err))
 }
 
 pub(crate) fn write_config_once(path: &Path, contents: &str) -> Result<()> {

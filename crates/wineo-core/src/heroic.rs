@@ -12,6 +12,15 @@ use sha2::{Digest, Sha256};
 use crate::error::{Error, Result};
 
 const FLATPAK_ID: &str = "com.heroicgameslauncher.hgl";
+/// The unsupported settings that still matter to a native game. The rest are
+/// about Wine or Proton, which a native game doesn't run on.
+const NATIVE_UNSUPPORTED: [&str; 5] = [
+    "wrapperOptions",
+    "beforeLaunchScriptPath",
+    "afterLaunchScriptPath",
+    "gamescope",
+    "showMangohud",
+];
 const MANAGED_ENV: [&str; 5] = [
     "WINEPREFIX",
     "PROTONPATH",
@@ -171,10 +180,13 @@ impl HeroicSource {
             }
             match candidate.kind {
                 HeroicGameKind::Windows => {}
-                HeroicGameKind::Native => candidate.issues.push(HeroicIssue::unsupported(
-                    Some("platform".to_owned()),
-                    "native games are not Windows prefix imports",
-                )),
+                HeroicGameKind::Native if platform(entry) != Some("linux") => {
+                    candidate.issues.push(HeroicIssue::unsupported(
+                        Some("platform".to_owned()),
+                        "only Linux native games can be imported",
+                    ))
+                }
+                HeroicGameKind::Native => {}
                 HeroicGameKind::Browser => candidate.issues.push(HeroicIssue::unsupported(
                     Some("browserUrl".to_owned()),
                     "browser games do not have a Wine prefix",
@@ -190,7 +202,18 @@ impl HeroicSource {
                     "only manually added sideloaded games are supported",
                 ));
             }
-            if candidate.issues.is_empty() {
+            if candidate.issues.is_empty() && candidate.kind == HeroicGameKind::Native {
+                match self.inspect_native_entry(raw_id, entry, &global) {
+                    Ok(import) => {
+                        candidate.executable = Some(import.exe.clone());
+                        candidate.issues = import.issues.clone();
+                    }
+                    Err(error) => candidate.issues.push(HeroicIssue::invalid(
+                        Some("settings".to_owned()),
+                        error.to_string(),
+                    )),
+                }
+            } else if candidate.issues.is_empty() {
                 match self.inspect_entry(raw_id, entry, &global) {
                     Ok(import) => {
                         candidate.prefix = Some(import.prefix.clone());
@@ -226,6 +249,137 @@ impl HeroicSource {
             .ok_or_else(|| missing_file(&library_path, "game id is not in sideload library"))?;
         let global = self.global_settings()?;
         self.inspect_entry(game_id, entry, &global)
+    }
+
+    /// Inspects a native sideloaded game, which imports as a native
+    /// environment. Heroic's Wine settings are ignored.
+    pub fn inspect_native(&self, game_id: &str) -> Result<HeroicNativeImport> {
+        if !valid_game_id(game_id) {
+            return Err(invalid_json(
+                &self.game_config_path(game_id),
+                "invalid game id",
+            ));
+        }
+        let library_path = self.library_path();
+        let library = read_json(&library_path)?;
+        let entries = library_entries(&library)
+            .ok_or_else(|| invalid_json(&library_path, "expected a games array"))?;
+        let entry = entries
+            .iter()
+            .filter_map(Value::as_object)
+            .find(|entry| string_field(entry, &["app_name", "id"]) == Some(game_id))
+            .ok_or_else(|| missing_file(&library_path, "game id is not in sideload library"))?;
+        let global = self.global_settings()?;
+        self.inspect_native_entry(game_id, entry, &global)
+    }
+
+    fn inspect_native_entry(
+        &self,
+        game_id: &str,
+        entry: &Map<String, Value>,
+        global: &Map<String, Value>,
+    ) -> Result<HeroicNativeImport> {
+        let game_path = self.game_config_path(game_id);
+        let game_root = read_optional_json(&game_path)?.unwrap_or(Value::Object(Map::new()));
+        if !supported_schema_root(&game_root) {
+            return Err(invalid_json(
+                &game_path,
+                format!(
+                    "unsupported Heroic game config version {}",
+                    schema_version(&game_root).unwrap_or_default()
+                ),
+            ));
+        }
+        let overrides = game_settings(&game_root, game_id).unwrap_or_default();
+        let mut effective = global.clone();
+        for (key, value) in &overrides {
+            effective.insert(key.clone(), value.clone());
+        }
+        let mut review = SettingsReview::default();
+        let mut issues = Vec::new();
+        if game_kind(entry) != HeroicGameKind::Native || platform(entry) != Some("linux") {
+            issues.push(HeroicIssue::unsupported(
+                Some("platform".to_owned()),
+                "only Linux native games import as native environments",
+            ));
+        }
+        if string_field(entry, &["runner"]) != Some("sideload") {
+            issues.push(HeroicIssue::unsupported(
+                Some("runner".to_owned()),
+                "only manually added sideloaded games can be imported",
+            ));
+        }
+        let base_exe = executable(entry)
+            .ok_or_else(|| missing_file(&game_path, "sideload entry has no executable"))?;
+        let target_exe = effective
+            .get("targetExe")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or(base_exe);
+        let (exe, relative_exe) = self.expand_path_buf(&target_exe);
+        review
+            .carried
+            .push(review_item("targetExe", exe.display().to_string()));
+        if relative_exe {
+            issues.push(HeroicIssue::needs_attention(
+                Some("targetExe".to_owned()),
+                "executable path was relative and was resolved against Heroic config",
+            ));
+        }
+        let launcher_args = effective
+            .get("launcherArgs")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let args = match crate::heroic_args::parse(launcher_args) {
+            Ok(args) => {
+                review.carried.push(review_item(
+                    "launcherArgs",
+                    format!("{launcher_args:?} -> {args:?}"),
+                ));
+                args
+            }
+            Err(error) => {
+                issues.push(HeroicIssue::invalid(
+                    Some("launcherArgs".to_owned()),
+                    format!("invalid Heroic quoting: {error}"),
+                ));
+                review.needs_attention.push(review_item(
+                    "launcherArgs",
+                    format!("{launcher_args:?} could not be parsed"),
+                ));
+                Vec::new()
+            }
+        };
+        let env = parse_environment(effective.get("enviromentOptions"), &mut issues, &mut review);
+        let gamemode = effective.get("useGameMode").and_then(Value::as_bool);
+        if let Some(value) = gamemode {
+            review
+                .carried
+                .push(review_item("useGameMode", value.to_string()));
+        }
+        collect_unsupported(
+            &effective,
+            global,
+            &overrides,
+            true,
+            &mut issues,
+            &mut review,
+        );
+        Ok(HeroicNativeImport {
+            id: game_id.to_owned(),
+            title: string_field(entry, &["title", "name"])
+                .unwrap_or(game_id)
+                .to_owned(),
+            exe,
+            args,
+            launcher_args: launcher_args.to_owned(),
+            env,
+            gamemode,
+            issues,
+            fingerprint: self.fingerprint(game_id)?,
+            settings_review: review,
+        })
     }
 
     pub fn shared_prefix_candidates(&self, game_id: &str) -> Result<Vec<HeroicSharedPrefix>> {
@@ -445,7 +599,14 @@ impl HeroicSource {
                 .push(review_item("useGameMode", value.to_string()));
         }
 
-        collect_unsupported(&effective, global, &overrides, &mut issues, &mut review);
+        collect_unsupported(
+            &effective,
+            global,
+            &overrides,
+            false,
+            &mut issues,
+            &mut review,
+        );
         if runner.kind == HeroicRunnerKind::Proton
             && bool_setting(&overrides, "disableUMU") == Some(true)
         {
@@ -673,6 +834,21 @@ pub struct HeroicImport {
     pub settings_review: SettingsReview,
 }
 
+/// A native sideloaded game, as a native environment would run it.
+#[derive(Debug, Clone)]
+pub struct HeroicNativeImport {
+    pub id: String,
+    pub title: String,
+    pub exe: PathBuf,
+    pub args: Vec<String>,
+    pub launcher_args: String,
+    pub env: BTreeMap<String, String>,
+    pub gamemode: Option<bool>,
+    pub issues: Vec<HeroicIssue>,
+    pub fingerprint: InputFingerprint,
+    pub settings_review: SettingsReview,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HeroicIssueKind {
     Invalid,
@@ -796,6 +972,21 @@ fn executable(object: &Map<String, Value>) -> Option<PathBuf> {
         .and_then(Value::as_str)
         .or_else(|| string_field(object, &["executable"]))
         .map(PathBuf::from)
+}
+
+/// The platform an entry names, lowercased, like `linux` or `windows`.
+fn platform(object: &Map<String, Value>) -> Option<&'static str> {
+    let platform = object
+        .get("install")
+        .and_then(Value::as_object)
+        .and_then(|install| install.get("platform"))
+        .and_then(Value::as_str)
+        .or_else(|| object.get("platform").and_then(Value::as_str))?;
+    [
+        "linux", "mac", "darwin", "windows", "win32", "win64", "browser",
+    ]
+    .into_iter()
+    .find(|known| platform.eq_ignore_ascii_case(known))
 }
 
 fn game_kind(object: &Map<String, Value>) -> HeroicGameKind {
@@ -1213,6 +1404,7 @@ fn collect_unsupported(
     settings: &Map<String, Value>,
     global: &Map<String, Value>,
     overrides: &Map<String, Value>,
+    native: bool,
     issues: &mut Vec<HeroicIssue>,
     review: &mut SettingsReview,
 ) {
@@ -1282,6 +1474,9 @@ fn collect_unsupported(
         ),
     ];
     for (field, detail) in unsupported {
+        if native && !NATIVE_UNSUPPORTED.contains(&field) {
+            continue;
+        }
         let Some(value) = settings.get(field) else {
             continue;
         };
