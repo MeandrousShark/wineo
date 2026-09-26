@@ -1740,3 +1740,79 @@ fn the_template_stays_the_first_question_when_a_flag_skips_the_kind() {
     assert!(!output.contains("What kind of environment?"), "{output}");
     assert!(!output.contains("Esc to go back"), "{output}");
 }
+
+fn validate(f: &Fixture, args: &[&str]) -> Pty {
+    let mut command = f.wineo();
+    command.arg("validate").args(args);
+    Pty::spawn(command)
+}
+
+/// Waits for the review of the fixes a stray state dir and entry offer.
+fn validate_review(pty: &mut Pty) {
+    pty.expect("2 warnings.\n");
+    pty.expect("  1) Remove oldgame's leftover state\n");
+    pty.expect("  2) Remove gone's desktop entry\n");
+    pty.expect("A number skips that fix.\n");
+    pty.expect("Press Enter to fix them, or pick a number. Ctrl+C to cancel.");
+    pty.expect("Choice: ");
+}
+
+#[test]
+fn validate_fixes_everything_on_enter() {
+    let f = Fixture::new();
+    let state = f.stray_state("oldgame");
+    let entry = f.stray_entry("gone");
+    let mut pty = validate(&f, &[]);
+    validate_review(&mut pty);
+    pty.send("");
+    pty.expect("Fixed 2 problems.");
+    let (status, _) = pty.finish();
+    assert_eq!(status.code(), Some(0));
+    assert!(!state.exists());
+    assert!(!entry.exists());
+}
+
+#[test]
+fn validate_skips_a_fix_picked_by_number() {
+    let f = Fixture::new();
+    let state = f.stray_state("oldgame");
+    let entry = f.stray_entry("gone");
+    let mut pty = validate(&f, &[]);
+    validate_review(&mut pty);
+    pty.send("1");
+    pty.expect("  1) Remove gone's desktop entry\n");
+    pty.expect("Choice: ");
+    pty.send("");
+    pty.expect("Fixed 1 problem. 1 warning left.");
+    let (status, _) = pty.finish();
+    assert_eq!(status.code(), Some(0));
+    assert!(state.exists());
+    assert!(!entry.exists());
+}
+
+#[test]
+fn ctrl_c_at_the_validate_review_fixes_nothing() {
+    let f = Fixture::new();
+    let state = f.stray_state("oldgame");
+    let entry = f.stray_entry("gone");
+    let mut pty = validate(&f, &[]);
+    validate_review(&mut pty);
+    pty.ctrl_c();
+    pty.expect("Canceled. Nothing was fixed.");
+    let (status, _) = pty.finish();
+    assert_eq!(status.code(), Some(130));
+    assert!(state.exists());
+    assert!(entry.exists());
+}
+
+#[test]
+fn validate_json_never_asks_even_at_a_terminal() {
+    let f = Fixture::new();
+    let state = f.stray_state("oldgame");
+    let pty = validate(&f, &["--json"]);
+    let (status, seen) = pty.finish();
+    assert_eq!(status.code(), Some(0));
+    assert!(seen.starts_with("{\"problems\":[{"), "{seen}");
+    assert!(!seen.contains("Choice"), "{seen}");
+    assert!(state.exists());
+}

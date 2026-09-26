@@ -495,6 +495,31 @@ impl Fixture {
     }
 }
 
+impl Fixture {
+    /// A state dir left behind by an environment that no longer exists.
+    pub fn stray_state(&self, name: &str) -> PathBuf {
+        let dir = self.root.path().join("state/wineo").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("output.log"), "old run\n").unwrap();
+        dir
+    }
+
+    /// A desktop entry wineo wrote for an environment that no longer exists.
+    pub fn stray_entry(&self, name: &str) -> PathBuf {
+        let dir = self.root.path().join("data/applications");
+        fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join(format!("wineo-{name}-{name}.desktop"));
+        fs::write(
+            &entry,
+            format!(
+                "[Desktop Entry]\nName={name}\nX-Wineo-Environment={name}\nX-Wineo-Target={name}\n"
+            ),
+        )
+        .unwrap();
+        entry
+    }
+}
+
 impl Drop for Fixture {
     /// A failed assertion must not leave supervisors or fake programs running.
     fn drop(&mut self) {
