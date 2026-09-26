@@ -30,4 +30,5 @@ mod table;
 pub mod templates;
 mod time;
 pub mod transfer;
+pub mod validate;
 pub mod winetricks;

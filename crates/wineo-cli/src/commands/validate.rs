@@ -1,0 +1,546 @@
+use std::io::{self, Write};
+use std::process::ExitCode;
+
+use serde::Serialize;
+use wineo_core::config::GlobalConfig;
+use wineo_core::paths::Paths;
+use wineo_core::validate::{self, Fix, Level, Problem, Report};
+
+use super::{components, json};
+use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
+use crate::style;
+
+/// The shell's code for a command ended by Ctrl+C.
+const CANCELED: u8 = 130;
+
+#[derive(clap::Args)]
+pub struct Args {
+    /// Environment to check, instead of everything
+    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
+    name: Option<String>,
+
+    /// Apply every fix without asking
+    #[arg(long)]
+    fix: bool,
+
+    /// Print the problems as JSON, without asking anything
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Serialize)]
+struct JsonOutput<'a> {
+    problems: &'a [Problem],
+    fixed: Vec<String>,
+}
+
+pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
+    let check = || match &args.name {
+        Some(name) => validate::check_environment(paths, name),
+        None => validate::check_all(paths),
+    };
+    let report = check()?;
+    let fixes = fixes(&report);
+
+    if args.json {
+        let applied = if args.fix {
+            apply_all(paths, &fixes)
+        } else {
+            Vec::new()
+        };
+        let report = if applied.is_empty() { report } else { check()? };
+        json::print(&JsonOutput {
+            problems: &report.problems,
+            fixed: applied.iter().map(Fix::label).collect(),
+        })?;
+        return Ok(exit(&report));
+    }
+
+    let color = style::stdout_enabled();
+    let mut out = io::stdout();
+    print_report(
+        paths,
+        &report,
+        verbose,
+        args.name.is_some(),
+        color,
+        &mut out,
+    )?;
+    if report.problems.is_empty() {
+        writeln!(out, "{}", clean(&report, args.name.as_deref()))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    writeln!(out)?;
+
+    let chosen = if fixes.is_empty() {
+        writeln!(out, "{}", summary(&report))?;
+        return Ok(exit(&report));
+    } else if args.fix {
+        writeln!(out, "{}", summary(&report))?;
+        fixes
+    } else if prompt::interactive() {
+        let mut prompt = Prompt::new(Terminal::open()?, io::stdout()).with_color(color);
+        match review(&mut prompt, &summary(&report), fixes) {
+            Err(err) if err.is::<Canceled>() => {
+                eprintln!("Canceled. Nothing was fixed.");
+                return Ok(ExitCode::from(CANCELED));
+            }
+            other => other?,
+        }
+    } else {
+        writeln!(out, "{}", summary(&report))?;
+        writeln!(out, "{}", fix_hint(fixes.len(), args.name.as_deref()))?;
+        return Ok(exit(&report));
+    };
+    if chosen.is_empty() {
+        writeln!(out, "Nothing was fixed.")?;
+        return Ok(exit(&report));
+    }
+
+    let applied = apply_all(paths, &chosen);
+    let fixed = report
+        .problems
+        .iter()
+        .filter(|problem| {
+            problem
+                .fix
+                .as_ref()
+                .is_some_and(|fix| applied.contains(fix))
+        })
+        .count();
+    let after = check()?;
+    writeln!(out, "{}", fixed_line(fixed, &after))?;
+    Ok(exit(&after))
+}
+
+fn exit(report: &Report) -> ExitCode {
+    if report.errors() > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Every fix offered, once each. Two environments missing the same build
+/// share its download.
+fn fixes(report: &Report) -> Vec<Fix> {
+    let mut fixes: Vec<Fix> = Vec::new();
+    for fix in report
+        .problems
+        .iter()
+        .filter_map(|problem| problem.fix.as_ref())
+    {
+        if !fixes.contains(fix) {
+            fixes.push(fix.clone());
+        }
+    }
+    fixes
+}
+
+/// Applies each fix on its own, so one failing leaves the rest to go on.
+/// Returns the ones that worked.
+fn apply_all(paths: &Paths, fixes: &[Fix]) -> Vec<Fix> {
+    let global = GlobalConfig::load_or_default(paths);
+    let mut applied = Vec::new();
+    for fix in fixes {
+        let result = validate::apply(paths, fix, |component, version| {
+            let global = global.as_ref().map_err(|err| anyhow::anyhow!("{err}"))?;
+            components::download_build(paths, global, component, version)
+        });
+        match result {
+            Ok(()) => applied.push(fix.clone()),
+            Err(err) => eprintln!(
+                "{}",
+                style::error_stderr(format!("error: {} failed: {err:#}", fix.label()))
+            ),
+        }
+    }
+    applied
+}
+
+/// The review from decision 2: Enter fixes everything listed, and a number
+/// takes that fix off the list.
+fn review<I: Input, W: Write>(
+    prompt: &mut Prompt<I, W>,
+    heading: &str,
+    mut fixes: Vec<Fix>,
+) -> anyhow::Result<Vec<Fix>> {
+    while !fixes.is_empty() {
+        let choices = numbered(
+            fixes
+                .iter()
+                .enumerate()
+                .map(|(index, fix)| (fix.label(), index)),
+        );
+        match prompt.review(
+            heading,
+            Some("A number skips that fix."),
+            "fix them",
+            &choices,
+            false,
+        )? {
+            Reply::Value(None) => return Ok(fixes),
+            Reply::Value(Some(index)) => {
+                fixes.remove(index);
+            }
+            Reply::Back => {}
+        }
+    }
+    Ok(fixes)
+}
+
+/// What a group of problems is listed under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Group {
+    Global,
+    Template(String),
+    Environment(String),
+}
+
+impl Group {
+    fn of(problem: &Problem) -> Self {
+        if let Some(template) = &problem.template {
+            Group::Template(template.clone())
+        } else if let Some(name) = problem.environment.as_ref().or(problem.stray.as_ref()) {
+            Group::Environment(name.clone())
+        } else {
+            Group::Global
+        }
+    }
+
+    fn heading(&self, paths: &Paths) -> String {
+        let shown = |path: std::path::PathBuf| {
+            paths
+                .contract(&path)
+                .unwrap_or_else(|_| path.display().to_string())
+        };
+        match self {
+            Group::Global => shown(paths.global_config()),
+            Group::Template(name) => shown(paths.templates_dir().join(format!("{name}.toml"))),
+            Group::Environment(name) => name.clone(),
+        }
+    }
+}
+
+/// Problems grouped under what they are in. With `verbose`, everything that
+/// was checked is listed, the clean ones with `ok`. `named` is a run on one
+/// environment, which leaves the global config and templates out.
+fn print_report(
+    paths: &Paths,
+    report: &Report,
+    verbose: bool,
+    named: bool,
+    color: bool,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let mut groups: Vec<Group> = Vec::new();
+    if verbose {
+        if !named {
+            groups.push(Group::Global);
+        }
+        groups.extend(report.templates.iter().cloned().map(Group::Template));
+        groups.extend(report.environments.iter().cloned().map(Group::Environment));
+    }
+    for problem in &report.problems {
+        let group = Group::of(problem);
+        if !groups.contains(&group) {
+            groups.push(group);
+        }
+    }
+    for group in &groups {
+        let heading = style::title_with_color(group.heading(paths), color);
+        let problems: Vec<&Problem> = report
+            .problems
+            .iter()
+            .filter(|problem| Group::of(problem) == *group)
+            .collect();
+        if problems.is_empty() {
+            writeln!(out, "{heading}  ok")?;
+            continue;
+        }
+        writeln!(out, "{heading}")?;
+        for problem in problems {
+            let level = format!("{:<7}", problem.level.as_str());
+            let level = match problem.level {
+                Level::Error => style::error_with_color(level, color),
+                Level::Warning => style::warning_with_color(level, color),
+            };
+            let mut lines = problem.message.lines();
+            writeln!(out, "  {level}  {}", lines.next().unwrap_or_default())?;
+            for line in lines {
+                writeln!(out, "           {line}")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn plural(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
+/// Like `1 error, 2 warnings`, leaving out a level with none.
+fn counts(report: &Report) -> String {
+    let mut parts = Vec::new();
+    if report.errors() > 0 {
+        parts.push(plural(report.errors(), "error", "errors"));
+    }
+    if report.warnings() > 0 {
+        parts.push(plural(report.warnings(), "warning", "warnings"));
+    }
+    parts.join(", ")
+}
+
+fn summary(report: &Report) -> String {
+    format!("{}.", counts(report))
+}
+
+fn clean(report: &Report, name: Option<&str>) -> String {
+    match name {
+        Some(name) => format!("No problems in {name}."),
+        None => format!(
+            "No problems in {}.",
+            plural(report.environments.len(), "environment", "environments")
+        ),
+    }
+}
+
+fn fix_hint(fixes: usize, name: Option<&str>) -> String {
+    let command = match name {
+        Some(name) => format!("wineo validate {name} --fix"),
+        None => "wineo validate --fix".to_owned(),
+    };
+    format!(
+        "{} can be fixed with `{command}`.",
+        plural(fixes, "problem", "problems")
+    )
+}
+
+fn fixed_line(fixed: usize, after: &Report) -> String {
+    let done = if fixed == 0 {
+        "Nothing was fixed.".to_owned()
+    } else {
+        format!("Fixed {}.", plural(fixed, "problem", "problems"))
+    };
+    if after.problems.is_empty() {
+        done
+    } else {
+        format!("{done} {} left.", counts(after))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    use wineo_core::components::Component;
+    use wineo_core::validate::{Area, Code};
+
+    use super::*;
+    use crate::prompt::Script;
+
+    fn paths(home: &Path) -> Paths {
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(home))).unwrap()
+    }
+
+    fn problem(code: Code, environment: Option<&str>, message: &str, fix: Option<Fix>) -> Problem {
+        Problem {
+            environment: environment.map(str::to_owned),
+            area: code.area(),
+            level: code.level(),
+            code,
+            message: message.to_owned(),
+            fix,
+            stray: None,
+            template: None,
+        }
+    }
+
+    fn art_fix() -> Fix {
+        Fix::DropArtRecord {
+            environment: "zomboid".to_owned(),
+            target: None,
+            kind: wineo_core::art::Kind::Icon,
+        }
+    }
+
+    fn state_fix() -> Fix {
+        Fix::RemoveStateDir {
+            environment: "oldgame".to_owned(),
+        }
+    }
+
+    fn broken() -> Report {
+        let mut stray = problem(
+            Code::StateDirStray,
+            None,
+            "state dir /s/oldgame has no environment",
+            Some(state_fix()),
+        );
+        stray.stray = Some("oldgame".to_owned());
+        let mut template = problem(Code::TemplateInvalid, None, "invalid config t.toml", None);
+        template.template = Some("mine".to_owned());
+        Report {
+            environments: vec!["clean".to_owned(), "zomboid".to_owned()],
+            templates: vec!["mine".to_owned()],
+            problems: vec![
+                problem(
+                    Code::GlobalConfigInvalid,
+                    None,
+                    "invalid config\nline two",
+                    None,
+                ),
+                template,
+                problem(
+                    Code::ExeMissing,
+                    Some("zomboid"),
+                    "target zomboid: C:\\Z.exe not found",
+                    None,
+                ),
+                problem(
+                    Code::ArtFileMissing,
+                    Some("zomboid"),
+                    "art: icon.png is recorded but missing",
+                    Some(art_fix()),
+                ),
+                stray,
+            ],
+        }
+    }
+
+    fn printed(report: &Report, verbose: bool) -> String {
+        printed_as(report, verbose, false)
+    }
+
+    fn printed_as(report: &Report, verbose: bool, named: bool) -> String {
+        let root = tempfile::tempdir().unwrap();
+        let mut out = Vec::new();
+        print_report(&paths(root.path()), report, verbose, named, false, &mut out).unwrap();
+        String::from_utf8(out)
+            .unwrap()
+            .replace(&root.path().display().to_string(), "~")
+    }
+
+    #[test]
+    fn problems_are_grouped_under_what_they_are_in() {
+        assert_eq!(
+            printed(&broken(), false),
+            concat!(
+                "~/.config/wineo/config.toml\n",
+                "  error    invalid config\n",
+                "           line two\n",
+                "~/.config/wineo/templates/mine.toml\n",
+                "  error    invalid config t.toml\n",
+                "zomboid\n",
+                "  error    target zomboid: C:\\Z.exe not found\n",
+                "  warning  art: icon.png is recorded but missing\n",
+                "oldgame\n",
+                "  warning  state dir /s/oldgame has no environment\n",
+            )
+        );
+    }
+
+    #[test]
+    fn verbose_lists_everything_checked() {
+        let listed = printed(&broken(), true);
+        assert!(listed.contains("~/.config/wineo/templates/mine.toml\n  error"));
+        assert!(listed.contains("\nclean  ok\nzomboid\n"), "{listed}");
+
+        let report = Report {
+            environments: vec!["zomboid".to_owned()],
+            ..Report::default()
+        };
+        assert_eq!(printed_as(&report, true, true), "zomboid  ok\n");
+        assert_eq!(
+            printed(&report, true),
+            "~/.config/wineo/config.toml  ok\nzomboid  ok\n"
+        );
+    }
+
+    #[test]
+    fn counts_and_endings_read_right() {
+        let report = broken();
+        assert_eq!(summary(&report), "3 errors, 2 warnings.");
+        let one = Report {
+            problems: vec![broken().problems.remove(4)],
+            ..Report::default()
+        };
+        assert_eq!(summary(&one), "1 warning.");
+        assert_eq!(fixed_line(2, &Report::default()), "Fixed 2 problems.");
+        assert_eq!(
+            fixed_line(1, &report),
+            "Fixed 1 problem. 3 errors, 2 warnings left."
+        );
+        assert_eq!(fixed_line(0, &one), "Nothing was fixed. 1 warning left.");
+        let none = Report {
+            environments: vec!["a".to_owned()],
+            ..Report::default()
+        };
+        assert_eq!(clean(&none, None), "No problems in 1 environment.");
+        assert_eq!(
+            clean(&Report::default(), None),
+            "No problems in 0 environments."
+        );
+        assert_eq!(clean(&none, Some("a")), "No problems in a.");
+        assert_eq!(
+            fix_hint(2, None),
+            "2 problems can be fixed with `wineo validate --fix`."
+        );
+    }
+
+    #[test]
+    fn equal_downloads_are_offered_once() {
+        let download = Fix::Download {
+            component: Component::Dxvk,
+            version: None,
+        };
+        let report = Report {
+            problems: vec![
+                problem(Code::BuildMissing, Some("a"), "x", Some(download.clone())),
+                problem(Code::BuildMissing, Some("b"), "x", Some(download.clone())),
+                problem(Code::LostRun, Some("b"), "x", Some(state_fix())),
+            ],
+            ..Report::default()
+        };
+        assert_eq!(fixes(&report), [download, state_fix()]);
+        assert_eq!(report.problems[0].area, Area::Wine);
+    }
+
+    #[test]
+    fn enter_fixes_everything_listed() {
+        let mut prompt = Prompt::new(Script::new(&[""]), Vec::new());
+        let chosen = review(&mut prompt, "1 warning.", vec![art_fix(), state_fix()]).unwrap();
+        assert_eq!(chosen, [art_fix(), state_fix()]);
+        let printed = String::from_utf8(prompt.output().clone()).unwrap();
+        assert_eq!(
+            printed,
+            concat!(
+                "1 warning.\n",
+                "  1) Drop zomboid's missing icon record\n",
+                "  2) Remove oldgame's leftover state\n",
+                "A number skips that fix.\n",
+                "\n",
+                "Press Enter to fix them, or pick a number. Ctrl+C to cancel.\n",
+                "Choice: ",
+            )
+        );
+    }
+
+    #[test]
+    fn a_number_skips_that_fix() {
+        let mut prompt = Prompt::new(Script::new(&["1", ""]), Vec::new());
+        let chosen = review(&mut prompt, "h", vec![art_fix(), state_fix()]).unwrap();
+        assert_eq!(chosen, [state_fix()]);
+
+        let mut prompt = Prompt::new(Script::new(&["1"]), Vec::new());
+        assert_eq!(review(&mut prompt, "h", vec![art_fix()]).unwrap(), []);
+    }
+
+    #[test]
+    fn cancel_fixes_nothing() {
+        let mut prompt = Prompt::new(Script::new(&["q"]), Vec::new());
+        let err = review(&mut prompt, "h", vec![art_fix()]).unwrap_err();
+        assert!(err.is::<Canceled>());
+    }
+}

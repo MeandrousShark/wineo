@@ -72,6 +72,8 @@ enum Command {
     Status(commands::status::Args),
     /// List environments and their state
     List(commands::list::Args),
+    /// Check configs and leftover state, and fix what is safe to fix
+    Validate(commands::validate::Args),
     /// Print the output of an environment's detached runs
     Logs(commands::logs::Args),
     /// Run an environment attached to the terminal
@@ -134,6 +136,7 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Rm(args) => commands::rm::run(&paths, args),
         Command::Status(args) => commands::status::run(&paths, args),
         Command::List(args) => commands::list::run(&paths, args),
+        Command::Validate(args) => commands::validate::run(&paths, args, verbose),
         Command::Logs(args) => commands::logs::run(&paths, args),
         Command::Run(args) => commands::run::run(&paths, args),
         Command::Exec(args) => commands::exec::run(&paths, args),
