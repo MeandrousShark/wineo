@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0027: `--native` as a kind, and `--exe` and `--desktop` for both kinds
 
@@ -35,7 +35,7 @@ Created environment palworld with target palworld
 - `Launch::check_target` and `check_native_target` already check a target
   without launching it.
 
-## Proposed decisions for maintainer approval
+## Decisions (settled with the maintainer, 2026-09-25)
 
 ### 1. `--native` takes no value
 
