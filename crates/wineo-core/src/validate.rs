@@ -440,7 +440,15 @@ pub fn check_all(paths: &Paths) -> Result<Report> {
     }
     check_strays(paths, &names, &mut report)?;
     report.environments = names;
+    contract(paths, &mut report);
     Ok(report)
+}
+
+/// Paths in messages are shown with `~` for the home dir, as elsewhere.
+fn contract(paths: &Paths, report: &mut Report) {
+    for problem in &mut report.problems {
+        problem.message = paths.contract_text(&problem.message);
+    }
 }
 
 /// Checks one environment: its config, targets, runtime state, desktop
@@ -460,6 +468,7 @@ pub fn check_environment(paths: &Paths, name: &str) -> Result<Report> {
         ..Report::default()
     };
     check_one(paths, &global, name, &mut report)?;
+    contract(paths, &mut report);
     Ok(report)
 }
 
@@ -1436,6 +1445,13 @@ mod tests {
         f.global("stop_timeuot = 3\n");
         assert_eq!(f.codes(), [Code::GlobalConfigInvalid, Code::ExeMissing]);
         let problem = f.only(Code::GlobalConfigInvalid);
+        assert!(
+            problem
+                .message
+                .starts_with("invalid config ~/config/wineo/config.toml: "),
+            "{}",
+            problem.message
+        );
         assert_eq!(problem.environment, None);
         assert_eq!(problem.level, Level::Error);
         assert!(
@@ -1763,6 +1779,10 @@ mod tests {
 
         let problem = f.only(Code::StateDirStray);
         assert_eq!(f.codes(), [Code::StateDirStray]);
+        assert_eq!(
+            problem.message,
+            "state dir ~/state/wineo/oldgame has no environment"
+        );
         assert_eq!(problem.environment, None);
         assert_eq!(problem.stray.as_deref(), Some("oldgame"));
         assert_eq!(fix(&problem).label(), "Remove oldgame's leftover state");

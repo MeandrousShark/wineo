@@ -239,6 +239,37 @@ impl Paths {
         }
     }
 
+    /// `contract` for every path under the home directory inside a message,
+    /// like the paths an error names. Only a whole path is contracted, so
+    /// `/home/ann2` or `/mnt/home/ann` is left alone when home is `/home/ann`.
+    pub fn contract_text(&self, text: &str) -> String {
+        let Some(home) = self.home.to_str().filter(|home| *home != "/") else {
+            return text.to_owned();
+        };
+        let in_path = |char: char| char.is_alphanumeric() || matches!(char, '/' | '-' | '_' | '.');
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(at) = rest.find(home) {
+            let before = match at {
+                0 => out.chars().last(),
+                _ => rest[..at].chars().last(),
+            };
+            let mut after = rest[at + home.len()..].chars();
+            // A period ending a sentence isn't part of the path.
+            let ends = match after.next() {
+                None | Some('/') => true,
+                Some('.') => !after.next().is_some_and(in_path),
+                Some(char) => !in_path(char),
+            };
+            out.push_str(&rest[..at]);
+            let starts = !before.is_some_and(in_path);
+            out.push_str(if starts && ends { "~" } else { home });
+            rest = &rest[at + home.len()..];
+        }
+        out.push_str(rest);
+        out
+    }
+
     /// The config form of a path. Inside a portable folder it is relative to
     /// the root, so the folder can move. Elsewhere it is `contract`.
     pub fn store(&self, path: &Path) -> Result<String> {
@@ -417,6 +448,24 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+
+    #[test]
+    fn contract_text_contracts_whole_paths_under_home() {
+        let paths = paths(&[("HOME", "/home/ann")]).unwrap();
+        assert_eq!(
+            paths.contract_text("invalid config /home/ann/.config/wineo/x.toml: bad"),
+            "invalid config ~/.config/wineo/x.toml: bad"
+        );
+        assert_eq!(paths.contract_text("/home/ann"), "~");
+        assert_eq!(
+            paths.contract_text("`/home/ann/a` and /home/ann/b\n/home/ann."),
+            "`~/a` and ~/b\n~."
+        );
+        assert_eq!(
+            paths.contract_text("/home/ann2/x /mnt/home/ann/y /home/ann.old"),
+            "/home/ann2/x /mnt/home/ann/y /home/ann.old"
+        );
+    }
 
     fn paths(vars: &[(&str, &str)]) -> Result<Paths> {
         let vars: HashMap<String, OsString> = vars

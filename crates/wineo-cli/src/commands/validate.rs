@@ -167,7 +167,7 @@ fn apply_all(paths: &Paths, fixes: &[Fix]) -> (Vec<Fix>, Vec<Failed>) {
             Ok(()) => applied.push(fix.clone()),
             Err(err) => failed.push(Failed {
                 fix: fix.label(),
-                message: format!("{err:#}"),
+                message: paths.contract_text(&format!("{err:#}")),
             }),
         }
     }
