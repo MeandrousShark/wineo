@@ -31,6 +31,8 @@ Completed: [0025: Fetch art during new and Heroic import](plans/0025-art-in-new-
 See [Fetching during new and import](art.md#fetching-during-new-and-import) for the flows and flags.
 Completed: [0026: Native Linux games](plans/0026-native-linux-games.md).
 See [Native Linux games](native.md) for creating, launching, and importing them.
+Completed: [0028: `wineo validate`](plans/0028-validate.md).
+See [Validate](validate.md) for the checks, fixes, and exit status.
 
 **Category**
 
@@ -51,7 +53,6 @@ See [Native Linux games](native.md) for creating, launching, and importing them.
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| `wineo validate` | Core | **2** | 0018 | Find config mistakes before a launch fails, and offer safe fixes | Checks syntax, unknown keys, and `schema_version`, plus that prefixes, runners, target executables, and working dirs exist. Also stale locks, lost runs, and dangling desktop entries. Only safe fixes are offered; an unsupported version or a missing prefix is reported, never rewritten. |
 | `--dry-run` for `import` and non-guided `new` | Automation | **2** | | Preview what would be created, copied, or registered without touching disk | Import already builds a review before writing, which a dry run could print and stop at. |
 | Pre-launch and post-exit hooks | Core | **2** | | Run a user command before a target starts or after it exits, e.g. mounting a drive or syncing saves | The supervisor already owns the process lifetime, so post-exit fits there. Needs decisions on failure handling, env vars passed in, and per-environment versus per-target hooks. |
 | Declarative winetricks dependencies | Compatibility | **2** | 0018 | List verbs in config, e.g. `winetricks = ["vcrun2022", "corefonts"]`, and have wineo install whatever is missing | Needs a record of installed verbs so it stays idempotent. A new config key is the first real test of 0018's versioning rules, since older wineo rejects unknown keys. |
