@@ -1635,3 +1635,38 @@ fn guided_heroic_import_of_a_native_game_asks_no_prefix_questions() {
     assert!(config.contains("heroic_id = \"dusk\""), "{config}");
     assert!(config.contains("gamemode = false"), "{config}");
 }
+
+#[test]
+fn esc_at_the_template_goes_back_to_the_kind_question() {
+    let f = Fixture::new();
+    let mut pty = f.new_guided(&[]);
+    pick_wine(&mut pty);
+    pty.expect("Start from a template?");
+    pty.expect("Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Template [1]: ");
+    pty.esc();
+    pty.expect("What kind of environment?");
+    pty.expect("Choice: ");
+    pty.send("2");
+    pty.expect("Install name: ");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+}
+
+#[test]
+fn the_template_stays_the_first_question_when_a_flag_skips_the_kind() {
+    let f = Fixture::new();
+    let dir = f.root.path().join("elsewhere");
+    let mut pty = f.new_guided(&["--dir", dir.to_str().unwrap()]);
+    pty.expect("Start from a template?");
+    pty.expect("Template [1]: ");
+    pty.esc();
+    pty.send("1");
+    pty.expect("Install name: ");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(!output.contains("What kind of environment?"), "{output}");
+    assert!(!output.contains("Esc to go back"), "{output}");
+}

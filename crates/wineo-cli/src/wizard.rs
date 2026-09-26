@@ -143,6 +143,8 @@ pub fn run<I: Input, W: Write>(
     } else {
         Step::Kind
     };
+    // Only a kind question that was asked can be gone back to.
+    let kind_asked = step == Step::Kind;
     let chosen = loop {
         match step {
             Step::Kind => {
@@ -165,8 +167,10 @@ pub fn run<I: Input, W: Write>(
             }
             Step::Template => {
                 let current = answers.template.as_ref().map(|(name, _)| name.as_str());
-                let Reply::Value(template) = ask_template(prompt, &templates, current)? else {
-                    unreachable!("the first question has nowhere to go back to");
+                let Reply::Value(template) = ask_template(prompt, &templates, current, kind_asked)?
+                else {
+                    step = Step::Kind;
+                    continue;
                 };
                 answers.arch_asked = prefill.arch.is_some()
                     || template.as_ref().is_some_and(|(_, t)| t.arch.is_some());
@@ -337,6 +341,7 @@ fn ask_template<I: Input, W: Write>(
     prompt: &mut Prompt<I, W>,
     templates: &Templates,
     current: Option<&str>,
+    back: bool,
 ) -> anyhow::Result<Reply<Option<(String, Template)>>> {
     let mut entries = vec![("None, choose each setting".to_owned(), None)];
     let mut broken = Vec::new();
@@ -366,7 +371,7 @@ fn ask_template<I: Input, W: Write>(
         "Template",
         &numbered(entries),
         Some(&default),
-        false,
+        back,
     )
 }
 
