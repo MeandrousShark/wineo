@@ -50,6 +50,14 @@ makepkg -si
 
 Run `makepkg -si` again from the same directory to update.
 
+`makepkg` writes the version it built into the PKGBUILD's `pkgver` line. To
+keep git from showing that as a change, run this once in the clone:
+
+```sh
+git config filter.pkgver.clean "sed 's/^pkgver=.*/pkgver=0/'"
+git config filter.pkgver.smudge cat
+```
+
 ### From source
 
 You need a recent stable Rust toolchain (the workspace uses the 2024
