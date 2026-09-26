@@ -226,6 +226,13 @@ Simpler, but the games with the most history show the least.
 - No backfill from `state.toml`. It holds only the latest run, so it would
   add one session at most.
 
+### 9. Settled during QA (2026-09-26)
+
+The log is strictly append-only. Importing Heroic playtime again appends a
+new `imported` line instead of rewriting the file, and readers use the last
+one. A rewrite could race with a supervisor appending a finished session and
+lose it.
+
 ## Implementation sequence
 
 1. Core: a `stats` module with the session record, the append and read side,
