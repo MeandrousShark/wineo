@@ -214,6 +214,17 @@ fn plain_answers(pty: &mut Pty, name: &str, how: &str) {
 /// `plain_answers` when a flag only Wine has, like `--dir`, already answered
 /// the kind question.
 fn plain_answers_prefilled(pty: &mut Pty, name: &str, how: &str) {
+    plain_answers_up_to_how(pty, name);
+    pty.expect(&format!("How does {name} get its program?"));
+    pty.expect("Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Choice [1]: ");
+    pty.send(how);
+}
+
+/// The template, name, location, and settings questions with the suggested
+/// answers, stopping right before "How does ... get its program?", whose
+/// default choice a prefill can change.
+fn plain_answers_up_to_how(pty: &mut Pty, name: &str) {
     pty.expect("Start from a template?");
     pty.expect("Ctrl+C to cancel.");
     pty.expect("Template [1]: ");
@@ -226,10 +237,6 @@ fn plain_answers_prefilled(pty: &mut Pty, name: &str, how: &str) {
     pty.expect("Esc to go back, Ctrl+C to cancel.");
     pty.expect("Choice [1]: ");
     pty.send("1");
-    pty.expect(&format!("How does {name} get its program?"));
-    pty.expect("Esc to go back, Ctrl+C to cancel.");
-    pty.expect("Choice [1]: ");
-    pty.send(how);
 }
 
 #[test]
@@ -1544,7 +1551,7 @@ fn esc_goes_back_from_the_native_exe_to_the_name_and_the_kind() {
 fn guided_new_with_native_skips_the_kind_question() {
     let f = Fixture::new();
     let exe = native_game(&f);
-    let mut pty = f.new_guided(&["--native", exe.to_str().unwrap()]);
+    let mut pty = f.new_guided(&["--native", "--exe", exe.to_str().unwrap()]);
     pty.expect("Install name: ");
     pty.send("dusk");
     pty.expect(&format!(
@@ -1555,6 +1562,65 @@ fn guided_new_with_native_skips_the_kind_question() {
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
     assert!(!output.contains("What kind of environment?"), "{output}");
+}
+
+#[test]
+fn guided_new_with_exe_alone_still_asks_the_kind_but_prefills_the_native_exe() {
+    let f = Fixture::new();
+    let exe = native_game(&f);
+    let mut pty = f.new_guided(&["--exe", exe.to_str().unwrap()]);
+    pty.expect("What kind of environment?");
+    pty.expect("Choice: ");
+    pty.send("2");
+    pty.expect("Install name: ");
+    pty.send("dusk");
+    pty.expect(&format!(
+        "Executable, as a path or a name on PATH [{}]: ",
+        exe.display()
+    ));
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(output.contains("What kind of environment?"), "{output}");
+    assert!(!f.registered("dusk"));
+}
+
+#[test]
+fn guided_new_with_exe_prefills_and_picks_the_wine_existing_target() {
+    let f = Fixture::new();
+    let exe = f.root.path().join("games/Palworld/start.sh");
+    fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut pty = f.new_guided(&["--exe", exe.to_str().unwrap()]);
+    pick_wine(&mut pty);
+    plain_answers_up_to_how(&mut pty, "palworld");
+    pty.expect("How does palworld get its program?");
+    pty.expect("Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Choice [2]: ");
+    pty.send("");
+    pty.expect(&format!("Executable [{}]: ", exe.display()));
+    pty.send("");
+    pty.expect("Ready to create palworld:");
+    pty.expect(&format!("program   use {}", exe.display()));
+    pty.expect("Create it? ");
+    pty.send("");
+    pty.expect("Created palworld.");
+    pty.expect("Adding \"start\":");
+    pty.expect("Choice: ");
+    pty.send("");
+    pty.expect("Save these changes?");
+    pty.expect("Choice: ");
+    pty.send("");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(
+        f.config("palworld")
+            .contains(&format!("exe = \"{}\"", exe.display())),
+        "{}",
+        f.config("palworld")
+    );
 }
 
 #[test]

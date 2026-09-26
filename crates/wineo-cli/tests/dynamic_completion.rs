@@ -380,10 +380,7 @@ fn path_arguments_complete_paths_of_their_kind() {
     let dirs = ["games/sub/"];
     let files = ["games/readme.txt", "games/run.sh", "games/sub/"];
 
-    assert_eq!(
-        complete(&["wineo", "new", "--native", "games/"]),
-        ["games/run.sh", "games/sub/"]
-    );
+    assert_eq!(complete(&["wineo", "new", "--exe", "games/"]), files);
     assert_eq!(
         complete(&["wineo", "new", "--install-exe", "games/"]),
         files

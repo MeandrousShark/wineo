@@ -548,19 +548,26 @@ fn desktop_entries_work_for_native_with_icons_from_art_only() {
 }
 
 #[test]
-fn new_native_writes_one_default_target_named_from_the_exe() {
+fn new_native_writes_one_default_target_named_from_the_environment() {
     let f = Fixture::new();
     let game = f.script("dusklight", GAME);
-    let created = f.run(&["new", "-n", "dusk", "--native", game.to_str().unwrap()]);
+    let created = f.run(&[
+        "new",
+        "-n",
+        "dusk",
+        "--native",
+        "--exe",
+        game.to_str().unwrap(),
+    ]);
     assert_success(&created);
     assert_eq!(
         stdout(&created),
-        "Created native environment dusk with target dusklight\n"
+        "Created native environment dusk with target dusk\n"
     );
     assert_eq!(
         f.created_config("dusk"),
         format!(
-            "schema_version = 1\nkind = \"native\"\n\n[targets.dusklight]\nexe = \"{}\"\ndefault = true\n",
+            "schema_version = 1\nkind = \"native\"\n\n[targets.dusk]\nexe = \"{}\"\ndefault = true\n",
             game.display()
         )
     );
@@ -576,7 +583,7 @@ fn new_native_writes_one_default_target_named_from_the_exe() {
     let created = f
         .wineo()
         .env("PATH", path)
-        .args(["new", "-n", "bare", "--native", "dusklight"])
+        .args(["new", "-n", "bare", "--native", "--exe", "dusklight"])
         .output()
         .unwrap();
     assert_success(&created);
@@ -587,6 +594,7 @@ fn new_native_writes_one_default_target_named_from_the_exe() {
         "-n",
         "missing",
         "--native",
+        "--exe",
         "wineo-surely-not-installed",
     ]);
     assert!(!refused.status.success());
@@ -595,7 +603,7 @@ fn new_native_writes_one_default_target_named_from_the_exe() {
         "{}",
         stderr(&refused)
     );
-    let refused = f.run(&["new", "-n", "win", "--native", "setup.exe"]);
+    let refused = f.run(&["new", "-n", "win", "--native", "--exe", "setup.exe"]);
     assert!(
         stderr(&refused).contains("win is native, so its target can't be a Windows program"),
         "{}",
@@ -604,12 +612,70 @@ fn new_native_writes_one_default_target_named_from_the_exe() {
     assert!(f.created_config("missing").is_empty());
     assert!(f.created_config("win").is_empty());
 
-    let taken = f.run(&["new", "-n", "dusk", "--native", game.to_str().unwrap()]);
+    let taken = f.run(&[
+        "new",
+        "-n",
+        "dusk",
+        "--native",
+        "--exe",
+        game.to_str().unwrap(),
+    ]);
     assert!(!taken.status.success());
     assert!(
         stderr(&taken).contains("already exists"),
         "{}",
         stderr(&taken)
+    );
+}
+
+#[test]
+fn new_native_alone_gives_an_empty_environment_and_the_hint() {
+    let f = Fixture::new();
+    let created = f.run(&["new", "-n", "dusk", "--native"]);
+    assert_success(&created);
+    assert_eq!(
+        stdout(&created),
+        "Created native environment dusk\nAdd a target with: wineo setup dusk\n"
+    );
+    assert_eq!(
+        f.created_config("dusk"),
+        "schema_version = 1\nkind = \"native\"\n"
+    );
+}
+
+#[test]
+fn new_native_refuses_a_value_the_old_syntax_gave_it() {
+    let f = Fixture::new();
+    let game = f.script("dusklight", GAME);
+    let refused = f.run(&["new", "-n", "dusk", "--native", game.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("unexpected argument"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(f.created_config("dusk").is_empty());
+}
+
+#[test]
+fn new_native_with_desktop_writes_an_entry_for_the_exe_target() {
+    let f = Fixture::new();
+    let game = f.script("dusklight", GAME);
+    let created = f.run(&[
+        "new",
+        "-n",
+        "dusk",
+        "--native",
+        "--exe",
+        game.to_str().unwrap(),
+        "-d",
+    ]);
+    assert_success(&created);
+    assert!(
+        f.root
+            .path()
+            .join("data/applications/wineo-dusk-dusk.desktop")
+            .is_file()
     );
 }
 
@@ -627,7 +693,7 @@ fn new_native_refuses_the_wine_only_flags() {
     ] {
         let refused = f
             .wineo()
-            .args(["new", "-n", "dusk", "--native", exe])
+            .args(["new", "-n", "dusk", "--native", "--exe", exe])
             .args(flags)
             .output()
             .unwrap();
