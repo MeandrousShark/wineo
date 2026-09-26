@@ -17,7 +17,7 @@ use crate::runners::Runners;
 use crate::winpath;
 
 /// The binary gamemode ships, which is not what the setting is called.
-const GAMEMODE: &str = "gamemoderun";
+pub(crate) const GAMEMODE: &str = "gamemoderun";
 /// What wineo hands umu itself on a Proton launch, so none of it can be
 /// overridden from a config or the command line.
 const MANAGED: [&str; 3] = ["PROTONPATH", "GAMEID", "STORE"];
@@ -582,7 +582,7 @@ pub fn check_program_path(paths: &Paths, program: &str) -> Result<()> {
 }
 
 /// The Unix path half of `resolve_program`, which needs no prefix.
-fn check_unix_program(paths: &Paths, exe: &str, relative_to_cwd: bool) -> Result<()> {
+pub(crate) fn check_unix_program(paths: &Paths, exe: &str, relative_to_cwd: bool) -> Result<()> {
     if winpath::is_windows_path(exe) || !is_path(exe, relative_to_cwd) {
         return Ok(());
     }

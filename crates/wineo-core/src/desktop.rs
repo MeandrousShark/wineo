@@ -254,6 +254,25 @@ pub fn remove_all(paths: &Paths, environment: &str) -> Result<Vec<String>> {
     Ok(removed)
 }
 
+/// Removes one entry and its icons, for an entry whose environment is gone.
+/// The file is left alone if it is no longer that entry.
+pub fn remove_entry(paths: &Paths, entry: &Entry) -> Result<()> {
+    supported(paths)?;
+    // The names come from a file anyone could have written, and end up in
+    // icon paths.
+    for name in [&entry.environment, &entry.target] {
+        if !crate::name::is_valid(name) {
+            return Err(Error::InvalidName(name.clone()));
+        }
+    }
+    if read_entry(&entry.path)
+        .is_some_and(|found| found.environment == entry.environment && found.target == entry.target)
+    {
+        remove_file(&entry.path)?;
+    }
+    remove_icons(paths, &entry.environment, &entry.target)
+}
+
 /// Refuses portable mode, whose environments never get desktop entries.
 pub fn supported(paths: &Paths) -> Result<()> {
     match paths.portable_root() {

@@ -37,6 +37,7 @@ pub mod steamgriddb;
 pub mod supervisor;
 pub mod targets;
 pub mod templates;
+pub mod validate;
 pub mod winpath;
 
 pub use error::{Error, Result};

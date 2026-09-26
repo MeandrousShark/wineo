@@ -536,6 +536,43 @@ pub fn remove(paths: &Paths, env: &str, target: Option<&str>, kind: Kind) -> Res
     Ok(Removed { files, record })
 }
 
+/// Drops the record of `kind` for `target`, or the environment for None, if
+/// its file is gone. Files are never touched. Returns whether it dropped one.
+pub fn drop_missing_record(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+) -> Result<bool> {
+    let art_dir = paths.art_dir(env);
+    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    Environment::ensure_exists(paths, env)?;
+    let mut art = ArtFile::open(&art_dir)?;
+    let Some(record) = art.config().record(target, kind) else {
+        return Ok(false);
+    };
+    let path = spot_dir(&art_dir, target).join(kind.file_name(record.format));
+    if fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) {
+        return Ok(false);
+    }
+    art.remove(target, kind);
+    art.save()
+}
+
+/// Drops the records for a target the environment no longer has. Its files
+/// stay. Returns whether it dropped any.
+pub fn drop_unknown_target(paths: &Paths, env: &str, target: &str) -> Result<bool> {
+    let art_dir = paths.art_dir(env);
+    let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    let environment = Environment::load(paths, env)?;
+    if environment.config.targets.contains_key(target) {
+        return Ok(false);
+    }
+    let mut art = ArtFile::open(&art_dir)?;
+    art.remove_target(target);
+    art.save()
+}
+
 /// Removes an environment's whole art dir, for `rm`. Returns whether there was one.
 pub fn remove_all(paths: &Paths, env: &str) -> Result<bool> {
     let art_dir = paths.art_dir(env);
