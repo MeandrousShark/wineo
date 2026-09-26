@@ -74,7 +74,7 @@ doesn't stop anything.
 | Environment | Several targets and no default, so `start` needs `--target` | warning | no |
 | Runtime | Lost run | warning | clean it up, like `wineo stop` |
 | Runtime | Unresolved installer | warning | clean it up, like `wineo stop` |
-| Runtime | Interrupted snapshot restore | error | no, hint `wineo snapshot restore` |
+| Runtime | Interrupted snapshot restore | error | no, hint `wineo snapshot recover` |
 | Runtime | State dir for an environment that no longer exists | warning | remove it |
 | Desktop | Entry for an environment that no longer exists | warning | remove it and its icons |
 | Desktop | An environment's entries out of date with its config | warning | rewrite them, like `start` does |
@@ -232,6 +232,21 @@ Checks only read, so they run on a running environment too. A fix takes the
 same lock its command would, so a fix for a busy environment (say `new` or a
 restore in progress) fails with today's busy error. It's reported as not
 fixed, and the rest go on.
+
+### 8. Settled during step 1 (2026-09-26)
+
+- A broken `art.toml` is an error (`art_config_invalid`) with no fix, so its
+  art checks aren't skipped silently.
+- The `code` and `area` names in `validate.rs` are approved as the stable
+  `--json` contract.
+- An interrupted restore is checked before the config is parsed, and skips
+  the environment's other checks.
+- A state dir with no environment that still records a lost run or an
+  unresolved installer gets no fix. The user removes it by hand once nothing
+  is running, since `wineo stop` can't reach it.
+- Not checked: shipped templates, DXVK/vkd3d builds for Proton runners, and
+  builds the prefix already holds. An environment with no targets isn't a
+  problem.
 
 ## Implementation sequence
 
