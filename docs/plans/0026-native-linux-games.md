@@ -130,7 +130,7 @@ Recommended:
 | `exe` | Meaning |
 |---|---|
 | `/usr/bin/dusklight`, `~/Games/Celeste/Celeste` | That file. It must exist and be executable. |
-| `dusklight` (no `/`) | Looked up on `PATH` at launch, like a shell would |
+| `dusklight` (no `/`) | Looked up on `PATH` at launch, like a shell would. The lookup uses the `PATH` the game gets (global `[env]`, the environment's `[env]`, then `-e`), falling back to wineo's own. |
 | `C:\...` or anything ending in `.exe`, `.msi`, `.bat`, `.lnk` | Refused: `dusklight is native, so its target can't be a Windows program` |
 | A relative path like `bin/game` | Refused outside portable mode, as for prefixes. In a portable folder it resolves against the folder, as Unix target paths do today. |
 
@@ -147,7 +147,7 @@ directory instead.
 - The command is `[gamemoderun] <exe> <args...>`, with the global `[env]`,
   the environment's `[env]`, and `-e` overrides applied. No `WINE*`
   variables are set, and `WINEPREFIX` is no longer reserved in a native
-  environment's `[env]`.
+  environment's `[env]` or in `-e`.
 - It runs in its own process group like a Proton run. `start` supervises it
   as usual, and the run is over when the whole group is gone, so a launcher
   that hands off to the game and exits is still tracked.
@@ -156,6 +156,10 @@ directory instead.
 - A program that leaves its own process group (`setsid`, or something that
   asks a running Steam to launch it) isn't tracked after it leaves. That's
   the same limit Proton has today.
+- Messages about a native run don't mention a prefix. The supervisor log
+  says `wineo: killing everything left in the process group`, and `status`
+  after a handoff says `other processes are keeping dusklight running`.
+  Wine and Proton wording is unchanged.
 
 ### 5. Creating one
 
