@@ -79,9 +79,11 @@ cyberpunk-2077: 97 h from Heroic
 ```
 
 Heroic's time counts toward the total but not toward sessions or averages,
-and `stats NAME` shows how much of the total it is. Importing again replaces
-the Heroic total with its current one, so time played through Heroic since
-then is picked up without counting anything twice.
+and `stats NAME` shows how much of the total it is. Importing again uses
+Heroic's current total in place of the old one, so time played through Heroic
+since then is picked up without counting anything twice. If an environment
+can't be updated, `--import-heroic` warns, goes on with the rest, and exits
+1.
 
 ## Where it's kept
 
@@ -96,10 +98,12 @@ The log is one JSON object per line, one per session:
 {"target":"game","started_at":"2026-09-20T19:02:11Z","ended_at":"2026-09-20T23:53:11Z","seconds":17460,"end":"stopped"}
 ```
 
-`end` is `exited`, `failed`, `stopped`, or `lost`. Heroic's time is a single
-`{"imported": {"seconds": ..., "last_played": ...}}` line. A line that doesn't
-parse, like one cut off by a crash, is skipped with a warning and the rest of
-the log still counts.
+`end` is `exited`, `failed`, `stopped`, or `lost`. Heroic's time is an
+`{"imported": {"seconds": ..., "last_played": ...}}` line. Each import adds a
+new one and only the last counts, so the log is never rewritten and a session
+finishing at the same moment can't be lost. A line that doesn't parse, like
+one cut off by a crash, is skipped with a warning and the rest of the log
+still counts.
 
 - `wineo rm` deletes the log.
 - `wineo clone` starts the clone at zero, since it's a new install to play.
