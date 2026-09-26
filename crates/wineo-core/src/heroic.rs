@@ -351,7 +351,15 @@ impl HeroicSource {
                 Vec::new()
             }
         };
-        let env = parse_environment(effective.get("enviromentOptions"), &mut issues, &mut review);
+        // wineo manages none of Wine's variables for a native game, so they stay.
+        let explicit = parse_environment(
+            effective.get("enviromentOptions"),
+            false,
+            &mut issues,
+            &mut review,
+        );
+        let mut env = prime_environment(&effective, &mut review);
+        env.extend(explicit);
         let gamemode = effective.get("useGameMode").and_then(Value::as_bool);
         if let Some(value) = gamemode {
             review
@@ -583,8 +591,12 @@ impl HeroicSource {
                 .carried
                 .push(review_item("workingDirectory", cwd.display().to_string()));
         }
-        let explicit_env =
-            parse_environment(effective.get("enviromentOptions"), &mut issues, &mut review);
+        let explicit_env = parse_environment(
+            effective.get("enviromentOptions"),
+            true,
+            &mut issues,
+            &mut review,
+        );
         let env = translated_environment(
             &effective,
             runner.kind,
@@ -1228,8 +1240,10 @@ fn hex_digest(digest: impl AsRef<[u8]>) -> String {
         .collect()
 }
 
+/// `managed` drops the variables wineo sets itself for a Windows game.
 fn parse_environment(
     value: Option<&Value>,
+    managed: bool,
     issues: &mut Vec<HeroicIssue>,
     review: &mut SettingsReview,
 ) -> BTreeMap<String, String> {
@@ -1273,7 +1287,7 @@ fn parse_environment(
             ));
             continue;
         }
-        if MANAGED_ENV.contains(&key) {
+        if managed && MANAGED_ENV.contains(&key) {
             issues.push(HeroicIssue::conflict(
                 Some(key.to_owned()),
                 "Heroic setting conflicts with a wineo-managed variable",
@@ -1290,15 +1304,13 @@ fn parse_environment(
     env
 }
 
-fn translated_environment(
+/// The variables Heroic's `nvidiaPrime` sets, for any kind of game. Explicit
+/// `enviromentOptions` go on top of these.
+fn prime_environment(
     settings: &Map<String, Value>,
-    runner: HeroicRunnerKind,
-    mut explicit: BTreeMap<String, String>,
-    issues: &mut Vec<HeroicIssue>,
     review: &mut SettingsReview,
 ) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
-    let wine_runner = matches!(runner, HeroicRunnerKind::Wine | HeroicRunnerKind::System);
     if bool_setting(settings, "nvidiaPrime") == Some(true) {
         env.insert("DRI_PRIME".to_owned(), "1".to_owned());
         env.insert("__NV_PRIME_RENDER_OFFLOAD".to_owned(), "1".to_owned());
@@ -1308,6 +1320,18 @@ fn translated_environment(
             "DRI_PRIME=1 and NVIDIA offload variables",
         ));
     }
+    env
+}
+
+fn translated_environment(
+    settings: &Map<String, Value>,
+    runner: HeroicRunnerKind,
+    mut explicit: BTreeMap<String, String>,
+    issues: &mut Vec<HeroicIssue>,
+    review: &mut SettingsReview,
+) -> BTreeMap<String, String> {
+    let mut env = prime_environment(settings, review);
+    let wine_runner = matches!(runner, HeroicRunnerKind::Wine | HeroicRunnerKind::System);
     // Heroic applies explicit enviromentOptions after general settings.
     env.append(&mut explicit);
 
@@ -1738,6 +1762,48 @@ mod tests {
         assert_eq!(import.env.get("KEEP"), Some(&String::new()));
         assert!(
             import
+                .issues
+                .iter()
+                .any(|issue| issue.kind == HeroicIssueKind::Conflict)
+        );
+    }
+
+    /// A native sideload `hades`, with `settings` as Heroic's defaults.
+    fn native_game(settings: &str) -> (TempDir, HeroicSource) {
+        let (root, source) = fixture();
+        let global = format!(r#"{{"defaultSettings":{{{settings}}}}}"#);
+        let library = r#"{"games":[{"app_name":"hades","title":"Hades","runner":"sideload","install":{"platform":"linux","executable":"/usr/bin/hades"}}]}"#;
+        write_fixture(&source, &global, "", library);
+        (root, source)
+    }
+
+    #[test]
+    fn a_native_import_carries_nvidia_prime_under_explicit_variables() {
+        let (_root, source) = native_game(
+            r#""nvidiaPrime":true,"showFps":true,"enviromentOptions":[{"key":"DRI_PRIME","value":"0"}]"#,
+        );
+        let import = source.inspect_native("hades").unwrap();
+        assert_eq!(import.env["DRI_PRIME"], "0");
+        assert_eq!(import.env["__NV_PRIME_RENDER_OFFLOAD"], "1");
+        assert_eq!(import.env["__GLX_VENDOR_LIBRARY_NAME"], "nvidia");
+        // DXVK_HUD is Wine's, so showFps means nothing to a native game.
+        assert!(!import.env.contains_key("DXVK_HUD"));
+        assert!(import.settings_review.carried.contains(&review_item(
+            "nvidiaPrime",
+            "DRI_PRIME=1 and NVIDIA offload variables"
+        )));
+    }
+
+    #[test]
+    fn a_native_import_keeps_what_wineo_manages_only_for_wine() {
+        let (_root, source) = native_game(
+            r#""enviromentOptions":[{"key":"WINEPREFIX","value":"/mine"},{"key":"PROTONPATH","value":"/proton"}]"#,
+        );
+        let import = source.inspect_native("hades").unwrap();
+        assert_eq!(import.env["WINEPREFIX"], "/mine");
+        assert_eq!(import.env["PROTONPATH"], "/proton");
+        assert!(
+            !import
                 .issues
                 .iter()
                 .any(|issue| issue.kind == HeroicIssueKind::Conflict)

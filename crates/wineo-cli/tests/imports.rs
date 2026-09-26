@@ -999,3 +999,27 @@ fn heroic_all_imports_windows_and_native_games_together() {
     );
     assert!(!dusk.contains("prefix"), "{dusk}");
 }
+
+#[test]
+fn a_native_heroic_import_keeps_wine_variables_and_carries_nvidia_prime() {
+    let f = Fixture::new();
+    let (heroic, _) = native_heroic(&f);
+    fs::write(
+        heroic.join("GamesConfig/dusk.json"),
+        r#"{"dusk":{"nvidiaPrime":true,"enviromentOptions":[{"key":"WINEPREFIX","value":"/mine"},{"key":"PROTONPATH","value":"/proton"}]}}"#,
+    )
+    .unwrap();
+    assert_success(&heroic_native(
+        &f,
+        &heroic,
+        &["--game", "dusk", "-n", "dusk"],
+    ));
+    let path = f.root.path().join("config/wineo/environments/dusk.toml");
+    let text = fs::read_to_string(&path).unwrap();
+    let config = wineo_core::config::EnvironmentConfig::parse(&path, &text).unwrap();
+    assert_eq!(config.env["WINEPREFIX"], "/mine");
+    assert_eq!(config.env["PROTONPATH"], "/proton");
+    assert_eq!(config.env["DRI_PRIME"], "1");
+    assert_eq!(config.env["__NV_PRIME_RENDER_OFFLOAD"], "1");
+    assert_eq!(config.env["__GLX_VENDOR_LIBRARY_NAME"], "nvidia");
+}
