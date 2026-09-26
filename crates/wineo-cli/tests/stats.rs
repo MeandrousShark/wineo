@@ -4,7 +4,7 @@ mod common;
 
 use std::fs;
 
-use common::{Fixture, assert_success, stdout};
+use common::{Fixture, assert_success, stderr, stdout};
 
 fn session(target: &str, started_at: &str, ended_at: &str, seconds: i64, end: &str) -> String {
     format!(
@@ -178,6 +178,43 @@ fn import_heroic_updates_existing_environments_and_the_summary_uses_the_last_imp
     assert_success(&named);
     let json: serde_json::Value = serde_json::from_slice(&stdout(&named).into_bytes()).unwrap();
     assert_eq!(json["imported_seconds"], 7200);
+}
+
+#[test]
+fn import_heroic_is_fail_soft_and_exits_1_if_any_environment_failed() {
+    let f = Fixture::new();
+    f.environment("good", "");
+    f.environment("bad", "");
+    for name in ["good", "bad"] {
+        let config = f.config_dir().join(format!("environments/{name}.toml"));
+        let text = fs::read_to_string(&config).unwrap();
+        fs::write(&config, format!("heroic_id = \"{name}-id\"\n{text}")).unwrap();
+    }
+    heroic_config(&f, "good-id", 60, "2026-09-20T19:02:11.000Z");
+    // Both games have playtime, so both try to write their imported line.
+    let heroic = f.config_dir().join("../heroic");
+    fs::write(
+        heroic.join("store/timestamp.json"),
+        r#"{"good-id":{"firstPlayed":"2026-01-01T00:00:00.000Z","lastPlayed":"2026-09-20T19:02:11.000Z","totalPlayed":60},"bad-id":{"firstPlayed":"2026-01-01T00:00:00.000Z","lastPlayed":"2026-09-20T19:02:11.000Z","totalPlayed":90}}"#,
+    )
+    .unwrap();
+    // A directory in place of "bad"'s log file makes writing it fail.
+    fs::create_dir_all(f.stats_log("bad")).unwrap();
+
+    let output = f.run(&["stats", "--import-heroic"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stdout(&output).contains("good: 1 h from Heroic"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        stderr(&output).contains("warning:"),
+        "{}",
+        stderr(&output)
+    );
+    // "good" still got its import despite "bad" failing.
+    assert!(f.read_stats_log("good").contains("\"seconds\":3600"));
 }
 
 #[test]

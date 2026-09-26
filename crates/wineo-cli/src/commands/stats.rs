@@ -263,31 +263,56 @@ fn label_line(label: &str, value: &str) -> String {
 }
 
 /// `wineo stats --import-heroic`: refreshes the `imported` line of every
-/// environment with a `heroic_id`, printing one terse line for each it updated.
+/// environment with a `heroic_id`, printing one terse line for each it
+/// updated. One environment's problem is warned about and skipped rather than
+/// stopping the rest, and the command exits 1 if any of them failed.
 fn import_heroic(paths: &Paths) -> anyhow::Result<ExitCode> {
     let sources = HeroicSource::discover_from_env()?;
+    let mut failed = false;
     for name in environment::names(paths)? {
-        let Ok(environment) = Environment::load(paths, &name) else {
-            continue;
+        let environment = match Environment::load(paths, &name) {
+            Ok(environment) => environment,
+            Err(error) => {
+                eprintln!(
+                    "warning: could not read {name}: {:#}",
+                    anyhow::Error::from(error)
+                );
+                failed = true;
+                continue;
+            }
         };
         let Some(heroic_id) = &environment.config.heroic_id else {
             continue;
         };
-        let playtime = sources
-            .iter()
-            .find_map(|source| source.playtime(heroic_id).ok().flatten());
+        let playtime = sources.iter().find_map(|source| {
+            source.playtime(heroic_id).unwrap_or_else(|error| {
+                eprintln!(
+                    "warning: could not read Heroic's playtime for {name}: {:#}",
+                    anyhow::Error::from(error)
+                );
+                None
+            })
+        });
         let Some(playtime) = playtime else {
             continue;
         };
-        stats::set_imported(
-            paths,
-            &name,
-            stats::Imported {
-                seconds: playtime.seconds,
-                last_played: playtime.last_played,
-            },
-        )?;
+        let imported = stats::Imported {
+            seconds: playtime.seconds,
+            last_played: playtime.last_played,
+        };
+        if let Err(error) = stats::set_imported(paths, &name, imported) {
+            eprintln!(
+                "warning: could not import playtime for {name}: {:#}",
+                anyhow::Error::from(error)
+            );
+            failed = true;
+            continue;
+        }
         println!("{name}: {} from Heroic", duration_hm(playtime.seconds));
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
 }
