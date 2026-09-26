@@ -80,9 +80,9 @@ they land first.
 
 1. Add native Linux games, so the features after it know some environments have no prefix.
 2. Add `wineo validate`.
-3. Make prefix deletion recoverable with trash and `prune`.
-4. Add Wine Wayland and Gamescope/MangoHud support, including supported Heroic import settings.
-5. Add declarative winetricks dependencies.
-6. Add tags and `wineo list --tag`.
-7. Add playtime statistics.
+3. Add playtime statistics.
+4. Make prefix deletion recoverable with trash and `prune`.
+5. Add Wine Wayland and Gamescope/MangoHud support, including supported Heroic import settings.
+6. Add declarative winetricks dependencies.
+7. Add tags and `wineo list --tag`.
 8. Complete the GUI-facing core API review, including a simplification pass that moves CLI logic into core, and resolve any blockers it finds.
