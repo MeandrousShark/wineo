@@ -18,8 +18,8 @@ use crate::operation::{Locks, Operation};
 use crate::paths::{self, Paths};
 use crate::runners::Runners;
 use crate::runtime::Runtime;
-use crate::stats;
 use crate::snapshot;
+use crate::stats;
 
 pub use crate::import::Cancelled as Canceled;
 

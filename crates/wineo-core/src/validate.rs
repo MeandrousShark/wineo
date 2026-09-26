@@ -128,10 +128,11 @@ pub enum Code {
     ArtTargetUnknown,
     ArtDuplicates,
     ArtDirStray,
+    StatsStray,
 }
 
 impl Code {
-    pub const ALL: [Code; 25] = [
+    pub const ALL: [Code; 26] = [
         Code::GlobalConfigInvalid,
         Code::TemplateInvalid,
         Code::TemplateUnresolved,
@@ -157,6 +158,7 @@ impl Code {
         Code::ArtTargetUnknown,
         Code::ArtDuplicates,
         Code::ArtDirStray,
+        Code::StatsStray,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -186,6 +188,7 @@ impl Code {
             Code::ArtTargetUnknown => "art_target_unknown",
             Code::ArtDuplicates => "art_duplicates",
             Code::ArtDirStray => "art_dir_stray",
+            Code::StatsStray => "stats_stray",
         }
     }
 
@@ -216,7 +219,8 @@ impl Code {
             | Code::ArtFileMissing
             | Code::ArtTargetUnknown
             | Code::ArtDuplicates
-            | Code::ArtDirStray => Level::Warning,
+            | Code::ArtDirStray
+            | Code::StatsStray => Level::Warning,
         }
     }
 
@@ -235,7 +239,8 @@ impl Code {
             Code::LostRun
             | Code::InstallerUnresolved
             | Code::RestoreInterrupted
-            | Code::StateDirStray => Area::Runtime,
+            | Code::StateDirStray
+            | Code::StatsStray => Area::Runtime,
             Code::DesktopEntryStray | Code::DesktopOutdated | Code::DesktopPortable => {
                 Area::Desktop
             }
@@ -292,6 +297,10 @@ pub enum Fix {
         environment: String,
         target: String,
     },
+    /// Removes a play log left by an environment that no longer exists.
+    RemoveStatsLog {
+        environment: String,
+    },
 }
 
 impl Fix {
@@ -333,6 +342,9 @@ impl Fix {
                 environment,
                 target,
             } => format!("Drop {environment}'s art records for {target}"),
+            Fix::RemoveStatsLog { environment } => {
+                format!("Remove {environment}'s leftover play stats")
+            }
         }
     }
 }
@@ -1022,6 +1034,21 @@ fn check_strays(paths: &Paths, names: &[String], report: &mut Report) -> Result<
             None,
         ));
     }
+
+    for (file, stray) in files_with_extension(&parent(&paths.stats_log("x")), "jsonl")? {
+        if known.contains(stray.as_str()) {
+            continue;
+        }
+        let fix = name::is_valid(&stray).then(|| Fix::RemoveStatsLog {
+            environment: stray.clone(),
+        });
+        report.push(Problem::stray(
+            Code::StatsStray,
+            &stray,
+            format!("play stats {} has no environment", file.display()),
+            fix,
+        ));
+    }
     Ok(())
 }
 
@@ -1047,6 +1074,34 @@ fn subdirs(dir: &Path) -> Result<Vec<(PathBuf, String)>> {
             continue;
         }
         found.push((entry.path(), name));
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Files directly in `dir` ending in `extension`, with the name they'd belong
+/// to (the file name without it), leaving out dotted ones.
+fn files_with_extension(dir: &Path, extension: &str) -> Result<Vec<(PathBuf, String)>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err).context(|| format!("failed to read {}", dir.display())),
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.context(|| format!("failed to read {}", dir.display()))?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let Some(stem) = name
+            .strip_suffix(&format!(".{extension}"))
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        found.push((path, stem));
     }
     found.sort();
     Ok(found)
@@ -1097,6 +1152,7 @@ pub fn apply(
             art::drop_unknown_target(paths, environment, target)?;
             Ok(())
         }
+        Fix::RemoveStatsLog { environment } => Ok(remove_stats_log(paths, environment)?),
     }
 }
 
@@ -1154,6 +1210,22 @@ fn remove_state_dir(paths: &Paths, name: &str) -> Result<()> {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err).context(|| format!("failed to remove {}", dir.display())),
+    }
+}
+
+fn remove_stats_log(paths: &Paths, name: &str) -> Result<()> {
+    if !name::is_valid(name) {
+        return Err(Error::InvalidName(name.to_owned()));
+    }
+    let _guard = Locks::new(paths).acquire(Operation::Remove, name, &[])?;
+    if paths.environment_config(name).exists() {
+        return Err(Error::EnvironmentExists(name.to_owned()));
+    }
+    let path = paths.stats_log(name);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).context(|| format!("failed to remove {}", path.display())),
     }
 }
 
@@ -1363,6 +1435,10 @@ mod tests {
 
         fn art_dir(&self, name: &str) -> PathBuf {
             self.paths.art_dir(name)
+        }
+
+        fn stats_log(&self, name: &str) -> PathBuf {
+            self.paths.stats_log(name)
         }
 
         fn stray_entry(&self, environment: &str, target: &str) -> (PathBuf, PathBuf) {
@@ -1786,6 +1862,32 @@ mod tests {
         assert_eq!(problem.environment, None);
         assert_eq!(problem.stray.as_deref(), Some("oldgame"));
         assert_eq!(fix(&problem).label(), "Remove oldgame's leftover state");
+        apply(&f.paths, fix(&problem), no_download).unwrap();
+        assert!(!stray.exists());
+        assert_eq!(f.codes(), []);
+    }
+
+    #[test]
+    fn a_stats_log_without_an_environment_is_removed() {
+        let f = Fixture::new();
+        f.wine("game", HEALTHY);
+        let stray = f.stats_log("oldgame");
+        fs::create_dir_all(stray.parent().unwrap()).unwrap();
+        fs::write(&stray, "{}\n").unwrap();
+        // A live environment's own log isn't a stray.
+        fs::write(f.stats_log("game"), "{}\n").unwrap();
+
+        let problem = f.only(Code::StatsStray);
+        assert_eq!(f.codes(), [Code::StatsStray]);
+        assert_eq!(problem.area, Area::Runtime);
+        assert!(problem.message.contains("play stats"));
+        assert!(problem.message.contains("has no environment"));
+        assert_eq!(problem.environment, None);
+        assert_eq!(problem.stray.as_deref(), Some("oldgame"));
+        assert_eq!(
+            fix(&problem).label(),
+            "Remove oldgame's leftover play stats"
+        );
         apply(&f.paths, fix(&problem), no_download).unwrap();
         assert!(!stray.exists());
         assert_eq!(f.codes(), []);

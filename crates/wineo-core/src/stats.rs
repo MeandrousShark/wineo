@@ -285,7 +285,11 @@ pub fn summarize(log: &Log, running: Option<&Running>, now: Timestamp, tz: &Time
             }),
         }
     }
-    by_target.sort_by(|a, b| b.seconds.cmp(&a.seconds).then_with(|| a.target.cmp(&b.target)));
+    by_target.sort_by(|a, b| {
+        b.seconds
+            .cmp(&a.seconds)
+            .then_with(|| a.target.cmp(&b.target))
+    });
 
     Summary {
         seconds: seconds + imported_seconds,
@@ -471,7 +475,12 @@ mod tests {
 
     #[test]
     fn summary_of_an_empty_log_has_nothing() {
-        let summary = summarize(&Log::default(), None, ts("2026-09-26T12:00:00Z"), &TimeZone::UTC);
+        let summary = summarize(
+            &Log::default(),
+            None,
+            ts("2026-09-26T12:00:00Z"),
+            &TimeZone::UTC,
+        );
         assert_eq!(summary.seconds, 0);
         assert_eq!(summary.sessions, 0);
         assert_eq!(summary.average_seconds, None);
@@ -512,10 +521,7 @@ mod tests {
         let summary = summarize(&log, None, now, &TimeZone::UTC);
         assert_eq!(summary.sessions, 3);
         assert_eq!(summary.seconds, 3600 + 17480 + 780);
-        assert_eq!(
-            summary.average_seconds,
-            Some((3600 + 17480 + 780) / 3)
-        );
+        assert_eq!(summary.average_seconds, Some((3600 + 17480 + 780) / 3));
         assert_eq!(
             summary.longest,
             Some(Longest {
