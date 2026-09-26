@@ -11,15 +11,27 @@ works the same for both kinds.
 ## Creating one
 
 ```
-$ wineo new -n dusklight --native dusklight
-Created native environment dusklight with target dusklight
+$ wineo new -n rimworld --native --exe ~/Games/RimWorld/start.sh -d
+Created native environment rimworld with target rimworld
+Added a desktop entry for rimworld in rimworld, with no icon
 ```
 
-`--native <EXE>` takes the program to launch. The target is named after it and
-made the default. `--art` works as usual, while `--runner`, `--arch`, `--dir`,
-`--template`, and `--install-exe` are refused.
+`--native` makes the environment native. `--exe` adds the program to launch
+as the default target, named after the environment, and `-d`/`--desktop`
+gives that target a desktop entry. The exe is checked before anything is
+written, so a bad one creates nothing. `--art` works as usual, while
+`--runner`, `--arch`, `--dir`, `--template`, and `--install-exe` are
+refused.
 
-Guided `wineo new` asks first:
+Without `--exe`, the environment starts with no targets:
+
+```
+$ wineo new -n rimworld --native
+Created native environment rimworld
+Add a target with: wineo setup rimworld
+```
+
+Guided `wineo new` asks first, unless `--native` already answered it:
 
 ```
 What kind of environment?

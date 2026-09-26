@@ -110,7 +110,7 @@ import](art.md#fetching-during-new-and-import).
 ### Import every Heroic game
 
 ```sh
-wineo import heroic --all [--runner <name>] [--adopt] [--desktop] [--art] [--yes]
+wineo import heroic --all [--runner <name>] [--adopt] [-d] [--art] [--yes]
 ```
 
 Every Windows game uses `--runner`, or the newest installed Proton. A library
@@ -121,7 +121,7 @@ a reason, and one confirmation covers them all. Review items take the guided
 defaults: unsupported settings are omitted, conflicting managed settings are
 dropped, and settings needing attention are kept, each noted in the table.
 
-`--desktop` creates a desktop entry for every game without asking. `--yes`
+`-d`/`--desktop` creates a desktop entry for every game without asking. `--yes`
 skips the confirmation, works without a terminal, and creates no desktop
 entries unless `--desktop` is also given. With a SteamGridDB key, `--all`
 also asks `Fetch art for these games?`, which `--art` answers the same way;
