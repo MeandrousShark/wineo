@@ -74,6 +74,10 @@ pub fn apply(paths: &Paths, name: &str, held: bool) -> anyhow::Result<()> {
     let Ok(environment) = Environment::load(paths, name) else {
         return Ok(());
     };
+    if environment.config.wine().is_none() {
+        let global = GlobalConfig::load_or_default(paths)?;
+        return reconcile_native(paths, &global, &environment);
+    }
     let Ok(prefix) = environment.prefix(paths) else {
         return Ok(());
     };
@@ -109,6 +113,18 @@ pub fn reconcile(
     prefix: &Path,
 ) -> anyhow::Result<()> {
     for change in desktop::reconcile(paths, global, environment, runner, prefix)? {
+        eprintln!("{}", describe(&change, &environment.name));
+    }
+    Ok(())
+}
+
+/// `reconcile` for a native environment, which has no runner or prefix.
+pub fn reconcile_native(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+) -> anyhow::Result<()> {
+    for change in desktop::reconcile_native(paths, global, environment)? {
         eprintln!("{}", describe(&change, &environment.name));
     }
     Ok(())

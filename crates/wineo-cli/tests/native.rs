@@ -466,3 +466,83 @@ fn set_works_for_native_and_checks_the_exes_it_writes() {
         stderr(&refused)
     );
 }
+
+/// A 1x1 PNG that decodes.
+const REAL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89\0\0\0\rIDAT\x78\x9c\x63\xf8\xcf\xc0\xf0\x1f\0\x05\0\x01\xff\x89\x99\x3d\x1d\0\0\0\0IEND\xae\x42\x60\x82";
+
+#[test]
+fn desktop_entries_work_for_native_with_icons_from_art_only() {
+    let f = Fixture::new();
+    let game = f.script("game.sh", GAME);
+    f.native("dusk", &target(&game));
+    let entry = f
+        .root
+        .path()
+        .join("data/applications/wineo-dusk-game.desktop");
+
+    let set = f.run(&["set", "dusk", "targets.game.desktop=true"]);
+    assert_success(&set);
+    assert_eq!(
+        stderr(&set),
+        "Added a desktop entry for game in dusk, with no icon\n"
+    );
+    let text = fs::read_to_string(&entry).unwrap();
+    assert!(
+        text.contains("Exec=wineo start dusk --target game\n"),
+        "{text}"
+    );
+    assert!(text.contains("Categories=Utility;Software;\n"), "{text}");
+    assert!(!text.contains("Icon="), "{text}");
+    assert!(!text.contains("StartupWMClass"), "{text}");
+
+    assert_success(&f.run(&["set", "dusk", "gamemode=true"]));
+    let text = fs::read_to_string(&entry).unwrap();
+    assert!(text.contains("Categories=Game;\n"), "{text}");
+
+    let png = f.root.path().join("icon.png");
+    fs::write(&png, REAL_PNG).unwrap();
+    let set = f.run(&["art", "set", "dusk", "icon", png.to_str().unwrap()]);
+    assert_success(&set);
+    assert_eq!(stderr(&set), "Updated the desktop entry for game in dusk\n");
+    let text = fs::read_to_string(&entry).unwrap();
+    assert!(
+        text.contains("\nIcon=wineo-dusk-game\nX-Wineo-Icon=art:"),
+        "{text}"
+    );
+    assert!(
+        f.root
+            .path()
+            .join("data/icons/hicolor/16x16/apps/wineo-dusk-game.png")
+            .is_file()
+    );
+
+    let listed = f.run(&["desktop"]);
+    assert_success(&listed);
+    assert!(stdout(&listed).contains("dusk"), "{}", stdout(&listed));
+
+    // A start reconciles like any other launch, and a clean one says nothing.
+    let started = f.run(&["start", "dusk"]);
+    assert_success(&started);
+    assert_eq!(stderr(&started), "");
+    wait_for("the program to start", || {
+        marker(&game, ".running").exists()
+    });
+    assert_success(&f.run(&["stop", "dusk"]));
+
+    let refused = f.run(&[
+        "set",
+        "dusk",
+        "targets.other.exe=/nonexistent/game",
+        "targets.other.desktop=true",
+    ]);
+    assert!(!refused.status.success());
+    assert!(
+        !f.root
+            .path()
+            .join("data/applications/wineo-dusk-other.desktop")
+            .exists()
+    );
+
+    assert_success(&f.run(&["rm", "dusk"]));
+    assert!(!entry.exists());
+}

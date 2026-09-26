@@ -50,7 +50,7 @@ pub fn reconcile(
     launch: &Launch,
 ) -> anyhow::Result<()> {
     let Host::Wine { runner, prefix } = &launch.host else {
-        return Ok(());
+        return crate::commands::desktop::reconcile_native(paths, global, environment);
     };
     crate::commands::components::reconcile_config(paths, global, environment, runner, prefix)?;
     crate::commands::desktop::reconcile(paths, global, environment, Some(runner), prefix)

@@ -87,6 +87,26 @@ pub fn reconcile(
     runner: Option<&Runner>,
     prefix: &Path,
 ) -> Result<Vec<Change>> {
+    reconcile_with(paths, global, environment, runner, Some(prefix))
+}
+
+/// `reconcile` for a native environment. Its icons come from art only, since
+/// only wine can pull one out of an executable.
+pub fn reconcile_native(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+) -> Result<Vec<Change>> {
+    reconcile_with(paths, global, environment, None, None)
+}
+
+fn reconcile_with(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    runner: Option<&Runner>,
+    prefix: Option<&Path>,
+) -> Result<Vec<Change>> {
     // The entries on the host belong to XDG environments, even one with the
     // same name, so a portable one only reports what it asked for.
     if supported(paths).is_err() {
@@ -210,11 +230,22 @@ fn write(
     global: &GlobalConfig,
     environment: &Environment,
     runner: Option<&Runner>,
-    prefix: &Path,
+    prefix: Option<&Path>,
     target_name: &str,
     target: &Target,
 ) -> Result<Vec<Change>> {
-    check(paths, prefix, &target.exe)?;
+    match prefix {
+        Some(prefix) => check(paths, prefix, &target.exe)?,
+        None => {
+            launch::check_native_exe(
+                paths,
+                global,
+                &environment.name,
+                &environment.config.env,
+                &target.exe,
+            )?;
+        }
+    }
 
     let path = entry_path(paths, &environment.name, target_name);
     let existing = fs::read_to_string(&path).ok();
@@ -232,6 +263,7 @@ fn write(
             target: target_name,
             name: &name,
             exe: &target.exe,
+            wine: prefix.is_some(),
             gaming,
             icon,
             stamp,
@@ -254,7 +286,7 @@ fn write(
     }
 
     let extract = || {
-        runner.is_some_and(|runner| {
+        runner.zip(prefix).is_some_and(|(runner, prefix)| {
             extract_icon(
                 paths,
                 runner,
@@ -375,6 +407,8 @@ struct Desired<'a> {
     target: &'a str,
     name: &'a str,
     exe: &'a str,
+    /// Whether wine runs it, which decides the window class.
+    wine: bool,
     gaming: bool,
     icon: bool,
     stamp: Option<&'a str>,
@@ -386,6 +420,7 @@ fn render(desired: &Desired) -> String {
         target,
         name,
         exe,
+        wine,
         gaming,
         icon,
         stamp,
@@ -414,7 +449,9 @@ fn render(desired: &Desired) -> String {
     }
     text.push_str("Terminal=false\n");
     text.push_str(&format!("Categories={categories}\n"));
-    if let Some(class) = wm_class(exe) {
+    // A native program names its own window class, which can't be known
+    // from its file name.
+    if *wine && let Some(class) = wm_class(exe) {
         // Without this the launcher shows a second, generic icon for the
         // running window instead of matching it to this entry.
         text.push_str(&format!("StartupWMClass={class}\n"));

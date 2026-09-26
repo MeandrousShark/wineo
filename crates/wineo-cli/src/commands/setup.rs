@@ -466,13 +466,13 @@ fn reconcile<I: Input, W: Write>(
     name: &str,
     prompt: &mut Prompt<I, W>,
 ) -> bool {
-    let result = Environment::load(paths, name).and_then(|environment| {
-        let prefix = environment.prefix(paths)?;
-        Ok((environment, prefix))
-    });
-    let reconciled = result
+    let reconciled = Environment::load(paths, name)
         .map_err(anyhow::Error::from)
-        .and_then(|(environment, prefix)| {
+        .and_then(|environment| {
+            if environment.config.wine().is_none() {
+                return desktop::reconcile_native(paths, global, &environment);
+            }
+            let prefix = environment.prefix(paths)?;
             let runner = Runners::new(paths, global)
                 .ok()
                 .and_then(|runners| runners.resolve(&environment.wine().ok()?.runner).ok());
