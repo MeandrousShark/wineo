@@ -311,6 +311,9 @@ impl Fix {
                 format!("Clean up after {environment}'s unfinished installer")
             }
             Fix::RemoveStateDir { environment } => format!("Remove {environment}'s leftover state"),
+            Fix::RemoveDesktopEntry(entry) if entry.target == entry.environment => {
+                format!("Remove {}'s desktop entry", entry.environment)
+            }
             Fix::RemoveDesktopEntry(entry) => format!(
                 "Remove {}'s desktop entry for {}",
                 entry.environment, entry.target
@@ -1967,7 +1970,7 @@ mod tests {
                         "environment `oldgame` is busy: a snapshot operation is running".to_owned()
                     )
                 ),
-                ("Remove gone's desktop entry for gone".to_owned(), Ok(())),
+                ("Remove gone's desktop entry".to_owned(), Ok(())),
             ]
         );
         assert!(f.paths.runtime_dir("oldgame").exists());
