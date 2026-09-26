@@ -219,8 +219,14 @@ fn creation_installer_keeps_the_runner_resolved_before_a_new_download() {
         &old,
     )
     .unwrap();
-    assert_eq!(installer.launch().runner.name(), "GE-Proton9-20");
-    assert_eq!(installer.launch().runner.selection(), "GE-Proton-Latest");
+    assert_eq!(
+        installer.launch().host.runner().unwrap().name(),
+        "GE-Proton9-20"
+    );
+    assert_eq!(
+        installer.launch().host.runner().unwrap().selection(),
+        "GE-Proton-Latest"
+    );
     assert!(
         f.created_config("test")
             .contains("runner = \"GE-Proton-Latest\"")

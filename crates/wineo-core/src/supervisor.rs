@@ -18,11 +18,10 @@ use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
 use signal_hook::iterator::{Handle, Signals};
 
 use crate::error::{self, Error, IoContext, Result};
-use crate::launch::{Launch, Overrides};
+use crate::launch::{Host, Launch, Overrides};
 use crate::log::{Cap, Log};
 use crate::operation::{Locks, Operation};
 use crate::prefix;
-use crate::runner::Runner;
 use crate::runtime::{RunMode, RunState, RunStatus, Runtime, exit_code};
 
 /// The hidden command a detached supervisor runs as.
@@ -131,12 +130,11 @@ impl Supervisor {
         mut notify: impl FnMut(Notice),
     ) -> Result<()> {
         let group = state.group;
-        let outlives = launch.runner.outlives_program();
+        let outlives = launch.host.outlives_program();
         // A run is over once the prefix looks idle, whether or not that could
         // be confirmed, so `settled` is not looked at.
         let ending = self.watch(
-            &launch.runner,
-            &launch.prefix,
+            &launch.host,
             group,
             state.boot_id.clone(),
             state.leader_start,
@@ -181,8 +179,7 @@ impl Supervisor {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn watch(
         &self,
-        runner: &Runner,
-        prefix: &Path,
+        host: &Host,
         group: Option<u32>,
         boot_id: Option<String>,
         leader_start: Option<u64>,
@@ -275,17 +272,13 @@ impl Supervisor {
                     // Launchers often hand off to another process and exit, so
                     // this lasts until nothing is left running in the prefix.
                     let sender = self.sender.clone();
-                    let (runner, prefix, boot_id) =
-                        (runner.clone(), prefix.to_owned(), boot_id.clone());
+                    let (host, boot_id) = (host.clone(), boot_id.clone());
                     thread::spawn(move || {
                         let result = match settle {
-                            Settle::Idle => runner.wait_idle(&prefix),
-                            Settle::Confirmed => runner.wait_settled_live(
-                                &prefix,
-                                group,
-                                boot_id.as_deref(),
-                                leader_start,
-                            ),
+                            Settle::Idle => host.wait_idle(group, boot_id.as_deref(), leader_start),
+                            Settle::Confirmed => {
+                                host.wait_settled_live(group, boot_id.as_deref(), leader_start)
+                            }
                         };
                         let _ = sender.send(Event::Idle(result));
                     });
@@ -296,17 +289,11 @@ impl Supervisor {
                     stopping = true;
                     deadline = Some(Instant::now() + stop_timeout);
                     watched(Watched::Notice(Notice::Stopping));
-                    let (runner, prefix, boot_id) =
-                        (runner.clone(), prefix.to_owned(), boot_id.clone());
+                    let (host, boot_id) = (host.clone(), boot_id.clone());
                     let (done, ended) = mpsc::channel();
                     ending_session = Some(ended);
                     thread::spawn(move || {
-                        let _ = runner.end_session_live(
-                            &prefix,
-                            group,
-                            boot_id.as_deref(),
-                            leader_start,
-                        );
+                        let _ = host.end_session_live(group, boot_id.as_deref(), leader_start);
                         let _ = done.send(());
                     });
                 }
@@ -321,7 +308,7 @@ impl Supervisor {
                     {
                         break Err(Error::StillRunning((stop_timeout + limit).as_secs().max(1)));
                     }
-                    match runner.kill_live(prefix, group, boot_id.as_deref(), leader_start) {
+                    match host.kill_live(group, boot_id.as_deref(), leader_start) {
                         Ok(
                             crate::process::GroupOwnership::Owned
                             | crate::process::GroupOwnership::Gone,
@@ -515,17 +502,19 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
 
     // `start` holds a lock of its own until this one is taken, but it lets go
     // when it exits, so the run keeps its protection here instead.
-    let _claim =
-        spec.claim
-            .locks
-            .acquire(Operation::Launch, &spec.claim.name, &[&spec.launch.prefix])?;
+    let held: Vec<&Path> = spec.launch.host.prefix().into_iter().collect();
+    let _claim = spec
+        .claim
+        .locks
+        .acquire(Operation::Launch, &spec.claim.name, &held)?;
     // The spec was prepared before the lock, so it can be stale by now.
     if !spec.claim.config.is_file() {
         return Err(Error::UnknownEnvironment(spec.claim.name.clone()));
     }
-    let wine_prefix = spec.launch.runner.wine_prefix(&spec.launch.prefix);
-    if !prefix::is_prefix(&wine_prefix) {
-        return Err(Error::MissingPrefix(spec.launch.prefix.clone()));
+    if let Host::Wine { runner, prefix } = &spec.launch.host
+        && !prefix::is_prefix(&runner.wine_prefix(prefix))
+    {
+        return Err(Error::MissingPrefix(prefix.clone()));
     }
 
     let runtime = Runtime::at(spec.runtime_dir.clone());
@@ -557,7 +546,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         .stderr(clone_log()?)
         .process_group(0)
         .spawn()
-        .context(|| format!("failed to start {}", spec.launch.runner.launcher()))?;
+        .context(|| format!("failed to start {}", spec.launch.host.launcher()))?;
     let mut state = RunState::running(
         RunMode::Detached,
         spec.launch.target.clone().unwrap_or_default(),
@@ -565,8 +554,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         Some(child.id()),
         &spec.overrides,
     );
-    state.runner = Some(spec.launch.runner.clone());
-    state.prefix = Some(spec.launch.prefix.clone());
+    state.record_host(&spec.launch.host);
     state.boot_id = crate::process::boot_id();
     state.leader_start = crate::process::start_time(child.id());
     if let Err(err) = runtime.write_state(&state) {
@@ -673,6 +661,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::runner::Runner;
 
     #[test]
     fn reports_round_trip_as_single_lines() {
@@ -722,8 +711,10 @@ mod tests {
             stop_timeout: 10,
             log_limit_mb: 50,
             launch: Launch {
-                runner: Runner::fake("wine"),
-                prefix: PathBuf::from("/prefixes/app"),
+                host: Host::Wine {
+                    runner: Runner::fake("wine"),
+                    prefix: PathBuf::from("/prefixes/app"),
+                },
                 target: Some("app".to_owned()),
                 args: vec![r"C:\Program Files\App\app.exe".to_owned(), "-x".to_owned()],
                 cwd: PathBuf::from("/prefixes/app/drive_c"),

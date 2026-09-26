@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{ExitCode, Stdio};
 use std::time::Duration;
 
@@ -14,8 +15,6 @@ use wineo_core::runtime::{RunMode, RunState, Runtime};
 use wineo_core::supervisor::{Notice, Supervisor};
 
 use crate::commands::build;
-use crate::commands::components;
-use crate::commands::desktop;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -61,23 +60,15 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, &args.name)?;
     let overrides = args.launch.into_overrides();
-    let runner = build::runner(paths, &global, &environment)?;
-    Launch::check_target(paths, &global, &environment, &runner, &overrides)?;
-    build::ensure_prefix(paths, &global, &environment, &runner)?;
+    build::prepare_target(paths, &global, &environment, &overrides)?;
     let launch = Launch::target(paths, &global, &environment, &overrides)?;
     let locks = Locks::new(paths);
-    let _guard = locks.acquire(Operation::Launch, &environment.name, &[&launch.prefix])?;
+    let held: Vec<&Path> = launch.host.prefix().into_iter().collect();
+    let _guard = locks.acquire(Operation::Launch, &environment.name, &held)?;
     Environment::ensure_exists(paths, &environment.name)?;
     let runtime = Runtime::new(paths, &environment.name);
     runtime.check_resolved(&environment.name)?;
-    components::reconcile_config(paths, &global, &environment, &launch.runner, &launch.prefix)?;
-    desktop::reconcile(
-        paths,
-        &global,
-        &environment,
-        Some(&launch.runner),
-        &launch.prefix,
-    )?;
+    build::reconcile(paths, &global, &environment, &launch)?;
 
     let Some(_lock) = runtime.try_lock()? else {
         bail!("{} is already running", environment.name);
@@ -92,7 +83,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         .stdin(Stdio::null())
         .process_group(0)
         .spawn()
-        .with_context(|| format!("failed to start {}", launch.runner.launcher()))?;
+        .with_context(|| format!("failed to start {}", launch.host.launcher()))?;
     let mut state = RunState::running(
         RunMode::Attached,
         launch.target.clone().unwrap_or_default(),
@@ -100,8 +91,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         Some(child.id()),
         &overrides,
     );
-    state.runner = Some(launch.runner.clone());
-    state.prefix = Some(launch.prefix.clone());
+    state.record_host(&launch.host);
     state.boot_id = process::boot_id();
     state.leader_start = process::start_time(child.id());
     // Wine is already running, so bailing out here would orphan it and free the lock.

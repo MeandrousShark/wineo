@@ -20,7 +20,7 @@ use jiff::Timestamp;
 use crate::config::GlobalConfig;
 use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
-use crate::launch::Launch;
+use crate::launch::{Host, Launch};
 use crate::operation::{Guard, Locks, Operation};
 use crate::paths::Paths;
 use crate::process;
@@ -77,7 +77,11 @@ impl Installer {
         program: &str,
     ) -> Result<Self> {
         // Resolved once to know which prefix to lock, then again under it.
-        let locked = launch(paths, global, &Environment::load(paths, name)?, program)?.prefix;
+        let locked = launch(paths, global, &Environment::load(paths, name)?, program)?
+            .host
+            .prefix()
+            .ok_or_else(|| Error::NoPrefix(name.to_owned()))?
+            .to_owned();
         let guard = Locks::new(paths).acquire(Operation::Install, name, &[&locked])?;
         Self::claim(guard, paths, global, name, program, Some(&locked), None)
     }
@@ -129,12 +133,19 @@ impl Installer {
             wine.runner = runner.name().to_owned();
         }
         let mut launch = launch(paths, global, &environment, program)?;
+        let Host::Wine {
+            runner: launch_runner,
+            prefix,
+        } = &mut launch.host
+        else {
+            return Err(Error::NoPrefix(name.to_owned()));
+        };
         if let Some(runner) = fixed_runner {
-            launch.runner = runner.clone();
+            *launch_runner = runner.clone();
         }
-        if locked.is_some_and(|locked| {
-            crate::paths::resolve(locked) != crate::paths::resolve(&launch.prefix)
-        }) {
+        if locked
+            .is_some_and(|locked| crate::paths::resolve(locked) != crate::paths::resolve(prefix))
+        {
             return Err(Error::Changed(name.to_owned()));
         }
         let runtime = Runtime::new(paths, name);
@@ -180,11 +191,14 @@ impl Installer {
             runtime,
             program,
         } = self;
+        let Host::Wine { runner, prefix } = &launch.host else {
+            unreachable!("an installer is only claimed for a launch in a prefix");
+        };
         let mut record = OperationState {
             operation: Operation::Install,
             program,
-            runner: launch.runner.clone(),
-            prefix: launch.prefix.clone(),
+            runner: runner.clone(),
+            prefix: prefix.clone(),
             pid: None,
             group: None,
             boot_id: None,
@@ -200,7 +214,7 @@ impl Installer {
         let mut child = match command(&launch, output).and_then(|mut command| {
             command
                 .spawn()
-                .context(|| format!("failed to start {}", launch.runner.launcher()))
+                .context(|| format!("failed to start {}", runner.launcher()))
         }) {
             Ok(child) => child,
             Err(err) => {
@@ -214,8 +228,8 @@ impl Installer {
         record.boot_id = process::boot_id();
         record.leader_start = process::start_time(child.id());
         if let Err(err) = write_operation(&runtime, &record) {
-            let cleanup = launch.runner.kill_owned(
-                &launch.prefix,
+            let cleanup = runner.kill_owned(
+                prefix,
                 record.group,
                 record.boot_id.as_deref(),
                 record.leader_start,
@@ -251,8 +265,7 @@ impl Installer {
         }
 
         let ending = supervisor.watch(
-            &launch.runner,
-            &launch.prefix,
+            &launch.host,
             record.group,
             record.boot_id.clone(),
             record.leader_start,
@@ -442,12 +455,14 @@ mod tests {
                 .acquire(Operation::Install, "hades", &[&prefix])
                 .unwrap(),
             launch: Launch {
-                runner: Runner::wine_build(
-                    "fake".to_owned(),
-                    PathBuf::from(wine),
-                    PathBuf::from("/bin/true"),
-                ),
-                prefix,
+                host: Host::Wine {
+                    runner: Runner::wine_build(
+                        "fake".to_owned(),
+                        PathBuf::from(wine),
+                        PathBuf::from("/bin/true"),
+                    ),
+                    prefix,
+                },
                 target: None,
                 args: vec!["setup.exe".to_owned()],
                 cwd: root.to_owned(),

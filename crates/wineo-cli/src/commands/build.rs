@@ -6,6 +6,7 @@ use anyhow::anyhow;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
+use wineo_core::launch::{Host, Launch, Overrides};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
@@ -17,6 +18,42 @@ pub fn runner(
     environment: &Environment,
 ) -> anyhow::Result<Runner> {
     Ok(Runners::new(paths, global)?.resolve(&environment.wine()?.runner)?)
+}
+
+/// What `start`, `run`, and `restart` check before anything else, building a
+/// missing prefix. A native environment has no prefix to build.
+pub fn prepare_target(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    overrides: &Overrides,
+) -> anyhow::Result<()> {
+    if environment.config.wine().is_none() {
+        return Ok(Launch::check_native_target(
+            paths,
+            global,
+            environment,
+            overrides,
+        )?);
+    }
+    let runner = runner(paths, global, environment)?;
+    Launch::check_target(paths, global, environment, &runner, overrides)?;
+    ensure_prefix(paths, global, environment, &runner)
+}
+
+/// Brings the prefix's components and the desktop entries in line with the
+/// config, under the launch's lock.
+pub fn reconcile(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    launch: &Launch,
+) -> anyhow::Result<()> {
+    let Host::Wine { runner, prefix } = &launch.host else {
+        return Ok(());
+    };
+    crate::commands::components::reconcile_config(paths, global, environment, runner, prefix)?;
+    crate::commands::desktop::reconcile(paths, global, environment, Some(runner), prefix)
 }
 
 /// What is printed right before a prefix is built, since that takes a while.

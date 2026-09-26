@@ -2051,6 +2051,7 @@ mod tests {
             target: "game".to_owned(),
             runner: None,
             prefix: None,
+            native: false,
             pid: 1,
             group: None,
             boot_id: None,

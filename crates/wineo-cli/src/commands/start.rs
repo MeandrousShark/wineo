@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
@@ -10,8 +11,6 @@ use wineo_core::runtime::{RunStatus, Runtime};
 use wineo_core::supervisor::{self, Claim, Spec, Started};
 
 use crate::commands::build;
-use crate::commands::components;
-use crate::commands::desktop;
 use crate::commands::run::LaunchArgs;
 
 #[derive(clap::Args)]
@@ -36,24 +35,16 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<bool> {
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, name)?;
-    let runner = build::runner(paths, &global, &environment)?;
-    Launch::check_target(paths, &global, &environment, &runner, &overrides)?;
-    build::ensure_prefix(paths, &global, &environment, &runner)?;
+    build::prepare_target(paths, &global, &environment, &overrides)?;
     let launch = Launch::target(paths, &global, &environment, &overrides)?;
     let locks = Locks::new(paths);
-    let _guard = locks.acquire(Operation::Launch, name, &[&launch.prefix])?;
+    let held: Vec<&Path> = launch.host.prefix().into_iter().collect();
+    let _guard = locks.acquire(Operation::Launch, name, &held)?;
     // The config was read before the lock, so it could already be gone.
     Environment::ensure_exists(paths, name)?;
     let runtime = Runtime::new(paths, name);
     runtime.check_resolved(name)?;
-    components::reconcile_config(paths, &global, &environment, &launch.runner, &launch.prefix)?;
-    desktop::reconcile(
-        paths,
-        &global,
-        &environment,
-        Some(&launch.runner),
-        &launch.prefix,
-    )?;
+    build::reconcile(paths, &global, &environment, &launch)?;
 
     if runtime.is_running()? {
         // The previous run's state doesn't matter for a new one, so an

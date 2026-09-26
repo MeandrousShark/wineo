@@ -352,6 +352,9 @@ impl Runner {
         boot_id: Option<&str>,
         leader_start: Option<u64>,
     ) -> Result<crate::process::GroupOwnership> {
+        if self.is_proton() {
+            return signal_live_group(group, boot_id, leader_start, Signal::TERM);
+        }
         let (Some(group_id), Some(boot_id), Some(leader_start)) = (group, boot_id, leader_start)
         else {
             return Ok(crate::process::GroupOwnership::Unknown);
@@ -359,15 +362,6 @@ impl Runner {
         let ownership = crate::process::live_group_ownership(group_id, boot_id, leader_start);
         if ownership != crate::process::GroupOwnership::Owned {
             return Ok(ownership);
-        }
-        if self.is_proton() {
-            return crate::process::signal_group_if_live(
-                Some(group_id),
-                Some(boot_id),
-                Some(leader_start),
-                Signal::TERM,
-            )
-            .context(|| "failed to signal tracked process group".to_owned());
         }
         quietly(
             self.command(prefix, None)?
@@ -422,6 +416,9 @@ impl Runner {
         boot_id: Option<&str>,
         leader_start: Option<u64>,
     ) -> Result<crate::process::GroupOwnership> {
+        if self.is_proton() {
+            return signal_live_group(group, boot_id, leader_start, Signal::KILL);
+        }
         let (Some(group_id), Some(boot_id), Some(leader_start)) = (group, boot_id, leader_start)
         else {
             return Ok(crate::process::GroupOwnership::Unknown);
@@ -429,15 +426,6 @@ impl Runner {
         let ownership = crate::process::live_group_ownership(group_id, boot_id, leader_start);
         if ownership != crate::process::GroupOwnership::Owned {
             return Ok(ownership);
-        }
-        if self.is_proton() {
-            return crate::process::signal_group_if_live(
-                Some(group_id),
-                Some(boot_id),
-                Some(leader_start),
-                Signal::KILL,
-            )
-            .context(|| "failed to signal tracked process group".to_owned());
         }
         self.kill(prefix, Some(group_id))?;
         Ok(crate::process::GroupOwnership::Owned)
@@ -510,7 +498,28 @@ fn wait_for_group(group: Option<u32>) -> Result<()> {
     }
 }
 
-fn wait_for_recorded_group(
+/// Signals a group a live owner established, the way a Proton run, or a
+/// native one, is asked to close or killed.
+pub(crate) fn signal_live_group(
+    group: Option<u32>,
+    boot_id: Option<&str>,
+    leader_start: Option<u64>,
+    signal: Signal,
+) -> Result<crate::process::GroupOwnership> {
+    let (Some(group_id), Some(boot_id), Some(leader_start)) = (group, boot_id, leader_start) else {
+        return Ok(crate::process::GroupOwnership::Unknown);
+    };
+    let ownership = crate::process::live_group_ownership(group_id, boot_id, leader_start);
+    if ownership != crate::process::GroupOwnership::Owned {
+        return Ok(ownership);
+    }
+    crate::process::signal_group_if_live(Some(group_id), Some(boot_id), Some(leader_start), signal)
+        .context(|| "failed to signal tracked process group".to_owned())
+}
+
+/// Waits for a recorded group to be gone, for cleaning up after a run whose
+/// owner died. Only an identified group can be confirmed.
+pub fn wait_for_recorded_group(
     group: Option<u32>,
     boot_id: Option<&str>,
     leader_start: Option<u64>,
@@ -526,7 +535,7 @@ fn wait_for_recorded_group(
     })
 }
 
-fn wait_for_live_group(
+pub(crate) fn wait_for_live_group(
     group: Option<u32>,
     boot_id: Option<&str>,
     leader_start: Option<u64>,
@@ -582,7 +591,7 @@ fn wait_for_owned_group(
 }
 
 /// `program`, or `wrapper program` when something like gamemoderun wraps it.
-fn wrapped(program: &Path, wrapper: Option<&Path>) -> Command {
+pub(crate) fn wrapped(program: &Path, wrapper: Option<&Path>) -> Command {
     match wrapper {
         Some(wrapper) => {
             let mut command = Command::new(wrapper);

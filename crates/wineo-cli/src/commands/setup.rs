@@ -7,6 +7,7 @@ use anyhow::bail;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::installer::{self, Cleaned, Installer, Outcome, Output};
+use wineo_core::launch::Host;
 use wineo_core::operation::Locks;
 use wineo_core::paths::Paths;
 use wineo_core::prefix::{self, BuildPlan};
@@ -556,8 +557,9 @@ pub(crate) fn run_installer<I: Input, W: Write>(
     // Read under the installer's lock, which settings that change the prefix
     // have to wait for, so this matches what the installer runs against.
     let environment = Environment::load(paths, name)?;
-    let launch = installer.launch();
-    components::reconcile_config(paths, global, &environment, &launch.runner, &launch.prefix)?;
+    if let Host::Wine { runner, prefix } = &installer.launch().host {
+        components::reconcile_config(paths, global, &environment, runner, prefix)?;
+    }
     prompt.say("Running it now. Ctrl+C asks it to close.")?;
     let outcome = installer.run(
         Duration::from_secs(global.stop_timeout.into()),

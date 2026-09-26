@@ -163,6 +163,7 @@ mod tests {
         RunState {
             runner: None,
             prefix: None,
+            native: false,
             status,
             mode: RunMode::Detached,
             target: target.to_owned(),

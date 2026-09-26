@@ -10,7 +10,7 @@ use wineo_core::installer::{self, Cleaned};
 use wineo_core::operation::Locks;
 use wineo_core::paths::Paths;
 use wineo_core::process::{self, GroupOwnership};
-use wineo_core::runner::Killed;
+use wineo_core::runner::{self, Killed};
 use wineo_core::runtime::{RunStatus, Runtime};
 use wineo_core::supervisor;
 
@@ -154,10 +154,16 @@ fn clean_up_lost_run(
             return Ok(Outcome::Unresolved);
         }
     };
-    let (Some(runner), Some(prefix)) = (run.runner.clone(), run.prefix.clone()) else {
-        report_unresolved_run(paths, name);
-        return Ok(Outcome::Unresolved);
+    // None for a native run, which is cleaned up through its group like Proton.
+    let wine = match (run.runner.clone(), run.prefix.clone(), run.native) {
+        (Some(runner), Some(prefix), false) => Some((runner, prefix)),
+        (None, None, true) => None,
+        _ => {
+            report_unresolved_run(paths, name);
+            return Ok(Outcome::Unresolved);
+        }
     };
+    let wineserver = wine.as_ref().is_some_and(|(runner, _)| !runner.is_proton());
     let ownership = process::group_ownership(run.group, run.boot_id.as_deref(), run.leader_start);
     let group = match ownership {
         GroupOwnership::Unknown => {
@@ -183,8 +189,10 @@ fn clean_up_lost_run(
         report_unresolved_run(paths, name);
         return Ok(Outcome::Unresolved);
     }
-    if !runner.is_proton() {
-        match runner.kill(&prefix, run.group) {
+    if let Some((runner, prefix)) = &wine
+        && wineserver
+    {
+        match runner.kill(prefix, run.group) {
             Ok(Killed::Untracked) => {
                 report_unresolved_run(paths, name);
                 return Ok(Outcome::Unresolved);
@@ -197,21 +205,25 @@ fn clean_up_lost_run(
             }
         }
     }
-    if !runner.is_proton() || group == GroupOwnership::Owned {
-        let settle_runner = runner.clone();
-        let settle_prefix = prefix.clone();
+    if wineserver || group == GroupOwnership::Owned {
         let settle_group = run.group;
         let settle_boot_id = run.boot_id.clone();
         let settle_leader_start = run.leader_start;
         if let Err(err) = wait_settled_bounded(settle_timeout, move || {
-            settle_runner
-                .wait_settled_owned(
-                    &settle_prefix,
+            match &wine {
+                Some((runner, prefix)) => runner.wait_settled_owned(
+                    prefix,
                     settle_group,
                     settle_boot_id.as_deref(),
                     settle_leader_start,
-                )
-                .map_err(anyhow::Error::from)
+                ),
+                None => runner::wait_for_recorded_group(
+                    settle_group,
+                    settle_boot_id.as_deref(),
+                    settle_leader_start,
+                ),
+            }
+            .map_err(anyhow::Error::from)
         }) {
             warn(err);
             report_unresolved_run(paths, name);

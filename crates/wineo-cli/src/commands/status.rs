@@ -252,6 +252,7 @@ mod tests {
         RunState {
             runner: None,
             prefix: None,
+            native: false,
             status,
             mode,
             target: "notepad".to_owned(),

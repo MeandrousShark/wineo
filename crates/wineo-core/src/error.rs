@@ -204,6 +204,18 @@ pub enum Error {
     #[error("`{0}` does not exist")]
     ExeNotFound(String),
 
+    #[error("{0} is native, so its target can't be a Windows program")]
+    NativeWindowsTarget(String),
+
+    #[error("{0} is not executable. Run chmod +x on it.")]
+    NotExecutable(String),
+
+    #[error("invalid exe `{0}`: use an absolute path or one starting with ~/")]
+    RelativeExe(String),
+
+    #[error("`{0}` was not found on PATH")]
+    NotOnPath(String),
+
     #[error("working directory `{0}` does not exist")]
     CwdNotFound(String),
 

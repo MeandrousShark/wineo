@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
-use crate::launch::Overrides;
+use crate::launch::{Host, Overrides};
 use crate::operation::Operation;
 use crate::paths::Paths;
 use crate::runner::Runner;
@@ -48,6 +48,10 @@ pub struct RunState {
     /// Concrete prefix used by this run, preserved if its alias changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix: Option<PathBuf>,
+    /// A native run, which has no runner or prefix and is tracked only
+    /// through its process group.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native: bool,
     pub pid: u32,
     /// The process group the run was spawned into, so what it left behind can
     /// still be killed once whatever owned it is gone. Missing in a state file
@@ -92,6 +96,7 @@ impl RunState {
             target,
             runner: None,
             prefix: None,
+            native: false,
             pid,
             group,
             boot_id: None,
@@ -103,6 +108,17 @@ impl RunState {
             requested_target: overrides.target.clone(),
             args: overrides.args.clone(),
             env: overrides.env.clone(),
+        }
+    }
+
+    /// Records what the run runs on, so a lost one can be cleaned up.
+    pub fn record_host(&mut self, host: &Host) {
+        match host {
+            Host::Wine { runner, prefix } => {
+                self.runner = Some(runner.clone());
+                self.prefix = Some(prefix.clone());
+            }
+            Host::Native { .. } => self.native = true,
         }
     }
 
@@ -530,6 +546,7 @@ mod tests {
             target: "notepad".to_owned(),
             runner: None,
             prefix: None,
+            native: false,
             pid: 4242,
             group: Some(4242),
             boot_id: None,

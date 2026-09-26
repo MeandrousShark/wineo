@@ -5,11 +5,12 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{GlobalConfig, Target, validate_env_var};
+use crate::config::{GlobalConfig, Kind, Target, validate_env_var};
 use crate::environment::Environment;
 use crate::error::{Error, Result};
 use crate::paths::Paths;
 use crate::prefix;
+use crate::process::GroupOwnership;
 use crate::runner::{self, Runner, with_menu_builder_disabled};
 use crate::runners::Runners;
 use crate::winpath;
@@ -19,6 +20,8 @@ const GAMEMODE: &str = "gamemoderun";
 /// What wineo hands umu itself on a Proton launch, so none of it can be
 /// overridden from a config or the command line.
 const MANAGED: [&str; 3] = ["PROTONPATH", "GAMEID", "STORE"];
+/// Endings that mark a Windows program, which a native environment can't run.
+const WINDOWS_EXTENSIONS: [&str; 4] = [".exe", ".msi", ".bat", ".lnk"];
 
 /// Command line overrides for launching a target.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -28,13 +31,121 @@ pub struct Overrides {
     pub args: Vec<String>,
 }
 
+/// What a launch runs on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Host {
+    /// A Windows program, through wine or umu, in `prefix`.
+    Wine { runner: Runner, prefix: PathBuf },
+    /// A Linux program, run directly. Everything it starts shares its process
+    /// group, which is how the run is tracked and ended.
+    Native { exe: PathBuf },
+}
+
+impl Host {
+    pub fn runner(&self) -> Option<&Runner> {
+        match self {
+            Host::Wine { runner, .. } => Some(runner),
+            Host::Native { .. } => None,
+        }
+    }
+
+    pub fn prefix(&self) -> Option<&Path> {
+        match self {
+            Host::Wine { prefix, .. } => Some(prefix),
+            Host::Native { .. } => None,
+        }
+    }
+
+    /// What is spawned, for naming it in an error.
+    pub fn launcher(&self) -> String {
+        match self {
+            Host::Wine { runner, .. } => runner.launcher().to_owned(),
+            Host::Native { exe } => exe.display().to_string(),
+        }
+    }
+
+    /// Whether other processes can outlive the launched program. A native
+    /// launcher can hand off to the game and exit, like a wine one.
+    pub fn outlives_program(&self) -> bool {
+        match self {
+            Host::Wine { runner, .. } => runner.outlives_program(),
+            Host::Native { .. } => true,
+        }
+    }
+
+    /// Waits until the run is over: the prefix is idle, or for a native run,
+    /// its whole process group is gone.
+    pub(crate) fn wait_idle(
+        &self,
+        group: Option<u32>,
+        boot_id: Option<&str>,
+        leader_start: Option<u64>,
+    ) -> Result<()> {
+        match self {
+            Host::Wine { runner, prefix } => runner.wait_idle(prefix),
+            Host::Native { .. } => runner::wait_for_live_group(group, boot_id, leader_start),
+        }
+    }
+
+    pub(crate) fn wait_settled_live(
+        &self,
+        group: Option<u32>,
+        boot_id: Option<&str>,
+        leader_start: Option<u64>,
+    ) -> Result<()> {
+        match self {
+            Host::Wine { runner, prefix } => {
+                runner.wait_settled_live(prefix, group, boot_id, leader_start)
+            }
+            Host::Native { .. } => runner::wait_for_live_group(group, boot_id, leader_start),
+        }
+    }
+
+    /// Asks programs to close. A native run gets SIGTERM to its group.
+    pub(crate) fn end_session_live(
+        &self,
+        group: Option<u32>,
+        boot_id: Option<&str>,
+        leader_start: Option<u64>,
+    ) -> Result<GroupOwnership> {
+        match self {
+            Host::Wine { runner, prefix } => {
+                runner.end_session_live(prefix, group, boot_id, leader_start)
+            }
+            Host::Native { .. } => runner::signal_live_group(
+                group,
+                boot_id,
+                leader_start,
+                rustix::process::Signal::TERM,
+            ),
+        }
+    }
+
+    /// Kills whatever is left. A native run gets SIGKILL to its group.
+    pub(crate) fn kill_live(
+        &self,
+        group: Option<u32>,
+        boot_id: Option<&str>,
+        leader_start: Option<u64>,
+    ) -> Result<GroupOwnership> {
+        match self {
+            Host::Wine { runner, prefix } => runner.kill_live(prefix, group, boot_id, leader_start),
+            Host::Native { .. } => runner::signal_live_group(
+                group,
+                boot_id,
+                leader_start,
+                rustix::process::Signal::KILL,
+            ),
+        }
+    }
+}
+
 /// A fully resolved program launch inside an environment.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Launch {
-    pub runner: Runner,
-    pub prefix: PathBuf,
+    pub host: Host,
     pub target: Option<String>,
-    /// Everything passed to `wine`.
+    /// Everything passed to `wine`, or to a native program.
     pub args: Vec<String>,
     pub cwd: PathBuf,
     /// Merged from the global config, the environment, and the overrides.
@@ -61,8 +172,10 @@ impl Launch {
         overrides: &Overrides,
     ) -> Result<Self> {
         let (name, target) = resolve_target(environment, overrides.target.as_deref())?;
+        let Kind::Wine(wine) = &environment.config.kind else {
+            return native_target(paths, global, environment, name, target, overrides);
+        };
         let (runner, prefix) = open(paths, global, environment)?;
-        let wine = environment.wine()?;
         // Windows paths and drive_c live in the wine prefix, which is `pfx/`
         // under a Proton environment's configured one.
         let wine_prefix = runner.wine_prefix(&prefix);
@@ -81,8 +194,7 @@ impl Launch {
             env: merge_env(&runner, global, environment, &overrides.env)?,
             gameid: runner.is_proton().then(|| wine.gameid.clone()).flatten(),
             store: runner.is_proton().then(|| wine.store.clone()).flatten(),
-            runner,
-            prefix,
+            host: Host::Wine { runner, prefix },
             target: Some(name.to_owned()),
             args,
             cwd,
@@ -91,7 +203,8 @@ impl Launch {
     }
 
     /// What `target` checks that doesn't need the prefix, so a typo or a bad
-    /// config fails before a missing prefix is built.
+    /// config fails before a missing prefix is built. A native launch needs no
+    /// prefix or runner, so it is checked in full and `runner` is unused.
     pub fn check_target(
         paths: &Paths,
         global: &GlobalConfig,
@@ -99,6 +212,9 @@ impl Launch {
         runner: &Runner,
         overrides: &Overrides,
     ) -> Result<()> {
+        if environment.config.wine().is_none() {
+            return Self::check_native_target(paths, global, environment, overrides);
+        }
         let (_, target) = resolve_target(environment, overrides.target.as_deref())?;
         check_unix_program(paths, &target.exe, false)?;
         if let Some(cwd) = &target.cwd
@@ -110,6 +226,16 @@ impl Launch {
         gamemode_path(global, environment, target)?;
         merge_env(runner, global, environment, &overrides.env)?;
         Ok(())
+    }
+
+    /// Everything `target` checks for a native environment, which is all of it.
+    pub fn check_native_target(
+        paths: &Paths,
+        global: &GlobalConfig,
+        environment: &Environment,
+        overrides: &Overrides,
+    ) -> Result<()> {
+        Self::target(paths, global, environment, overrides).map(|_| ())
     }
 
     /// What `exec` checks that doesn't need the prefix, like `check_target`.
@@ -144,8 +270,7 @@ impl Launch {
         wine_args.extend(args.iter().cloned());
         Ok(Self {
             env: merge_env(&runner, global, environment, env)?,
-            runner,
-            prefix,
+            host: Host::Wine { runner, prefix },
             target: None,
             args: wine_args,
             cwd,
@@ -158,10 +283,12 @@ impl Launch {
     }
 
     pub fn command(&self) -> Command {
-        let mut command = self
-            .runner
-            .command(&self.prefix, self.gamemode.as_deref())
-            .expect("the runner was resolved when this launch was built");
+        let mut command = match &self.host {
+            Host::Wine { runner, prefix } => runner
+                .command(prefix, self.gamemode.as_deref())
+                .expect("the runner was resolved when this launch was built"),
+            Host::Native { exe } => runner::wrapped(exe, self.gamemode.as_deref()),
+        };
         command
             .args(&self.args)
             .current_dir(&self.cwd)
@@ -234,6 +361,81 @@ fn open(
         return Err(Error::MissingPrefix(prefix));
     }
     Ok((runner, prefix))
+}
+
+/// A native target: its exe run directly, with no prefix and no runner.
+fn native_target(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    name: &str,
+    target: &Target,
+    overrides: &Overrides,
+) -> Result<Launch> {
+    let (exe, default_cwd) = resolve_native_exe(paths, &environment.name, &target.exe)?;
+    let cwd = match &target.cwd {
+        Some(cwd) => Some(paths.config_path(cwd)?)
+            .filter(|dir| dir.is_dir())
+            .ok_or_else(|| Error::CwdNotFound(cwd.to_owned()))?,
+        None => default_cwd,
+    };
+    let mut args = target.args.clone();
+    args.extend(overrides.args.iter().cloned());
+    let gamemode = gamemode_path(global, environment, target)?;
+    Ok(Launch {
+        env: merge(None, global, environment, &overrides.env)?,
+        host: Host::Native { exe },
+        target: Some(name.to_owned()),
+        args,
+        cwd,
+        gamemode,
+        gameid: None,
+        store: None,
+    })
+}
+
+/// Where a native target's exe is, and the directory it runs in unless the
+/// target says otherwise: the exe's own, or home for one found on PATH.
+fn resolve_native_exe(paths: &Paths, environment: &str, exe: &str) -> Result<(PathBuf, PathBuf)> {
+    let lower = exe.to_ascii_lowercase();
+    if winpath::is_windows_path(exe) || WINDOWS_EXTENSIONS.iter().any(|ext| lower.ends_with(ext)) {
+        return Err(Error::NativeWindowsTarget(environment.to_owned()));
+    }
+    if !exe.contains('/') && !exe.starts_with('~') {
+        let path_var = std::env::var_os("PATH").unwrap_or_default();
+        let found =
+            native_on_path(&path_var, exe).ok_or_else(|| Error::NotOnPath(exe.to_owned()))?;
+        return Ok((found, paths.expand("~")));
+    }
+    // Outside a portable folder a relative path would depend on where wineo
+    // happened to run from, as a relative prefix would.
+    if paths.portable_root().is_none() && !paths.expand(exe).is_absolute() {
+        return Err(Error::RelativeExe(exe.to_owned()));
+    }
+    let path = paths.config_path(exe)?;
+    if !path.is_file() {
+        return Err(Error::ExeNotFound(exe.to_owned()));
+    }
+    if !runner::is_executable(&path) {
+        let shown = paths
+            .contract(&path)
+            .unwrap_or_else(|_| path.display().to_string());
+        return Err(Error::NotExecutable(shown));
+    }
+    let dir = path
+        .parent()
+        .map_or_else(|| paths.expand("~"), Path::to_owned);
+    Ok((path, dir))
+}
+
+/// Looks a bare name up on PATH the way a shell would. Unlike
+/// `runner::find_on_path`, symlinks are kept, since a program can behave
+/// differently depending on the name it is run as.
+fn native_on_path(path_var: &std::ffi::OsStr, name: &str) -> Option<PathBuf> {
+    std::env::split_paths(path_var)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(name))
+        .find(|candidate| runner::is_executable(candidate))
 }
 
 fn resolve_target<'a>(
@@ -390,12 +592,26 @@ pub fn merge_env(
     environment: &Environment,
     overrides: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>> {
+    merge(Some(runner), global, environment, overrides)
+}
+
+/// `merge_env` for a launch with or without a runner. Nothing is added or
+/// rewritten for a native one, which gets no WINE variables.
+fn merge(
+    runner: Option<&Runner>,
+    global: &GlobalConfig,
+    environment: &Environment,
+    overrides: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>> {
     for (key, value) in overrides {
         check_override(key, value)?;
     }
     let mut env = global.env.clone();
     env.extend(environment.config.env.clone());
     env.extend(overrides.clone());
+    let Some(runner) = runner else {
+        return Ok(env);
+    };
     // Only a Proton launch has these, and wineo decides all of them: the
     // runner root it resolved, and the environment's own protonfixes settings.
     if runner.is_proton()
@@ -413,7 +629,7 @@ pub fn merge_env(
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
+    use std::ffi::{OsStr, OsString};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::fs::symlink;
 
@@ -758,5 +974,253 @@ mod tests {
         ));
         assert!(parse_env_assignment("=x").is_err());
         assert!(parse_env_assignment("WINEPREFIX=/x").is_err());
+    }
+
+    fn native(name: &str, text: &str) -> Environment {
+        let text = format!("kind = \"native\"\n{text}");
+        Environment {
+            name: name.to_owned(),
+            path: PathBuf::from(format!("/{name}.toml")),
+            config: EnvironmentConfig::parse(Path::new(&format!("/{name}.toml")), &text).unwrap(),
+        }
+    }
+
+    fn script(path: &Path, mode: u32) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    fn native_launch(paths: &Paths, exe: &str) -> Result<Launch> {
+        let env = native("dusk", &format!("[targets.game]\nexe = '{exe}'\n"));
+        Launch::target(paths, &GlobalConfig::default(), &env, &Overrides::default())
+    }
+
+    #[test]
+    fn a_native_exe_by_absolute_or_home_path_runs_in_its_own_dir() {
+        let f = fixture();
+        let home = f.prefix.parent().unwrap();
+        let exe = home.join("Games/Dusk/dusk.sh");
+        script(&exe, 0o755);
+
+        let launch = native_launch(&f.paths, exe.to_str().unwrap()).unwrap();
+        assert!(matches!(&launch.host, Host::Native { exe: found } if *found == exe));
+        assert_eq!(launch.cwd, home.join("Games/Dusk"));
+        assert!(launch.host.runner().is_none());
+        assert!(launch.host.prefix().is_none());
+
+        let launch = native_launch(&f.paths, "~/Games/Dusk/dusk.sh").unwrap();
+        assert!(matches!(&launch.host, Host::Native { exe: found } if *found == exe));
+        assert_eq!(launch.cwd, home.join("Games/Dusk"));
+
+        assert!(matches!(
+            native_launch(&f.paths, "~/Games/Dusk/missing.sh"),
+            Err(Error::ExeNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn a_bare_native_name_is_looked_up_on_path_and_runs_in_home() {
+        let f = fixture();
+        let home = f.prefix.parent().unwrap();
+        let first = home.join("first");
+        let second = home.join("second");
+        script(&second.join("dusk"), 0o755);
+        // Not executable, so a shell would skip it too.
+        script(&first.join("dusk"), 0o644);
+        let path_var =
+            std::env::join_paths([PathBuf::from("relative"), first.clone(), second.clone()])
+                .unwrap();
+        assert_eq!(native_on_path(&path_var, "dusk"), Some(second.join("dusk")));
+        assert_eq!(native_on_path(&path_var, "nope"), None);
+
+        // Something every system has on PATH.
+        let launch = native_launch(&f.paths, "sh").unwrap();
+        let Host::Native { exe } = &launch.host else {
+            panic!("not native");
+        };
+        assert!(exe.is_absolute() && exe.ends_with("sh"), "{exe:?}");
+        assert_eq!(launch.cwd, home);
+        assert!(matches!(
+            native_launch(&f.paths, "wineo-surely-not-installed"),
+            Err(Error::NotOnPath(_))
+        ));
+    }
+
+    #[test]
+    fn a_native_exe_that_is_not_executable_is_refused() {
+        let f = fixture();
+        let home = f.prefix.parent().unwrap();
+        script(&home.join("Games/foo/start.sh"), 0o644);
+        let err = native_launch(&f.paths, "~/Games/foo/start.sh").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "~/Games/foo/start.sh is not executable. Run chmod +x on it."
+        );
+    }
+
+    #[test]
+    fn a_native_target_cannot_be_a_windows_program() {
+        let f = fixture();
+        let home = f.prefix.parent().unwrap();
+        // Even an executable one on disk.
+        script(&home.join("game.EXE"), 0o755);
+        for exe in [
+            r"C:\Games\game.exe",
+            "c:/games/game",
+            "~/game.EXE",
+            "setup.msi",
+            "~/run.bat",
+            "/x/Game.Lnk",
+        ] {
+            let err = native_launch(&f.paths, exe).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "dusk is native, so its target can't be a Windows program",
+                "{exe}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_relative_native_exe_only_works_in_a_portable_folder() {
+        let f = fixture();
+        assert!(matches!(
+            native_launch(&f.paths, "bin/game"),
+            Err(Error::RelativeExe(_))
+        ));
+
+        let root = f.prefix.parent().unwrap().join("usb");
+        script(&root.join("bin/game"), 0o755);
+        let home = f.prefix.parent().unwrap().to_owned();
+        let portable = Paths::select(
+            move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+            Some(&root),
+        )
+        .unwrap();
+        let launch = native_launch(&portable, "bin/game").unwrap();
+        let root = root.canonicalize().unwrap();
+        assert!(
+            matches!(&launch.host, Host::Native { exe } if crate::paths::resolve(exe) == root.join("bin/game")),
+            "{:?}",
+            launch.host
+        );
+    }
+
+    #[test]
+    fn a_native_launch_applies_env_and_args_and_adds_no_wine_variables() {
+        let f = fixture();
+        let home = f.prefix.parent().unwrap();
+        let exe = home.join("dusk.sh");
+        script(&exe, 0o755);
+        let global = GlobalConfig::parse(
+            Path::new("/g.toml"),
+            "[env]\nA = \"global\"\nB = \"global\"\n",
+        )
+        .unwrap();
+        let env = native(
+            "dusk",
+            &format!(
+                "[env]\nB = \"env\"\nWINEPREFIX = \"/mine\"\nWINEDLLOVERRIDES = \"x=n\"\n[targets.game]\nexe = '{}'\nargs = [\"-a\"]\ncwd = '~'\n",
+                exe.display()
+            ),
+        );
+        let overrides = Overrides {
+            env: BTreeMap::from([("C".to_owned(), "cli".to_owned())]),
+            args: vec!["-b".to_owned()],
+            ..Default::default()
+        };
+        let launch = Launch::target(&f.paths, &global, &env, &overrides).unwrap();
+        assert_eq!(launch.args, ["-a", "-b"]);
+        assert_eq!(launch.cwd, home);
+        assert_eq!(launch.env["A"], "global");
+        assert_eq!(launch.env["B"], "env");
+        assert_eq!(launch.env["C"], "cli");
+        // Passed through as written, with nothing wineo adds or rewrites.
+        assert_eq!(launch.env["WINEPREFIX"], "/mine");
+        assert_eq!(launch.env["WINEDLLOVERRIDES"], "x=n");
+
+        let command = launch.command();
+        assert_eq!(command.get_program(), exe.as_os_str());
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["-a", "-b"]);
+        assert_eq!(command.get_current_dir(), Some(home));
+        let set: BTreeMap<_, _> = command
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(|v| v.to_owned())))
+            .collect();
+        let wine: Vec<_> = set
+            .keys()
+            .filter(|key| key.to_string_lossy().starts_with("WINE"))
+            .collect();
+        assert_eq!(wine, ["WINEDLLOVERRIDES", "WINEPREFIX"]);
+        assert_eq!(
+            set[OsStr::new("WINEDLLOVERRIDES")].as_deref(),
+            Some(OsStr::new("x=n"))
+        );
+        assert!(!set.contains_key(OsStr::new("PROTONPATH")));
+    }
+
+    #[test]
+    fn gamemode_wraps_a_native_command() {
+        let launch = Launch {
+            host: Host::Native {
+                exe: PathBuf::from("/usr/bin/dusklight"),
+            },
+            target: Some("game".to_owned()),
+            args: vec!["-x".to_owned()],
+            cwd: PathBuf::from("/"),
+            env: BTreeMap::new(),
+            gamemode: Some(PathBuf::from("/usr/bin/gamemoderun")),
+            gameid: None,
+            store: None,
+        };
+        let command = launch.command();
+        assert_eq!(command.get_program(), "/usr/bin/gamemoderun");
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["/usr/bin/dusklight", "-x"]);
+        assert_eq!(command.get_envs().count(), 0);
+    }
+
+    #[test]
+    fn native_target_checks_cover_the_exe_without_a_runner() {
+        let f = fixture();
+        let env = native("dusk", "[targets.game]\nexe = 'game.exe'\n");
+        assert!(matches!(
+            Launch::check_target(
+                &f.paths,
+                &GlobalConfig::default(),
+                &env,
+                &Runner::fake("wine"),
+                &Overrides::default()
+            ),
+            Err(Error::NativeWindowsTarget(_))
+        ));
+        assert!(matches!(
+            Launch::check_native_target(
+                &f.paths,
+                &GlobalConfig::default(),
+                &native("dusk", ""),
+                &Overrides::default()
+            ),
+            Err(Error::NoTargets(_))
+        ));
+    }
+
+    #[test]
+    fn exec_still_needs_a_prefix() {
+        let f = fixture();
+        let env = native("dusk", "");
+        assert!(matches!(
+            Launch::exec(
+                &f.paths,
+                &GlobalConfig::default(),
+                &env,
+                "sh",
+                &[],
+                &BTreeMap::new()
+            ),
+            Err(Error::NoPrefix(_))
+        ));
     }
 }
