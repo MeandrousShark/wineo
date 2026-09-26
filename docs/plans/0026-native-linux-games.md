@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0026: Native Linux games
 

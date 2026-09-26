@@ -3,6 +3,23 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.7.0 - 2026-09-25
+
+- Native Linux games: `kind = "native"` environments launch a Linux binary
+  or script directly, with no prefix or runner
+  ([0026](docs/plans/0026-native-linux-games.md)). See
+  [Native Linux games](docs/native.md).
+- `wineo new --native <EXE>`, and guided `new` asks what kind of environment
+  first.
+- Native runs are tracked through their process group, so launcher scripts
+  that hand off to the game stay tracked, and `stop` ends the whole group.
+- `import heroic` imports native Heroic games, and skips one whose executable
+  is missing.
+- `status` shows the kind, and `status --json` has a `kind` field, with
+  `runner` and `prefix` `null` for native environments.
+- `docs/native-environment.toml.example` is a commented native config, and
+  the Arch package installs it.
+
 ## 0.6.1 - 2026-09-25
 
 - `snapshot create`, `snapshot restore`, `clone`, `portable copy`, and
