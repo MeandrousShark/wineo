@@ -1,7 +1,7 @@
 use jiff::Timestamp;
 use serde::Serialize;
 use wineo_core::operation::Operation;
-use wineo_core::report::{ComponentReport, EnvironmentReport};
+use wineo_core::report::{ComponentReport, EnvironmentReport, Played};
 use wineo_core::runtime::{RunMode, RunState, State, Status};
 
 #[derive(Serialize)]
@@ -78,6 +78,24 @@ pub struct NamedOutput<'a> {
     dxvk: Option<&'a ComponentReport>,
     vkd3d: Option<&'a ComponentReport>,
     desktop: &'a [String],
+    played: Option<PlayedOutput>,
+}
+
+#[derive(Serialize)]
+pub struct PlayedOutput {
+    seconds: i64,
+    sessions: usize,
+    last_played: Option<Timestamp>,
+}
+
+impl From<&Played> for PlayedOutput {
+    fn from(played: &Played) -> Self {
+        Self {
+            seconds: played.seconds,
+            sessions: played.sessions,
+            last_played: played.last_played,
+        }
+    }
 }
 
 impl<'a> NamedOutput<'a> {
@@ -98,6 +116,7 @@ impl<'a> NamedOutput<'a> {
             dxvk: report.dxvk.as_ref(),
             vkd3d: report.vkd3d.as_ref(),
             desktop: &report.desktop,
+            played: report.played.as_ref().map(PlayedOutput::from),
         }
     }
 }

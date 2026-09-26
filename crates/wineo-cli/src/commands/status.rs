@@ -11,7 +11,7 @@ use wineo_core::runtime::{RunMode, RunState, State};
 
 use super::json::{self, NamedOutput};
 use super::table;
-use super::time::{absolute, relative};
+use super::time::{absolute, day_label, duration_hm, relative};
 
 /// Width of the label column in `status <name>`'s detail lines. Wide enough
 /// for the longest label there is, so no line pushes its value out of line.
@@ -130,6 +130,9 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
     if !report.desktop.is_empty() {
         lines.push(label_line("desktop", &report.desktop.join(", ")));
     }
+    if let Some(played) = &report.played {
+        lines.push(label_line("played", &played_value(played, now, tz)));
+    }
     if report.status.state == State::Running
         && let Some(run) = &report.status.run
     {
@@ -193,6 +196,19 @@ fn target_value(run: &RunState, exe: Option<&str>) -> String {
         Some(exe) => format!("{} ({exe})", run.target),
         None => run.target.clone(),
     }
+}
+
+fn played_value(played: &report::Played, now: Timestamp, tz: &TimeZone) -> String {
+    let sessions = if played.sessions == 1 {
+        "1 session".to_owned()
+    } else {
+        format!("{} sessions", played.sessions)
+    };
+    let mut value = format!("{} over {sessions}", duration_hm(played.seconds));
+    if let Some(last_played) = played.last_played {
+        value.push_str(&format!(", last {}", day_label(now, last_played, tz)));
+    }
+    value
 }
 
 fn runner_value(name: &str, version: Option<&str>) -> String {
@@ -296,6 +312,7 @@ mod tests {
             dxvk: None,
             vkd3d: None,
             desktop: Vec::new(),
+            played: None,
         }
     }
 
@@ -507,6 +524,37 @@ mod tests {
         report.target_exe = None;
         let text = render(&report, now(), &TimeZone::UTC);
         assert!(text.contains("\n  target    notepad\n"), "{text}");
+    }
+
+    #[test]
+    fn a_played_line_shows_when_the_environment_has_sessions() {
+        let status = Status {
+            state: State::Inactive,
+            run: None,
+            lost: false,
+        };
+        let mut report = report(status);
+        report.played = Some(wineo_core::report::Played {
+            seconds: 65_100,
+            sessions: 11,
+            last_played: Some(now()),
+        });
+        let text = render(&report, now(), &TimeZone::UTC);
+        assert!(
+            text.contains("\n  played    18 h 5 m over 11 sessions, last today\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_never_played_environment_has_no_played_line() {
+        let status = Status {
+            state: State::Inactive,
+            run: None,
+            lost: false,
+        };
+        let text = render(&report(status), now(), &TimeZone::UTC);
+        assert!(!text.contains("played"), "{text}");
     }
 
     #[test]

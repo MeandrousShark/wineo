@@ -1,3 +1,5 @@
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 use serde::Serialize;
 
 use crate::components::{Builds, Component, LATEST};
@@ -10,6 +12,7 @@ use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::runners::Runners;
 use crate::runtime::{Runtime, Status};
+use crate::stats;
 
 /// Everything `wineo status <name>` shows, gathered here so `--json` stays
 /// cheap to add later.
@@ -44,6 +47,18 @@ pub struct EnvironmentReport {
     pub vkd3d: Option<ComponentReport>,
     /// Targets that have a desktop entry on disk right now.
     pub desktop: Vec<String>,
+    /// None if the environment has never been played.
+    pub played: Option<Played>,
+}
+
+/// The little of `stats::Summary` that `status` shows: enough to say how much
+/// was played and when, without the per-target and longest-session detail
+/// `wineo stats` has room for.
+#[derive(Debug, Clone, Serialize)]
+pub struct Played {
+    pub seconds: i64,
+    pub sessions: usize,
+    pub last_played: Option<Timestamp>,
 }
 
 /// What a config asks for against what its prefix actually has.
@@ -92,6 +107,17 @@ impl EnvironmentReport {
         let target_exe = target.map(|target| target.exe.clone());
         let components = components(paths, global, environment);
         let busy = Locks::new(paths).busy_with(&environment.name)?;
+        let (summary, _) = stats::summary(
+            paths,
+            &environment.name,
+            Timestamp::now(),
+            &TimeZone::system(),
+        )?;
+        let played = (summary.sessions > 0).then_some(Played {
+            seconds: summary.seconds,
+            sessions: summary.sessions,
+            last_played: summary.last_played,
+        });
         Ok(Self {
             dxvk: components.0,
             vkd3d: components.1,
@@ -115,6 +141,7 @@ impl EnvironmentReport {
                 .filter(|entry| entry.environment == environment.name)
                 .map(|entry| entry.target)
                 .collect(),
+            played,
         })
     }
 }
