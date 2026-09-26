@@ -1410,10 +1410,14 @@ mod tests {
     #[test]
     fn the_skip_entry_fetches_nothing() {
         let world = world();
-        let (result, transcript, _) = wizard(&world, found, &answers(&["1", "", "", "3"]));
+        let (result, transcript, _) = wizard(&world, found, &answers(&["1", "", "", "4"]));
         assert!(result.is_ok(), "{result:?}\n{transcript}");
         assert!(
-            transcript.contains("  3) None of these, skip art\n"),
+            transcript.contains("  3) Search for something else\n"),
+            "{transcript}"
+        );
+        assert!(
+            transcript.contains("  4) None of these, skip art\n"),
             "{transcript}"
         );
         assert!(

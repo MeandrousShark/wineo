@@ -215,7 +215,11 @@ fn fetch(paths: &Paths, request: &FetchRequest) -> anyhow::Result<bool> {
     let game = match (request.game, request.search, art::saved_game(paths, env)?) {
         (Some(game), ..) => game,
         (None, None, Some(saved)) => saved,
-        (None, search, _) => pick_game(&api, search.unwrap_or(env))?,
+        (None, search, _) => match pick_game(&api, search.unwrap_or(env))? {
+            Some(game) => game,
+            // Backed out of an empty search: nothing to fetch.
+            None => return Ok(true),
+        },
     };
     if art::saved_game(paths, env)? != Some(game) {
         art::save_game(paths, env, game)?;
@@ -443,45 +447,37 @@ fn try_fetch_new<I: Input, W: Write>(
 ) -> anyhow::Result<()> {
     let env = request.env;
     let api = Api::new(transport, &key.value);
-    let games = api.search(request.term)?;
-    let Some(top) = games.first() else {
-        bail!("no SteamGridDB games match `{}`", request.term);
-    };
-    let (game, out): (u64, &mut dyn Write) = match pick {
+    let (game, term, out): (u64, String, &mut dyn Write) = match pick {
         Pick::Top(out) => {
+            let games = api.search(request.term)?;
+            let Some(top) = games.first() else {
+                bail!("no SteamGridDB games match `{}`", request.term);
+            };
             writeln!(
                 out,
                 "{env}: art from SteamGridDB game {}, {}",
                 top.id,
                 game_name(top)
             )?;
-            (top.id, out)
+            (top.id, request.term.to_owned(), out)
         }
-        Pick::Ask(prompt) => {
-            let entries = games
-                .iter()
-                .map(|game| (game_label(game), Some(game.id)))
-                .chain([("None of these, skip art".to_owned(), None)]);
-            let choices = numbered(entries);
-            match prompt.choose("Which game is it?", "Game", &choices, Some("1"), false)? {
-                Reply::Value(Some(game)) => (game, prompt.writer()),
-                Reply::Value(None) => {
-                    writeln!(
-                        prompt.writer(),
-                        "Skipped art. Fetch later with: wineo art fetch {env} --search <term>"
-                    )?;
-                    return Ok(());
-                }
-                Reply::Back => unreachable!("the pick list has no back"),
+        Pick::Ask(prompt) => match ask_new_game(&api, request.term, prompt)? {
+            Some((game, term)) => (game, term, prompt.writer()),
+            None => {
+                writeln!(
+                    prompt.writer(),
+                    "Skipped art. Fetch later with: wineo art fetch {env} --search <term>"
+                )?;
+                return Ok(());
             }
-        }
+        },
     };
     if art::saved_game(paths, env)? != Some(game) {
         art::save_game(paths, env, game)?;
     }
     let fetch = FetchRequest {
         spot: env,
-        search: Some(request.term),
+        search: Some(&term),
         game: Some(game),
         only: match request.kinds {
             ArtFetch::All => None,
@@ -504,21 +500,135 @@ fn try_fetch_new<I: Input, W: Write>(
     fetched.map(drop)
 }
 
-/// Searches for `term` and asks which match is the game.
-fn pick_game(api: &Api, term: &str) -> anyhow::Result<u64> {
-    let games = api.search(term)?;
-    if games.is_empty() {
-        bail!("no SteamGridDB games match `{term}`");
+/// What picking an entry beyond a search result means in the guided flows'
+/// pick list.
+#[derive(Clone, Copy)]
+enum GamePick {
+    Game(u64),
+    SearchAgain,
+    Skip,
+}
+
+/// Shows the pick list with a skip entry, searching again on request or on
+/// an empty result, until a game is picked or skipped. Returns the term that
+/// found the picked game, alongside its ID.
+fn ask_new_game<I: Input, W: Write>(
+    api: &Api,
+    term: &str,
+    prompt: &mut Prompt<I, W>,
+) -> anyhow::Result<Option<(u64, String)>> {
+    let mut term = term.to_owned();
+    let mut games = api.search(&term)?;
+    loop {
+        if games.is_empty() {
+            match ask_after_no_matches(prompt, &term)? {
+                Reply::Value(next) => {
+                    term = next;
+                    games = api.search(&term)?;
+                    continue;
+                }
+                Reply::Back => return Ok(None),
+            }
+        }
+        let entries = games
+            .iter()
+            .map(|game| (game_label(game), GamePick::Game(game.id)))
+            .chain([
+                (
+                    "Search for something else".to_owned(),
+                    GamePick::SearchAgain,
+                ),
+                ("None of these, skip art".to_owned(), GamePick::Skip),
+            ]);
+        let choices = numbered(entries);
+        match prompt.choose("Which game is it?", "Game", &choices, Some("1"), false)? {
+            Reply::Value(GamePick::Game(game)) => return Ok(Some((game, term))),
+            Reply::Value(GamePick::Skip) => return Ok(None),
+            Reply::Value(GamePick::SearchAgain) => match ask_search_term(prompt)? {
+                Reply::Value(next) => {
+                    term = next;
+                    games = api.search(&term)?;
+                }
+                // Esc here goes back to the same list.
+                Reply::Back => {}
+            },
+            Reply::Back => unreachable!("the pick list has no back"),
+        }
     }
+}
+
+/// Searches for `term` and asks which match is the game. A terminal is
+/// needed for more than one match, and to search again after an empty one.
+fn pick_game(api: &Api, term: &str) -> anyhow::Result<Option<u64>> {
     if !prompt::interactive() {
+        let games = api.search(term)?;
+        if games.is_empty() {
+            bail!("no SteamGridDB games match `{term}`");
+        }
         bail!("picking a game needs a terminal, pass --game instead");
     }
-    let choices = numbered(games.iter().map(|game| (game_label(game), game.id)));
     let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
-    match prompt.choose("Which game is it?", "Game", &choices, Some("1"), false)? {
-        Reply::Value(game) => Ok(game),
-        Reply::Back => unreachable!("the first question has no back"),
+    ask_game(api, term, &mut prompt)
+}
+
+/// The interactive part of `pick_game`, split out so tests can drive it with
+/// a scripted prompt and a fake transport.
+fn ask_game<I: Input, W: Write>(
+    api: &Api,
+    term: &str,
+    prompt: &mut Prompt<I, W>,
+) -> anyhow::Result<Option<u64>> {
+    let mut term = term.to_owned();
+    let mut games = api.search(&term)?;
+    loop {
+        if games.is_empty() {
+            match ask_after_no_matches(prompt, &term)? {
+                Reply::Value(next) => {
+                    term = next;
+                    games = api.search(&term)?;
+                    continue;
+                }
+                Reply::Back => return Ok(None),
+            }
+        }
+        let entries = games
+            .iter()
+            .map(|game| (game_label(game), Some(game.id)))
+            .chain([("Search for something else".to_owned(), None)]);
+        let choices = numbered(entries);
+        match prompt.choose("Which game is it?", "Game", &choices, Some("1"), false)? {
+            Reply::Value(Some(game)) => return Ok(Some(game)),
+            Reply::Value(None) => match ask_search_term(prompt)? {
+                Reply::Value(next) => {
+                    term = next;
+                    games = api.search(&term)?;
+                }
+                // Esc here goes back to the same list.
+                Reply::Back => {}
+            },
+            Reply::Back => unreachable!("the first question has no back"),
+        }
     }
+}
+
+/// Prints the no-matches line and asks for a new term.
+fn ask_after_no_matches<I: Input, W: Write>(
+    prompt: &mut Prompt<I, W>,
+    term: &str,
+) -> anyhow::Result<Reply<String>> {
+    prompt.say(format!("No SteamGridDB games match `{term}`."))?;
+    ask_search_term(prompt)
+}
+
+/// An empty line editor, re-asked on an empty answer.
+fn ask_search_term<I: Input, W: Write>(prompt: &mut Prompt<I, W>) -> anyhow::Result<Reply<String>> {
+    prompt.text("Search for", None, |answer| {
+        if answer.is_empty() {
+            Err("Enter a search term.".to_owned())
+        } else {
+            Ok(answer.to_owned())
+        }
+    })
 }
 
 /// The lines `art list` prints, and its warnings.
@@ -660,6 +770,19 @@ pub(crate) mod fake {
                 (
                     200,
                     format!("{{\"success\":true,\"data\":{data}}}").into_bytes(),
+                ),
+            );
+        }
+
+        /// A single named game, for a search under a different term that
+        /// should turn up something other than Hades.
+        pub(crate) fn search_one(&mut self, term: &str, id: u64, name: &str) {
+            self.0.insert(
+                format!("{}/search/autocomplete/{term}", steamgriddb::API),
+                (
+                    200,
+                    format!("{{\"success\":true,\"data\":[{{\"id\":{id},\"name\":\"{name}\"}}]}}")
+                        .into_bytes(),
                 ),
             );
         }
@@ -909,12 +1032,13 @@ mod tests {
         let mut fake = Fake::default();
         fake.search("hades", true);
         fake.icon_only();
-        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, Some(&["3"]));
+        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, Some(&["4"]));
         assert!(outcome.result.is_ok());
         let out = &outcome.out;
         assert!(out.contains("1) Hades (2020), 7"), "{out}");
         assert!(out.contains("2) Hades II, 8"), "{out}");
-        assert!(out.contains("3) None of these, skip art"), "{out}");
+        assert!(out.contains("3) Search for something else"), "{out}");
+        assert!(out.contains("4) None of these, skip art"), "{out}");
         assert!(
             out.ends_with(
                 "Game [1]: Skipped art. Fetch later with: wineo art fetch hades --search <term>\n"
@@ -924,6 +1048,78 @@ mod tests {
         assert!(!out.contains("icon:"), "{out}");
         assert_eq!(art::saved_game(&paths, "hades").unwrap(), None);
         assert!(!paths.art_dir("hades").join("icon.png").exists());
+    }
+
+    #[test]
+    fn asking_again_searches_a_new_term_and_saves_the_pick() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        fake.search_one("arena", 42, "Hades Arena");
+        fake.page(Kind::Icon, &[]);
+        fake.page(Kind::Grid, &[]);
+        fake.page(Kind::Hero, &[]);
+        fake.page(Kind::Logo, &[]);
+        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, Some(&["3", "arena", "1"]));
+        assert!(outcome.result.is_ok(), "{}", outcome.err);
+        let out = &outcome.out;
+        assert!(out.contains("3) Search for something else"), "{out}");
+        assert!(out.contains("Search for: "), "{out}");
+        assert!(out.contains("1) Hades Arena, 42"), "{out}");
+        assert_eq!(art::saved_game(&paths, "hades").unwrap(), Some(42));
+    }
+
+    #[test]
+    fn backing_out_of_a_new_search_returns_to_the_same_list() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        fake.icon_only();
+        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, Some(&["3", "<", "1"]));
+        assert!(outcome.result.is_ok(), "{}", outcome.err);
+        assert_eq!(
+            outcome.out.matches("Which game is it?").count(),
+            2,
+            "{}",
+            outcome.out
+        );
+        assert_eq!(art::saved_game(&paths, "hades").unwrap(), Some(7));
+    }
+
+    #[test]
+    fn asking_with_no_matches_asks_for_a_term_and_succeeds() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.search("hades", false);
+        fake.search("hadesii", true);
+        fake.icon_only();
+        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, Some(&["hadesii", "1"]));
+        assert!(outcome.result.is_ok(), "{}", outcome.err);
+        let out = &outcome.out;
+        assert!(
+            out.contains("No SteamGridDB games match `hades`.\n"),
+            "{out}"
+        );
+        assert!(out.contains("Search for: "), "{out}");
+        assert!(out.contains("icon: fetched SteamGridDB 1\n"), "{out}");
+        assert_eq!(art::saved_game(&paths, "hades").unwrap(), Some(7));
+    }
+
+    #[test]
+    fn backing_out_of_an_empty_search_skips_art() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.search("hades", false);
+        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, Some(&["<"]));
+        assert!(outcome.result.is_ok(), "{}", outcome.err);
+        assert!(
+            outcome
+                .out
+                .contains("Skipped art. Fetch later with: wineo art fetch hades --search <term>\n"),
+            "{}",
+            outcome.out
+        );
+        assert_eq!(art::saved_game(&paths, "hades").unwrap(), None);
     }
 
     #[test]
@@ -997,11 +1193,11 @@ mod tests {
     }
 
     #[test]
-    fn no_matches_warns_and_fetches_nothing() {
+    fn top_with_no_matches_warns_and_fetches_nothing() {
         let (_root, paths) = paths();
         let mut fake = Fake::default();
         fake.search("hades", false);
-        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, Some(&["1"]));
+        let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, None);
         assert!(outcome.result.is_ok());
         assert_eq!(outcome.out, "");
         assert!(
@@ -1029,5 +1225,87 @@ mod tests {
             "{}",
             outcome.err
         );
+    }
+
+    /// Drives `ask_game`, the interactive core `pick_game` uses once it knows
+    /// it has a terminal, with a scripted prompt and the fake transport.
+    fn ask_game_with(
+        fake: &Fake,
+        term: &str,
+        answers: &[&str],
+    ) -> (anyhow::Result<Option<u64>>, String) {
+        let mut prompt = Prompt::new(Script::new(answers), Vec::new());
+        let result = ask_game(&Api::new(fake, "k"), term, &mut prompt);
+        (result, String::from_utf8(prompt.output().clone()).unwrap())
+    }
+
+    #[test]
+    fn ask_game_offers_a_search_again_entry_last() {
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        let (result, out) = ask_game_with(&fake, "hades", &["1"]);
+        assert_eq!(result.unwrap(), Some(7));
+        assert!(out.contains("1) Hades (2020), 7"), "{out}");
+        assert!(out.contains("2) Hades II, 8"), "{out}");
+        assert!(out.contains("3) Search for something else"), "{out}");
+    }
+
+    #[test]
+    fn ask_game_again_searches_a_new_term_and_picks_from_it() {
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        fake.search_one("arena", 42, "Hades Arena");
+        let (result, out) = ask_game_with(&fake, "hades", &["3", "arena", "1"]);
+        assert_eq!(result.unwrap(), Some(42));
+        assert!(out.contains("3) Search for something else"), "{out}");
+        assert!(out.contains("Search for: "), "{out}");
+        assert!(out.contains("1) Hades Arena, 42"), "{out}");
+    }
+
+    #[test]
+    fn ask_game_backs_out_of_a_new_search_to_the_same_list() {
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        let (result, out) = ask_game_with(&fake, "hades", &["3", "<", "1"]);
+        assert_eq!(result.unwrap(), Some(7));
+        assert_eq!(out.matches("Which game is it?").count(), 2, "{out}");
+    }
+
+    #[test]
+    fn ask_game_with_no_matches_asks_for_a_term_and_succeeds() {
+        let mut fake = Fake::default();
+        fake.search("hades", false);
+        fake.search("hadesii", true);
+        let (result, out) = ask_game_with(&fake, "hades", &["hadesii", "1"]);
+        assert_eq!(result.unwrap(), Some(7));
+        assert!(
+            out.contains("No SteamGridDB games match `hades`.\n"),
+            "{out}"
+        );
+        assert!(out.contains("Search for: "), "{out}");
+    }
+
+    #[test]
+    fn ask_game_backing_out_of_an_empty_search_gives_up_the_pick() {
+        let mut fake = Fake::default();
+        fake.search("hades", false);
+        let (result, out) = ask_game_with(&fake, "hades", &["<"]);
+        assert_eq!(result.unwrap(), None);
+        assert!(
+            out.contains("No SteamGridDB games match `hades`.\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn picking_from_a_new_search_saves_that_game() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        fake.search_one("arena", 42, "Hades Arena");
+        let (result, _) = ask_game_with(&fake, "hades", &["3", "arena", "1"]);
+        let game = result.unwrap().unwrap();
+        art::save_game(&paths, "hades", game).unwrap();
+        assert_eq!(art::saved_game(&paths, "hades").unwrap(), Some(42));
     }
 }
