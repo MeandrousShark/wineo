@@ -173,8 +173,11 @@ impl Supervisor {
 
         if let Err(error) = ending.settled {
             // Keep the run marked live so ordinary commands cannot pass a
-            // process we failed to observe or settle.
-            runtime.write_state(state)?;
+            // process we failed to observe or settle. A failure here must not
+            // hide the settle error, which is the one worth reporting.
+            if let Err(write_err) = runtime.write_state(state) {
+                notify(Notice::Warning(write_err));
+            }
             return Err(error);
         }
 
