@@ -16,6 +16,7 @@ use wineo_core::programs::Listing;
 use wineo_core::runners::Runners;
 use wineo_core::runtime::Runtime;
 use wineo_core::supervisor::{Notice, Watched};
+use wineo_core::targets::{self, Batch, Spec, Written};
 use wineo_core::templates::Templates;
 
 use super::art::{Access, AutoFetch, KeyCheck, Pick};
@@ -60,23 +61,30 @@ pub struct Args {
     #[arg(long)]
     art: bool,
 
-    /// Make a native environment running EXE, a path or a name on PATH
-    #[arg(
-        long,
-        value_name = "EXE",
-        value_hint = clap::ValueHint::ExecutablePath,
-        conflicts_with_all = ["dir", "runner", "template", "arch", "install_exe"]
-    )]
-    native: Option<String>,
+    /// Make the environment native, running Linux programs instead of Windows ones
+    #[arg(long, conflicts_with_all = ["dir", "runner", "template", "arch", "install_exe"])]
+    native: bool,
+
+    /// Program for the default target, added once the environment exists: a
+    /// path or a name on PATH for --native, a Unix or Windows path for Wine
+    #[arg(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath, conflicts_with = "install_exe")]
+    exe: Option<String>,
+
+    /// Make a desktop entry for the --exe target
+    #[arg(short = 'd', long = "desktop", requires = "exe")]
+    desktop: bool,
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
+    if args.desktop {
+        wineo_core::desktop::supported(paths)?;
+    }
     let name = match args.name.clone() {
         Some(name) if !args.interactive => name,
         _ => return guided(paths, args),
     };
-    if let Some(exe) = &args.native {
-        return new_native(paths, &name, exe, args.art);
+    if args.native {
+        return new_native(paths, &name, args.exe.as_deref(), args.desktop, args.art);
     }
     // Checked up front so a typo fails before the prefix creation wait.
     if let Some(installer) = &args.install_exe {
@@ -159,15 +167,29 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             eprintln!("Creating a wine prefix in {dir}, this takes a few seconds");
         }
     })?;
-    if created_prefix {
-        println!("Created environment {}", environment.name);
-    } else {
-        println!(
-            "Created environment {} using the existing prefix at {}",
-            environment.name,
-            paths.shown(&environment.wine()?.prefix)
-        );
-    }
+    let environment = match &args.exe {
+        Some(exe) if add_default_target(paths, &environment, exe, args.desktop)? => {
+            println!(
+                "{}",
+                created_message(&environment, created_prefix, paths, true)?
+            );
+            Environment::load(paths, &environment.name)?
+        }
+        Some(exe) => {
+            eprintln!(
+                "Created environment {}, but {exe} was not found. Add a target with: wineo setup {}",
+                environment.name, environment.name
+            );
+            return Ok(ExitCode::FAILURE);
+        }
+        None => {
+            println!(
+                "{}",
+                created_message(&environment, created_prefix, paths, false)?
+            );
+            environment
+        }
+    };
 
     components::reconcile_config(
         paths,
@@ -185,10 +207,12 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     }
 
     let Some(program) = &args.install_exe else {
-        println!(
-            "Add a target with: wineo set {} targets.<target>.exe=<path>",
-            environment.name
-        );
+        if args.exe.is_none() {
+            println!(
+                "Add a target with: wineo set {} targets.<target>.exe=<path>",
+                environment.name
+            );
+        }
         return Ok(ExitCode::SUCCESS);
     };
     let installer = match Installer::prepare_with_runner(
@@ -278,18 +302,24 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     }
 }
 
-/// Creates a native environment with one default target running `exe`.
-fn new_native(paths: &Paths, name: &str, exe: &str, art: bool) -> anyhow::Result<ExitCode> {
+/// Creates a native environment, with a default target named after it
+/// running `exe` when one is given.
+fn new_native(
+    paths: &Paths,
+    name: &str,
+    exe: Option<&str>,
+    desktop: bool,
+    art: bool,
+) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
-    let environment = Environment::create_native(paths, &global, name, Some(exe))?;
-    let target = environment
-        .config
-        .targets
-        .keys()
-        .next()
-        .cloned()
-        .unwrap_or_default();
-    println!("Created native environment {name} with target {target}");
+    let environment = Environment::create_native(paths, &global, name, exe, desktop)?;
+    match exe {
+        Some(_) => println!("Created native environment {name} with target {name}"),
+        None => {
+            println!("Created native environment {name}");
+            println!("Add a target with: wineo setup {name}");
+        }
+    }
     desktop::reconcile_native(paths, &global, &environment)?;
     if art && fetch_art(paths, &global, name).is_err() {
         eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
@@ -298,11 +328,68 @@ fn new_native(paths: &Paths, name: &str, exe: &str, art: bool) -> anyhow::Result
     Ok(ExitCode::SUCCESS)
 }
 
+/// The plain "Created environment" line, extended with the default target
+/// `--exe` added, and the "existing prefix" note carried over either way.
+fn created_message(
+    environment: &Environment,
+    created_prefix: bool,
+    paths: &Paths,
+    with_target: bool,
+) -> anyhow::Result<String> {
+    let mut message = format!("Created environment {}", environment.name);
+    if with_target {
+        message.push_str(&format!(" with target {}", environment.name));
+    }
+    if !created_prefix {
+        let prefix = paths.shown(&environment.wine()?.prefix);
+        if with_target {
+            message.push_str(&format!(", using the existing prefix at {prefix}"));
+        } else {
+            message.push_str(&format!(" using the existing prefix at {prefix}"));
+        }
+    }
+    Ok(message)
+}
+
+/// Adds `exe` as the environment's default target, named after it, checked
+/// against the prefix that now exists. `Ok(false)` means the exe wasn't
+/// found, so the environment is kept without a target.
+fn add_default_target(
+    paths: &Paths,
+    environment: &Environment,
+    exe: &str,
+    desktop: bool,
+) -> anyhow::Result<bool> {
+    let prefix = environment.prefix(paths)?;
+    if wineo_core::desktop::check(paths, &prefix, exe).is_err() {
+        return Ok(false);
+    }
+    let mut batch = Batch::new(environment.config.targets.clone());
+    batch.add(
+        &environment.name,
+        Spec {
+            exe: exe.to_owned(),
+            args: Vec::new(),
+            cwd: None,
+            name: None,
+            desktop,
+        },
+    )?;
+    batch.set_default(Some(&environment.name));
+    match targets::write(paths, &environment.name, &batch)? {
+        Written::Saved => Ok(true),
+        Written::Changed(_) => bail!(
+            "{}'s config changed while its target was being added",
+            environment.name
+        ),
+    }
+}
+
 /// Asks for everything, starting from whatever flags were given.
 fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     if !prompt::interactive() {
         bail!(
-            "wineo new needs a terminal without -n. Use: wineo new -n <name> [-t <template>] [--install-exe <path>] [--native <exe>]"
+            "wineo new needs a terminal without -n. Use: wineo new -n <name> [-t <template>] [--native] [--exe <path> [-d]] [--install-exe <path>]"
         );
     }
     let global = GlobalConfig::load(paths)?;
@@ -314,6 +401,7 @@ fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         arch: args.arch,
         install_exe: args.install_exe,
         native: args.native,
+        exe: args.exe,
     };
     let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
     let mut guided = Guided { registered: None };

@@ -37,8 +37,11 @@ pub struct Prefill {
     pub template: Option<String>,
     pub arch: Option<Arch>,
     pub install_exe: Option<String>,
-    /// `--native`, which makes it native and is what the exe question starts from.
-    pub native: Option<String>,
+    /// `--native`, which skips the kind question and picks the native branch.
+    pub native: bool,
+    /// `--exe`, which prefills the native branch's exe question, or the Wine
+    /// "already installed" path, picked as the way to add the game.
+    pub exe: Option<String>,
 }
 
 impl Prefill {
@@ -119,8 +122,8 @@ pub fn run<I: Input, W: Write>(
         None => None,
     };
     let mut answers = Answers {
-        native: prefill.native.is_some(),
-        exe: prefill.native.clone(),
+        native: prefill.native,
+        exe: prefill.exe.clone(),
         arch_asked: prefill.arch.is_some()
             || template.as_ref().is_some_and(|(_, t)| t.arch.is_some()),
         arch: prefill.arch,
@@ -128,7 +131,11 @@ pub fn run<I: Input, W: Write>(
         name: prefill.name.clone(),
         dir: prefill.dir.clone(),
         runner: prefill.runner.clone(),
-        how: prefill.install_exe.clone().map(How::Installer),
+        how: prefill
+            .install_exe
+            .clone()
+            .map(How::Installer)
+            .or_else(|| prefill.exe.clone().map(How::Existing)),
         art: None,
         art_asked: false,
     };
@@ -136,7 +143,7 @@ pub fn run<I: Input, W: Write>(
     let mut key: Option<Option<Key>> = None;
     // A template from the command line isn't asked about, but going back
     // still reaches the question.
-    let mut step = if prefill.native.is_some() || prefill.template.is_some() {
+    let mut step = if prefill.native || prefill.template.is_some() {
         Step::Name
     } else if prefill.wine_only() {
         Step::Template
@@ -1020,7 +1027,7 @@ fn create_native<I: Input, W: Write>(
     exe: String,
     art: Option<(Key, String)>,
 ) -> anyhow::Result<ExitCode> {
-    let environment = match Environment::create_native(paths, global, name, None) {
+    let environment = match Environment::create_native(paths, global, name, None, false) {
         Ok(environment) => environment,
         Err(err) => {
             prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
