@@ -253,7 +253,11 @@ pub fn summarize(log: &Log, running: Option<&Running>, now: Timestamp, tz: &Time
             started_at: session.started_at,
         });
     let first_played = sessions.iter().map(|session| session.started_at).min();
-    let last_played = sessions.iter().map(|session| session.started_at).max();
+    let last_played = sessions
+        .iter()
+        .map(|session| session.started_at)
+        .chain(log.imported.and_then(|imported| imported.last_played))
+        .max();
 
     let week_start = start_of_week(now, tz);
     let month_start = start_of_month(now, tz);
@@ -591,6 +595,22 @@ mod tests {
         assert_eq!(summary.average_seconds, Some(3600));
         assert_eq!(summary.imported_seconds, 342_000);
         assert_eq!(summary.seconds, 3600 + 342_000);
+        assert_eq!(summary.last_played, Some(ts("2026-09-20T19:00:00Z")));
+    }
+
+    #[test]
+    fn heroic_last_played_counts_when_it_is_the_latest() {
+        let log = Log {
+            sessions: Vec::new(),
+            imported: Some(Imported {
+                seconds: 342_000,
+                last_played: Some(ts("2026-06-01T10:00:00Z")),
+            }),
+            warnings: Vec::new(),
+        };
+        let summary = summarize(&log, None, ts("2026-09-26T12:00:00Z"), &TimeZone::UTC);
+        assert_eq!(summary.last_played, Some(ts("2026-06-01T10:00:00Z")));
+        assert_eq!(summary.first_played, None);
     }
 
     #[test]
