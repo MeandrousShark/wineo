@@ -217,6 +217,67 @@ fn heroic_import_dash_d_is_the_same_as_desktop() {
 }
 
 #[test]
+fn heroic_import_records_playtime_from_timestamp_json() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    fs::create_dir_all(heroic.join("store")).unwrap();
+    fs::write(
+        heroic.join("store/timestamp.json"),
+        r#"{"a":{"firstPlayed":"2026-06-01T10:00:00.000Z","lastPlayed":"2026-09-20T19:02:11.000Z","totalPlayed":5700}}"#,
+    )
+    .unwrap();
+
+    let single = heroic_import(&f, &heroic, &["--game", "a", "-n", "alpha"]);
+    assert_success(&single);
+    let log = f.read_stats_log("alpha");
+    assert!(log.contains("\"seconds\":342000"), "{log}");
+    assert!(
+        log.contains("\"last_played\":\"2026-09-20T19:02:11Z\""),
+        "{log}"
+    );
+}
+
+#[test]
+fn heroic_import_with_empty_dates_or_no_timestamp_file_does_not_fail() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    // No `store/timestamp.json` at all.
+    let single = heroic_import(&f, &heroic, &["--game", "a", "-n", "alpha"]);
+    assert_success(&single);
+    assert!(f.read_stats_log("alpha").is_empty());
+
+    fs::create_dir_all(heroic.join("store")).unwrap();
+    fs::write(
+        heroic.join("store/timestamp.json"),
+        r#"{"b":{"firstPlayed":"","lastPlayed":"","totalPlayed":0}}"#,
+    )
+    .unwrap();
+    let second = heroic_import(&f, &heroic, &["--game", "b", "-n", "beta"]);
+    assert_success(&second);
+    assert!(f.read_stats_log("beta").is_empty());
+}
+
+#[test]
+fn heroic_bulk_import_records_playtime_for_every_game() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    fs::create_dir_all(heroic.join("store")).unwrap();
+    fs::write(
+        heroic.join("store/timestamp.json"),
+        r#"{"a":{"firstPlayed":"2026-01-01T00:00:00.000Z","lastPlayed":"2026-01-02T00:00:00.000Z","totalPlayed":60},"b":{"firstPlayed":"","lastPlayed":"","totalPlayed":0}}"#,
+    )
+    .unwrap();
+
+    let output = bulk_heroic(&f, &heroic);
+    assert_success(&output);
+    assert!(f.read_stats_log("alpha").contains("\"seconds\":3600"));
+    assert!(f.read_stats_log("beta").is_empty());
+}
+
+#[test]
 fn heroic_bulk_imports_absolute_pfx_self_links_and_recognizes_completed_games() {
     let f = Fixture::new();
     f.install_proton("GE-Proton11-7");

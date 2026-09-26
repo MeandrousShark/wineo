@@ -2,6 +2,8 @@
 
 mod common;
 
+use std::fs;
+
 use common::{Fixture, assert_success, stdout};
 
 fn session(target: &str, started_at: &str, ended_at: &str, seconds: i64, end: &str) -> String {
@@ -114,6 +116,60 @@ fn a_never_played_environment_says_so() {
     let output = f.run(&["stats", "game"]);
     assert_success(&output);
     assert_eq!(stdout(&output), "game\n  played      never\n");
+}
+
+/// A minimal Heroic install with `game_id`'s playtime in `store/timestamp.json`.
+fn heroic_config(f: &Fixture, game_id: &str, total_played_minutes: u64, last_played: &str) {
+    let heroic = f.config_dir().join("../heroic");
+    fs::create_dir_all(heroic.join("sideload_apps")).unwrap();
+    fs::create_dir_all(heroic.join("store")).unwrap();
+    fs::write(heroic.join("config.json"), "{}").unwrap();
+    fs::write(heroic.join("sideload_apps/library.json"), r#"{"games":[]}"#).unwrap();
+    fs::write(
+        heroic.join("store/timestamp.json"),
+        format!(
+            r#"{{"{game_id}":{{"firstPlayed":"2026-01-01T00:00:00.000Z","lastPlayed":"{last_played}","totalPlayed":{total_played_minutes}}}}}"#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn import_heroic_updates_existing_environments_and_replaces_on_a_second_run() {
+    let f = Fixture::new();
+    f.environment("game", "");
+    let config = f.config_dir().join("environments/game.toml");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(&config, format!("heroic_id = \"abc\"\n{text}")).unwrap();
+
+    heroic_config(&f, "abc", 60, "2026-09-20T19:02:11.000Z");
+    let first = f.run(&["stats", "--import-heroic"]);
+    assert_success(&first);
+    assert!(
+        stdout(&first).contains("game: 1 h from Heroic"),
+        "{}",
+        stdout(&first)
+    );
+    let log = f.read_stats_log("game");
+    assert!(log.contains("\"seconds\":3600"), "{log}");
+    assert_eq!(log.lines().count(), 1, "{log}");
+
+    heroic_config(&f, "abc", 120, "2026-09-25T09:00:00.000Z");
+    let second = f.run(&["stats", "--import-heroic"]);
+    assert_success(&second);
+    assert!(
+        stdout(&second).contains("game: 2 h from Heroic"),
+        "{}",
+        stdout(&second)
+    );
+    let log = f.read_stats_log("game");
+    assert!(log.contains("\"seconds\":7200"), "{log}");
+    assert!(!log.contains("\"seconds\":3600"), "{log}");
+    assert_eq!(
+        log.lines().count(),
+        1,
+        "importing again should replace, not add, the imported line: {log}"
+    );
 }
 
 #[test]

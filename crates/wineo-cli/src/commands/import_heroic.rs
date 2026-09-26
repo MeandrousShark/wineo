@@ -332,6 +332,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         });
         let destination = resolved_destination(paths, &global, &request, &inspection)?;
         let environment = import_reviewed(paths, &global, request, &inspection, Some(&settings))?;
+        import_playtime(paths, &source, &imported.id, &environment.name);
         let mut prompt = (art.enabled && prompt::interactive())
             .then(|| Terminal::open().ok())
             .flatten()
@@ -654,6 +655,7 @@ fn guided<I: Input, W: Write>(
     ensure_source_unchanged(&source, &imported)?;
     let destination = resolved_destination(paths, global, &request, &inspection)?;
     let environment = import_reviewed(paths, global, request, &inspection, Some(&settings))?;
+    import_playtime(paths, &source, &imported.id, &environment.name);
     let fetched = fetch_art(
         paths,
         global,
@@ -1756,6 +1758,7 @@ fn import_one(
         &game.inspection,
         Some(&settings),
     )?;
+    import_playtime(paths, bulk.source, &game.imported.id, &environment.name);
     let top = Pick::<OutputOnly, Vec<u8>>::Top(out);
     // A top match can't be canceled.
     let _ = fetch_art(
@@ -3457,6 +3460,31 @@ fn print_log_path(paths: &Paths, name: &str, body: &str) {
     match write_import_log(paths, name, body) {
         Ok(path) => println!("Import log: {}", style::path(paths, &path)),
         Err(error) => eprintln!("warning: could not write the import log: {error:#}"),
+    }
+}
+
+/// Carries `game_id`'s Heroic playtime into `name`'s new play log, if Heroic
+/// ever played it. Never fails the import: a game worth playing is worth
+/// importing even if its history can't be.
+pub(crate) fn import_playtime(paths: &Paths, source: &HeroicSource, game_id: &str, name: &str) {
+    match source.playtime(game_id) {
+        Ok(Some(playtime)) => {
+            let imported = wineo_core::stats::Imported {
+                seconds: playtime.seconds,
+                last_played: playtime.last_played,
+            };
+            if let Err(error) = wineo_core::stats::set_imported(paths, name, imported) {
+                eprintln!(
+                    "warning: could not import playtime from Heroic: {:#}",
+                    anyhow::Error::from(error)
+                );
+            }
+        }
+        Ok(None) => {}
+        Err(error) => eprintln!(
+            "warning: could not read Heroic's playtime: {:#}",
+            anyhow::Error::from(error)
+        ),
     }
 }
 

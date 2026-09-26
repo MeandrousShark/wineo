@@ -260,6 +260,7 @@ pub(super) fn direct(
     println!("{}", summary(paths, &imported, &name));
     ensure_unchanged(source, &imported)?;
     let environment = import::register_native(paths, &name, &settings(&imported, &desktop_choice))?;
+    super::import_playtime(paths, source, &imported.id, &environment.name);
     let mut prompt = (art.enabled && prompt::interactive())
         .then(|| Terminal::open().ok())
         .flatten()
@@ -385,6 +386,7 @@ pub(super) fn guided<I: Input, W: Write>(
     }
     ensure_unchanged(source, &imported)?;
     let environment = import::register_native(paths, &name, &settings(&imported, &desktop_choice))?;
+    super::import_playtime(paths, source, &imported.id, &environment.name);
     let fetched = fetch_art(
         paths,
         global,
@@ -507,6 +509,7 @@ pub(super) fn import_one(
         &game.name,
         &settings(&game.imported, &desktop_choice),
     )?;
+    super::import_playtime(paths, bulk.source, &game.imported.id, &environment.name);
     let top = Pick::<OutputOnly, Vec<u8>>::Top(out);
     // A top match can't be canceled.
     let _ = fetch_art(
