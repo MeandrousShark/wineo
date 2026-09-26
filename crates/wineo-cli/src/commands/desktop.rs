@@ -52,11 +52,9 @@ pub fn run(paths: &Paths, _args: Args) -> anyhow::Result<ExitCode> {
             "No desktop entries. Add one with: wineo set <name> targets.<target>.desktop=true"
         );
     }
-    // There is no verb for these: the environment they named is gone, so
-    // nothing wineo can be pointed at owns them any more.
     if !strays.is_empty() {
         eprintln!(
-            "{} entr{} belong to an environment that no longer exists. Delete:",
+            "{} entr{} belong to an environment that no longer exists. Remove with `wineo validate`:",
             strays.len(),
             if strays.len() == 1 { "y" } else { "ies" }
         );
