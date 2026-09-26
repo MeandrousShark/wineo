@@ -258,3 +258,45 @@ fn json_shapes_match_the_named_object_and_the_collection_envelope() {
     assert_eq!(environments[0]["name"], "game");
     assert_eq!(json["errors"], serde_json::json!([]));
 }
+
+#[test]
+fn sessions_is_refused_without_a_name_or_without_json() {
+    let f = Fixture::new();
+    f.environment("game", "");
+
+    let without_name = f.run(&["stats", "--json", "--sessions"]);
+    assert!(!without_name.status.success());
+    assert!(
+        stderr(&without_name).contains("required"),
+        "{}",
+        stderr(&without_name)
+    );
+
+    let without_json = f.run(&["stats", "game", "--sessions"]);
+    assert!(!without_json.status.success());
+    assert!(
+        stderr(&without_json).contains("required"),
+        "{}",
+        stderr(&without_json)
+    );
+}
+
+#[test]
+fn import_heroic_conflicts_with_name_json_and_sessions() {
+    let f = Fixture::new();
+    f.environment("game", "");
+
+    for args in [
+        &["stats", "--import-heroic", "game"][..],
+        &["stats", "--import-heroic", "--json"][..],
+        &["stats", "--import-heroic", "--json", "--sessions", "game"][..],
+    ] {
+        let output = f.run(args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            stderr(&output).contains("cannot be used with"),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+}
