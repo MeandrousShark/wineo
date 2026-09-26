@@ -111,10 +111,7 @@ fn warnings_alone_exit_0_and_nothing_is_fixed_without_a_terminal() {
     assert_success(&output);
     let text = stdout(&output);
     assert!(text.starts_with("oldgame\n  warning  state dir "), "{text}");
-    assert!(
-        text.ends_with("\n1 warning.\n1 problem can be fixed with `wineo validate --fix`.\n"),
-        "{text}"
-    );
+    assert!(text.ends_with("\n\n1 warning.\n"), "{text}");
     assert!(state.exists());
 }
 
@@ -167,7 +164,7 @@ fn errors_left_after_fixing_still_exit_1() {
 }
 
 #[test]
-fn a_fix_for_a_busy_environment_fails_and_the_rest_go_on() {
+fn a_fix_for_a_busy_environment_fails_the_rest_go_on_and_it_exits_1() {
     let f = Fixture::new();
     let state = f.stray_state("oldgame");
     let entry = f.stray_entry("gone");
@@ -176,7 +173,7 @@ fn a_fix_for_a_busy_environment_fails_and_the_rest_go_on() {
         .unwrap();
 
     let output = f.run(&["validate", "--fix"]);
-    assert_success(&output);
+    assert_eq!(output.status.code(), Some(1));
     assert!(
         stderr(&output).contains(
             "error: Remove oldgame's leftover state failed: environment `oldgame` is busy: a snapshot operation is running"
@@ -225,6 +222,7 @@ fn json_reports_without_asking_and_fix_lists_what_it_fixed() {
                 },
             ],
             "fixed": [],
+            "errors": [],
         })
     );
     assert_eq!(fs::read(art_toml(&f, "hades")).unwrap(), before);
@@ -246,7 +244,10 @@ fn json_for_a_clean_setup_exits_0() {
     f.environment("hades", "");
     let output = f.run(&["validate", "--json"]);
     assert_success(&output);
-    assert_eq!(stdout(&output), "{\"problems\":[],\"fixed\":[]}\n");
+    assert_eq!(
+        stdout(&output),
+        "{\"problems\":[],\"fixed\":[],\"errors\":[]}\n"
+    );
 }
 
 #[test]
@@ -286,4 +287,30 @@ fn portable_mode_checks_only_the_portable_folder() {
         text.contains("portable environments never get desktop entries"),
         "{text}"
     );
+}
+
+#[test]
+fn json_fix_lists_failed_fixes_under_errors_and_exits_1() {
+    let f = Fixture::new();
+    f.stray_state("oldgame");
+    let entry = f.stray_entry("gone");
+    let _busy = Locks::new(&paths(&f))
+        .acquire(Operation::Snapshot, "oldgame", &[])
+        .unwrap();
+    let output = f.run(&["validate", "--json", "--fix"]);
+    assert_eq!(output.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json["fixed"],
+        serde_json::json!(["Remove gone's desktop entry"])
+    );
+    assert_eq!(
+        json["errors"],
+        serde_json::json!([{
+            "fix": "Remove oldgame's leftover state",
+            "message": "environment `oldgame` is busy: a snapshot operation is running",
+        }])
+    );
+    assert_eq!(json["problems"][0]["code"], "state_dir_stray");
+    assert!(!entry.exists());
 }

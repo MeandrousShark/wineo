@@ -32,6 +32,7 @@ pub struct Args {
 struct JsonOutput<'a> {
     problems: &'a [Problem],
     fixed: Vec<String>,
+    errors: &'a [Failed],
 }
 
 pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
@@ -43,17 +44,18 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
     let fixes = fixes(&report);
 
     if args.json {
-        let applied = if args.fix {
+        let (applied, failed) = if args.fix {
             apply_all(paths, &fixes)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         let report = if applied.is_empty() { report } else { check()? };
         json::print(&JsonOutput {
             problems: &report.problems,
             fixed: applied.iter().map(Fix::label).collect(),
+            errors: &failed,
         })?;
-        return Ok(exit(&report));
+        return Ok(exit(&report, !failed.is_empty()));
     }
 
     let color = style::stdout_enabled();
@@ -74,7 +76,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
 
     let chosen = if fixes.is_empty() {
         writeln!(out, "{}", summary(&report))?;
-        return Ok(exit(&report));
+        return Ok(exit(&report, false));
     } else if args.fix {
         writeln!(out, "{}", summary(&report))?;
         fixes
@@ -89,15 +91,20 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         }
     } else {
         writeln!(out, "{}", summary(&report))?;
-        writeln!(out, "{}", fix_hint(fixes.len(), args.name.as_deref()))?;
-        return Ok(exit(&report));
+        return Ok(exit(&report, false));
     };
     if chosen.is_empty() {
         writeln!(out, "Nothing was fixed.")?;
-        return Ok(exit(&report));
+        return Ok(exit(&report, false));
     }
 
-    let applied = apply_all(paths, &chosen);
+    let (applied, failed) = apply_all(paths, &chosen);
+    for failed in &failed {
+        eprintln!(
+            "{}",
+            style::error_stderr(format!("error: {} failed: {}", failed.fix, failed.message))
+        );
+    }
     let fixed = report
         .problems
         .iter()
@@ -110,11 +117,12 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         .count();
     let after = check()?;
     writeln!(out, "{}", fixed_line(fixed, &after))?;
-    Ok(exit(&after))
+    Ok(exit(&after, !failed.is_empty()))
 }
 
-fn exit(report: &Report) -> ExitCode {
-    if report.errors() > 0 {
+/// 1 when errors are left or a fix failed.
+fn exit(report: &Report, failed: bool) -> ExitCode {
+    if failed || report.errors() > 0 {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -137,11 +145,19 @@ fn fixes(report: &Report) -> Vec<Fix> {
     fixes
 }
 
+/// A fix that failed, for `--json`.
+#[derive(Serialize)]
+struct Failed {
+    fix: String,
+    message: String,
+}
+
 /// Applies each fix on its own, so one failing leaves the rest to go on.
-/// Returns the ones that worked.
-fn apply_all(paths: &Paths, fixes: &[Fix]) -> Vec<Fix> {
+/// Returns the ones that worked and why the others didn't.
+fn apply_all(paths: &Paths, fixes: &[Fix]) -> (Vec<Fix>, Vec<Failed>) {
     let global = GlobalConfig::load_or_default(paths);
     let mut applied = Vec::new();
+    let mut failed = Vec::new();
     for fix in fixes {
         let result = validate::apply(paths, fix, |component, version| {
             let global = global.as_ref().map_err(|err| anyhow::anyhow!("{err}"))?;
@@ -149,17 +165,17 @@ fn apply_all(paths: &Paths, fixes: &[Fix]) -> Vec<Fix> {
         });
         match result {
             Ok(()) => applied.push(fix.clone()),
-            Err(err) => eprintln!(
-                "{}",
-                style::error_stderr(format!("error: {} failed: {err:#}", fix.label()))
-            ),
+            Err(err) => failed.push(Failed {
+                fix: fix.label(),
+                message: format!("{err:#}"),
+            }),
         }
     }
-    applied
+    (applied, failed)
 }
 
-/// The review from decision 2: Enter fixes everything listed, and a number
-/// takes that fix off the list.
+/// The review from decision 2: Enter fixes everything listed, and numbers
+/// take those fixes off the list.
 fn review<I: Input, W: Write>(
     prompt: &mut Prompt<I, W>,
     heading: &str,
@@ -172,16 +188,21 @@ fn review<I: Input, W: Write>(
                 .enumerate()
                 .map(|(index, fix)| (fix.label(), index)),
         );
-        match prompt.review(
+        match prompt.review_many(
             heading,
-            Some("A number skips that fix."),
+            Some("Numbers skip those fixes, like 1 3 4."),
             "fix them",
             &choices,
             false,
         )? {
             Reply::Value(None) => return Ok(fixes),
-            Reply::Value(Some(index)) => {
-                fixes.remove(index);
+            Reply::Value(Some(skipped)) => {
+                fixes = fixes
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(index, _)| !skipped.contains(index))
+                    .map(|(_, fix)| fix)
+                    .collect();
             }
             Reply::Back => {}
         }
@@ -303,17 +324,6 @@ fn clean(report: &Report, name: Option<&str>) -> String {
             plural(report.environments.len(), "environment", "environments")
         ),
     }
-}
-
-fn fix_hint(fixes: usize, name: Option<&str>) -> String {
-    let command = match name {
-        Some(name) => format!("wineo validate {name} --fix"),
-        None => "wineo validate --fix".to_owned(),
-    };
-    format!(
-        "{} can be fixed with `{command}`.",
-        plural(fixes, "problem", "problems")
-    )
 }
 
 fn fixed_line(fixed: usize, after: &Report) -> String {
@@ -483,10 +493,6 @@ mod tests {
             "No problems in 0 environments."
         );
         assert_eq!(clean(&none, Some("a")), "No problems in a.");
-        assert_eq!(
-            fix_hint(2, None),
-            "2 problems can be fixed with `wineo validate --fix`."
-        );
     }
 
     #[test]
@@ -519,19 +525,29 @@ mod tests {
                 "1 warning.\n",
                 "  1) Drop zomboid's missing icon record\n",
                 "  2) Remove oldgame's leftover state\n",
-                "A number skips that fix.\n",
+                "Numbers skip those fixes, like 1 3 4.\n",
                 "\n",
-                "Press Enter to fix them, or pick a number. Ctrl+C to cancel.\n",
+                "Press Enter to fix them, or pick numbers. Ctrl+C to cancel.\n",
                 "Choice: ",
             )
         );
     }
 
     #[test]
-    fn a_number_skips_that_fix() {
+    fn numbers_skip_those_fixes() {
         let mut prompt = Prompt::new(Script::new(&["1", ""]), Vec::new());
         let chosen = review(&mut prompt, "h", vec![art_fix(), state_fix()]).unwrap();
         assert_eq!(chosen, [state_fix()]);
+
+        let lost = Fix::CleanUpLostRun {
+            environment: "a".to_owned(),
+        };
+        let mut prompt = Prompt::new(Script::new(&["1, 3", ""]), Vec::new());
+        let chosen = review(&mut prompt, "h", vec![art_fix(), state_fix(), lost.clone()]).unwrap();
+        assert_eq!(chosen, [state_fix()]);
+
+        let mut prompt = Prompt::new(Script::new(&["1 2"]), Vec::new());
+        assert_eq!(review(&mut prompt, "h", vec![art_fix(), lost]).unwrap(), []);
 
         let mut prompt = Prompt::new(Script::new(&["1"]), Vec::new());
         assert_eq!(review(&mut prompt, "h", vec![art_fix()]).unwrap(), []);

@@ -1752,8 +1752,8 @@ fn validate_review(pty: &mut Pty) {
     pty.expect("2 warnings.\n");
     pty.expect("  1) Remove oldgame's leftover state\n");
     pty.expect("  2) Remove gone's desktop entry\n");
-    pty.expect("A number skips that fix.\n");
-    pty.expect("Press Enter to fix them, or pick a number. Ctrl+C to cancel.");
+    pty.expect("Numbers skip those fixes, like 1 3 4.\n");
+    pty.expect("Press Enter to fix them, or pick numbers. Ctrl+C to cancel.");
     pty.expect("Choice: ");
 }
 
@@ -1815,4 +1815,44 @@ fn validate_json_never_asks_even_at_a_terminal() {
     assert!(seen.starts_with("{\"problems\":[{"), "{seen}");
     assert!(!seen.contains("Choice"), "{seen}");
     assert!(state.exists());
+}
+
+#[test]
+fn validate_skips_every_fix_numbered_on_one_line() {
+    let f = Fixture::new();
+    let states = ["a", "b", "c", "d"].map(|name| f.stray_state(name));
+    let mut pty = validate(&f, &[]);
+    pty.expect("4 warnings.\n");
+    pty.expect("  4) Remove d's leftover state\n");
+    pty.expect("Choice: ");
+    pty.send("1 3 4");
+    pty.expect("  1) Remove b's leftover state\n");
+    pty.expect("Choice: ");
+    pty.send("");
+    pty.expect("Fixed 1 problem. 3 warnings left.");
+    let (status, _) = pty.finish();
+    assert_eq!(status.code(), Some(0));
+    let left: Vec<bool> = states.iter().map(|state| state.exists()).collect();
+    assert_eq!(left, [true, false, true, true]);
+}
+
+#[test]
+fn a_bad_token_at_the_validate_review_asks_again_without_skipping() {
+    let f = Fixture::new();
+    let state = f.stray_state("oldgame");
+    let entry = f.stray_entry("gone");
+    let mut pty = validate(&f, &[]);
+    validate_review(&mut pty);
+    pty.send("1 x");
+    pty.expect("`1 x` is not one of the choices");
+    pty.expect("Choice: ");
+    pty.send("1 3");
+    pty.expect("Pick numbers between 1 and 2");
+    pty.expect("Choice: ");
+    pty.send("");
+    pty.expect("Fixed 2 problems.");
+    let (status, _) = pty.finish();
+    assert_eq!(status.code(), Some(0));
+    assert!(!state.exists());
+    assert!(!entry.exists());
 }
