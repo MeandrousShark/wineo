@@ -54,6 +54,9 @@ fn start_then_stop() {
         "{log}"
     );
     assert!(!log.contains("killing"), "{log}");
+    let stats_log = f.read_stats_log("app");
+    assert_eq!(stats_log.lines().count(), 1, "{stats_log}");
+    assert!(stats_log.contains("\"end\":\"stopped\""), "{stats_log}");
 
     let not_running = f.run(&["stop", "app"]);
     assert_success(&not_running);
@@ -69,6 +72,9 @@ fn start_reconciles_a_desktop_setting_added_by_hand() {
     wait_for("the first run to finish", || {
         f.state("app").contains("status = \"exited\"")
     });
+    let stats_log = f.read_stats_log("app");
+    assert_eq!(stats_log.lines().count(), 1, "{stats_log}");
+    assert!(stats_log.contains("\"end\":\"exited\""), "{stats_log}");
 
     let config = f.config_dir().join("environments/app.toml");
     let mut text = fs::read_to_string(&config).unwrap();
@@ -103,6 +109,9 @@ fn a_program_exiting_on_its_own_records_its_code() {
     assert!(state.contains("exit_code = 3"), "{state}");
     assert!(state.contains("program_exited_at"), "{state}");
     assert!(state.contains("ended_at"), "{state}");
+    let stats_log = f.read_stats_log("app");
+    assert_eq!(stats_log.lines().count(), 1, "{stats_log}");
+    assert!(stats_log.contains("\"end\":\"failed\""), "{stats_log}");
 }
 
 #[test]
@@ -275,6 +284,13 @@ fn stop_ends_an_attached_run() {
         stderr(&output)
     );
     assert!(f.state("app").contains("status = \"stopped\""));
+    let stats_log = f.read_stats_log("app");
+    assert_eq!(
+        stats_log.lines().count(),
+        1,
+        "an attached run appends one session too: {stats_log}"
+    );
+    assert!(stats_log.contains("\"end\":\"stopped\""), "{stats_log}");
 }
 
 #[test]
@@ -283,6 +299,18 @@ fn stop_cleans_up_after_a_dead_supervisor() {
     f.environment("app", APP);
     assert_success(&f.run(&["start", "app"]));
     wait_for("the program to start", || f.fake_program_running("app"));
+
+    // Simulates a heartbeat recorded a moment before the crash, so the lost
+    // session can be checked to end there rather than at cleanup time.
+    let heartbeat_at = jiff::Timestamp::now();
+    let state_path = f.runtime("app").dir().join("state.toml");
+    let state_text = fs::read_to_string(&state_path).unwrap();
+    // Inserted before any `[table]` header, so it lands as a top-level key
+    // rather than one nested under `[runner]`.
+    let at = state_text.find("\n[").unwrap_or(state_text.len());
+    let mut state_text = state_text;
+    state_text.insert_str(at, &format!("\nheartbeat_at = \"{heartbeat_at}\""));
+    fs::write(&state_path, state_text).unwrap();
 
     let supervisor = f.runtime("app").holder_pid().unwrap().unwrap();
     let killed = Command::new("kill")
@@ -305,6 +333,13 @@ fn stop_cleans_up_after_a_dead_supervisor() {
     );
     assert!(!f.fake_program_running("app"));
     assert!(f.state("app").contains("status = \"stopped\""));
+    let stats_log = f.read_stats_log("app");
+    assert_eq!(stats_log.lines().count(), 1, "{stats_log}");
+    assert!(stats_log.contains("\"end\":\"lost\""), "{stats_log}");
+    assert!(
+        stats_log.contains(&format!("\"ended_at\":\"{heartbeat_at}\"")),
+        "{stats_log}"
+    );
 
     // The cleanup happens once, so a later stop leaves the prefix alone.
     let again = f.run(&["stop", "app"]);
