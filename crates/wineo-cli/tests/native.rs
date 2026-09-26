@@ -148,6 +148,11 @@ fn a_handoff_keeps_the_run_going_until_its_child_exits() {
     assert!(state.contains("status = \"running\""), "{state}");
     assert!(!marker(&launcher, ".done").exists());
     assert!(f.runtime("dusk").is_running().unwrap());
+    let shown = stdout(&f.run(&["status", "dusk"]));
+    assert!(
+        shown.contains("other processes are keeping dusk running"),
+        "{shown}"
+    );
 
     wait_for("the run to end", || {
         f.state("dusk").contains("status = \"exited\"")
@@ -172,7 +177,10 @@ fn stop_kills_a_native_program_that_ignores_a_request_to_close() {
     assert!(!f.run_group_alive("dusk"));
     let log = f.log("dusk");
     assert!(log.contains("wineo: stopping"), "{log}");
-    assert!(log.contains("wineo: killing"), "{log}");
+    assert!(
+        log.contains("wineo: killing everything left in the process group"),
+        "{log}"
+    );
     assert!(f.state("dusk").contains("status = \"stopped\""));
 }
 

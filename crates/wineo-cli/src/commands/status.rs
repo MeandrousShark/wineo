@@ -130,7 +130,7 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
     if report.status.state == State::Running
         && let Some(run) = &report.status.run
     {
-        lines.extend(pid_lines(run, now));
+        lines.extend(pid_lines(&report.name, run, now));
     }
     lines.join("\n") + "\n"
 }
@@ -199,7 +199,7 @@ fn runner_value(name: &str, version: Option<&str>) -> String {
     }
 }
 
-fn pid_lines(run: &RunState, now: Timestamp) -> Vec<String> {
+fn pid_lines(name: &str, run: &RunState, now: Timestamp) -> Vec<String> {
     match run.program_exited_at {
         None => vec![label_line("pid", &run.pid.to_string())],
         Some(exited_at) => {
@@ -212,7 +212,11 @@ fn pid_lines(run: &RunState, now: Timestamp) -> Vec<String> {
                     "pid",
                     &format!("{}, exited {}{code}", run.pid, relative(now, exited_at)),
                 ),
-                continuation_line("other processes are keeping the prefix running"),
+                continuation_line(&if run.native {
+                    format!("other processes are keeping {name} running")
+                } else {
+                    "other processes are keeping the prefix running".to_owned()
+                }),
             ]
         }
     }
@@ -355,6 +359,25 @@ mod tests {
             text.ends_with(
                 "  pid       48213, exited 1 min ago with code 0\n\
                  \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20other processes are keeping the prefix running\n"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_native_handoff_names_the_environment_rather_than_a_prefix() {
+        let mut run = run(RunStatus::Running, RunMode::Detached);
+        run.native = true;
+        run.program_exited_at = Some(ts("2026-09-16T14:04:11Z"));
+        let status = Status {
+            state: State::Running,
+            run: Some(run),
+            lost: false,
+        };
+        let text = render(&report(status), now(), &TimeZone::UTC);
+        assert!(
+            text.ends_with(
+                "\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20other processes are keeping notepad running\n"
             ),
             "{text}"
         );

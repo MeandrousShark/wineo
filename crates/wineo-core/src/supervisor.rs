@@ -517,6 +517,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         return Err(Error::MissingPrefix(prefix.clone()));
     }
 
+    let native = matches!(spec.launch.host, Host::Native { .. });
     let runtime = Runtime::at(spec.runtime_dir.clone());
     let Some(lock) = runtime.try_lock()? else {
         reporter.send(Report::AlreadyRunning);
@@ -526,7 +527,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
     let log = runtime.rotate_log()?;
     let session = Log::new(runtime.log_path());
     if let Err(err) = session.begin() {
-        log_notice(&log, Notice::Warning(err));
+        log_notice(&log, native, Notice::Warning(err));
     }
     // Anything wineo itself prints from here on, even a panic, lands in the log.
     let _ = rustix::stdio::dup2_stderr(&log);
@@ -558,7 +559,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
     state.boot_id = crate::process::boot_id();
     state.leader_start = crate::process::start_time(child.id());
     if let Err(err) = runtime.write_state(&state) {
-        log_notice(&log, Notice::Warning(err));
+        log_notice(&log, native, Notice::Warning(err));
     }
     reporter.send(Report::Started(child.id()));
 
@@ -574,7 +575,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         child,
         &mut state,
         stop_timeout,
-        |notice| log_notice(&log, notice),
+        |notice| log_notice(&log, native, notice),
     );
     // One final check before the run lock goes, so whoever is following the
     // log can still see the last reset.
@@ -583,9 +584,10 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
     result
 }
 
-fn log_notice(mut log: &File, notice: Notice) {
+fn log_notice(mut log: &File, native: bool, notice: Notice) {
     let message = match notice {
         Notice::Stopping => "stopping, asking programs to close".to_owned(),
+        Notice::Killing if native => "killing everything left in the process group".to_owned(),
         Notice::Killing => "killing everything left in the prefix".to_owned(),
         Notice::Warning(err) => format!("warning: {}", error::chain(&err)),
     };
