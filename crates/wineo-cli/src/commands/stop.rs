@@ -131,8 +131,18 @@ fn clean_up_lost_run(
             report_unresolved_run(paths, name);
             return Ok(Outcome::Unresolved);
         }
-        LostRunCleanup::Gone => "and what it started had already exited",
-        LostRunCleanup::Killed => "so it killed anything left behind",
+        LostRunCleanup::Gone { warning } => {
+            if let Some(warning) = warning {
+                eprintln!("warning: {warning}");
+            }
+            "and what it started had already exited"
+        }
+        LostRunCleanup::Killed { warning } => {
+            if let Some(warning) = warning {
+                eprintln!("warning: {warning}");
+            }
+            "so it killed anything left behind"
+        }
     };
     eprintln!("wineo lost track of {name}'s last run, {outcome}");
     Ok(Outcome::CleanedUp)

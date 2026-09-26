@@ -245,10 +245,12 @@ pub struct Status {
 pub enum LostRunCleanup {
     /// There was no lost run, or another command dealt with it first.
     NotLost,
-    /// What the run started had already exited.
-    Gone,
-    /// What the run left behind was killed.
-    Killed,
+    /// What the run started had already exited. `warning` is set if its
+    /// session could not be logged.
+    Gone { warning: Option<String> },
+    /// What the run left behind was killed. `warning` is set if its session
+    /// could not be logged.
+    Killed { warning: Option<String> },
     /// Ownership or cleanup could not be confirmed, so the state is kept.
     /// `warning` is the error behind it, when there is one.
     Unresolved { warning: Option<String> },
@@ -548,10 +550,15 @@ impl Runtime {
                 return unresolved(Some(chain(&err)));
             }
         }
+        // The state write is what makes this idempotent: it stops any retry
+        // from seeing the run as lost again, so it must go first and its
+        // error must stop this from appending a second `lost` session.
+        run.finish(RunStatus::Stopped);
+        self.write_state(&run)?;
         let ended_at = run.heartbeat_at.unwrap_or(run.started_at);
         // Best effort: a lost session is worth logging, but not worth failing
-        // the cleanup over if it can't be.
-        let _ = crate::stats::append(
+        // the cleanup over if it can't be, since the state is already saved.
+        let warning = crate::stats::append(
             stats_log,
             &crate::stats::Session::new(
                 run.target.clone(),
@@ -559,13 +566,13 @@ impl Runtime {
                 ended_at,
                 crate::stats::End::Lost,
             ),
-        );
-        run.finish(RunStatus::Stopped);
-        self.write_state(&run)?;
+        )
+        .err()
+        .map(|err| chain(&err));
         Ok(if group == GroupOwnership::Gone {
-            LostRunCleanup::Gone
+            LostRunCleanup::Gone { warning }
         } else {
-            LostRunCleanup::Killed
+            LostRunCleanup::Killed { warning }
         })
     }
 
@@ -678,6 +685,7 @@ pub fn exit_code(status: ExitStatus) -> i32 {
 mod tests {
     use std::ffi::OsString;
     use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Instant;
@@ -1030,5 +1038,44 @@ mod tests {
     fn exit_codes_follow_shell_convention() {
         assert_eq!(exit_code(ExitStatus::from_raw(3 << 8)), 3);
         assert_eq!(exit_code(ExitStatus::from_raw(9)), 137);
+    }
+
+    #[test]
+    fn a_lost_run_is_logged_exactly_once_even_across_a_failed_state_write() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime(root.path());
+        let mut run = run_state(RunStatus::Running);
+        run.native = true;
+        // A boot id that never matches the current one, so ownership resolves
+        // to `Gone` without touching any real process.
+        run.boot_id = Some("an-earlier-boot".to_owned());
+        run.leader_start = Some(1);
+        run.heartbeat_at = Some("2026-09-16T21:03:00Z".parse().unwrap());
+        runtime.write_state(&run).unwrap();
+        let stats_log = root.path().join("stats.jsonl");
+
+        // The runtime dir can't be written to, so the state write inside
+        // cleanup fails before anything is appended.
+        let dir = runtime.dir().to_owned();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let failed = runtime.clean_up_lost_run(Duration::from_secs(5), &stats_log);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(failed.is_err(), "{failed:?}");
+        assert!(!stats_log.exists());
+        assert_eq!(
+            runtime.read_state().unwrap().unwrap().status,
+            RunStatus::Running,
+            "a failed write must not mark the run finished"
+        );
+
+        // A retry now succeeds, and logs the lost session exactly once.
+        let cleaned = runtime
+            .clean_up_lost_run(Duration::from_secs(5), &stats_log)
+            .unwrap();
+        assert!(matches!(cleaned, LostRunCleanup::Gone { warning: None }));
+        let log = fs::read_to_string(&stats_log).unwrap();
+        assert_eq!(log.lines().count(), 1, "{log}");
+        assert!(log.contains("\"end\":\"lost\""), "{log}");
+        assert!(log.contains("\"ended_at\":\"2026-09-16T21:03:00Z\""), "{log}");
     }
 }

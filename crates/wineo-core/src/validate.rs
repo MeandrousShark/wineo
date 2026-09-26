@@ -1177,7 +1177,9 @@ fn clean_up_lost_run(paths: &Paths, name: &str) -> Result<()> {
                 None => message,
             }))
         }
-        LostRunCleanup::NotLost | LostRunCleanup::Gone | LostRunCleanup::Killed => Ok(()),
+        LostRunCleanup::NotLost
+        | LostRunCleanup::Gone { .. }
+        | LostRunCleanup::Killed { .. } => Ok(()),
     }
 }
 
