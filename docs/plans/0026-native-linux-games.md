@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0026: Native Linux games
 
@@ -57,7 +57,7 @@ prefix.
   so they work as is. `status <name>`, its JSON, and `EnvironmentReport`
   always show both.
 
-## Proposed decisions for maintainer approval
+## Decisions (settled with the maintainer, 2026-09-25)
 
 ### 1. How a config says it's native
 
