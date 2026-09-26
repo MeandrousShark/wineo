@@ -171,7 +171,7 @@ fn heroic_bulk_copy_and_adopt_register_all_games_with_explicit_desktop_entries()
                     .exists()
             );
             if adopt {
-                assert_eq!(config.prefix, prefix.to_str().unwrap());
+                assert_eq!(config.wine().unwrap().prefix, prefix.to_str().unwrap());
             } else {
                 let copied = f.root.path().join("data/wineo/prefixes").join(name);
                 assert_eq!(

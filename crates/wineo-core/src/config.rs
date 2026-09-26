@@ -107,16 +107,32 @@ pub struct Defaults {
     pub vkd3d_root: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct EnvironmentConfig {
     /// 0 for a legacy file without the key. Checked by `parse`.
-    #[serde(default)]
     pub schema_version: u32,
+    pub kind: Kind,
+    pub gamemode: Option<bool>,
+    /// The Heroic game id this environment was imported from. Only Heroic
+    /// imports set this; older configs load fine without it.
+    pub heroic_id: Option<String>,
+    pub env: BTreeMap<String, String>,
+    pub targets: BTreeMap<String, Target>,
+}
+
+/// What an environment runs on. A config without `kind` is Wine.
+#[derive(Debug)]
+pub enum Kind {
+    Wine(WineConfig),
+    Native,
+}
+
+/// The settings only a Wine or Proton environment has.
+#[derive(Debug)]
+pub struct WineConfig {
     pub prefix: String,
     pub runner: String,
     pub arch: Arch,
-    pub gamemode: Option<bool>,
     /// The umu id umu looks protonfixes up by. Unset means no fixes.
     pub gameid: Option<String>,
     /// The store the game came from, which some protonfixes branch on.
@@ -125,13 +141,83 @@ pub struct EnvironmentConfig {
     /// newest installed, resolved on use rather than written back.
     pub dxvk: Option<String>,
     pub vkd3d: Option<String>,
-    /// The Heroic game id this environment was imported from. Only Heroic
-    /// imports set this; older configs load fine without it.
-    pub heroic_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum KindName {
+    Wine,
+    Native,
+}
+
+/// The file as written, before the kind decides which keys it may have.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEnvironmentConfig {
     #[serde(default)]
-    pub env: BTreeMap<String, String>,
+    schema_version: u32,
+    kind: Option<KindName>,
+    prefix: Option<String>,
+    runner: Option<String>,
+    arch: Option<Arch>,
+    gamemode: Option<bool>,
+    gameid: Option<String>,
+    store: Option<String>,
+    dxvk: Option<String>,
+    vkd3d: Option<String>,
+    heroic_id: Option<String>,
     #[serde(default)]
-    pub targets: BTreeMap<String, Target>,
+    env: BTreeMap<String, String>,
+    #[serde(default)]
+    targets: BTreeMap<String, Target>,
+}
+
+impl RawEnvironmentConfig {
+    fn into_config(self, name: &str) -> Result<EnvironmentConfig, String> {
+        let kind = match self.kind.unwrap_or(KindName::Wine) {
+            KindName::Wine => Kind::Wine(WineConfig {
+                prefix: self.prefix.ok_or_else(|| missing("prefix"))?,
+                runner: self.runner.ok_or_else(|| missing("runner"))?,
+                arch: self.arch.ok_or_else(|| missing("arch"))?,
+                gameid: self.gameid,
+                store: self.store,
+                dxvk: self.dxvk,
+                vkd3d: self.vkd3d,
+            }),
+            KindName::Native => {
+                let set = [
+                    ("prefix", self.prefix.is_some()),
+                    ("runner", self.runner.is_some()),
+                    ("arch", self.arch.is_some()),
+                    ("gameid", self.gameid.is_some()),
+                    ("store", self.store.is_some()),
+                    ("dxvk", self.dxvk.is_some()),
+                    ("vkd3d", self.vkd3d.is_some()),
+                ];
+                if let Some((key, _)) = set.iter().find(|(_, set)| *set) {
+                    return Err(native_key_message(name, key));
+                }
+                Kind::Native
+            }
+        };
+        Ok(EnvironmentConfig {
+            schema_version: self.schema_version,
+            kind,
+            gamemode: self.gamemode,
+            heroic_id: self.heroic_id,
+            env: self.env,
+            targets: self.targets,
+        })
+    }
+}
+
+fn missing(key: &str) -> String {
+    format!("missing field `{key}`")
+}
+
+/// The refusal for a Wine-only key on a native environment.
+pub fn native_key_message(name: &str, key: &str) -> String {
+    format!("native environment {name} can't set {key}")
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -238,11 +324,29 @@ impl EnvironmentConfig {
     /// `path` is only used for error messages.
     pub fn parse(path: &Path, text: &str) -> Result<Self> {
         check_schema(path, text)?;
-        let config: Self = parse_toml(path, text)?;
+        let raw: RawEnvironmentConfig = parse_toml(path, text)?;
+        let name = path.file_stem().unwrap_or_default().to_string_lossy();
+        let config = raw
+            .into_config(&name)
+            .map_err(|message| invalid(path, message))?;
         config
             .validate()
             .map_err(|message| invalid(path, message))?;
         Ok(config)
+    }
+
+    pub fn wine(&self) -> Option<&WineConfig> {
+        match &self.kind {
+            Kind::Wine(wine) => Some(wine),
+            Kind::Native => None,
+        }
+    }
+
+    pub fn wine_mut(&mut self) -> Option<&mut WineConfig> {
+        match &mut self.kind {
+            Kind::Wine(wine) => Some(wine),
+            Kind::Native => None,
+        }
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -445,7 +549,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(config.prefix, "~/Apps/Photoshop");
+        assert_eq!(config.wine().unwrap().prefix, "~/Apps/Photoshop");
         assert_eq!(config.env["DXVK_HUD"], "1");
         let photoshop = &config.targets["photoshop"];
         assert!(photoshop.default);
@@ -473,6 +577,111 @@ mod tests {
         assert!(environment("runner = \"wine\"\narch = \"win64\"").is_err());
         assert!(environment("prefix = \"/p\"\narch = \"win64\"").is_err());
         assert!(environment("prefix = \"/p\"\nrunner = \"wine\"").is_err());
+    }
+
+    const NATIVE: &str = r#"
+        schema_version = 1
+        kind = "native"
+        gamemode = true
+
+        [env]
+        SDL_VIDEODRIVER = "wayland"
+
+        [targets.game]
+        exe = "/usr/bin/dusklight"
+        default = true
+        desktop = true
+        name = "Dusklight"
+    "#;
+
+    fn named(name: &str, text: &str) -> Result<EnvironmentConfig> {
+        EnvironmentConfig::parse(Path::new(&format!("/test/{name}.toml")), text)
+    }
+
+    #[test]
+    fn a_native_config_parses() {
+        let config = environment(NATIVE).unwrap();
+        assert!(matches!(config.kind, Kind::Native));
+        assert!(config.wine().is_none());
+        assert_eq!(config.gamemode, Some(true));
+        assert_eq!(config.env["SDL_VIDEODRIVER"], "wayland");
+        assert_eq!(config.targets["game"].exe, "/usr/bin/dusklight");
+    }
+
+    #[test]
+    fn a_native_config_needs_no_targets() {
+        assert!(matches!(
+            environment("kind = \"native\"").unwrap().kind,
+            Kind::Native
+        ));
+    }
+
+    #[test]
+    fn each_wine_only_key_is_refused_for_native() {
+        for (key, value) in [
+            ("prefix", "\"/p\""),
+            ("runner", "\"wine\""),
+            ("arch", "\"win64\""),
+            ("gameid", "\"umu-1\""),
+            ("store", "\"gog\""),
+            ("dxvk", "\"latest\""),
+            ("vkd3d", "\"latest\""),
+        ] {
+            let err = named(
+                "dusklight",
+                &format!("kind = \"native\"\n{key} = {value}\n"),
+            )
+            .unwrap_err();
+            assert!(matches!(err, Error::ConfigInvalid { .. }), "{key}: {err}");
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "invalid config /test/dusklight.toml: native environment dusklight can't set {key}"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn a_config_without_kind_is_wine() {
+        let config = environment(ENV).unwrap();
+        let wine = config.wine().unwrap();
+        assert_eq!(wine.prefix, "/p");
+        assert_eq!(wine.runner, "wine");
+        assert_eq!(wine.arch, Arch::Win64);
+    }
+
+    #[test]
+    fn an_explicit_wine_kind_is_wine() {
+        let config = environment(&format!("kind = \"wine\"\n{ENV}")).unwrap();
+        assert_eq!(config.wine().unwrap().prefix, "/p");
+    }
+
+    #[test]
+    fn an_explicit_wine_kind_still_needs_prefix_runner_and_arch() {
+        let err = environment("kind = \"wine\"\nrunner = \"wine\"\narch = \"win64\"").unwrap_err();
+        assert!(err.to_string().contains("missing field `prefix`"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_kind_is_refused() {
+        for kind in ["\"proton\"", "\"Native\"", "1"] {
+            assert!(
+                matches!(
+                    environment(&format!("kind = {kind}\n{ENV}")),
+                    Err(Error::ConfigSyntax { .. })
+                ),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_keys_are_refused_for_native_too() {
+        assert!(matches!(
+            environment("kind = \"native\"\nprefx = 1"),
+            Err(Error::ConfigSyntax { .. })
+        ));
     }
 
     #[test]
@@ -692,14 +901,14 @@ mod tests {
     fn example_config_parses_as_shipped() {
         let config = environment(EXAMPLE).unwrap();
         assert_eq!(config.schema_version, 1);
-        assert_eq!(config.prefix, "[PREFIX-DIR]");
-        assert_eq!(config.runner, "GE-Proton-Latest");
-        assert_eq!(config.arch, Arch::Win64);
+        assert_eq!(config.wine().unwrap().prefix, "[PREFIX-DIR]");
+        assert_eq!(config.wine().unwrap().runner, "GE-Proton-Latest");
+        assert_eq!(config.wine().unwrap().arch, Arch::Win64);
         assert!(config.gamemode.is_none());
-        assert!(config.gameid.is_none());
-        assert!(config.store.is_none());
-        assert!(config.dxvk.is_none());
-        assert!(config.vkd3d.is_none());
+        assert!(config.wine().unwrap().gameid.is_none());
+        assert!(config.wine().unwrap().store.is_none());
+        assert!(config.wine().unwrap().dxvk.is_none());
+        assert!(config.wine().unwrap().vkd3d.is_none());
         assert!(config.heroic_id.is_none());
         assert!(config.env.is_empty());
         assert!(config.targets.is_empty());
@@ -714,10 +923,10 @@ mod tests {
             .unwrap_or_else(|err| panic!("uncommented example did not parse: {err}\n---\n{text}"));
 
         assert!(config.gamemode.unwrap());
-        assert!(config.gameid.is_some());
-        assert!(config.store.is_some());
-        assert!(config.dxvk.is_some());
-        assert!(config.vkd3d.is_some());
+        assert!(config.wine().unwrap().gameid.is_some());
+        assert!(config.wine().unwrap().store.is_some());
+        assert!(config.wine().unwrap().dxvk.is_some());
+        assert!(config.wine().unwrap().vkd3d.is_some());
         assert!(config.heroic_id.is_some());
         assert!(!config.env.is_empty());
         assert_eq!(config.env["DXVK_HUD"], "1");

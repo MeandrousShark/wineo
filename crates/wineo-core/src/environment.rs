@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, Value, value};
 
-use crate::config::{self, Arch, EnvironmentConfig, GlobalConfig};
+use crate::config::{self, Arch, EnvironmentConfig, GlobalConfig, WineConfig};
 use crate::edit;
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
@@ -170,8 +170,15 @@ impl Environment {
         Self::load(paths, &new.name)
     }
 
+    /// The Wine settings, or the no-prefix error for a native environment.
+    pub fn wine(&self) -> Result<&WineConfig> {
+        self.config
+            .wine()
+            .ok_or_else(|| Error::NoPrefix(self.name.clone()))
+    }
+
     pub fn prefix(&self, paths: &Paths) -> Result<PathBuf> {
-        let prefix = &self.config.prefix;
+        let prefix = &self.wine()?.prefix;
         // Outside a portable folder a relative prefix would land in whatever
         // directory wineo happened to run from.
         if paths.portable_root().is_none() && !paths.expand(prefix).is_absolute() {
@@ -191,6 +198,9 @@ impl Environment {
         global: &GlobalConfig,
         on_wait: impl FnOnce(),
     ) -> Result<()> {
+        let Some(wine) = self.config.wine() else {
+            return Ok(());
+        };
         let quiet = Runtime::new(paths, &self.name)
             .status()
             .is_ok_and(|status| status.state != State::Running && !status.lost);
@@ -198,7 +208,7 @@ impl Environment {
             return Ok(());
         }
         let Ok(runner) =
-            Runners::new(paths, global).and_then(|runners| runners.resolve(&self.config.runner))
+            Runners::new(paths, global).and_then(|runners| runners.resolve(&wine.runner))
         else {
             return Ok(());
         };
@@ -239,7 +249,7 @@ impl Environment {
             &self.name,
             runner,
             &dir,
-            self.config.arch,
+            self.wine()?.arch,
             on_create_prefix,
         )?;
         Ok(true)
@@ -358,7 +368,11 @@ pub fn sharing_prefix(paths: &Paths, name: &str, prefix: &Path) -> Result<Sharin
         if other == name {
             continue;
         }
-        match Environment::load(paths, &other).and_then(|env| env.prefix(paths)) {
+        let loaded = Environment::load(paths, &other);
+        if loaded.as_ref().is_ok_and(|env| env.config.wine().is_none()) {
+            continue;
+        }
+        match loaded.and_then(|env| env.prefix(paths)) {
             Ok(other_prefix) if crate::paths::resolve(&other_prefix) == wanted => {
                 sharing.names.push(other);
             }
@@ -476,9 +490,10 @@ mod tests {
             |_| {},
         )
         .unwrap();
-        assert_eq!(env.config.prefix, "~/Apps/Thing");
-        assert_eq!(env.config.runner, "wine");
-        assert_eq!(env.config.arch, Arch::Win64);
+        let wine = env.config.wine().unwrap();
+        assert_eq!(wine.prefix, "~/Apps/Thing");
+        assert_eq!(wine.runner, "wine");
+        assert_eq!(wine.arch, Arch::Win64);
         assert_eq!(
             fs::read_to_string(paths.environment_config("thing")).unwrap(),
             "schema_version = 1\nprefix = \"~/Apps/Thing\"\nrunner = \"wine\"\narch = \"win64\"\n"
@@ -720,6 +735,63 @@ mod tests {
         );
     }
 
+    fn native(paths: &Paths, name: &str) -> Environment {
+        let path = paths.environment_config(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "kind = \"native\"\n[targets.game]\nexe = \"/usr/bin/dusklight\"\n",
+        )
+        .unwrap();
+        Environment::load(paths, name).unwrap()
+    }
+
+    #[test]
+    fn a_native_environment_has_no_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let env = native(&paths, "dusklight");
+        let err = env.prefix(&paths).unwrap_err();
+        assert!(matches!(err, Error::NoPrefix(_)));
+        assert_eq!(
+            err.to_string(),
+            "dusklight is a native environment, so it has no prefix"
+        );
+        assert!(matches!(env.wine(), Err(Error::NoPrefix(_))));
+        assert!(matches!(
+            env.build_prefix(
+                &paths,
+                &GlobalConfig::default(),
+                &Runner::fake("wine"),
+                false,
+                |_| panic!("nothing to build"),
+            ),
+            Err(Error::NoPrefix(_))
+        ));
+    }
+
+    #[test]
+    fn waiting_for_a_native_environment_to_go_idle_returns_at_once() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let env = native(&paths, "dusklight");
+        env.wait_idle(&paths, &GlobalConfig::default(), || {
+            panic!("no wine to wait for")
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_native_environment_shares_no_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let prefix = root.path().join("home/Games/game");
+        hand_written(&paths, "game", &prefix);
+        native(&paths, "dusklight");
+        assert!(sharing_prefix(&paths, "other", &prefix).unwrap().names == ["game"]);
+        assert!(sharing_prefix(&paths, "game", &prefix).unwrap().is_empty());
+    }
+
     /// Stands in for wine, which the fake runner doesn't run, by writing the
     /// registry file `prefix::create` checks for.
     fn wine_builds_it(dir: &Path) {
@@ -929,7 +1001,7 @@ mod tests {
         )
         .unwrap();
         assert!(prefix::is_prefix(&prefix));
-        assert_eq!(env.config.arch, Arch::Win64);
+        assert_eq!(env.config.wine().unwrap().arch, Arch::Win64);
     }
 
     #[test]

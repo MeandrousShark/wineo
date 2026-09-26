@@ -94,7 +94,7 @@ pub fn apply(paths: &Paths, name: &str, held: bool) -> anyhow::Result<()> {
     let runner = may_run_wine
         .then(|| Runners::new(paths, &global).ok())
         .flatten()
-        .and_then(|runners| runners.resolve(&environment.config.runner).ok());
+        .and_then(|runners| runners.resolve(&environment.wine().ok()?.runner).ok());
     reconcile(paths, &global, &environment, runner.as_ref(), &prefix)
 }
 

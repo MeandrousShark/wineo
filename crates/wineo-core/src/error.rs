@@ -213,6 +213,9 @@ pub enum Error {
     #[error("{0}")]
     InvalidEnv(String),
 
+    #[error("{0} is a native environment, so it has no prefix")]
+    NoPrefix(String),
+
     #[error("invalid prefix `{0}`: use an absolute path or one starting with ~/")]
     RelativePrefix(String),
 

@@ -74,7 +74,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let (name, forwarded) = args.split();
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, name)?;
-    let runner = Runners::new(paths, &global)?.resolve(&environment.config.runner)?;
+    let runner = Runners::new(paths, &global)?.resolve(&environment.wine()?.runner)?;
 
     let overrides: BTreeMap<String, String> = args.env.iter().cloned().collect();
     let env = merge_env(&runner, &global, &environment, &overrides)?;

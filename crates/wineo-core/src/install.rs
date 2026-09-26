@@ -35,10 +35,14 @@ pub struct Wanted {
 }
 
 impl Wanted {
+    /// Nothing for a native environment, which has no prefix to install into.
     pub fn from_config(config: &EnvironmentConfig) -> Self {
-        Self {
-            dxvk: config.dxvk.clone(),
-            vkd3d: config.vkd3d.clone(),
+        match config.wine() {
+            Some(wine) => Self {
+                dxvk: wine.dxvk.clone(),
+                vkd3d: wine.vkd3d.clone(),
+            },
+            None => Self::default(),
         }
     }
 

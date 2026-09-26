@@ -151,7 +151,10 @@ fn status_uses_the_unresolved_installers_concrete_runner() {
         .unwrap(),
     };
     let report = EnvironmentReport::load(&paths, &GlobalConfig::default(), &environment).unwrap();
-    assert_eq!(report.runner, "GE-Proton-Latest -> GE-Proton9-20");
+    assert_eq!(
+        report.runner.as_deref(),
+        Some("GE-Proton-Latest -> GE-Proton9-20")
+    );
 }
 
 #[test]

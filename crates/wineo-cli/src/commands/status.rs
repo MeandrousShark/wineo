@@ -43,7 +43,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             });
             let report = EnvironmentReport::load(paths, &global, &environment)?;
             if args.json {
-                json::print(&NamedOutput::new(&report, &environment.config.runner))?;
+                let configured = environment.config.wine().map(|wine| wine.runner.as_str());
+                json::print(&NamedOutput::new(&report, configured))?;
             } else {
                 print!("{}", render(&report, Timestamp::now(), &TimeZone::system()));
             }
@@ -100,11 +101,15 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
             &target_value(run, report.target_exe.as_deref()),
         ));
     }
-    lines.push(label_line(
-        "runner",
-        &runner_value(&report.runner, report.runner_version.as_deref()),
-    ));
-    lines.push(label_line("prefix", &report.prefix));
+    if let Some(runner) = &report.runner {
+        lines.push(label_line(
+            "runner",
+            &runner_value(runner, report.runner_version.as_deref()),
+        ));
+    }
+    if let Some(prefix) = &report.prefix {
+        lines.push(label_line("prefix", prefix));
+    }
     if report.gamemode {
         lines.push(label_line("gamemode", "on"));
     }
@@ -268,10 +273,10 @@ mod tests {
         EnvironmentReport {
             name: "notepad".to_owned(),
             status,
-            runner: "wine".to_owned(),
+            runner: Some("wine".to_owned()),
             runner_resolved: Some("wine".to_owned()),
             runner_version: Some("wine-11.17".to_owned()),
-            prefix: "~/.local/share/wineo/prefixes/notepad".to_owned(),
+            prefix: Some("~/.local/share/wineo/prefixes/notepad".to_owned()),
             target_exe: Some("notepad".to_owned()),
             busy: None,
             unresolved: false,

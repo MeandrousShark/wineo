@@ -56,6 +56,12 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     runtime.check_resolved(name)?;
 
     if args.delete_prefix {
+        if environment
+            .as_ref()
+            .is_some_and(|environment| environment.config.wine().is_none())
+        {
+            bail!("{name} has no prefix. Run wineo rm {name}");
+        }
         let Some(prefix) = &prefix else {
             bail!(
                 "{name}'s config can't be read, so its prefix can't be found. Remove it without --delete-prefix and delete the prefix yourself"
@@ -89,12 +95,16 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         eprintln!("Removed art");
     }
 
-    match (&environment, args.delete_prefix) {
+    let wine = environment
+        .as_ref()
+        .map(|environment| environment.config.wine());
+    match (wine, args.delete_prefix) {
         (_, true) => println!("Removed environment {name} and its prefix"),
-        (Some(environment), false) => println!(
+        (Some(Some(wine)), false) => println!(
             "Removed environment {name}, its prefix is still at {}",
-            paths.shown(&environment.config.prefix)
+            paths.shown(&wine.prefix)
         ),
+        (Some(None), false) => println!("Removed environment {name}"),
         (None, false) => println!("Removed environment {name}; its prefix was left untouched"),
     }
     if let Some(prefix) = &prefix {

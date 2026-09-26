@@ -16,7 +16,7 @@ pub fn runner(
     global: &GlobalConfig,
     environment: &Environment,
 ) -> anyhow::Result<Runner> {
-    Ok(Runners::new(paths, global)?.resolve(&environment.config.runner)?)
+    Ok(Runners::new(paths, global)?.resolve(&environment.wine()?.runner)?)
 }
 
 /// What is printed right before a prefix is built, since that takes a while.

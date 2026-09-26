@@ -106,10 +106,11 @@ pub(crate) fn setup<I: Input, W: Write>(
     }
     let environment = Environment::load(paths, name)?;
     let dir = environment.prefix(paths)?;
+    let wine = environment.wine()?;
     prompt.say(format!(
         "{name}: runs on {}, prefix {}",
-        environment.config.runner,
-        paths.shown(&environment.config.prefix)
+        wine.runner,
+        paths.shown(&wine.prefix)
     ))?;
     let wine_prefix = match prefix::wine_prefix_in(&dir) {
         Some(wine_prefix) => Some(wine_prefix),
@@ -473,7 +474,7 @@ fn reconcile<I: Input, W: Write>(
         .and_then(|(environment, prefix)| {
             let runner = Runners::new(paths, global)
                 .ok()
-                .and_then(|runners| runners.resolve(&environment.config.runner).ok());
+                .and_then(|runners| runners.resolve(&environment.wine().ok()?.runner).ok());
             desktop::reconcile(paths, global, &environment, runner.as_ref(), &prefix)
         });
     match reconciled {

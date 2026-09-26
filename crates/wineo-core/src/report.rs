@@ -17,11 +17,12 @@ use crate::runtime::{Runtime, Status};
 pub struct EnvironmentReport {
     pub name: String,
     pub status: Status,
-    pub runner: String,
+    /// None for a native environment, which has no runner or prefix.
+    pub runner: Option<String>,
     pub runner_resolved: Option<String>,
     pub runner_version: Option<String>,
     /// The prefix as stored in the config, e.g. `~/.local/share/wineo/prefixes/notepad`.
-    pub prefix: String,
+    pub prefix: Option<String>,
     /// The exe of the run's target in the current config. None if there's no
     /// run, or its target was removed from the config since.
     pub target_exe: Option<String>,
@@ -59,6 +60,7 @@ pub struct ComponentReport {
 impl EnvironmentReport {
     pub fn load(paths: &Paths, global: &GlobalConfig, environment: &Environment) -> Result<Self> {
         let status = Runtime::new(paths, &environment.name).status()?;
+        let wine = environment.config.wine();
         // An unresolvable runner is worth showing the rest of the status for.
         let operation_runner = Runtime::new(paths, &environment.name)
             .read_operation()
@@ -68,18 +70,19 @@ impl EnvironmentReport {
         let resolved = operation_runner
             .or_else(|| status.run.as_ref().and_then(|run| run.runner.clone()))
             .or_else(|| {
+                let wine = wine?;
                 Runners::new(paths, global)
-                    .and_then(|runners| runners.resolve(&environment.config.runner))
+                    .and_then(|runners| runners.resolve(&wine.runner))
                     .ok()
             });
         let runner_version = resolved.as_ref().and_then(|runner| runner.version());
         let runner_resolved = resolved.as_ref().map(|runner| runner.name().to_owned());
-        let runner_name = match &resolved {
-            Some(runner) if runner.name() != environment.config.runner => {
-                format!("{} -> {}", environment.config.runner, runner.name())
+        let runner_name = wine.map(|wine| match &resolved {
+            Some(runner) if runner.name() != wine.runner => {
+                format!("{} -> {}", wine.runner, runner.name())
             }
-            _ => environment.config.runner.clone(),
-        };
+            _ => wine.runner.clone(),
+        });
         let target = status
             .run
             .as_ref()
@@ -97,9 +100,9 @@ impl EnvironmentReport {
             runner: runner_name,
             runner_resolved,
             runner_version,
-            prefix: paths.shown(&environment.config.prefix),
-            gameid: environment.config.gameid.clone(),
-            store: environment.config.store.clone(),
+            prefix: wine.map(|wine| paths.shown(&wine.prefix)),
+            gameid: wine.and_then(|wine| wine.gameid.clone()),
+            store: wine.and_then(|wine| wine.store.clone()),
             target_exe,
             status,
             desktop: desktop::supported(paths)
@@ -127,8 +130,9 @@ fn components(
     environment: &Environment,
 ) -> (Option<ComponentReport>, Option<ComponentReport>) {
     let wanted = Wanted::from_config(&environment.config);
-    let resolved = Runners::new(paths, global)
-        .and_then(|runners| runners.resolve(&environment.config.runner))
+    let resolved = environment
+        .wine()
+        .and_then(|wine| Runners::new(paths, global)?.resolve(&wine.runner))
         .ok()
         .zip(environment.prefix(paths).ok());
 
@@ -208,9 +212,9 @@ mod tests {
         let paths = test_paths(root.path());
         let env = environment("");
         let report = EnvironmentReport::load(&paths, &GlobalConfig::default(), &env).unwrap();
-        assert_eq!(report.runner, "proton-ge");
+        assert_eq!(report.runner.as_deref(), Some("proton-ge"));
         assert_eq!(report.runner_version, None);
-        assert_eq!(report.prefix, "~/prefix");
+        assert_eq!(report.prefix.as_deref(), Some("~/prefix"));
     }
 
     #[test]

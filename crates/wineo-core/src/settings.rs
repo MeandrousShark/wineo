@@ -323,6 +323,64 @@ mod tests {
     }
 
     #[test]
+    fn a_no_op_edit_leaves_a_versioned_wine_file_byte_identical() {
+        let (_root, paths) = setup();
+        let text = format!(
+            "{NOTEPAD}schema_version = 1\ngamemode = true # mine\n\n[targets.notepad]\nexe = \"notepad\"\n"
+        );
+        write_env(&paths, &text);
+        update(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[("gamemode", "true"), ("runner", "wine")],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("notepad")).unwrap(),
+            text
+        );
+    }
+
+    #[test]
+    fn an_edit_never_adds_kind_to_a_wine_file() {
+        let (_root, paths) = setup();
+        write_env(&paths, NOTEPAD);
+        update(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[("gamemode", "true")],
+            &[],
+        )
+        .unwrap();
+        let text = fs::read_to_string(paths.environment_config("notepad")).unwrap();
+        assert!(!text.contains("kind"), "{text}");
+    }
+
+    #[test]
+    fn a_wine_only_key_is_not_written_to_a_native_file() {
+        let (_root, paths) = setup();
+        let text = "kind = \"native\"\n";
+        write_env(&paths, text);
+        let err = update(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[("runner", "wine")],
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .ends_with("native environment notepad can't set runner"),
+            "{err}"
+        );
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("notepad")).unwrap(),
+            text
+        );
+    }
+
+    #[test]
     fn a_versioned_file_is_not_stamped_twice() {
         let (_root, paths) = setup();
         let versioned = format!("{NOTEPAD}schema_version = 1\n");

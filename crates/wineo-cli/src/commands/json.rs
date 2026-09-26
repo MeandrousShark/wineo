@@ -68,8 +68,8 @@ struct RunnerOutput<'a> {
 pub struct NamedOutput<'a> {
     #[serde(flatten)]
     status: StatusOutput<'a>,
-    runner: RunnerOutput<'a>,
-    prefix: &'a str,
+    runner: Option<RunnerOutput<'a>>,
+    prefix: Option<&'a str>,
     target_exe: Option<&'a str>,
     gamemode: bool,
     gameid: Option<&'a str>,
@@ -80,15 +80,15 @@ pub struct NamedOutput<'a> {
 }
 
 impl<'a> NamedOutput<'a> {
-    pub fn new(report: &'a EnvironmentReport, configured_runner: &'a str) -> Self {
+    pub fn new(report: &'a EnvironmentReport, configured_runner: Option<&'a str>) -> Self {
         Self {
             status: StatusOutput::new(&report.name, &report.status, report.busy, report.unresolved),
-            runner: RunnerOutput {
-                configured: configured_runner,
+            runner: configured_runner.map(|configured| RunnerOutput {
+                configured,
                 resolved: report.runner_resolved.as_deref(),
                 version: report.runner_version.as_deref(),
-            },
-            prefix: &report.prefix,
+            }),
+            prefix: report.prefix.as_deref(),
             target_exe: report.target_exe.as_deref(),
             gamemode: report.gamemode,
             gameid: report.gameid.as_deref(),

@@ -153,7 +153,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         println!(
             "Created environment {} using the existing prefix at {}",
             environment.name,
-            paths.shown(&environment.config.prefix)
+            paths.shown(&environment.wine()?.prefix)
         );
     }
 

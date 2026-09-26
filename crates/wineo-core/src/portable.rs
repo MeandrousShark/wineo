@@ -12,6 +12,7 @@ use crate::clone::{self, ConfigReview};
 use crate::config::{self, EnvironmentConfig, GlobalConfig};
 use crate::download::{InstallLock, publish};
 use crate::environment::{self, Environment};
+use crate::error::Error;
 use crate::import::{self, ExternalDependency, ImportLayout, ImportProgress, SourceFingerprint};
 use crate::operation::{Locks, Operation};
 use crate::paths::{self, Paths};
@@ -83,20 +84,21 @@ pub fn inspect(
         .with_context(|| format!("failed to read {}", source_path.display()))?;
     let config =
         EnvironmentConfig::parse(&source_path, &source_config).map_err(|err| anyhow!(err))?;
-    let configured_root = from
-        .config_path(&config.prefix)
-        .map_err(|err| anyhow!(err))?;
+    let wine = config
+        .wine()
+        .ok_or_else(|| anyhow!(Error::NoPrefix(name.to_owned())))?;
+    let configured_root = from.config_path(&wine.prefix).map_err(|err| anyhow!(err))?;
     let runner = if import::root_layout_ambiguous(&configured_root) {
         Some(
             Runners::new(from, global)
                 .map_err(|err| anyhow!(err))?
-                .resolve(&config.runner)
+                .resolve(&wine.runner)
                 .map_err(|err| anyhow!(err))?,
         )
     } else {
         None
     };
-    let prefix = import::inspect_root(&configured_root, runner.as_ref(), config.arch)?;
+    let prefix = import::inspect_root(&configured_root, runner.as_ref(), wine.arch)?;
     if paths::resolve(&configured_root) != prefix.source_root {
         bail!("configured prefix root does not match inspected source root");
     }
@@ -194,7 +196,7 @@ pub fn inspect(
         folder,
         source_root,
         destination,
-        runner: config.runner,
+        runner: wine.runner.clone(),
         layout: prefix.layout,
         targets: config.targets.keys().cloned().collect(),
         snapshots: snapshots.into_iter().map(|item| item.label).collect(),

@@ -59,13 +59,13 @@ fn apply_components(
     let config = environment.as_ref().map(|env| &env.config);
     let wanted = Wanted {
         dxvk: value_after(
-            config.and_then(|config| config.dxvk.as_deref()),
+            config.and_then(|config| config.wine()?.dxvk.as_deref()),
             pairs,
             unset,
             "dxvk",
         ),
         vkd3d: value_after(
-            config.and_then(|config| config.vkd3d.as_deref()),
+            config.and_then(|config| config.wine()?.vkd3d.as_deref()),
             pairs,
             unset,
             "vkd3d",
@@ -169,7 +169,7 @@ fn check_runner(
     let runners = Runners::new(paths, global)?;
     let current = Environment::load(paths, name)
         .ok()
-        .and_then(|environment| runners.resolve(&environment.config.runner).ok());
+        .and_then(|environment| runners.resolve(&environment.wine().ok()?.runner).ok());
 
     let runner = match changed {
         Some(changed) => {

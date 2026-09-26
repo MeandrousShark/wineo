@@ -135,7 +135,7 @@ pub fn inspect_create(
         prefix,
         snapshot,
         layout: inspected.layout,
-        runner: env.config.runner,
+        runner: env.wine()?.runner.clone(),
         external_dependencies: inspected.external_dependencies,
         config_text,
         fingerprint: inspected.fingerprint,
@@ -261,6 +261,9 @@ pub fn inspect_restore(
     let manifest = read_manifest(paths, &snapshot, name, label, &prefix)?;
     let saved_config = fs::read_to_string(snapshot.join("config.toml"))?;
     let saved = EnvironmentConfig::parse(&snapshot.join("config.toml"), &saved_config)?;
+    let Some(saved) = saved.wine() else {
+        bail!("snapshot config points to a different prefix");
+    };
     if paths::resolve(&paths.config_path(&saved.prefix)?) != prefix {
         bail!("snapshot config points to a different prefix");
     }
@@ -274,8 +277,8 @@ pub fn inspect_restore(
         snapshot,
         current_config,
         saved_config,
-        current_runner: env.config.runner,
-        saved_runner: saved.runner,
+        current_runner: env.wine()?.runner.clone(),
+        saved_runner: saved.runner.clone(),
         layout: manifest.layout,
         current_fingerprint: current.fingerprint,
         snapshot_fingerprint,
@@ -442,7 +445,10 @@ pub fn recover(paths: &Paths, name: &str) -> Result<()> {
 
 fn validate_marker_config(paths: &Paths, name: &str, marker: &RestoreMarker) -> Result<()> {
     let config = EnvironmentConfig::parse(&paths.environment_config(name), &marker.old_config)?;
-    if paths::resolve(&paths.config_path(&config.prefix)?) != marker.prefix {
+    let Some(wine) = config.wine() else {
+        bail!("restore marker config points to a different prefix");
+    };
+    if paths::resolve(&paths.config_path(&wine.prefix)?) != marker.prefix {
         bail!("restore marker config points to a different prefix");
     }
     Ok(())
@@ -494,12 +500,13 @@ fn inspect_prefix(
     env: &Environment,
     prefix: &Path,
 ) -> Result<import::Inspection> {
+    let wine = env.wine()?;
     let runner = if import::root_layout_ambiguous(prefix) {
-        Some(Runners::new(paths, global)?.resolve(&env.config.runner)?)
+        Some(Runners::new(paths, global)?.resolve(&wine.runner)?)
     } else {
         None
     };
-    let inspected = import::inspect_root(prefix, runner.as_ref(), env.config.arch)?;
+    let inspected = import::inspect_root(prefix, runner.as_ref(), wine.arch)?;
     if inspected.source_root != prefix {
         bail!("configured prefix root changed during inspection");
     }

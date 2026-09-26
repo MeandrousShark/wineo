@@ -12,6 +12,7 @@ use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::download::{InstallLock, publish};
 use crate::edit;
 use crate::environment::Environment;
+use crate::error::Error;
 use crate::import::{self, ExternalDependency, ImportLayout, ImportProgress};
 use crate::name;
 use crate::operation::{Locks, Operation};
@@ -57,20 +58,23 @@ pub fn inspect(
         .with_context(|| format!("failed to read {}", source_path.display()))?;
     let config =
         EnvironmentConfig::parse(&source_path, &source_config).map_err(|err| anyhow!(err))?;
+    let wine = config
+        .wine()
+        .ok_or_else(|| anyhow!(Error::NoPrefix(source_name.to_owned())))?;
     let configured_root = paths
-        .config_path(&config.prefix)
+        .config_path(&wine.prefix)
         .map_err(|err| anyhow!(err))?;
     let runner = if import::root_layout_ambiguous(&configured_root) {
         Some(
             Runners::new(paths, global)
                 .map_err(|err| anyhow!(err))?
-                .resolve(&config.runner)
+                .resolve(&wine.runner)
                 .map_err(|err| anyhow!(err))?,
         )
     } else {
         None
     };
-    let prefix = import::inspect_root(&configured_root, runner.as_ref(), config.arch)?;
+    let prefix = import::inspect_root(&configured_root, runner.as_ref(), wine.arch)?;
     if paths::resolve(&configured_root) != prefix.source_root {
         bail!("configured prefix root does not match inspected source root");
     }
@@ -129,7 +133,7 @@ pub fn inspect(
         new_name: new_name.to_owned(),
         source_root,
         destination,
-        runner: config.runner,
+        runner: wine.runner.clone(),
         layout: prefix.layout,
         targets: config.targets.keys().cloned().collect(),
         external_dependencies: prefix.external_dependencies.clone(),
@@ -572,8 +576,8 @@ mod tests {
             )
             .unwrap();
             assert_eq!(clone.config.heroic_id, None);
-            assert_eq!(clone.config.gameid.as_deref(), Some("game"));
-            assert_eq!(clone.config.store.as_deref(), Some("steam"));
+            assert_eq!(clone.config.wine().unwrap().gameid.as_deref(), Some("game"));
+            assert_eq!(clone.config.wine().unwrap().store.as_deref(), Some("steam"));
             assert_eq!(clone.config.targets["game"].name.as_deref(), Some("Game"));
             assert!(clone.config.targets["game"].default);
             assert!(!clone.config.targets["game"].desktop);

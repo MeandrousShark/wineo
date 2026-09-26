@@ -62,6 +62,7 @@ impl Launch {
     ) -> Result<Self> {
         let (name, target) = resolve_target(environment, overrides.target.as_deref())?;
         let (runner, prefix) = open(paths, global, environment)?;
+        let wine = environment.wine()?;
         // Windows paths and drive_c live in the wine prefix, which is `pfx/`
         // under a Proton environment's configured one.
         let wine_prefix = runner.wine_prefix(&prefix);
@@ -78,14 +79,8 @@ impl Launch {
         let gamemode = gamemode_path(global, environment, target)?;
         Ok(Self {
             env: merge_env(&runner, global, environment, &overrides.env)?,
-            gameid: runner
-                .is_proton()
-                .then(|| environment.config.gameid.clone())
-                .flatten(),
-            store: runner
-                .is_proton()
-                .then(|| environment.config.store.clone())
-                .flatten(),
+            gameid: runner.is_proton().then(|| wine.gameid.clone()).flatten(),
+            store: runner.is_proton().then(|| wine.store.clone()).flatten(),
             runner,
             prefix,
             target: Some(name.to_owned()),
@@ -231,8 +226,9 @@ fn open(
     global: &GlobalConfig,
     environment: &Environment,
 ) -> Result<(Runner, PathBuf)> {
+    let wine = environment.wine()?;
     let prefix = crate::paths::resolve(&environment.prefix(paths)?);
-    let runner = Runners::new(paths, global)?.resolve(&environment.config.runner)?;
+    let runner = Runners::new(paths, global)?.resolve(&wine.runner)?;
     // Wine would silently create a fresh prefix here otherwise.
     if !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
         return Err(Error::MissingPrefix(prefix));

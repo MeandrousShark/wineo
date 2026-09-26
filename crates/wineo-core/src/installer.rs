@@ -122,7 +122,11 @@ impl Installer {
     ) -> Result<Self> {
         let mut environment = Environment::load(paths, name)?;
         if let Some(runner) = fixed_runner {
-            environment.config.runner = runner.name().to_owned();
+            let wine = environment
+                .config
+                .wine_mut()
+                .ok_or_else(|| Error::NoPrefix(name.to_owned()))?;
+            wine.runner = runner.name().to_owned();
         }
         let mut launch = launch(paths, global, &environment, program)?;
         if let Some(runner) = fixed_runner {
