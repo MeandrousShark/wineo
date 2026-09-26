@@ -3,6 +3,17 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.9.0 - 2026-09-26
+
+- `wineo validate [NAME]` finds config mistakes and leftover state before a
+  launch trips over them, and offers the fixes that are safe
+  ([0028](docs/plans/0028-validate.md)). See [Validate](docs/validate.md).
+- At a terminal, one review lists every fix. Enter applies them all, and
+  numbers like `1 3 4` skip some. `--fix` applies them without asking.
+- `--json` reports each problem with a stable `code`, plus `fixed` and
+  `errors` for what `--fix` did.
+- `wineo desktop` points stray entries at `wineo validate`.
+
 ## 0.8.0 - 2026-09-26
 
 - `wineo new --native` is now a plain flag that picks the kind, and
