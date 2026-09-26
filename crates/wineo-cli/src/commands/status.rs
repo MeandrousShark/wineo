@@ -204,7 +204,12 @@ fn played_value(played: &report::Played, now: Timestamp, tz: &TimeZone) -> Strin
     } else {
         format!("{} sessions", played.sessions)
     };
-    let mut value = format!("{} over {sessions}", duration_hm(played.seconds));
+    // With no sessions, all of it came from a Heroic import.
+    let mut value = if played.sessions == 0 {
+        format!("{} from Heroic", duration_hm(played.seconds))
+    } else {
+        format!("{} over {sessions}", duration_hm(played.seconds))
+    };
     if let Some(last_played) = played.last_played {
         value.push_str(&format!(", last {}", day_label(now, last_played, tz)));
     }
@@ -542,6 +547,26 @@ mod tests {
         let text = render(&report, now(), &TimeZone::UTC);
         assert!(
             text.contains("\n  played    18 h 5 m over 11 sessions, last today\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_played_line_with_only_heroic_time_says_so() {
+        let status = Status {
+            state: State::Inactive,
+            run: None,
+            lost: false,
+        };
+        let mut report = report(status);
+        report.played = Some(wineo_core::report::Played {
+            seconds: 349_200,
+            sessions: 0,
+            last_played: Some(now()),
+        });
+        let text = render(&report, now(), &TimeZone::UTC);
+        assert!(
+            text.contains("\n  played    97 h from Heroic, last today\n"),
             "{text}"
         );
     }

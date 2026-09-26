@@ -190,7 +190,9 @@ fn render_named(name: &str, log: &Log, summary: &Summary, now: Timestamp, tz: &T
         format!("{} sessions", summary.sessions)
     };
     let mut played = format!("{} over {sessions_word}", duration_hm(summary.seconds));
-    if summary.imported_seconds > 0 {
+    if summary.sessions == 0 {
+        played = format!("{}, all from Heroic", duration_hm(summary.seconds));
+    } else if summary.imported_seconds > 0 {
         played.push_str(&format!(
             ", {} from Heroic",
             duration_hm(summary.imported_seconds)

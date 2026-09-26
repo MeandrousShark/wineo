@@ -113,7 +113,7 @@ impl EnvironmentReport {
             Timestamp::now(),
             &TimeZone::system(),
         )?;
-        let played = (summary.sessions > 0).then_some(Played {
+        let played = (summary.sessions > 0 || summary.imported_seconds > 0).then_some(Played {
             seconds: summary.seconds,
             sessions: summary.sessions,
             last_played: summary.last_played,
