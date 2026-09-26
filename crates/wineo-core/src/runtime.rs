@@ -6,6 +6,7 @@ use std::os::unix::fs::FileExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -14,12 +15,13 @@ use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, IoContext, Result};
+use crate::error::{Error, IoContext, Result, chain};
 use crate::files::write_atomic;
 use crate::launch::{Host, Overrides};
 use crate::operation::Operation;
 use crate::paths::Paths;
-use crate::runner::Runner;
+use crate::process::{self, GroupOwnership};
+use crate::runner::{self, Killed, Runner};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -226,6 +228,20 @@ pub struct Status {
     /// `state.toml` says running but nothing holds the lock, so whatever owned
     /// the run died before it could record how the run ended.
     pub lost: bool,
+}
+
+/// What cleaning up after a lost run did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LostRunCleanup {
+    /// There was no lost run, or another command dealt with it first.
+    NotLost,
+    /// What the run started had already exited.
+    Gone,
+    /// What the run left behind was killed.
+    Killed,
+    /// Ownership or cleanup could not be confirmed, so the state is kept.
+    /// `warning` is the error behind it, when there is one.
+    Unresolved { warning: Option<String> },
 }
 
 /// A probe from `is_running` holds a shared lock for a moment, so taking the
@@ -443,6 +459,96 @@ impl Runtime {
         }
     }
 
+    /// Kills whatever a run left in the prefix when the process that owned it
+    /// died, then records the run as stopped so this only happens once.
+    pub fn clean_up_lost_run(&self, settle_timeout: Duration) -> Result<LostRunCleanup> {
+        let unresolved = |warning: Option<String>| Ok(LostRunCleanup::Unresolved { warning });
+        match self.status() {
+            Ok(status) if status.lost => {}
+            Ok(_) => return Ok(LostRunCleanup::NotLost),
+            Err(err) => return unresolved(Some(chain(&err))),
+        }
+        // Holding the lock keeps a new run from starting in the middle of this,
+        // and the state is read again in case one already came and went.
+        let Some(_lock) = self.try_lock()? else {
+            return Ok(LostRunCleanup::NotLost);
+        };
+        let mut run = match self.read_state() {
+            Ok(Some(run)) if run.status == RunStatus::Running => run,
+            Ok(_) => return Ok(LostRunCleanup::NotLost),
+            Err(err) => return unresolved(Some(chain(&err))),
+        };
+        // None for a native run, which is cleaned up through its group like Proton.
+        let wine = match (run.runner.clone(), run.prefix.clone(), run.native) {
+            (Some(runner), Some(prefix), false) => Some((runner, prefix)),
+            (None, None, true) => None,
+            _ => return unresolved(None),
+        };
+        let wineserver = wine.as_ref().is_some_and(|(runner, _)| !runner.is_proton());
+        let ownership =
+            process::group_ownership(run.group, run.boot_id.as_deref(), run.leader_start);
+        let group = match ownership {
+            GroupOwnership::Unknown => return unresolved(None),
+            GroupOwnership::Gone => GroupOwnership::Gone,
+            GroupOwnership::Owned => match process::signal_group_if_owned(
+                run.group,
+                run.boot_id.as_deref(),
+                run.leader_start,
+                rustix::process::Signal::KILL,
+            ) {
+                Ok(ownership) => ownership,
+                Err(err) => return unresolved(Some(chain(&err))),
+            },
+        };
+        if group == GroupOwnership::Unknown {
+            return unresolved(None);
+        }
+        if let Some((runner, prefix)) = &wine
+            && wineserver
+        {
+            match runner.kill(prefix, run.group) {
+                Ok(Killed::Untracked) => return unresolved(None),
+                Ok(Killed::Done | Killed::Gone) => {}
+                Err(err) => return unresolved(Some(chain(&err))),
+            }
+        }
+        if wineserver || group == GroupOwnership::Owned {
+            let settle_group = run.group;
+            let settle_boot_id = run.boot_id.clone();
+            let settle_leader_start = run.leader_start;
+            if let Err(err) = wait_settled_bounded(settle_timeout, move || match &wine {
+                Some((runner, prefix)) => runner.wait_settled_owned(
+                    prefix,
+                    settle_group,
+                    settle_boot_id.as_deref(),
+                    settle_leader_start,
+                ),
+                None => runner::wait_for_recorded_group(
+                    settle_group,
+                    settle_boot_id.as_deref(),
+                    settle_leader_start,
+                ),
+            }) {
+                return unresolved(Some(chain(&err)));
+            }
+        }
+        run.finish(RunStatus::Stopped);
+        self.write_state(&run)?;
+        Ok(if group == GroupOwnership::Gone {
+            LostRunCleanup::Gone
+        } else {
+            LostRunCleanup::Killed
+        })
+    }
+
+    /// What to tell someone when a lost run could not be cleaned up.
+    pub fn unresolved_run_message(&self, name: &str) -> String {
+        format!(
+            "wineo could not confirm ownership of {name}'s last run. Verify its processes have stopped, then remove {} to clear this block",
+            self.state_path().display()
+        )
+    }
+
     /// Output of the latest detached run.
     pub fn log_path(&self) -> PathBuf {
         self.dir.join("output.log")
@@ -510,6 +616,26 @@ impl Runtime {
     /// Where an installer's output goes when it is not shown on the terminal.
     pub fn install_log_path(&self) -> PathBuf {
         self.dir.join("install.log")
+    }
+}
+
+fn wait_settled_bounded(
+    timeout: Duration,
+    wait: impl FnOnce() -> Result<()> + Send + 'static,
+) -> Result<()> {
+    let (sender, settled) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = sender.send(wait());
+    });
+    match settled.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(Error::Unsettled(format!(
+            "cleanup did not settle within {} ms",
+            timeout.as_millis()
+        ))),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::Unsettled(
+            "cleanup settlement check stopped unexpectedly".to_owned(),
+        )),
     }
 }
 

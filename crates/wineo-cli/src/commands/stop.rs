@@ -1,6 +1,4 @@
 use std::process::ExitCode;
-use std::sync::mpsc;
-use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -9,9 +7,7 @@ use wineo_core::environment::Environment;
 use wineo_core::installer::{self, Cleaned};
 use wineo_core::operation::Locks;
 use wineo_core::paths::Paths;
-use wineo_core::process::{self, GroupOwnership};
-use wineo_core::runner::{self, Killed};
-use wineo_core::runtime::{RunStatus, Runtime};
+use wineo_core::runtime::{LostRunCleanup, Runtime};
 use wineo_core::supervisor;
 
 #[derive(clap::Args)]
@@ -123,141 +119,27 @@ fn report_unresolved_installer(paths: &Paths, name: &str) {
     );
 }
 
-/// Kills whatever a run left in the prefix when the process that owned it
-/// died, then records the run as stopped so this only happens once.
+/// Cleans up after a lost run and says what happened.
 fn clean_up_lost_run(
     paths: &Paths,
     name: &str,
     runtime: &Runtime,
     settle_timeout: Duration,
 ) -> anyhow::Result<Outcome> {
-    match runtime.status() {
-        Ok(status) if status.lost => {}
-        Ok(_) => return Ok(Outcome::NotRunning),
-        Err(err) => {
-            warn(err.into());
-            report_unresolved_run(paths, name);
-            return Ok(Outcome::Unresolved);
-        }
-    }
-    // Holding the lock keeps a new run from starting in the middle of this,
-    // and the state is read again in case one already came and went.
-    let Some(_lock) = runtime.try_lock()? else {
-        return Ok(Outcome::NotRunning);
-    };
-    let mut run = match runtime.read_state() {
-        Ok(Some(run)) if run.status == RunStatus::Running => run,
-        Ok(_) => return Ok(Outcome::NotRunning),
-        Err(err) => {
-            warn(err.into());
-            report_unresolved_run(paths, name);
-            return Ok(Outcome::Unresolved);
-        }
-    };
-    // None for a native run, which is cleaned up through its group like Proton.
-    let wine = match (run.runner.clone(), run.prefix.clone(), run.native) {
-        (Some(runner), Some(prefix), false) => Some((runner, prefix)),
-        (None, None, true) => None,
-        _ => {
-            report_unresolved_run(paths, name);
-            return Ok(Outcome::Unresolved);
-        }
-    };
-    let wineserver = wine.as_ref().is_some_and(|(runner, _)| !runner.is_proton());
-    let ownership = process::group_ownership(run.group, run.boot_id.as_deref(), run.leader_start);
-    let group = match ownership {
-        GroupOwnership::Unknown => {
-            report_unresolved_run(paths, name);
-            return Ok(Outcome::Unresolved);
-        }
-        GroupOwnership::Gone => GroupOwnership::Gone,
-        GroupOwnership::Owned => match process::signal_group_if_owned(
-            run.group,
-            run.boot_id.as_deref(),
-            run.leader_start,
-            rustix::process::Signal::KILL,
-        ) {
-            Ok(ownership) => ownership,
-            Err(err) => {
-                warn(err.into());
-                report_unresolved_run(paths, name);
-                return Ok(Outcome::Unresolved);
+    let outcome = match runtime.clean_up_lost_run(settle_timeout)? {
+        LostRunCleanup::NotLost => return Ok(Outcome::NotRunning),
+        LostRunCleanup::Unresolved { warning } => {
+            if let Some(warning) = warning {
+                eprintln!("warning: {warning}");
             }
-        },
-    };
-    if group == GroupOwnership::Unknown {
-        report_unresolved_run(paths, name);
-        return Ok(Outcome::Unresolved);
-    }
-    if let Some((runner, prefix)) = &wine
-        && wineserver
-    {
-        match runner.kill(prefix, run.group) {
-            Ok(Killed::Untracked) => {
-                report_unresolved_run(paths, name);
-                return Ok(Outcome::Unresolved);
-            }
-            Ok(Killed::Done | Killed::Gone) => {}
-            Err(err) => {
-                warn(err.into());
-                report_unresolved_run(paths, name);
-                return Ok(Outcome::Unresolved);
-            }
-        }
-    }
-    if wineserver || group == GroupOwnership::Owned {
-        let settle_group = run.group;
-        let settle_boot_id = run.boot_id.clone();
-        let settle_leader_start = run.leader_start;
-        if let Err(err) = wait_settled_bounded(settle_timeout, move || {
-            match &wine {
-                Some((runner, prefix)) => runner.wait_settled_owned(
-                    prefix,
-                    settle_group,
-                    settle_boot_id.as_deref(),
-                    settle_leader_start,
-                ),
-                None => runner::wait_for_recorded_group(
-                    settle_group,
-                    settle_boot_id.as_deref(),
-                    settle_leader_start,
-                ),
-            }
-            .map_err(anyhow::Error::from)
-        }) {
-            warn(err);
             report_unresolved_run(paths, name);
             return Ok(Outcome::Unresolved);
         }
-    }
-    run.finish(RunStatus::Stopped);
-    runtime.write_state(&run)?;
-    let outcome = if group == GroupOwnership::Gone {
-        "and what it started had already exited"
-    } else {
-        "so it killed anything left behind"
+        LostRunCleanup::Gone => "and what it started had already exited",
+        LostRunCleanup::Killed => "so it killed anything left behind",
     };
     eprintln!("wineo lost track of {name}'s last run, {outcome}");
     Ok(Outcome::CleanedUp)
-}
-
-fn wait_settled_bounded(
-    timeout: Duration,
-    wait: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
-) -> anyhow::Result<()> {
-    let (sender, settled) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = sender.send(wait());
-    });
-    match settled.recv_timeout(timeout) {
-        Ok(result) => result,
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            bail!("cleanup did not settle within {} ms", timeout.as_millis())
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            bail!("cleanup settlement check stopped unexpectedly")
-        }
-    }
 }
 
 fn report_unresolved_run(paths: &Paths, name: &str) {
@@ -265,11 +147,7 @@ fn report_unresolved_run(paths: &Paths, name: &str) {
 }
 
 fn unresolved_run_message(paths: &Paths, name: &str) -> String {
-    let state = Runtime::new(paths, name).dir().join("state.toml");
-    format!(
-        "wineo could not confirm ownership of {name}'s last run. Verify its processes have stopped, then remove {} to clear this block",
-        state.display()
-    )
+    Runtime::new(paths, name).unresolved_run_message(name)
 }
 
 fn warn(err: anyhow::Error) {
@@ -289,7 +167,7 @@ mod tests {
     use wineo_core::paths::Paths;
     use wineo_core::process;
     use wineo_core::runners::Runners;
-    use wineo_core::runtime::{RunMode, RunState};
+    use wineo_core::runtime::{RunMode, RunState, RunStatus};
 
     fn paths(root: &std::path::Path) -> Paths {
         let root = root.to_owned();
