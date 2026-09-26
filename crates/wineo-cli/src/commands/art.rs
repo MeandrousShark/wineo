@@ -461,7 +461,7 @@ fn try_fetch_new<I: Input, W: Write>(
             )?;
             (top.id, request.term.to_owned(), out)
         }
-        Pick::Ask(prompt) => match ask_new_game(&api, request.term, prompt)? {
+        Pick::Ask(prompt) => match ask_game(&api, request.term, prompt, true)? {
             Some((game, term)) => (game, term, prompt.writer()),
             None => {
                 writeln!(
@@ -500,8 +500,7 @@ fn try_fetch_new<I: Input, W: Write>(
     fetched.map(drop)
 }
 
-/// What picking an entry beyond a search result means in the guided flows'
-/// pick list.
+/// An entry in the pick list.
 #[derive(Clone, Copy)]
 enum GamePick {
     Game(u64),
@@ -509,13 +508,28 @@ enum GamePick {
     Skip,
 }
 
-/// Shows the pick list with a skip entry, searching again on request or on
-/// an empty result, until a game is picked or skipped. Returns the term that
-/// found the picked game, alongside its ID.
-fn ask_new_game<I: Input, W: Write>(
+/// Searches for `term` and asks which match is the game. A terminal is
+/// needed for more than one match, and to search again after an empty one.
+fn pick_game(api: &Api, term: &str) -> anyhow::Result<Option<u64>> {
+    if !prompt::interactive() {
+        let games = api.search(term)?;
+        if games.is_empty() {
+            bail!("no SteamGridDB games match `{term}`");
+        }
+        bail!("picking a game needs a terminal, pass --game instead");
+    }
+    let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
+    Ok(ask_game(api, term, &mut prompt, false)?.map(|(game, _)| game))
+}
+
+/// Shows the pick list, searching again on request or after an empty result,
+/// until a game is picked. `skip` adds an entry that gives up instead, as Esc
+/// after an empty result does. Returns the term that found the picked game.
+fn ask_game<I: Input, W: Write>(
     api: &Api,
     term: &str,
     prompt: &mut Prompt<I, W>,
+    skip: bool,
 ) -> anyhow::Result<Option<(u64, String)>> {
     let mut term = term.to_owned();
     let mut games = api.search(&term)?;
@@ -530,16 +544,15 @@ fn ask_new_game<I: Input, W: Write>(
                 Reply::Back => return Ok(None),
             }
         }
+        let skip_entry = skip.then(|| ("None of these, skip art".to_owned(), GamePick::Skip));
         let entries = games
             .iter()
             .map(|game| (game_label(game), GamePick::Game(game.id)))
-            .chain([
-                (
-                    "Search for something else".to_owned(),
-                    GamePick::SearchAgain,
-                ),
-                ("None of these, skip art".to_owned(), GamePick::Skip),
-            ]);
+            .chain([(
+                "Search for something else".to_owned(),
+                GamePick::SearchAgain,
+            )])
+            .chain(skip_entry);
         let choices = numbered(entries);
         match prompt.choose("Which game is it?", "Game", &choices, Some("1"), false)? {
             Reply::Value(GamePick::Game(game)) => return Ok(Some((game, term))),
@@ -553,60 +566,6 @@ fn ask_new_game<I: Input, W: Write>(
                 Reply::Back => {}
             },
             Reply::Back => unreachable!("the pick list has no back"),
-        }
-    }
-}
-
-/// Searches for `term` and asks which match is the game. A terminal is
-/// needed for more than one match, and to search again after an empty one.
-fn pick_game(api: &Api, term: &str) -> anyhow::Result<Option<u64>> {
-    if !prompt::interactive() {
-        let games = api.search(term)?;
-        if games.is_empty() {
-            bail!("no SteamGridDB games match `{term}`");
-        }
-        bail!("picking a game needs a terminal, pass --game instead");
-    }
-    let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
-    ask_game(api, term, &mut prompt)
-}
-
-/// The interactive part of `pick_game`, split out so tests can drive it with
-/// a scripted prompt and a fake transport.
-fn ask_game<I: Input, W: Write>(
-    api: &Api,
-    term: &str,
-    prompt: &mut Prompt<I, W>,
-) -> anyhow::Result<Option<u64>> {
-    let mut term = term.to_owned();
-    let mut games = api.search(&term)?;
-    loop {
-        if games.is_empty() {
-            match ask_after_no_matches(prompt, &term)? {
-                Reply::Value(next) => {
-                    term = next;
-                    games = api.search(&term)?;
-                    continue;
-                }
-                Reply::Back => return Ok(None),
-            }
-        }
-        let entries = games
-            .iter()
-            .map(|game| (game_label(game), Some(game.id)))
-            .chain([("Search for something else".to_owned(), None)]);
-        let choices = numbered(entries);
-        match prompt.choose("Which game is it?", "Game", &choices, Some("1"), false)? {
-            Reply::Value(Some(game)) => return Ok(Some(game)),
-            Reply::Value(None) => match ask_search_term(prompt)? {
-                Reply::Value(next) => {
-                    term = next;
-                    games = api.search(&term)?;
-                }
-                // Esc here goes back to the same list.
-                Reply::Back => {}
-            },
-            Reply::Back => unreachable!("the first question has no back"),
         }
     }
 }
@@ -1235,7 +1194,8 @@ mod tests {
         answers: &[&str],
     ) -> (anyhow::Result<Option<u64>>, String) {
         let mut prompt = Prompt::new(Script::new(answers), Vec::new());
-        let result = ask_game(&Api::new(fake, "k"), term, &mut prompt);
+        let result = ask_game(&Api::new(fake, "k"), term, &mut prompt, false)
+            .map(|pick| pick.map(|(game, _)| game));
         (result, String::from_utf8(prompt.output().clone()).unwrap())
     }
 
