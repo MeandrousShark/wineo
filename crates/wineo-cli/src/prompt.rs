@@ -284,6 +284,59 @@ impl<I: Input, W: Write> Prompt<I, W> {
         choices: &[Choice<T>],
         back: bool,
     ) -> anyhow::Result<Reply<Option<T>>> {
+        let label = self.review_menu(heading, note, enter_action, choices, back, "a number")?;
+        self.choose_or_enter(choices, back, &label)
+    }
+
+    /// `review` taking any number of entries on one line, like `1 3 4` or
+    /// `1,3,4`. A line with anything that isn't one of them is asked again.
+    /// Every entry has to be numbered.
+    pub fn review_many<T: Clone>(
+        &mut self,
+        heading: &str,
+        note: Option<&str>,
+        enter_action: &str,
+        choices: &[Choice<T>],
+        back: bool,
+    ) -> anyhow::Result<Reply<Option<Vec<T>>>> {
+        let label = self.review_menu(heading, note, enter_action, choices, back, "numbers")?;
+        loop {
+            let answer = match self.read(&label)? {
+                Reply::Value(answer) => answer,
+                Reply::Back if back => return Ok(Reply::Back),
+                Reply::Back => continue,
+            };
+            if answer.is_empty() {
+                return Ok(Reply::Value(None));
+            }
+            if let Some(reply) = self.special(&answer, back)? {
+                return Ok(reply.map(Some));
+            }
+            match parse_numbers(&answer, choices.len()) {
+                Ok(picked) => {
+                    return Ok(Reply::Value(Some(
+                        picked
+                            .into_iter()
+                            .map(|index| choices[index].value.clone())
+                            .collect(),
+                    )));
+                }
+                Err(problem) => self.say(problem)?,
+            }
+        }
+    }
+
+    /// Prints a review menu and returns the label to ask with. `pick` is what
+    /// the keys line offers besides Enter.
+    fn review_menu<T>(
+        &mut self,
+        heading: &str,
+        note: Option<&str>,
+        enter_action: &str,
+        choices: &[Choice<T>],
+        back: bool,
+        pick: &str,
+    ) -> anyhow::Result<String> {
         writeln!(
             self.out,
             "{}",
@@ -299,7 +352,7 @@ impl<I: Input, W: Write> Prompt<I, W> {
         let enter = if choices.is_empty() {
             format!("Press Enter to {enter_action},")
         } else {
-            format!("Press Enter to {enter_action}, or pick a number.")
+            format!("Press Enter to {enter_action}, or pick {pick}.")
         };
         let rest = if back {
             "Esc to go back, Ctrl+C to cancel."
@@ -308,14 +361,13 @@ impl<I: Input, W: Write> Prompt<I, W> {
         };
         self.say(format!("{enter} {rest}"))?;
         // "Choice:" with nothing numbered to choose reads like a missing list.
-        let label = if choices.is_empty() {
+        Ok(if choices.is_empty() {
             let mut chars = enter_action.chars();
             let first = chars.next().map(|c| c.to_uppercase().to_string());
             format!("{}{}? ", first.unwrap_or_default(), chars.as_str())
         } else {
             "Choice: ".to_owned()
-        };
-        self.choose_or_enter(choices, back, &label)
+        })
     }
 
     fn choose_or_enter<T: Clone>(
@@ -861,6 +913,45 @@ mod tests {
             printed(&p),
             "Review:\n\nPress Enter to create it, Ctrl+C to cancel.\nCreate it? "
         );
+    }
+
+    #[test]
+    fn review_many_takes_several_numbers_on_a_line() {
+        let choices = numbered([
+            ("one".to_owned(), 1),
+            ("two".to_owned(), 2),
+            ("three".to_owned(), 3),
+            ("four".to_owned(), 4),
+        ]);
+        for line in ["1 3 4", "1,3,4", "1, 3 4"] {
+            let mut p = prompt(&[line]);
+            let reply = p
+                .review_many("Review:", Some("Note."), "fix them", &choices, false)
+                .unwrap();
+            assert_eq!(reply, Reply::Value(Some(vec![1, 3, 4])), "{line}");
+        }
+        let mut p = prompt(&["2"]);
+        let reply = p
+            .review_many("Review:", None, "fix them", &choices, false)
+            .unwrap();
+        assert_eq!(reply, Reply::Value(Some(vec![2])));
+        assert_eq!(
+            printed(&p),
+            "Review:\n  1) one\n  2) two\n  3) three\n  4) four\n\nPress Enter to fix them, or pick numbers. Ctrl+C to cancel.\nChoice: "
+        );
+    }
+
+    #[test]
+    fn review_many_asks_again_after_a_bad_token() {
+        let choices = numbered([("one".to_owned(), 1), ("two".to_owned(), 2)]);
+        let mut p = prompt(&["1 5", "1 x", ""]);
+        let reply = p
+            .review_many("Review:", None, "fix them", &choices, false)
+            .unwrap();
+        assert_eq!(reply, Reply::Value(None));
+        let text = printed(&p);
+        assert!(text.contains("Pick numbers between 1 and 2\n"), "{text}");
+        assert!(text.contains("`1 x` is not one of the choices"), "{text}");
     }
 
     #[test]
