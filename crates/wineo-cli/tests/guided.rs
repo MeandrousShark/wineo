@@ -526,13 +526,17 @@ fn a_change_made_while_a_question_waits_refreshes_the_review() {
     pty.send("2");
     pty.expect("Target: ");
     pty.send("1");
-    pty.expect("Press Enter to done, or pick a number. Esc to go back, Ctrl+C to cancel.");
+    pty.expect(
+        "Press Enter to finish editing, or pick a number. Esc to go back, Ctrl+C to cancel.",
+    );
     pty.expect("Choice: ");
     // The working directory, which is all this setup changes.
     pty.send("3");
     pty.expect("Working directory, or empty for the executable's folder: ");
     pty.send(r"C:\Games");
-    pty.expect("Press Enter to done, or pick a number. Esc to go back, Ctrl+C to cancel.");
+    pty.expect(
+        "Press Enter to finish editing, or pick a number. Esc to go back, Ctrl+C to cancel.",
+    );
     pty.expect("Choice: ");
     pty.send("");
     pty.expect("Choice [5]: ");

@@ -462,7 +462,7 @@ impl Card<'_> {
                 if self.adding.is_some() {
                     "add it"
                 } else {
-                    "done"
+                    "finish editing"
                 },
                 &choices,
                 true,
