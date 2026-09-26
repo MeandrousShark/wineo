@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0029: Playtime statistics
 
@@ -36,7 +36,9 @@ criterion 3, moved up ahead of trash and `prune`.
   RFC 3339 strings that are often empty. Imported environments record
   `heroic_id`.
 
-## Proposed decisions for maintainer approval
+## Decisions (settled with the maintainer, 2026-09-26)
+
+The maintainer accepted every recommendation below: 2A, 3A, 5A, and 7A.
 
 ### 1. What counts as a session
 
