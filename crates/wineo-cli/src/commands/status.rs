@@ -101,6 +101,9 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
             &target_value(run, report.target_exe.as_deref()),
         ));
     }
+    if report.native {
+        lines.push(label_line("kind", "native"));
+    }
     if let Some(runner) = &report.runner {
         lines.push(label_line(
             "runner",
@@ -278,6 +281,7 @@ mod tests {
         EnvironmentReport {
             name: "notepad".to_owned(),
             status,
+            native: false,
             runner: Some("wine".to_owned()),
             runner_resolved: Some("wine".to_owned()),
             runner_version: Some("wine-11.17".to_owned()),

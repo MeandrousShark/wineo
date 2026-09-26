@@ -68,6 +68,7 @@ struct RunnerOutput<'a> {
 pub struct NamedOutput<'a> {
     #[serde(flatten)]
     status: StatusOutput<'a>,
+    kind: &'static str,
     runner: Option<RunnerOutput<'a>>,
     prefix: Option<&'a str>,
     target_exe: Option<&'a str>,
@@ -83,6 +84,7 @@ impl<'a> NamedOutput<'a> {
     pub fn new(report: &'a EnvironmentReport, configured_runner: Option<&'a str>) -> Self {
         Self {
             status: StatusOutput::new(&report.name, &report.status, report.busy, report.unresolved),
+            kind: if report.native { "native" } else { "wine" },
             runner: configured_runner.map(|configured| RunnerOutput {
                 configured,
                 resolved: report.runner_resolved.as_deref(),

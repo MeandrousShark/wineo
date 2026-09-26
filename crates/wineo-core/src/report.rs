@@ -17,6 +17,8 @@ use crate::runtime::{Runtime, Status};
 pub struct EnvironmentReport {
     pub name: String,
     pub status: Status,
+    /// A native environment, which has no runner or prefix.
+    pub native: bool,
     /// None for a native environment, which has no runner or prefix.
     pub runner: Option<String>,
     pub runner_resolved: Option<String>,
@@ -97,6 +99,7 @@ impl EnvironmentReport {
             busy,
             gamemode: crate::launch::gamemode(global, environment, target),
             name: environment.name.clone(),
+            native: wine.is_none(),
             runner: runner_name,
             runner_resolved,
             runner_version,

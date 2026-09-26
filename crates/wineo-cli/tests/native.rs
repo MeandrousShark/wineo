@@ -333,3 +333,28 @@ fn a_bare_name_is_found_on_the_path_the_game_gets() {
     });
     assert_success(&f.run(&["stop", "dusk"]));
 }
+
+#[test]
+fn status_shows_the_kind_in_place_of_runner_and_prefix() {
+    let f = Fixture::new();
+    let game = f.script("game.sh", GAME);
+    f.native("dusk", &format!("gamemode = false\n{}", target(&game)));
+    f.environment("app", "[targets.app]\nexe = \"app\"\n");
+
+    let shown = f.run(&["status", "dusk"]);
+    assert_success(&shown);
+    assert_eq!(stdout(&shown), "dusk: inactive\n  kind      native\n");
+
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout(&f.run(&["status", "dusk", "--json"]))).unwrap();
+    assert_eq!(json["kind"], "native");
+    assert!(json["runner"].is_null(), "{json}");
+    assert!(json["prefix"].is_null(), "{json}");
+
+    let wine: serde_json::Value =
+        serde_json::from_str(&stdout(&f.run(&["status", "app", "--json"]))).unwrap();
+    assert_eq!(wine["kind"], "wine");
+    assert_eq!(wine["runner"]["configured"], "wine");
+    assert!(wine["prefix"].is_string(), "{wine}");
+    assert!(!stdout(&f.run(&["status", "app"])).contains("kind"));
+}
