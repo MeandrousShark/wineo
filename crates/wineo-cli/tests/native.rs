@@ -546,3 +546,97 @@ fn desktop_entries_work_for_native_with_icons_from_art_only() {
     assert_success(&f.run(&["rm", "dusk"]));
     assert!(!entry.exists());
 }
+
+#[test]
+fn new_native_writes_one_default_target_named_from_the_exe() {
+    let f = Fixture::new();
+    let game = f.script("dusklight", GAME);
+    let created = f.run(&["new", "-n", "dusk", "--native", game.to_str().unwrap()]);
+    assert_success(&created);
+    assert_eq!(
+        stdout(&created),
+        "Created native environment dusk with target dusklight\n"
+    );
+    assert_eq!(
+        f.created_config("dusk"),
+        format!(
+            "schema_version = 1\nkind = \"native\"\n\n[targets.dusklight]\nexe = \"{}\"\ndefault = true\n",
+            game.display()
+        )
+    );
+    assert_success(&f.run(&["start", "dusk"]));
+    wait_for("the program to start", || {
+        marker(&game, ".running").exists()
+    });
+    assert_success(&f.run(&["stop", "dusk"]));
+
+    // A bare name is looked up on PATH when it is written.
+    let dir = game.parent().unwrap();
+    let path = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap());
+    let created = f
+        .wineo()
+        .env("PATH", path)
+        .args(["new", "-n", "bare", "--native", "dusklight"])
+        .output()
+        .unwrap();
+    assert_success(&created);
+    assert!(f.created_config("bare").contains("exe = \"dusklight\""));
+
+    let refused = f.run(&[
+        "new",
+        "-n",
+        "missing",
+        "--native",
+        "wineo-surely-not-installed",
+    ]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("`wineo-surely-not-installed` was not found on PATH"),
+        "{}",
+        stderr(&refused)
+    );
+    let refused = f.run(&["new", "-n", "win", "--native", "setup.exe"]);
+    assert!(
+        stderr(&refused).contains("win is native, so its target can't be a Windows program"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(f.created_config("missing").is_empty());
+    assert!(f.created_config("win").is_empty());
+
+    let taken = f.run(&["new", "-n", "dusk", "--native", game.to_str().unwrap()]);
+    assert!(!taken.status.success());
+    assert!(
+        stderr(&taken).contains("already exists"),
+        "{}",
+        stderr(&taken)
+    );
+}
+
+#[test]
+fn new_native_refuses_the_wine_only_flags() {
+    let f = Fixture::new();
+    let game = f.script("dusklight", GAME);
+    let exe = game.to_str().unwrap();
+    for flags in [
+        &["--runner", "wine"][..],
+        &["--arch", "win64"][..],
+        &["--dir", "/tmp/x"][..],
+        &["--template", "gaming"][..],
+        &["--install-exe", "/tmp/setup.exe"][..],
+    ] {
+        let refused = f
+            .wineo()
+            .args(["new", "-n", "dusk", "--native", exe])
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(!refused.status.success(), "{flags:?}");
+        assert!(
+            stderr(&refused).contains("cannot be used with"),
+            "{flags:?}: {}",
+            stderr(&refused)
+        );
+    }
+    assert!(f.created_config("dusk").is_empty());
+}

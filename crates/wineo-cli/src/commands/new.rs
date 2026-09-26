@@ -59,6 +59,14 @@ pub struct Args {
     /// Fetch art from SteamGridDB, searching the environment's name
     #[arg(long)]
     art: bool,
+
+    /// Make a native environment running EXE, a path or a name on PATH
+    #[arg(
+        long,
+        value_name = "EXE",
+        conflicts_with_all = ["dir", "runner", "template", "arch", "install_exe"]
+    )]
+    native: Option<String>,
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
@@ -66,6 +74,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         Some(name) if !args.interactive => name,
         _ => return guided(paths, args),
     };
+    if let Some(exe) = &args.native {
+        return new_native(paths, &name, exe, args.art);
+    }
     // Checked up front so a typo fails before the prefix creation wait.
     if let Some(installer) = &args.install_exe {
         launch::check_program_path(paths, installer)?;
@@ -264,6 +275,26 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+/// Creates a native environment with one default target running `exe`.
+fn new_native(paths: &Paths, name: &str, exe: &str, art: bool) -> anyhow::Result<ExitCode> {
+    let global = GlobalConfig::load(paths)?;
+    let environment = Environment::create_native(paths, &global, name, Some(exe))?;
+    let target = environment
+        .config
+        .targets
+        .keys()
+        .next()
+        .cloned()
+        .unwrap_or_default();
+    println!("Created native environment {name} with target {target}");
+    desktop::reconcile_native(paths, &global, &environment)?;
+    if art && fetch_art(paths, &global, name).is_err() {
+        eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
+        return Ok(ExitCode::from(CANCELED));
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Asks for everything, starting from whatever flags were given.

@@ -177,6 +177,40 @@ impl Environment {
             .ok_or_else(|| Error::NoPrefix(self.name.clone()))
     }
 
+    /// Writes a native environment's config. With an `exe`, which is checked
+    /// the way a launch resolves it, it gets one default target running it,
+    /// named after the exe.
+    pub fn create_native(
+        paths: &Paths,
+        global: &GlobalConfig,
+        name: &str,
+        exe: Option<&str>,
+    ) -> Result<Self> {
+        check_name(name)?;
+        let path = paths.environment_config(name);
+        if path.exists() {
+            return Err(Error::EnvironmentExists(name.to_owned()));
+        }
+        let mut doc = config::new_document();
+        doc["kind"] = value("native");
+        if let Some(exe) = exe {
+            crate::launch::check_native_exe(paths, global, name, &Default::default(), exe)?;
+            let mut table = toml_edit::Table::new();
+            table["exe"] = value(paths.store_value(exe)?);
+            table["default"] = value(true);
+            let mut targets = toml_edit::Table::new();
+            targets.set_implicit(true);
+            targets.insert(
+                &crate::targets::suggest_name("", exe),
+                toml_edit::Item::Table(table),
+            );
+            doc["targets"] = toml_edit::Item::Table(targets);
+        }
+        let _guard = Locks::new(paths).config(&path)?;
+        write_new(&path, &doc.to_string())?;
+        Self::load(paths, name)
+    }
+
     pub fn prefix(&self, paths: &Paths) -> Result<PathBuf> {
         let prefix = &self.wine()?.prefix;
         // Outside a portable folder a relative prefix would land in whatever
