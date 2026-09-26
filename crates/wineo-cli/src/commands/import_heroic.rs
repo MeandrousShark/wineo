@@ -59,7 +59,7 @@ pub struct Args {
     #[arg(long)]
     pub arch: Option<Arch>,
     /// Create a desktop entry, named after the Heroic title
-    #[arg(long)]
+    #[arg(short, long)]
     pub desktop: bool,
     /// Review and edit choices even when flags supply all required values
     #[arg(long)]
