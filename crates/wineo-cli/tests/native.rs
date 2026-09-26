@@ -756,3 +756,58 @@ fn portable_copy_takes_a_native_config_and_lists_host_paths() {
     let again = f.run(&["portable", "copy", "dusk", "--to", dir.to_str().unwrap()]);
     assert!(!again.status.success());
 }
+
+#[test]
+fn prefix_commands_refuse_a_native_environment() {
+    let f = Fixture::new();
+    let game = f.script("game.sh", GAME);
+    f.native("dusk", &target(&game));
+    for args in [
+        &["exec", "dusk", "winecfg"][..],
+        &["winetricks", "dusk", "corefonts"][..],
+        &["programs", "dusk"][..],
+        &["snapshot", "create", "dusk", "clean"][..],
+        &["snapshot", "list", "dusk"][..],
+        &["snapshot", "restore", "dusk", "clean"][..],
+    ] {
+        let refused = f.run(args);
+        assert!(!refused.status.success(), "{args:?}");
+        assert_eq!(
+            stderr(&refused),
+            "error: dusk is a native environment, so it has no prefix\n",
+            "{args:?}"
+        );
+    }
+
+    let refused = f.run(&["rm", "dusk", "--delete-prefix"]);
+    assert!(!refused.status.success());
+    assert_eq!(
+        stderr(&refused),
+        "error: dusk has no prefix. Run wineo rm dusk\n"
+    );
+    assert!(!f.created_config("dusk").is_empty());
+}
+
+#[test]
+fn list_logs_and_rm_work_for_native() {
+    let f = Fixture::new();
+    let game = f.script("game.sh", GAME);
+    f.native("dusk", &target(&game));
+    assert_success(&f.run(&["start", "dusk", "--", "-hello"]));
+    wait_for("the program to start", || {
+        marker(&game, ".running").exists()
+    });
+    let listed = stdout(&f.run(&["list"]));
+    assert!(listed.starts_with("dusk"), "{listed}");
+    assert!(listed.contains("running"), "{listed}");
+    assert_success(&f.run(&["stop", "dusk"]));
+    let logs = f.run(&["logs", "dusk"]);
+    assert_success(&logs);
+    assert!(stdout(&logs).contains("game: -hello"), "{}", stdout(&logs));
+
+    let removed = f.run(&["rm", "dusk"]);
+    assert_success(&removed);
+    assert_eq!(stdout(&removed), "Removed environment dusk\n");
+    assert!(f.created_config("dusk").is_empty());
+    assert!(game.exists());
+}
