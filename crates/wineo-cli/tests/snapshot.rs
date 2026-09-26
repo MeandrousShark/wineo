@@ -132,6 +132,25 @@ fn create_restore_and_delete_keep_the_saved_state_independent() {
 }
 
 #[test]
+fn a_restore_leaves_play_stats_alone() {
+    let Some(f) = fixture() else { return };
+    environment(&f);
+    f.write_stats_log(
+        "game",
+        "{\"target\":\"game\",\"started_at\":\"2026-01-01T00:00:00Z\",\"ended_at\":\"2026-01-01T01:00:00Z\",\"seconds\":3600,\"end\":\"exited\"}\n",
+    );
+    assert_success(&f.run(&["snapshot", "create", "game", "before-update"]));
+    let before = f.read_stats_log("game");
+    f.write_stats_log(
+        "game",
+        "{\"target\":\"game\",\"started_at\":\"2026-01-02T00:00:00Z\",\"ended_at\":\"2026-01-02T02:00:00Z\",\"seconds\":7200,\"end\":\"exited\"}\n",
+    );
+    assert_success(&f.run(&["snapshot", "restore", "game", "before-update", "--yes"]));
+    // A restore rolls back the prefix, but never playtime.
+    assert_ne!(f.read_stats_log("game"), before);
+}
+
+#[test]
 fn create_refuses_duplicate_label_without_changing_the_first_snapshot() {
     let Some(f) = fixture() else { return };
     let (prefix, _) = environment(&f);

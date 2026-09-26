@@ -24,6 +24,7 @@ pub mod set;
 pub mod setup;
 pub mod snapshot;
 pub mod start;
+pub mod stats;
 pub mod status;
 pub mod stop;
 mod table;

@@ -168,6 +168,29 @@ fn clone_copies_art_and_rm_removes_only_the_clones() {
 }
 
 #[test]
+fn clone_does_not_copy_play_stats() {
+    let f = Fixture::new();
+    source(&f);
+    f.write_stats_log(
+        "zomboid",
+        "{\"target\":\"game\",\"started_at\":\"2026-01-01T00:00:00Z\",\"ended_at\":\"2026-01-01T01:00:00Z\",\"seconds\":3600,\"end\":\"exited\"}\n",
+    );
+    let output = f.run(&["clone", "zomboid", "zomboid_modded"]);
+    assert_success(&output);
+    assert!(!f.stats_log("zomboid_modded").exists());
+    assert!(!f.read_stats_log("zomboid").is_empty());
+
+    let removed = f.run(&["rm", "zomboid", "--delete-prefix"]);
+    assert_success(&removed);
+    assert!(
+        stderr(&removed).contains("Removed play stats\n"),
+        "{}",
+        stderr(&removed)
+    );
+    assert!(!f.stats_log("zomboid").exists());
+}
+
+#[test]
 fn clone_refuses_leftover_art_under_the_new_name() {
     let f = Fixture::new();
     source(&f);

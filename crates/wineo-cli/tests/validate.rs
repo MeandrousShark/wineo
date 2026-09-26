@@ -314,3 +314,25 @@ fn json_fix_lists_failed_fixes_under_errors_and_exits_1() {
     assert_eq!(json["problems"][0]["code"], "state_dir_stray");
     assert!(!entry.exists());
 }
+
+#[test]
+fn a_stray_stats_log_is_reported_and_removed_by_fix() {
+    let f = Fixture::new();
+    f.write_stats_log(
+        "oldgame",
+        "{\"target\":\"x\",\"started_at\":\"2026-01-01T00:00:00Z\",\"ended_at\":\"2026-01-01T00:00:01Z\",\"seconds\":1,\"end\":\"exited\"}\n",
+    );
+    let output = f.run(&["validate", "--json"]);
+    assert_success(&output);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["problems"][0]["code"], "stats_stray");
+    assert_eq!(json["problems"][0]["area"], "runtime");
+    assert_eq!(
+        json["problems"][0]["fix"],
+        "Remove oldgame's leftover play stats"
+    );
+
+    let fixed = f.run(&["validate", "--json", "--fix"]);
+    assert_success(&fixed);
+    assert!(!f.stats_log("oldgame").exists());
+}

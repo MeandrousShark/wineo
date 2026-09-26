@@ -475,6 +475,23 @@ impl Fixture {
         fs::read_to_string(self.runtime(name).log_path()).unwrap_or_default()
     }
 
+    pub fn stats_log(&self, name: &str) -> PathBuf {
+        self.root
+            .path()
+            .join("data/wineo/stats")
+            .join(format!("{name}.jsonl"))
+    }
+
+    pub fn write_stats_log(&self, name: &str, text: &str) {
+        let path = self.stats_log(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+
+    pub fn read_stats_log(&self, name: &str) -> String {
+        fs::read_to_string(self.stats_log(name)).unwrap_or_default()
+    }
+
     pub fn fake_program_running(&self, name: &str) -> bool {
         self.root
             .path()

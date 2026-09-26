@@ -70,6 +70,8 @@ enum Command {
     Rm(commands::rm::Args),
     /// Show whether environments are running
     Status(commands::status::Args),
+    /// Show playtime
+    Stats(commands::stats::Args),
     /// List environments and their state
     List(commands::list::Args),
     /// Check configs and leftover state, and fix what is safe to fix
@@ -135,6 +137,7 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Art(args) => commands::art::run(&paths, args),
         Command::Rm(args) => commands::rm::run(&paths, args),
         Command::Status(args) => commands::status::run(&paths, args),
+        Command::Stats(args) => commands::stats::run(&paths, args),
         Command::List(args) => commands::list::run(&paths, args),
         Command::Validate(args) => commands::validate::run(&paths, args, verbose),
         Command::Logs(args) => commands::logs::run(&paths, args),

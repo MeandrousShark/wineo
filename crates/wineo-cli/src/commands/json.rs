@@ -3,6 +3,7 @@ use serde::Serialize;
 use wineo_core::operation::Operation;
 use wineo_core::report::{ComponentReport, EnvironmentReport, Played};
 use wineo_core::runtime::{RunMode, RunState, State, Status};
+use wineo_core::stats::{Longest, Session, Summary, TargetSummary};
 
 #[derive(Serialize)]
 pub struct RunOutput<'a> {
@@ -131,6 +132,49 @@ pub struct CollectionOutput<'a> {
 pub struct CollectionError {
     pub name: String,
     pub message: String,
+}
+
+/// `wineo stats [NAME] --json`'s shape, named or as one of a collection's
+/// `environments`. `this_week_seconds` and `this_month_seconds` are text-only,
+/// so `Summary` isn't serialized as is.
+#[derive(Serialize)]
+pub struct StatsOutput<'a> {
+    name: &'a str,
+    seconds: i64,
+    sessions: usize,
+    average_seconds: Option<i64>,
+    longest: Option<Longest>,
+    first_played: Option<Timestamp>,
+    last_played: Option<Timestamp>,
+    running: bool,
+    imported_seconds: i64,
+    targets: Vec<TargetSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sessions_log: Option<&'a [Session]>,
+}
+
+impl<'a> StatsOutput<'a> {
+    pub fn new(name: &'a str, summary: &Summary, sessions_log: Option<&'a [Session]>) -> Self {
+        Self {
+            name,
+            seconds: summary.seconds,
+            sessions: summary.sessions,
+            average_seconds: summary.average_seconds,
+            longest: summary.longest,
+            first_played: summary.first_played,
+            last_played: summary.last_played,
+            running: summary.running,
+            imported_seconds: summary.imported_seconds,
+            targets: summary.targets.clone(),
+            sessions_log,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct StatsCollectionOutput<'a> {
+    pub environments: Vec<StatsOutput<'a>>,
+    pub errors: &'a [CollectionError],
 }
 
 pub fn print(value: &impl Serialize) -> anyhow::Result<()> {

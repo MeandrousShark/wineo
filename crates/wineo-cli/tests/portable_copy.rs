@@ -382,3 +382,16 @@ fn art_follows_the_copy_and_a_move() {
     assert!(!moved.join("art/game").exists());
     assert_eq!(read(source.join("hero.png")), "hero");
 }
+
+#[test]
+fn play_stats_follow_the_copy_like_art() {
+    let Some((f, _)) = fixture() else { return };
+    f.write_stats_log(
+        "game",
+        "{\"target\":\"game\",\"started_at\":\"2026-01-01T00:00:00Z\",\"ended_at\":\"2026-01-01T01:00:00Z\",\"seconds\":3600,\"end\":\"exited\"}\n",
+    );
+    let dir = f.root.path().join("usb");
+    let copied = copy(&f, "game", &dir);
+    assert_success(&copied);
+    assert_eq!(read(dir.join("stats/game.jsonl")), f.read_stats_log("game"));
+}
