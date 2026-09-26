@@ -363,6 +363,9 @@ pub struct Problem {
     /// `environment` stays None, since that environment is gone.
     #[serde(skip)]
     pub stray: Option<String>,
+    /// The template a template problem is in, for grouping it in a report.
+    #[serde(skip)]
+    pub template: Option<String>,
 }
 
 impl Problem {
@@ -375,6 +378,7 @@ impl Problem {
             message,
             fix,
             stray: None,
+            template: None,
         }
     }
 
@@ -382,6 +386,13 @@ impl Problem {
         Self {
             stray: Some(name.to_owned()),
             ..Self::new(code, None, message, fix)
+        }
+    }
+
+    fn template(code: Code, name: &str, message: String) -> Self {
+        Self {
+            template: Some(name.to_owned()),
+            ..Self::new(code, None, message, None)
         }
     }
 }
@@ -475,7 +486,11 @@ fn check_templates(paths: &Paths, global: &GlobalConfig, report: &mut Report) ->
         }
         match templates.resolve(&listed.name) {
             Ok(template) => check_template(paths, global, &listed.name, &template, report),
-            Err(err) => report.push(Problem::new(Code::TemplateInvalid, None, chain(&err), None)),
+            Err(err) => report.push(Problem::template(
+                Code::TemplateInvalid,
+                &listed.name,
+                chain(&err),
+            )),
         }
         report.templates.push(listed.name);
     }
@@ -492,11 +507,10 @@ fn check_template(
     report: &mut Report,
 ) {
     let mut unresolved = |err: Error| {
-        report.push(Problem::new(
+        report.push(Problem::template(
             Code::TemplateUnresolved,
-            None,
+            name,
             format!("template {name}: {}", chain(&err)),
-            None,
         ));
     };
     let runners = match Runners::new(paths, global) {
@@ -1455,6 +1469,8 @@ mod tests {
         assert_eq!(report.errors(), 2);
         assert_eq!(report.warnings(), 2);
         assert!(report.problems[1].message.starts_with("template gone: "));
+        assert_eq!(report.problems[1].template.as_deref(), Some("gone"));
+        assert_eq!(report.problems[3].template.as_deref(), Some("typo"));
         assert!(report.problems[2].message.starts_with("template nodxvk: "));
         // The shipped template isn't the user's to fix.
         assert_eq!(report.templates, ["broken", "gone", "nodxvk", "typo"]);
