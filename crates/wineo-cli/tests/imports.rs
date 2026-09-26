@@ -928,6 +928,27 @@ fn a_native_heroic_game_imports_as_a_native_environment() {
 }
 
 #[test]
+fn a_native_heroic_import_records_playtime_from_timestamp_json() {
+    let f = Fixture::new();
+    let (heroic, _) = native_heroic(&f);
+    fs::create_dir_all(heroic.join("store")).unwrap();
+    fs::write(
+        heroic.join("store/timestamp.json"),
+        r#"{"dusk":{"firstPlayed":"2026-01-01T00:00:00.000Z","lastPlayed":"2026-09-20T19:02:11.000Z","totalPlayed":90}}"#,
+    )
+    .unwrap();
+
+    let output = heroic_native(&f, &heroic, &["--game", "dusk", "-n", "dusk"]);
+    assert_success(&output);
+    let log = f.read_stats_log("dusk");
+    assert!(log.contains("\"seconds\":5400"), "{log}");
+    assert!(
+        log.contains("\"last_played\":\"2026-09-20T19:02:11Z\""),
+        "{log}"
+    );
+}
+
+#[test]
 fn a_native_heroic_game_refuses_wine_flags_and_a_missing_exe() {
     let f = Fixture::new();
     let (heroic, _) = native_heroic(&f);
