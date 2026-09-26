@@ -50,8 +50,9 @@ state; see [Portable layout](portable.md).
 
 Snapshots do not include external game files or other files outside the
 configured prefix root, external symlink targets, runners, downloads, runtime
-records, logs, import logs, desktop files, or an environment's art store; see
-[Artwork](art.md). A restore that drops a target keeps that target's art on
+records, logs, import logs, desktop files, an environment's art store, or its
+[playtime log](stats.md); see [Artwork](art.md). A restore never rolls back
+playtime. A restore that drops a target keeps that target's art on
 disk, since a later restore may bring the target back; `wineo art list` warns
 about it. External files remain in place.
 wineserver stays up for a few seconds after the last program exits and keeps

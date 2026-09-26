@@ -45,7 +45,8 @@ its location for recovery. Remove a clone registration with `wineo rm NAME`;
 delete its copied prefix with `wineo rm NAME --delete-prefix`.
 
 Clone also copies the source's art store to the new name, and the review shows
-`art: copied`; see [Artwork](art.md). `wineo rm` deletes a clone's art along
+`art: copied`; see [Artwork](art.md). Playtime isn't copied, so the clone
+starts at zero; see [Playtime](stats.md). `wineo rm` deletes a clone's art along
 with the rest of its registration.
 
 Clone copies local prefix data only. It does not copy external game folders,

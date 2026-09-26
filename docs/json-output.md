@@ -1,12 +1,13 @@
 # JSON output
 
-`status`, `list`, and `validate` accept `--json` for scripting:
+`status`, `list`, `validate`, and `stats` accept `--json` for scripting:
 
 ```sh
 wineo status hades --json
 wineo status --json
 wineo list --json
 wineo validate --json
+wineo stats --json
 ```
 
 Each command writes one compact JSON document and a newline to stdout. Fields
@@ -52,6 +53,10 @@ objects. Each component object has `wanted`, nullable `resolved`, nullable
 same precedence as human status: the active operation's runner, then the
 runner saved with the last run, then resolution of the configured value. It
 is `null` if no runner can be resolved.
+
+Named status also includes `played`, which is `null` for an environment
+that has never been played, and otherwise has `seconds`, `sessions`, and a
+nullable `last_played`. See [Playtime](stats.md).
 
 A [native environment](native.md) has no runner or prefix, so `runner` and
 `prefix` are `null`, along with `gameid`, `store`, `dxvk`, and `vkd3d`.
@@ -132,7 +137,7 @@ The codes are stable:
 | `target` | `exe_missing`, `cwd_missing`, `gamemode_missing` |
 | `native_target` | `native_exe_invalid` |
 | `environment` | `target_ambiguous` |
-| `runtime` | `lost_run`, `installer_unresolved`, `restore_interrupted`, `state_dir_stray` |
+| `runtime` | `lost_run`, `installer_unresolved`, `restore_interrupted`, `state_dir_stray`, `stats_stray` |
 | `desktop` | `desktop_entry_stray`, `desktop_outdated`, `desktop_portable` |
 | `art` | `art_config_invalid`, `art_file_missing`, `art_target_unknown`, `art_duplicates`, `art_dir_stray` |
 
@@ -146,3 +151,54 @@ and both are empty without `--fix`. A failed fix's problem stays in
 The command exits 1 when any error-level problem is left or any fix failed,
 and 0 otherwise. A failure before the checks finish exits 1 with a diagnostic
 on stderr and no JSON on stdout.
+
+## Stats
+
+`wineo stats NAME --json` returns one object:
+
+```json
+{
+  "name": "the-sims-4",
+  "seconds": 18600,
+  "sessions": 3,
+  "average_seconds": 6200,
+  "longest": { "seconds": 17460, "started_at": "2026-09-20T19:02:11Z" },
+  "first_played": "2026-09-12T20:14:00Z",
+  "last_played": "2026-09-26T10:00:00Z",
+  "running": false,
+  "imported_seconds": 0,
+  "targets": [
+    { "target": "game", "seconds": 17820, "sessions": 2 },
+    { "target": "editor", "seconds": 780, "sessions": 1 }
+  ]
+}
+```
+
+Durations are whole seconds. `seconds` includes `imported_seconds`, the
+total carried over from Heroic, while `sessions`, `average_seconds`, and
+`longest` count only wineo's own sessions. `average_seconds`, `longest`,
+`first_played`, and `last_played` are `null` when there's nothing to base
+them on. A running session counts its time so far, and `running` is `true`.
+`targets` is sorted by time played.
+
+`--sessions` adds `sessions_log`, the environment's finished sessions as
+they're stored, for charts:
+
+```json
+"sessions_log": [
+  {
+    "target": "game",
+    "started_at": "2026-09-17T19:00:00Z",
+    "ended_at": "2026-09-17T22:00:00Z",
+    "seconds": 10800,
+    "end": "exited"
+  }
+]
+```
+
+`end` is `exited`, `failed`, `stopped`, or `lost`.
+
+Nameless `wineo stats --json` returns the collection envelope, with every
+environment in `environments`, played or not, sorted by name. An environment
+whose log can't be read is left out and reported in `errors`, and the command
+exits 1.

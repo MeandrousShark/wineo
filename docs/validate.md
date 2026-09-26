@@ -101,6 +101,7 @@ and the others still run.
 | Runtime | Unfinished installer | warning | clean it up, like `wineo stop` |
 | Runtime | Interrupted snapshot restore | error | hint: `wineo snapshot recover` |
 | Runtime | State dir for an environment that no longer exists | warning | remove it |
+| Runtime | [Playtime log](stats.md) for an environment that no longer exists | warning | remove it |
 | Desktop | Entry for an environment that no longer exists | warning | remove it and its icons |
 | Desktop | An environment's entries out of date with its config | warning | rewrite them, like `start` does |
 | Desktop | Portable config with `desktop = true` | warning | |

@@ -98,7 +98,7 @@ wineo portable copy hades --to ~/usb/wineo
 
 `portable copy` copies an environment from the standard XDG layout into a
 portable folder: its config, its full configured prefix tree, its art store,
-and every snapshot for that prefix. The source is only read and is left
+its [playtime log](stats.md), and every snapshot for that prefix. The source is only read and is left
 unchanged. Like `clone`, it first waits for wine to exit in the source
 prefix, then prints its review, showing `art: copied` when
 the environment has art (see [Artwork](art.md)), and then copies without a

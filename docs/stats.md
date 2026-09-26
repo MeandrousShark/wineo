@@ -1,0 +1,111 @@
+# Playtime
+
+```sh
+wineo stats
+wineo stats the-sims-4
+wineo stats --import-heroic
+```
+
+Wineo keeps a log of every time a target runs, so you can see how much each
+game gets played. Nothing needs turning on.
+
+## The overview
+
+`wineo stats` lists every played environment, most played first:
+
+```
+$ wineo stats
+                played      sessions  last played
+cyberpunk-2077  97 h               0  Sep 4
+the-sims-4      5 h 10 m           3  today
+palworld        3 h                1  Sep 17
+1 never played. Total 105 h 10 m.
+```
+
+A game that's running now counts its time so far, and its last played day
+is marked `(running)`.
+
+## One environment
+
+```
+$ wineo stats the-sims-4
+the-sims-4
+  played      5 h 10 m over 3 sessions
+  average     1 h 43 m
+  longest     4 h 51 m, Sep 20
+  first       Sep 12
+  last        today, 13 m
+  this week   13 m
+  this month  5 h 10 m
+  targets     game 4 h 57 m (2), editor 13 m (1)
+```
+
+`targets` only shows when more than one target has been played. `wineo
+status NAME` also shows a one-line summary:
+
+```
+  played    5 h 10 m over 3 sessions, last today
+```
+
+## What counts
+
+Every target run counts as a session: `start`, `run`, and each half of a
+`restart`, for Wine and [native](native.md) environments alike. A run that
+crashes or is stopped still counts, however short. `exec`, `winetricks`,
+installers, and imports don't count.
+
+A session lasts from the launch until the run ends, which is when nothing is
+left running in the prefix, not when the launched exe exits. That's right for
+launchers and wrapper scripts, which exit while the game keeps going. A helper
+that stays in the tray after the game closes, like the EA app, keeps the run
+going until it exits or you run `wineo stop`. Idle time with the game open
+counts as played.
+
+If wineo dies while a game is running, say in a crash or a reboot, the run is
+lost. The supervisor notes the time once a minute while a game runs, so a lost
+session ends at the last note instead of whenever the lost run gets cleaned
+up. It's added to the log when `wineo stop` or `wineo validate` cleans the run
+up.
+
+## Heroic playtime
+
+Heroic counts playtime too. `import heroic` carries a game's Heroic total and
+last played date over, and `wineo stats --import-heroic` does the same for
+every environment that was already imported from Heroic:
+
+```
+$ wineo stats --import-heroic
+cyberpunk-2077: 97 h from Heroic
+```
+
+Heroic's time counts toward the total but not toward sessions or averages,
+and `stats NAME` shows how much of the total it is. Importing again replaces
+the Heroic total with its current one, so time played through Heroic since
+then is picked up without counting anything twice.
+
+## Where it's kept
+
+Each environment's log is `$XDG_DATA_HOME/wineo/stats/<name>.jsonl`, or
+`stats/<name>.jsonl` in a [portable folder](portable.md). It's in the data
+dir rather than the state dir, since `~/.local/state` is often left out of
+backups and playtime can't be rebuilt.
+
+The log is one JSON object per line, one per session:
+
+```json
+{"target":"game","started_at":"2026-09-20T19:02:11Z","ended_at":"2026-09-20T23:53:11Z","seconds":17460,"end":"stopped"}
+```
+
+`end` is `exited`, `failed`, `stopped`, or `lost`. Heroic's time is a single
+`{"imported": {"seconds": ..., "last_played": ...}}` line. A line that doesn't
+parse, like one cut off by a crash, is skipped with a warning and the rest of
+the log still counts.
+
+- `wineo rm` deletes the log.
+- `wineo clone` starts the clone at zero, since it's a new install to play.
+- `wineo portable copy` carries the log, like art.
+- Snapshots leave it alone, so a restore never rolls back playtime.
+- `wineo validate` warns about a log with no environment and offers to remove
+  it.
+
+`--json` output is described in [JSON output](json-output.md#stats).
