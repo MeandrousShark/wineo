@@ -74,6 +74,7 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
             config: environment.path.clone(),
         },
         runtime_dir: runtime.dir().to_owned(),
+        stats_log: paths.stats_log(name),
         stop_timeout: global.stop_timeout,
         // Read now, so a changed limit applies from the next start.
         log_limit_mb: global.log_limit_mb,

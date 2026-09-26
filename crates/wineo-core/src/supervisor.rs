@@ -38,7 +38,14 @@ enum Event {
     Stop,
     Force,
     StopTimeout,
+    /// Nothing else happened for `HEARTBEAT_INTERVAL`, so the run is still live.
+    Heartbeat,
 }
+
+/// How long the run waits between events before it counts as a heartbeat.
+/// Reuses the loop's own wait rather than a separate timer, so a live run
+/// costs one wakeup a minute rather than none.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 
 /// What the run loop tells whoever is watching it.
 #[derive(Debug)]
@@ -49,6 +56,8 @@ pub enum Notice {
     Killing,
     /// Something failed without ending the run.
     Warning(Error),
+    /// The run is still live, for whoever wants to record it.
+    Heartbeat,
 }
 
 /// What watching a program reports along the way.
@@ -119,7 +128,9 @@ impl Supervisor {
     }
 
     /// Waits until the program has exited and nothing is left running in the
-    /// prefix, recording in `state` when the program exits and how the run ended.
+    /// prefix, recording in `state` when the program exits and how the run
+    /// ended, and appending the finished session to `stats_log`.
+    #[allow(clippy::too_many_arguments)]
     pub fn wait(
         self,
         runtime: &Runtime,
@@ -127,6 +138,7 @@ impl Supervisor {
         child: Child,
         state: &mut RunState,
         stop_timeout: Duration,
+        stats_log: &Path,
         mut notify: impl FnMut(Notice),
     ) -> Result<()> {
         let group = state.group;
@@ -145,6 +157,12 @@ impl Supervisor {
             |watched| match watched {
                 Watched::Exited(code) => {
                     state.program_exited(code, outlives);
+                    if let Err(err) = runtime.write_state(state) {
+                        notify(Notice::Warning(err));
+                    }
+                }
+                Watched::Notice(Notice::Heartbeat) => {
+                    state.heartbeat();
                     if let Err(err) = runtime.write_state(state) {
                         notify(Notice::Warning(err));
                     }
@@ -168,7 +186,12 @@ impl Supervisor {
             (false, _) => RunStatus::Failed,
         };
         state.finish(status);
-        runtime.write_state(state)
+        runtime.write_state(state)?;
+        // A failed append must not fail the run: it already happened.
+        if let Err(err) = crate::stats::append(stats_log, &session(state, status)) {
+            notify(Notice::Warning(err));
+        }
+        Ok(())
     }
 
     /// Waits for `child` and then for everything it started, asking programs
@@ -259,12 +282,14 @@ impl Supervisor {
                     Err(RecvTimeoutError::Timeout) => Event::StopTimeout,
                     Err(RecvTimeoutError::Disconnected) => break lost(),
                 },
-                None => match self.events.recv() {
+                None => match self.events.recv_timeout(HEARTBEAT_INTERVAL) {
                     Ok(event) => event,
-                    Err(_) => break lost(),
+                    Err(RecvTimeoutError::Timeout) => Event::Heartbeat,
+                    Err(RecvTimeoutError::Disconnected) => break lost(),
                 },
             };
             match event {
+                Event::Heartbeat => watched(Watched::Notice(Notice::Heartbeat)),
                 Event::Exited(status) => {
                     observed_exit = true;
                     exit = status.ok().map(exit_code);
@@ -341,6 +366,22 @@ impl Supervisor {
     }
 }
 
+/// The session a finished run adds to its environment's play log.
+fn session(state: &RunState, status: RunStatus) -> crate::stats::Session {
+    let end = match status {
+        RunStatus::Exited => crate::stats::End::Exited,
+        RunStatus::Failed => crate::stats::End::Failed,
+        RunStatus::Stopped => crate::stats::End::Stopped,
+        RunStatus::Running => unreachable!("a finished run is never still running"),
+    };
+    crate::stats::Session::new(
+        state.target.clone(),
+        state.started_at,
+        state.ended_at.unwrap_or(state.started_at),
+        end,
+    )
+}
+
 fn wait_status(status: rustix::process::WaitIdStatus) -> ExitStatus {
     let raw = if let Some(code) = status.exit_status() {
         code << 8
@@ -367,6 +408,7 @@ impl Drop for Supervisor {
 pub struct Spec {
     pub claim: Claim,
     pub runtime_dir: PathBuf,
+    pub stats_log: PathBuf,
     pub stop_timeout: u32,
     pub log_limit_mb: u32,
     pub launch: Launch,
@@ -575,6 +617,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         child,
         &mut state,
         stop_timeout,
+        &spec.stats_log,
         |notice| log_notice(&log, native, notice),
     );
     // One final check before the run lock goes, so whoever is following the
@@ -590,6 +633,8 @@ fn log_notice(mut log: &File, native: bool, notice: Notice) {
         Notice::Killing if native => "killing everything left in the process group".to_owned(),
         Notice::Killing => "killing everything left in the prefix".to_owned(),
         Notice::Warning(err) => format!("warning: {}", error::chain(&err)),
+        // Silent: nothing worth telling whoever is following the log.
+        Notice::Heartbeat => return,
     };
     let _ = writeln!(log, "wineo: {message}");
 }
@@ -710,6 +755,7 @@ mod tests {
                 config: PathBuf::from("/config/wineo/environments/app.toml"),
             },
             runtime_dir: PathBuf::from("/state/wineo/app"),
+            stats_log: PathBuf::from("/data/wineo/stats/app.jsonl"),
             stop_timeout: 10,
             log_limit_mb: 50,
             launch: Launch {

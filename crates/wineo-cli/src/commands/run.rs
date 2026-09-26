@@ -106,10 +106,12 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         child,
         &mut state,
         Duration::from_secs(global.stop_timeout.into()),
+        &paths.stats_log(name),
         |notice| match notice {
             Notice::Stopping => note(&format!("Stopping {name}, press Ctrl+C again to force it")),
             Notice::Killing => {}
             Notice::Warning(err) => warn(err.into()),
+            Notice::Heartbeat => {}
         },
     )?;
     Ok(ExitCode::from(

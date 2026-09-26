@@ -33,6 +33,7 @@ pub mod secret_service;
 pub mod settings;
 pub mod shortcut;
 pub mod snapshot;
+pub mod stats;
 pub mod steamgriddb;
 pub mod supervisor;
 pub mod targets;

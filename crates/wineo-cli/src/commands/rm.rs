@@ -9,7 +9,7 @@ use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::prefix;
 use wineo_core::runtime::Runtime;
-use wineo_core::{art, desktop};
+use wineo_core::{art, desktop, stats};
 
 use super::transfer;
 
@@ -93,6 +93,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     }
     if art::remove_all(paths, name)? {
         eprintln!("Removed art");
+    }
+    if stats::remove_log(paths, name)? {
+        eprintln!("Removed play stats");
     }
 
     let wine = environment

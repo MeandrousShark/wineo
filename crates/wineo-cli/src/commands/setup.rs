@@ -593,6 +593,10 @@ pub(crate) fn run_installer<I: Input, W: Write>(
         Duration::from_secs(global.stop_timeout.into()),
         Output::Log(&log),
         |watched| {
+            // Nothing worth telling whoever is watching the installer.
+            if matches!(watched, Watched::Notice(Notice::Heartbeat)) {
+                return;
+            }
             let message = match watched {
                 Watched::Exited(_) => {
                     "The installer exited. Waiting for anything it started to finish".to_owned()
@@ -606,6 +610,7 @@ pub(crate) fn run_installer<I: Input, W: Write>(
                 Watched::Notice(Notice::Warning(err)) => {
                     format!("warning: {:#}", anyhow::Error::from(err))
                 }
+                Watched::Notice(Notice::Heartbeat) => unreachable!("handled above"),
             };
             let _ = prompt.say(message);
         },

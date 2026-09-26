@@ -1113,7 +1113,7 @@ fn clean_up_lost_run(paths: &Paths, name: &str) -> Result<()> {
         GlobalConfig::load(paths).map_or(DEFAULT_STOP_TIMEOUT, |global| global.stop_timeout);
     let runtime = Runtime::new(paths, name);
     let timeout = Duration::from_secs(u64::from(stop_timeout) + 10);
-    match runtime.clean_up_lost_run(timeout)? {
+    match runtime.clean_up_lost_run(timeout, &paths.stats_log(name))? {
         LostRunCleanup::Unresolved { warning } => {
             let message = runtime.unresolved_run_message(name);
             Err(Error::Unsettled(match warning {

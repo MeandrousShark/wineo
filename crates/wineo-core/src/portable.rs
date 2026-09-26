@@ -18,6 +18,7 @@ use crate::operation::{Locks, Operation};
 use crate::paths::{self, Paths};
 use crate::runners::Runners;
 use crate::runtime::Runtime;
+use crate::stats;
 use crate::snapshot;
 
 pub use crate::import::Cancelled as Canceled;
@@ -396,6 +397,7 @@ pub fn execute_reviewed(
         let art = StagedArt::stage(&source_locks, &from.art_dir(name), &to.art_dir(name))
             .and_then(StagedArt::publish)?;
         published.extend(art);
+        published.extend(stats::copy_log(from, to, name)?);
         if let Some(text) = &reviewed.global_text {
             let path = to.global_config();
             let _guard = locks.config(&path).map_err(|err| anyhow!(err))?;
@@ -612,6 +614,7 @@ pub fn execute_native(
         let art = StagedArt::stage(&source_locks, &from.art_dir(name), &to.art_dir(name))
             .and_then(StagedArt::publish)?;
         published.extend(art);
+        published.extend(stats::copy_log(from, to, name)?);
         if let Some(text) = &reviewed.global_text {
             let path = to.global_config();
             let _guard = locks.config(&path).map_err(|err| anyhow!(err))?;

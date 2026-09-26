@@ -66,6 +66,10 @@ pub struct RunState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leader_start: Option<u64>,
     pub started_at: Timestamp,
+    /// Stamped about once a minute while the run is live, so a lost run's
+    /// session can end here instead of whenever it is cleaned up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat_at: Option<Timestamp>,
     /// The run lasts until the prefix goes idle, which can be well after the
     /// launched program exits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -104,6 +108,7 @@ impl RunState {
             boot_id: None,
             leader_start: None,
             started_at: Timestamp::now(),
+            heartbeat_at: None,
             program_exited_at: None,
             ended_at: None,
             exit_code: None,
@@ -132,6 +137,11 @@ impl RunState {
             self.program_exited_at = Some(Timestamp::now());
         }
         self.exit_code = exit_code;
+    }
+
+    /// Stamps that the run is still alive, for a lost run's session to end at.
+    pub fn heartbeat(&mut self) {
+        self.heartbeat_at = Some(Timestamp::now());
     }
 
     pub fn finish(&mut self, status: RunStatus) {
@@ -460,8 +470,14 @@ impl Runtime {
     }
 
     /// Kills whatever a run left in the prefix when the process that owned it
-    /// died, then records the run as stopped so this only happens once.
-    pub fn clean_up_lost_run(&self, settle_timeout: Duration) -> Result<LostRunCleanup> {
+    /// died, then records the run as stopped so this only happens once. Its
+    /// session is logged to `stats_log` as `lost`, ending at its last
+    /// heartbeat rather than whenever this cleanup happened to run.
+    pub fn clean_up_lost_run(
+        &self,
+        settle_timeout: Duration,
+        stats_log: &Path,
+    ) -> Result<LostRunCleanup> {
         let unresolved = |warning: Option<String>| Ok(LostRunCleanup::Unresolved { warning });
         match self.status() {
             Ok(status) if status.lost => {}
@@ -532,6 +548,18 @@ impl Runtime {
                 return unresolved(Some(chain(&err)));
             }
         }
+        let ended_at = run.heartbeat_at.unwrap_or(run.started_at);
+        // Best effort: a lost session is worth logging, but not worth failing
+        // the cleanup over if it can't be.
+        let _ = crate::stats::append(
+            stats_log,
+            &crate::stats::Session::new(
+                run.target.clone(),
+                run.started_at,
+                ended_at,
+                crate::stats::End::Lost,
+            ),
+        );
         run.finish(RunStatus::Stopped);
         self.write_state(&run)?;
         Ok(if group == GroupOwnership::Gone {
@@ -678,6 +706,7 @@ mod tests {
             boot_id: None,
             leader_start: None,
             started_at: "2026-09-16T21:02:11Z".parse().unwrap(),
+            heartbeat_at: None,
             program_exited_at: None,
             ended_at: None,
             exit_code: None,

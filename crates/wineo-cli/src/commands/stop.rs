@@ -122,7 +122,7 @@ fn clean_up_lost_run(
     runtime: &Runtime,
     settle_timeout: Duration,
 ) -> anyhow::Result<Outcome> {
-    let outcome = match runtime.clean_up_lost_run(settle_timeout)? {
+    let outcome = match runtime.clean_up_lost_run(settle_timeout, &paths.stats_log(name))? {
         LostRunCleanup::NotLost => return Ok(Outcome::NotRunning),
         LostRunCleanup::Unresolved { warning } => {
             if let Some(warning) = warning {

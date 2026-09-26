@@ -2093,6 +2093,7 @@ mod tests {
             boot_id: None,
             leader_start: None,
             started_at: "2026-09-21T00:00:00Z".parse().unwrap(),
+            heartbeat_at: None,
             program_exited_at: None,
             ended_at: None,
             exit_code: None,

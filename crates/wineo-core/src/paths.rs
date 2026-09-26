@@ -169,6 +169,15 @@ impl Paths {
         }
     }
 
+    /// An environment's playtime log. A portable folder carries it, so it
+    /// moves with the folder, like art.
+    pub fn stats_log(&self, name: &str) -> PathBuf {
+        match &self.portable {
+            Some(root) => root.join("stats").join(format!("{name}.jsonl")),
+            None => self.data.join("stats").join(format!("{name}.jsonl")),
+        }
+    }
+
     pub fn default_runner_root(&self) -> PathBuf {
         self.data.join("runners")
     }
@@ -495,6 +504,10 @@ mod tests {
             Path::new("/home/me/.local/share/wineo/art/notepad")
         );
         assert_eq!(
+            paths.stats_log("notepad"),
+            Path::new("/home/me/.local/share/wineo/stats/notepad.jsonl")
+        );
+        assert_eq!(
             paths.runtime_dir("notepad"),
             Path::new("/home/me/.local/state/wineo/notepad")
         );
@@ -520,6 +533,7 @@ mod tests {
         );
         assert_eq!(paths.runtime_dir("x"), Path::new("/state/wineo/x"));
         assert_eq!(paths.art_dir("x"), Path::new("/data/wineo/art/x"));
+        assert_eq!(paths.stats_log("x"), Path::new("/data/wineo/stats/x.jsonl"));
         assert_eq!(paths.host_data(), Path::new("/data/wineo"));
     }
 
@@ -647,6 +661,10 @@ mod tests {
         assert_eq!(
             paths.art_dir("hades"),
             Path::new("/mnt/usb/wineo/art/hades")
+        );
+        assert_eq!(
+            paths.stats_log("hades"),
+            Path::new("/mnt/usb/wineo/stats/hades.jsonl")
         );
         assert_eq!(paths.host_data(), Path::new("/home/me/.local/share/wineo"));
         let state = Path::new("/home/me/.local/state/wineo/.portable");

@@ -268,6 +268,7 @@ mod tests {
             boot_id: None,
             leader_start: None,
             started_at: ts("2026-09-16T14:02:11Z"),
+            heartbeat_at: None,
             program_exited_at: None,
             ended_at: None,
             exit_code: None,

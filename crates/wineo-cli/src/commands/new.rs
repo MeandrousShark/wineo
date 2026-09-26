@@ -244,6 +244,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             Watched::Notice(Notice::Warning(err)) => {
                 note(&format!("warning: {:#}", anyhow::Error::from(err)));
             }
+            Watched::Notice(Notice::Heartbeat) => {}
             Watched::Exited(_) => {}
         },
     ) {
