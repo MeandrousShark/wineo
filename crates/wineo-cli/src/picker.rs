@@ -2,9 +2,11 @@
 //! guided `new`. Everything here only stages changes in a `Batch`, and the
 //! caller reviews and writes them.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use wineo_core::launch;
 use wineo_core::name;
 use wineo_core::paths::Paths;
 use wineo_core::programs::{self, Program, Source};
@@ -65,6 +67,20 @@ pub struct Place<'a> {
     /// The wine prefix itself, which is `pfx/` inside a Proton environment's
     /// prefix. None when there is no prefix to look in.
     pub wine_prefix: Option<PathBuf>,
+    /// Set for a native environment, whose targets are Linux programs added
+    /// by path: the global and environment `[env]` merged, whose PATH a bare
+    /// name is looked up on.
+    pub native_env: Option<BTreeMap<String, String>>,
+}
+
+impl Place<'_> {
+    fn exe_label(&self) -> &'static str {
+        if self.native_env.is_some() {
+            "Executable, as a path or a name on PATH"
+        } else {
+            "Executable, as a Unix path or a Windows one"
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -82,6 +98,17 @@ pub fn pick<I: Input, W: Write>(
     place: &Place,
     batch: &mut Batch,
 ) -> anyhow::Result<Reply<()>> {
+    // A native environment has nothing installed to list.
+    if place.native_env.is_some() {
+        loop {
+            let Reply::Value(program) = ask_path(prompt, place)? else {
+                return Ok(Reply::Back);
+            };
+            if add_program(prompt, place, batch, &program)? {
+                return Ok(Reply::Value(()));
+            }
+        }
+    }
     // Scanned the same way `wineo programs` does, so both list the same things.
     let listing = place
         .wine_prefix
@@ -181,11 +208,7 @@ fn ask_path<I: Input, W: Write>(
     prompt: &mut Prompt<I, W>,
     place: &Place,
 ) -> anyhow::Result<Reply<Program>> {
-    let reply = prompt.text(
-        "Executable, as a Unix path or a Windows one",
-        None,
-        |answer| resolve_exe(place, answer),
-    )?;
+    let reply = prompt.text(place.exe_label(), None, |answer| resolve_exe(place, answer))?;
     Ok(match reply {
         Reply::Value(exe) => Reply::Value(Program {
             source: Source::Executable,
@@ -462,11 +485,9 @@ impl Card<'_> {
                     }
                 }
                 Field::Exe => {
-                    let reply = prompt.text(
-                        "Executable, as a Unix path or a Windows one",
-                        Some(&spec.exe),
-                        |answer| resolve_exe(place, answer),
-                    )?;
+                    let reply = prompt.text(place.exe_label(), Some(&spec.exe), |answer| {
+                        resolve_exe(place, answer)
+                    })?;
                     if let Reply::Value(exe) = reply {
                         spec.exe = exe;
                     }
@@ -636,6 +657,9 @@ pub fn review(batch: &Batch) -> Vec<String> {
 /// Unix path inside `drive_c` as its `C:` path, and any other Unix path
 /// made absolute, with the home directory as `~`.
 fn resolve_exe(place: &Place, answer: &str) -> Result<String, String> {
+    if let Some(env) = &place.native_env {
+        return native_exe(place.paths, place.name, env, answer);
+    }
     let answer = &clean_path(answer);
     if answer.is_empty() {
         return Err("Enter the path to the program".to_owned());
@@ -656,6 +680,34 @@ fn resolve_exe(place: &Place, answer: &str) -> Result<String, String> {
         return Err(missing());
     }
     Ok(config_path(place, &unix))
+}
+
+/// A native target's exe as its config holds it, checked the way a launch
+/// resolves it. A path typed here may be relative to where wineo runs, and is
+/// stored made absolute, with the home directory as `~`. A bare name stays as
+/// typed, to be looked up on PATH.
+pub fn native_exe(
+    paths: &Paths,
+    name: &str,
+    env: &BTreeMap<String, String>,
+    answer: &str,
+) -> Result<String, String> {
+    let answer = clean_path(answer);
+    if answer.is_empty() {
+        return Err("Enter the path to the program".to_owned());
+    }
+    let path_var = launch::native_path_var(env);
+    if !answer.contains('/') && !answer.starts_with('~') {
+        launch::resolve_native_exe(paths, name, &answer, &path_var)
+            .map_err(|err| err.to_string())?;
+        return Ok(answer);
+    }
+    let unix = paths.absolute(&answer).map_err(|err| err.to_string())?;
+    let stored = paths
+        .store(&unix)
+        .unwrap_or_else(|_| unix.display().to_string());
+    launch::resolve_native_exe(paths, name, &stored, &path_var).map_err(|err| err.to_string())?;
+    Ok(stored)
 }
 
 fn resolve_cwd(place: &Place, answer: &str) -> Result<Option<String>, String> {
@@ -748,6 +800,7 @@ mod tests {
                 paths: &self.paths,
                 name: "hades",
                 wine_prefix: Some(self.wine_prefix.clone()),
+                native_env: None,
             }
         }
     }

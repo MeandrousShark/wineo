@@ -196,9 +196,24 @@ impl Fixture {
     }
 }
 
+/// Answers the kind question guided `new` starts with, picking Wine.
+fn pick_wine(pty: &mut Pty) {
+    pty.expect("What kind of environment?");
+    pty.expect("Press Enter to pick 1, or pick a number. Ctrl+C to cancel.");
+    pty.expect("Choice: ");
+    pty.send("");
+}
+
 /// Answers the questions up to the review for an environment called `name`
 /// with no template, the suggested location and settings, and `how`.
 fn plain_answers(pty: &mut Pty, name: &str, how: &str) {
+    pick_wine(pty);
+    plain_answers_prefilled(pty, name, how);
+}
+
+/// `plain_answers` when a flag only Wine has, like `--dir`, already answered
+/// the kind question.
+fn plain_answers_prefilled(pty: &mut Pty, name: &str, how: &str) {
     pty.expect("Start from a template?");
     pty.expect("Ctrl+C to cancel.");
     pty.expect("Template [1]: ");
@@ -769,6 +784,7 @@ fn guided_new_makes_an_empty_environment_with_nothing_switched_on() {
 fn esc_goes_back_in_guided_new_and_q_and_b_remain_text() {
     let f = Fixture::new();
     let mut pty = f.new_guided(&[]);
+    pick_wine(&mut pty);
     pty.expect("Start from a template?");
     pty.expect("Ctrl+C to cancel.");
     pty.expect("Template [1]: ");
@@ -848,7 +864,7 @@ fn guided_adoption_preserves_content_and_detects_the_existing_architecture() {
     fs::write(prefix.join("system.reg"), registry).unwrap();
     fs::write(prefix.join("drive_c/save.dat"), b"saved progress").unwrap();
     let mut pty = f.new_guided(&["--dir", prefix.to_str().unwrap()]);
-    plain_answers(&mut pty, "adopted", "3");
+    plain_answers_prefilled(&mut pty, "adopted", "3");
     pty.expect("Ready to create adopted:");
     pty.expect("Press Enter to create it, Esc to go back, Ctrl+C to cancel.");
     pty.expect("Create it? ");
@@ -1024,6 +1040,7 @@ fn enter_takes_the_global_suggestions() {
     f.install_runner("custom");
     f.global_config("[defaults]\nrunner = \"custom\"\n");
     let mut pty = f.new_guided(&[]);
+    pick_wine(&mut pty);
     pty.expect("Template [1]: ");
     pty.send("");
     pty.expect("Install name: ");
@@ -1093,7 +1110,7 @@ fn guided_new_reports_recovery_when_the_installer_disappears_after_creation() {
         .arg(&installer)
         .env("WINEO_TEST_REMOVE_INSTALLER", &installer);
     let mut pty = Pty::spawn(command);
-    plain_answers(&mut pty, "game", "1");
+    plain_answers_prefilled(&mut pty, "game", "1");
     pty.expect("Installer [");
     pty.send("");
     pty.expect("  program   run the installer");
@@ -1126,7 +1143,7 @@ fn guided_new_reports_recovery_when_the_installer_cannot_spawn_after_creation() 
         .arg(&installer)
         .env("WINEO_TEST_REMOVE_WINE", f.root.path().join("bin/wine"));
     let mut pty = Pty::spawn(command);
-    plain_answers(&mut pty, "game", "1");
+    plain_answers_prefilled(&mut pty, "game", "1");
     pty.expect("Installer [");
     pty.send("");
     pty.expect("  program   run the installer");
@@ -1208,6 +1225,7 @@ fn a_registered_name_offers_setup_instead() {
     f.games("app", "");
     let before = f.config("app");
     let mut pty = f.new_guided(&[]);
+    pick_wine(&mut pty);
     pty.expect("Template [1]: ");
     pty.send("1");
     pty.expect("Install name: ");
@@ -1240,7 +1258,7 @@ fn a_failed_creation_says_nothing_was_registered() {
         fs::set_permissions(bin.join(file), fs::Permissions::from_mode(0o755)).unwrap();
     }
     let mut pty = f.new_guided(&["--runner", "broken"]);
-    plain_answers(&mut pty, "game", "3");
+    plain_answers_prefilled(&mut pty, "game", "3");
     pty.expect("Press Enter to create it, Esc to go back, Ctrl+C to cancel.");
     pty.expect("Create it? ");
     pty.send("");
@@ -1258,6 +1276,7 @@ fn a_failed_creation_says_nothing_was_registered() {
 fn a_name_that_cant_be_used_reports_the_problem_concisely() {
     let f = Fixture::new();
     let mut pty = f.new_guided(&[]);
+    pick_wine(&mut pty);
     pty.expect("Template [1]: ");
     pty.send("1");
     pty.expect("Used in commands like `wineo start <name>`");
@@ -1303,6 +1322,7 @@ fn a_proton_runner_leaves_the_templates_dxvk_and_vkd3d_out() {
 fn the_arrow_keys_and_word_deletion_edit_an_answer() {
     let f = Fixture::new();
     let mut pty = f.new_guided(&[]);
+    pick_wine(&mut pty);
     pty.expect("Template [1]: ");
     pty.send("1");
     pty.expect("Install name: ");
@@ -1427,4 +1447,144 @@ fn setup_explains_a_prefix_it_cant_build_without_offering() {
     assert!(status.success(), "{output}");
     assert!(!output.contains("doesn't exist yet"), "{output}");
     assert!(!f.root.path().join("mnt").exists());
+}
+
+/// A native game script in the fixture, executable.
+fn native_game(f: &Fixture) -> std::path::PathBuf {
+    let exe = f.root.path().join("games/Dusklight/dusklight.sh");
+    fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+    exe
+}
+
+#[test]
+fn guided_new_makes_a_native_environment_asking_only_what_it_needs() {
+    let f = Fixture::new();
+    let exe = native_game(&f);
+    let mut pty = f.new_guided(&[]);
+    pty.expect(
+        "What kind of environment?\n  1) Windows program (Wine or Proton)\n  2) Native Linux program\n\nPress Enter to pick 1, or pick a number. Ctrl+C to cancel.\nChoice: ",
+    );
+    pty.send("2");
+    pty.expect("Used in commands like `wineo start <name>`.\n");
+    pty.expect("Install name: ");
+    pty.send("dusk");
+    pty.expect("Executable, as a path or a name on PATH: ");
+    // Refused the way a launch would refuse it, then asked again.
+    pty.send("setup.exe");
+    pty.expect("dusk is native, so its target can't be a Windows program");
+    pty.expect("Executable, as a path or a name on PATH: ");
+    pty.send(&format!("'{}'", exe.display()));
+    pty.expect("note: run `wineo art key` to fetch art from SteamGridDB");
+    pty.expect("Ready to create dusk:");
+    pty.expect("  kind      native");
+    pty.expect(&format!("  program   use {}", exe.display()));
+    pty.expect("  art       none");
+    pty.expect("Create it? ");
+    pty.send("");
+    pty.expect("Created dusk.");
+    pty.expect("Adding \"dusklight\":");
+    pty.expect("  desktop      yes, named \"dusklight\"");
+    pty.expect("Press Enter to add it, or pick a number. Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Choice: ");
+    pty.send("");
+    pty.expect("Save these changes?");
+    pty.expect("Choice: ");
+    pty.send("");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    for asked in ["template", "Prefix location", "Settings for", "How does"] {
+        assert!(!output.contains(asked), "{asked}: {output}");
+    }
+    let config = f.config("dusk");
+    assert!(config.contains("kind = \"native\""), "{config}");
+    assert!(!config.contains("prefix"), "{config}");
+    assert!(
+        config.contains(&format!("exe = \"{}\"", exe.display())),
+        "{config}"
+    );
+    let entry = f
+        .root
+        .path()
+        .join("data/applications/wineo-dusk-dusklight.desktop");
+    let text = fs::read_to_string(entry).unwrap();
+    assert!(
+        text.contains("Exec=wineo start dusk --target dusklight"),
+        "{text}"
+    );
+    assert!(!f.root.path().join("data/wineo/prefixes/dusk").exists());
+}
+
+#[test]
+fn esc_goes_back_from_the_native_exe_to_the_name_and_the_kind() {
+    let f = Fixture::new();
+    let mut pty = f.new_guided(&[]);
+    pty.expect("What kind of environment?");
+    pty.expect("Choice: ");
+    pty.send("2");
+    pty.expect("Install name: ");
+    pty.send("dusk");
+    pty.expect("Executable, as a path or a name on PATH: ");
+    pty.esc();
+    pty.expect("Install name [dusk]: ");
+    pty.esc();
+    pty.expect("What kind of environment?");
+    pty.expect("Choice: ");
+    pty.send("1");
+    pty.expect("Start from a template?");
+    pty.expect("Template [1]: ");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(!f.registered("dusk"));
+}
+
+#[test]
+fn guided_new_with_native_skips_the_kind_question() {
+    let f = Fixture::new();
+    let exe = native_game(&f);
+    let mut pty = f.new_guided(&["--native", exe.to_str().unwrap()]);
+    pty.expect("Install name: ");
+    pty.send("dusk");
+    pty.expect(&format!(
+        "Executable, as a path or a name on PATH [{}]: ",
+        exe.display()
+    ));
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(!output.contains("What kind of environment?"), "{output}");
+}
+
+#[test]
+fn setup_of_a_native_environment_adds_targets_by_path() {
+    let f = Fixture::new();
+    let exe = native_game(&f);
+    let config = f.config_dir().join("environments/dusk.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "kind = \"native\"\n").unwrap();
+
+    let mut pty = f.setup("dusk");
+    pty.expect("No targets yet.");
+    pty.expect("  3) Remove a target\n  4) Finish\n");
+    pty.expect("Choice [1]: ");
+    pty.send("");
+    pty.expect("Executable, as a path or a name on PATH: ");
+    pty.send(exe.to_str().unwrap());
+    pty.expect("Adding \"dusklight\":");
+    pty.expect("Choice: ");
+    pty.send("");
+    pty.expect("Choice [4]: ");
+    pty.send("");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    for wine in ["prefix", "Programs in", "installer"] {
+        assert!(!output.contains(wine), "{wine}: {output}");
+    }
+    assert!(
+        f.config("dusk").contains("[targets.dusklight]"),
+        "{}",
+        f.config("dusk")
+    );
 }

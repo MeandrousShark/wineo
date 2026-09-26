@@ -312,6 +312,7 @@ fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         template: args.template,
         arch: args.arch,
         install_exe: args.install_exe,
+        native: args.native,
     };
     let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
     let mut guided = Guided { registered: None };

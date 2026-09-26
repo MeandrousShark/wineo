@@ -37,6 +37,20 @@ pub struct Prefill {
     pub template: Option<String>,
     pub arch: Option<Arch>,
     pub install_exe: Option<String>,
+    /// `--native`, which makes it native and is what the exe question starts from.
+    pub native: Option<String>,
+}
+
+impl Prefill {
+    /// Whether a flag only a Wine environment has was given, which answers
+    /// the kind question.
+    fn wine_only(&self) -> bool {
+        self.dir.is_some()
+            || self.runner.is_some()
+            || self.template.is_some()
+            || self.arch.is_some()
+            || self.install_exe.is_some()
+    }
 }
 
 /// How the new environment gets its program.
@@ -50,6 +64,9 @@ enum How {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Step {
+    Kind,
+    /// A native environment's executable.
+    Exe,
     Template,
     Name,
     Location,
@@ -61,6 +78,10 @@ enum Step {
 
 /// The answers so far. Each question starts from what is here.
 struct Answers {
+    /// A native environment, which skips everything about a prefix.
+    native: bool,
+    /// A native environment's executable, as its target's `exe` holds it.
+    exe: Option<String>,
     template: Option<(String, Template)>,
     name: Option<String>,
     dir: Option<String>,
@@ -98,6 +119,8 @@ pub fn run<I: Input, W: Write>(
         None => None,
     };
     let mut answers = Answers {
+        native: prefill.native.is_some(),
+        exe: prefill.native.clone(),
         arch_asked: prefill.arch.is_some()
             || template.as_ref().is_some_and(|(_, t)| t.arch.is_some()),
         arch: prefill.arch,
@@ -113,13 +136,33 @@ pub fn run<I: Input, W: Write>(
     let mut key: Option<Option<Key>> = None;
     // A template from the command line isn't asked about, but going back
     // still reaches the question.
-    let mut step = if prefill.template.is_some() {
+    let mut step = if prefill.native.is_some() || prefill.template.is_some() {
         Step::Name
-    } else {
+    } else if prefill.wine_only() {
         Step::Template
+    } else {
+        Step::Kind
     };
-    let (runner, arch, dir) = loop {
+    let chosen = loop {
         match step {
+            Step::Kind => {
+                answers.native = ask_kind(prompt)?;
+                step = if answers.native || prefill.template.is_some() {
+                    Step::Name
+                } else {
+                    Step::Template
+                };
+            }
+            Step::Exe => {
+                let name = answers.name.clone().expect("named before this");
+                match ask_exe(prompt, paths, global, &name, answers.exe.as_deref())? {
+                    Reply::Value(exe) => {
+                        answers.exe = Some(exe);
+                        step = Step::Art;
+                    }
+                    Reply::Back => step = Step::Name,
+                }
+            }
             Step::Template => {
                 let current = answers.template.as_ref().map(|(name, _)| name.as_str());
                 let Reply::Value(template) = ask_template(prompt, &templates, current)? else {
@@ -130,14 +173,25 @@ pub fn run<I: Input, W: Write>(
                 answers.template = template;
                 step = Step::Name;
             }
-            Step::Name => match ask_name(prompt, paths, answers.name.as_deref())? {
+            Step::Name => match ask_name(prompt, paths, answers.name.as_deref(), answers.native)? {
                 Reply::Value(Name::New(name)) => {
                     answers.name = Some(name);
-                    step = Step::Location;
+                    step = if answers.native {
+                        Step::Exe
+                    } else {
+                        Step::Location
+                    };
                 }
                 Reply::Value(Name::Existing(name)) => {
                     guided.registered = Some(name.clone());
                     return setup::setup(paths, global, &name, prompt);
+                }
+                Reply::Back if answers.native || prefill.template.is_some() => {
+                    step = if prefill.wine_only() {
+                        Step::Template
+                    } else {
+                        Step::Kind
+                    };
                 }
                 Reply::Back => step = Step::Template,
             },
@@ -188,20 +242,32 @@ pub fn run<I: Input, W: Write>(
                         answers.art_asked = true;
                         step = Step::Review;
                     }
+                    Reply::Back if answers.native => step = Step::Exe,
                     Reply::Back => step = Step::How,
                 }
             }
+            Step::Review if answers.native => match review_native(prompt, &answers)? {
+                Reply::Value(()) => break None,
+                Reply::Back if key.as_ref().is_some_and(Option::is_some) => step = Step::Art,
+                Reply::Back => step = Step::Exe,
+            },
             Step::Review => match review(prompt, paths, global, &answers)? {
-                Reply::Value(chosen) => break chosen,
+                Reply::Value(chosen) => break Some(chosen),
                 Reply::Back if key.as_ref().is_some_and(Option::is_some) => step = Step::Art,
                 Reply::Back => step = Step::How,
             },
         }
     };
 
+    let art = key.flatten().zip(answers.art.clone());
+    let Some((runner, arch, dir)) = chosen else {
+        let name = answers.name.expect("named before the review");
+        let exe = answers.exe.expect("chosen before the review");
+        return create_native(paths, global, prompt, guided, access, &name, exe, art);
+    };
+
     let name = answers.name.clone().expect("named before the review");
     let how = answers.how.clone().expect("chosen before the review");
-    let art = key.flatten().zip(answers.art);
     let template = answers
         .template
         .map(|(_, template)| template.for_runner(&runner).0);
@@ -363,12 +429,44 @@ fn describe_template(template: &Template) -> String {
     }
 }
 
+/// Wine or native. Asked first, since it decides every question after it.
+fn ask_kind<I: Input, W: Write>(prompt: &mut Prompt<I, W>) -> anyhow::Result<bool> {
+    let choices = numbered([
+        ("Windows program (Wine or Proton)".to_owned(), false),
+        ("Native Linux program".to_owned(), true),
+    ]);
+    match prompt.review("What kind of environment?", None, "pick 1", &choices, false)? {
+        Reply::Value(native) => Ok(native.unwrap_or(false)),
+        Reply::Back => unreachable!("the first question has nowhere to go back to"),
+    }
+}
+
+/// A native environment's executable, checked the way a launch resolves it.
+fn ask_exe<I: Input, W: Write>(
+    prompt: &mut Prompt<I, W>,
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    current: Option<&str>,
+) -> anyhow::Result<Reply<String>> {
+    prompt.text(
+        "Executable, as a path or a name on PATH",
+        current,
+        |answer| picker::native_exe(paths, name, &global.env, answer),
+    )
+}
+
 fn ask_name<I: Input, W: Write>(
     prompt: &mut Prompt<I, W>,
     paths: &Paths,
     default: Option<&str>,
+    native: bool,
 ) -> anyhow::Result<Reply<Name>> {
-    prompt.say("Used in commands like `wineo start <name>` and as the prefix folder name.")?;
+    prompt.say(if native {
+        "Used in commands like `wineo start <name>`."
+    } else {
+        "Used in commands like `wineo start <name>` and as the prefix folder name."
+    })?;
     loop {
         let reply = prompt.text(
             "Install name",
@@ -880,6 +978,83 @@ fn review<I: Input, W: Write>(
     )
 }
 
+fn review_native<I: Input, W: Write>(
+    prompt: &mut Prompt<I, W>,
+    answers: &Answers,
+) -> anyhow::Result<Reply<()>> {
+    let name = answers.name.as_deref().expect("named before the review");
+    let exe = answers.exe.as_deref().expect("chosen before the review");
+    let mut heading = format!("Ready to create {name}:\n");
+    heading.push_str("  kind      native\n");
+    heading.push_str(&format!("  program   use {exe}"));
+    heading.push_str(&format!(
+        "\n  art       {}",
+        match &answers.art {
+            Some(term) => format!("fetch from SteamGridDB, searching \"{term}\""),
+            None => "none".to_owned(),
+        }
+    ));
+    Ok(
+        match prompt.review::<()>(&heading, None, "create it", &[], true)? {
+            Reply::Value(_) => Reply::Value(()),
+            Reply::Back => Reply::Back,
+        },
+    )
+}
+
+/// Registers a native environment, then adds its target the way an
+/// already installed program is added to a Wine one.
+#[allow(clippy::too_many_arguments)]
+fn create_native<I: Input, W: Write>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    prompt: &mut Prompt<I, W>,
+    guided: &mut Guided,
+    access: &Access,
+    name: &str,
+    exe: String,
+    art: Option<(Key, String)>,
+) -> anyhow::Result<ExitCode> {
+    let environment = match Environment::create_native(paths, global, name, None) {
+        Ok(environment) => environment,
+        Err(err) => {
+            prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
+            prompt.say(format!(
+                "{name} wasn't created. Fix that, then run `wineo new` again."
+            ))?;
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+    guided.registered = Some(name.to_owned());
+    prompt.say(format!("Created {name}."))?;
+    if let Some((key, term)) = &art {
+        fetch_art(paths, global, prompt, access, name, key, term)?;
+    }
+    let mut native_env = global.env.clone();
+    native_env.extend(environment.config.env.clone());
+    let place = Place {
+        paths,
+        name,
+        wine_prefix: None,
+        native_env: Some(native_env),
+    };
+    let mut batch = Batch::new(environment.config.targets.clone());
+    let program = Program {
+        source: Source::Executable,
+        name: file_stem(&exe),
+        exe,
+        lnk: None,
+    };
+    picker::add_program(prompt, &place, &mut batch, &program)?;
+    if batch.is_empty() {
+        return setup::finish(paths, global, name, prompt, &batch);
+    }
+    match setup::save(paths, global, name, prompt, &mut batch, true)? {
+        Reply::Value(()) => setup::finish(paths, global, name, prompt, &batch),
+        Reply::Back => setup::menu(paths, global, name, prompt, &place, batch),
+    }
+}
+
 fn create<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
@@ -945,6 +1120,7 @@ fn create<I: Input, W: Write>(
         paths,
         name: &name,
         wine_prefix: Some(runner.wine_prefix(&dir)),
+        native_env: None,
     };
     let mut batch = Batch::new(environment.config.targets.clone());
     match how {
@@ -1131,7 +1307,8 @@ mod tests {
         wineo_core::art::saved_game(&world.paths, "hades").unwrap()
     }
 
-    const BEFORE_ART: [&str; 5] = ["1", "hades", "", "1", "3"];
+    // Enter picks Wine at the kind question.
+    const BEFORE_ART: [&str; 6] = ["", "1", "hades", "", "1", "3"];
 
     fn answers(rest: &[&'static str]) -> Vec<&'static str> {
         BEFORE_ART.iter().chain(rest).copied().collect()

@@ -106,6 +106,25 @@ pub(crate) fn setup<I: Input, W: Write>(
         return Ok(ExitCode::FAILURE);
     }
     let environment = Environment::load(paths, name)?;
+    // No prefix to scan or build, so targets are only ever added by path.
+    if environment.config.wine().is_none() {
+        let mut native_env = global.env.clone();
+        native_env.extend(environment.config.env.clone());
+        let place = Place {
+            paths,
+            name,
+            wine_prefix: None,
+            native_env: Some(native_env),
+        };
+        return menu(
+            paths,
+            global,
+            name,
+            prompt,
+            &place,
+            Batch::new(environment.config.targets),
+        );
+    }
     let dir = environment.prefix(paths)?;
     let wine = environment.wine()?;
     prompt.say(format!(
@@ -121,6 +140,7 @@ pub(crate) fn setup<I: Input, W: Write>(
         paths,
         name,
         wine_prefix,
+        native_env: None,
     };
     menu(
         paths,
@@ -196,16 +216,24 @@ pub(crate) fn menu<I: Input, W: Write>(
             list(prompt, &batch)?;
             shown = Some(targets.clone());
         }
-        let choices = numbered([
+        let mut entries = vec![
             ("Add targets".to_owned(), Action::Add),
             ("Edit a target".to_owned(), Action::Edit),
             ("Remove a target".to_owned(), Action::Remove),
-            ("Run an installer or updater".to_owned(), Action::Install),
-            ("Finish".to_owned(), Action::Finish),
-        ]);
-        let default = if targets.is_empty() { "1" } else { "5" };
+        ];
+        // An installer runs in a prefix, which a native environment has none of.
+        if place.native_env.is_none() {
+            entries.push(("Run an installer or updater".to_owned(), Action::Install));
+        }
+        entries.push(("Finish".to_owned(), Action::Finish));
+        let default = if targets.is_empty() {
+            "1".to_owned()
+        } else {
+            entries.len().to_string()
+        };
+        let choices = numbered(entries);
         let Reply::Value(action) =
-            prompt.choose("What next?", "Choice", &choices, Some(default), false)?
+            prompt.choose("What next?", "Choice", &choices, Some(&default), false)?
         else {
             unreachable!("the menu offers no way back");
         };
