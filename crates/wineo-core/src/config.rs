@@ -350,7 +350,11 @@ impl EnvironmentConfig {
     }
 
     fn validate(&self) -> Result<(), String> {
-        validate_env(&self.env)?;
+        // Only wine reads WINEPREFIX, so a native program may have its own.
+        match self.kind {
+            Kind::Wine(_) => validate_env(&self.env)?,
+            Kind::Native => validate_env_vars(&self.env)?,
+        }
         if let Some(bad) = self.targets.keys().find(|name| !name::is_valid(name)) {
             return Err(format!(
                 "invalid target name `{bad}`: use letters, digits, `-`, and `_`"
@@ -421,10 +425,14 @@ pub(crate) fn invalid(path: &Path, message: String) -> Error {
 }
 
 fn validate_env(env: &BTreeMap<String, String>) -> Result<(), String> {
+    if env.contains_key("WINEPREFIX") {
+        return Err("WINEPREFIX is managed by wineo and can't be set in [env]".to_owned());
+    }
+    validate_env_vars(env)
+}
+
+fn validate_env_vars(env: &BTreeMap<String, String>) -> Result<(), String> {
     for (key, value) in env {
-        if key == "WINEPREFIX" {
-            return Err("WINEPREFIX is managed by wineo and can't be set in [env]".to_owned());
-        }
         validate_env_var(key, value)?;
     }
     Ok(())
@@ -693,6 +701,13 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("WINEPREFIX"), "{err}");
+    }
+
+    #[test]
+    fn wineprefix_in_env_is_allowed_for_native() {
+        let config = environment("kind = \"native\"\n[env]\nWINEPREFIX = \"/x\"").unwrap();
+        assert_eq!(config.env["WINEPREFIX"], "/x");
+        assert!(environment("kind = \"native\"\n[env]\n\"A=B\" = \"1\"").is_err());
     }
 
     #[test]
