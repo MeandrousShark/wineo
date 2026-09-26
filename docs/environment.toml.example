@@ -4,6 +4,10 @@
 
 schema_version = 1
 
+# Wine is the default kind, covering both Wine and Proton runners. For a
+# native Linux program, start from native-environment.toml.example instead.
+# kind = "wine"
+
 # Required. The prefix directory, built on first `wineo start` (or offered by
 # `wineo setup`) if it doesn't exist. Must be absolute or start with ~/, for
 # example ~/.local/share/wineo/prefixes/<name>.

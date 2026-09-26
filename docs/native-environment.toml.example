@@ -1,0 +1,37 @@
+# Example native environment config, for a Linux game or program launched
+# directly with no prefix or runner. Copy it to
+# ~/.config/wineo/environments/<name>.toml and uncomment whatever applies.
+# For a Windows program, start from environment.toml.example instead.
+
+schema_version = 1
+
+# Required. Makes this a native environment. The Wine-only keys prefix,
+# runner, arch, gameid, store, dxvk, and vkd3d are refused.
+kind = "native"
+
+# Run under gamemode. Default: the global setting.
+# gamemode = true
+
+# The Heroic game id this environment was imported from. Only a Heroic import
+# sets this. Default: unset.
+# heroic_id = "abcdef0123456789"
+
+# Extra environment variables for every launch. Values aren't expanded, so
+# write paths in full. Default: none.
+# [env]
+# SDL_VIDEODRIVER = "wayland"
+
+# One table per program to launch, started with `wineo start <env>.<target>`.
+# Only one target can be the default.
+
+# [targets.game]
+# exe = "~/Games/RimWorld/start.sh"  # Required. Absolute or starting with ~/. Must be executable, and a script needs a shebang line.
+# args = ["-popupwindow"]  # Arguments for the exe. Any given on the command line come after.
+# cwd = "~/Games/RimWorld"  # Default: the exe's own directory.
+# default = true  # What `wineo start <env>` launches when there are several targets.
+# gamemode = true  # Overrides the environment's own gamemode setting for this target.
+# desktop = true  # Whether this target gets a desktop entry. Default: false.
+# name = "RimWorld"  # What the desktop entry is called. Default: the target's own name.
+
+# [targets.dusklight]
+# exe = "dusklight"  # A name with no / is looked up on PATH at launch. cwd then defaults to your home directory.

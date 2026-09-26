@@ -902,10 +902,12 @@ mod tests {
         key_end > 0 && rest[key_end..].trim_start().starts_with('=')
     }
 
-    /// Uncomments every setting line in the example, leaving prose comments
+    const NATIVE_EXAMPLE: &str = include_str!("../../../docs/native-environment.toml.example");
+
+    /// Uncomments every setting line in an example, leaving prose comments
     /// and blank lines alone.
-    fn uncommented_example() -> String {
-        EXAMPLE
+    fn uncommented_example(example: &str) -> String {
+        example
             .lines()
             .map(|line| {
                 if is_example_setting(line) {
@@ -939,7 +941,7 @@ mod tests {
     /// example line, so a new field with no line here fails this test.
     #[test]
     fn example_config_parses_with_every_setting_uncommented() {
-        let text = uncommented_example();
+        let text = uncommented_example(EXAMPLE);
         let config = environment(&text)
             .unwrap_or_else(|err| panic!("uncommented example did not parse: {err}\n---\n{text}"));
 
@@ -963,6 +965,42 @@ mod tests {
 
         let launcher = &config.targets["launcher"];
         assert!(!launcher.exe.is_empty());
+    }
+
+    #[test]
+    fn native_example_config_parses_as_shipped() {
+        let config = environment(NATIVE_EXAMPLE).unwrap();
+        assert_eq!(config.schema_version, 1);
+        assert!(matches!(config.kind, Kind::Native));
+        assert!(config.gamemode.is_none());
+        assert!(config.heroic_id.is_none());
+        assert!(config.env.is_empty());
+        assert!(config.targets.is_empty());
+    }
+
+    /// Like the Wine example, every optional field a native config can hold
+    /// must have an example line.
+    #[test]
+    fn native_example_config_parses_with_every_setting_uncommented() {
+        let text = uncommented_example(NATIVE_EXAMPLE);
+        let config = environment(&text)
+            .unwrap_or_else(|err| panic!("uncommented example did not parse: {err}\n---\n{text}"));
+
+        assert!(matches!(config.kind, Kind::Native));
+        assert!(config.gamemode.unwrap());
+        assert!(config.heroic_id.is_some());
+        assert!(!config.env.is_empty());
+
+        let game = &config.targets["game"];
+        assert!(!game.exe.is_empty());
+        assert!(!game.args.is_empty());
+        assert!(game.cwd.is_some());
+        assert!(game.default);
+        assert!(game.gamemode.unwrap());
+        assert!(game.desktop);
+        assert!(game.name.is_some());
+
+        assert_eq!(config.targets["dusklight"].exe, "dusklight");
     }
 
     #[test]
