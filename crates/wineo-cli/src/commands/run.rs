@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
-use wineo_core::launch::{Launch, Overrides, parse_env_assignment};
+use wineo_core::launch::{Launch, Overrides, parse_launch_env_assignment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::process;
@@ -34,7 +34,7 @@ pub struct LaunchArgs {
     target: Option<String>,
 
     /// Set an environment variable for this run, overriding the config
-    #[arg(short, long = "env", value_name = "KEY=VALUE", value_parser = parse_env_assignment)]
+    #[arg(short, long = "env", value_name = "KEY=VALUE", value_parser = parse_launch_env_assignment)]
     env: Vec<(String, String)>,
 
     /// Extra arguments passed to the target

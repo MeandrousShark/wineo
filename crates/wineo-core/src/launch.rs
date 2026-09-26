@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -328,17 +329,25 @@ fn gamemode_path(
         .ok_or_else(|| Error::GamemodeMissing(environment.name.clone()))
 }
 
-/// Parses a `-e KEY=VALUE` flag.
+/// Parses a `-e KEY=VALUE` flag for a command that always runs in a prefix.
 pub fn parse_env_assignment(assignment: &str) -> Result<(String, String)> {
+    let (key, value) = parse_launch_env_assignment(assignment)?;
+    check_override(true, &key, &value)?;
+    Ok((key, value))
+}
+
+/// Parses a `-e KEY=VALUE` flag for launching a target. `WINEPREFIX` is only
+/// refused once the launch turns out to need a prefix.
+pub fn parse_launch_env_assignment(assignment: &str) -> Result<(String, String)> {
     let (key, value) = assignment
         .split_once('=')
         .ok_or_else(|| Error::InvalidEnvAssignment(assignment.to_owned()))?;
-    check_override(key, value)?;
+    check_override(false, key, value)?;
     Ok((key.to_owned(), value.to_owned()))
 }
 
-fn check_override(key: &str, value: &str) -> Result<()> {
-    if key == "WINEPREFIX" {
+fn check_override(wine: bool, key: &str, value: &str) -> Result<()> {
+    if wine && key == "WINEPREFIX" {
         return Err(managed(key));
     }
     validate_env_var(key, value).map_err(Error::InvalidEnv)
@@ -372,7 +381,13 @@ fn native_target(
     target: &Target,
     overrides: &Overrides,
 ) -> Result<Launch> {
-    let (exe, default_cwd) = resolve_native_exe(paths, &environment.name, &target.exe)?;
+    let env = merge(None, global, environment, &overrides.env)?;
+    let (exe, default_cwd) = resolve_native_exe(
+        paths,
+        &environment.name,
+        &target.exe,
+        &native_path_var(&env),
+    )?;
     let cwd = match &target.cwd {
         Some(cwd) => Some(paths.config_path(cwd)?)
             .filter(|dir| dir.is_dir())
@@ -383,7 +398,7 @@ fn native_target(
     args.extend(overrides.args.iter().cloned());
     let gamemode = gamemode_path(global, environment, target)?;
     Ok(Launch {
-        env: merge(None, global, environment, &overrides.env)?,
+        env,
         host: Host::Native { exe },
         target: Some(name.to_owned()),
         args,
@@ -394,17 +409,30 @@ fn native_target(
     })
 }
 
+/// The PATH a native program gets: its own from `env`, or else wineo's, which
+/// it inherits.
+pub fn native_path_var(env: &BTreeMap<String, String>) -> OsString {
+    match env.get("PATH") {
+        Some(path) => OsString::from(path),
+        None => std::env::var_os("PATH").unwrap_or_default(),
+    }
+}
+
 /// Where a native target's exe is, and the directory it runs in unless the
 /// target says otherwise: the exe's own, or home for one found on PATH.
-fn resolve_native_exe(paths: &Paths, environment: &str, exe: &str) -> Result<(PathBuf, PathBuf)> {
+pub fn resolve_native_exe(
+    paths: &Paths,
+    environment: &str,
+    exe: &str,
+    path_var: &OsStr,
+) -> Result<(PathBuf, PathBuf)> {
     let lower = exe.to_ascii_lowercase();
     if winpath::is_windows_path(exe) || WINDOWS_EXTENSIONS.iter().any(|ext| lower.ends_with(ext)) {
         return Err(Error::NativeWindowsTarget(environment.to_owned()));
     }
     if !exe.contains('/') && !exe.starts_with('~') {
-        let path_var = std::env::var_os("PATH").unwrap_or_default();
         let found =
-            native_on_path(&path_var, exe).ok_or_else(|| Error::NotOnPath(exe.to_owned()))?;
+            native_on_path(path_var, exe).ok_or_else(|| Error::NotOnPath(exe.to_owned()))?;
         return Ok((found, paths.expand("~")));
     }
     // Outside a portable folder a relative path would depend on where wineo
@@ -431,7 +459,7 @@ fn resolve_native_exe(paths: &Paths, environment: &str, exe: &str) -> Result<(Pa
 /// Looks a bare name up on PATH the way a shell would. Unlike
 /// `runner::find_on_path`, symlinks are kept, since a program can behave
 /// differently depending on the name it is run as.
-fn native_on_path(path_var: &std::ffi::OsStr, name: &str) -> Option<PathBuf> {
+fn native_on_path(path_var: &OsStr, name: &str) -> Option<PathBuf> {
     std::env::split_paths(path_var)
         .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(name))
@@ -604,7 +632,7 @@ fn merge(
     overrides: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>> {
     for (key, value) in overrides {
-        check_override(key, value)?;
+        check_override(runner.is_some(), key, value)?;
     }
     let mut env = global.env.clone();
     env.extend(environment.config.env.clone());
@@ -629,7 +657,6 @@ fn merge(
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::{OsStr, OsString};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::fs::symlink;
 
@@ -1222,5 +1249,70 @@ mod tests {
             ),
             Err(Error::NoPrefix(_))
         ));
+    }
+
+    #[test]
+    fn a_bare_native_name_uses_the_path_the_game_gets() {
+        let f = fixture();
+        let home = f.prefix.parent().unwrap();
+        let from_global = home.join("global-bin");
+        let from_env = home.join("env-bin");
+        let from_cli = home.join("cli-bin");
+        for dir in [&from_global, &from_env, &from_cli] {
+            script(&dir.join("dusk"), 0o755);
+        }
+        script(&from_global.join("only-global"), 0o755);
+        let global = GlobalConfig::parse(
+            Path::new("/g.toml"),
+            &format!("[env]\nPATH = \"{}\"\n", from_global.display()),
+        )
+        .unwrap();
+        let launch = |env_path: Option<&Path>, cli_path: Option<&Path>, exe: &str| {
+            let table = env_path
+                .map(|dir| format!("[env]\nPATH = \"{}\"\n", dir.display()))
+                .unwrap_or_default();
+            let env = native("dusk", &format!("{table}[targets.game]\nexe = '{exe}'\n"));
+            let overrides = Overrides {
+                env: cli_path
+                    .map(|dir| BTreeMap::from([("PATH".to_owned(), dir.display().to_string())]))
+                    .unwrap_or_default(),
+                ..Default::default()
+            };
+            Launch::target(&f.paths, &global, &env, &overrides).map(|launch| launch.host)
+        };
+        let exe_of = |host: Result<Host>| match host.unwrap() {
+            Host::Native { exe } => exe,
+            Host::Wine { .. } => panic!("not native"),
+        };
+        assert_eq!(exe_of(launch(None, None, "dusk")), from_global.join("dusk"));
+        assert_eq!(
+            exe_of(launch(Some(&from_env), None, "dusk")),
+            from_env.join("dusk")
+        );
+        assert_eq!(
+            exe_of(launch(Some(&from_env), Some(&from_cli), "dusk")),
+            from_cli.join("dusk")
+        );
+        assert!(matches!(
+            launch(Some(&from_env), None, "only-global"),
+            Err(Error::NotOnPath(_))
+        ));
+    }
+
+    #[test]
+    fn wineprefix_overrides_are_refused_only_for_wine() {
+        let overrides = BTreeMap::from([("WINEPREFIX".to_owned(), "/x".to_owned())]);
+        let global = GlobalConfig::default();
+        assert!(parse_launch_env_assignment("WINEPREFIX=/x").is_ok());
+        assert!(parse_launch_env_assignment("A=B=C").is_ok());
+        assert!(parse_launch_env_assignment("=x").is_err());
+        let err =
+            merge_env(&Runner::fake("wine"), &global, &environment(""), &overrides).unwrap_err();
+        assert!(
+            err.to_string().contains("WINEPREFIX is managed by wineo"),
+            "{err}"
+        );
+        let merged = merge(None, &global, &native("dusk", ""), &overrides).unwrap();
+        assert_eq!(merged["WINEPREFIX"], "/x");
     }
 }

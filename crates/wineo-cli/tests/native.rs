@@ -279,3 +279,49 @@ fn start_refuses_a_bad_native_target_before_anything_runs() {
     );
     assert!(f.state("dusk").is_empty());
 }
+
+#[test]
+fn a_wineprefix_override_is_only_refused_for_wine() {
+    let f = Fixture::new();
+    f.environment("app", "[targets.app]\nexe = \"app\"\n");
+    let refused = f.run(&["start", "app", "-e", "WINEPREFIX=/elsewhere"]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("WINEPREFIX is managed by wineo"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(f.state("app").is_empty());
+
+    let game = f.script("game.sh", GAME);
+    f.native("dusk", &target(&game));
+    assert_success(&f.run(&["start", "dusk", "-e", "WINEPREFIX=/cli"]));
+    wait_for("the program to start", || {
+        marker(&game, ".running").exists()
+    });
+    assert_success(&f.run(&["stop", "dusk"]));
+    assert!(
+        f.log("dusk").contains("WINEPREFIX=/cli"),
+        "{}",
+        f.log("dusk")
+    );
+}
+
+#[test]
+fn a_bare_name_is_found_on_the_path_the_game_gets() {
+    let f = Fixture::new();
+    let game = f.script("dusklight", GAME);
+    let dir = game.parent().unwrap();
+    f.native(
+        "dusk",
+        &format!(
+            "[env]\nPATH = \"{}:/usr/bin:/bin\"\n\n[targets.game]\nexe = \"dusklight\"\n",
+            dir.display()
+        ),
+    );
+    assert_success(&f.run(&["start", "dusk"]));
+    wait_for("the program to start", || {
+        marker(&game, ".running").exists()
+    });
+    assert_success(&f.run(&["stop", "dusk"]));
+}
