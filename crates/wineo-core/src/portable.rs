@@ -159,36 +159,12 @@ pub fn inspect(
         true,
     )?;
 
-    let config_dir = to
-        .environments_dir()
-        .parent()
-        .ok_or_else(|| anyhow!("config dir has no parent"))?
-        .to_owned();
-    let first_copy = fs::symlink_metadata(&config_dir).is_err();
-    let global_text = if !first_copy {
-        None
-    } else {
-        match fs::read_to_string(from.global_config()) {
-            Ok(text) => Some(portable_global(to, &from.global_config(), &text)?),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("failed to read {}", from.global_config().display()));
-            }
-        }
-    };
-    let (copied_templates, templates_fingerprint) = if !first_copy || !from.templates_dir().is_dir()
-    {
-        (Vec::new(), None)
-    } else {
-        let mut names: Vec<String> = fs::read_dir(from.templates_dir())?
-            .filter_map(|entry| entry.ok())
-            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
-            .filter_map(|file| file.strip_suffix(".toml").map(str::to_owned))
-            .collect();
-        names.sort();
-        (names, Some(import::fingerprint(&from.templates_dir())?))
-    };
+    let FirstCopy {
+        first_copy,
+        global_text,
+        copied_templates,
+        templates_fingerprint,
+    } = first_copy(from, to)?;
 
     Ok(CopyInspection {
         name: name.to_owned(),
@@ -434,6 +410,231 @@ pub fn execute_reviewed(
     progress(ImportProgress::Finished {
         entries: reviewed.prefix.fingerprint.entries,
     });
+    Environment::load(to, name).map_err(|err| anyhow!(err))
+}
+
+/// What the first copy into a folder brings along besides the environment:
+/// the source global config and templates. Later copies keep the folder's own.
+struct FirstCopy {
+    first_copy: bool,
+    global_text: Option<String>,
+    copied_templates: Vec<String>,
+    templates_fingerprint: Option<SourceFingerprint>,
+}
+
+fn first_copy(from: &Paths, to: &Paths) -> Result<FirstCopy> {
+    let config_dir = to
+        .environments_dir()
+        .parent()
+        .ok_or_else(|| anyhow!("config dir has no parent"))?
+        .to_owned();
+    let first_copy = fs::symlink_metadata(&config_dir).is_err();
+    let global_text = if !first_copy {
+        None
+    } else {
+        match fs::read_to_string(from.global_config()) {
+            Ok(text) => Some(portable_global(to, &from.global_config(), &text)?),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to read {}", from.global_config().display()));
+            }
+        }
+    };
+    let (copied_templates, templates_fingerprint) = if !first_copy || !from.templates_dir().is_dir()
+    {
+        (Vec::new(), None)
+    } else {
+        let mut names: Vec<String> = fs::read_dir(from.templates_dir())?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .filter_map(|file| file.strip_suffix(".toml").map(str::to_owned))
+            .collect();
+        names.sort();
+        (names, Some(import::fingerprint(&from.templates_dir())?))
+    };
+    Ok(FirstCopy {
+        first_copy,
+        global_text,
+        copied_templates,
+        templates_fingerprint,
+    })
+}
+
+/// A reviewed copy of a native environment into a portable folder: its
+/// config and art, and on a first copy the global config and templates.
+#[derive(Debug, Clone)]
+pub struct NativeCopyInspection {
+    pub name: String,
+    pub folder: PathBuf,
+    pub targets: Vec<String>,
+    pub changed_settings: Vec<String>,
+    /// Target paths outside the folder, which keep pointing at the host.
+    pub external_target_paths: Vec<String>,
+    pub first_copy: bool,
+    pub copies_global_config: bool,
+    pub copied_templates: Vec<String>,
+    /// Whether the source has art, which is copied along.
+    pub art: bool,
+    source_config: String,
+    config_text: String,
+    global_text: Option<String>,
+    templates_fingerprint: Option<SourceFingerprint>,
+}
+
+/// Reviews copying the native environment `name` into the folder `to` selects.
+pub fn inspect_native(from: &Paths, to: &Paths, name: &str) -> Result<NativeCopyInspection> {
+    if from.portable_root().is_some() {
+        bail!("portable copy reads the standard layout; drop --portable");
+    }
+    let folder = to
+        .portable_root()
+        .ok_or_else(|| anyhow!("no portable folder selected"))?
+        .to_owned();
+    Environment::ensure_exists(from, name).map_err(|err| anyhow!(err))?;
+    let source_path = from.environment_config(name);
+    let source_config = fs::read_to_string(&source_path)
+        .with_context(|| format!("failed to read {}", source_path.display()))?;
+    let config =
+        EnvironmentConfig::parse(&source_path, &source_config).map_err(|err| anyhow!(err))?;
+    if config.wine().is_some() {
+        bail!("{name} is not a native environment");
+    }
+    let source_config_dir = from
+        .environments_dir()
+        .parent()
+        .ok_or_else(|| anyhow!("config dir has no parent"))?
+        .to_owned();
+    reject_overlap(&source_config_dir, &folder)?;
+    if to.environment_config(name).exists() {
+        bail!(
+            "environment `{name}` already exists in {}",
+            folder.display()
+        );
+    }
+    if fs::symlink_metadata(to.art_dir(name)).is_ok() {
+        bail!(
+            "{} already exists; move it aside if a copy was interrupted",
+            to.art_dir(name).display()
+        );
+    }
+    let (changed_settings, config_text) = clone::native_config(&source_config, &config, true)?;
+    let mut external_target_paths = Vec::new();
+    for (key, target) in &config.targets {
+        for (field, raw) in [("exe", Some(&target.exe)), ("cwd", target.cwd.as_ref())] {
+            let Some(raw) = raw else { continue };
+            // A bare name is looked up on PATH wherever it runs.
+            if !raw.contains('/') && !raw.starts_with('~') {
+                continue;
+            }
+            let path = from.expand(raw);
+            if !path.is_absolute() || !paths::resolve(&path).starts_with(&folder) {
+                external_target_paths.push(format!("targets.{key}.{field}: {raw}"));
+            }
+        }
+    }
+    let FirstCopy {
+        first_copy,
+        global_text,
+        copied_templates,
+        templates_fingerprint,
+    } = first_copy(from, to)?;
+    Ok(NativeCopyInspection {
+        name: name.to_owned(),
+        folder,
+        targets: config.targets.keys().cloned().collect(),
+        changed_settings,
+        external_target_paths,
+        first_copy,
+        copies_global_config: global_text.is_some(),
+        copied_templates,
+        art: fs::symlink_metadata(from.art_dir(name)).is_ok(),
+        source_config,
+        config_text,
+        global_text,
+        templates_fingerprint,
+    })
+}
+
+/// Copies a reviewed native environment into the folder, with its config
+/// written last so a failure never leaves it half registered.
+pub fn execute_native(
+    from: &Paths,
+    to: &Paths,
+    reviewed: &NativeCopyInspection,
+    cancel: &AtomicBool,
+) -> Result<Environment> {
+    let name = &reviewed.name;
+    let source_locks = Locks::new(from);
+    let _source = source_locks
+        .acquire(Operation::Copy, name, &[])
+        .map_err(|err| anyhow!(err))?;
+    let locks = Locks::new(to);
+    let _operation = locks
+        .acquire(Operation::Create, name, &[])
+        .map_err(|err| anyhow!(err))?;
+    let _source_config = source_locks
+        .config(&from.environment_config(name))
+        .map_err(|err| anyhow!(err))?;
+    let current = inspect_native(from, to, name)?;
+    if current.source_config != reviewed.source_config
+        || current.config_text != reviewed.config_text
+        || current.global_text != reviewed.global_text
+        || current.templates_fingerprint != reviewed.templates_fingerprint
+    {
+        bail!("the reviewed environment changed; inspect it again before copying");
+    }
+    import::check_cancelled(cancel)?;
+
+    let mut published: Vec<PathBuf> = Vec::new();
+    let result = (|| -> Result<()> {
+        if reviewed.templates_fingerprint.is_some() {
+            let parent = to.templates_dir();
+            let parent = parent.parent().expect("templates have a parent");
+            fs::create_dir_all(parent)?;
+            let staging = tempfile::Builder::new()
+                .prefix(".wineo-copy-")
+                .tempdir_in(parent)?;
+            let staged = staging.path().join("templates");
+            import::copy_tree(
+                &from.templates_dir(),
+                &staged,
+                &to.templates_dir(),
+                cancel,
+                &mut |_| {},
+            )?;
+            if reviewed.templates_fingerprint != Some(import::fingerprint(&from.templates_dir())?) {
+                bail!("templates changed while they were being copied; try again");
+            }
+            publish(&staged, &to.templates_dir())?;
+            published.push(to.templates_dir());
+        }
+        let art = StagedArt::stage(&source_locks, &from.art_dir(name), &to.art_dir(name))
+            .and_then(StagedArt::publish)?;
+        published.extend(art);
+        if let Some(text) = &reviewed.global_text {
+            let path = to.global_config();
+            let _guard = locks.config(&path).map_err(|err| anyhow!(err))?;
+            write_once(&path, text)?;
+            published.push(path);
+        }
+        let config_path = to.environment_config(name);
+        let _guard = locks.config(&config_path).map_err(|err| anyhow!(err))?;
+        import::write_config_once(&config_path, &reviewed.config_text)
+    })();
+    result.map_err(|err| {
+        if published.is_empty() {
+            return err;
+        }
+        let paths: Vec<String> = published
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        anyhow!(
+            "{err}; copied files remain at {}; move them aside and retry",
+            paths.join(", ")
+        )
+    })?;
     Environment::load(to, name).map_err(|err| anyhow!(err))
 }
 

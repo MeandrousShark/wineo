@@ -4,6 +4,8 @@ use std::process::ExitCode;
 use clap_complete::ArgValueCompleter;
 use wineo_core::clone::{self, CloneInspection};
 use wineo_core::config::GlobalConfig;
+use wineo_core::environment::Environment;
+use wineo_core::error::Error;
 use wineo_core::import::ImportProgress;
 use wineo_core::paths::Paths;
 
@@ -27,6 +29,14 @@ pub struct Args {
 
 pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
+    if let Ok(source) = Environment::load(paths, &args.source)
+        && source.config.wine().is_none()
+    {
+        if args.dir.is_some() {
+            return Err(Error::NoPrefix(args.source).into());
+        }
+        return clone_native(paths, &args.source, &args.name);
+    }
     let destination: Option<PathBuf> = args
         .dir
         .as_deref()
@@ -63,6 +73,31 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         }
         Err(error) => Err(error),
     }
+}
+
+/// A native environment is only its config and art, so there is nothing to
+/// wait for or copy beyond them.
+fn clone_native(paths: &Paths, source: &str, name: &str) -> anyhow::Result<ExitCode> {
+    let reviewed = clone::inspect_native(paths, source, name)?;
+    println!(
+        "Clone {} as {}\n  kind: native\n  targets: {}",
+        reviewed.source_name,
+        reviewed.new_name,
+        if reviewed.targets.is_empty() {
+            "(none)".to_owned()
+        } else {
+            reviewed.targets.join(", ")
+        }
+    );
+    if reviewed.art {
+        println!("  art: copied");
+    }
+    for setting in &reviewed.changed_settings {
+        println!("  change: {setting}");
+    }
+    let environment = clone::execute_native(paths, &reviewed)?;
+    println!("Cloned {} as {}", reviewed.source_name, environment.name);
+    Ok(ExitCode::SUCCESS)
 }
 
 fn print_review(reviewed: &CloneInspection, verbose: bool) {

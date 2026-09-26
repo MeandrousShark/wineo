@@ -4,6 +4,7 @@ use std::process::ExitCode;
 use clap::{Subcommand, ValueHint};
 use clap_complete::ArgValueCompleter;
 use wineo_core::config::GlobalConfig;
+use wineo_core::environment::Environment;
 use wineo_core::import::ImportProgress;
 use wineo_core::paths::Paths;
 use wineo_core::portable::{self, CopyInspection, Storage};
@@ -43,6 +44,11 @@ fn copy(
 ) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let folder = Paths::from_env(Some(to))?;
+    if let Ok(source) = Environment::load(paths, name)
+        && source.config.wine().is_none()
+    {
+        return copy_native(paths, &folder, name);
+    }
     transfer::wait_idle(paths, &global, name)?;
     let reviewed = portable::inspect(paths, &folder, &global, name)?;
     print_review(&reviewed, verbose);
@@ -65,6 +71,59 @@ fn copy(
         },
     );
     match result {
+        Ok(environment) => {
+            println!(
+                "Copied {} to {}",
+                environment.name,
+                reviewed.folder.display()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(error) if error.is::<portable::Canceled>() => {
+            eprintln!("Copy canceled");
+            Ok(ExitCode::from(130))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// A native environment is only its config and art, with no prefix or
+/// snapshots to copy.
+fn copy_native(paths: &Paths, folder: &Paths, name: &str) -> anyhow::Result<ExitCode> {
+    let reviewed = portable::inspect_native(paths, folder, name)?;
+    println!(
+        "Copy {} to {}\n  kind: native\n  targets: {}",
+        reviewed.name,
+        reviewed.folder.display(),
+        if reviewed.targets.is_empty() {
+            "(none)".to_owned()
+        } else {
+            reviewed.targets.join(", ")
+        }
+    );
+    for setting in &reviewed.changed_settings {
+        println!("  change: {setting}");
+    }
+    if reviewed.first_copy {
+        if reviewed.copies_global_config {
+            println!("  global config: copied, prefix_root follows the folder");
+        }
+        if !reviewed.copied_templates.is_empty() {
+            println!("  templates: {}", reviewed.copied_templates.join(", "));
+        }
+    } else {
+        println!("  global config and templates: the folder's own are kept");
+    }
+    if reviewed.art {
+        println!("  art: copied");
+    }
+    for path in &reviewed.external_target_paths {
+        println!("  external target path: {path} (kept in place)");
+    }
+    println!("The source stays as it is. External game files stay where they are.");
+
+    let cancellation = Cancellation::new()?;
+    match portable::execute_native(paths, folder, &reviewed, &cancellation.flag) {
         Ok(environment) => {
             println!(
                 "Copied {} to {}",

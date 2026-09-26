@@ -402,6 +402,128 @@ pub(crate) fn transform_config(
     Ok(text)
 }
 
+/// What copying a native environment's config changes, and its config for
+/// the copy. It has no prefix, so only desktop entries are turned off and,
+/// unless kept, the Heroic id dropped.
+pub(crate) fn native_config(
+    source: &str,
+    config: &EnvironmentConfig,
+    keep_heroic_id: bool,
+) -> Result<(Vec<String>, String)> {
+    let mut changed = Vec::new();
+    let mut doc: DocumentMut = source.parse()?;
+    if !keep_heroic_id && doc.as_table_mut().remove("heroic_id").is_some() {
+        changed.push("heroic_id removed".to_owned());
+    }
+    if let Some(targets) = doc
+        .get_mut("targets")
+        .and_then(|item| item.as_table_like_mut())
+    {
+        for (name, target) in &config.targets {
+            if !target.desktop {
+                continue;
+            }
+            let table = targets
+                .get_mut(name)
+                .and_then(|item| item.as_table_like_mut())
+                .ok_or_else(|| anyhow!("target `{name}` has an unsupported TOML shape"))?;
+            replace_existing(table, "desktop", Value::from(false))?;
+            changed.push(format!("targets.{name}.desktop disabled"));
+        }
+    }
+    crate::config::stamp_schema(&mut doc);
+    let text = doc.to_string();
+    EnvironmentConfig::parse(Path::new("<clone>"), &text).map_err(|err| anyhow!(err))?;
+    Ok((changed, text))
+}
+
+/// A reviewed copy of a native environment under a new name.
+#[derive(Debug, Clone)]
+pub struct NativeCloneInspection {
+    pub source_name: String,
+    pub new_name: String,
+    pub targets: Vec<String>,
+    pub changed_settings: Vec<String>,
+    /// Whether the source has art, which is copied along.
+    pub art: bool,
+    source_config: String,
+    config_text: String,
+}
+
+/// Reviews cloning a native environment, which is its config and art.
+pub fn inspect_native(
+    paths: &Paths,
+    source_name: &str,
+    new_name: &str,
+) -> Result<NativeCloneInspection> {
+    if !name::is_valid(new_name) {
+        bail!("invalid environment name `{new_name}`");
+    }
+    Environment::ensure_exists(paths, source_name).map_err(|err| anyhow!(err))?;
+    let source_path = paths.environment_config(source_name);
+    let source_config = fs::read_to_string(&source_path)
+        .with_context(|| format!("failed to read {}", source_path.display()))?;
+    let config =
+        EnvironmentConfig::parse(&source_path, &source_config).map_err(|err| anyhow!(err))?;
+    if config.wine().is_some() {
+        bail!("{source_name} is not a native environment");
+    }
+    if paths.environment_config(new_name).exists() {
+        bail!("environment `{new_name}` already exists");
+    }
+    let art = paths.art_dir(new_name);
+    if fs::symlink_metadata(&art).is_ok() {
+        bail!(
+            "{} already exists; move it aside if a clone was interrupted",
+            art.display()
+        );
+    }
+    let (changed_settings, config_text) = native_config(&source_config, &config, false)?;
+    Ok(NativeCloneInspection {
+        source_name: source_name.to_owned(),
+        new_name: new_name.to_owned(),
+        targets: config.targets.keys().cloned().collect(),
+        changed_settings,
+        art: fs::symlink_metadata(paths.art_dir(source_name)).is_ok(),
+        source_config,
+        config_text,
+    })
+}
+
+/// Clones a reviewed native environment. The art is published before the
+/// config, which registers the copy.
+pub fn execute_native(paths: &Paths, reviewed: &NativeCloneInspection) -> Result<Environment> {
+    let locks = Locks::new(paths);
+    let _operation = locks
+        .acquire(Operation::Create, &reviewed.new_name, &[])
+        .map_err(|err| anyhow!(err))?;
+    let _source_config_lock = locks
+        .config(&paths.environment_config(&reviewed.source_name))
+        .map_err(|err| anyhow!(err))?;
+    let current = inspect_native(paths, &reviewed.source_name, &reviewed.new_name)?;
+    if current.source_config != reviewed.source_config
+        || current.config_text != reviewed.config_text
+    {
+        bail!("the reviewed environment changed; inspect it again before cloning");
+    }
+    let art = StagedArt::stage(
+        &locks,
+        &paths.art_dir(&reviewed.source_name),
+        &paths.art_dir(&reviewed.new_name),
+    )
+    .and_then(StagedArt::publish)?;
+    let config_path = paths.environment_config(&reviewed.new_name);
+    let _config_lock = locks.config(&config_path).map_err(|err| anyhow!(err))?;
+    import::write_config_once(&config_path, &reviewed.config_text).map_err(|err| match &art {
+        Some(art) => anyhow!(
+            "{err}; its art was copied to {}, move it aside and retry clone",
+            art.display()
+        ),
+        None => err,
+    })?;
+    Environment::load(paths, &reviewed.new_name).map_err(|err| anyhow!(err))
+}
+
 fn replace_existing(table: &mut dyn TableLike, field: &str, mut new: Value) -> Result<()> {
     let old = table
         .get_mut(field)

@@ -640,3 +640,119 @@ fn new_native_refuses_the_wine_only_flags() {
     }
     assert!(f.created_config("dusk").is_empty());
 }
+
+#[test]
+fn clone_copies_a_native_config_and_art_with_desktop_entries_off() {
+    let f = Fixture::new();
+    let game = f.script("game.sh", GAME);
+    f.native(
+        "dusk",
+        &format!("heroic_id = \"abc\"\n{}desktop = true\n", target(&game)),
+    );
+    assert_success(&f.run(&["set", "dusk", "gamemode=true"]));
+    let png = f.root.path().join("icon.png");
+    fs::write(&png, REAL_PNG).unwrap();
+    assert_success(&f.run(&["art", "set", "dusk", "icon", png.to_str().unwrap()]));
+
+    let refused = f.run(&["clone", "dusk", "copy", "--dir", "/tmp/elsewhere"]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("dusk is a native environment, so it has no prefix"),
+        "{}",
+        stderr(&refused)
+    );
+
+    let cloned = f.run(&["clone", "dusk", "copy"]);
+    assert_success(&cloned);
+    assert_eq!(
+        stdout(&cloned),
+        "Clone dusk as copy\n  kind: native\n  targets: game\n  art: copied\n  change: heroic_id removed\n  change: targets.game.desktop disabled\nCloned dusk as copy\n"
+    );
+    let config = f.created_config("copy");
+    assert!(config.contains("kind = \"native\""), "{config}");
+    assert!(config.contains("gamemode = true"), "{config}");
+    assert!(config.contains("desktop = false"), "{config}");
+    assert!(!config.contains("heroic_id"), "{config}");
+    assert!(
+        f.root
+            .path()
+            .join("data/wineo/art/copy")
+            .read_dir()
+            .unwrap()
+            .next()
+            .is_some()
+    );
+    assert!(
+        !f.root
+            .path()
+            .join("data/applications/wineo-copy-game.desktop")
+            .exists()
+    );
+    let taken = f.run(&["clone", "dusk", "copy"]);
+    assert!(!taken.status.success());
+}
+
+#[test]
+fn portable_copy_takes_a_native_config_and_lists_host_paths() {
+    let f = Fixture::new();
+    let game = f.script("game.sh", GAME);
+    f.native(
+        "dusk",
+        &format!(
+            "{}desktop = true\n\n[targets.bare]\nexe = \"sh\"\n",
+            target(&game)
+        ),
+    );
+    f.global_config("gamemode = false\n");
+    let dir = f.root.path().join("usb");
+    let copied = f.run(&["portable", "copy", "dusk", "--to", dir.to_str().unwrap()]);
+    assert_success(&copied);
+    let out = stdout(&copied);
+    assert!(out.starts_with("Copy dusk to "), "{out}");
+    assert!(out.contains("  kind: native\n"), "{out}");
+    assert!(out.contains("  targets: bare, game\n"), "{out}");
+    assert!(
+        out.contains("  change: targets.game.desktop disabled\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("  global config: copied, prefix_root follows the folder\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            "  external target path: targets.game.exe: {} (kept in place)\n",
+            game.display()
+        )),
+        "{out}"
+    );
+    assert!(!out.contains("targets.bare.exe"), "{out}");
+    assert!(
+        out.ends_with(&format!("Copied dusk to {}\n", dir.display())),
+        "{out}"
+    );
+
+    let portable = |args: &[&str]| {
+        f.wineo()
+            .arg("--portable")
+            .arg(&dir)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let config = stdout(&portable(&["config", "dusk"]));
+    assert!(config.contains("kind = \"native\""), "{config}");
+    assert!(
+        config.contains(&format!("exe = \"{}\"", game.display())),
+        "{config}"
+    );
+    assert!(!dir.join("prefixes").exists());
+    assert_success(&portable(&["start", "dusk", "--target", "game"]));
+    wait_for("the program to start", || {
+        marker(&game, ".running").exists()
+    });
+    assert_success(&portable(&["stop", "dusk"]));
+
+    let again = f.run(&["portable", "copy", "dusk", "--to", dir.to_str().unwrap()]);
+    assert!(!again.status.success());
+}
