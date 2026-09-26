@@ -11,7 +11,6 @@
 //! are how an entry is recognized as wineo's, which means no separate manifest
 //! and means an entry whose target has gone can still be found and removed.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -100,6 +99,61 @@ pub fn reconcile_native(
     reconcile_with(paths, global, environment, None, None)
 }
 
+/// What reconciling would change, worked out without writing anything or
+/// running wine, so `validate` can say whether the entries are out of date.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pending {
+    Write { target: String },
+    Update { target: String },
+    Remove { target: String },
+}
+
+/// `reconcile` as a dry run. A target whose entry can't be made is left out,
+/// since reconciling would skip it too.
+pub fn pending(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    runner: Option<&Runner>,
+    prefix: &Path,
+) -> Result<Vec<Pending>> {
+    pending_with(paths, global, environment, runner, Some(prefix))
+}
+
+/// `pending` for a native environment.
+pub fn pending_native(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+) -> Result<Vec<Pending>> {
+    pending_with(paths, global, environment, None, None)
+}
+
+fn pending_with(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    runner: Option<&Runner>,
+    prefix: Option<&Path>,
+) -> Result<Vec<Pending>> {
+    if supported(paths).is_err() {
+        return Ok(Vec::new());
+    }
+    let plan = plan(paths, global, environment, runner, prefix)?;
+    let mut pending = Vec::new();
+    for (target, draft) in plan.wanted {
+        match draft {
+            Ok(Some(draft)) if draft.existing.is_some() => pending.push(Pending::Update { target }),
+            Ok(Some(_)) => pending.push(Pending::Write { target }),
+            Ok(None) | Err(_) => {}
+        }
+    }
+    pending.extend(plan.leftover.into_iter().map(|entry| Pending::Remove {
+        target: entry.target,
+    }));
+    Ok(pending)
+}
+
 fn reconcile_with(
     paths: &Paths,
     global: &GlobalConfig,
@@ -121,43 +175,68 @@ fn reconcile_with(
             })
             .collect());
     }
+    let plan = plan(paths, global, environment, runner, prefix)?;
     let mut changes = Vec::new();
-    let mut wanted = BTreeSet::new();
-
-    for (target_name, target) in &environment.config.targets {
-        if !target.desktop {
-            continue;
-        }
-        wanted.insert(target_name.clone());
-        match write(
-            paths,
-            global,
-            environment,
-            runner,
-            prefix,
-            target_name,
-            target,
-        ) {
+    for (target_name, draft) in plan.wanted {
+        let written = draft.and_then(|draft| match draft {
+            Some(draft) => write(paths, environment, runner, prefix, &target_name, draft),
+            None => Ok(Vec::new()),
+        });
+        match written {
             Ok(written) => changes.extend(written),
             Err(reason) => changes.push(Change::Skipped {
-                target: target_name.clone(),
+                target: target_name,
                 reason: reason.to_string(),
             }),
         }
     }
-
-    // Anything left over is a target that stopped asking for an entry, or one
-    // that was removed from the config entirely.
-    for entry in owned_by(paths, &environment.name)? {
-        if !wanted.contains(&entry.target) {
-            remove_file(&entry.path)?;
-            remove_icons(paths, &environment.name, &entry.target)?;
-            changes.push(Change::Removed {
-                target: entry.target,
-            });
-        }
+    for entry in plan.leftover {
+        remove_file(&entry.path)?;
+        remove_icons(paths, &environment.name, &entry.target)?;
+        changes.push(Change::Removed {
+            target: entry.target,
+        });
     }
     Ok(changes)
+}
+
+/// What reconciling an environment involves, before anything is written.
+struct Plan {
+    /// Each target asking for an entry, with the draft of it, or None when the
+    /// entry on disk already matches.
+    wanted: Vec<(String, Result<Option<Draft>>)>,
+    /// Entries for a target that stopped asking for one, or one that was
+    /// removed from the config entirely.
+    leftover: Vec<Entry>,
+}
+
+fn plan(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    runner: Option<&Runner>,
+    prefix: Option<&Path>,
+) -> Result<Plan> {
+    let mut wanted = Vec::new();
+    for (target_name, target) in &environment.config.targets {
+        if target.desktop {
+            let draft = draft(
+                paths,
+                global,
+                environment,
+                runner,
+                prefix,
+                target_name,
+                target,
+            );
+            wanted.push((target_name.clone(), draft));
+        }
+    }
+    let leftover = owned_by(paths, &environment.name)?
+        .into_iter()
+        .filter(|entry| !wanted.iter().any(|(target, _)| *target == entry.target))
+        .collect();
+    Ok(Plan { wanted, leftover })
 }
 
 /// Removes every entry belonging to `environment`, for `wineo rm`. Returns the
@@ -225,7 +304,46 @@ fn read_entry(path: &Path) -> Option<Entry> {
     })
 }
 
-fn write(
+/// Everything about a target's entry that is known without writing it.
+struct Draft {
+    path: PathBuf,
+    existing: Option<String>,
+    existing_stamp: Option<String>,
+    name: String,
+    exe: String,
+    gaming: bool,
+    art: Option<IconArt>,
+    art_stamp: Option<String>,
+    had_icon: bool,
+    stale_art: bool,
+}
+
+impl Draft {
+    fn render(&self, environment: &str, target: &str, wine: bool, icon: bool) -> String {
+        let stamp = self.stamp(icon);
+        render(&Desired {
+            environment,
+            target,
+            name: &self.name,
+            exe: &self.exe,
+            wine,
+            gaming: self.gaming,
+            icon,
+            stamp,
+        })
+    }
+
+    fn stamp(&self, icon: bool) -> Option<&str> {
+        match &self.art_stamp {
+            Some(stamp) => Some(stamp),
+            None => icon.then_some("exe"),
+        }
+    }
+}
+
+/// Reads what a target's entry should be. None when the entry on disk already
+/// matches, which is what makes a reconcile on every launch cheap.
+fn draft(
     paths: &Paths,
     global: &GlobalConfig,
     environment: &Environment,
@@ -233,7 +351,7 @@ fn write(
     prefix: Option<&Path>,
     target_name: &str,
     target: &Target,
-) -> Result<Vec<Change>> {
+) -> Result<Option<Draft>> {
     match prefix {
         Some(prefix) => check(paths, prefix, &target.exe)?,
         None => {
@@ -249,7 +367,7 @@ fn write(
 
     let path = entry_path(paths, &environment.name, target_name);
     let existing = fs::read_to_string(&path).ok();
-    let existing_stamp = existing.as_deref().and_then(stamp_of);
+    let existing_stamp = existing.as_deref().and_then(stamp_of).map(str::to_owned);
     let name = target
         .name
         .clone()
@@ -257,34 +375,45 @@ fn write(
     let gaming = runner.is_some_and(Runner::is_proton)
         || launch::gamemode(global, environment, Some(target));
 
-    let rendered = |icon: bool, stamp: Option<&str>| {
-        render(&Desired {
-            environment: &environment.name,
-            target: target_name,
-            name: &name,
-            exe: &target.exe,
-            wine: prefix.is_some(),
-            gaming,
-            icon,
-            stamp,
-        })
-    };
-
     let art = icon_art(paths, &environment.name, target_name)?;
     let art_stamp = art.as_ref().map(|art| format!("art:{}", art.hash));
     let had_icon = has_icon(paths, &environment.name, target_name);
     // Icons from art that has since gone are the art's, not the exe's.
-    let stale_art = art.is_none() && existing_stamp.is_some_and(|stamp| stamp.starts_with("art:"));
+    let stale_art = art.is_none()
+        && existing_stamp
+            .as_deref()
+            .is_some_and(|stamp| stamp.starts_with("art:"));
+    let draft = Draft {
+        path,
+        existing,
+        existing_stamp,
+        name,
+        exe: target.exe.clone(),
+        gaming,
+        art,
+        art_stamp,
+        had_icon,
+        stale_art,
+    };
+    // With an icon already there, the text below matches and nothing runs.
+    let current = !draft.stale_art
+        && draft.existing.as_deref()
+            == Some(
+                draft
+                    .render(&environment.name, target_name, prefix.is_some(), had_icon)
+                    .as_str(),
+            );
+    Ok((!current).then_some(draft))
+}
 
-    // An icon that is already there is what makes a reconcile on every launch
-    // cheap: the text below then matches and nothing runs.
-    if !stale_art {
-        let stamp = art_stamp.as_deref().or(had_icon.then_some("exe"));
-        if existing.as_deref() == Some(rendered(had_icon, stamp).as_str()) {
-            return Ok(Vec::new());
-        }
-    }
-
+fn write(
+    paths: &Paths,
+    environment: &Environment,
+    runner: Option<&Runner>,
+    prefix: Option<&Path>,
+    target_name: &str,
+    draft: Draft,
+) -> Result<Vec<Change>> {
     let extract = || {
         runner.zip(prefix).is_some_and(|(runner, prefix)| {
             extract_icon(
@@ -293,16 +422,19 @@ fn write(
                 prefix,
                 &environment.name,
                 target_name,
-                &target.exe,
+                &draft.exe,
             )
             .is_some()
         })
     };
+    let had_icon = draft.had_icon;
+    let stale_art = draft.stale_art;
+    let existing_stamp = draft.existing_stamp.as_deref();
     let mut unreadable = false;
-    let (icon, stamp) = match &art {
+    let icon = match &draft.art {
         Some(art) => {
-            let changed = existing_stamp != art_stamp.as_deref();
-            let icon = if changed || !had_icon {
+            let changed = existing_stamp != draft.art_stamp.as_deref();
+            if changed || !had_icon {
                 match art_icon::install(
                     &art.path,
                     art.format,
@@ -334,8 +466,7 @@ fn write(
                 }
             } else {
                 true
-            };
-            (icon, art_stamp.as_deref())
+            }
         }
         None => {
             if stale_art {
@@ -344,13 +475,13 @@ fn write(
             // Only attempted when the entry is being written anyway, so a
             // target with no icon to find does not pay for wine starting up
             // on every launch.
-            let icon = (had_icon && !stale_art) || extract();
-            (icon, icon.then_some("exe"))
+            (had_icon && !stale_art) || extract()
         }
     };
-    write_atomic(&path, rendered(icon, stamp))?;
+    let text = draft.render(&environment.name, target_name, prefix.is_some(), icon);
+    write_atomic(&draft.path, text)?;
 
-    let mut changes = vec![match existing {
+    let mut changes = vec![match draft.existing {
         Some(_) => Change::Updated {
             target: target_name.to_owned(),
         },
@@ -1412,5 +1543,69 @@ mod tests {
         assert_eq!(fixture.icons().len(), 1);
         remove_all(&fixture.paths, "hades").unwrap();
         assert!(fixture.icons().is_empty());
+    }
+
+    fn pending_for(fixture: &Fixture, environment: &Environment) -> Vec<Pending> {
+        pending(
+            &fixture.paths,
+            &GlobalConfig::default(),
+            environment,
+            None,
+            &fixture.prefix,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn pending_says_what_reconcile_would_do_without_writing() {
+        let fixture = Fixture::new();
+        let environment = fixture.environment(ASKS);
+        let hades = || "hades".to_owned();
+        assert_eq!(
+            pending_for(&fixture, &environment),
+            [Pending::Write { target: hades() }]
+        );
+        assert!(fixture.entry("hades").is_none());
+
+        fixture.reconcile(&environment);
+        assert!(pending_for(&fixture, &environment).is_empty());
+
+        let renamed = fixture.environment(&format!("{ASKS}name = 'Hades II'\n"));
+        let before = fixture.entry("hades");
+        assert_eq!(
+            pending_for(&fixture, &renamed),
+            [Pending::Update { target: hades() }]
+        );
+        assert_eq!(fixture.entry("hades"), before);
+
+        let dropped = fixture.environment("\n[targets.hades]\nexe = 'C:\\Hades\\Hades.exe'\n");
+        assert_eq!(
+            pending_for(&fixture, &dropped),
+            [Pending::Remove { target: hades() }]
+        );
+        assert_eq!(fixture.entry("hades"), before);
+    }
+
+    #[test]
+    fn pending_sees_changed_icon_art_without_installing_it() {
+        let fixture = Fixture::new();
+        let environment = fixture.environment(ASKS);
+        fixture.reconcile(&environment);
+        fixture.art(None, "icon.png", &png(64, 1));
+        assert_eq!(
+            pending_for(&fixture, &environment),
+            [Pending::Update {
+                target: "hades".to_owned()
+            }]
+        );
+        assert!(fixture.icons().is_empty());
+    }
+
+    #[test]
+    fn pending_leaves_out_a_target_that_would_be_skipped() {
+        let fixture = Fixture::new();
+        let environment = fixture
+            .environment("\n[targets.hades]\nexe = 'C:\\Hades\\Missing.exe'\ndesktop = true\n");
+        assert!(pending_for(&fixture, &environment).is_empty());
     }
 }
