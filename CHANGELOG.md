@@ -3,6 +3,20 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.8.0 - 2026-09-26
+
+- `wineo new --native` is now a plain flag that picks the kind, and
+  `--exe PATH` adds a default target named after the environment, for Wine
+  and native environments alike
+  ([0027](docs/plans/0027-new-exe-flag.md)).
+- The old `--native <EXE>` form is gone. Use `--native --exe <EXE>` instead.
+- `--native` without `--exe` makes an empty native environment and points at
+  `wineo setup`.
+- `-d`/`--desktop` on `new` gives the `--exe` target a desktop entry, and
+  `import heroic` gains `-d` as the short form of `--desktop`.
+- `wineo setup` picks the only target by default when editing, and the edit
+  card says `Press Enter to finish editing`.
+
 ## 0.7.1 - 2026-09-25
 
 - SteamGridDB pick lists in `art fetch`, guided `new`, and `import heroic`

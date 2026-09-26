@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0027: `--native` as a kind, and `--exe` and `--desktop` for both kinds
 
