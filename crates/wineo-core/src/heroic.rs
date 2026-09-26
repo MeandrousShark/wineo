@@ -5,6 +5,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -127,6 +128,35 @@ impl HeroicSource {
 
     pub fn config_dir(&self) -> &Path {
         &self.config_dir
+    }
+
+    /// `game_id`'s playtime as Heroic tracked it, from `store/timestamp.json`.
+    /// None if Heroic never played it, or played it for no time at all.
+    pub fn playtime(&self, game_id: &str) -> Result<Option<HeroicPlaytime>> {
+        let path = self.config_dir.join("store/timestamp.json");
+        let Some(value) = read_optional_json(&path)? else {
+            return Ok(None);
+        };
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid_json(&path, "expected an object"))?;
+        let Some(entry) = object.get(game_id).and_then(Value::as_object) else {
+            return Ok(None);
+        };
+        let minutes = entry
+            .get("totalPlayed")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        if minutes <= 0.0 {
+            return Ok(None);
+        }
+        let last_played = string_field(entry, &["lastPlayed"])
+            .filter(|value| !value.is_empty())
+            .and_then(|value| value.parse().ok());
+        Ok(Some(HeroicPlaytime {
+            seconds: (minutes * 60.0).round() as i64,
+            last_played,
+        }))
     }
 
     pub fn origin(&self) -> HeroicOrigin {
@@ -819,6 +849,13 @@ pub struct HeroicRunner {
     pub name: String,
     pub path: Option<PathBuf>,
     pub source: Option<PathBuf>,
+}
+
+/// One app's playtime as Heroic tracked it, from `store/timestamp.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeroicPlaytime {
+    pub seconds: i64,
+    pub last_played: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone)]
@@ -2096,6 +2133,44 @@ mod tests {
                 .issues
                 .iter()
                 .any(|issue| issue.field.as_deref() == Some("disableUMU"))
+        );
+    }
+
+    #[test]
+    fn playtime_reads_total_minutes_and_last_played() {
+        let (_root, source) = fixture();
+        fs::create_dir_all(source.config_dir().join("store")).unwrap();
+        fs::write(
+            source.config_dir().join("store/timestamp.json"),
+            r#"{"hades":{"firstPlayed":"2026-06-01T10:00:00.000Z","lastPlayed":"2026-09-20T19:02:11.000Z","totalPlayed":5720}}"#,
+        )
+        .unwrap();
+        let playtime = source.playtime("hades").unwrap().unwrap();
+        assert_eq!(playtime.seconds, 5720 * 60);
+        assert_eq!(
+            playtime.last_played,
+            Some("2026-09-20T19:02:11Z".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn playtime_is_none_without_a_played_entry_or_file() {
+        let (_root, source) = fixture();
+        assert_eq!(source.playtime("hades").unwrap(), None);
+
+        fs::create_dir_all(source.config_dir().join("store")).unwrap();
+        fs::write(
+            source.config_dir().join("store/timestamp.json"),
+            r#"{"hades":{"firstPlayed":"","lastPlayed":"","totalPlayed":0},"other":{"firstPlayed":"2026-01-01T00:00:00.000Z","lastPlayed":"2026-01-02T00:00:00.000Z","totalPlayed":90}}"#,
+        )
+        .unwrap();
+        assert_eq!(source.playtime("hades").unwrap(), None);
+        assert_eq!(source.playtime("missing").unwrap(), None);
+        let other = source.playtime("other").unwrap().unwrap();
+        assert_eq!(other.seconds, 90 * 60);
+        assert_eq!(
+            other.last_played,
+            Some("2026-01-02T00:00:00Z".parse().unwrap())
         );
     }
 }

@@ -306,6 +306,19 @@ pub fn summarize(log: &Log, running: Option<&Running>, now: Timestamp, tz: &Time
     }
 }
 
+/// `name`'s run right now, if it counts as a live session. A lost run does
+/// not: it isn't over, but nobody can say it's still going either.
+pub fn running_session(paths: &Paths, name: &str) -> Result<Option<Running>> {
+    let status = Runtime::new(paths, name).status()?;
+    Ok((status.state == State::Running && !status.lost)
+        .then_some(status.run)
+        .flatten()
+        .map(|run| Running {
+            target: run.target,
+            started_at: run.started_at,
+        }))
+}
+
 /// Reads `name`'s log and folds in its live run, if any, as of `now`.
 /// Returns the summary alongside any warnings from unreadable lines.
 pub fn summary(
@@ -315,14 +328,7 @@ pub fn summary(
     tz: &TimeZone,
 ) -> Result<(Summary, Vec<String>)> {
     let log = read(&paths.stats_log(name))?;
-    let status = Runtime::new(paths, name).status()?;
-    let running = (status.state == State::Running && !status.lost)
-        .then_some(status.run)
-        .flatten()
-        .map(|run| Running {
-            target: run.target,
-            started_at: run.started_at,
-        });
+    let running = running_session(paths, name)?;
     let warnings = log.warnings.clone();
     Ok((summarize(&log, running.as_ref(), now, tz), warnings))
 }
