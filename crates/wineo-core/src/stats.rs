@@ -2,8 +2,10 @@
 //!
 //! `$XDG_DATA_HOME/wineo/stats/<env>.jsonl`, or `<folder>/stats/<env>.jsonl`
 //! in a portable folder (see `Paths::stats_log`). One JSON object per line: a
-//! session, or the single `imported` line Heroic playtime is carried over as.
-//! Totals are computed on read, so nothing has to stay in sync.
+//! session, or an `imported` line Heroic playtime is carried over as. The log
+//! is strictly append-only, including a re-import: reading keeps the last
+//! `imported` line it sees. Totals are computed on read, so nothing has to
+//! stay in sync.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -54,9 +56,9 @@ impl Session {
     }
 }
 
-/// A starting total carried over from Heroic, recorded as one line at the top
-/// of the log. It counts toward the total but not sessions or averages, and
-/// importing again replaces it with Heroic's current total.
+/// A starting total carried over from Heroic. It counts toward the total but
+/// not sessions or averages. Importing again appends another `imported` line
+/// with Heroic's current total; reading a log keeps only the last one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Imported {
     pub seconds: i64,
@@ -81,10 +83,11 @@ enum Line {
     Imported(ImportedLine),
 }
 
-/// Appends one session line to the log at `path`. O_APPEND makes this
-/// crash-safe without a read-modify-write or a lock: a session is never lost
-/// or torn by a concurrent append.
-pub fn append(path: &Path, session: &Session) -> Result<()> {
+/// Appends one line to the log at `path`, creating it and its parent
+/// directory if needed. O_APPEND makes this crash-safe without a
+/// read-modify-write or a lock: a line is never lost or torn by a concurrent
+/// append.
+fn append_line(path: &Path, line: &impl Serialize) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).context(|| format!("failed to create {}", parent.display()))?;
     }
@@ -93,36 +96,22 @@ pub fn append(path: &Path, session: &Session) -> Result<()> {
         .append(true)
         .open(path)
         .context(|| format!("failed to open {}", path.display()))?;
-    let mut line = serde_json::to_string(session).expect("a session always serializes");
-    line.push('\n');
-    file.write_all(line.as_bytes())
+    let mut text = serde_json::to_string(line).expect("a log line always serializes");
+    text.push('\n');
+    file.write_all(text.as_bytes())
         .context(|| format!("failed to write {}", path.display()))
 }
 
-/// Replaces the log's `imported` line with `imported`, keeping every session.
-/// Unlike `append`, this rewrites the file, since there is only ever one.
-fn write_imported(path: &Path, imported: Imported) -> Result<()> {
-    let existing = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
-    };
-    let mut text = serde_json::to_string(&ImportedLine { imported })
-        .expect("an imported line always serializes");
-    text.push('\n');
-    for line in existing.lines() {
-        if line.trim().is_empty() || serde_json::from_str::<ImportedLine>(line).is_ok() {
-            continue;
-        }
-        text.push_str(line);
-        text.push('\n');
-    }
-    write_atomic(path, text)
+/// Appends one session line to the log at `path`.
+pub fn append(path: &Path, session: &Session) -> Result<()> {
+    append_line(path, session)
 }
 
-/// Records Heroic's playtime as `name`'s `imported` line.
+/// Appends `name`'s Heroic playtime as a new `imported` line. The log is
+/// append-only even here: a re-import doesn't rewrite the earlier line, it
+/// adds a new one, and reading the log uses whichever comes last.
 pub fn set_imported(paths: &Paths, name: &str, imported: Imported) -> Result<()> {
-    write_imported(&paths.stats_log(name), imported)
+    append_line(&paths.stats_log(name), &ImportedLine { imported })
 }
 
 /// Removes an environment's whole play log, for `rm`. Returns whether there was one.
@@ -436,44 +425,57 @@ mod tests {
     }
 
     #[test]
-    fn imported_replaces_in_place_and_keeps_sessions() {
+    fn importing_twice_appends_another_line_and_the_summary_uses_the_last() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("game.jsonl");
-        let a = session(
+        let before = session(
             "game",
             "2026-09-20T19:00:00Z",
             "2026-09-20T20:00:00Z",
             End::Exited,
         );
-        append(&path, &a).unwrap();
-        write_imported(
+        let after = session(
+            "game",
+            "2026-09-22T19:00:00Z",
+            "2026-09-22T20:00:00Z",
+            End::Exited,
+        );
+        append(&path, &before).unwrap();
+        append_line(
             &path,
-            Imported {
-                seconds: 342_000,
-                last_played: Some(ts("2026-06-01T10:00:00Z")),
+            &ImportedLine {
+                imported: Imported {
+                    seconds: 342_000,
+                    last_played: Some(ts("2026-06-01T10:00:00Z")),
+                },
             },
         )
         .unwrap();
-        let log = read(&path).unwrap();
-        assert_eq!(log.sessions, vec![a.clone()]);
+        append(&path, &after).unwrap();
+        append_line(
+            &path,
+            &ImportedLine {
+                imported: Imported {
+                    seconds: 400_000,
+                    last_played: None,
+                },
+            },
+        )
+        .unwrap();
+
+        // Append-only: both imported lines are still on disk, with the
+        // sessions on either side of them kept too.
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 4, "{text}");
         assert_eq!(
-            log.imported,
-            Some(Imported {
-                seconds: 342_000,
-                last_played: Some(ts("2026-06-01T10:00:00Z")),
-            })
+            text.lines().filter(|line| line.contains("imported")).count(),
+            2,
+            "{text}"
         );
 
-        write_imported(
-            &path,
-            Imported {
-                seconds: 400_000,
-                last_played: None,
-            },
-        )
-        .unwrap();
         let log = read(&path).unwrap();
-        assert_eq!(log.sessions, vec![a]);
+        assert_eq!(log.sessions, vec![before, after]);
+        // The last `imported` line wins.
         assert_eq!(
             log.imported,
             Some(Imported {

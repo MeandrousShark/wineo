@@ -135,7 +135,7 @@ fn heroic_config(f: &Fixture, game_id: &str, total_played_minutes: u64, last_pla
 }
 
 #[test]
-fn import_heroic_updates_existing_environments_and_replaces_on_a_second_run() {
+fn import_heroic_updates_existing_environments_and_the_summary_uses_the_last_import() {
     let f = Fixture::new();
     f.environment("game", "");
     let config = f.config_dir().join("environments/game.toml");
@@ -162,14 +162,22 @@ fn import_heroic_updates_existing_environments_and_replaces_on_a_second_run() {
         "{}",
         stdout(&second)
     );
+    // The log is append-only, so importing again adds a second `imported`
+    // line rather than rewriting the first.
     let log = f.read_stats_log("game");
+    assert!(log.contains("\"seconds\":3600"), "{log}");
     assert!(log.contains("\"seconds\":7200"), "{log}");
-    assert!(!log.contains("\"seconds\":3600"), "{log}");
     assert_eq!(
-        log.lines().count(),
-        1,
-        "importing again should replace, not add, the imported line: {log}"
+        log.lines().filter(|line| line.contains("imported")).count(),
+        2,
+        "{log}"
     );
+
+    // But the summary uses the last one.
+    let named = f.run(&["stats", "game", "--json"]);
+    assert_success(&named);
+    let json: serde_json::Value = serde_json::from_slice(&stdout(&named).into_bytes()).unwrap();
+    assert_eq!(json["imported_seconds"], 7200);
 }
 
 #[test]
