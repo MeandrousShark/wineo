@@ -32,6 +32,7 @@ enum Source {
 #[derive(clap::Args, Default)]
 struct PrefixArgs {
     /// Prefix directory, or a Proton compatdata directory
+    #[arg(value_hint = clap::ValueHint::DirPath)]
     source: Option<String>,
     /// Name for the new environment
     #[arg(short, long)]
@@ -43,7 +44,7 @@ struct PrefixArgs {
     #[arg(long, conflicts_with = "dir")]
     adopt: bool,
     /// Copy destination, defaults to the configured prefix root, or DIR/prefixes with --portable
-    #[arg(long)]
+    #[arg(long, value_hint = clap::ValueHint::DirPath)]
     dir: Option<String>,
     /// Resolve a missing registry architecture marker
     #[arg(long)]

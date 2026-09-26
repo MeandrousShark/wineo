@@ -37,7 +37,7 @@ pub struct Args {
     interactive: bool,
 
     /// Prefix directory, defaults to ~/.local/share/wineo/prefixes/<name>, or DIR/prefixes/<name> with --portable
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
     dir: Option<String>,
 
     /// Runner to create the prefix with, defaults to wine
@@ -53,7 +53,7 @@ pub struct Args {
     arch: Option<Arch>,
 
     /// Run an installer after creating the environment
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     install_exe: Option<String>,
 
     /// Fetch art from SteamGridDB, searching the environment's name
@@ -64,6 +64,7 @@ pub struct Args {
     #[arg(
         long,
         value_name = "EXE",
+        value_hint = clap::ValueHint::ExecutablePath,
         conflicts_with_all = ["dir", "runner", "template", "arch", "install_exe"]
     )]
     native: Option<String>,

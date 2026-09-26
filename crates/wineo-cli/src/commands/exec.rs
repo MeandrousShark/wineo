@@ -26,6 +26,7 @@ pub struct Args {
     env: Vec<(String, String)>,
 
     /// Windows path, Unix path, or a name wine knows like winecfg
+    #[arg(value_hint = clap::ValueHint::FilePath)]
     program: String,
 
     /// Arguments passed to the program

@@ -13,8 +13,19 @@ fn complete(root: &Path, shell: &str, words: &[&str]) -> Vec<String> {
 }
 
 fn complete_with(root: &Path, portable: Option<&Path>, shell: &str, words: &[&str]) -> Vec<String> {
+    complete_in(root, portable, root, shell, words)
+}
+
+fn complete_in(
+    root: &Path,
+    portable: Option<&Path>,
+    cwd: &Path,
+    shell: &str,
+    words: &[&str],
+) -> Vec<String> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_wineo"));
     command
+        .current_dir(cwd)
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_STATE_HOME", root.join("state"))
@@ -346,5 +357,46 @@ fn art_completes_environments_targets_and_kinds() {
                 .filter(|word| !word.starts_with('-'))
                 .collect();
         assert_eq!(kinds, ["icon", "grid", "hero", "logo"], "{action}");
+    }
+}
+
+#[test]
+fn path_arguments_complete_paths_of_their_kind() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    let games = root.path().join("games");
+    fs::create_dir_all(games.join("sub")).unwrap();
+    fs::write(games.join("readme.txt"), "").unwrap();
+    fs::write(games.join("run.sh"), "#!/bin/sh\n").unwrap();
+    fs::set_permissions(games.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    let complete = |words: &[&str]| {
+        let mut found = complete_in(root.path(), None, root.path(), "fish", words);
+        found.sort();
+        found
+    };
+    let dirs = ["games/sub/"];
+    let files = ["games/readme.txt", "games/run.sh", "games/sub/"];
+
+    assert_eq!(
+        complete(&["wineo", "new", "--native", "games/"]),
+        ["games/run.sh", "games/sub/"]
+    );
+    assert_eq!(
+        complete(&["wineo", "new", "--install-exe", "games/"]),
+        files
+    );
+    assert_eq!(complete(&["wineo", "exec", "hades", "games/"]), files);
+    for words in [
+        &["wineo", "new", "--dir", "games/"][..],
+        &["wineo", "clone", "hades", "copy", "--dir", "games/"],
+        &["wineo", "import", "prefix", "games/"],
+        &["wineo", "import", "prefix", "--dir", "games/"],
+        &["wineo", "import", "heroic", "--config-dir", "games/"],
+        &["wineo", "import", "heroic", "--dir", "games/"],
+    ] {
+        assert_eq!(complete(words), dirs, "{words:?}");
     }
 }

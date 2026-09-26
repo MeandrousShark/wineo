@@ -35,7 +35,7 @@ mod native;
 #[derive(clap::Args, Default)]
 pub struct Args {
     /// Read Heroic's config from this directory
-    #[arg(long)]
+    #[arg(long, value_hint = clap::ValueHint::DirPath)]
     pub config_dir: Option<String>,
     /// List Heroic sideload candidates without prompting
     #[arg(long)]
@@ -53,7 +53,7 @@ pub struct Args {
     #[arg(long, conflicts_with = "dir")]
     pub adopt: bool,
     /// Copy destination, defaults to the configured prefix root, or DIR/prefixes with --portable
-    #[arg(long)]
+    #[arg(long, value_hint = clap::ValueHint::DirPath)]
     pub dir: Option<String>,
     /// Resolve a missing registry architecture marker
     #[arg(long)]
