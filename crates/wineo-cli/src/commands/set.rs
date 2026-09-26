@@ -2,10 +2,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::bail;
-use wineo_core::config::GlobalConfig;
+use wineo_core::config::{GlobalConfig, WINE_ONLY_KEYS, native_key_message};
 use wineo_core::edit;
 use wineo_core::environment::Environment;
 use wineo_core::install::{self, Wanted};
+use wineo_core::launch;
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::prefix;
@@ -135,6 +136,46 @@ fn check_desktop(
     Ok(())
 }
 
+/// Refuses the keys a native environment can't have, with the same line its
+/// config would be refused with, and checks the exes it is given the way a
+/// launch resolves them. Nothing to do for a Wine environment.
+fn check_native(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    pairs: &[(&str, &str)],
+    unset: &[&str],
+) -> anyhow::Result<()> {
+    let Ok(environment) = Environment::load(paths, name) else {
+        return Ok(());
+    };
+    if environment.config.wine().is_some() {
+        return Ok(());
+    }
+    if let Some((key, _)) = pairs.iter().find(|(key, _)| WINE_ONLY_KEYS.contains(key)) {
+        bail!("{}", native_key_message(name, key));
+    }
+    let mut targets: Vec<String> = pairs
+        .iter()
+        .filter_map(|(key, _)| {
+            let (target, field) = key.strip_prefix("targets.")?.split_once('.')?;
+            (field == "exe").then(|| target.to_owned())
+        })
+        .collect();
+    targets.extend(enabled_desktops(pairs));
+    for target in targets {
+        let current = environment
+            .config
+            .targets
+            .get(&target)
+            .map(|target| target.exe.as_str());
+        if let Some(exe) = value_after(current, pairs, unset, &format!("targets.{target}.exe")) {
+            launch::check_native_exe(paths, global, name, &environment.config.env, &exe)?;
+        }
+    }
+    Ok(())
+}
+
 fn changed_runner<'a>(pairs: &[(&'a str, &'a str)]) -> Option<&'a str> {
     pairs
         .iter()
@@ -253,12 +294,16 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     if let ConfigFile::Environment(name) = file {
         Environment::ensure_exists(paths, name)?;
     }
-
     let pairs = settings
         .iter()
         .map(|setting| edit::parse_assignment(setting))
         .collect::<Result<Vec<_>, _>>()?;
     let unset: Vec<&str> = args.unset.iter().map(String::as_str).collect();
+    if let ConfigFile::Environment(name) = file
+        && (pairs.iter().any(|(key, _)| *key == "kind") || unset.contains(&"kind"))
+    {
+        bail!("{name}'s kind can't be changed, make a new environment instead");
+    }
 
     // Pointing an environment somewhere else has to exclude whatever is using
     // either prefix, so a removal can't delete one this is about to adopt. A
@@ -288,6 +333,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // cannot be removed between the check and the write.
     if let ConfigFile::Environment(name) = file {
         let global = GlobalConfig::load_or_default(paths)?;
+        check_native(paths, &global, name, &pairs, &unset)?;
         let runner = check_runner(paths, &global, name, &pairs)?;
         check_desktop(paths, name, &pairs, &unset)?;
         apply_components(paths, &global, name, runner.as_ref(), &pairs, &unset)?;

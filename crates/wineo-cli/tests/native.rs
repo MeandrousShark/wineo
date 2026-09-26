@@ -358,3 +358,111 @@ fn status_shows_the_kind_in_place_of_runner_and_prefix() {
     assert!(wine["prefix"].is_string(), "{wine}");
     assert!(!stdout(&f.run(&["status", "app"])).contains("kind"));
 }
+
+#[test]
+fn set_refuses_what_a_native_environment_cant_have() {
+    let f = Fixture::new();
+    let game = f.script("game.sh", GAME);
+    f.native("dusk", &target(&game));
+    let before = f.created_config("dusk");
+    for (key, value) in [
+        ("prefix", "/p"),
+        ("runner", "wine"),
+        ("arch", "win64"),
+        ("gameid", "umu-1"),
+        ("store", "gog"),
+        ("dxvk", "latest"),
+        ("vkd3d", "latest"),
+    ] {
+        let refused = f.run(&["set", "dusk", &format!("{key}={value}")]);
+        assert!(!refused.status.success(), "{key}");
+        assert_eq!(
+            stderr(&refused),
+            format!("error: native environment dusk can't set {key}\n")
+        );
+    }
+
+    for args in [
+        &["set", "dusk", "kind=wine"][..],
+        &["set", "dusk", "--unset", "kind"][..],
+    ] {
+        let refused = f.run(args);
+        assert!(!refused.status.success());
+        assert_eq!(
+            stderr(&refused),
+            "error: dusk's kind can't be changed, make a new environment instead\n"
+        );
+    }
+    f.environment("app", "[targets.app]\nexe = \"app\"\n");
+    let refused = f.run(&["set", "app", "kind=native"]);
+    assert_eq!(
+        stderr(&refused),
+        "error: app's kind can't be changed, make a new environment instead\n"
+    );
+    assert_eq!(f.created_config("dusk"), before);
+}
+
+#[test]
+fn set_works_for_native_and_checks_the_exes_it_writes() {
+    let f = Fixture::new();
+    let game = f.script("game.sh", GAME);
+    f.native("dusk", &target(&game));
+    assert_success(&f.run(&["set", "dusk", "gamemode=true", "env.WINEPREFIX=/mine"]));
+    let text = f.created_config("dusk");
+    assert!(text.contains("gamemode = true"), "{text}");
+    assert!(text.contains("WINEPREFIX = \"/mine\""), "{text}");
+
+    let missing = f.root.path().join("games/missing.sh");
+    let refused = f.run(&[
+        "set",
+        "dusk",
+        &format!("targets.other.exe={}", missing.display()),
+    ]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("does not exist"),
+        "{}",
+        stderr(&refused)
+    );
+
+    let refused = f.run(&["set", "dusk", "targets.other.exe=game.exe"]);
+    assert!(
+        stderr(&refused).contains("dusk is native, so its target can't be a Windows program"),
+        "{}",
+        stderr(&refused)
+    );
+    let refused = f.run(&[
+        "set",
+        "dusk",
+        "targets.other.exe=wineo-surely-not-installed",
+    ]);
+    assert!(
+        stderr(&refused).contains("was not found on PATH"),
+        "{}",
+        stderr(&refused)
+    );
+
+    let other = f.script("other.sh", GAME);
+    assert_success(&f.run(&[
+        "set",
+        "dusk",
+        &format!("targets.other.exe={}", other.display()),
+    ]));
+    assert!(f.created_config("dusk").contains("[targets.other]"));
+
+    // Removing the last target leaves a valid config that `start` explains.
+    assert_success(&f.run(&[
+        "set",
+        "dusk",
+        "--unset",
+        "targets.game",
+        "--unset",
+        "targets.other",
+    ]));
+    let refused = f.run(&["start", "dusk"]);
+    assert!(
+        stderr(&refused).contains("environment `dusk` has no targets"),
+        "{}",
+        stderr(&refused)
+    );
+}

@@ -409,6 +409,20 @@ fn native_target(
     })
 }
 
+/// Checks a native target's exe as it is written, resolving it the way a
+/// launch would, on the PATH the global and environment `[env]` give it.
+pub fn check_native_exe(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &str,
+    env: &BTreeMap<String, String>,
+    exe: &str,
+) -> Result<PathBuf> {
+    let mut merged = global.env.clone();
+    merged.extend(env.clone());
+    resolve_native_exe(paths, environment, exe, &native_path_var(&merged)).map(|(exe, _)| exe)
+}
+
 /// The PATH a native program gets: its own from `env`, or else wineo's, which
 /// it inherits.
 pub fn native_path_var(env: &BTreeMap<String, String>) -> OsString {

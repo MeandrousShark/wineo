@@ -185,16 +185,17 @@ impl RawEnvironmentConfig {
                 vkd3d: self.vkd3d,
             }),
             KindName::Native => {
-                let set = [
-                    ("prefix", self.prefix.is_some()),
-                    ("runner", self.runner.is_some()),
-                    ("arch", self.arch.is_some()),
-                    ("gameid", self.gameid.is_some()),
-                    ("store", self.store.is_some()),
-                    ("dxvk", self.dxvk.is_some()),
-                    ("vkd3d", self.vkd3d.is_some()),
-                ];
-                if let Some((key, _)) = set.iter().find(|(_, set)| *set) {
+                let set = |key: &str| match key {
+                    "prefix" => self.prefix.is_some(),
+                    "runner" => self.runner.is_some(),
+                    "arch" => self.arch.is_some(),
+                    "gameid" => self.gameid.is_some(),
+                    "store" => self.store.is_some(),
+                    "dxvk" => self.dxvk.is_some(),
+                    "vkd3d" => self.vkd3d.is_some(),
+                    _ => unreachable!("not a Wine-only key"),
+                };
+                if let Some(key) = WINE_ONLY_KEYS.iter().find(|key| set(key)) {
                     return Err(native_key_message(name, key));
                 }
                 Kind::Native
@@ -214,6 +215,11 @@ impl RawEnvironmentConfig {
 fn missing(key: &str) -> String {
     format!("missing field `{key}`")
 }
+
+/// Keys only a Wine environment can have.
+pub const WINE_ONLY_KEYS: [&str; 7] = [
+    "prefix", "runner", "arch", "gameid", "store", "dxvk", "vkd3d",
+];
 
 /// The refusal for a Wine-only key on a native environment.
 pub fn native_key_message(name: &str, key: &str) -> String {
