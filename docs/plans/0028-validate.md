@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0028: `wineo validate`
 
@@ -49,7 +49,7 @@ silently falls back to defaults, and stray desktop entries are only listed by
 - `--json` conventions from `docs/json-output.md`: one document, snake_case,
   and the `{ ..., errors: [...] }` partial-failure shape with a non-zero exit.
 
-## Proposed decisions for maintainer approval
+## Decisions (settled with the maintainer, 2026-09-26)
 
 ### 1. What it checks, and how bad each problem is
 
@@ -94,15 +94,14 @@ only to drop a record whose file or target is gone. Downloads are the one fix
 that fetches anything, and they reuse the existing DXVK/vkd3d offer. Runner
 downloads stay a hint, since those are big.
 
-Open question: should unknown keys suggest the closest real key, like
-`unknown field gamemod, did you mean gamemode?` Serde's message already
-lists the expected fields, so the recommendation is to leave it as is.
+Settled: unknown keys keep serde's message, which already lists the expected
+fields. No `did you mean` suggestion.
 
 ### 2. How fixes are applied
 
-The main choice. Here's the same broken setup under each option:
+Settled: A. Here's the same broken setup under each option considered:
 
-**A. Report, then one review for all fixes (recommended)**
+**A. Report, then one review for all fixes (chosen)**
 
 Uses the 0022 review form. With no terminal, it only reports. `--fix` applies
 every fix without asking, for scripts.
@@ -192,7 +191,7 @@ environments never get entries.
 
 Parsing stops at the first error, so a file with two typos shows one, and
 the next one shows up after the first is fixed. Collecting every error would
-mean a second parser beside serde's. Recommended: accept one per file.
+mean a second parser beside serde's. Settled: one per file.
 
 ### 6. `--json`
 
