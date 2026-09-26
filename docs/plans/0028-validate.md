@@ -248,6 +248,18 @@ fixed, and the rest go on.
   builds the prefix already holds. An environment with no targets isn't a
   problem.
 
+### 9. Settled during step 2 (2026-09-26)
+
+- A fix that fails exits 1, even when only warnings are left.
+- `--json --fix` adds an `errors: [{fix, message}]` array for fixes that
+  failed, following the partial-failure shape in `json-output.md`.
+- The review takes one or more numbers on a line, like `1 3 4` or `1,3,4`,
+  and skips those fixes. The list is shown again with what's left, and Enter
+  fixes the rest. A note line under the list says `Numbers skip those fixes,
+  like 1 3 4.`, and the keys line says `or pick numbers.`
+- No `--fix` hint after a report with no terminal.
+- Paths in problem messages are shown with `~` for the home dir.
+
 ## Implementation sequence
 
 1. Core: a `validate` module with `Problem { environment, area, level, code,
