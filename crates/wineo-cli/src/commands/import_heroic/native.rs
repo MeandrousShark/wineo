@@ -133,6 +133,9 @@ fn settings(imported: &HeroicNativeImport, desktop: &DesktopChoice) -> ImportedS
         cwd: None,
         default: true,
         gamemode: None,
+        wayland: None,
+        mangohud: None,
+        gamescope: None,
         desktop: desktop.enabled,
         name: desktop.enabled.then(|| desktop.name.clone()),
     };

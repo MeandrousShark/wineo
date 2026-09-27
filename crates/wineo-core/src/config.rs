@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, value};
 
 use crate::error::{Error, IoContext, Result};
+pub use crate::gamescope::GamescopeSetting;
 use crate::name;
 use crate::paths::Paths;
 
@@ -68,6 +69,8 @@ pub struct GlobalConfig {
     pub log_limit_mb: u32,
     /// Unset everywhere means off, so this stays an option all the way down.
     pub gamemode: Option<bool>,
+    pub wayland: Option<bool>,
+    pub mangohud: Option<bool>,
     #[serde(default)]
     pub defaults: Defaults,
     #[serde(default)]
@@ -113,6 +116,10 @@ pub struct EnvironmentConfig {
     pub schema_version: u32,
     pub kind: Kind,
     pub gamemode: Option<bool>,
+    /// Always None for a native environment, which has no Wine to switch.
+    pub wayland: Option<bool>,
+    pub mangohud: Option<bool>,
+    pub gamescope: Option<GamescopeSetting>,
     /// The Heroic game id this environment was imported from. Only Heroic
     /// imports set this; older configs load fine without it.
     pub heroic_id: Option<String>,
@@ -161,6 +168,9 @@ struct RawEnvironmentConfig {
     runner: Option<String>,
     arch: Option<Arch>,
     gamemode: Option<bool>,
+    wayland: Option<bool>,
+    mangohud: Option<bool>,
+    gamescope: Option<GamescopeSetting>,
     gameid: Option<String>,
     store: Option<String>,
     dxvk: Option<String>,
@@ -193,10 +203,21 @@ impl RawEnvironmentConfig {
                     "store" => self.store.is_some(),
                     "dxvk" => self.dxvk.is_some(),
                     "vkd3d" => self.vkd3d.is_some(),
+                    "wayland" => self.wayland.is_some(),
                     _ => unreachable!("not a Wine-only key"),
                 };
                 if let Some(key) = WINE_ONLY_KEYS.iter().find(|key| set(key)) {
                     return Err(native_key_message(name, key));
+                }
+                if let Some(target) = self
+                    .targets
+                    .iter()
+                    .find_map(|(target, config)| config.wayland.is_some().then_some(target))
+                {
+                    return Err(native_key_message(
+                        name,
+                        &format!("targets.{target}.wayland"),
+                    ));
                 }
                 Kind::Native
             }
@@ -205,6 +226,9 @@ impl RawEnvironmentConfig {
             schema_version: self.schema_version,
             kind,
             gamemode: self.gamemode,
+            wayland: self.wayland,
+            mangohud: self.mangohud,
+            gamescope: self.gamescope,
             heroic_id: self.heroic_id,
             env: self.env,
             targets: self.targets,
@@ -217,8 +241,8 @@ fn missing(key: &str) -> String {
 }
 
 /// Keys only a Wine environment can have.
-pub const WINE_ONLY_KEYS: [&str; 7] = [
-    "prefix", "runner", "arch", "gameid", "store", "dxvk", "vkd3d",
+pub const WINE_ONLY_KEYS: [&str; 8] = [
+    "prefix", "runner", "arch", "gameid", "store", "dxvk", "vkd3d", "wayland",
 ];
 
 /// The refusal for a Wine-only key on a native environment.
@@ -236,6 +260,10 @@ pub struct Target {
     #[serde(default)]
     pub default: bool,
     pub gamemode: Option<bool>,
+    pub wayland: Option<bool>,
+    pub mangohud: Option<bool>,
+    /// Replaces the environment's whole, so `false` turns it off here.
+    pub gamescope: Option<GamescopeSetting>,
     /// Whether this target has a desktop entry. Reconciled, so setting it
     /// writes the entry and clearing it takes the entry away.
     #[serde(default)]
@@ -263,6 +291,8 @@ impl Default for GlobalConfig {
             stop_timeout: DEFAULT_STOP_TIMEOUT,
             log_limit_mb: DEFAULT_LOG_LIMIT_MB,
             gamemode: None,
+            wayland: None,
+            mangohud: None,
             defaults: Defaults::default(),
             art: ArtConfig::default(),
             env: BTreeMap::new(),
@@ -654,6 +684,90 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn wayland_is_refused_for_native_at_either_level() {
+        let err = named("dusklight", "kind = \"native\"\nwayland = false\n").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid config /test/dusklight.toml: native environment dusklight can't set wayland"
+        );
+        let err = named(
+            "dusklight",
+            "kind = \"native\"\n[targets.game]\nexe = \"dusk\"\nwayland = true\n",
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid config /test/dusklight.toml: native environment dusklight can't set targets.game.wayland"
+        );
+    }
+
+    #[test]
+    fn gamescope_and_mangohud_work_for_native() {
+        let config = environment(
+            "kind = \"native\"\nmangohud = true\n[gamescope]\nwidth = 1280\n[targets.game]\nexe = \"dusk\"\nmangohud = false\ngamescope = false\n",
+        )
+        .unwrap();
+        assert_eq!(config.mangohud, Some(true));
+        assert_eq!(
+            config
+                .gamescope
+                .as_ref()
+                .and_then(GamescopeSetting::on)
+                .unwrap()
+                .width,
+            Some(1280)
+        );
+        let game = &config.targets["game"];
+        assert_eq!(game.mangohud, Some(false));
+        assert_eq!(game.gamescope, Some(GamescopeSetting::Off));
+    }
+
+    #[test]
+    fn launch_settings_parse_at_every_level() {
+        let config = global("wayland = true\nmangohud = false\n").unwrap();
+        assert_eq!(config.wayland, Some(true));
+        assert_eq!(config.mangohud, Some(false));
+        let config = environment(&format!(
+            "{ENV}wayland = true\nmangohud = true\n[gamescope]\nfilter = \"fsr\"\n[targets.game]\nexe = \"g\"\nwayland = false\n[targets.game.gamescope]\nwindow = \"borderless\"\n"
+        ))
+        .unwrap();
+        assert_eq!(config.wayland, Some(true));
+        assert_eq!(config.mangohud, Some(true));
+        assert!(config.gamescope.as_ref().unwrap().on().is_some());
+        let game = &config.targets["game"];
+        assert_eq!(game.wayland, Some(false));
+        assert_eq!(game.mangohud, None);
+        let table = game.gamescope.as_ref().unwrap().on().unwrap();
+        assert_eq!(table.window, Some(crate::gamescope::Window::Borderless));
+        assert_eq!(table.filter, None);
+    }
+
+    #[test]
+    fn gamescope_is_not_a_global_key() {
+        assert!(global("[gamescope]\nwidth = 1\n").is_err());
+    }
+
+    #[test]
+    fn gamescope_true_and_bad_values_are_refused_at_load() {
+        for text in [
+            "gamescope = true\n",
+            "[gamescope]\nfilter = \"bilinear\"\n",
+            "[gamescope]\nscaler = \"zoom\"\n",
+            "[gamescope]\nwindow = \"windowed\"\n",
+            "[targets.game]\nexe = \"g\"\ngamescope = true\n",
+            "[targets.game]\nexe = \"g\"\n[targets.game.gamescope]\nscaler = \"big\"\n",
+        ] {
+            let err = environment(&format!("{ENV}{text}")).unwrap_err();
+            assert!(matches!(err, Error::ConfigSyntax { .. }), "{text}: {err}");
+        }
+        let err = environment(&format!("{ENV}gamescope = true\n")).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("gamescope takes a [gamescope] table or false, not true"),
+            "{err:?}"
+        );
     }
 
     #[test]

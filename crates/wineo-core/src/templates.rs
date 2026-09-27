@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use toml_edit::{DocumentMut, value};
 
-use crate::config::Arch;
+use crate::config::{Arch, GamescopeSetting};
 use crate::error::{Error, Result};
 use crate::name;
 use crate::paths::Paths;
@@ -38,6 +38,9 @@ pub struct Template {
     pub runner: Option<String>,
     pub arch: Option<Arch>,
     pub gamemode: Option<bool>,
+    pub wayland: Option<bool>,
+    pub mangohud: Option<bool>,
+    pub gamescope: Option<GamescopeSetting>,
     pub gameid: Option<String>,
     pub store: Option<String>,
     pub dxvk: Option<String>,
@@ -77,8 +80,14 @@ impl Template {
     /// `runner` and `arch` are left out: the caller resolves those before the
     /// prefix is created, so they are already written.
     pub fn apply(&self, doc: &mut DocumentMut) {
-        if let Some(gamemode) = self.gamemode {
-            doc["gamemode"] = value(gamemode);
+        for (key, set) in [
+            ("gamemode", self.gamemode),
+            ("wayland", self.wayland),
+            ("mangohud", self.mangohud),
+        ] {
+            if let Some(set) = set {
+                doc[key] = value(set);
+            }
         }
         for (key, set) in [
             ("gameid", &self.gameid),
@@ -92,6 +101,9 @@ impl Template {
         }
         for (key, set) in &self.env {
             doc["env"][key.as_str()] = value(set.as_str());
+        }
+        if let Some(gamescope) = &self.gamescope {
+            doc["gamescope"] = gamescope.to_item();
         }
     }
 }
@@ -392,5 +404,41 @@ mod tests {
         assert!(!text.contains("runner"), "{text}");
         assert!(!text.contains("arch"), "{text}");
         assert!(!text.contains("vkd3d"), "{text}");
+    }
+
+    #[test]
+    fn launch_settings_carry_into_the_environment() {
+        let root = tempfile::tempdir().unwrap();
+        write(
+            root.path(),
+            "t",
+            "wayland = true\nmangohud = false\n\n[gamescope]\nwidth = 1920\nwindow = \"fullscreen\"\n",
+        );
+        let template = templates(root.path()).resolve("t").unwrap();
+        assert_eq!(template.wayland, Some(true));
+        assert_eq!(template.mangohud, Some(false));
+        let mut doc = crate::config::new_document();
+        doc["prefix"] = value("/p");
+        doc["runner"] = value("wine");
+        doc["arch"] = value("win64");
+        template.apply(&mut doc);
+        let text = doc.to_string();
+        assert!(text.contains("wayland = true\n"), "{text}");
+        assert!(text.contains("mangohud = false\n"), "{text}");
+        assert!(
+            text.contains("[gamescope]\nwidth = 1920\nwindow = \"fullscreen\"\n"),
+            "{text}"
+        );
+        let config = crate::config::EnvironmentConfig::parse(Path::new("/t.toml"), &text).unwrap();
+        assert_eq!(config.gamescope, template.gamescope);
+
+        write(root.path(), "off", "gamescope = false\n");
+        let off = templates(root.path()).resolve("off").unwrap();
+        let mut doc = DocumentMut::new();
+        off.apply(&mut doc);
+        assert_eq!(doc.to_string(), "gamescope = false\n");
+
+        write(root.path(), "on", "gamescope = true\n");
+        assert!(templates(root.path()).resolve("on").is_err());
     }
 }
