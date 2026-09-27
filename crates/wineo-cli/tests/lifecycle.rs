@@ -945,6 +945,75 @@ fn gamemode_can_be_set_and_unset_at_every_level() {
 }
 
 #[test]
+fn wayland_x11_fallback_is_noted_once_for_each_launch_command() {
+    let f = Fixture::new();
+    f.install_runner("wayland-wine");
+    let driver = f
+        .root
+        .path()
+        .join("data/wineo/runners/wayland-wine/lib/wine/x86_64-unix/winewayland.so");
+    fs::create_dir_all(driver.parent().unwrap()).unwrap();
+    fs::write(driver, b"").unwrap();
+    f.environment_with_runner(
+        "app",
+        "wayland-wine",
+        "wayland = true\n[targets.app]\nexe = 'app'\n",
+    );
+
+    let expected = "Not a Wayland session, starting app on X11.\n";
+    let started = f
+        .wineo()
+        .env_remove("WAYLAND_DISPLAY")
+        .args(["start", "app"])
+        .output()
+        .unwrap();
+    assert_success(&started);
+    assert_eq!(stderr(&started), expected);
+    wait_for("the program to start", || f.fake_program_running("app"));
+
+    let restarted = f
+        .wineo()
+        .env_remove("WAYLAND_DISPLAY")
+        .args(["restart", "app"])
+        .output()
+        .unwrap();
+    assert_success(&restarted);
+    assert_eq!(stderr(&restarted), expected);
+    assert_success(&f.run(&["stop", "app"]));
+
+    assert_success(&f.run(&["set", "app", "targets.app.exe=exit-0"]));
+    let ran = f
+        .wineo()
+        .env_remove("WAYLAND_DISPLAY")
+        .args(["run", "app"])
+        .output()
+        .unwrap();
+    assert_success(&ran);
+    assert_eq!(stderr(&ran), expected);
+}
+
+#[test]
+fn status_shows_launch_settings_in_text_and_json() {
+    let f = Fixture::new();
+    f.environment(
+        "app",
+        "wayland = true\nmangohud = true\n[gamescope]\n[targets.app]\nexe = 'app'\n",
+    );
+    let shown = f.run(&["status", "app"]);
+    assert_success(&shown);
+    for line in ["gamescope  on", "mangohud  on", "wayland   on"] {
+        assert!(stdout(&shown).contains(line), "{}", stdout(&shown));
+    }
+    let json = f.run(&["status", "app", "--json"]);
+    assert_success(&json);
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    for key in ["gamescope", "mangohud", "wayland"] {
+        assert_eq!(value[key], true, "{key}: {}", stdout(&json));
+    }
+    assert_eq!(value["gamemode"], false);
+}
+
+#[test]
 fn runners_tells_wine_and_proton_apart() {
     let f = Fixture::new();
     f.install_runner("wine-tkg");

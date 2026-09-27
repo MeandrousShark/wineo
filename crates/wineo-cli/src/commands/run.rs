@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
-use wineo_core::launch::{Launch, Overrides, parse_launch_env_assignment};
+use wineo_core::launch::{Launch, Overrides, Wayland, parse_launch_env_assignment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::process;
@@ -73,6 +73,13 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let Some(_lock) = runtime.try_lock()? else {
         bail!("{} is already running", environment.name);
     };
+
+    if launch.wayland == Wayland::NoSession {
+        note(&format!(
+            "Not a Wayland session, starting {} on X11.",
+            environment.name
+        ));
+    }
 
     let supervisor = Supervisor::listen()?;
     // A separate process group keeps the terminal's Ctrl+C away from wine, so

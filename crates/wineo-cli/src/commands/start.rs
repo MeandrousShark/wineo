@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use anyhow::{Context, bail};
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
-use wineo_core::launch::{Launch, Overrides};
+use wineo_core::launch::{Launch, Overrides, Wayland};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::{RunStatus, Runtime};
@@ -65,6 +65,10 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
         }
         already_running(name, &overrides);
         return Ok(false);
+    }
+
+    if launch.wayland == Wayland::NoSession {
+        eprintln!("Not a Wayland session, starting {name} on X11.");
     }
 
     let spec = Spec {
