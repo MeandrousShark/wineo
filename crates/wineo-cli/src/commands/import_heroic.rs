@@ -7,6 +7,7 @@ use wineo_core::components::Component;
 use wineo_core::config::{Arch, GlobalConfig, Target};
 use wineo_core::download::Provider;
 use wineo_core::environment::{self, Environment, HeroicIdSnapshot};
+use wineo_core::gamescope::GamescopeSetting;
 use wineo_core::heroic::{
     HeroicCandidate, HeroicGameKind, HeroicImport, HeroicIssue, HeroicIssueKind, HeroicRunnerKind,
     HeroicSharedPrefix, HeroicSource, ReviewItem, SettingsReview,
@@ -203,7 +204,13 @@ impl ReviewEvidence {
                     && issue.kind == HeroicIssueKind::Conflict)
                 && !(field == Some("autoInstallDxvk") && imported.dxvk.is_some())
                 && !(field == Some("autoInstallVkd3d") && imported.vkd3d.is_some())
+                && !(field == Some("enableHDR") && imported.wayland == Some(true))
         });
+        for issue in &imported.issues {
+            if issue.field.as_deref() == Some("enableWineWayland") && !self.issues.contains(issue) {
+                self.issues.push(issue.clone());
+            }
+        }
         self.settings = imported.settings_review.clone();
     }
 }
@@ -265,6 +272,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         drop_runner_conflicts(&mut imported);
         suppress_covered_settings(&mut imported, &runner);
         carry_over_components(&mut imported, &runner);
+        carry_over_wayland(&mut imported, &runner);
         evidence.resolved(&imported, &runner);
         install::check_available(
             paths,
@@ -572,6 +580,7 @@ fn guided<I: Input, W: Write>(
     drop_runner_conflicts(&mut imported);
     suppress_covered_settings(&mut imported, &resolved);
     carry_over_components(&mut imported, &resolved);
+    carry_over_wayland(&mut imported, &resolved);
     evidence.resolved(&imported, &resolved);
     ensure_components_available(
         paths,
@@ -1169,6 +1178,7 @@ fn classify_candidates(
         drop_runner_conflicts(&mut imported);
         suppress_covered_settings(&mut imported, runner);
         carry_over_components(&mut imported, runner);
+        carry_over_wayland(&mut imported, runner);
         evidence.resolved(&imported, runner);
         let inspection = match prefix_inspection(&imported, runner, args.arch) {
             Ok(inspection) => inspection,
@@ -2463,6 +2473,9 @@ fn imported_settings(
         targets,
         env: imported.env.clone(),
         gamemode: imported.gamemode,
+        wayland: imported.wayland,
+        mangohud: imported.mangohud,
+        gamescope: imported.gamescope.clone(),
         dxvk: imported.dxvk.clone(),
         vkd3d: imported.vkd3d.clone(),
         heroic_id: Some(imported.id.clone()),
@@ -2579,6 +2592,52 @@ fn carry_over_components(imported: &mut HeroicImport, runner: &Runner) {
     }
 }
 
+fn carry_over_wayland(imported: &mut HeroicImport, runner: &Runner) {
+    if !imported.enable_wine_wayland {
+        return;
+    }
+    if !runner.supports_wayland() {
+        let detail = format!("{} does not support Wine Wayland; skipped", runner.name());
+        imported.issues.push(HeroicIssue {
+            kind: HeroicIssueKind::NeedsAttention,
+            field: Some("enableWineWayland".to_owned()),
+            message: detail.clone(),
+        });
+        imported.settings_review.needs_attention.push(ReviewItem {
+            field: "enableWineWayland".to_owned(),
+            detail,
+        });
+        return;
+    }
+    imported.wayland = Some(true);
+    imported.settings_review.carried.push(ReviewItem {
+        field: "enableWineWayland".to_owned(),
+        detail: "wayland=true".to_owned(),
+    });
+    if imported.enable_hdr {
+        let key = if runner.is_proton() {
+            "PROTON_ENABLE_HDR"
+        } else {
+            "DXVK_HDR"
+        };
+        imported
+            .env
+            .entry(key.to_owned())
+            .or_insert_with(|| "1".to_owned());
+        imported.settings_review.carried.push(ReviewItem {
+            field: "enableHDR".to_owned(),
+            detail: format!("{key} retained"),
+        });
+        imported
+            .issues
+            .retain(|issue| issue.field.as_deref() != Some("enableHDR"));
+        imported
+            .settings_review
+            .unsupported
+            .retain(|item| item.field != "enableHDR");
+    }
+}
+
 /// Removes the Unsupported issue for `field`, if there is one, and says
 /// whether there was: Heroic's own setting was on.
 fn take_unsupported_issue(imported: &mut HeroicImport, field: &str) -> bool {
@@ -2665,7 +2724,13 @@ fn reject_unresolved(imported: &HeroicImport) -> anyhow::Result<()> {
     let blocking: Vec<_> = imported
         .issues
         .iter()
-        .filter(|issue| !matches!(issue.kind, HeroicIssueKind::External))
+        .filter(|issue| {
+            !matches!(issue.kind, HeroicIssueKind::External)
+                && !(issue.kind == HeroicIssueKind::NeedsAttention
+                    && issue.field.as_deref().is_some_and(|field| {
+                        field == "enableWineWayland" || field.starts_with("gamescope.")
+                    }))
+        })
         .collect();
     if !blocking.is_empty() {
         for issue in blocking {
@@ -2821,6 +2886,20 @@ fn dropped_conflict(issue: &HeroicIssue) -> bool {
         )
 }
 
+fn gamescope_display(setting: &GamescopeSetting) -> String {
+    match setting {
+        GamescopeSetting::Off => "off".to_owned(),
+        GamescopeSetting::On(game) => {
+            let args = game.args(false);
+            if args.is_empty() {
+                "on".to_owned()
+            } else {
+                format!("on: {}", display_args(&args))
+            }
+        }
+    }
+}
+
 /// Proton handles a prefix with both registry layouts, so the conflict
 /// Heroic's reader raises for it is not worth showing before the runner is
 /// picked. It is dropped for real once one is.
@@ -2867,6 +2946,31 @@ fn show_game_summary<I: Input, W: Write>(
         blocks.push(Block {
             label: "gamemode",
             lines: vec![on_off(gamemode).to_owned()],
+        });
+    }
+    if imported.enable_wine_wayland {
+        blocks.push(Block {
+            label: "wayland",
+            lines: vec![
+                if imported.wayland == Some(true) {
+                    "on"
+                } else {
+                    "requested"
+                }
+                .to_owned(),
+            ],
+        });
+    }
+    if imported.mangohud == Some(true) {
+        blocks.push(Block {
+            label: "mangohud",
+            lines: vec!["on".to_owned()],
+        });
+    }
+    if let Some(gamescope) = &imported.gamescope {
+        blocks.push(Block {
+            label: "gamescope",
+            lines: vec![gamescope_display(gamescope)],
         });
     }
     if let Some(dxvk) = &imported.dxvk {
@@ -3036,6 +3140,31 @@ fn final_facts_text(
         label: "runner",
         lines: vec![runner_label],
     });
+    if imported.enable_wine_wayland {
+        blocks.push(Block {
+            label: "wayland",
+            lines: vec![
+                if imported.wayland == Some(true) {
+                    "on"
+                } else {
+                    "not imported"
+                }
+                .to_owned(),
+            ],
+        });
+    }
+    if imported.mangohud == Some(true) {
+        blocks.push(Block {
+            label: "mangohud",
+            lines: vec!["on".to_owned()],
+        });
+    }
+    if let Some(gamescope) = &imported.gamescope {
+        blocks.push(Block {
+            label: "gamescope",
+            lines: vec![gamescope_display(gamescope)],
+        });
+    }
     if let Some(dxvk) = &imported.dxvk {
         blocks.push(Block {
             label: "dxvk",
@@ -3324,6 +3453,9 @@ fn log_text(
             .unwrap_or_else(|| "default".to_owned())
     ));
     out.push_str(&format!("  gamemode: {:?}\n", imported.gamemode));
+    out.push_str(&format!("  wayland: {:?}\n", imported.wayland));
+    out.push_str(&format!("  mangohud: {:?}\n", imported.mangohud));
+    out.push_str(&format!("  gamescope: {:?}\n", imported.gamescope));
     if !imported.env.is_empty() {
         out.push_str("  environment:\n");
         for (key, value) in &imported.env {
@@ -3569,6 +3701,11 @@ mod tests {
             cwd: Some(root.join("drive_c")),
             env: BTreeMap::new(),
             gamemode: Some(true),
+            wayland: None,
+            mangohud: None,
+            gamescope: None,
+            enable_wine_wayland: false,
+            enable_hdr: false,
             dxvk: None,
             vkd3d: None,
             issues: Vec::new(),
@@ -3619,6 +3756,81 @@ mod tests {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         }
         Runners::at(root.to_owned()).resolve(name).unwrap()
+    }
+
+    #[test]
+    fn wayland_and_hdr_use_the_chosen_runner_without_overriding_heroic_env() {
+        let root = tempdir().unwrap();
+        let runners = root.path().join("runners");
+        let wine = fake_wine_runner(&runners, "wine-tkg");
+        let (mut imported, inspection, request) = reviewed_import(root.path());
+        imported.enable_wine_wayland = true;
+        imported.enable_hdr = true;
+        carry_over_wayland(&mut imported, &wine);
+        assert_eq!(imported.wayland, None);
+        assert_eq!(imported.env.get("DXVK_HDR"), None);
+        assert!(
+            imported
+                .issues
+                .iter()
+                .any(|issue| issue.field.as_deref() == Some("enableWineWayland"))
+        );
+        let settings = imported_settings(
+            &imported,
+            &inspection,
+            &request,
+            &DesktopChoice {
+                enabled: false,
+                name: "Game".to_owned(),
+            },
+        );
+        assert_eq!(settings.wayland, None);
+        fs::create_dir_all(runners.join("wine-tkg/lib/wine/x86_64-unix")).unwrap();
+        fs::write(
+            runners.join("wine-tkg/lib/wine/x86_64-unix/winewayland.so"),
+            "",
+        )
+        .unwrap();
+        let wine = Runners::at(runners.clone()).resolve("wine-tkg").unwrap();
+        let (mut imported, inspection, request) = reviewed_import(root.path());
+        imported.enable_wine_wayland = true;
+        imported.enable_hdr = true;
+        imported
+            .env
+            .insert("DXVK_HDR".to_owned(), "custom".to_owned());
+        carry_over_wayland(&mut imported, &wine);
+        assert_eq!(imported.wayland, Some(true));
+        assert_eq!(imported.env["DXVK_HDR"], "custom");
+        let settings = imported_settings(
+            &imported,
+            &inspection,
+            &request,
+            &DesktopChoice {
+                enabled: false,
+                name: "Game".to_owned(),
+            },
+        );
+        assert_eq!(settings.wayland, Some(true));
+        assert_eq!(settings.env["DXVK_HDR"], "custom");
+
+        fake_proton_runner(&runners, "proton-test");
+        fs::write(
+            runners.join("proton-test/proton"),
+            "#!/bin/sh\n# PROTON_ENABLE_WAYLAND\n",
+        )
+        .unwrap();
+        let proton = Runners::at(runners).resolve("proton-test").unwrap();
+        let (mut imported, _, _) = reviewed_import(root.path());
+        imported.enable_wine_wayland = true;
+        imported.enable_hdr = true;
+        carry_over_wayland(&mut imported, &proton);
+        assert_eq!(imported.wayland, Some(true));
+        assert_eq!(imported.env["PROTON_ENABLE_HDR"], "1");
+        assert!(!imported.env.contains_key("DXVK_HDR"));
+        let (mut imported, _, _) = reviewed_import(root.path());
+        imported.enable_hdr = true;
+        carry_over_wayland(&mut imported, &proton);
+        assert_eq!(imported.env.get("PROTON_ENABLE_HDR"), None);
     }
 
     #[test]
@@ -4340,6 +4552,11 @@ mod tests {
                 ("PROTON_ENABLE_WAYLAND".to_owned(), "1".to_owned()),
             ]),
             gamemode: Some(true),
+            wayland: None,
+            mangohud: None,
+            gamescope: None,
+            enable_wine_wayland: false,
+            enable_hdr: false,
             dxvk: None,
             vkd3d: None,
             issues: vec![
@@ -4442,6 +4659,11 @@ mod tests {
             cwd: exe.parent().map(Path::to_owned),
             env: BTreeMap::new(),
             gamemode: Some(true),
+            wayland: None,
+            mangohud: None,
+            gamescope: None,
+            enable_wine_wayland: false,
+            enable_hdr: false,
             dxvk: None,
             vkd3d: None,
             issues: Vec::new(),

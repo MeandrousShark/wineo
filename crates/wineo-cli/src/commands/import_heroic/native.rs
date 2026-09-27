@@ -19,8 +19,8 @@ use wineo_core::paths::Paths;
 
 use super::{
     Args, ArtChoice, Block, Bulk, BulkRow, DesktopChoice, OutputOnly, RowStatus, display_args,
-    display_env_value, edit_art, edit_desktop, fetch_art, on_off, print_issue, render_blocks,
-    review_art,
+    display_env_value, edit_art, edit_desktop, fetch_art, gamescope_display, on_off, print_issue,
+    render_blocks, review_art,
 };
 use crate::commands::art::{Access, Pick};
 use crate::commands::desktop;
@@ -143,6 +143,8 @@ fn settings(imported: &HeroicNativeImport, desktop: &DesktopChoice) -> ImportedS
         targets: BTreeMap::from([(TARGET.to_owned(), target)]),
         env: imported.env.clone(),
         gamemode: imported.gamemode,
+        mangohud: imported.mangohud,
+        gamescope: imported.gamescope.clone(),
         heroic_id: Some(imported.id.clone()),
         ..ImportedSettings::default()
     }
@@ -181,6 +183,18 @@ fn summary(paths: &Paths, imported: &HeroicNativeImport, name: &str) -> String {
         label: "gamemode",
         lines: vec![on_off(imported.gamemode.unwrap_or(false)).to_owned()],
     });
+    if imported.mangohud == Some(true) {
+        blocks.push(Block {
+            label: "mangohud",
+            lines: vec!["on".to_owned()],
+        });
+    }
+    if let Some(gamescope) = &imported.gamescope {
+        blocks.push(Block {
+            label: "gamescope",
+            lines: vec![gamescope_display(gamescope)],
+        });
+    }
     let warnings: Vec<String> = imported
         .issues
         .iter()

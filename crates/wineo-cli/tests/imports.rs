@@ -486,6 +486,130 @@ fn heroic_bulk_preserves_omission_evidence_in_verbose_output_and_plain_logs() {
 }
 
 #[test]
+fn heroic_bulk_imports_gamescope_mangohud_and_supported_wine_wayland_hdr() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    f.install_runner("wine-test");
+    let root = f.root.path().join("data/wineo/runners/wine-test");
+    fs::create_dir_all(root.join("lib/wine/x86_64-unix")).unwrap();
+    fs::write(root.join("lib/wine/x86_64-unix/winewayland.so"), "").unwrap();
+    fs::write(heroic.join("GamesConfig/a.json"), r#"{"a":{"enableWineWayland":true,"enableHDR":true,"showMangohud":true,"gamescope":{"enableUpscaling":true,"enableLimiter":true,"gameWidth":"1920","upscaleMethod":"fsr","fpsLimiter":"60","additionalOptions":"--label 'two words'"},"enviromentOptions":[{"key":"DXVK_HDR","value":"custom"}]}}"#).unwrap();
+    let output = f.run(&[
+        "-v",
+        "import",
+        "heroic",
+        "--config-dir",
+        heroic.to_str().unwrap(),
+        "--all",
+        "--yes",
+        "--runner",
+        "wine-test",
+    ]);
+    assert_success(&output);
+    let text = f.created_config("alpha");
+    let path = f.config_dir().join("environments/alpha.toml");
+    let config = wineo_core::config::EnvironmentConfig::parse(&path, &text).unwrap();
+    assert_eq!(config.wayland, Some(true));
+    assert_eq!(config.mangohud, Some(true));
+    assert_eq!(config.env["DXVK_HDR"], "custom");
+    let game = config.gamescope.unwrap();
+    let game = game.on().unwrap();
+    assert_eq!((game.width, game.fps_limit), (Some(1920), Some(60)));
+    assert_eq!(game.args, ["--label", "two words"]);
+    assert!(text.contains("[gamescope]"), "{text}");
+    let log = fs::read_to_string(f.root.path().join("state/wineo/imports/alpha.log")).unwrap();
+    for field in [
+        "wayland: Some(true)",
+        "mangohud: Some(true)",
+        "gamescope: Some(On(",
+        "enableHDR",
+    ] {
+        assert!(log.contains(field), "{field}: {log}");
+    }
+}
+
+#[test]
+fn heroic_direct_skips_wayland_on_unsupported_runner() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    fs::write(heroic.join("GamesConfig/a.json"), r#"{"a":{"enableWineWayland":true,"showMangohud":true,"gamescope":{"enableUpscaling":false,"enableLimiter":false}}}"#).unwrap();
+    let output = heroic_import(&f, &heroic, &["--game", "a", "-n", "alpha"]);
+    assert_success(&output);
+    let out = stdout(&output);
+    assert!(
+        out.contains("wayland") && out.contains("does not support Wine Wayland"),
+        "{out}"
+    );
+    let text = f.created_config("alpha");
+    assert!(!text.contains("wayland ="), "{text}");
+    assert!(!text.contains("[gamescope]"), "{text}");
+    assert!(text.contains("mangohud = true"), "{text}");
+}
+
+#[test]
+fn heroic_direct_skips_non_numeric_gamescope_fields_with_a_warning() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    fs::write(heroic.join("GamesConfig/a.json"), r#"{"a":{"gamescope":{"enableUpscaling":true,"gameWidth":"bad","gameHeight":"","upscaleMethod":"integer"}}}"#).unwrap();
+    let output = heroic_import(&f, &heroic, &["--game", "a", "-n", "alpha"]);
+    assert_success(&output);
+    let out = stdout(&output);
+    assert!(
+        out.contains("gamescope gameWidth is not a number; skipped"),
+        "{out}"
+    );
+    let text = f.created_config("alpha");
+    assert!(text.contains("scaler = \"integer\""), "{text}");
+    assert!(!text.contains("width ="), "{text}");
+}
+
+#[test]
+fn heroic_proton_import_adds_hdr_only_with_supported_wayland() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    f.install_proton("proton-test");
+    symlink(".", prefix.join("pfx")).unwrap();
+    let proton = f.root.path().join("data/wineo/runners/proton-test/proton");
+    fs::write(&proton, "#!/bin/sh\n# PROTON_ENABLE_WAYLAND\nexit 0\n").unwrap();
+    let settings = fs::read_to_string(heroic.join("config.json"))
+        .unwrap()
+        .replace(
+            "\"type\":\"wine\",\"name\":\"System\",\"bin\":\"wine\"",
+            &format!(
+                "\"type\":\"proton\",\"name\":\"proton-test\",\"bin\":\"{}\"",
+                proton.display()
+            ),
+        );
+    fs::write(heroic.join("config.json"), settings).unwrap();
+    fs::write(
+        heroic.join("GamesConfig/a.json"),
+        r#"{"a":{"enableWineWayland":true,"enableHDR":true}}"#,
+    )
+    .unwrap();
+    let output = f.run(&[
+        "import",
+        "heroic",
+        "--config-dir",
+        heroic.to_str().unwrap(),
+        "--game",
+        "a",
+        "-n",
+        "alpha",
+        "--runner",
+        "proton-test",
+    ]);
+    assert_success(&output);
+    let text = f.created_config("alpha");
+    assert!(text.contains("wayland = true"), "{text}");
+    assert!(text.contains("PROTON_ENABLE_HDR = \"1\""), "{text}");
+    assert!(!text.contains("DXVK_HDR"), "{text}");
+}
+
+#[test]
 fn heroic_disable_umu_disclosure_follows_runner_and_per_game_setting() {
     for (proton, per_game, global_only) in [
         (true, Some(true), false),
@@ -930,6 +1054,32 @@ fn a_native_heroic_game_imports_as_a_native_environment() {
 
     // It runs like any native environment.
     assert_success(&f.run(&["run", "dusk"]));
+}
+
+#[test]
+fn native_heroic_import_carries_gamescope_and_mangohud_but_not_wine_keys() {
+    let f = Fixture::new();
+    let (heroic, _) = native_heroic(&f);
+    fs::write(heroic.join("GamesConfig/dusk.json"), r#"{"dusk":{"enableWineWayland":true,"enableHDR":true,"showMangohud":true,"gamescope":{"enableUpscaling":true,"upscaleMethod":"stretch","windowType":"borderless","additionalOptions":"--label 'two words'"}}}"#).unwrap();
+    let output = heroic_native(&f, &heroic, &["--game", "dusk", "-n", "dusk"]);
+    assert_success(&output);
+    let out = stdout(&output);
+    assert!(
+        out.contains("mangohud") && out.contains("gamescope"),
+        "{out}"
+    );
+    assert!(!out.contains("enableWineWayland"), "{out}");
+    let text = f.created_config("dusk");
+    let path = f.config_dir().join("environments/dusk.toml");
+    let config = wineo_core::config::EnvironmentConfig::parse(&path, &text).unwrap();
+    assert_eq!(config.mangohud, Some(true));
+    let game = config.gamescope.unwrap();
+    let game = game.on().unwrap();
+    assert_eq!(game.scaler, Some(wineo_core::gamescope::Scaler::Stretch));
+    assert_eq!(game.window, Some(wineo_core::gamescope::Window::Borderless));
+    assert_eq!(game.args, ["--label", "two words"]);
+    assert!(!text.contains("wayland ="), "{text}");
+    assert!(!text.contains("DXVK_HDR"), "{text}");
 }
 
 #[test]
