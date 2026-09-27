@@ -162,7 +162,7 @@ pub fn create(runner: &Runner, dir: &Path, arch: Arch, log: &Path) -> Result<()>
         .context(|| format!("failed to open {}", log.display()))?;
     // umu creates the prefix when it is handed an empty program, and waits for
     // it. Proton prefixes are always win64, so WINEARCH means nothing there.
-    let mut command = runner.command(dir, None)?;
+    let mut command = runner.command(dir, &[])?;
     if runner.is_proton() {
         command.arg("");
     } else {
@@ -212,7 +212,7 @@ pub fn disable_menu_builder(runner: &Runner, dir: &Path, log: &Path) -> Result<(
         .try_clone()
         .context(|| format!("failed to open {}", log.display()))?;
     let status = runner
-        .command(dir, None)?
+        .command(dir, &[])?
         .args([
             "reg",
             "add",

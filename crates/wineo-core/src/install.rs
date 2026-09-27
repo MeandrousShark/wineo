@@ -413,7 +413,7 @@ fn clear_override(runner: &Runner, wine_prefix: &Path, dll: &str) {
 }
 
 fn reg(runner: &Runner, wine_prefix: &Path) -> Result<std::process::Command> {
-    let mut command = runner.command(wine_prefix, None)?;
+    let mut command = runner.command(wine_prefix, &[])?;
     command
         .arg("reg")
         .stdin(Stdio::null())

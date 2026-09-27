@@ -120,7 +120,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // umu ships winetricks and runs it inside the container, so a Proton
     // environment needs no winetricks on PATH and no WINE to point at.
     let mut command = if runner.is_proton() {
-        let mut command = runner.command(&prefix, None)?;
+        let mut command = runner.command(&prefix, &[])?;
         command.arg("winetricks");
         command
     } else {

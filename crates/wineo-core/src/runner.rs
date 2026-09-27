@@ -1,4 +1,4 @@
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -170,17 +170,36 @@ impl Runner {
         }
     }
 
+    /// Whether this build has Wine's Wayland driver. Proton also has to know
+    /// the variable that turns it on, which older builds ignore.
+    pub fn supports_wayland(&self) -> bool {
+        match &self.kind {
+            Kind::Wine { wine, .. } => {
+                let Some(root) = wine.parent().and_then(Path::parent) else {
+                    return false;
+                };
+                ["lib", "lib64"].iter().any(|lib| {
+                    root.join(lib)
+                        .join("wine/x86_64-unix/winewayland.so")
+                        .is_file()
+                })
+            }
+            Kind::Proton { root } => std::fs::read(root.join("proton"))
+                .is_ok_and(|script| contains(&script, b"PROTON_ENABLE_WAYLAND")),
+        }
+    }
+
     /// A command that runs a Windows program in `prefix`, through wine or
     /// through umu. The caller appends the program and its arguments. Also
     /// blocks wine's own menu builder, unless the inherited environment already
     /// opts back in. `prefix` is the configured directory, not `wine_prefix`:
     /// umu makes `pfx/` underneath it itself.
-    pub fn command(&self, prefix: &Path, wrapper: Option<&Path>) -> Result<Command> {
+    pub fn command(&self, prefix: &Path, wrappers: &[OsString]) -> Result<Command> {
         let mut command = match &self.kind {
-            Kind::Wine { wine, .. } => wrapped(wine, wrapper),
+            Kind::Wine { wine, .. } => wrapped(wine, wrappers),
             Kind::Proton { root } => {
                 let umu = find_on_path(UMU).ok_or(Error::ProgramNotFound(UMU))?;
-                let mut command = wrapped(&umu, wrapper);
+                let mut command = wrapped(&umu, wrappers);
                 command.env("PROTONPATH", root);
                 command
             }
@@ -306,7 +325,7 @@ impl Runner {
             return Ok(());
         }
         quietly(
-            self.command(prefix, None)?
+            self.command(prefix, &[])?
                 .args(["wineboot", "--end-session"]),
         )
         .status()
@@ -336,7 +355,7 @@ impl Runner {
             .context(|| "failed to signal tracked process group".to_owned());
         }
         quietly(
-            self.command(prefix, None)?
+            self.command(prefix, &[])?
                 .args(["wineboot", "--end-session"]),
         )
         .status()
@@ -364,7 +383,7 @@ impl Runner {
             return Ok(ownership);
         }
         quietly(
-            self.command(prefix, None)?
+            self.command(prefix, &[])?
                 .args(["wineboot", "--end-session"]),
         )
         .status()
@@ -590,16 +609,23 @@ fn wait_for_owned_group(
     }
 }
 
-/// `program`, or `wrapper program` when something like gamemoderun wraps it.
-pub(crate) fn wrapped(program: &Path, wrapper: Option<&Path>) -> Command {
-    match wrapper {
-        Some(wrapper) => {
-            let mut command = Command::new(wrapper);
-            command.arg(program);
+/// `program`, or `wrappers... program` when something like gamemoderun
+/// wraps it. `wrappers` is a whole command line, flags included.
+pub(crate) fn wrapped(program: &Path, wrappers: &[OsString]) -> Command {
+    match wrappers.split_first() {
+        Some((first, rest)) => {
+            let mut command = Command::new(first);
+            command.args(rest).arg(program);
             command
         }
         None => Command::new(program),
     }
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 /// Adds `winemenubuilder.exe=d` to a `WINEDLLOVERRIDES` value, unless it
@@ -676,6 +702,64 @@ mod tests {
         assert_eq!(find_in_path(&path_var, "wine"), Some(wine));
         assert_eq!(find_in_path(&path_var, "wineserver"), None);
         assert_eq!(find_in_path(&OsString::new(), "wine"), None);
+    }
+
+    fn touch(path: &Path, text: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn a_wine_build_supports_wayland_when_it_ships_the_driver() {
+        let root = tempfile::tempdir().unwrap();
+        let build = |name: &str, lib: Option<&str>| {
+            let dir = root.path().join(name);
+            touch(&dir.join("bin/wine"), "");
+            if let Some(lib) = lib {
+                touch(&dir.join(lib).join("wine/x86_64-unix/winewayland.so"), "");
+            }
+            Runner::wine_build(
+                name.to_owned(),
+                dir.join("bin/wine"),
+                dir.join("bin/wineserver"),
+            )
+        };
+        assert!(build("lib", Some("lib")).supports_wayland());
+        assert!(build("lib64", Some("lib64")).supports_wayland());
+        assert!(!build("none", None).supports_wayland());
+        assert!(!build("elsewhere", Some("share")).supports_wayland());
+    }
+
+    #[test]
+    fn a_proton_build_supports_wayland_when_its_script_knows_the_variable() {
+        let root = tempfile::tempdir().unwrap();
+        let build = |name: &str, script: Option<&str>| {
+            let dir = root.path().join(name);
+            fs::create_dir_all(&dir).unwrap();
+            if let Some(script) = script {
+                touch(&dir.join("proton"), script);
+            }
+            Runner::proton(name.to_owned(), dir)
+        };
+        let script = "#!/usr/bin/env python3\nif 'PROTON_ENABLE_WAYLAND' in env:\n    pass\n";
+        assert!(build("GE-Proton11-7", Some(script)).supports_wayland());
+        assert!(!build("proton-9.0", Some("#!/usr/bin/env python3\n")).supports_wayland());
+        assert!(!build("broken", None).supports_wayland());
+    }
+
+    #[test]
+    fn wrappers_go_in_front_in_order() {
+        let command = wrapped(
+            Path::new("/usr/bin/wine"),
+            &["/usr/bin/gamescope".into(), "-f".into(), "--".into()],
+        );
+        assert_eq!(command.get_program(), "/usr/bin/gamescope");
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["-f", "--", "/usr/bin/wine"]);
+        assert_eq!(
+            wrapped(Path::new("/usr/bin/wine"), &[]).get_program(),
+            "/usr/bin/wine"
+        );
     }
 
     #[test]

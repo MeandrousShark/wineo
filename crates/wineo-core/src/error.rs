@@ -159,6 +159,19 @@ pub enum Error {
     )]
     GamemodeMissing(String),
 
+    #[error(
+        "gamescope is on for `{0}`, but it was not found or is not installed.\nInstall gamescope, or turn it off with `wineo set {0} gamescope=false`"
+    )]
+    GamescopeMissing(String),
+
+    #[error(
+        "mangohud is on for `{0}`, but it was not found or is not installed.\nInstall MangoHud, or turn it off with `wineo set {0} mangohud=false`"
+    )]
+    MangohudMissing(String),
+
+    #[error("wayland is on for {environment}, but {runner} doesn't support it")]
+    WaylandUnsupported { environment: String, runner: String },
+
     #[error("{} is larger than 32 MiB", .0.display())]
     ArtTooLarge(PathBuf),
 

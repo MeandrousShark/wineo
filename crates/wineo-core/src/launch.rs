@@ -6,9 +6,10 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{GlobalConfig, Kind, Target, validate_env_var};
+use crate::config::{GamescopeSetting, GlobalConfig, Kind, Target, validate_env_var};
 use crate::environment::Environment;
 use crate::error::{Error, Result};
+use crate::gamescope::Gamescope;
 use crate::paths::Paths;
 use crate::prefix;
 use crate::process::GroupOwnership;
@@ -18,6 +19,10 @@ use crate::winpath;
 
 /// The binary gamemode ships, which is not what the setting is called.
 pub(crate) const GAMEMODE: &str = "gamemoderun";
+const GAMESCOPE: &str = "gamescope";
+const MANGOHUD: &str = "mangohud";
+/// What gamescope's `--mangoapp` runs, which ships with MangoHud.
+const MANGOAPP: &str = "mangoapp";
 /// What wineo hands umu itself on a Proton launch, so none of it can be
 /// overridden from a config or the command line.
 const MANAGED: [&str; 3] = ["PROTONPATH", "GAMEID", "STORE"];
@@ -141,6 +146,56 @@ impl Host {
     }
 }
 
+/// The programs a game launch runs under. Paths are kept rather than flags,
+/// so a detached run cannot end up resolving a different one from a
+/// different PATH.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Wrappers {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gamescope: Option<PathBuf>,
+    /// Everything before gamescope's `--`, `--mangoapp` included.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gamescope_args: Vec<String>,
+    /// Only set when MangoHud is not already gamescope's `--mangoapp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mangohud: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gamemode: Option<PathBuf>,
+}
+
+impl Wrappers {
+    /// The command line in front of the program, in Heroic's order.
+    pub fn command_line(&self) -> Vec<OsString> {
+        let mut line = Vec::new();
+        if let Some(gamescope) = &self.gamescope {
+            line.push(gamescope.into());
+            line.extend(self.gamescope_args.iter().map(OsString::from));
+            line.push("--".into());
+        }
+        if let Some(mangohud) = &self.mangohud {
+            // A no-op on current MangoHud, which older versions need to hook
+            // OpenGL games. Heroic passes it too.
+            line.extend([mangohud.into(), "--dlsym".into()]);
+        }
+        if let Some(gamemode) = &self.gamemode {
+            line.push(gamemode.into());
+        }
+        line
+    }
+}
+
+/// Whether a launch runs on Wine's Wayland driver.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Wayland {
+    #[default]
+    Off,
+    On,
+    /// Asked for, but wineo itself isn't in a Wayland session, so the launch
+    /// runs on X11 instead.
+    NoSession,
+}
+
 /// A fully resolved program launch inside an environment.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Launch {
@@ -151,11 +206,11 @@ pub struct Launch {
     pub cwd: PathBuf,
     /// Merged from the global config, the environment, and the overrides.
     pub env: BTreeMap<String, String>,
-    /// The resolved `gamemoderun`, when this launch asked for gamemode. The
-    /// path is kept rather than the flag, so a detached run cannot end up
-    /// resolving a different one from a different PATH.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gamemode: Option<PathBuf>,
+    /// What runs in front of wine, umu, or a native program.
+    #[serde(default)]
+    pub wrappers: Wrappers,
+    #[serde(default)]
+    pub wayland: Wayland,
     /// What umu looks protonfixes up by. Only a game launch carries these: a
     /// tool has no reason to trigger a game's fix script, which can install
     /// things. Heroic draws the same line.
@@ -172,9 +227,29 @@ impl Launch {
         environment: &Environment,
         overrides: &Overrides,
     ) -> Result<Self> {
+        Self::target_in(
+            paths,
+            global,
+            environment,
+            overrides,
+            wayland_session(),
+            runner::find_on_path,
+        )
+    }
+
+    /// `target` with the session and the PATH lookup passed in, so tests
+    /// needn't change wineo's own environment.
+    fn target_in(
+        paths: &Paths,
+        global: &GlobalConfig,
+        environment: &Environment,
+        overrides: &Overrides,
+        session: bool,
+        find: impl Fn(&str) -> Option<PathBuf>,
+    ) -> Result<Self> {
         let (name, target) = resolve_target(environment, overrides.target.as_deref())?;
         let Kind::Wine(wine) = &environment.config.kind else {
-            return native_target(paths, global, environment, name, target, overrides);
+            return native_target(paths, global, environment, name, target, overrides, find);
         };
         let (runner, prefix) = open(paths, global, environment)?;
         // Windows paths and drive_c live in the wine prefix, which is `pfx/`
@@ -190,7 +265,14 @@ impl Launch {
         args.extend(overrides.args.iter().cloned());
         // Resolved here rather than at spawn time, so `start` refuses before it
         // hands anything to a supervisor.
-        let gamemode = gamemode_path(global, environment, target)?;
+        let wrappers = resolve_wrappers(global, environment, target, &find)?;
+        let wayland = check_wayland(global, environment, target, &runner)?;
+        // Only the session decides this, so an X11 login doesn't break every
+        // game with the setting.
+        let wayland = match wayland {
+            Wayland::On if !session => Wayland::NoSession,
+            wayland => wayland,
+        };
         Ok(Self {
             env: merge_env(&runner, global, environment, &overrides.env)?,
             gameid: runner.is_proton().then(|| wine.gameid.clone()).flatten(),
@@ -199,7 +281,8 @@ impl Launch {
             target: Some(name.to_owned()),
             args,
             cwd,
-            gamemode,
+            wrappers,
+            wayland,
         })
     }
 
@@ -224,7 +307,8 @@ impl Launch {
         {
             return Err(Error::CwdNotFound(cwd.to_owned()));
         }
-        gamemode_path(global, environment, target)?;
+        resolve_wrappers(global, environment, target, &runner::find_on_path)?;
+        check_wayland(global, environment, target, runner)?;
         merge_env(runner, global, environment, &overrides.env)?;
         Ok(())
     }
@@ -276,24 +360,30 @@ impl Launch {
             args: wine_args,
             cwd,
             // Running a tool in the prefix is not playing a game, so neither
-            // gamemode nor the game's protonfixes apply.
-            gamemode: None,
+            // the wrappers, Wayland, nor the game's protonfixes apply.
+            wrappers: Wrappers::default(),
+            wayland: Wayland::Off,
             gameid: None,
             store: None,
         })
     }
 
     pub fn command(&self) -> Command {
+        let wrappers = self.wrappers.command_line();
         let mut command = match &self.host {
             Host::Wine { runner, prefix } => runner
-                .command(prefix, self.gamemode.as_deref())
+                .command(prefix, &wrappers)
                 .expect("the runner was resolved when this launch was built"),
-            Host::Native { exe } => runner::wrapped(exe, self.gamemode.as_deref()),
+            Host::Native { exe } => runner::wrapped(exe, &wrappers),
         };
         command
             .args(&self.args)
             .current_dir(&self.cwd)
             .envs(&self.env);
+        // After `[env]`, so the setting wins over a stray DISPLAY there.
+        if let (Wayland::On, Host::Wine { runner, .. }) = (self.wayland, &self.host) {
+            with_wayland(&mut command, runner);
+        }
         // Left unset when this launch has none, so umu falls back to
         // `umu-default` and applies no fixes.
         if let Some(gameid) = &self.gameid {
@@ -316,17 +406,98 @@ pub fn gamemode(global: &GlobalConfig, environment: &Environment, target: Option
         .unwrap_or(false)
 }
 
-fn gamemode_path(
+/// Whether a launch shows MangoHud, decided like `gamemode`.
+pub fn mangohud(global: &GlobalConfig, environment: &Environment, target: Option<&Target>) -> bool {
+    target
+        .and_then(|target| target.mangohud)
+        .or(environment.config.mangohud)
+        .or(global.mangohud)
+        .unwrap_or(false)
+}
+
+/// Whether a launch asks for Wine's Wayland driver, decided like `gamemode`.
+/// Always off for a native environment, which has no Wine to switch.
+pub fn wayland(global: &GlobalConfig, environment: &Environment, target: Option<&Target>) -> bool {
+    environment.config.wine().is_some()
+        && target
+            .and_then(|target| target.wayland)
+            .or(environment.config.wayland)
+            .or(global.wayland)
+            .unwrap_or(false)
+}
+
+/// The gamescope settings a launch runs with. A target's setting replaces the
+/// environment's whole, so what's in the file is what runs.
+pub fn gamescope<'a>(
+    environment: &'a Environment,
+    target: Option<&'a Target>,
+) -> Option<&'a Gamescope> {
+    target
+        .and_then(|target| target.gamescope.as_ref())
+        .or(environment.config.gamescope.as_ref())
+        .and_then(GamescopeSetting::on)
+}
+
+/// Whether wineo itself runs in a Wayland session, which a Wayland launch
+/// needs to have anything to connect to.
+pub fn wayland_session() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty())
+}
+
+fn resolve_wrappers(
     global: &GlobalConfig,
     environment: &Environment,
     target: &Target,
-) -> Result<Option<PathBuf>> {
-    if !gamemode(global, environment, Some(target)) {
-        return Ok(None);
+    find: &impl Fn(&str) -> Option<PathBuf>,
+) -> Result<Wrappers> {
+    let name = &environment.name;
+    let mangohud = mangohud(global, environment, Some(target));
+    let mut wrappers = Wrappers::default();
+    if let Some(gamescope) = gamescope(environment, Some(target)) {
+        wrappers.gamescope =
+            Some(find(GAMESCOPE).ok_or_else(|| Error::GamescopeMissing(name.clone()))?);
+        if mangohud && find(MANGOAPP).is_none() {
+            return Err(Error::MangohudMissing(name.clone()));
+        }
+        wrappers.gamescope_args = gamescope.args(mangohud);
+    } else if mangohud {
+        wrappers.mangohud =
+            Some(find(MANGOHUD).ok_or_else(|| Error::MangohudMissing(name.clone()))?);
     }
-    runner::find_on_path(GAMEMODE)
-        .map(Some)
-        .ok_or_else(|| Error::GamemodeMissing(environment.name.clone()))
+    if gamemode(global, environment, Some(target)) {
+        wrappers.gamemode =
+            Some(find(GAMEMODE).ok_or_else(|| Error::GamemodeMissing(name.clone()))?);
+    }
+    Ok(wrappers)
+}
+
+/// `Wayland::On` when a launch asks for it, before the session is looked at.
+fn check_wayland(
+    global: &GlobalConfig,
+    environment: &Environment,
+    target: &Target,
+    runner: &Runner,
+) -> Result<Wayland> {
+    if !wayland(global, environment, Some(target)) {
+        return Ok(Wayland::Off);
+    }
+    if !runner.supports_wayland() {
+        return Err(Error::WaylandUnsupported {
+            environment: environment.name.clone(),
+            runner: runner.name().to_owned(),
+        });
+    }
+    Ok(Wayland::On)
+}
+
+/// Proton turns the driver on from a variable. Plain Wine falls back to it
+/// when there is no X display to use.
+fn with_wayland(command: &mut Command, runner: &Runner) {
+    if runner.is_proton() {
+        command.env("PROTON_ENABLE_WAYLAND", "1");
+    } else {
+        command.env_remove("DISPLAY");
+    }
 }
 
 /// Parses a `-e KEY=VALUE` flag for a command that always runs in a prefix.
@@ -380,6 +551,7 @@ fn native_target(
     name: &str,
     target: &Target,
     overrides: &Overrides,
+    find: impl Fn(&str) -> Option<PathBuf>,
 ) -> Result<Launch> {
     let env = merge(None, global, environment, &overrides.env)?;
     let (exe, default_cwd) = resolve_native_exe(
@@ -396,14 +568,15 @@ fn native_target(
     };
     let mut args = target.args.clone();
     args.extend(overrides.args.iter().cloned());
-    let gamemode = gamemode_path(global, environment, target)?;
+    let wrappers = resolve_wrappers(global, environment, target, &find)?;
     Ok(Launch {
         env,
         host: Host::Native { exe },
         target: Some(name.to_owned()),
         args,
         cwd,
-        gamemode,
+        wrappers,
+        wayland: Wayland::Off,
         gameid: None,
         store: None,
     })
@@ -1202,25 +1375,347 @@ mod tests {
         assert!(!set.contains_key(OsStr::new("PROTONPATH")));
     }
 
+    /// Every wrapper resolves to `/bin/<name>`.
+    fn found(program: &str) -> Option<PathBuf> {
+        Some(PathBuf::from("/bin").join(program))
+    }
+
+    fn command_line(command: &Command) -> Vec<String> {
+        std::iter::once(command.get_program())
+            .chain(command.get_args())
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// A native launch of `/usr/bin/dusklight -x` under whatever `text`
+    /// turns on, with `global` underneath.
+    fn wrapped_native(global: &str, text: &str) -> Result<Vec<String>> {
+        let f = fixture();
+        let global = GlobalConfig::parse(Path::new("/g.toml"), global).unwrap();
+        let env = native(
+            "dusk",
+            &format!("{text}\n[targets.game]\nexe = '/bin/sh'\nargs = [\"-x\"]\n"),
+        );
+        let launch =
+            Launch::target_in(&f.paths, &global, &env, &Overrides::default(), true, found)?;
+        Ok(command_line(&launch.command()))
+    }
+
     #[test]
-    fn gamemode_wraps_a_native_command() {
+    fn wrappers_run_in_heroic_order() {
+        let line = |global: &str, text: &str| wrapped_native(global, text).unwrap().join(" ");
+        assert_eq!(line("", ""), "/bin/sh -x");
+        assert_eq!(line("gamemode = true", ""), "/bin/gamemoderun /bin/sh -x");
+        assert_eq!(
+            line("mangohud = true", ""),
+            "/bin/mangohud --dlsym /bin/sh -x"
+        );
+        assert_eq!(line("", "[gamescope]"), "/bin/gamescope -- /bin/sh -x");
+        assert_eq!(
+            line("gamemode = true\nmangohud = true", ""),
+            "/bin/mangohud --dlsym /bin/gamemoderun /bin/sh -x"
+        );
+        assert_eq!(
+            line(
+                "gamemode = true",
+                "[gamescope]\nwidth = 1280\nheight = 720\nwindow = \"fullscreen\"\nargs = [\"--hdr-enabled\"]"
+            ),
+            "/bin/gamescope -w 1280 -h 720 -f --hdr-enabled -- /bin/gamemoderun /bin/sh -x"
+        );
+        // Under gamescope, MangoHud is its flag rather than a wrapper.
+        assert_eq!(
+            line("mangohud = true", "[gamescope]\nfps_limit = 60"),
+            "/bin/gamescope -r 60 --mangoapp -- /bin/sh -x"
+        );
+        assert_eq!(
+            line(
+                "gamemode = true\nmangohud = true",
+                "[gamescope]\nargs = [\"--expose-wayland\"]"
+            ),
+            "/bin/gamescope --mangoapp --expose-wayland -- /bin/gamemoderun /bin/sh -x"
+        );
+    }
+
+    #[test]
+    fn wrappers_go_in_front_of_wine() {
         let launch = Launch {
-            host: Host::Native {
-                exe: PathBuf::from("/usr/bin/dusklight"),
+            host: Host::Wine {
+                runner: Runner::fake("wine"),
+                prefix: PathBuf::from("/p"),
             },
-            target: Some("game".to_owned()),
-            args: vec!["-x".to_owned()],
+            target: Some("app".to_owned()),
+            args: vec!["app.exe".to_owned()],
             cwd: PathBuf::from("/"),
             env: BTreeMap::new(),
-            gamemode: Some(PathBuf::from("/usr/bin/gamemoderun")),
+            wrappers: Wrappers {
+                gamescope: Some(PathBuf::from("/bin/gamescope")),
+                gamescope_args: vec!["-f".to_owned(), "--mangoapp".to_owned()],
+                mangohud: None,
+                gamemode: Some(PathBuf::from("/bin/gamemoderun")),
+            },
+            wayland: Wayland::Off,
             gameid: None,
             store: None,
         };
-        let command = launch.command();
-        assert_eq!(command.get_program(), "/usr/bin/gamemoderun");
-        let args: Vec<_> = command.get_args().collect();
-        assert_eq!(args, ["/usr/bin/dusklight", "-x"]);
-        assert_eq!(command.get_envs().count(), 0);
+        let wine = Runner::fake("wine")
+            .wine_path()
+            .unwrap()
+            .display()
+            .to_string();
+        assert_eq!(
+            command_line(&launch.command()),
+            [
+                "/bin/gamescope",
+                "-f",
+                "--mangoapp",
+                "--",
+                "/bin/gamemoderun",
+                &wine,
+                "app.exe"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_missing_wrapper_refuses_the_launch() {
+        let f = fixture();
+        let launch = |text: &str, missing: &'static str| {
+            let env = native(
+                "dusk",
+                &format!("{text}\n[targets.game]\nexe = '/bin/sh'\n"),
+            );
+            Launch::target_in(
+                &f.paths,
+                &GlobalConfig::default(),
+                &env,
+                &Overrides::default(),
+                true,
+                move |program: &str| (program != missing).then(|| found(program)).flatten(),
+            )
+            .map(|_| ())
+        };
+        assert!(matches!(
+            launch("[gamescope]", "gamescope"),
+            Err(Error::GamescopeMissing(name)) if name == "dusk"
+        ));
+        assert!(matches!(
+            launch("mangohud = true", "mangohud"),
+            Err(Error::MangohudMissing(_))
+        ));
+        // Under gamescope it's mangoapp that has to be there.
+        assert!(launch("mangohud = true\n[gamescope]", "mangohud").is_ok());
+        assert!(matches!(
+            launch("mangohud = true\n[gamescope]", "mangoapp"),
+            Err(Error::MangohudMissing(_))
+        ));
+        assert!(matches!(
+            launch("gamemode = true", "gamemoderun"),
+            Err(Error::GamemodeMissing(_))
+        ));
+        assert!(launch("gamemode = false\nmangohud = false", "gamemoderun").is_ok());
+    }
+
+    #[test]
+    fn mangohud_and_wayland_take_the_most_specific_setting() {
+        let off = GlobalConfig::default();
+        let on = GlobalConfig {
+            mangohud: Some(true),
+            wayland: Some(true),
+            ..GlobalConfig::default()
+        };
+        let quiet = environment("[targets.app]\nexe = \"app\"\n");
+        let loud = environment("mangohud = true\nwayland = true\n\n[targets.app]\nexe = \"app\"\n");
+        let mixed = environment(
+            "mangohud = true\nwayland = true\n\n[targets.app]\nexe = \"app\"\nmangohud = false\nwayland = false\n",
+        );
+        let target = |env: &Environment| env.config.targets.get("app").cloned();
+        for setting in [mangohud, wayland] {
+            assert!(!setting(&off, &quiet, target(&quiet).as_ref()));
+            assert!(setting(&on, &quiet, target(&quiet).as_ref()));
+            assert!(setting(&off, &loud, target(&loud).as_ref()));
+            assert!(!setting(&on, &mixed, target(&mixed).as_ref()));
+            assert!(setting(&off, &mixed, None));
+        }
+        // A native environment has no Wine to switch, whatever the global says.
+        let native = native("dusk", "[targets.game]\nexe = \"dusk\"\n");
+        assert!(!wayland(&on, &native, native.config.targets.get("game")));
+        assert!(mangohud(&on, &native, native.config.targets.get("game")));
+    }
+
+    #[test]
+    fn a_target_gamescope_replaces_the_environments_whole() {
+        let env = environment(
+            "[gamescope]\nwidth = 1920\nfilter = \"fsr\"\n\n[targets.plain]\nexe = \"a\"\n\n[targets.own]\nexe = \"b\"\n[targets.own.gamescope]\nwindow = \"borderless\"\n\n[targets.off]\nexe = \"c\"\ngamescope = false\n",
+        );
+        let args = |name: &str| {
+            gamescope(&env, env.config.targets.get(name)).map(|gamescope| gamescope.args(false))
+        };
+        assert_eq!(args("plain").unwrap(), ["-w", "1920", "-F", "fsr"]);
+        // No field merging: the target's table is all there is.
+        assert_eq!(args("own").unwrap(), ["-b"]);
+        assert_eq!(args("off"), None);
+        assert!(gamescope(&env, None).is_some());
+
+        let bare = environment("[targets.app]\nexe = \"a\"\n");
+        assert!(gamescope(&bare, bare.config.targets.get("app")).is_none());
+        let only_target =
+            environment("gamescope = false\n[targets.app]\nexe = \"a\"\n[targets.app.gamescope]\n");
+        assert!(gamescope(&only_target, only_target.config.targets.get("app")).is_some());
+    }
+
+    /// A launchable Wine environment on a fake runner at `runners/fake`,
+    /// which has the Wayland driver when `driver` says so.
+    fn wine_launch(f: &Fixture, driver: bool, text: &str, session: bool) -> Result<Launch> {
+        fs::write(f.prefix.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+        let root = f.prefix.parent().unwrap().join("runners/fake");
+        for name in ["wine", "wineserver"] {
+            script(&root.join("bin").join(name), 0o755);
+        }
+        let so = root.join("lib/wine/x86_64-unix/winewayland.so");
+        if driver {
+            fs::create_dir_all(so.parent().unwrap()).unwrap();
+            fs::write(&so, "").unwrap();
+        } else {
+            let _ = fs::remove_file(&so);
+        }
+        let text = format!(
+            "prefix = \"{}\"\nrunner = \"fake\"\narch = \"win64\"\n{text}\n[targets.app]\nexe = 'C:\\Program Files\\App\\app.exe'\n",
+            f.prefix.display()
+        );
+        let environment = Environment {
+            name: "palworld".to_owned(),
+            path: PathBuf::from("/palworld.toml"),
+            config: EnvironmentConfig::parse(Path::new("/palworld.toml"), &text).unwrap(),
+        };
+        let mut global = GlobalConfig::default();
+        global.defaults.runner_root = Some("~/runners".to_owned());
+        Launch::target_in(
+            &f.paths,
+            &global,
+            &environment,
+            &Overrides::default(),
+            session,
+            found,
+        )
+    }
+
+    fn envs(command: &Command) -> BTreeMap<String, Option<String>> {
+        command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn wayland_on_wine_takes_display_away_even_from_env() {
+        let f = fixture();
+        let launch =
+            wine_launch(&f, true, "wayland = true\n[env]\nDISPLAY = \":1\"\n", true).unwrap();
+        assert_eq!(launch.wayland, Wayland::On);
+        let set = envs(&launch.command());
+        assert_eq!(set.get("DISPLAY"), Some(&None));
+        assert!(!set.contains_key("PROTON_ENABLE_WAYLAND"));
+
+        let launch = wine_launch(&f, true, "[env]\nDISPLAY = \":1\"\n", true).unwrap();
+        assert_eq!(launch.wayland, Wayland::Off);
+        assert_eq!(envs(&launch.command())["DISPLAY"].as_deref(), Some(":1"));
+    }
+
+    #[test]
+    fn outside_a_wayland_session_wine_launches_on_x11() {
+        let f = fixture();
+        let launch = wine_launch(&f, true, "wayland = true\n", false).unwrap();
+        assert_eq!(launch.wayland, Wayland::NoSession);
+        assert!(!envs(&launch.command()).contains_key("DISPLAY"));
+    }
+
+    #[test]
+    fn a_runner_without_the_driver_refuses_wayland() {
+        let f = fixture();
+        for session in [true, false] {
+            let err = wine_launch(&f, false, "wayland = true\n", session).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "wayland is on for palworld, but fake doesn't support it"
+            );
+        }
+        assert!(wine_launch(&f, false, "wayland = false\n", true).is_ok());
+    }
+
+    #[test]
+    fn check_target_refuses_what_a_launch_would() {
+        let f = fixture();
+        // Not Runner::fake, whose `true` may sit next to a real Wayland driver.
+        let bin = f.prefix.parent().unwrap().join("runners/bare/bin");
+        let runner =
+            Runner::wine_build("bare".to_owned(), bin.join("wine"), bin.join("wineserver"));
+        let check = |text: &str| {
+            Launch::check_target(
+                &f.paths,
+                &GlobalConfig::default(),
+                &environment(&format!("{text}\n[targets.app]\nexe = \"app\"\n")),
+                &runner,
+                &Overrides::default(),
+            )
+        };
+        assert!(matches!(
+            check("wayland = true"),
+            Err(Error::WaylandUnsupported { .. })
+        ));
+        assert!(check("wayland = false").is_ok());
+    }
+
+    #[test]
+    fn wayland_on_proton_sets_its_variable() {
+        let mut command = Command::new("umu-run");
+        command.env("DISPLAY", ":0");
+        with_wayland(&mut command, &Runner::fake_proton("GE-Proton11-7"));
+        let set = envs(&command);
+        assert_eq!(set["PROTON_ENABLE_WAYLAND"].as_deref(), Some("1"));
+        assert_eq!(set["DISPLAY"].as_deref(), Some(":0"));
+
+        let mut command = Command::new("wine");
+        with_wayland(&mut command, &Runner::fake("wine"));
+        let set = envs(&command);
+        assert_eq!(set.get("DISPLAY"), Some(&None));
+        assert!(!set.contains_key("PROTON_ENABLE_WAYLAND"));
+    }
+
+    #[test]
+    fn exec_gets_no_wrappers_or_wayland() {
+        let f = fixture();
+        fs::write(f.prefix.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+        let root = f.prefix.parent().unwrap().join("runners/fake");
+        for name in ["wine", "wineserver"] {
+            script(&root.join("bin").join(name), 0o755);
+        }
+        let text = format!(
+            "prefix = \"{}\"\nrunner = \"fake\"\narch = \"win64\"\ngamemode = true\nmangohud = true\nwayland = true\n[gamescope]\n",
+            f.prefix.display()
+        );
+        let environment = Environment {
+            name: "app".to_owned(),
+            path: PathBuf::from("/app.toml"),
+            config: EnvironmentConfig::parse(Path::new("/app.toml"), &text).unwrap(),
+        };
+        let mut global = GlobalConfig::default();
+        global.defaults.runner_root = Some("~/runners".to_owned());
+        let launch = Launch::exec(
+            &f.paths,
+            &global,
+            &environment,
+            "winecfg",
+            &[],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(launch.wrappers, Wrappers::default());
+        assert_eq!(launch.wayland, Wayland::Off);
     }
 
     #[test]

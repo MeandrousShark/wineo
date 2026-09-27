@@ -727,7 +727,7 @@ fn extract_icon(
     let scratch = Scratch::new(paths).ok()?;
 
     let status = runner
-        .command(prefix, None)
+        .command(prefix, &[])
         .ok()?
         .args(["winemenubuilder.exe", "-a", "-r", &shortcut])
         // Set outright rather than merged: this command exists only to run the
