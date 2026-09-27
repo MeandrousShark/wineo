@@ -392,7 +392,9 @@ fn draft(
         .clone()
         .unwrap_or_else(|| target_name.to_owned());
     let gaming = runner.is_some_and(Runner::is_proton)
-        || launch::gamemode(global, environment, Some(target));
+        || launch::gamemode(global, environment, Some(target))
+        || launch::gamescope(environment, Some(target)).is_some()
+        || launch::mangohud(global, environment, Some(target));
 
     let art = icon_art(paths, &environment.name, target_name)?;
     let art_stamp = art.as_ref().map(|art| format!("art:{}", art.hash));
@@ -1120,6 +1122,23 @@ mod tests {
             "{}",
             fixture.entry("hades").unwrap()
         );
+    }
+
+    #[test]
+    fn gamescope_and_mangohud_make_it_a_game() {
+        for setting in ["mangohud = true\n", "[gamescope]\n"] {
+            let fixture = Fixture::new();
+            let environment = fixture.environment(&format!(
+                "{setting}[targets.hades]\nexe = 'C:\\Hades\\Hades.exe'\ndesktop = true\n"
+            ));
+            fixture.reconcile(&environment);
+            assert!(
+                fixture
+                    .entry("hades")
+                    .unwrap()
+                    .contains("\nCategories=Game;\n")
+            );
+        }
     }
 
     // One target with a bad exe must not stop the others, since reconciliation
