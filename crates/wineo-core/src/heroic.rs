@@ -736,7 +736,8 @@ impl HeroicSource {
             cwd,
             env,
             gamemode,
-            wayland: None,
+            wayland: (bool_setting(&effective, "enableWineWayland") == Some(false))
+                .then_some(false),
             mangohud,
             gamescope,
             enable_wine_wayland,
@@ -1485,11 +1486,11 @@ fn imported_toggle(
     field: &str,
     review: &mut SettingsReview,
 ) -> Option<bool> {
-    let on = (bool_setting(settings, field) == Some(true)).then_some(true);
-    if on.is_some() {
-        review.carried.push(review_item(field, "true"));
+    let value = bool_setting(settings, field);
+    if let Some(value) = value {
+        review.carried.push(review_item(field, value.to_string()));
     }
-    on
+    value
 }
 
 fn imported_gamescope(
@@ -1935,7 +1936,15 @@ mod tests {
         fs::write(source.game_config_path("hades"), r#"{"hades":{"gamescope":{"enableUpscaling":true,"upscaleMethod":"stretch"},"showMangohud":false,"enableWineWayland":false}}"#).unwrap();
         let imported = source.inspect("hades").unwrap();
         assert!(!imported.enable_wine_wayland);
-        assert_eq!(imported.mangohud, None);
+        assert_eq!(imported.mangohud, Some(false));
+        assert_eq!(imported.wayland, Some(false));
+        assert!(
+            imported
+                .settings_review
+                .carried
+                .iter()
+                .any(|item| item.field == "showMangohud" && item.detail == "false")
+        );
         assert_eq!(
             imported.gamescope.unwrap().on().unwrap().scaler,
             Some(Scaler::Stretch)

@@ -2594,6 +2594,12 @@ fn carry_over_components(imported: &mut HeroicImport, runner: &Runner) {
 
 fn carry_over_wayland(imported: &mut HeroicImport, runner: &Runner) {
     if !imported.enable_wine_wayland {
+        if imported.wayland == Some(false) {
+            imported.settings_review.carried.push(ReviewItem {
+                field: "enableWineWayland".to_owned(),
+                detail: "wayland=false".to_owned(),
+            });
+        }
         return;
     }
     if !runner.supports_wayland() {
@@ -2948,11 +2954,13 @@ fn show_game_summary<I: Input, W: Write>(
             lines: vec![on_off(gamemode).to_owned()],
         });
     }
-    if imported.enable_wine_wayland {
+    if imported.enable_wine_wayland || imported.wayland == Some(false) {
         blocks.push(Block {
             label: "wayland",
             lines: vec![
-                if imported.wayland == Some(true) {
+                if imported.wayland == Some(false) {
+                    "off"
+                } else if imported.wayland == Some(true) {
                     "on"
                 } else {
                     "requested"
@@ -2961,10 +2969,10 @@ fn show_game_summary<I: Input, W: Write>(
             ],
         });
     }
-    if imported.mangohud == Some(true) {
+    if let Some(mangohud) = imported.mangohud {
         blocks.push(Block {
             label: "mangohud",
-            lines: vec!["on".to_owned()],
+            lines: vec![on_off(mangohud).to_owned()],
         });
     }
     if let Some(gamescope) = &imported.gamescope {
@@ -3140,11 +3148,13 @@ fn final_facts_text(
         label: "runner",
         lines: vec![runner_label],
     });
-    if imported.enable_wine_wayland {
+    if imported.enable_wine_wayland || imported.wayland == Some(false) {
         blocks.push(Block {
             label: "wayland",
             lines: vec![
-                if imported.wayland == Some(true) {
+                if imported.wayland == Some(false) {
+                    "off"
+                } else if imported.wayland == Some(true) {
                     "on"
                 } else {
                     "not imported"
@@ -3153,10 +3163,10 @@ fn final_facts_text(
             ],
         });
     }
-    if imported.mangohud == Some(true) {
+    if let Some(mangohud) = imported.mangohud {
         blocks.push(Block {
             label: "mangohud",
-            lines: vec!["on".to_owned()],
+            lines: vec![on_off(mangohud).to_owned()],
         });
     }
     if let Some(gamescope) = &imported.gamescope {

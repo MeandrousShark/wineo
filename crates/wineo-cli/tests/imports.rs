@@ -549,6 +549,31 @@ fn heroic_direct_skips_wayland_on_unsupported_runner() {
 }
 
 #[test]
+fn heroic_explicit_false_overrides_global_game_toggles() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    f.global_config("wayland = true\nmangohud = true\n");
+    fs::write(
+        heroic.join("GamesConfig/a.json"),
+        r#"{"a":{"enableWineWayland":false,"showMangohud":false}}"#,
+    )
+    .unwrap();
+    let output = heroic_import(&f, &heroic, &["--game", "a", "-n", "alpha"]);
+    assert_success(&output);
+    let text = f.created_config("alpha");
+    assert!(text.contains("wayland = false"), "{text}");
+    assert!(text.contains("mangohud = false"), "{text}");
+    let config = wineo_core::config::EnvironmentConfig::parse(
+        &f.config_dir().join("environments/alpha.toml"),
+        &text,
+    )
+    .unwrap();
+    assert_eq!(config.wayland, Some(false));
+    assert_eq!(config.mangohud, Some(false));
+}
+
+#[test]
 fn heroic_direct_skips_non_numeric_gamescope_fields_with_a_warning() {
     let f = Fixture::new();
     let prefix = source(f.root.path());
