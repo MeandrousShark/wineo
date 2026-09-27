@@ -6,15 +6,35 @@
 schema_version = 1
 
 # Required. Makes this a native environment. The Wine-only keys prefix,
-# runner, arch, gameid, store, dxvk, and vkd3d are refused.
+# runner, arch, gameid, store, dxvk, vkd3d, and wayland are refused.
 kind = "native"
 
 # Run under gamemode. Default: the global setting.
 # gamemode = true
 
+# Show the MangoHud overlay. Under gamescope this is gamescope's --mangoapp.
+# Default: the global setting.
+# mangohud = true
+
 # The Heroic game id this environment was imported from. Only a Heroic import
 # sets this. Default: unset.
 # heroic_id = "abcdef0123456789"
+
+# Run every target under gamescope. Every field is optional, and an empty
+# table runs plain `gamescope --`. A target's own [targets.<name>.gamescope]
+# replaces this whole table. Default: off.
+# [gamescope]
+# width = 1920  # -w, the resolution the game renders at.
+# height = 1080  # -h
+# output_width = 2560  # -W, the window or screen size.
+# output_height = 1440  # -H
+# filter = "fsr"  # -F: linear, nearest, fsr, nis, pixel, or sgsr.
+# scaler = "fit"  # -S: auto, integer, fit, fill, or stretch.
+# window = "fullscreen"  # -f, or "borderless" for -b.
+# fps_limit = 60  # -r
+# fps_limit_unfocused = 10  # -o, the limit while the window isn't focused.
+# grab_cursor = true  # --force-grab-cursor
+# args = ["--hdr-enabled"]  # Any other gamescope flags, passed last.
 
 # Extra environment variables for every launch. Values aren't expanded, so
 # write paths in full. Default: none.
@@ -30,8 +50,10 @@ kind = "native"
 # cwd = "~/Games/RimWorld"  # Default: the exe's own directory.
 # default = true  # What `wineo start <env>` launches when there are several targets.
 # gamemode = true  # Overrides the environment's own gamemode setting for this target.
+# mangohud = true  # Likewise for mangohud.
 # desktop = true  # Whether this target gets a desktop entry. Default: false.
 # name = "RimWorld"  # What the desktop entry is called. Default: the target's own name.
 
 # [targets.dusklight]
 # exe = "dusklight"  # A name with no / is looked up on PATH at launch. cwd then defaults to your home directory.
+# gamescope = false  # Turns off the environment's gamescope for this target.

@@ -21,6 +21,15 @@ arch = "win64"
 # Run under gamemode. Default: the global setting.
 # gamemode = true
 
+# Show the MangoHud overlay. Under gamescope this is gamescope's --mangoapp.
+# Default: the global setting.
+# mangohud = true
+
+# Use Wine's Wayland driver instead of X11. Needs a runner that supports it
+# and a Wayland session; outside one the game starts on X11 with a note.
+# Default: the global setting.
+# wayland = true
+
 # The umu id protonfixes looks this game up by. Default: no fixes applied.
 # gameid = "umu-1234567890"
 
@@ -40,6 +49,22 @@ arch = "win64"
 # sets this. Default: unset.
 # heroic_id = "abcdef0123456789"
 
+# Run every target under gamescope. Every field is optional, and an empty
+# table runs plain `gamescope --`. A target's own [targets.<name>.gamescope]
+# replaces this whole table. Default: off.
+# [gamescope]
+# width = 1920  # -w, the resolution the game renders at.
+# height = 1080  # -h
+# output_width = 2560  # -W, the window or screen size.
+# output_height = 1440  # -H
+# filter = "fsr"  # -F: linear, nearest, fsr, nis, pixel, or sgsr.
+# scaler = "fit"  # -S: auto, integer, fit, fill, or stretch.
+# window = "fullscreen"  # -f, or "borderless" for -b.
+# fps_limit = 60  # -r
+# fps_limit_unfocused = 10  # -o, the limit while the window isn't focused.
+# grab_cursor = true  # --force-grab-cursor
+# args = ["--hdr-enabled"]  # Any other gamescope flags, passed last.
+
 # Extra environment variables for every launch in this prefix. WINEPREFIX is
 # managed by wineo and can't be set here. Default: none.
 # [env]
@@ -54,8 +79,11 @@ arch = "win64"
 # cwd = 'C:\Program Files\Game'  # Default: the exe's own directory.
 # default = true  # What `wineo start <env>` launches when there are several targets.
 # gamemode = true  # Overrides the environment's own gamemode setting for this target.
+# mangohud = true  # Likewise for mangohud.
+# wayland = true  # Likewise for wayland.
 # desktop = true  # Whether this target gets a desktop entry. Default: false.
 # name = "My Game"  # What the desktop entry is called. Default: the target's own name.
 
 # [targets.launcher]
 # exe = "~/Games/game/launcher.exe"  # A Unix path works too, and can start with ~ for your home.
+# gamescope = false  # Turns off the environment's gamescope for this target.

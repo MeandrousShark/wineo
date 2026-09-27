@@ -1042,6 +1042,9 @@ mod tests {
         assert_eq!(config.wine().unwrap().runner, "GE-Proton-Latest");
         assert_eq!(config.wine().unwrap().arch, Arch::Win64);
         assert!(config.gamemode.is_none());
+        assert!(config.mangohud.is_none());
+        assert!(config.wayland.is_none());
+        assert!(config.gamescope.is_none());
         assert!(config.wine().unwrap().gameid.is_none());
         assert!(config.wine().unwrap().store.is_none());
         assert!(config.wine().unwrap().dxvk.is_none());
@@ -1060,6 +1063,15 @@ mod tests {
             .unwrap_or_else(|err| panic!("uncommented example did not parse: {err}\n---\n{text}"));
 
         assert!(config.gamemode.unwrap());
+        assert!(config.mangohud.unwrap());
+        assert!(config.wayland.unwrap());
+        let gamescope = config
+            .gamescope
+            .as_ref()
+            .and_then(GamescopeSetting::on)
+            .unwrap();
+        assert_eq!(gamescope.args(false).last().unwrap(), "--hdr-enabled");
+        assert!(gamescope.grab_cursor);
         assert!(config.wine().unwrap().gameid.is_some());
         assert!(config.wine().unwrap().store.is_some());
         assert!(config.wine().unwrap().dxvk.is_some());
@@ -1074,11 +1086,14 @@ mod tests {
         assert!(game.cwd.is_some());
         assert!(game.default);
         assert!(game.gamemode.unwrap());
+        assert!(game.mangohud.unwrap());
+        assert!(game.wayland.unwrap());
         assert!(game.desktop);
         assert!(game.name.is_some());
 
         let launcher = &config.targets["launcher"];
         assert!(!launcher.exe.is_empty());
+        assert_eq!(launcher.gamescope, Some(GamescopeSetting::Off));
     }
 
     #[test]
@@ -1087,6 +1102,8 @@ mod tests {
         assert_eq!(config.schema_version, 1);
         assert!(matches!(config.kind, Kind::Native));
         assert!(config.gamemode.is_none());
+        assert!(config.mangohud.is_none());
+        assert!(config.gamescope.is_none());
         assert!(config.heroic_id.is_none());
         assert!(config.env.is_empty());
         assert!(config.targets.is_empty());
@@ -1102,6 +1119,14 @@ mod tests {
 
         assert!(matches!(config.kind, Kind::Native));
         assert!(config.gamemode.unwrap());
+        assert!(config.mangohud.unwrap());
+        assert!(
+            config
+                .gamescope
+                .as_ref()
+                .and_then(GamescopeSetting::on)
+                .is_some()
+        );
         assert!(config.heroic_id.is_some());
         assert!(!config.env.is_empty());
 
@@ -1111,10 +1136,13 @@ mod tests {
         assert!(game.cwd.is_some());
         assert!(game.default);
         assert!(game.gamemode.unwrap());
+        assert!(game.mangohud.unwrap());
         assert!(game.desktop);
         assert!(game.name.is_some());
 
-        assert_eq!(config.targets["dusklight"].exe, "dusklight");
+        let dusklight = &config.targets["dusklight"];
+        assert_eq!(dusklight.exe, "dusklight");
+        assert_eq!(dusklight.gamescope, Some(GamescopeSetting::Off));
     }
 
     #[test]
