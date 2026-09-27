@@ -130,8 +130,9 @@ become `window`. The limiter's values become `fps_limit` and
 options are split into `args`. A value that isn't a number is skipped with a
 warning.
 
-Wine Wayland on a runner without Wayland support is skipped with a warning
-naming the runner. HDR without Wine Wayland, and Heroic's WoW64 toggle, are
+MangoHud or Wine Wayland turned off in Heroic is written as `false`, so a
+global setting in wineo doesn't turn it back on. Wine Wayland on a runner
+without Wayland support is skipped with a warning naming the runner. HDR without Wine Wayland, and Heroic's WoW64 toggle, are
 reported as not imported, since the runner's own build decides WoW64. An
 `[env]` variable already set by the game's Heroic environment options wins
 over the HDR one. The guided review and `-v` show each carried setting;

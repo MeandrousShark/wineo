@@ -132,7 +132,10 @@ gamescope [flags] -- mangohud --dlsym gamemoderun wine|umu-run|exe [args]
 
 Each wrapper is left out when its setting is off, `mangohud --dlsym` is
 dropped under gamescope in favor of `--mangoapp`, and Wayland under
-gamescope adds what's described [above](#wayland). The binaries are found
+gamescope adds what's described [above](#wayland). On Wine, gamescope's
+program is `sh -c` running the rest and then `wineserver -w`, which keeps
+gamescope open until the prefix is idle and passes the program's exit
+status through. The binaries are found
 on `PATH` when the launch starts. A missing one fails before anything runs:
 
 ```
