@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0029: Playtime statistics
 
@@ -250,6 +250,8 @@ lose it.
    `portable.md`, `snapshots.md`, and `validate.md`.
 
 ## Verification and acceptance
+
+Maintainer acceptance testing completed on 2026-09-26.
 
 - Unit tests for the summary math, including a running session, an empty
   log, a torn last line, and an `imported` line.

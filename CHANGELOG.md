@@ -3,6 +3,17 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.10.0 - 2026-09-26
+
+- `wineo stats [NAME]` shows playtime, session counts, and per-target totals,
+  including running sessions, with JSON output and optional session history
+  ([0029](docs/plans/0029-playtime-stats.md)). See [Playtime statistics](docs/stats.md).
+- `status` includes playtime, and lost runs count through their last heartbeat.
+- Heroic imports carry over playtime; `stats --import-heroic` updates existing
+  environments from Heroic's totals.
+- Portable copies carry playtime, clones start fresh, and `validate` finds
+  stray stats logs.
+
 ## 0.9.0 - 2026-09-26
 
 - `wineo validate [NAME]` finds config mistakes and leftover state before a
