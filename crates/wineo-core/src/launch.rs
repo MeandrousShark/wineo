@@ -168,6 +168,13 @@ pub struct Wrappers {
     /// dropped inside it for Wine to fall back to Wayland.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<PathBuf>,
+    /// Gamescope exits when its direct child exits, even if Wine handed off
+    /// to another process. Keep that child alive until this runner's prefix is
+    /// idle; both paths are resolved before handing the launch to a supervisor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sh: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wineserver: Option<PathBuf>,
 }
 
 impl Wrappers {
@@ -181,6 +188,14 @@ impl Wrappers {
         }
         if let Some(env) = &self.env {
             line.extend([env.into(), "-u".into(), "DISPLAY".into()]);
+        }
+        if let (Some(sh), Some(wineserver)) = (&self.sh, &self.wineserver) {
+            line.extend([
+                sh.into(),
+                "-c".into(),
+                "\"$@\"; status=$?; \"$0\" -w; exit $status".into(),
+                wineserver.into(),
+            ]);
         }
         if let Some(mangohud) = &self.mangohud {
             // A no-op on current MangoHud, which older versions need to hook
@@ -276,6 +291,12 @@ impl Launch {
         // Resolved here rather than at spawn time, so `start` refuses before it
         // hands anything to a supervisor.
         let mut wrappers = resolve_wrappers(global, environment, target, &find)?;
+        if wrappers.gamescope.is_some()
+            && let Some(wineserver) = runner.wineserver_path()
+        {
+            wrappers.sh = Some(find("sh").unwrap_or_else(|| PathBuf::from("sh")));
+            wrappers.wineserver = Some(wineserver.to_owned());
+        }
         let wayland = check_wayland(global, environment, target, &runner)?;
         // Only the session decides this, so an X11 login doesn't break every
         // game with the setting.
@@ -1475,6 +1496,8 @@ mod tests {
                 mangohud: None,
                 gamemode: Some(PathBuf::from("/bin/gamemoderun")),
                 env: None,
+                sh: Some(PathBuf::from("/bin/sh")),
+                wineserver: Runner::fake("wine").wineserver_path().map(Path::to_owned),
             },
             wayland: Wayland::Off,
             gameid: None,
@@ -1492,9 +1515,85 @@ mod tests {
                 "-f",
                 "--mangoapp",
                 "--",
+                "/bin/sh",
+                "-c",
+                "\"$@\"; status=$?; \"$0\" -w; exit $status",
+                &Runner::fake("wine")
+                    .wineserver_path()
+                    .unwrap()
+                    .display()
+                    .to_string(),
                 "/bin/gamemoderun",
                 &wine,
                 "app.exe"
+            ]
+        );
+    }
+
+    #[test]
+    fn only_plain_wine_under_gamescope_waits_for_its_prefix() {
+        let f = fixture();
+        let wine = wine_launch(&f, true, "gamemode = true\n[gamescope]", true).unwrap();
+        let Host::Wine { runner, .. } = &wine.host else {
+            panic!("expected Wine");
+        };
+        let wine_path = runner.wine_path().unwrap().display().to_string();
+        let wineserver = runner.wineserver_path().unwrap().display().to_string();
+        let program = r"C:\Program Files\App\app.exe";
+        let script = "\"$@\"; status=$?; \"$0\" -w; exit $status";
+        assert_eq!(
+            command_line(&wine.command()),
+            [
+                "/bin/gamescope",
+                "--",
+                "/bin/sh",
+                "-c",
+                script,
+                &wineserver,
+                "/bin/gamemoderun",
+                &wine_path,
+                program,
+            ]
+        );
+        let wayland = wine_launch(&f, true, "wayland = true\n[gamescope]", true).unwrap();
+        assert_eq!(
+            command_line(&wayland.command()),
+            [
+                "/bin/gamescope",
+                "--expose-wayland",
+                "--",
+                "/bin/env",
+                "-u",
+                "DISPLAY",
+                "/bin/sh",
+                "-c",
+                script,
+                &wineserver,
+                &wine_path,
+                program,
+            ]
+        );
+        let no_gamescope = wine_launch(&f, true, "", true).unwrap();
+        assert_eq!(
+            command_line(&no_gamescope.command()),
+            [wine_path.as_str(), program]
+        );
+
+        let proton = Wrappers {
+            gamescope: Some(PathBuf::from("/bin/gamescope")),
+            gamescope_args: vec!["--mangoapp".to_owned()],
+            ..Wrappers::default()
+        };
+        let mut command = runner::wrapped(Path::new("/bin/umu-run"), &proton.command_line());
+        command.arg(program);
+        assert_eq!(
+            command_line(&command),
+            [
+                "/bin/gamescope",
+                "--mangoapp",
+                "--",
+                "/bin/umu-run",
+                program
             ]
         );
     }
@@ -1661,7 +1760,7 @@ mod tests {
         .unwrap();
         let line = command_line(&launch.command()).join(" ");
         assert!(
-            line.starts_with("/bin/gamescope -f --expose-wayland -- /bin/env -u DISPLAY "),
+            line.starts_with("/bin/gamescope -f --expose-wayland -- /bin/env -u DISPLAY /bin/sh -c \"$@\"; status=$?; \"$0\" -w; exit $status "),
             "{line}"
         );
         assert!(line.contains("runners/fake/bin/wine "), "{line}");
@@ -1684,7 +1783,12 @@ mod tests {
         for (text, session) in [("", true), ("wayland = true\n", false)] {
             let launch = wine_launch(&f, true, &format!("{text}[gamescope]"), session).unwrap();
             let line = command_line(&launch.command()).join(" ");
-            assert!(line.starts_with("/bin/gamescope -- "), "{line}");
+            assert!(
+                line.starts_with(
+                    "/bin/gamescope -- /bin/sh -c \"$@\"; status=$?; \"$0\" -w; exit $status "
+                ),
+                "{line}"
+            );
             assert!(!line.contains("DISPLAY"), "{line}");
         }
     }
@@ -1779,6 +1883,13 @@ mod tests {
         .unwrap();
         assert_eq!(launch.wrappers, Wrappers::default());
         assert_eq!(launch.wayland, Wayland::Off);
+        assert_eq!(
+            command_line(&launch.command()),
+            [
+                root.join("bin/wine").display().to_string(),
+                "winecfg".to_owned()
+            ]
+        );
     }
 
     #[test]

@@ -776,6 +776,8 @@ mod tests {
                     mangohud: None,
                     gamemode: Some(PathBuf::from("/usr/bin/gamemoderun")),
                     env: Some(PathBuf::from("/usr/bin/env")),
+                    sh: Some(PathBuf::from("/usr/bin/sh")),
+                    wineserver: Some(PathBuf::from("/usr/bin/wineserver")),
                 },
                 wayland: crate::launch::Wayland::On,
                 gameid: Some("umu-hades".to_owned()),
