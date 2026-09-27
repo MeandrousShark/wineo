@@ -18,6 +18,7 @@ pub mod portable;
 pub mod programs;
 pub mod prune;
 pub mod restart;
+pub mod restore;
 pub mod rm;
 pub mod run;
 pub mod runners;

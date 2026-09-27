@@ -173,7 +173,7 @@ fn id_valid(id: &str) -> bool {
             .bytes()
             .chain(date[9..15].bytes())
             .all(|c| c.is_ascii_digit())
-        && random.len() == 16
+        && random.len() == 8
         && random.chars().all(|c| c.is_ascii_hexdigit())
 }
 
@@ -1446,7 +1446,7 @@ pub fn remove_with(
             .prefix(".id-")
             .tempfile_in(paths.locks_dir())?;
         let token = Sha256::digest(random.path().as_os_str().as_encoded_bytes());
-        let suffix = format!("{:016x}", u64::from_le_bytes(token[..8].try_into()?));
+        let suffix = format!("{:08x}", u32::from_le_bytes(token[..4].try_into()?));
         let id = format!("{stamp}-{suffix}");
         let dir = entry_dir(paths, &id)?;
         match fs::create_dir(&dir) {
@@ -2147,6 +2147,13 @@ mod tests {
     }
 
     #[test]
+    fn trash_ids_require_an_eight_character_hex_suffix() {
+        assert!(id_valid("20260926T183000Z-a1b2c3d4"));
+        assert!(!id_valid("20260926T183000Z-a1b2c3d4e5f60708"));
+        assert!(!id_valid("20260926T183000Z-a1b2c3dg"));
+    }
+
+    #[test]
     fn marker_blocks_absent_metadata_and_is_retired_only_after_recovery() {
         let f = Fixture::new();
         f.config("game", "kind = 'native'\n");
@@ -2337,7 +2344,7 @@ mod tests {
         let f = Fixture::new();
         f.config("game", "kind = 'native'\n");
         create_storage(&f.paths.trash_dir()).unwrap();
-        let id = "20260926T183000Z-a1b2c3d4e5f60708";
+        let id = "20260926T183000Z-a1b2c3d4";
         let dir = entry_dir(&f.paths, id).unwrap();
         fs::create_dir(&dir).unwrap();
         sync(&f.paths.trash_dir()).unwrap();
@@ -2979,7 +2986,7 @@ mod tests {
         let source = paths.environment_config("game");
         fs::create_dir_all(parent(&source).unwrap()).unwrap();
         fs::write(&source, "kind = 'native'\n# only source is authoritative\n").unwrap();
-        let id = "20260926T183000Z-a1b2c3d4e5f60708";
+        let id = "20260926T183000Z-a1b2c3d4";
         let dir = entry_dir(&paths, id).unwrap();
         create_storage(&dir).unwrap();
         let dest = dir.join("config.toml");

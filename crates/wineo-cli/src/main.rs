@@ -68,7 +68,9 @@ enum Command {
     Art(commands::art::Args),
     /// Remove an environment
     Rm(commands::rm::Args),
-    /// List and restore recoverable environment removals
+    /// Return a trash entry's data to its original name and paths
+    Restore(commands::restore::Args),
+    /// List recoverable environment removals
     Trash(commands::trash::Args),
     /// Permanently delete selected trash entries
     Prune(commands::prune::Args),
@@ -140,6 +142,7 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Desktop(args) => commands::desktop::run(&paths, args),
         Command::Art(args) => commands::art::run(&paths, args),
         Command::Rm(args) => commands::rm::run(&paths, args),
+        Command::Restore(args) => commands::restore::run(&paths, args),
         Command::Trash(args) => commands::trash::run(&paths, args),
         Command::Prune(args) => commands::prune::run(&paths, args),
         Command::Status(args) => commands::status::run(&paths, args),

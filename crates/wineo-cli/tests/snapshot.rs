@@ -128,7 +128,7 @@ fn create_restore_and_delete_keep_the_saved_state_independent() {
     assert!(prefix.exists());
     let removed = f.run(&["rm", "game", "--delete-prefix"]);
     assert_success(&removed);
-    assert!(!stdout(&removed).contains("Snapshots remain"));
+    assert!(!stdout(&removed).contains("Snapshots left"));
 }
 
 #[test]
@@ -195,7 +195,7 @@ fn removing_environment_without_prefix_leaves_snapshot_and_reports_where_it_is()
 
     let output = f.run(&["rm", "game"]);
     assert_success(&output);
-    assert!(stdout(&output).contains(root.to_str().unwrap()));
+    assert!(stdout(&output).contains(&format!("Snapshots left at {}", root.display())));
     assert!(prefix.exists());
     assert!(root.join("saved/prefix/system.reg").exists());
 }
@@ -221,7 +221,7 @@ fn removing_prefix_and_snapshots_can_be_restored_from_trash() {
         .to_owned();
     assert!(stdout(&removed).contains(&id));
 
-    assert_success(&f.run(&["trash", "restore", &id]));
+    assert_success(&f.run(&["restore", &id]));
     assert_eq!(f.created_config("game"), config);
     assert_eq!(f.read_stats_log("game"), "saved playtime\n");
     assert!(prefix.join("system.reg").exists());

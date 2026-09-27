@@ -565,7 +565,7 @@ pub fn find_on_path(program: &str) -> Option<PathBuf> {
 pub fn trash_id(output: &Output) -> String {
     stdout(output)
         .lines()
-        .find_map(|line| line.strip_prefix("Restore with: wineo trash restore "))
+        .find_map(|line| line.strip_prefix("Restore with: wineo restore "))
         .expect("removal should print a restore command")
         .to_owned()
 }

@@ -93,7 +93,7 @@ fn trash_ids_complete_for_restore_and_prune() {
         .last()
         .unwrap();
     for words in [
-        vec!["wineo", "trash", "restore", &id[..4]],
+        vec!["wineo", "restore", &id[..4]],
         vec!["wineo", "prune", &id[..4]],
     ] {
         assert!(
@@ -101,6 +101,9 @@ fn trash_ids_complete_for_restore_and_prune() {
             "{words:?}"
         );
     }
+    let suffix = id.split_once('-').unwrap().1;
+    assert_eq!(suffix.len(), 8);
+    assert!(suffix.bytes().all(|byte| byte.is_ascii_hexdigit()));
 }
 
 #[test]

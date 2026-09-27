@@ -955,6 +955,7 @@ fn static_completions_cover_every_visible_command_and_flag() {
             "run",
             "exec",
             "rm",
+            "restore",
             "runners",
             "winetricks",
             "completions",
@@ -1088,10 +1089,17 @@ fn rm_removes_the_config_and_runtime_state_but_keeps_the_prefix() {
 
     let out = output(wineo(root.path()).args(["rm", "notepad"]));
     assert!(out.status.success(), "{}", stderr(&out));
-    assert!(
-        stdout(&out).contains("its prefix is still at"),
-        "{}",
-        stdout(&out)
+    let output = stdout(&out);
+    let lines: Vec<_> = output.lines().map(str::to_owned).collect();
+    let id = lines[0].split_whitespace().last().unwrap();
+    assert_eq!(
+        lines,
+        [
+            format!("Removed environment notepad to trash {id}"),
+            format!("Prefix left at {}", prefix.display()),
+            format!("Restore with: wineo restore {id}"),
+            format!("To permanently delete, run: wineo prune {id} (the prefix stays)"),
+        ]
     );
     assert!(
         !root
@@ -1110,7 +1118,7 @@ fn rm_removes_an_environment_with_a_broken_config() {
     let out = output(wineo(root.path()).args(["rm", "broken"]));
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
-        stdout(&out).contains("its prefix was left untouched"),
+        stdout(&out).starts_with("Removed environment broken to trash "),
         "{}",
         stdout(&out)
     );
@@ -1163,7 +1171,22 @@ fn rm_delete_prefix_deletes_the_prefix_without_following_its_symlinks() {
 
     let out = output(wineo(root.path()).args(["rm", "notepad", "--delete-prefix"]));
     assert!(out.status.success(), "{}", stderr(&out));
-    assert!(stdout(&out).contains("and its prefix"), "{}", stdout(&out));
+    let output = stdout(&out);
+    let id = output
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .last()
+        .unwrap();
+    assert!(
+        output.starts_with(&format!(
+            "Removed environment notepad and its prefix to trash {id}\n"
+        )),
+        "{output}"
+    );
+    assert!(output.contains(&format!("Restore with: wineo restore {id}")));
+    assert!(output.contains(&format!("To permanently delete, run: wineo prune {id}\n")));
     assert!(!prefix.exists());
     assert!(
         outside.join("keep.txt").exists(),
@@ -1181,11 +1204,51 @@ fn rm_delete_prefix_notes_a_prefix_that_is_already_gone() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stderr(&out).contains("already gone"), "{}", stderr(&out));
     assert!(
+        stdout(&out).starts_with("Removed environment notepad to trash "),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        !stdout(&out).contains("and its prefix to trash"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
         !root
             .path()
             .join("config/wineo/environments/notepad.toml")
             .exists()
     );
+}
+
+#[test]
+fn rm_plain_notes_a_prefix_that_was_already_absent() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = root.path().join("prefixes/notepad");
+    environment_with_prefix(root.path(), "notepad", &prefix);
+
+    let out = output(wineo(root.path()).args(["rm", "notepad"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let output = stdout(&out);
+    let id = output
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .last()
+        .unwrap();
+    assert!(
+        output.contains(&format!(
+            "Prefix was already absent at {}",
+            prefix.display()
+        )),
+        "{output}"
+    );
+    assert!(
+        output.contains(&format!("To permanently delete, run: wineo prune {id}\n")),
+        "{output}"
+    );
+    assert!(!output.contains("the prefix stays"), "{output}");
 }
 
 #[test]

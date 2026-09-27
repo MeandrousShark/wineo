@@ -132,17 +132,37 @@ pub fn gather(
 /// Aligns columns, padded to the widest value in that column with two spaces
 /// between them, with trailing spaces trimmed off each line.
 pub fn render(rows: &[Row]) -> Vec<String> {
-    let name_w = rows.iter().map(|row| row.name.len()).max().unwrap_or(0);
-    let state_w = rows.iter().map(|row| row.state.len()).max().unwrap_or(0);
-    let target_w = rows.iter().map(|row| row.target.len()).max().unwrap_or(0);
+    let columns: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            [
+                row.name.clone(),
+                row.state.clone(),
+                row.target.clone(),
+                row.time.clone(),
+            ]
+        })
+        .collect();
+    render_columns(&columns)
+}
+
+/// Aligns arbitrary fixed-width rows with two spaces between columns.
+pub fn render_columns<const N: usize>(rows: &[[String; N]]) -> Vec<String> {
+    let widths: [usize; N] =
+        std::array::from_fn(|column| rows.iter().map(|row| row[column].len()).max().unwrap_or(0));
     rows.iter()
         .map(|row| {
-            format!(
-                "{:name_w$}  {:state_w$}  {:target_w$}  {}",
-                row.name, row.state, row.target, row.time,
-            )
-            .trim_end()
-            .to_owned()
+            let mut line = String::new();
+            for (column, value) in row.iter().enumerate() {
+                if column > 0 {
+                    line.push_str("  ");
+                }
+                line.push_str(value);
+                if column + 1 < N {
+                    line.push_str(&" ".repeat(widths[column] - value.len()));
+                }
+            }
+            line.trim_end().to_owned()
         })
         .collect()
 }

@@ -377,7 +377,7 @@ fn art_follows_the_copy_and_a_move() {
     let id = common::trash_id(&removed);
     assert!(!moved.join("art/game").exists());
     assert_eq!(read(source.join("hero.png")), "hero");
-    assert_success(&portable(&f, &moved, &["trash", "restore", &id]));
+    assert_success(&portable(&f, &moved, &["restore", &id]));
     assert_eq!(read(moved.join("art/game/hero.png")), "hero");
     assert_eq!(read(moved.join("art/game/game/icon.svg")), "<svg/>");
     assert_eq!(read(source.join("hero.png")), "hero");

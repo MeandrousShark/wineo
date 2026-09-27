@@ -9,7 +9,7 @@ pub struct Args {
     #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
     name: String,
 
-    /// Retain the environment's Wine prefix and snapshots in trash too
+    /// Also move the Wine prefix and snapshots to trash
     #[arg(long)]
     delete_prefix: bool,
 }
@@ -32,29 +32,37 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             }
         );
     }
-    println!("Removed environment {} to trash {}", entry.name, entry.id);
-    if args.delete_prefix {
-        println!("Environment {} and its prefix were retained", entry.name);
+    let prefix_was_left = !args.delete_prefix && entry.prefix_present == Some(true);
+    if args.delete_prefix && entry.prefix_present == Some(true) {
+        println!(
+            "Removed environment {} and its prefix to trash {}",
+            entry.name, entry.id
+        );
+    } else {
+        println!("Removed environment {} to trash {}", entry.name, entry.id);
     }
-    println!("Restore with: wineo trash restore {}", entry.id);
     if let Some(prefix) = entry.prefix_left {
         if entry.prefix_present == Some(false) {
             println!("Prefix was already absent at {}", prefix.display());
         } else {
-            println!(
-                "Removed {}, its prefix is still at {}",
-                entry.name,
-                prefix.display()
-            );
+            println!("Prefix left at {}", prefix.display());
         }
-    } else if !args.delete_prefix {
-        println!("Removed {}, its prefix was left untouched", entry.name);
     }
     if let Some(snapshots) = entry.snapshots_left
         && snapshots.is_dir()
         && std::fs::read_dir(&snapshots)?.next().is_some()
     {
-        println!("Snapshots remain at {}", snapshots.display());
+        println!("Snapshots left at {}", snapshots.display());
     }
+    println!("Restore with: wineo restore {}", entry.id);
+    println!(
+        "To permanently delete, run: wineo prune {}{}",
+        entry.id,
+        if prefix_was_left {
+            " (the prefix stays)"
+        } else {
+            ""
+        }
+    );
     Ok(ExitCode::SUCCESS)
 }

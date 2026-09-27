@@ -45,7 +45,8 @@ fn repeated_names_have_independent_ids_and_restore_collisions_do_not_overwrite()
         "kind = 'native'\n# new\n",
     )
     .unwrap();
-    let collision = f.run(&["trash", "restore", &first]);
+    assert_eq!(first.split_once('-').unwrap().1.len(), 8);
+    let collision = f.run(&["restore", &first]);
     assert!(!collision.status.success());
     assert!(stderr(&collision).contains("already exists"));
     assert_eq!(f.created_config("game"), "kind = 'native'\n# new\n");
@@ -114,10 +115,74 @@ fn broken_config_restores_byte_for_byte_with_a_warning() {
         .split_whitespace()
         .last()
         .unwrap();
-    let restored = f.run(&["trash", "restore", id]);
+    let restored = f.run(&["restore", id]);
     assert_success(&restored);
     assert!(stderr(&restored).contains("raw config is still invalid"));
     assert_eq!(fs::read(path).unwrap(), raw);
+}
+
+#[test]
+fn bare_trash_lists_entries_with_relative_removal_time() {
+    let f = Fixture::new();
+    let id = remove(&f, "game");
+    let manifest = f
+        .root
+        .path()
+        .join(format!("data/wineo/trash/{id}/manifest.toml"));
+    let text = fs::read_to_string(&manifest).unwrap();
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("removed_at = "))
+        .unwrap();
+    fs::write(
+        &manifest,
+        text.replace(line, "removed_at = '2020-01-01T00:00:00Z'"),
+    )
+    .unwrap();
+
+    let bare = f.run(&["trash"]);
+    assert_success(&bare);
+    let listing = stdout(&bare);
+    let entry = listing.lines().find(|line| line.contains(&id)).unwrap();
+    assert!(entry.contains("removed "), "{entry}");
+    assert!(entry.contains("days ago"), "{entry}");
+    assert!(!entry.contains("2020-01-01T00:00:00Z"), "{entry}");
+
+    let explicit = f.run(&["trash", "list"]);
+    assert_success(&explicit);
+    assert!(stdout(&explicit).contains(&id));
+}
+
+#[test]
+fn rm_prints_restore_and_prune_commands_for_a_native_environment() {
+    let f = Fixture::new();
+    native(&f, "game");
+    let removed = f.run(&["rm", "game"]);
+    assert_success(&removed);
+    let output = stdout(&removed);
+    let id = output
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .last()
+        .unwrap();
+    assert_eq!(
+        output,
+        format!(
+            "Removed environment game to trash {id}\n\
+             Restore with: wineo restore {id}\n\
+             To permanently delete, run: wineo prune {id}\n"
+        )
+    );
+}
+
+#[test]
+fn rm_delete_prefix_help_matches_the_accepted_wording() {
+    let f = Fixture::new();
+    let help = f.run(&["rm", "--help"]);
+    assert_success(&help);
+    assert!(stdout(&help).contains("Also move the Wine prefix and snapshots to trash"));
 }
 
 #[test]
