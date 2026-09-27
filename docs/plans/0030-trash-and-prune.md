@@ -85,8 +85,9 @@ snapshots that plain `rm` left in place.
 - Restore raw config, art, and stats together. For `--delete-prefix` entries,
   restore the retained prefix and snapshots too.
 - For plain `rm`, the prefix and snapshots stay where they were. Restoring
-  the config makes the existing snapshots accessible again. If the retained
-  prefix has disappeared, refuse restoration with a clear explanation.
+  the config makes the existing snapshots accessible again. If a prefix known
+  to be present at removal has disappeared, refuse restoration with a clear
+  explanation. Prefixes already absent at removal do not block restoration.
 - Rebuild desktop entries from the restored config using normal desktop
   entry checks. Do not overwrite an unrelated shortcut.
 - Restoration does not launch the environment.
@@ -147,41 +148,85 @@ what remains. Do not present that entry as fully restorable.
 - Native executable folders and paths referenced inside Wine prefixes are
   not additional payloads to copy or delete.
 
-## Remaining decisions for review
+## Follow-up decisions settled with the maintainer (2026-09-26)
 
-The main behavior above is agreed. These edge cases need a maintainer
-decision before implementation:
+The maintainer selected all nine recommendations: 1A through 9A.
 
-1. **Configs or prefixes already broken at removal time.** Plain `rm` can
-   currently unregister an unreadable config, and config-first environments
-   can legitimately have no prefix yet. Recommend retaining those configs
-   unchanged and recording whether the prefix was present, absent, or unknown
-   at removal. Apply the missing-prefix restore refusal when a known retained
-   prefix has disappeared, while allowing a config that never had one to be
-   restored. Define how an unreadable config is restored without losing the
-   existing ability to remove it.
-2. **Recovery direction.** Recommend rolling back interrupted removal to the
-   registered environment, completing interrupted restoration, and resuming
-   interrupted prune. Recovery must refuse newly introduced collisions.
-3. **Transient runtime data.** Recommend cleaning up resolved runtime state
-   and logs rather than restoring old process identities. Playtime is already
-   retained separately. Confirm whether old logs should instead be retained.
-4. **Portable copy.** Recommend copying only the active environment and its
-   snapshots, art, and stats, not unrelated trash history. Moving the whole
-   portable folder still carries its trash.
-5. **Age selection.** Recommend positive whole-day values such as `30d`,
-   measured as elapsed 24-hour periods since removal. Preview and execution
-   use the same cutoff.
+1. **Configs or prefixes already broken at removal time.** Retain raw configs
+   and record whether the prefix was present, absent, or unknown. Restore
+   config-first environments whose prefix was already absent. Restore broken
+   configs byte-for-byte with a warning and defer desktop setup until they
+   are fixed. Refuse restoration if a known retained prefix has disappeared.
+2. **Recovery direction.** Roll back interrupted removal to the registered
+   environment, complete interrupted restoration, and resume interrupted
+   prune. Recovery stops at newly introduced collisions.
+3. **Transient runtime data.** Discard resolved runtime state and logs. Never
+   restore old process identities. Retain playtime separately.
+4. **Portable copy.** Copy only the active environment and its snapshots,
+   art, and stats, without trash history. Moving the entire portable folder
+   carries its trash.
+5. **Age selection.** Accept positive whole-day values such as `30d`, measured
+   as elapsed 24-hour periods since removal. Older means strictly older than
+   the cutoff; freeze that cutoff for preview and execution.
+6. **Storage layout.** Keep entry metadata at `<wineo-data>/trash/<ID>/` and
+   prefix payloads at `<prefix-parent>/.wineo-trash/<ID>/`. Move snapshots
+   alongside the prefix payload when they share its filesystem. Separately
+   mounted snapshots use a trash area on their own filesystem. Portable
+   equivalents stay inside the folder with relative references. Refuse a
+   payload move that cannot stay on its filesystem rather than copying it.
+7. **IDs and manifests.** Use a timestamp plus random suffix, for example
+   `20260926T183000Z-a1b2c3d4`, with collision checks. Use a versioned TOML
+   manifest recording original locations, owned payloads, and recovery
+   progress.
+8. **Recovery entry point and locks.** Ordinary commands detect pending work,
+   block conflicting actions, and explain how to recover. Recovery is explicit
+   through `validate --fix`, not silently attempted by ordinary commands.
+   Lock the trash entry, environment name, and affected paths before changing
+   anything.
+9. **Batch prune failures.** Continue past independent failures, retain their
+   records, summarize results, and exit nonzero if any entry failed. Mark
+   partially pruned entries as unrestorable.
 
-The implementation plan also needs a concrete manifest schema, trash directory
-layout, ID format, and locking/recovery state transitions documented here
-before approval. In particular, account for separately mounted snapshot
-storage, original-path reuse, and existing Btrfs snapshot cleanup behavior.
+## Storage and recovery protocol requirements
+
+The manifest must distinguish owned payloads from references left in place.
+It records the entry ID, format version, original environment name, removal
+time, prefix inclusion and original presence, operation phase, and progress
+for each payload. Payload records need original and retained locations plus
+enough identity information to distinguish the original data from a path
+reused after interruption. Unknown manifest versions are refused.
+
+The logical states are:
+
+- `removing`: record progress before changing sources; recovery rolls back
+  retained payloads to their original locations without replacing new data.
+- `trashed`: removal committed; eligible for restore or prune.
+- `restoring`: recovery resumes returning the saved payloads and registration.
+- `pruning`: recovery resumes deletion of owned payloads only. Once permanent
+  deletion starts, the entry is not offered for restoration.
+
+Write and sync intent before each destructive transition, then persist its
+completion. Recovery must recognize a completed filesystem operation even if
+the subsequent progress write failed. Retain the manifest until restoration
+or permanent deletion has completed, including cleanup of payload containers.
+Runtime cleanup and desktop reconciliation must be accounted for without
+making discarded runtime logs a prerequisite for removal rollback.
+
+Acquire operation locks before config locks, revalidate the source and
+selection under those locks, and use a consistent order for multi-path locks.
+Persistent recovery records must let normal operations detect affected names
+and paths even while the config is absent. Trash entry locks remain in host
+state, outside payloads that prune deletes.
+
+Separately mounted snapshot storage must use an owned payload location within
+that filesystem, not a sibling outside its mount. If no suitable location can
+be used, fail before mutation. Btrfs cleanup failures retain the manifest and
+remaining payload locations rather than claiming the entry was pruned.
 
 ## Proposed implementation sequence
 
-1. Settle the remaining decisions and document the storage and recovery
-   protocol in this plan. Obtain approval before implementation.
+1. Obtain approval of this draft before implementation. The behavioral
+   decisions above are settled.
 2. Add core trash records, path resolution, entry locking, and durable
    remove/restore/prune operations. Move removal policy out of the CLI.
 3. Wire `rm`, `trash list`, `trash restore`, and `prune` to those operations,
