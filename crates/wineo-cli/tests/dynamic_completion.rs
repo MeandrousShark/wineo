@@ -68,6 +68,42 @@ fn fixture(root: &Path) {
 }
 
 #[test]
+fn trash_ids_complete_for_restore_and_prune() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "game", "kind = 'native'\n");
+    let removed = Command::new(env!("CARGO_BIN_EXE_wineo"))
+        .args(["rm", "game"])
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("XDG_DATA_HOME", root.path().join("data"))
+        .env("XDG_STATE_HOME", root.path().join("state"))
+        .env_remove("WINEO_PORTABLE_DIR")
+        .output()
+        .unwrap();
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    let text = String::from_utf8(removed.stdout).unwrap();
+    let id = text
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .last()
+        .unwrap();
+    for words in [
+        vec!["wineo", "trash", "restore", &id[..4]],
+        vec!["wineo", "prune", &id[..4]],
+    ] {
+        assert!(
+            complete(root.path(), "fish", &words).contains(&id.to_owned()),
+            "{words:?}"
+        );
+    }
+}
+
+#[test]
 fn fish_completes_environment_positions_and_filters_prefix() {
     let root = tempfile::tempdir().unwrap();
     fixture(root.path());

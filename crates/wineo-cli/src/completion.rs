@@ -5,6 +5,23 @@ use clap_complete::CompletionCandidate;
 use wineo_core::environment::{self, Environment};
 use wineo_core::paths::Paths;
 use wineo_core::snapshot;
+use wineo_core::trash;
+
+pub fn trash_ids(current: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(prefix) = current.to_str() else {
+        return Vec::new();
+    };
+    let (portable, _) = split_portable(words_before_current());
+    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
+        return Vec::new();
+    };
+    trash::list(&paths)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| entry.id.starts_with(prefix))
+        .map(|entry| CompletionCandidate::new(entry.id))
+        .collect()
+}
 
 pub fn environments(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(prefix) = current.to_str() else {

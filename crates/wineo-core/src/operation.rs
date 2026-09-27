@@ -46,6 +46,8 @@ pub enum Operation {
     Snapshot,
     /// Copying an environment into a portable folder.
     Copy,
+    /// Mutating or recovering a durable trash entry.
+    Trash,
 }
 
 impl Operation {
@@ -60,6 +62,7 @@ impl Operation {
             Operation::Cleanup => "cleanup",
             Operation::Snapshot => "snapshot",
             Operation::Copy => "copy",
+            Operation::Trash => "trash",
         }
     }
 
@@ -74,6 +77,7 @@ impl Operation {
             Operation::Cleanup,
             Operation::Snapshot,
             Operation::Copy,
+            Operation::Trash,
         ]
         .into_iter()
         .find(|operation| operation.as_str() == word)
@@ -97,6 +101,7 @@ impl Operation {
             Operation::Cleanup => "what an installer left running is being stopped",
             Operation::Snapshot => "a snapshot operation is running",
             Operation::Copy => "it is being copied to a portable folder",
+            Operation::Trash => "its trash entry is being changed",
         }
     }
 }
@@ -110,6 +115,7 @@ pub struct Locks {
     prefix_dir: PathBuf,
     /// The portable root, which decides where restore markers are.
     portable: Option<PathBuf>,
+    paths: Option<Paths>,
 }
 
 /// Holds an operation's locks until it is dropped. The kernel drops the flocks
@@ -180,6 +186,7 @@ impl Locks {
             dir: paths.locks_dir(),
             prefix_dir: paths.prefix_locks_dir(),
             portable: paths.portable_root().map(Path::to_owned),
+            paths: Some(paths.clone()),
         }
     }
 
@@ -188,6 +195,7 @@ impl Locks {
             prefix_dir: dir.clone(),
             dir,
             portable: None,
+            paths: None,
         }
     }
 
@@ -222,7 +230,7 @@ impl Locks {
             }
             files.push((file, target.path.clone()));
         }
-        if operation != Operation::Snapshot {
+        if operation != Operation::Snapshot && operation != Operation::Trash {
             let marker = paths::restore_marker(&self.dir, self.portable.as_deref(), name);
             match marker.symlink_metadata() {
                 Ok(_) => {
@@ -237,6 +245,12 @@ impl Locks {
                 }
             }
         }
+        if operation != Operation::Trash
+            && let Some(paths) = &self.paths
+        {
+            crate::trash::check_pending(paths, name, prefixes)
+                .map_err(|err| Error::Unsettled(err.to_string()))?;
+        }
         Ok(Guard {
             files,
             exclusive: !operation.is_shared(),
@@ -248,6 +262,20 @@ impl Locks {
     /// while a game runs. Take any operation locks first, then this one, and
     /// read the file again once it is held.
     pub fn config(&self, path: &Path) -> Result<ConfigGuard> {
+        let guard = self.config_lock(path, CONFIG_ATTEMPTS)?;
+        if let Some(paths) = &self.paths
+            && let Some(name) = path.file_stem().and_then(|stem| stem.to_str())
+            && path.parent() == Some(paths.environments_dir().as_path())
+        {
+            crate::trash::check_pending(paths, name, &[])
+                .map_err(|err| Error::Unsettled(err.to_string()))?;
+        }
+        Ok(guard)
+    }
+
+    /// Internal trash recovery already holds the name and entry locks and
+    /// deliberately works while that name has a pending record.
+    pub(crate) fn config_recovery(&self, path: &Path) -> Result<ConfigGuard> {
         self.config_lock(path, CONFIG_ATTEMPTS)
     }
 

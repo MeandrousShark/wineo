@@ -57,6 +57,8 @@ impl NewEnvironment {
 impl Environment {
     pub fn load_for_heroic_match(paths: &Paths, name: &str) -> Result<(Self, HeroicIdSnapshot)> {
         check_name(name)?;
+        crate::trash::check_pending(paths, name, &[])
+            .map_err(|err| Error::Unsettled(err.to_string()))?;
         crate::snapshot::check_recovery_marker(paths, name)?;
         let path = paths.environment_config(name);
         let mut file = match fs::File::open(&path) {
@@ -90,6 +92,8 @@ impl Environment {
 
     pub fn load(paths: &Paths, name: &str) -> Result<Self> {
         check_name(name)?;
+        crate::trash::check_pending(paths, name, &[])
+            .map_err(|err| Error::Unsettled(err.to_string()))?;
         crate::snapshot::check_recovery_marker(paths, name)?;
         let path = paths.environment_config(name);
         let text = match fs::read_to_string(&path) {
@@ -111,6 +115,8 @@ impl Environment {
     /// commands that shouldn't be blocked by a broken one.
     pub fn ensure_exists(paths: &Paths, name: &str) -> Result<()> {
         check_name(name)?;
+        crate::trash::check_pending(paths, name, &[])
+            .map_err(|err| Error::Unsettled(err.to_string()))?;
         if paths.environment_config(name).is_file() {
             crate::snapshot::check_recovery_marker(paths, name)?;
             Ok(())

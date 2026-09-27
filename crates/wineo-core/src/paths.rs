@@ -2,6 +2,8 @@ use std::ffi::OsString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::{Error, IoContext, Result};
 use crate::winpath;
 
@@ -10,7 +12,7 @@ pub const PORTABLE_VAR: &str = "WINEO_PORTABLE_DIR";
 
 /// Where wineo keeps its files, following the XDG base directory spec unless a
 /// portable folder is selected.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Paths {
     home: PathBuf,
     config: PathBuf,
@@ -113,6 +115,13 @@ impl Paths {
 
     pub fn environment_config(&self, name: &str) -> PathBuf {
         self.environments_dir().join(format!("{name}.toml"))
+    }
+
+    /// Durable trash metadata, carried by a portable folder when selected.
+    pub fn trash_dir(&self) -> PathBuf {
+        self.portable
+            .as_ref()
+            .map_or_else(|| self.data.join("trash"), |root| root.join("data/trash"))
     }
 
     pub fn snapshot_root(&self, prefix: &Path, name: &str) -> PathBuf {

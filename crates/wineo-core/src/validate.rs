@@ -32,6 +32,7 @@ use crate::runner::{self, Runner};
 use crate::runners::Runners;
 use crate::runtime::{LostRunCleanup, Runtime};
 use crate::templates::{Template, Templates};
+use crate::trash::{self, Phase};
 use crate::winpath;
 
 /// How bad a problem is. An error means something will fail: a command
@@ -73,6 +74,7 @@ pub enum Area {
     Runtime,
     Desktop,
     Art,
+    Trash,
 }
 
 impl Area {
@@ -88,6 +90,7 @@ impl Area {
             Area::Runtime => "runtime",
             Area::Desktop => "desktop",
             Area::Art => "art",
+            Area::Trash => "trash",
         }
     }
 }
@@ -129,10 +132,12 @@ pub enum Code {
     ArtDuplicates,
     ArtDirStray,
     StatsStray,
+    TrashInterrupted,
+    TrashInvalid,
 }
 
 impl Code {
-    pub const ALL: [Code; 26] = [
+    pub const ALL: [Code; 28] = [
         Code::GlobalConfigInvalid,
         Code::TemplateInvalid,
         Code::TemplateUnresolved,
@@ -159,6 +164,8 @@ impl Code {
         Code::ArtDuplicates,
         Code::ArtDirStray,
         Code::StatsStray,
+        Code::TrashInterrupted,
+        Code::TrashInvalid,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -189,6 +196,8 @@ impl Code {
             Code::ArtDuplicates => "art_duplicates",
             Code::ArtDirStray => "art_dir_stray",
             Code::StatsStray => "stats_stray",
+            Code::TrashInterrupted => "trash_interrupted",
+            Code::TrashInvalid => "trash_invalid",
         }
     }
 
@@ -207,6 +216,7 @@ impl Code {
             | Code::NativeExeInvalid
             | Code::RestoreInterrupted
             | Code::ArtConfigInvalid => Level::Error,
+            Code::TrashInterrupted | Code::TrashInvalid => Level::Error,
             Code::TemplateUnresolved
             | Code::PrefixMissing
             | Code::TargetAmbiguous
@@ -249,6 +259,7 @@ impl Code {
             | Code::ArtTargetUnknown
             | Code::ArtDuplicates
             | Code::ArtDirStray => Area::Art,
+            Code::TrashInterrupted | Code::TrashInvalid => Area::Trash,
         }
     }
 }
@@ -301,6 +312,9 @@ pub enum Fix {
     RemoveStatsLog {
         environment: String,
     },
+    RecoverTrash {
+        id: String,
+    },
 }
 
 impl Fix {
@@ -345,6 +359,7 @@ impl Fix {
             Fix::RemoveStatsLog { environment } => {
                 format!("Remove {environment}'s leftover play stats")
             }
+            Fix::RecoverTrash { id } => format!("Recover interrupted trash entry {id}"),
         }
     }
 }
@@ -444,13 +459,24 @@ impl Report {
 /// left behind by environments that no longer exist, in the active root only.
 pub fn check_all(paths: &Paths) -> Result<Report> {
     let mut report = Report::default();
+    let pending = check_trash(paths, None, &mut report)?;
     let global = check_global(paths, &mut report);
     check_templates(paths, &global, &mut report)?;
     let names = environment::names(paths)?;
     for name in &names {
-        check_one(paths, &global, name, &mut report)?;
+        if !pending.contains(name) {
+            check_one(paths, &global, name, &mut report)?;
+        }
     }
-    check_strays(paths, &names, &mut report)?;
+    let mut protected = names.clone();
+    protected.extend(pending);
+    if !report
+        .problems
+        .iter()
+        .any(|problem| problem.code == Code::TrashInvalid)
+    {
+        check_strays(paths, &protected, &mut report)?;
+    }
     report.environments = names;
     contract(paths, &mut report);
     Ok(report)
@@ -469,19 +495,88 @@ pub fn check_environment(paths: &Paths, name: &str) -> Result<Report> {
     if !name::is_valid(name) {
         return Err(Error::InvalidName(name.to_owned()));
     }
+    let mut report = Report {
+        environments: vec![name.to_owned()],
+        ..Report::default()
+    };
+    let pending = check_trash(paths, Some(name), &mut report)?;
+    if pending.contains(name) {
+        return Ok(report);
+    }
     if !paths.environment_config(name).is_file() {
         return Err(Error::UnknownEnvironment(name.to_owned()));
     }
     // A broken global config is only reported by `check_all`. Here it means
     // defaults, as it does for most commands.
     let global = GlobalConfig::load(paths).unwrap_or_default();
-    let mut report = Report {
-        environments: vec![name.to_owned()],
-        ..Report::default()
-    };
     check_one(paths, &global, name, &mut report)?;
     contract(paths, &mut report);
     Ok(report)
+}
+
+fn check_trash(
+    paths: &Paths,
+    selected: Option<&str>,
+    report: &mut Report,
+) -> Result<BTreeSet<String>> {
+    let mut pending = BTreeSet::new();
+    let mut marked = BTreeSet::new();
+    match trash::pending_entries(paths) {
+        Ok(entries) => {
+            for entry in entries {
+                pending.insert(entry.name.clone());
+                marked.insert(entry.id.clone());
+                if selected.is_some_and(|name| name != entry.name) {
+                    continue;
+                }
+                report.push(Problem::new(
+                    Code::TrashInterrupted,
+                    Some(&entry.name),
+                    format!(
+                        "trash entry {} has pending recovery{}; run `wineo validate --fix`",
+                        entry.id,
+                        if entry.finished { " (finalizing)" } else { "" }
+                    ),
+                    Some(Fix::RecoverTrash { id: entry.id }),
+                ));
+            }
+        }
+        Err(err) => report.push(Problem::new(
+            Code::TrashInvalid,
+            None,
+            format!("pending trash markers cannot be inspected: {err:#}"),
+            None,
+        )),
+    }
+    match trash::list(paths) {
+        Ok(entries) => {
+            for entry in entries {
+                if entry.phase == Phase::Trashed || marked.contains(&entry.id) {
+                    continue;
+                }
+                pending.insert(entry.name.clone());
+                if selected.is_some_and(|name| name != entry.name) {
+                    continue;
+                }
+                report.push(Problem::new(
+                    Code::TrashInterrupted,
+                    Some(&entry.name),
+                    format!(
+                        "trash entry {} has interrupted {:?}; recover with `wineo validate --fix`",
+                        entry.id, entry.phase
+                    ),
+                    Some(Fix::RecoverTrash { id: entry.id }),
+                ));
+            }
+        }
+        Err(err) => report.push(Problem::new(
+            Code::TrashInvalid,
+            None,
+            format!("trash storage cannot be inspected: {err:#}"),
+            None,
+        )),
+    }
+    Ok(pending)
 }
 
 fn check_global(paths: &Paths, report: &mut Report) -> GlobalConfig {
@@ -1153,6 +1248,7 @@ pub fn apply(
             Ok(())
         }
         Fix::RemoveStatsLog { environment } => Ok(remove_stats_log(paths, environment)?),
+        Fix::RecoverTrash { id } => trash::recover(paths, id),
     }
 }
 

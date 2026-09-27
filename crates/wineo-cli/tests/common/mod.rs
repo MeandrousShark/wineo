@@ -562,6 +562,14 @@ pub fn find_on_path(program: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+pub fn trash_id(output: &Output) -> String {
+    stdout(output)
+        .lines()
+        .find_map(|line| line.strip_prefix("Restore with: wineo trash restore "))
+        .expect("removal should print a restore command")
+        .to_owned()
+}
+
 pub fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }

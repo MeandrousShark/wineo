@@ -767,11 +767,16 @@ fn adopted_prefix_deletion_refuses_registered_aliases_and_retains_failed_removal
     assert!(prefix.exists());
 
     let games = prefix.join("drive_c/Games");
-    fs::set_permissions(&games, fs::Permissions::from_mode(0o555)).unwrap();
+    let trash = prefix.parent().unwrap().join(".wineo-trash");
+    fs::write(&trash, b"occupied").unwrap();
     let failed = f.run(&["rm", "adopted", "--delete-prefix"]);
-    fs::set_permissions(&games, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(!failed.status.success());
-    assert!(stderr(&failed).contains("adopted was kept and the prefix may be partly deleted"));
+    assert!(
+        stderr(&failed).contains(".wineo-trash"),
+        "{}",
+        stderr(&failed)
+    );
+    assert_eq!(fs::read(&trash).unwrap(), b"occupied");
     assert_eq!(
         fs::read_to_string(configs.join("adopted.toml")).unwrap(),
         original

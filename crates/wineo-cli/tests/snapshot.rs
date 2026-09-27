@@ -187,17 +187,46 @@ fn interrupted_restore_blocks_config_edits_and_removal() {
 }
 
 #[test]
-fn removing_environment_leaves_snapshot_and_reports_where_it_is() {
+fn removing_environment_without_prefix_leaves_snapshot_and_reports_where_it_is() {
     let Some(f) = fixture() else { return };
     let (prefix, _) = environment(&f);
     assert_success(&f.run(&["snapshot", "create", "game", "saved"]));
     let root = prefix.parent().unwrap().join(".wineo-snapshots/game");
 
-    let output = f.run(&["rm", "game", "--delete-prefix"]);
+    let output = f.run(&["rm", "game"]);
     assert_success(&output);
     assert!(stdout(&output).contains(root.to_str().unwrap()));
-    assert!(!prefix.exists());
+    assert!(prefix.exists());
     assert!(root.join("saved/prefix/system.reg").exists());
+}
+
+#[test]
+fn removing_prefix_and_snapshots_can_be_restored_from_trash() {
+    let Some(f) = fixture() else { return };
+    let (prefix, config) = environment(&f);
+    assert_success(&f.run(&["snapshot", "create", "game", "saved"]));
+    let snapshots = prefix.parent().unwrap().join(".wineo-snapshots/game");
+    f.write_stats_log("game", "saved playtime\n");
+
+    let removed = f.run(&["rm", "game", "--delete-prefix"]);
+    assert_success(&removed);
+    assert!(!prefix.exists());
+    assert!(!snapshots.exists());
+    let listing = f.run(&["trash", "list"]);
+    assert_success(&listing);
+    let id = stdout(&listing)
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned();
+    assert!(stdout(&removed).contains(&id));
+
+    assert_success(&f.run(&["trash", "restore", &id]));
+    assert_eq!(f.created_config("game"), config);
+    assert_eq!(f.read_stats_log("game"), "saved playtime\n");
+    assert!(prefix.join("system.reg").exists());
+    assert!(snapshots.join("saved/prefix/system.reg").exists());
+    assert!(stdout(&f.run(&["trash", "list"])).trim().is_empty());
 }
 
 #[test]

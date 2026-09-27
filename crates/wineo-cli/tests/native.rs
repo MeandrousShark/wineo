@@ -873,7 +873,8 @@ fn list_logs_and_rm_work_for_native() {
 
     let removed = f.run(&["rm", "dusk"]);
     assert_success(&removed);
-    assert_eq!(stdout(&removed), "Removed environment dusk\n");
+    assert!(stdout(&removed).contains("Removed environment dusk"));
+    assert!(stdout(&removed).contains("wineo trash restore "));
     assert!(f.created_config("dusk").is_empty());
     assert!(game.exists());
 }

@@ -152,11 +152,7 @@ fn clone_copies_art_and_rm_removes_only_the_clones() {
 
     let removed = f.run(&["rm", "zomboid_modded", "--delete-prefix"]);
     assert_success(&removed);
-    assert!(
-        stderr(&removed).contains("Removed art\n"),
-        "{}",
-        stderr(&removed)
-    );
+    let id = common::trash_id(&removed);
     assert!(!copy.exists());
     assert_eq!(fs::read(original.join("icon.png")).unwrap(), b"icon");
     let mut names: Vec<_> = fs::read_dir(&art)
@@ -165,6 +161,11 @@ fn clone_copies_art_and_rm_removes_only_the_clones() {
         .collect();
     names.sort();
     assert_eq!(names, ["zomboid"]);
+    assert_success(&f.run(&["trash", "restore", &id]));
+    assert_eq!(fs::read_to_string(copy.join("art.toml")).unwrap(), record);
+    assert_eq!(fs::read(copy.join("icon.png")).unwrap(), b"icon");
+    assert_eq!(fs::read(copy.join("game/grid.jpg")).unwrap(), b"grid");
+    assert_eq!(fs::read(original.join("icon.png")).unwrap(), b"icon");
 }
 
 #[test]
@@ -180,14 +181,14 @@ fn clone_does_not_copy_play_stats() {
     assert!(!f.stats_log("zomboid_modded").exists());
     assert!(!f.read_stats_log("zomboid").is_empty());
 
+    let stats = f.read_stats_log("zomboid");
     let removed = f.run(&["rm", "zomboid", "--delete-prefix"]);
     assert_success(&removed);
-    assert!(
-        stderr(&removed).contains("Removed play stats\n"),
-        "{}",
-        stderr(&removed)
-    );
+    let id = common::trash_id(&removed);
     assert!(!f.stats_log("zomboid").exists());
+    assert_success(&f.run(&["trash", "restore", &id]));
+    assert_eq!(f.read_stats_log("zomboid"), stats);
+    assert!(!f.stats_log("zomboid_modded").exists());
 }
 
 #[test]
