@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0031: Wine Wayland, gamescope, and MangoHud
 
@@ -47,7 +47,10 @@ these as toggles and a gamescope form, so the config shape settles here.
   didn't: an older wineo refuses the file with `unknown field` instead of
   misreading it.
 
-## Decisions (open)
+## Decisions (settled with the maintainer, 2026-09-27)
+
+The maintainer accepted every recommendation below: 1A, and the
+recommended options for 2 through 5.
 
 ### 1. Gamescope config shape
 
@@ -200,7 +203,8 @@ own can wait until someone asks. HDR without Wayland stays unsupported.
   waits for the prefix, so Proton shouldn't). If it does, wrap the runner
   command so gamescope's child lasts until the prefix is idle.
 - The maintainer plays one Proton game with each setting and re-imports a
-  Heroic game that has them.
+  Heroic game that has them. The maintainer has no HDR monitor, so HDR is
+  covered by the import tests only.
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
 
 ## Scope limits
