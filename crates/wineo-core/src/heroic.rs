@@ -11,16 +11,15 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
+use crate::gamescope::{Filter, Gamescope, GamescopeSetting, Scaler, Window};
 
 const FLATPAK_ID: &str = "com.heroicgameslauncher.hgl";
 /// The unsupported settings that still matter to a native game. The rest are
 /// about Wine or Proton, which a native game doesn't run on.
-const NATIVE_UNSUPPORTED: [&str; 5] = [
+const NATIVE_UNSUPPORTED: [&str; 3] = [
     "wrapperOptions",
     "beforeLaunchScriptPath",
     "afterLaunchScriptPath",
-    "gamescope",
-    "showMangohud",
 ];
 const MANAGED_ENV: [&str; 5] = [
     "WINEPREFIX",
@@ -396,6 +395,8 @@ impl HeroicSource {
                 .carried
                 .push(review_item("useGameMode", value.to_string()));
         }
+        let mangohud = imported_toggle(&effective, "showMangohud", &mut review);
+        let gamescope = imported_gamescope(&effective, &mut issues, &mut review);
         collect_unsupported(
             &effective,
             global,
@@ -414,6 +415,8 @@ impl HeroicSource {
             launcher_args: launcher_args.to_owned(),
             env,
             gamemode,
+            mangohud,
+            gamescope,
             issues,
             fingerprint: self.fingerprint(game_id)?,
             settings_review: review,
@@ -640,6 +643,10 @@ impl HeroicSource {
                 .carried
                 .push(review_item("useGameMode", value.to_string()));
         }
+        let mangohud = imported_toggle(&effective, "showMangohud", &mut review);
+        let gamescope = imported_gamescope(&effective, &mut issues, &mut review);
+        let enable_wine_wayland = bool_setting(&effective, "enableWineWayland") == Some(true);
+        let enable_hdr = bool_setting(&effective, "enableHDR") == Some(true);
 
         collect_unsupported(
             &effective,
@@ -729,6 +736,11 @@ impl HeroicSource {
             cwd,
             env,
             gamemode,
+            wayland: None,
+            mangohud,
+            gamescope,
+            enable_wine_wayland,
+            enable_hdr,
             dxvk: None,
             vkd3d: None,
             issues,
@@ -871,6 +883,11 @@ pub struct HeroicImport {
     pub cwd: Option<PathBuf>,
     pub env: BTreeMap<String, String>,
     pub gamemode: Option<bool>,
+    pub wayland: Option<bool>,
+    pub mangohud: Option<bool>,
+    pub gamescope: Option<GamescopeSetting>,
+    pub enable_wine_wayland: bool,
+    pub enable_hdr: bool,
     /// `dxvk`/`vkd3d` to carry into the environment config, filled in by the
     /// importer once it knows the chosen wineo runner. Inspection itself
     /// never sets these, since Proton bundles its own and only the CLI
@@ -893,6 +910,8 @@ pub struct HeroicNativeImport {
     pub launcher_args: String,
     pub env: BTreeMap<String, String>,
     pub gamemode: Option<bool>,
+    pub mangohud: Option<bool>,
+    pub gamescope: Option<GamescopeSetting>,
     pub issues: Vec<HeroicIssue>,
     pub fingerprint: InputFingerprint,
     pub settings_review: SettingsReview,
@@ -1461,6 +1480,94 @@ fn translated_environment(
     env
 }
 
+fn imported_toggle(
+    settings: &Map<String, Value>,
+    field: &str,
+    review: &mut SettingsReview,
+) -> Option<bool> {
+    let on = (bool_setting(settings, field) == Some(true)).then_some(true);
+    if on.is_some() {
+        review.carried.push(review_item(field, "true"));
+    }
+    on
+}
+
+fn imported_gamescope(
+    settings: &Map<String, Value>,
+    issues: &mut Vec<HeroicIssue>,
+    review: &mut SettingsReview,
+) -> Option<GamescopeSetting> {
+    let object = settings.get("gamescope")?.as_object()?;
+    if !["enableUpscaling", "enableLimiter"]
+        .iter()
+        .any(|key| bool_setting(object, key) == Some(true))
+    {
+        return None;
+    }
+    let mut game = Gamescope::default();
+    let mut number = |field: &str| -> Option<u32> {
+        let value = value_string(Some(object.get(field)?));
+        if value
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return None;
+        }
+        if let Some(number) = value.as_deref().and_then(|value| value.parse::<u32>().ok()) {
+            return Some(number);
+        }
+        let detail = format!("gamescope {field} is not a number; skipped");
+        issues.push(HeroicIssue::needs_attention(
+            Some(format!("gamescope.{field}")),
+            &detail,
+        ));
+        review
+            .needs_attention
+            .push(review_item(format!("gamescope.{field}"), detail));
+        None
+    };
+    if bool_setting(object, "enableUpscaling") == Some(true) {
+        game.width = number("gameWidth");
+        game.height = number("gameHeight");
+        game.output_width = number("upscaleWidth");
+        game.output_height = number("upscaleHeight");
+        match object.get("upscaleMethod").and_then(Value::as_str) {
+            Some("fsr") => game.filter = Some(Filter::Fsr),
+            Some("nis") => game.filter = Some(Filter::Nis),
+            Some("integer") => game.scaler = Some(Scaler::Integer),
+            Some("stretch") => game.scaler = Some(Scaler::Stretch),
+            _ => {}
+        }
+        game.window = match object.get("windowType").and_then(Value::as_str) {
+            Some("fullscreen") => Some(Window::Fullscreen),
+            Some("borderless") => Some(Window::Borderless),
+            _ => None,
+        };
+    }
+    if bool_setting(object, "enableLimiter") == Some(true) {
+        game.fps_limit = number("fpsLimiter");
+        game.fps_limit_unfocused = number("fpsLimiterNoFocus");
+    }
+    game.grab_cursor = bool_setting(object, "enableForceGrabCursor") == Some(true);
+    if let Some(options) = object.get("additionalOptions").and_then(Value::as_str) {
+        match crate::heroic_args::parse(options) {
+            Ok(args) => game.args = args,
+            Err(error) => {
+                let detail = format!("gamescope additionalOptions has invalid quoting: {error}");
+                issues.push(HeroicIssue::needs_attention(
+                    Some("gamescope.additionalOptions".to_owned()),
+                    &detail,
+                ));
+                review
+                    .needs_attention
+                    .push(review_item("gamescope.additionalOptions", detail));
+            }
+        }
+    }
+    review.carried.push(review_item("gamescope", "on"));
+    Some(GamescopeSetting::On(game))
+}
+
 fn collect_unsupported(
     settings: &Map<String, Value>,
     global: &Map<String, Value>,
@@ -1479,20 +1586,8 @@ fn collect_unsupported(
             "afterLaunchScriptPath",
             "Heroic launch scripts are not executed during import",
         ),
-        (
-            "gamescope",
-            "gamescope command construction needs manual setup",
-        ),
-        ("showMangohud", "MangoHud wrapper setup needs manual setup"),
-        (
-            "enableWineWayland",
-            "Wine Wayland handling is runner-specific",
-        ),
         ("enableHDR", "HDR handling is runner-specific"),
-        (
-            "enableWoW64",
-            "architecture mode is not copied into wineo settings",
-        ),
+        ("enableWoW64", "the runner's build decides WoW64"),
         (
             "eacRuntime",
             "Heroic-managed anti-cheat runtime is not imported",
@@ -1713,6 +1808,166 @@ mod tests {
         )
         .unwrap();
         prefix
+    }
+
+    fn game_fixture(source: &HeroicSource, root: &Path, settings: &str, native: bool) {
+        let prefix = wine_prefix(root);
+        let global = format!(
+            r#"{{"defaultSettings":{{"winePrefix":"{}","wineVersion":{{"type":"wine","name":"System","bin":"wine"}}}}}}"#,
+            prefix.display()
+        );
+        let platform = if native { "linux" } else { "Windows" };
+        let library = format!(
+            r#"{{"games":[{{"app_name":"hades","title":"Hades","runner":"sideload","install":{{"platform":"{platform}","executable":"{}"}}}}]}}"#,
+            prefix.join("drive_c/game.exe").display()
+        );
+        write_fixture(
+            source,
+            &global,
+            &format!(r#"{{"hades":{settings}}}"#),
+            &library,
+        );
+    }
+
+    #[test]
+    fn gamescope_fields_follow_heroic_enable_flags_and_skip_bad_numbers() {
+        let (root, source) = fixture();
+        game_fixture(
+            &source,
+            root.path(),
+            r#"{"showMangohud":true,"gamescope":{"enableUpscaling":true,"enableLimiter":true,"gameWidth":"1920","gameHeight":"1080","upscaleWidth":"2560","upscaleHeight":"1440","upscaleMethod":"fsr","windowType":"fullscreen","fpsLimiter":"60","fpsLimiterNoFocus":"10","enableForceGrabCursor":true,"additionalOptions":"--hdr-enabled --label 'two words'"}}"#,
+            false,
+        );
+        let imported = source.inspect("hades").unwrap();
+        assert_eq!(imported.mangohud, Some(true));
+        let game = imported.gamescope.unwrap();
+        let game = game.on().unwrap();
+        assert_eq!(
+            (
+                game.width,
+                game.height,
+                game.output_width,
+                game.output_height
+            ),
+            (Some(1920), Some(1080), Some(2560), Some(1440))
+        );
+        assert_eq!(
+            (
+                game.filter,
+                game.window,
+                game.fps_limit,
+                game.fps_limit_unfocused
+            ),
+            (
+                Some(Filter::Fsr),
+                Some(Window::Fullscreen),
+                Some(60),
+                Some(10)
+            )
+        );
+        assert!(game.grab_cursor);
+        assert_eq!(game.args, ["--hdr-enabled", "--label", "two words"]);
+        assert!(
+            !imported
+                .issues
+                .iter()
+                .any(|issue| issue.field.as_deref() == Some("gamescope")
+                    || issue.field.as_deref() == Some("showMangohud"))
+        );
+
+        fs::write(source.game_config_path("hades"), r#"{"hades":{"showMangohud":true,"gamescope":{"enableUpscaling":false,"enableLimiter":false,"gameWidth":"1920"}}}"#).unwrap();
+        let imported = source.inspect("hades").unwrap();
+        assert_eq!(imported.mangohud, Some(true));
+        assert_eq!(imported.gamescope, None);
+
+        fs::write(source.game_config_path("hades"), r#"{"hades":{"gamescope":{"enableLimiter":true,"fpsLimiter":"","fpsLimiterNoFocus":"oops","gameWidth":"not used","enableForceGrabCursor":true}}}"#).unwrap();
+        let imported = source.inspect("hades").unwrap();
+        let game = imported.gamescope.unwrap();
+        let game = game.on().unwrap();
+        assert_eq!(game.fps_limit, None);
+        assert_eq!(game.fps_limit_unfocused, None);
+        assert_eq!(game.width, None);
+        assert!(game.grab_cursor);
+        assert_eq!(
+            imported
+                .issues
+                .iter()
+                .filter(|issue| issue.field.as_deref() == Some("gamescope.fpsLimiterNoFocus"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn gamescope_alternatives_native_and_global_defaults() {
+        let (root, source) = fixture();
+        game_fixture(
+            &source,
+            root.path(),
+            r#"{"enableWineWayland":true,"enableHDR":true,"showMangohud":true,"gamescope":{"enableUpscaling":true,"upscaleMethod":"integer","windowType":"borderless"}}"#,
+            true,
+        );
+        let native = source.inspect_native("hades").unwrap();
+        assert_eq!(native.mangohud, Some(true));
+        let game = native.gamescope.unwrap();
+        let game = game.on().unwrap();
+        assert_eq!(
+            (game.scaler, game.window),
+            (Some(Scaler::Integer), Some(Window::Borderless))
+        );
+        assert!(!native.issues.iter().any(|issue| matches!(
+            issue.field.as_deref(),
+            Some("enableWineWayland" | "enableHDR" | "gamescope")
+        )));
+
+        let prefix = root.path().join("prefix");
+        fs::write(source.config_path(), format!(r#"{{"defaultSettings":{{"winePrefix":"{}","wineVersion":{{"type":"wine","name":"System","bin":"wine"}},"enableWineWayland":true,"showMangohud":true,"gamescope":{{"enableUpscaling":true,"upscaleMethod":"nis","windowType":"windowed","gameWidth":""}}}}}}"#, prefix.display())).unwrap();
+        fs::write(source.library_path(), format!(r#"{{"games":[{{"app_name":"hades","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}}]}}"#, prefix.join("drive_c/game.exe").display())).unwrap();
+        fs::write(source.game_config_path("hades"), r#"{"hades":{}}"#).unwrap();
+        let imported = source.inspect("hades").unwrap();
+        assert!(imported.enable_wine_wayland);
+        assert_eq!(imported.mangohud, Some(true));
+        let game = imported.gamescope.unwrap();
+        let game = game.on().unwrap();
+        assert_eq!(game.filter, Some(Filter::Nis));
+        assert_eq!(game.window, None);
+        assert_eq!(game.width, None);
+        fs::write(source.game_config_path("hades"), r#"{"hades":{"gamescope":{"enableUpscaling":true,"upscaleMethod":"stretch"},"showMangohud":false,"enableWineWayland":false}}"#).unwrap();
+        let imported = source.inspect("hades").unwrap();
+        assert!(!imported.enable_wine_wayland);
+        assert_eq!(imported.mangohud, None);
+        assert_eq!(
+            imported.gamescope.unwrap().on().unwrap().scaler,
+            Some(Scaler::Stretch)
+        );
+    }
+
+    #[test]
+    fn hdr_without_wayland_remains_unsupported() {
+        let (root, source) = fixture();
+        game_fixture(
+            &source,
+            root.path(),
+            r#"{"enableHDR":true,"enableWineWayland":false,"enableWoW64":true}"#,
+            false,
+        );
+        let imported = source.inspect("hades").unwrap();
+        assert!(!imported.enable_wine_wayland);
+        assert!(imported.enable_hdr);
+        assert!(
+            imported
+                .issues
+                .iter()
+                .any(|issue| issue.field.as_deref() == Some("enableHDR")
+                    && issue.kind == HeroicIssueKind::Unsupported)
+        );
+        assert!(
+            imported
+                .issues
+                .iter()
+                .any(|issue| issue.field.as_deref() == Some("enableWoW64")
+                    && issue.message.contains("runner's build decides WoW64"))
+        );
     }
 
     #[test]

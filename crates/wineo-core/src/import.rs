@@ -23,6 +23,7 @@ use toml_edit::{Array, DocumentMut, Item, Table, Value, value};
 use crate::config::{Arch, EnvironmentConfig, GlobalConfig, Target, validate_env_var};
 use crate::download::{InstallLock, publish};
 use crate::environment::Environment;
+use crate::gamescope::GamescopeSetting;
 use crate::name;
 use crate::operation::{Locks, Operation};
 use crate::paths::{self, Paths};
@@ -84,6 +85,9 @@ pub struct ImportedSettings {
     pub targets: BTreeMap<String, Target>,
     pub env: BTreeMap<String, String>,
     pub gamemode: Option<bool>,
+    pub wayland: Option<bool>,
+    pub mangohud: Option<bool>,
+    pub gamescope: Option<GamescopeSetting>,
     pub gameid: Option<String>,
     pub store: Option<String>,
     pub dxvk: Option<String>,
@@ -1123,6 +1127,15 @@ fn finish_config(mut doc: DocumentMut, settings: Option<&ImportedSettings>) -> R
         }
         if let Some(gamemode) = settings.gamemode {
             doc["gamemode"] = Value::from(gamemode).into();
+        }
+        if let Some(wayland) = settings.wayland {
+            doc["wayland"] = value(wayland);
+        }
+        if let Some(mangohud) = settings.mangohud {
+            doc["mangohud"] = value(mangohud);
+        }
+        if let Some(gamescope) = &settings.gamescope {
+            doc["gamescope"] = gamescope.to_item();
         }
         if let Some(gameid) = &settings.gameid {
             doc["gameid"] = value(gameid);
