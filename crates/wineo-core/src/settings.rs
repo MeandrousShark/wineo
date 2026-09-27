@@ -381,6 +381,73 @@ mod tests {
     }
 
     #[test]
+    fn native_wayland_is_refused_at_both_levels_without_writing() {
+        let (_root, paths) = setup();
+        let text = "kind = 'native'\n[targets.game]\nexe = 'game'\n";
+        write_env(&paths, text);
+        for key in ["wayland", "targets.game.wayland"] {
+            let err = update(
+                &paths,
+                ConfigFile::Environment("notepad"),
+                &[(key, "true")],
+                &[],
+            )
+            .unwrap_err();
+            assert!(
+                err.to_string().contains(&format!("can't set {key}")),
+                "{err}"
+            );
+            assert_eq!(
+                fs::read_to_string(paths.environment_config("notepad")).unwrap(),
+                text
+            );
+        }
+    }
+
+    #[test]
+    fn gamescope_false_becomes_a_table_and_an_unset_field_keeps_it_on() {
+        let (_root, paths) = setup();
+        write_env(
+            &paths,
+            &format!(
+                "{NOTEPAD}gamescope = false # keep\n[targets.game]\nexe = 'game'\ngamescope = false # keep target\n"
+            ),
+        );
+        for prefix in ["gamescope", "targets.game.gamescope"] {
+            let field = format!("{prefix}.width");
+            update(
+                &paths,
+                ConfigFile::Environment("notepad"),
+                &[(field.as_str(), "1920")],
+                &[],
+            )
+            .unwrap();
+            update(
+                &paths,
+                ConfigFile::Environment("notepad"),
+                &[],
+                &[field.as_str()],
+            )
+            .unwrap();
+        }
+        let text = fs::read_to_string(paths.environment_config("notepad")).unwrap();
+        assert!(text.contains("[gamescope]"), "{text}");
+        assert!(text.contains("[targets.game.gamescope]"), "{text}");
+        assert!(text.contains("# keep"), "{text}");
+        assert!(text.contains("# keep target"), "{text}");
+        let config = EnvironmentConfig::parse(Path::new("/x"), &text).unwrap();
+        assert!(config.gamescope.unwrap().on().is_some());
+        assert!(
+            config.targets["game"]
+                .gamescope
+                .as_ref()
+                .unwrap()
+                .on()
+                .is_some()
+        );
+    }
+
+    #[test]
     fn a_versioned_file_is_not_stamped_twice() {
         let (_root, paths) = setup();
         let versioned = format!("{NOTEPAD}schema_version = 1\n");

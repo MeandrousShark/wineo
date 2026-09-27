@@ -59,10 +59,11 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
             store_value(root, key, value);
             Ok(())
         }
-        "gamemode" => {
-            store_value(root, "gamemode", Value::from(parse_bool(key, raw)?));
+        "gamemode" | "wayland" | "mangohud" => {
+            store_value(root, key, Value::from(parse_bool(key, raw)?));
             Ok(())
         }
+        "gamescope" => set_gamescope(root, key, raw),
         "arch" => Err(read_only_arch()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
@@ -73,6 +74,8 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
                 Ok(())
             } else if let Some(rest) = key.strip_prefix("targets.") {
                 set_target(root, key, rest, raw)
+            } else if let Some(field) = key.strip_prefix("gamescope.") {
+                set_gamescope_field(root, key, field, raw)
             } else {
                 Err(EditError::UnknownKey(key.to_string()))
             }
@@ -99,8 +102,8 @@ fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
             store_value(table, "arch", value);
             Ok(())
         }
-        "gamemode" => {
-            store_value(root, "gamemode", Value::from(parse_bool(key, raw)?));
+        "gamemode" | "wayland" | "mangohud" => {
+            store_value(root, key, Value::from(parse_bool(key, raw)?));
             Ok(())
         }
         "defaults.prefix_root"
@@ -149,10 +152,24 @@ fn set_target(root: &mut Table, key: &str, rest: &str, raw: &str) -> Result<(), 
 
     // Parse and validate before creating any table, so a rejected value
     // never leaves an empty `[targets]` or `[targets.<name>]` behind.
+    if field == "gamescope" {
+        parse_gamescope_off(key, raw)?;
+        let targets = ensure_table(root, "targets", "targets", true)?;
+        let target = ensure_table(targets, name, &format!("targets.{name}"), false)?;
+        return set_gamescope(target, key, raw);
+    }
+    if let Some(gamescope_field) = field.strip_prefix("gamescope.") {
+        let value = parse_gamescope_field(key, gamescope_field, raw)?;
+        let targets = ensure_table(root, "targets", "targets", true)?;
+        let target = ensure_table(targets, name, &format!("targets.{name}"), false)?;
+        let table = ensure_gamescope(target, key)?;
+        store_value(table, gamescope_field, value);
+        return Ok(());
+    }
     let value = match field {
         "exe" | "cwd" | "name" => parse_string_value(key, raw)?,
         "args" => parse_args_value(key, raw)?,
-        "gamemode" | "desktop" => Value::from(parse_bool(key, raw)?),
+        "gamemode" | "wayland" | "mangohud" | "desktop" => Value::from(parse_bool(key, raw)?),
         _ => return Err(EditError::UnknownKey(key.to_string())),
     };
 
@@ -195,11 +212,116 @@ fn set_target_default(root: &mut Table, name: &str, key: &str, raw: &str) -> Res
     Ok(())
 }
 
+fn parse_gamescope_off(key: &str, raw: &str) -> Result<(), EditError> {
+    if raw == "false" {
+        Ok(())
+    } else {
+        Err(EditError::InvalidValue {
+            key: key.to_owned(),
+            reason: if raw == "true" {
+                "gamescope takes a [gamescope] table or false, not true".to_owned()
+            } else {
+                "gamescope takes a [gamescope] table or false".to_owned()
+            },
+        })
+    }
+}
+
+fn set_gamescope(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
+    parse_gamescope_off(key, raw)?;
+    store_value(root, "gamescope", Value::from(false));
+    Ok(())
+}
+
+fn ensure_gamescope<'a>(root: &'a mut Table, key: &str) -> Result<&'a mut Table, EditError> {
+    let old_decor = root
+        .get("gamescope")
+        .and_then(Item::as_value)
+        .filter(|value| value.as_bool() == Some(false))
+        .map(|value| value.decor().clone());
+    if old_decor.is_some() {
+        root.remove("gamescope");
+    }
+    let table = ensure_table(root, "gamescope", key, false)?;
+    if let Some(decor) = old_decor {
+        *table.decor_mut() = decor;
+    }
+    Ok(table)
+}
+
+fn set_gamescope_field(
+    root: &mut Table,
+    key: &str,
+    field: &str,
+    raw: &str,
+) -> Result<(), EditError> {
+    let value = parse_gamescope_field(key, field, raw)?;
+    let table = ensure_gamescope(root, key)?;
+    store_value(table, field, value);
+    Ok(())
+}
+
+fn parse_gamescope_field(key: &str, field: &str, raw: &str) -> Result<Value, EditError> {
+    match field {
+        "width"
+        | "height"
+        | "output_width"
+        | "output_height"
+        | "fps_limit"
+        | "fps_limit_unfocused" => parse_count_value(key, raw),
+        "filter" | "scaler" | "window" => {
+            let allowed: &[&str] = match field {
+                "filter" => &["linear", "nearest", "fsr", "nis", "pixel", "sgsr"],
+                "scaler" => &["auto", "integer", "fit", "fill", "stretch"],
+                _ => &["fullscreen", "borderless"],
+            };
+            if !allowed.contains(&raw) {
+                return Err(EditError::InvalidValue {
+                    key: key.to_owned(),
+                    reason: format!("unknown {field} `{raw}`"),
+                });
+            }
+            parse_string_value(key, raw)
+        }
+        "grab_cursor" => Ok(Value::from(parse_bool(key, raw)?)),
+        "args" => parse_args_value(key, raw),
+        _ => Err(EditError::UnknownKey(key.to_owned())),
+    }
+}
+
+fn known_gamescope_field(field: &str) -> bool {
+    matches!(
+        field,
+        "width"
+            | "height"
+            | "output_width"
+            | "output_height"
+            | "fps_limit"
+            | "fps_limit_unfocused"
+            | "filter"
+            | "scaler"
+            | "window"
+            | "grab_cursor"
+            | "args"
+    )
+}
+
+fn unset_gamescope_field(root: &mut Table, key: &str, field: &str) -> Result<bool, EditError> {
+    if !known_gamescope_field(field) {
+        return Err(EditError::UnknownKey(key.to_owned()));
+    }
+    // An empty gamescope table still turns gamescope on.
+    match root.get_mut("gamescope") {
+        Some(Item::Table(table)) => Ok(table.remove(field).is_some()),
+        None | Some(Item::Value(_)) => Ok(false),
+        Some(_) => Err(not_a_table(key)),
+    }
+}
+
 fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
-        "prefix" | "runner" | "gamemode" | "gameid" | "store" | "dxvk" | "vkd3d" => {
-            Ok(root.remove(key).is_some())
-        }
+        "prefix" | "runner" | "gamemode" | "wayland" | "mangohud" | "gamescope" | "gameid"
+        | "store" | "dxvk" | "vkd3d" => Ok(root.remove(key).is_some()),
         "arch" => Err(read_only_arch()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
@@ -207,6 +329,8 @@ fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
                 unset_field(root, "env", "env", var)
             } else if let Some(rest) = key.strip_prefix("targets.") {
                 unset_target(root, key, rest)
+            } else if let Some(field) = key.strip_prefix("gamescope.") {
+                unset_gamescope_field(root, key, field)
             } else {
                 Err(EditError::UnknownKey(key.to_string()))
             }
@@ -216,7 +340,9 @@ fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
 
 fn unset_global(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
-        "stop_timeout" | "log_limit_mb" | "gamemode" => Ok(root.remove(key).is_some()),
+        "stop_timeout" | "log_limit_mb" | "gamemode" | "wayland" | "mangohud" => {
+            Ok(root.remove(key).is_some())
+        }
         "defaults.runner" => unset_field(root, "defaults", "defaults", "runner"),
         "defaults.arch" => unset_field(root, "defaults", "defaults", "arch"),
         "defaults.prefix_root" => unset_field(root, "defaults", "defaults", "prefix_root"),
@@ -264,8 +390,20 @@ fn unset_target(root: &mut Table, key: &str, rest: &str) -> Result<bool, EditErr
     if let Some(field) = field
         && !matches!(
             field,
-            "exe" | "args" | "cwd" | "default" | "gamemode" | "desktop" | "name"
+            "exe"
+                | "args"
+                | "cwd"
+                | "default"
+                | "gamemode"
+                | "wayland"
+                | "mangohud"
+                | "gamescope"
+                | "desktop"
+                | "name"
         )
+        && !field
+            .strip_prefix("gamescope.")
+            .is_some_and(known_gamescope_field)
     {
         return Err(EditError::UnknownKey(key.to_string()));
     }
@@ -287,7 +425,11 @@ fn unset_target(root: &mut Table, key: &str, rest: &str) -> Result<bool, EditErr
             let Some(target) = existing_table(targets, name, &error_key)? else {
                 return Ok(false);
             };
-            let removed = target.remove(field).is_some();
+            let removed = if let Some(gamescope_field) = field.strip_prefix("gamescope.") {
+                unset_gamescope_field(target, key, gamescope_field)?
+            } else {
+                target.remove(field).is_some()
+            };
             if removed && target.is_empty() {
                 targets.remove(name);
                 if targets.is_empty() {
@@ -783,5 +925,94 @@ mod tests {
         let mut doc = parse("");
         let err = set(&mut doc, Scope::Environment, "env.FOO=BAR", "x").unwrap_err();
         assert!(matches!(err, EditError::InvalidValue { key, .. } if key == "env.FOO=BAR"));
+    }
+
+    #[test]
+    fn launch_bools_work_at_every_level() {
+        let mut global = parse("");
+        let mut env = parse("");
+        for key in ["wayland", "mangohud"] {
+            set(&mut global, Scope::Global, key, "true").unwrap();
+            assert!(unset(&mut global, Scope::Global, key).unwrap());
+            set(&mut env, Scope::Environment, key, "false").unwrap();
+            assert!(unset(&mut env, Scope::Environment, key).unwrap());
+            let target = format!("targets.game.{key}");
+            set(&mut env, Scope::Environment, &target, "true").unwrap();
+            assert!(unset(&mut env, Scope::Environment, &target).unwrap());
+            assert!(set(&mut global, Scope::Global, key, "yes").is_err());
+        }
+        assert!(matches!(
+            set(&mut global, Scope::Global, "gamescope", "false"),
+            Err(EditError::UnknownKey(_))
+        ));
+    }
+
+    #[test]
+    fn gamescope_fields_are_typed_and_unsetting_the_last_one_keeps_the_table() {
+        let fields = [
+            ("width", "1920"),
+            ("height", "1080"),
+            ("output_width", "2560"),
+            ("output_height", "1440"),
+            ("fps_limit", "60"),
+            ("fps_limit_unfocused", "0"),
+            ("filter", "fsr"),
+            ("scaler", "fit"),
+            ("window", "borderless"),
+            ("grab_cursor", "true"),
+            ("args", r#"["--hdr-enabled"]"#),
+        ];
+        for prefix in ["gamescope", "targets.game.gamescope"] {
+            let mut doc = if prefix.starts_with("targets") {
+                parse("[targets.game]\nexe = 'game'\ngamescope = false # old\n")
+            } else {
+                parse("gamescope = false # old\n")
+            };
+            for (field, raw) in fields {
+                let key = format!("{prefix}.{field}");
+                set(&mut doc, Scope::Environment, &key, raw).unwrap();
+                assert!(doc.to_string().contains(&format!("{field} = ")));
+                assert!(doc.to_string().contains("# old"), "{doc}");
+                assert!(unset(&mut doc, Scope::Environment, &key).unwrap());
+                assert!(doc.to_string().contains(&format!("[{prefix}]")), "{doc}");
+            }
+            assert!(!unset(&mut doc, Scope::Environment, &format!("{prefix}.width")).unwrap());
+            assert!(unset(&mut doc, Scope::Environment, prefix).unwrap());
+            assert!(!doc.to_string().contains(&format!("[{prefix}]")), "{doc}");
+            set(&mut doc, Scope::Environment, prefix, "false").unwrap();
+            assert!(doc.to_string().contains("gamescope = false"), "{doc}");
+            let err = set(&mut doc, Scope::Environment, prefix, "true").unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("gamescope takes a [gamescope] table or false, not true")
+            );
+            assert!(doc.to_string().contains("gamescope = false"), "{doc}");
+        }
+    }
+
+    #[test]
+    fn invalid_gamescope_fields_do_not_change_the_document() {
+        let mut doc = parse("gamescope = false\n");
+        for (field, value) in [
+            ("width", "-1"),
+            ("height", "4294967296"),
+            ("filter", "bilinear"),
+            ("scaler", "zoom"),
+            ("window", "windowed"),
+            ("grab_cursor", "yes"),
+            ("args", "[1]"),
+            ("unknown", "2"),
+        ] {
+            assert!(
+                set(
+                    &mut doc,
+                    Scope::Environment,
+                    &format!("gamescope.{field}"),
+                    value
+                )
+                .is_err()
+            );
+            assert_eq!(doc.to_string(), "gamescope = false\n");
+        }
     }
 }
