@@ -76,6 +76,51 @@ fn a_clean_setup_prints_one_line() {
 }
 
 #[test]
+fn missing_launch_tools_and_unsupported_wayland_have_stable_error_codes() {
+    let f = Fixture::new();
+    f.install_runner("old-wine");
+    f.environment_with_runner(
+        "game",
+        "old-wine",
+        "wayland = true\nmangohud = true\n[gamescope]\n[targets.game]\nexe = 'game'\n",
+    );
+    let output = f.run_sandboxed(&["validate", "game", "--json"]);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let problems = json["problems"].as_array().unwrap();
+    for code in [
+        "gamescope_missing",
+        "mangohud_missing",
+        "wayland_unsupported",
+    ] {
+        let problem = problems
+            .iter()
+            .find(|p| p["code"] == code)
+            .unwrap_or_else(|| panic!("{code}: {json}"));
+        assert_eq!(problem["level"], "error");
+        assert_eq!(problem["area"], "target");
+    }
+    assert!(
+        problems.iter().any(|p| p["code"] == "mangohud_missing"
+            && p["message"].as_str().unwrap().contains("mangoapp"))
+    );
+
+    f.environment_with_runner(
+        "game",
+        "old-wine",
+        "mangohud = true\n[targets.game]\nexe = 'game'\n",
+    );
+    let output = f.run_sandboxed(&["validate", "game", "--json"]);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json["problems"].as_array().unwrap().iter().any(|p| {
+        p["code"] == "mangohud_missing"
+            && p["message"]
+                .as_str()
+                .unwrap()
+                .contains("mangohud was not found")
+    }));
+}
+
+#[test]
 fn verbose_lists_what_was_checked() {
     let f = Fixture::new();
     f.environment("hades", "");

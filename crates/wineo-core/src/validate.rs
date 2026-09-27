@@ -117,6 +117,9 @@ pub enum Code {
     ExeMissing,
     CwdMissing,
     GamemodeMissing,
+    GamescopeMissing,
+    MangohudMissing,
+    WaylandUnsupported,
     NativeExeInvalid,
     TargetAmbiguous,
     LostRun,
@@ -137,7 +140,7 @@ pub enum Code {
 }
 
 impl Code {
-    pub const ALL: [Code; 28] = [
+    pub const ALL: [Code; 31] = [
         Code::GlobalConfigInvalid,
         Code::TemplateInvalid,
         Code::TemplateUnresolved,
@@ -149,6 +152,9 @@ impl Code {
         Code::ExeMissing,
         Code::CwdMissing,
         Code::GamemodeMissing,
+        Code::GamescopeMissing,
+        Code::MangohudMissing,
+        Code::WaylandUnsupported,
         Code::NativeExeInvalid,
         Code::TargetAmbiguous,
         Code::LostRun,
@@ -181,6 +187,9 @@ impl Code {
             Code::ExeMissing => "exe_missing",
             Code::CwdMissing => "cwd_missing",
             Code::GamemodeMissing => "gamemode_missing",
+            Code::GamescopeMissing => "gamescope_missing",
+            Code::MangohudMissing => "mangohud_missing",
+            Code::WaylandUnsupported => "wayland_unsupported",
             Code::NativeExeInvalid => "native_exe_invalid",
             Code::TargetAmbiguous => "target_ambiguous",
             Code::LostRun => "lost_run",
@@ -213,6 +222,9 @@ impl Code {
             | Code::ExeMissing
             | Code::CwdMissing
             | Code::GamemodeMissing
+            | Code::GamescopeMissing
+            | Code::MangohudMissing
+            | Code::WaylandUnsupported
             | Code::NativeExeInvalid
             | Code::RestoreInterrupted
             | Code::ArtConfigInvalid => Level::Error,
@@ -243,7 +255,12 @@ impl Code {
             | Code::BuildMissing
             | Code::PrefixMissing
             | Code::PrefixRefused => Area::Wine,
-            Code::ExeMissing | Code::CwdMissing | Code::GamemodeMissing => Area::Target,
+            Code::ExeMissing
+            | Code::CwdMissing
+            | Code::GamemodeMissing
+            | Code::GamescopeMissing
+            | Code::MangohudMissing
+            | Code::WaylandUnsupported => Area::Target,
             Code::NativeExeInvalid => Area::NativeTarget,
             Code::TargetAmbiguous => Area::Environment,
             Code::LostRun
@@ -895,6 +912,34 @@ fn check_targets(
                 format!(
                     "target {target_name}: gamemode is on, but {} was not found",
                     launch::GAMEMODE
+                ),
+            );
+        }
+        let gamescope = launch::gamescope(environment, Some(target)).is_some();
+        if gamescope && runner::find_on_path("gamescope").is_none() {
+            push(
+                Code::GamescopeMissing,
+                format!("target {target_name}: gamescope is on, but gamescope was not found"),
+            );
+        }
+        if launch::mangohud(global, environment, Some(target)) {
+            let binary = if gamescope { "mangoapp" } else { "mangohud" };
+            if runner::find_on_path(binary).is_none() {
+                push(
+                    Code::MangohudMissing,
+                    format!("target {target_name}: mangohud is on, but {binary} was not found"),
+                );
+            }
+        }
+        if launch::wayland(global, environment, Some(target))
+            && let Some(runner) = &wine.runner
+            && !runner.supports_wayland()
+        {
+            push(
+                Code::WaylandUnsupported,
+                format!(
+                    "target {target_name}: wayland is on, but {} doesn't support it",
+                    runner.name()
                 ),
             );
         }
@@ -1851,6 +1896,71 @@ mod tests {
             &[Code::GamemodeMissing]
         };
         assert_eq!(f.codes(), expected);
+    }
+
+    #[test]
+    fn launch_checks_report_missing_wrappers_and_unsupported_wayland() {
+        let f = Fixture::new();
+        f.wine(
+            "game",
+            &format!("wayland = true\nmangohud = true\n[gamescope]\n{HEALTHY}"),
+        );
+        let report = f.check();
+        let has = |code| report.problems.iter().find(|p| p.code == code);
+        for (code, program) in [
+            (Code::GamescopeMissing, "gamescope"),
+            (Code::MangohudMissing, "mangoapp"),
+        ] {
+            if runner::find_on_path(program).is_none() {
+                let problem = has(code).unwrap();
+                assert!(problem.message.contains(program));
+                assert_eq!(problem.area, Area::Target);
+                assert_eq!(problem.level, Level::Error);
+            }
+        }
+        let problem = has(Code::WaylandUnsupported).unwrap();
+        assert!(problem.message.contains("fake doesn't support it"));
+        assert_eq!(problem.area, Area::Target);
+        assert_eq!(problem.level, Level::Error);
+
+        f.wine("game", &format!("mangohud = true\n{HEALTHY}"));
+        let report = f.check();
+        if runner::find_on_path("mangohud").is_none() {
+            assert!(
+                report
+                    .problems
+                    .iter()
+                    .any(|p| p.code == Code::MangohudMissing
+                        && p.message.contains("mangohud was not found"))
+            );
+        }
+        assert!(
+            !report
+                .problems
+                .iter()
+                .any(|p| p.code == Code::WaylandUnsupported)
+        );
+
+        f.write_config(
+            "game",
+            &format!(
+                "prefix = '{}'\nrunner = 'missing'\narch = 'win64'\nwayland = true\n{HEALTHY}",
+                f.prefix_dir("game").display()
+            ),
+        );
+        let report = f.check();
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.code == Code::RunnerMissing)
+        );
+        assert!(
+            !report
+                .problems
+                .iter()
+                .any(|p| p.code == Code::WaylandUnsupported)
+        );
     }
 
     #[test]
