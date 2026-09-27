@@ -343,7 +343,7 @@ fn status_shows_the_kind_in_place_of_runner_and_prefix() {
 
     let shown = f.run(&["status", "dusk"]);
     assert_success(&shown);
-    assert_eq!(stdout(&shown), "dusk: inactive\n  kind      native\n");
+    assert_eq!(stdout(&shown), "dusk: inactive\n  kind       native\n");
 
     let json: serde_json::Value =
         serde_json::from_str(&stdout(&f.run(&["status", "dusk", "--json"]))).unwrap();
