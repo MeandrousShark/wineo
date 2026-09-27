@@ -116,6 +116,15 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
     if report.gamemode {
         lines.push(label_line("gamemode", "on"));
     }
+    for (label, enabled) in [
+        ("gamescope", report.gamescope),
+        ("mangohud", report.mangohud),
+        ("wayland", report.wayland),
+    ] {
+        if enabled {
+            lines.push(label_line(label, "on"));
+        }
+    }
     if let Some(gameid) = &report.gameid {
         lines.push(label_line("gameid", gameid));
     }
@@ -596,5 +605,23 @@ mod tests {
         report.runner_version = None;
         let text = render(&report, now(), &TimeZone::UTC);
         assert!(text.contains("\n  runner    wine\n"), "{text}");
+    }
+
+    #[test]
+    fn launch_settings_show_next_to_gamemode_when_on() {
+        let mut report = report(Status {
+            state: State::Inactive,
+            run: None,
+            lost: false,
+        });
+        report.gamemode = true;
+        report.gamescope = true;
+        report.mangohud = true;
+        report.wayland = true;
+        let text = render(&report, now(), &TimeZone::UTC);
+        assert!(
+            text.contains("  gamemode  on\n  gamescope  on\n  mangohud  on\n  wayland   on\n"),
+            "{text}"
+        );
     }
 }
