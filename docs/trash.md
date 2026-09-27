@@ -7,8 +7,8 @@ an earlier entry.
 ```sh
 wineo rm hades
 wineo rm hades --delete-prefix
-wineo trash list
-wineo trash restore 20260926T183000Z-a1b2c3d4
+wineo trash
+wineo restore 20260926T183000Z-a1b2c3d4
 wineo prune 20260926T183000Z-a1b2c3d4
 wineo prune --older-than 30d
 wineo prune --all --yes
@@ -21,8 +21,12 @@ discarded, and Wineo desktop entries are removed. Native environments have no
 prefix; their external executable folders and other external game files are
 never part of the trash entry.
 
-`trash list` shows each ID, name, removal time, and whether the prefix was
-included. Restore returns data to its original name and paths. It refuses
+`rm` prints the entry ID along with the commands to restore or prune it.
+After a plain `rm` it also lists the prefix and snapshots left in place,
+which pruning does not delete.
+
+`wineo trash` (or `wineo trash list`) shows each ID, name, how long ago it was
+removed, and whether the prefix was included. Restore returns data to its original name and paths. It refuses
 collisions rather than overwriting existing data. Restoring a plain `rm` entry
 returns its config, art, and playtime while leaving the prefix and snapshots
 where they were; restoring a `--delete-prefix` entry returns those too.
