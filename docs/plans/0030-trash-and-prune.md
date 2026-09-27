@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0030: Recoverable removal and prune
 
@@ -189,6 +189,9 @@ The maintainer selected all nine recommendations: 1A through 9A.
 
 ## Storage and recovery protocol requirements
 
+The maintainer approved this plan and the following protocol clarifications
+on 2026-09-26.
+
 The manifest must distinguish owned payloads from references left in place.
 It records the entry ID, format version, original environment name, removal
 time, prefix inclusion and original presence, operation phase, and progress
@@ -223,10 +226,42 @@ that filesystem, not a sibling outside its mount. If no suitable location can
 be used, fail before mutation. Btrfs cleanup failures retain the manifest and
 remaining payload locations rather than claiming the entry was pruned.
 
+### Approved implementation clarifications
+
+- Document each durable transition and its sync ordering alongside the core
+  protocol. Sync intent before mutation, affected directory entries after
+  moves, and completion afterward. Recovery distinguishes operations that
+  never started from operations completed before their progress write.
+- Pending records block conflicting creation, import, launch, and edits even
+  when the environment config is absent. Detection cannot depend on loading
+  that config successfully.
+- Removal rollback reconciles desktop entries after restoring registration.
+  Report failures explicitly. A desktop recreation failure after successful
+  restoration leaves the environment registered and reports the shortcut
+  failure rather than undoing the restored environment.
+- Cross-filesystem metadata copies must be complete, verified, and durable
+  before deleting their sources. Track staging ownership and identities so
+  recovery can resolve both-copy states without deleting unrelated data.
+- A prefix retained by plain removal must still match its recorded identity
+  when restored. A different prefix recreated at the same path, or an identity
+  that cannot be established, causes refusal rather than silent attachment.
+- Prune freezes the selected IDs, cutoff, and reviewed state before
+  confirmation, then revalidates under locks. Newly added or changed entries
+  are not silently included in the confirmed operation.
+- Prune preflights payload storage availability and identity. If storage is
+  unavailable, leave that entry untouched and continue independent entries.
+  An empty mountpoint is not proof of successful deletion. Support only
+  verified cleanup behavior for Btrfs payloads; keep actionable records when
+  cleanup cannot finish rather than improvising destructive commands.
+- Shared-prefix discovery retains its existing selected-root scope. Host-wide
+  locks coordinate concurrent operations but do not discover idle registrations
+  in other roots. Document this limitation; do not introduce a global registry.
+
 ## Proposed implementation sequence
 
-1. Obtain approval of this draft before implementation. The behavioral
-   decisions above are settled.
+1. Implement with `coder-sol`, establishing the core protocol and API before
+   CLI integration. Use GPT-only agents. Escalate unresolved design questions
+   to the maintainer rather than inventing new behavior.
 2. Add core trash records, path resolution, entry locking, and durable
    remove/restore/prune operations. Move removal policy out of the CLI.
 3. Wire `rm`, `trash list`, `trash restore`, and `prune` to those operations,
@@ -235,6 +270,9 @@ remaining payload locations rather than claiming the entry was pruned.
    ordinary environment operations.
 5. Document the commands, retained-data rules, portable behavior, and recovery
    limitations. Update the README and feature roadmap.
+6. Run independent `qa-gpt` review of crash recovery, destructive boundaries,
+   concurrency, and plan coverage. Resolve findings before maintainer
+   acceptance testing. Mark the plan done and release only after acceptance.
 
 ## Verification and acceptance
 
