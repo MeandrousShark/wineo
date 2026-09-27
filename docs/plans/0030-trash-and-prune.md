@@ -257,6 +257,20 @@ remaining payload locations rather than claiming the entry was pruned.
   locks coordinate concurrent operations but do not discover idle registrations
   in other roots. Document this limitation; do not introduce a global registry.
 
+### Implementation follow-up approved by the maintainer (2026-09-26)
+
+- Portable trash and pending recovery support same-filesystem folder moves.
+  Copying or moving a portable folder across filesystems changes recorded
+  identities and is not supported for retained trash in this plan. Restore or
+  prune its trash and finish pending recovery before that relocation. Document
+  this limitation explicitly; do not weaken identity checks to accept copies.
+- Add small durable host-state markers for pending trash operations so missing
+  or unmounted metadata storage cannot hide affected names and paths from
+  conflicting operations. These are recovery markers, not a global registry
+  of prefixes. Portable manifests remain authoritative when the folder moves.
+  Marker creation, retirement, and recovery must account for interruption and
+  moved portable roots without silently discarding unresolved work.
+
 ## Proposed implementation sequence
 
 1. Implement with `coder-sol`, establishing the core protocol and API before
