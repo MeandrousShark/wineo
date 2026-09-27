@@ -170,6 +170,8 @@ own can wait until someone asks. HDR without Wayland stays unsupported.
 - The review shows the new rows, and Heroic's global defaults feed these
   keys the same way they feed gamemode today. `wrapperOptions` stays
   unsupported.
+- `enableWoW64` stays unsupported, with a clearer reason: the runner's own
+  build decides it.
 
 ## Implementation sequence
 
@@ -214,3 +216,7 @@ own can wait until someone asks. HDR without Wayland stays unsupported.
   pre-launch hooks are their own backlog item.
 - No MangoHud config management. `MANGOHUD_CONFIG` goes in `[env]`.
 - No guided `new` prompts for these. Templates and `set` cover them.
+- No WoW64 setting (maintainer, 2026-09-27). Arch's Wine is already a pure
+  WoW64 build, and neither installed Proton script reads
+  `PROTON_USE_WOW64`, so it would do nothing here. It's also a runner build
+  and prefix creation property, closer to `arch` than a launch option.
