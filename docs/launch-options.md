@@ -72,6 +72,14 @@ Values are checked when the config is read, so a typo like
 `filter = "bilinear"` fails before anything launches. Only current gamescope
 flags are supported; `-F` and `-S` need gamescope 3.12 or newer.
 
+Gamescope closes as soon as the program it started exits, and takes anything
+that program handed off to with it. On Wine, wineo keeps gamescope's program
+running until the prefix is idle, so a launcher that starts the game and
+exits still works. Proton already waits for its prefix. A native launcher
+script that starts the game in the background and exits doesn't work under
+gamescope; use one that `exec`s the game, or point the target at the game
+itself.
+
 ## MangoHud
 
 With `mangohud` on, the launch runs under `mangohud`. Under gamescope,
