@@ -141,6 +141,18 @@ HDR as the same `[env]` entry Heroic sets (`PROTON_ENABLE_HDR=1` on Proton,
 `DXVK_HDR=1` on Wine). It's only an environment variable, so a key of its
 own can wait until someone asks. HDR without Wayland stays unsupported.
 
+### 6. Wayland under gamescope (settled during step 4, 2026-09-27)
+
+Gamescope hides the session's `WAYLAND_DISPLAY` from its child and always
+gives it its own `DISPLAY` (checked with gamescope 3.16's headless backend).
+So with both on, Proton's Wayland driver had nothing to connect to, and
+leaving `DISPLAY` out did nothing on Wine.
+
+The maintainer chose to make it work: with `wayland` and gamescope both on,
+wineo adds `--expose-wayland` to gamescope's flags, and on Wine it runs the
+child through `env -u DISPLAY` inside gamescope. Refusing the combination,
+or documenting `--expose-wayland` as a manual step, were the alternatives.
+
 ## Launching
 
 - Order matches Heroic: `gamescope [flags] --`, then `mangohud`, then
