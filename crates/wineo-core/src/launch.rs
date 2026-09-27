@@ -23,6 +23,8 @@ const GAMESCOPE: &str = "gamescope";
 const MANGOHUD: &str = "mangohud";
 /// What gamescope's `--mangoapp` runs, which ships with MangoHud.
 const MANGOAPP: &str = "mangoapp";
+/// Gamescope hides the session's Wayland display from the game unless asked.
+const EXPOSE_WAYLAND: &str = "--expose-wayland";
 /// What wineo hands umu itself on a Proton launch, so none of it can be
 /// overridden from a config or the command line.
 const MANAGED: [&str; 3] = ["PROTONPATH", "GAMEID", "STORE"];
@@ -161,6 +163,11 @@ pub struct Wrappers {
     pub mangohud: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gamemode: Option<PathBuf>,
+    /// `env`, set when Wine's Wayland driver runs under gamescope. Gamescope
+    /// always hands the game its own X display, so `DISPLAY` has to be
+    /// dropped inside it for Wine to fall back to Wayland.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<PathBuf>,
 }
 
 impl Wrappers {
@@ -171,6 +178,9 @@ impl Wrappers {
             line.push(gamescope.into());
             line.extend(self.gamescope_args.iter().map(OsString::from));
             line.push("--".into());
+        }
+        if let Some(env) = &self.env {
+            line.extend([env.into(), "-u".into(), "DISPLAY".into()]);
         }
         if let Some(mangohud) = &self.mangohud {
             // A no-op on current MangoHud, which older versions need to hook
@@ -265,7 +275,7 @@ impl Launch {
         args.extend(overrides.args.iter().cloned());
         // Resolved here rather than at spawn time, so `start` refuses before it
         // hands anything to a supervisor.
-        let wrappers = resolve_wrappers(global, environment, target, &find)?;
+        let mut wrappers = resolve_wrappers(global, environment, target, &find)?;
         let wayland = check_wayland(global, environment, target, &runner)?;
         // Only the session decides this, so an X11 login doesn't break every
         // game with the setting.
@@ -273,6 +283,18 @@ impl Launch {
             Wayland::On if !session => Wayland::NoSession,
             wayland => wayland,
         };
+        if wayland == Wayland::On && wrappers.gamescope.is_some() {
+            if !wrappers
+                .gamescope_args
+                .iter()
+                .any(|arg| arg == EXPOSE_WAYLAND)
+            {
+                wrappers.gamescope_args.push(EXPOSE_WAYLAND.to_owned());
+            }
+            if !runner.is_proton() {
+                wrappers.env = Some(find("env").unwrap_or_else(|| PathBuf::from("env")));
+            }
+        }
         Ok(Self {
             env: merge_env(&runner, global, environment, &overrides.env)?,
             gameid: runner.is_proton().then(|| wine.gameid.clone()).flatten(),
@@ -1452,6 +1474,7 @@ mod tests {
                 gamescope_args: vec!["-f".to_owned(), "--mangoapp".to_owned()],
                 mangohud: None,
                 gamemode: Some(PathBuf::from("/bin/gamemoderun")),
+                env: None,
             },
             wayland: Wayland::Off,
             gameid: None,
@@ -1624,6 +1647,46 @@ mod tests {
         let launch = wine_launch(&f, true, "[env]\nDISPLAY = \":1\"\n", true).unwrap();
         assert_eq!(launch.wayland, Wayland::Off);
         assert_eq!(envs(&launch.command())["DISPLAY"].as_deref(), Some(":1"));
+    }
+
+    #[test]
+    fn wayland_under_gamescope_exposes_it_and_drops_display_inside() {
+        let f = fixture();
+        let launch = wine_launch(
+            &f,
+            true,
+            "wayland = true\n[gamescope]\nwindow = \"fullscreen\"",
+            true,
+        )
+        .unwrap();
+        let line = command_line(&launch.command()).join(" ");
+        assert!(
+            line.starts_with("/bin/gamescope -f --expose-wayland -- /bin/env -u DISPLAY "),
+            "{line}"
+        );
+        assert!(line.contains("runners/fake/bin/wine "), "{line}");
+
+        // Already in args, it isn't passed twice.
+        let launch = wine_launch(
+            &f,
+            true,
+            "wayland = true\n[gamescope]\nargs = [\"--expose-wayland\"]",
+            true,
+        )
+        .unwrap();
+        let line = command_line(&launch.command());
+        assert_eq!(
+            line.iter().filter(|arg| *arg == "--expose-wayland").count(),
+            1
+        );
+
+        // Off, or outside a session, gamescope runs as configured.
+        for (text, session) in [("", true), ("wayland = true\n", false)] {
+            let launch = wine_launch(&f, true, &format!("{text}[gamescope]"), session).unwrap();
+            let line = command_line(&launch.command()).join(" ");
+            assert!(line.starts_with("/bin/gamescope -- "), "{line}");
+            assert!(!line.contains("DISPLAY"), "{line}");
+        }
     }
 
     #[test]

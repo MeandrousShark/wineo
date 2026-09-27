@@ -775,6 +775,7 @@ mod tests {
                     gamescope_args: vec!["-f".to_owned(), "--mangoapp".to_owned()],
                     mangohud: None,
                     gamemode: Some(PathBuf::from("/usr/bin/gamemoderun")),
+                    env: Some(PathBuf::from("/usr/bin/env")),
                 },
                 wayland: crate::launch::Wayland::On,
                 gameid: Some("umu-hades".to_owned()),
