@@ -44,7 +44,7 @@ nullable. `busy` is a lowercase operation value such as `launch` or
 `unresolved`.
 
 Named status also includes `kind`, `wine` or `native`; `runner` with
-`configured`, `resolved`, and `version`; `prefix`; nullable `target_exe`, `gameid`, and `store`; `gamemode`;
+`configured`, `resolved`, and `version`; `prefix`; nullable `target_exe`, `gameid`, and `store`; `gamemode`, `gamescope`, `mangohud`, and `wayland` (see [Launch options](launch-options.md));
 `desktop`, an array of target names; and nullable `dxvk` and `vkd3d` component
 objects. Each component object has `wanted`, nullable `resolved`, nullable
 `installed`, and `current`.
@@ -134,14 +134,14 @@ The codes are stable:
 | `template` | `template_invalid`, `template_unresolved` |
 | `environment_config` | `environment_config_invalid` |
 | `wine` | `runner_missing`, `build_missing`, `prefix_missing`, `prefix_refused` |
-| `target` | `exe_missing`, `cwd_missing`, `gamemode_missing` |
+| `target` | `exe_missing`, `cwd_missing`, `gamemode_missing`, `gamescope_missing`, `mangohud_missing`, `wayland_unsupported` |
 | `native_target` | `native_exe_invalid` |
 | `environment` | `target_ambiguous` |
 | `runtime` | `lost_run`, `installer_unresolved`, `restore_interrupted`, `state_dir_stray`, `stats_stray` |
 | `desktop` | `desktop_entry_stray`, `desktop_outdated`, `desktop_portable` |
 | `art` | `art_config_invalid`, `art_file_missing`, `art_target_unknown`, `art_duplicates`, `art_dir_stray` |
 
-A native target's working dir and gamemode problems use the `target` area.
+A native target's working dir, gamemode, gamescope, and MangoHud problems use the `target` area.
 
 `fixed` lists the fixes that were applied, and `errors` lists the ones that
 failed, each with its `fix` label and a `message`. Both are always present,

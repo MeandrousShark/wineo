@@ -101,6 +101,9 @@ storage is reported for attention rather than recovered by ordinary commands.
 | Target | Exe missing (a Unix path, or a `C:\` path in an existing prefix) | error | |
 | Target | Unix working dir missing | error | |
 | Target | `gamemode` on, but gamemode isn't installed | error | |
+| Target | gamescope on, but gamescope isn't installed | error | |
+| Target | `mangohud` on, but `mangohud` (or `mangoapp` under gamescope) isn't installed | error | |
+| Target | `wayland` on, but the runner has no Wayland support | error | |
 | Native target | Exe missing, not executable, or a Windows path | error | |
 | Environment | Several targets and no default, so `start` needs `--target` | warning | |
 | Runtime | Lost run | warning | clean it up, like `wineo stop` |

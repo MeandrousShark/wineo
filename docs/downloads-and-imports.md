@@ -90,7 +90,8 @@ a supported replacement. Runner installation finishes before prefix copying.
 A successfully installed runner remains available if the import is canceled.
 
 Review covers the executable, argument boundaries, working directory,
-environment variables, gamemode, and supported compatibility toggles. Unsupported
+environment variables, gamemode, [launch options](#launch-options), and
+supported compatibility toggles. Unsupported
 wrappers, scripts, and runtime settings are omitted, and settings wineo manages
 itself are dropped. The summary lists both as warnings, with `-v` naming every
 omitted setting. Noninteractive imports refuse unresolved settings; add
@@ -106,6 +107,35 @@ With a SteamGridDB key, the guided review has an `art` row that fetches art
 searching the Heroic title, and the fully specified flow fetches it with
 `--art`. See [Fetching during new and
 import](art.md#fetching-during-new-and-import).
+
+### Launch options
+
+Heroic's gamescope, MangoHud, and Wine Wayland settings become wineo's
+[launch options](launch-options.md), following the same rules Heroic's own
+launcher does:
+
+| Heroic | wineo |
+|---|---|
+| Show MangoHud | `mangohud = true` |
+| Gamescope, with upscaling or the FPS limiter on | a `[gamescope]` table |
+| Enable Wine Wayland | `wayland = true`, when the chosen runner supports it |
+| Enable HDR, with Wine Wayland imported | `PROTON_ENABLE_HDR = "1"` on Proton or `DXVK_HDR = "1"` on Wine, in `[env]` |
+
+Heroic only runs gamescope when upscaling or the limiter is on, so its
+gamescope settings are skipped otherwise. Game and upscale resolutions become
+`width`, `height`, `output_width`, and `output_height`; FSR and NIS become
+`filter`, integer and stretch become `scaler`; fullscreen and borderless
+become `window`. The limiter's values become `fps_limit` and
+`fps_limit_unfocused`, the cursor grab becomes `grab_cursor`, and additional
+options are split into `args`. A value that isn't a number is skipped with a
+warning.
+
+Wine Wayland on a runner without Wayland support is skipped with a warning
+naming the runner. HDR without Wine Wayland, and Heroic's WoW64 toggle, are
+reported as not imported, since the runner's own build decides WoW64. An
+`[env]` variable already set by the game's Heroic environment options wins
+over the HDR one. The guided review and `-v` show each carried setting;
+`--all`'s one line per game doesn't.
 
 ### Import every Heroic game
 
@@ -143,7 +173,9 @@ Import Dusklight as dusklight
 ```
 
 It gets one default `game` target from Heroic's executable, plus its launch
-arguments, environment variables, gamemode, and `nvidiaPrime`. Variables that
+arguments, environment variables, gamemode, MangoHud, gamescope, and
+`nvidiaPrime`. Wine Wayland and HDR are ignored, as Heroic does for native
+games. Variables that
 wineo manages for Wine, like `WINEPREFIX`, are kept as written, since wineo
 manages none of them for native. Heroic's Wine version, prefix, DXVK, and
 other Wine settings are ignored, and wrappers are reported as not imported,

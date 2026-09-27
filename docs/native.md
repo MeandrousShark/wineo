@@ -5,8 +5,9 @@ prefix and no runner. It shows up in `list`, `status`, desktop entries, and
 art next to Wine environments.
 
 Only what is specific to Wine or Proton is refused for a native environment.
-Everything else, like gamemode, `[env]`, targets, art, and desktop entries,
-works the same for both kinds.
+Everything else, like gamemode, gamescope, MangoHud, `[env]`, targets, art,
+and desktop entries, works the same for both kinds. `wayland` is Wine-only,
+since it switches Wine's display driver; see [Launch options](launch-options.md).
 
 ## Creating one
 
@@ -104,8 +105,8 @@ keep working while a game's drive is unmounted.
 ## Launching and stopping
 
 `start`, `run`, `restart`, `stop`, and `logs` work as they do for Wine. The
-command is the exe and its arguments, wrapped in `gamemoderun` when gamemode
-is on. The global `[env]`, the environment's `[env]`, and `-e` apply, and no
+command is the exe and its arguments, wrapped in gamescope, `mangohud`, and
+`gamemoderun` when those are on. The global `[env]`, the environment's `[env]`, and `-e` apply, and no
 `WINE*` variables are added. `WINEPREFIX` is yours to set in `[env]` or `-e`
 here, since wineo doesn't manage it for native environments.
 
@@ -116,10 +117,10 @@ AppImage wrapper or GOG's `start.sh`, is still tracked:
 ```
 $ wineo status rimworld
 rimworld: running since 2026-09-25 20:43:05 (2 min ago)
-  target    game (~/Games/RimWorld/start.sh)
-  kind      native
-  pid       702760, exited 1 min ago with code 0
-            other processes are keeping rimworld running
+  target     game (~/Games/RimWorld/start.sh)
+  kind       native
+  pid        702760, exited 1 min ago with code 0
+             other processes are keeping rimworld running
 ```
 
 `stop` sends SIGTERM to the group, waits `stop_timeout`, then sends SIGKILL.
@@ -133,7 +134,7 @@ leaves.
 
 | Command | Native behavior |
 |---|---|
-| `set` | `gamemode`, `env.*`, and `targets.*` work. Wine-only keys and `kind` are refused. |
+| `set` | `gamemode`, `mangohud`, `gamescope.*`, `env.*`, and `targets.*` work. Wine-only keys, including `wayland`, and `kind` are refused. |
 | `setup` | Skips the prefix and program scan. Adding a target goes straight to entering a path. |
 | `desktop`, `art` | Work. The icon comes from art only, and an entry with no art uses the theme's generic icon. |
 | `clone` | Copies the config and art under the new name, with desktop entries off |
@@ -142,8 +143,8 @@ leaves.
 | `exec`, `winetricks`, `programs`, `snapshot` | Refused: `dusklight is a native environment, so it has no prefix` |
 | `templates`, `import` of a prefix | Wine only |
 
-Desktop entries get `Game;` as their category when gamemode is on, and
-`Utility;Software;` otherwise.
+Desktop entries get `Game;` as their category when gamemode, gamescope, or
+MangoHud is on, and `Utility;Software;` otherwise.
 
 `status --json` has `"kind": "native"`, with `runner` and `prefix` set to
 `null`. See [JSON output](json-output.md).

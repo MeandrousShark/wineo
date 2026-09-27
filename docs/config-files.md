@@ -83,6 +83,13 @@ configs never get the key written. `docs/native-environment.toml.example`
 (installed next to the Wine example) lists every key a native config can
 hold. See [Native Linux games](native.md).
 
+## Launch options
+
+`mangohud`, `wayland`, and `[gamescope]` needed no schema bump either, for
+the same reason: an older wineo refuses a config using them with
+`unknown field` instead of launching without them. They can also go in a
+template. See [Launch options](launch-options.md).
+
 ## Creating an environment from a template
 
 To reuse the same settings across environments instead of writing each one by

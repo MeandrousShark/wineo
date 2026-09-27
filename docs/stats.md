@@ -44,7 +44,7 @@ the-sims-4
 status NAME` also shows a one-line summary:
 
 ```
-  played    5 h 10 m over 3 sessions, last today
+  played     5 h 10 m over 3 sessions, last today
 ```
 
 ## What counts

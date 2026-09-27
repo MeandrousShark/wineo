@@ -77,7 +77,7 @@ See [Shell completion](docs/shell-completion.md) to set up completions.
 - `wine` to run Windows programs with Wine
 - `umu-launcher` to run Proton environments
 - `winetricks` for `wineo winetricks`
-- `gamemode` for targets that turn it on
+- `gamemode`, `gamescope`, and `mangohud` for targets that turn them on
 - `dbus` and a Secret Service keyring (GNOME Keyring, KWallet) to store a
   SteamGridDB key; without one, wineo falls back to a private file
 
@@ -98,6 +98,7 @@ Every command has `--help`. The common ones:
 | Run some other exe in the prefix | `wineo exec hades path/to/tool.exe` |
 | Install Windows components | `wineo winetricks hades vcrun2022` |
 | Change settings | `wineo set hades key=value`, `wineo config hades` |
+| Use gamescope, MangoHud, or Wine Wayland | `wineo set hades mangohud=true wayland=true gamescope.window=fullscreen` |
 | Manage runners and components | `wineo runners`, `wineo download`, `wineo dxvk`, `wineo vkd3d` |
 | Import a prefix or Heroic games | `wineo import` |
 | Copy, snapshot, or go portable | `wineo clone`, `wineo snapshot`, `wineo portable` |
@@ -114,6 +115,7 @@ you pass `--portable DIR` or set it up for a portable folder.
 
 - [Config files](docs/config-files.md)
 - [Native Linux games](docs/native.md)
+- [Launch options](docs/launch-options.md)
 - [Downloads and imports](docs/downloads-and-imports.md)
 - [Clone an environment](docs/clone.md)
 - [Trash and removal](docs/trash.md)
