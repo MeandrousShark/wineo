@@ -105,7 +105,8 @@ finishing at the same moment can't be lost. A line that doesn't parse, like
 one cut off by a crash, is skipped with a warning and the rest of the log
 still counts.
 
-- `wineo rm` deletes the log.
+- `wineo rm` retains the playtime log in trash with the config and art; see
+  [Trash and removal](trash.md).
 - `wineo clone` starts the clone at zero, since it's a new install to play.
 - `wineo portable copy` carries the log, like art.
 - Snapshots leave it alone, so a restore never rolls back playtime.

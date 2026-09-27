@@ -90,6 +90,15 @@ cannot identify original prefix at ... or ...
 
 A plain move on the same filesystem does not have this problem.
 
+Portable trash and pending trash recovery also rely on filesystem identity.
+Move the folder only on the same filesystem while it contains trash history or
+pending recovery. Before moving it across filesystems, run
+`wineo validate --fix` to finish recovery and restore or prune its trash
+entries. Portable manifests are authoritative; host-state recovery markers
+are not a registry of environments. `wineo portable copy` copies the active
+environment and snapshots, art, and playtime, but not trash history. See
+[Trash and removal](trash.md).
+
 ## Copying an environment in
 
 ```sh

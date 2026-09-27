@@ -41,13 +41,15 @@ variables are reported for review. Registry contents and arbitrary strings are
 not rewritten.
 
 If registration fails after the copy, wineo keeps the copied prefix and reports
-its location for recovery. Remove a clone registration with `wineo rm NAME`;
-delete its copied prefix with `wineo rm NAME --delete-prefix`.
+its location for recovery. Remove a clone with `wineo rm NAME`; this trashes
+its config and art, leaving the copied prefix in place. Add
+`--delete-prefix` to trash the copied prefix and snapshots too. See
+[Trash and removal](trash.md).
 
 Clone also copies the source's art store to the new name, and the review shows
 `art: copied`; see [Artwork](art.md). Playtime isn't copied, so the clone
-starts at zero; see [Playtime](stats.md). `wineo rm` deletes a clone's art along
-with the rest of its registration.
+starts at zero; see [Playtime](stats.md). `wineo rm` retains a clone's art in
+trash with the rest of its registration.
 
 Clone copies local prefix data only. It does not copy external game folders,
 downloads, runners, runtime state, or desktop entries, and it does not migrate

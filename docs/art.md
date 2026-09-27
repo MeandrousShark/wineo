@@ -308,8 +308,9 @@ Portable environments still get no desktop entries.
 
 `clone` and `portable copy` copy an environment's art to the new name, and
 their reviews show `art: copied`; they refuse if art already exists under
-the new name. `wineo rm` deletes an environment's art and prints `Removed
-art`. Removing a target, whether by unsetting it with `wineo set` or during
-`wineo setup`, deletes that target's art and its art.toml records. Snapshots
+the new name. `wineo rm` retains an environment's art in trash for restoration
+or pruning; see [Trash and removal](trash.md). Removing a target, whether by
+unsetting it with `wineo set` or during `wineo setup`, deletes that target's
+art and its art.toml records. Snapshots
 do not include art: a snapshot restore that drops a target keeps its art
 on disk, and `art list` warns about it.

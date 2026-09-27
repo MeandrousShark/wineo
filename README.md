@@ -104,7 +104,7 @@ Every command has `--help`. The common ones:
 | Artwork | `wineo art fetch hades`, `wineo art list hades` |
 | Find and fix config problems | `wineo validate` |
 | See how much you've played | `wineo stats`, `wineo stats hades` |
-| Remove an environment | `wineo rm hades` |
+| Remove, restore, or permanently delete an environment | `wineo rm hades`, `wineo trash list`, `wineo trash restore ID`, `wineo prune ID` |
 
 Configs live in `$XDG_CONFIG_HOME/wineo/`, prefixes and data in
 `$XDG_DATA_HOME/wineo/`, and run state in `$XDG_STATE_HOME/wineo/`, unless
@@ -116,6 +116,7 @@ you pass `--portable DIR` or set it up for a portable folder.
 - [Native Linux games](docs/native.md)
 - [Downloads and imports](docs/downloads-and-imports.md)
 - [Clone an environment](docs/clone.md)
+- [Trash and removal](docs/trash.md)
 - [Prefix snapshots](docs/snapshots.md)
 - [Portable layout](docs/portable.md)
 - [Artwork](docs/art.md)

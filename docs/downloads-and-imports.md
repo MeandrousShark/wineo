@@ -161,7 +161,8 @@ Mac games are still refused, since wineo only runs Linux ones.
 
 ## Removal
 
-`wineo rm my-game` removes registration and wineo desktop entries, retaining the
-prefix. `wineo rm my-game --delete-prefix` explicitly deletes the configured
-prefix, including the original when it was adopted. External game files and
-Heroic metadata are not removed with the prefix.
+`wineo rm my-game` trashes the config, art, and playtime log while leaving the
+prefix and snapshots in place. `wineo rm my-game --delete-prefix` also trashes
+the configured prefix and its snapshots. External game files and Heroic
+metadata are not included. See [Trash and removal](trash.md) for restore,
+prune, and recovery.

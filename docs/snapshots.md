@@ -64,7 +64,6 @@ restoring a snapshot. Snapshots are
 stored beside the live prefix and are not backups against filesystem or device
 failure. They do not support automatic retention or cross-filesystem restore.
 
-Deleting an environment with `wineo rm` leaves its snapshots on disk and prints
-their location. The snapshots then require manual cleanup because Wineo no
-longer has a registered environment to validate them. This also applies when
-the prefix is removed with `--delete-prefix`.
+Plain `wineo rm` leaves the prefix and its snapshots in place; restoring the
+trash entry makes them accessible again. `wineo rm --delete-prefix` retains
+both the prefix and snapshots in trash. See [Trash and removal](trash.md).

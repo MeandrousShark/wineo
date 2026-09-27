@@ -80,6 +80,12 @@ A fix takes the same lock as the command it stands in for. If an environment
 is busy, say with a snapshot restore, its fix fails with the usual busy error
 and the others still run.
 
+Interrupted trash removal, restoration, or pruning is reported as an error.
+Recovery is explicit: review with `wineo validate`, then use
+`wineo validate --fix` to recover the reported operation. Do not use
+conflicting commands until recovery is complete. Invalid or unavailable trash
+storage is reported for attention rather than recovered by ordinary commands.
+
 ## What it checks
 
 | Area | Check | Level | Fix |
@@ -100,6 +106,8 @@ and the others still run.
 | Runtime | Lost run | warning | clean it up, like `wineo stop` |
 | Runtime | Unfinished installer | warning | clean it up, like `wineo stop` |
 | Runtime | Interrupted snapshot restore | error | hint: `wineo snapshot recover` |
+| Trash | Interrupted removal, restoration, or prune | error | recover with `wineo validate --fix` |
+| Trash | Trash storage cannot be inspected | error | |
 | Runtime | State dir for an environment that no longer exists | warning | remove it |
 | Runtime | [Playtime log](stats.md) for an environment that no longer exists | warning | remove it |
 | Desktop | Entry for an environment that no longer exists | warning | remove it and its icons |
@@ -135,6 +143,9 @@ Only the active root is checked: the standard locations, or the folder given
 by `--portable` or `WINEO_PORTABLE_DIR`. Portable environments never get
 desktop entries, so desktop checks are skipped there, apart from the warning
 about a hand-edited `desktop = true`.
+
+Shared-prefix discovery is also limited to registrations in the selected root;
+idle registrations in other roots may not be detected.
 
 ## Exit status
 

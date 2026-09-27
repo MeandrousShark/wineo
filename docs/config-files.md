@@ -36,9 +36,10 @@ Started palworld
 The config file itself is never written; DXVK, vkd3d, and desktop entries
 come from the normal start that follows. Checks that fail fast, like an
 unknown target or winetricks missing from PATH, still run before the build.
-`programs`, `set`, `clone`, `snapshot`, `portable copy`, and `rm` keep
-refusing a missing prefix, since they read or copy one and a fresh empty
-prefix gives them nothing to work with.
+`programs`, `set`, `clone`, `snapshot`, and `portable copy` keep refusing a
+missing prefix, since they read or copy one and a fresh empty prefix gives
+them nothing to work with. `rm` can remove a registration without a prefix;
+see [Trash and removal](trash.md).
 
 Building is refused when the prefix path isn't safely empty, mainly to avoid
 hiding a real prefix on an unmounted drive:
