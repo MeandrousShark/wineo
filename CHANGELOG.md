@@ -3,6 +3,11 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.11.1 - 2026-09-26
+
+- `wineo trash` no longer mentions a prefix for entries that had none at
+  removal, like native environments.
+
 ## 0.11.0 - 2026-09-26
 
 - `wineo rm` moves an environment to recoverable trash instead of deleting
