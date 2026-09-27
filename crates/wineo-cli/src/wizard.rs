@@ -423,6 +423,26 @@ fn describe_template(template: &Template) -> String {
         Some(false) => parts.push("gamemode off".to_owned()),
         None => {}
     }
+    for (label, setting) in [
+        ("mangohud", template.mangohud),
+        ("wayland", template.wayland),
+    ] {
+        match setting {
+            Some(true) => parts.push(format!("{label} on")),
+            Some(false) => parts.push(format!("{label} off")),
+            None => {}
+        }
+    }
+    if let Some(gamescope) = &template.gamescope {
+        parts.push(format!(
+            "gamescope {}",
+            if gamescope.on().is_some() {
+                "on"
+            } else {
+                "off"
+            }
+        ));
+    }
     if let Some(gameid) = &template.gameid {
         parts.push(format!("gameid {gameid}"));
     }
@@ -1214,6 +1234,21 @@ mod tests {
     use wineo_core::steamgriddb::KeySource;
 
     use super::*;
+    use wineo_core::gamescope::{Gamescope, GamescopeSetting};
+
+    #[test]
+    fn template_summary_lists_new_launch_settings() {
+        let template = Template {
+            mangohud: Some(true),
+            wayland: Some(false),
+            gamescope: Some(GamescopeSetting::On(Gamescope::default())),
+            ..Template::default()
+        };
+        assert_eq!(
+            describe_template(&template),
+            "mangohud on, wayland off, gamescope on"
+        );
+    }
     use crate::commands::art::NO_KEY_NOTE;
     use crate::commands::art::fake::{Fake, PNG};
     use crate::prompt::Script;
