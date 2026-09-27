@@ -198,6 +198,7 @@ fn removing_environment_without_prefix_leaves_snapshot_and_reports_where_it_is()
     assert!(stdout(&output).contains(&format!("Snapshots left at {}", root.display())));
     assert!(prefix.exists());
     assert!(root.join("saved/prefix/system.reg").exists());
+    assert!(stdout(&f.run(&["trash"])).contains("prefix left in place"));
 }
 
 #[test]
@@ -214,6 +215,7 @@ fn removing_prefix_and_snapshots_can_be_restored_from_trash() {
     assert!(!snapshots.exists());
     let listing = f.run(&["trash", "list"]);
     assert_success(&listing);
+    assert!(stdout(&listing).contains("prefix included"));
     let id = stdout(&listing)
         .split_whitespace()
         .next()

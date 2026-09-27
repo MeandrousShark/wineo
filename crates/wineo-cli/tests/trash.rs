@@ -147,6 +147,7 @@ fn bare_trash_lists_entries_with_relative_removal_time() {
     assert!(entry.contains("removed "), "{entry}");
     assert!(entry.contains("days ago"), "{entry}");
     assert!(!entry.contains("2020-01-01T00:00:00Z"), "{entry}");
+    assert!(entry.ends_with("days ago"), "native has no prefix: {entry}");
 
     let explicit = f.run(&["trash", "list"]);
     assert_success(&explicit);

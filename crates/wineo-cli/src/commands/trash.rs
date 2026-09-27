@@ -29,6 +29,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                         Err(_) => entry.removed_at.clone(),
                     };
                     let state = match entry.phase {
+                        Phase::Trashed if entry.prefix_present != Some(true) => "",
                         Phase::Trashed => {
                             if entry.include_prefix {
                                 "prefix included"
