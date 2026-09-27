@@ -59,7 +59,7 @@ to permanently deleting it.
 
 ```sh
 wineo trash list
-wineo trash restore <ID>
+wineo restore <ID>
 wineo prune <ID>
 wineo prune --older-than 30d
 wineo prune --all
@@ -270,6 +270,23 @@ remaining payload locations rather than claiming the entry was pruned.
   of prefixes. Portable manifests remain authoritative when the folder moves.
   Marker creation, retirement, and recovery must account for interruption and
   moved portable roots without silently discarding unresolved work.
+
+### Acceptance follow-up approved by the maintainer (2026-09-26)
+
+Acceptance testing passed with these presentation changes:
+
+- Restore is a top-level verb: `wineo restore <ID>` replaces
+  `wineo trash restore`. Bare `wineo trash` lists entries, like
+  `wineo trash list`.
+- IDs use an 8-character hex suffix, for example
+  `20260926T183000Z-a1b2c3d4`. Only that form is accepted, since trash has
+  not shipped in a release; prune longer QA entries before upgrading.
+- `trash list` shows removal time relative to now, like `wineo list`.
+- `rm` reports one line naming what went to trash, then how to restore and
+  how to prune. Plain `rm` lists the prefix and snapshots left in place and
+  notes that pruning does not delete the prefix.
+- `rm --delete-prefix` help reads "Also move the Wine prefix and snapshots
+  to trash".
 
 ## Proposed implementation sequence
 
