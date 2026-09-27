@@ -3,6 +3,18 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.11.0 - 2026-09-26
+
+- `wineo rm` moves an environment to recoverable trash instead of deleting
+  it, and `--delete-prefix` trashes the prefix and snapshots too
+  ([0030](docs/plans/0030-trash-and-prune.md)). See [Trash and removal](docs/trash.md).
+- `wineo trash` lists entries, `wineo restore ID` brings one back under its
+  original name and paths, and `wineo prune` permanently deletes by ID,
+  `--older-than 30d`, or `--all`.
+- Interrupted removal, restore, or prune shows up in `wineo validate`, and
+  `validate --fix` recovers it.
+- Portable folders keep their trash when moved on the same filesystem.
+
 ## 0.10.0 - 2026-09-26
 
 - `wineo stats [NAME]` shows playtime, session counts, and per-target totals,

@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0030: Recoverable removal and prune
 
