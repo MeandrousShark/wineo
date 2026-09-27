@@ -38,6 +38,11 @@ pub struct EnvironmentReport {
     pub unresolved: bool,
     /// Whether the last run's target, or the environment itself, asks for gamemode.
     pub gamemode: bool,
+    /// Whether the same target, or the environment, asks for these.
+    pub gamescope: bool,
+    pub mangohud: bool,
+    /// Whether Wine's Wayland driver is asked for. Always false for native.
+    pub wayland: bool,
     /// What umu is told to look protonfixes up by, when this environment asked
     /// for them.
     pub gameid: Option<String>,
@@ -124,6 +129,9 @@ impl EnvironmentReport {
             unresolved: busy.is_none() && unresolved(paths, &environment.name),
             busy,
             gamemode: crate::launch::gamemode(global, environment, target),
+            gamescope: crate::launch::gamescope(environment, target).is_some(),
+            mangohud: crate::launch::mangohud(global, environment, target),
+            wayland: crate::launch::wayland(global, environment, target),
             name: environment.name.clone(),
             native: wine.is_none(),
             runner: runner_name,
