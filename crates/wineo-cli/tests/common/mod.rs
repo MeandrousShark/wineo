@@ -245,8 +245,12 @@ impl Fixture {
     /// Uses the wine installed on the system instead of the fakes.
     pub fn real() -> Self {
         let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let root = tempfile::tempdir().unwrap();
+        // umu's container bind-mounts the session bus path and refuses to start
+        // when it's missing. A plain file mounts fine and still isn't a bus.
+        fs::write(root.path().join("no-bus"), "").unwrap();
         Self {
-            root: tempfile::tempdir().unwrap(),
+            root,
             path_var: inherited.clone(),
             sandbox: inherited,
         }
