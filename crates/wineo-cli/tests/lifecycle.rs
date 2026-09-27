@@ -544,6 +544,132 @@ fn start_status_logs_restart_and_stop_with_real_wine() {
     assert!(entries.is_empty(), "{entries:?}");
 }
 
+fn gamescope_available() -> bool {
+    if find_on_path("gamescope").is_some() {
+        true
+    } else {
+        eprintln!("skipping: gamescope is not on PATH");
+        false
+    }
+}
+
+fn program_in_group(group: u32, name: &str) -> bool {
+    fs::read_dir("/proc").unwrap().flatten().any(|entry| {
+        let path = entry.path();
+        let Ok(stat) = fs::read_to_string(path.join("stat")) else {
+            return false;
+        };
+        let Some((_, fields)) = stat.rsplit_once(") ") else {
+            return false;
+        };
+        let process_group = fields
+            .split_whitespace()
+            .nth(2)
+            .and_then(|id| id.parse::<u32>().ok());
+        process_group == Some(group)
+            && fs::read_to_string(path.join("comm")).is_ok_and(|comm| comm.trim().starts_with(name))
+    })
+}
+
+fn gamescope_in_group(group: u32) -> bool {
+    program_in_group(group, "gamescope")
+}
+
+fn stopped_gamescope(f: &Fixture, name: &str) {
+    let group = f
+        .state(name)
+        .lines()
+        .find_map(|line| line.strip_prefix("group = "))
+        .unwrap()
+        .parse::<u32>()
+        .unwrap();
+    assert!(
+        gamescope_in_group(group),
+        "gamescope did not join the run's group"
+    );
+    assert_success(&f.run(&["stop", name]));
+    wait_for("gamescope to exit", || !gamescope_in_group(group));
+    assert!(f.state(name).contains("status = \"stopped\""));
+}
+
+#[test]
+#[ignore = "runs system Wine and headless gamescope"]
+fn a_real_wine_launcher_hands_off_under_headless_gamescope() {
+    if !gamescope_available() || find_on_path("wine").is_none() {
+        eprintln!("skipping: system Wine is not on PATH");
+        return;
+    }
+    let f = Fixture::real();
+    assert_success(&f.run(&["new", "-n", "headless-wine"]));
+    let config = f.config_dir().join("environments/headless-wine.toml");
+    let mut text = fs::read_to_string(&config).unwrap();
+    text.push_str("\n[gamescope]\nargs = [\"--backend\", \"headless\"]\n");
+    fs::write(config, text).unwrap();
+    assert_success(&f.run(&["set", "headless-wine", "targets.handoff.exe=cmd"]));
+    assert_success(&f.run(&[
+        "set",
+        "headless-wine",
+        "targets.handoff.args=['/c', 'start /b ping -n 30 127.0.0.1 & echo launcher-finished']",
+    ]));
+    assert_success(&f.run(&["start", "headless-wine", "--target", "handoff"]));
+    wait_for("Wine launcher to finish", || {
+        f.log("headless-wine").contains("launcher-finished")
+    });
+    thread::sleep(Duration::from_secs(2));
+    let group = f
+        .state("headless-wine")
+        .lines()
+        .find_map(|line| line.strip_prefix("group = "))
+        .unwrap()
+        .parse::<u32>()
+        .unwrap();
+    assert!(
+        program_in_group(group, "ping.exe"),
+        "{}",
+        f.log("headless-wine")
+    );
+    assert!(
+        f.runtime("headless-wine").is_running().unwrap(),
+        "{}",
+        f.log("headless-wine")
+    );
+    stopped_gamescope(&f, "headless-wine");
+}
+
+#[test]
+#[ignore = "runs umu/Proton and headless gamescope"]
+fn a_real_proton_target_stops_headless_gamescope() {
+    if !gamescope_available() {
+        return;
+    }
+    if std::env::var_os("WINEO_TEST_PROTON").is_none() || find_on_path("umu-run").is_none() {
+        eprintln!("skipping: set WINEO_TEST_PROTON and install umu-run");
+        return;
+    }
+    let f = Fixture::real();
+    let runner = real_proton(&f);
+    assert_success(&f.run(&["new", "-n", "headless-proton", "--runner", &runner]));
+    let config = f.config_dir().join("environments/headless-proton.toml");
+    let mut text = fs::read_to_string(&config).unwrap();
+    text.push_str("\n[gamescope]\nargs = [\"--backend\", \"headless\"]\n");
+    fs::write(config, text).unwrap();
+    assert_success(&f.run(&["set", "headless-proton", "targets.ping.exe=ping"]));
+    assert_success(&f.run(&[
+        "set",
+        "headless-proton",
+        "targets.ping.args=['-n', '30', '127.0.0.1']",
+    ]));
+    assert_success(&f.run(&["start", "headless-proton", "--target", "ping"]));
+    wait_for("Proton gamescope to run", || {
+        f.state("headless-proton")
+            .lines()
+            .find_map(|line| line.strip_prefix("group = "))
+            .and_then(|id| id.parse::<u32>().ok())
+            .is_some_and(gamescope_in_group)
+    });
+    stopped_gamescope(&f, "headless-proton");
+}
+
 impl Fixture {
     fn resets(&self, name: &str) -> u64 {
         let mut path = self.runtime(name).log_path().into_os_string();
