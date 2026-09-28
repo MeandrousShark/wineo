@@ -418,7 +418,6 @@ pub(crate) fn install_component_version(
     provider: Provider,
     installed_name: &str,
 ) -> anyhow::Result<String> {
-    let tag = pinned_tag(provider, installed_name)?;
     let cancellation = Cancellation::new()?;
     let client = Client::new()?;
     install_selected(
@@ -426,7 +425,7 @@ pub(crate) fn install_component_version(
         global,
         Selection {
             provider,
-            tag: Some(&tag),
+            tag: None,
             expected_name: Some(installed_name),
         },
         &client,
@@ -449,37 +448,16 @@ fn install_selected<T: Transport, W: Write>(
     cancellation: &Cancellation,
     output: &mut W,
 ) -> anyhow::Result<String> {
-    let release = cancellation.result(client.select(selection.provider, selection.tag))?;
-    if let Some(installed_name) = selection.expected_name {
-        anyhow::ensure!(
-            release.installed_name == installed_name,
-            "release {} installs `{}`, not requested build `{installed_name}`",
-            release.tag,
-            release.installed_name
-        );
-    }
+    let release = cancellation.result(match selection.expected_name {
+        Some(installed_name) => client.select_pinned(selection.provider, installed_name),
+        None => client.select(selection.provider, selection.tag),
+    })?;
     writeln!(
         output,
         "{}",
         describe(paths, global, &release, style::stderr_enabled())?
     )?;
     install(paths, global, client, &release, cancellation)
-}
-
-fn pinned_tag(provider: Provider, installed_name: &str) -> anyhow::Result<String> {
-    let prefix = match provider {
-        Provider::Dxvk => "dxvk-",
-        Provider::Vkd3d => "vkd3d-proton-",
-        _ => anyhow::bail!("only components can use a pinned build download"),
-    };
-    let version = installed_name
-        .strip_prefix(prefix)
-        .filter(|v| !v.is_empty());
-    anyhow::ensure!(
-        version.is_some(),
-        "`{installed_name}` is not an upstream {provider} build name"
-    );
-    Ok(format!("v{}", version.unwrap()))
 }
 
 #[cfg(test)]
@@ -852,17 +830,5 @@ mod tests {
         anyhow::ensure!(destination.join("x64/dxgi.dll").is_file());
         anyhow::ensure!(destination.join("x32/dxgi.dll").is_file());
         Ok((name, String::from_utf8(output)?))
-    }
-
-    #[test]
-    fn pinned_component_names_select_exact_tags() {
-        assert_eq!(pinned_tag(Provider::Dxvk, "dxvk-2.6").unwrap(), "v2.6");
-        assert_eq!(
-            pinned_tag(Provider::Vkd3d, "vkd3d-proton-2.14").unwrap(),
-            "v2.14"
-        );
-        assert!(pinned_tag(Provider::Dxvk, "custom-build").is_err());
-        assert!(pinned_tag(Provider::Dxvk, "2.7").is_err());
-        assert!(pinned_tag(Provider::GeProton, "dxvk-2.6").is_err());
     }
 }

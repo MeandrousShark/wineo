@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 
 use crate::config::GlobalConfig;
+use crate::error::Error;
 use crate::paths::{Paths, resolve};
 
 pub const RECEIPT: &str = ".wineo-install.json";
@@ -178,6 +179,7 @@ impl Transport for Https {
         }
         let response = request
             .send()
+            .map_err(|err| Error::Network(err.into()))
             .with_context(|| format!("request failed: {url}"))?;
         Ok(Response {
             status: response.status().as_u16(),
@@ -194,14 +196,20 @@ impl Transport for Https {
             .0
             .get(url)
             .send()
+            .map_err(|err| Error::Network(err.into()))
             .with_context(|| format!("request failed: {url}"))?;
         let status = response.status();
         if status.as_u16() == 403 || status.as_u16() == 429 {
-            bail!("GitHub denied or rate-limited the request ({status}); try again later");
+            return Err(Error::Network(
+                format!("GitHub denied or rate-limited the request ({status}); try again later")
+                    .into(),
+            )
+            .into());
         }
         Ok(Box::new(
             response
                 .error_for_status()
+                .map_err(|err| Error::Network(err.into()))
                 .with_context(|| format!("request failed: {url}"))?,
         ))
     }
@@ -228,7 +236,8 @@ fn http_client(https_only: bool, timeout: Duration) -> Result<reqwest::blocking:
         .timeout(timeout)
         .user_agent(concat!("wineo/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::limited(10))
-        .build()?)
+        .build()
+        .map_err(|err| Error::Network(err.into()))?)
 }
 
 impl<T: Transport> Client<T> {
@@ -240,7 +249,8 @@ impl<T: Transport> Client<T> {
         self.transport
             .get(url)?
             .take(8 * 1024 * 1024 + 1)
-            .read_to_end(&mut data)?;
+            .read_to_end(&mut data)
+            .map_err(|err| Error::Network(err.into()))?;
         ensure!(
             data.len() <= 8 * 1024 * 1024,
             "release metadata exceeds size limit"
@@ -297,6 +307,18 @@ impl<T: Transport> Client<T> {
             }
         }
         bail!("no supported stable {provider} release found")
+    }
+
+    pub fn select_pinned(&self, provider: Provider, installed_name: &str) -> Result<Release> {
+        let tag = pinned_tag(provider, installed_name)?;
+        let release = self.select(provider, Some(&tag))?;
+        ensure!(
+            release.installed_name == installed_name,
+            "release {} installs `{}`, not requested build `{installed_name}`",
+            release.tag,
+            release.installed_name
+        );
+        Ok(release)
     }
     pub fn install(
         &self,
@@ -373,6 +395,7 @@ impl<T: Transport> Client<T> {
             check_cancel(cancelled)?;
             let count = response
                 .read(&mut buffer)
+                .map_err(|err| Error::Network(err.into()))
                 .context("interrupted archive download")?;
             if count == 0 {
                 break;
@@ -438,7 +461,8 @@ impl<T: Transport> Client<T> {
             self.transport
                 .get(&asset.browser_download_url)?
                 .take(1024 * 1024 + 1)
-                .read_to_string(&mut data)?;
+                .read_to_string(&mut data)
+                .map_err(|err| Error::Network(err.into()))?;
             ensure!(
                 data.len() <= 1024 * 1024,
                 "checksum document exceeds size limit"
@@ -654,8 +678,26 @@ fn parse_checksum(text: &str, asset: &str, document: &str) -> Result<String> {
     Ok(matches.remove(0))
 }
 fn check_cancel(cancelled: &AtomicBool) -> Result<()> {
-    ensure!(!cancelled.load(Ordering::Relaxed), "download canceled");
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(Error::Canceled("download").into());
+    }
     Ok(())
+}
+
+pub fn pinned_tag(provider: Provider, installed_name: &str) -> Result<String> {
+    let prefix = match provider {
+        Provider::Dxvk => "dxvk-",
+        Provider::Vkd3d => "vkd3d-proton-",
+        _ => bail!("only components can use a pinned build download"),
+    };
+    let version = installed_name
+        .strip_prefix(prefix)
+        .filter(|v| !v.is_empty());
+    ensure!(
+        version.is_some(),
+        "`{installed_name}` is not an upstream {provider} build name"
+    );
+    Ok(format!("v{}", version.unwrap()))
 }
 
 fn destination_identity(destination: &Path) -> Result<PathBuf> {
@@ -922,8 +964,53 @@ fn locate_build(provider: Provider, root: &Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Cursor;
+
+    use super::*;
+
+    #[test]
+    fn pinned_component_names_select_exact_tags() {
+        assert_eq!(pinned_tag(Provider::Dxvk, "dxvk-2.6").unwrap(), "v2.6");
+        assert_eq!(
+            pinned_tag(Provider::Vkd3d, "vkd3d-proton-2.14").unwrap(),
+            "v2.14"
+        );
+        assert!(pinned_tag(Provider::Dxvk, "custom-build").is_err());
+        assert!(pinned_tag(Provider::Dxvk, "2.7").is_err());
+        assert!(pinned_tag(Provider::GeProton, "dxvk-2.6").is_err());
+    }
+
+    #[test]
+    fn pinned_selection_uses_the_exact_release() {
+        let url = "https://api.github.com/repos/doitsujin/dxvk/releases/tags/v2.6";
+        let release = serde_json::json!({
+            "tag_name": "v2.6",
+            "assets": [{
+                "name": "dxvk-2.6.tar.gz",
+                "browser_download_url": "https://fixture/a",
+                "size": 1,
+                "digest": null
+            }]
+        });
+        let client = Client::with_transport(Fixture(BTreeMap::from([(
+            url.to_owned(),
+            serde_json::to_vec(&release).unwrap(),
+        )])));
+        let selected = client.select_pinned(Provider::Dxvk, "dxvk-2.6").unwrap();
+        assert_eq!(selected.tag, "v2.6");
+        assert_eq!(selected.installed_name, "dxvk-2.6");
+    }
+
+    #[test]
+    fn canceled_download_has_a_typed_error() {
+        let error = check_cancel(&AtomicBool::new(true)).unwrap_err();
+        assert!(error.is::<Error>());
+        assert!(matches!(
+            error.downcast_ref::<Error>(),
+            Some(Error::Canceled("download"))
+        ));
+        assert_eq!(error.to_string(), "download canceled");
+    }
 
     struct Fixture(BTreeMap<String, Vec<u8>>);
     impl Transport for Fixture {
