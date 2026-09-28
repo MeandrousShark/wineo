@@ -5,6 +5,7 @@ pub mod cancel;
 pub mod clone;
 pub mod components;
 pub mod config;
+pub mod create;
 pub mod desktop;
 pub mod download;
 pub mod edit;

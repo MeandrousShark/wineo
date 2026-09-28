@@ -90,6 +90,9 @@ pub enum Error {
     #[error("environment `{0}` already exists")]
     EnvironmentExists(String),
 
+    #[error("Proton prefixes are always win64, so --arch win32 can't be used with `{0}`")]
+    ProtonWin32(String),
+
     #[error(
         "there is no template `{name}`{}",
         if .available.is_empty() {

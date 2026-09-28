@@ -8,13 +8,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use wineo_core::config::{Arch, GlobalConfig};
-use wineo_core::environment::{Environment, NewEnvironment};
+use wineo_core::create::{self, CreateEvent, CreateRequest};
+use wineo_core::environment::Environment;
 use wineo_core::error::Error;
 use wineo_core::install::{self, Wanted};
-use wineo_core::installer::{Installer, Output};
-use wineo_core::operation::{Locks, Operation};
+use wineo_core::installer::Installer;
 use wineo_core::paths::Paths;
-use wineo_core::prefix::{self, PrefixEvent};
+use wineo_core::prefix;
 use wineo_core::programs::{Program, Source};
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
@@ -725,7 +725,12 @@ fn combination_problem(
     arch: Arch,
     answers: &Answers,
 ) -> Option<String> {
-    if runner.is_proton() && arch == Arch::Win32 && answers.arch_asked {
+    if answers.arch_asked
+        && matches!(
+            create::check_arch(runner, Some(arch)),
+            Err(Error::ProtonWin32(_))
+        )
+    {
         return Some("Proton prefixes are always win64.".to_owned());
     }
     // The layout decides which kind of runner an existing prefix is for.
@@ -1106,43 +1111,67 @@ fn create<I: Input, W: Write>(
         how,
         art,
     } = creating;
-    let new = NewEnvironment {
-        name: name.clone(),
-        dir: Some(dir.display().to_string()),
-        arch: (!runner.is_proton()).then_some(arch),
-        template,
-    };
-    let guard = Locks::new(paths).acquire(Operation::Create, &name, &[&dir])?;
     let shown = paths
         .contract(&dir)
         .unwrap_or_else(|_| dir.display().to_string());
-    let mut created = false;
-    let cancellation = Cancellation::new()?;
-    let log = paths.runtime_dir(&name).join("create.log");
-    let environment = match Environment::create(
+    let mut cancellation = Some(Cancellation::new()?);
+    let token = cancellation.as_ref().unwrap().token.clone();
+    let created = match create::run(
         paths,
-        global,
-        &runner,
-        &new,
-        &cancellation.token,
-        Output::Log(&log),
-        |event| {
-            if let PrefixEvent::Started { .. } = event {
-                created = true;
+        CreateRequest {
+            name: name.clone(),
+            dir: Some(dir.display().to_string()),
+            resolved_runner: Some(runner.clone()),
+            arch: (!runner.is_proton()).then_some(arch),
+            template,
+            ..Default::default()
+        },
+        &token,
+        |event| match event {
+            CreateEvent::BuildingPrefix { runner, .. } => {
                 let _ = prompt.say(if runner.is_proton() {
                     format!("Creating a Proton prefix in {shown}, which takes a while")
                 } else {
                     format!("Creating a wine prefix in {shown}, which takes a few seconds")
                 });
             }
+            CreateEvent::Saved => {
+                drop(cancellation.take());
+                guided.registered = Some(name.clone());
+            }
+            CreateEvent::Registered { created_prefix, .. } => {
+                let _ = prompt.say(if created_prefix {
+                    format!("Created {name}.")
+                } else {
+                    format!("Created {name}, using the prefix already at {shown}.")
+                });
+            }
+            CreateEvent::Components(changes) => {
+                for change in changes {
+                    eprintln!("{}", components::describe(&change, &name));
+                }
+            }
+            CreateEvent::Desktop(changes) => {
+                for change in changes {
+                    eprintln!("{}", desktop::describe(&change, &name));
+                }
+            }
+            CreateEvent::TemplateComponentsOmitted { .. } => {}
         },
     ) {
-        Ok(environment) => environment,
+        Ok(created) => created,
         Err(err) => {
-            if matches!(err, Error::Canceled(_)) || prompt.input().interrupted() {
+            if err
+                .downcast_ref::<Error>()
+                .is_some_and(|err| matches!(err, Error::Canceled(_)))
+                || prompt.input().interrupted()
+            {
                 return Err(Canceled.into());
             }
-            prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
+            if guided.registered.is_some() {
+                return Err(err);
+            }
+            prompt.say(format!("error: {err:#}"))?;
             prompt.say(format!(
                 "{name} wasn't created. Fix that, then run `wineo new` again."
             ))?;
@@ -1150,14 +1179,12 @@ fn create<I: Input, W: Write>(
         }
     };
     drop(cancellation);
-    guided.registered = Some(name.clone());
-    prompt.say(if created {
-        format!("Created {name}.")
-    } else {
-        format!("Created {name}, using the prefix already at {shown}.")
-    })?;
-    components::reconcile_config(paths, global, &environment, &runner, &dir)?;
-    desktop::reconcile(paths, global, &environment, Some(&runner), &dir)?;
+    let create::Created {
+        environment,
+        runner,
+        guard,
+        ..
+    } = created;
     // Before the installer, so every question is answered before the wait.
     if let Some((key, term)) = &art {
         fetch_art(paths, global, prompt, access, &name, key, term)?;

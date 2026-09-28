@@ -5,20 +5,16 @@ use std::time::Duration;
 
 use anyhow::bail;
 use wineo_core::config::{Arch, GlobalConfig};
-use wineo_core::environment::{Environment, NewEnvironment};
+use wineo_core::create::{self, CreateEvent, CreateRequest, TargetOutcome};
+use wineo_core::environment::Environment;
 use wineo_core::error::Error;
-use wineo_core::install::{self, Wanted};
 use wineo_core::installer::{Installer, Outcome, Output};
 use wineo_core::launch;
-use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
-use wineo_core::prefix::{self, PrefixEvent};
+use wineo_core::prefix;
 use wineo_core::programs::Listing;
-use wineo_core::runners::Runners;
 use wineo_core::runtime::Runtime;
 use wineo_core::supervisor::{Notice, Watched};
-use wineo_core::targets::{self, Batch, Spec, Written};
-use wineo_core::templates::Templates;
 
 use super::art::{Access, AutoFetch, KeyCheck, Pick};
 use super::transfer::Cancellation;
@@ -92,82 +88,26 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     if let Some(installer) = &args.install_exe {
         launch::check_program_path(paths, installer)?;
     }
-    let global = GlobalConfig::load(paths)?;
-    let template = match &args.template {
-        Some(name) => Some(Templates::new(paths).resolve(name)?),
-        None => None,
-    };
-    let runners = Runners::new(paths, &global)?;
-    // An explicit flag wins over what the template says.
-    let runner_name = match (&args.runner, &template) {
-        (Some(runner), _) => runner.clone(),
-        (None, Some(template)) => template
-            .runner_name(&runners, &global.defaults.runner)?
-            .unwrap_or_else(|| global.defaults.runner.clone()),
-        (None, None) => global.defaults.runner.clone(),
-    };
-    let arch = args
-        .arch
-        .or_else(|| template.as_ref().and_then(|template| template.arch));
-    // Resolved before anything is created, so a typo never leaves a prefix behind.
-    let runner = runners.resolve(&runner_name)?;
-
-    if runner.is_proton() && arch == Some(Arch::Win32) {
-        bail!(
-            "Proton prefixes are always win64, so --arch win32 can't be used with `{}`",
-            runner.name()
-        );
-    }
-
-    let template = template.map(|template| {
-        let (fitted, left_out) = template.for_runner(&runner);
-        if left_out {
-            eprintln!(
-                "{} bundles its own DXVK and vkd3d-proton, so the template's are left out",
-                runner.name()
-            );
-        }
-        fitted
-    });
-    // A build the template names has to be there before a prefix is made,
-    // the same way its runner does.
-    if let Some(template) = &template {
-        install::check_available(
-            paths,
-            &global,
-            &name,
-            &runner,
-            &Wanted {
-                dxvk: template.dxvk.clone(),
-                vkd3d: template.vkd3d.clone(),
-            },
-        )?;
-    }
-
-    let new = NewEnvironment {
-        name,
-        dir: args.dir,
-        arch,
-        template,
-    };
-    // Held through the installer too, so nothing touches the prefix while it runs.
-    let locks = Locks::new(paths);
-    let prefix = new.prefix_dir(paths, &global)?;
-    let guard = locks.acquire(Operation::Create, &new.name, &[&prefix])?;
-
-    let cancellation = Cancellation::new()?;
-    let log = paths.runtime_dir(&new.name).join("create.log");
-    let mut created_prefix = false;
-    let environment = match Environment::create(
+    let mut cancellation = Some(Cancellation::new()?);
+    let token = cancellation.as_ref().unwrap().token.clone();
+    let created = match create::run(
         paths,
-        &global,
-        &runner,
-        &new,
-        &cancellation.token,
-        Output::Log(&log),
-        |event| {
-            if let PrefixEvent::Started { dir } = event {
-                created_prefix = true;
+        CreateRequest {
+            name,
+            dir: args.dir,
+            runner: args.runner,
+            arch: args.arch,
+            template_name: args.template,
+            exe: args.exe.clone(),
+            desktop: args.desktop,
+            ..Default::default()
+        },
+        &token,
+        |event| match event {
+            CreateEvent::TemplateComponentsOmitted { runner } => eprintln!(
+                "{runner} bundles its own DXVK and vkd3d-proton, so the template's are left out"
+            ),
+            CreateEvent::BuildingPrefix { dir, runner } => {
                 let dir = paths
                     .contract(&dir)
                     .unwrap_or_else(|_| dir.display().to_string());
@@ -179,49 +119,74 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                     eprintln!("Creating a wine prefix in {dir}, this takes a few seconds");
                 }
             }
+            CreateEvent::Saved => drop(cancellation.take()),
+            CreateEvent::Registered {
+                name,
+                stored_prefix,
+                created_prefix,
+                target,
+            } => {
+                if target != TargetOutcome::ExeNotFound {
+                    println!(
+                        "{}",
+                        created_message(
+                            &name,
+                            &stored_prefix,
+                            created_prefix,
+                            paths,
+                            target == TargetOutcome::Added
+                        )
+                    );
+                }
+            }
+            CreateEvent::Components(changes) => {
+                for change in changes {
+                    eprintln!(
+                        "{}",
+                        components::describe(&change, args.name.as_deref().unwrap())
+                    );
+                }
+            }
+            CreateEvent::Desktop(changes) => {
+                for change in changes {
+                    eprintln!(
+                        "{}",
+                        desktop::describe(&change, args.name.as_deref().unwrap())
+                    );
+                }
+            }
         },
     ) {
-        Ok(environment) => environment,
-        Err(Error::Canceled(_)) => {
+        Ok(created) => created,
+        Err(err)
+            if err
+                .downcast_ref::<Error>()
+                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
+        {
             eprintln!("Canceled. Nothing was created.");
             return Ok(ExitCode::from(CANCELED));
         }
-        Err(err) => return Err(err.into()),
+        Err(err) => return Err(err),
     };
-    // Released so the art picker and other prompts get Ctrl+C as before.
     drop(cancellation);
-    let environment = match &args.exe {
-        Some(exe) if add_default_target(paths, &environment, exe, args.desktop)? => {
-            println!(
-                "{}",
-                created_message(&environment, created_prefix, paths, true)?
-            );
-            Environment::load(paths, &environment.name)?
-        }
-        Some(exe) => {
+    let create::Created {
+        global,
+        environment,
+        runner,
+        prefix,
+        target,
+        guard,
+        ..
+    } = created;
+    if target == TargetOutcome::ExeNotFound {
+        if let Some(exe) = &args.exe {
             eprintln!(
                 "Created environment {}, but {exe} was not found. Add a target with: wineo setup {}",
                 environment.name, environment.name
             );
-            return Ok(ExitCode::FAILURE);
         }
-        None => {
-            println!(
-                "{}",
-                created_message(&environment, created_prefix, paths, false)?
-            );
-            environment
-        }
-    };
-
-    components::reconcile_config(
-        paths,
-        &global,
-        &environment,
-        &runner,
-        &environment.prefix(paths)?,
-    )?;
-    desktop::reconcile(paths, &global, &environment, Some(&runner), &prefix)?;
+        return Ok(ExitCode::FAILURE);
+    }
     // Before the installer, so the pick list isn't left waiting behind it.
     if args.art && fetch_art(paths, &global, &environment.name).is_err() {
         let name = &environment.name;
@@ -357,58 +322,25 @@ fn new_native(
 /// The plain "Created environment" line, extended with the default target
 /// `--exe` added, and the "existing prefix" note carried over either way.
 fn created_message(
-    environment: &Environment,
+    name: &str,
+    stored_prefix: &str,
     created_prefix: bool,
     paths: &Paths,
     with_target: bool,
-) -> anyhow::Result<String> {
-    let mut message = format!("Created environment {}", environment.name);
+) -> String {
+    let mut message = format!("Created environment {name}");
     if with_target {
-        message.push_str(&format!(" with target {}", environment.name));
+        message.push_str(&format!(" with target {name}"));
     }
     if !created_prefix {
-        let prefix = paths.shown(&environment.wine()?.prefix);
+        let prefix = paths.shown(stored_prefix);
         if with_target {
             message.push_str(&format!(", using the existing prefix at {prefix}"));
         } else {
             message.push_str(&format!(" using the existing prefix at {prefix}"));
         }
     }
-    Ok(message)
-}
-
-/// Adds `exe` as the environment's default target, named after it, checked
-/// against the prefix that now exists. `Ok(false)` means the exe wasn't
-/// found, so the environment is kept without a target.
-fn add_default_target(
-    paths: &Paths,
-    environment: &Environment,
-    exe: &str,
-    desktop: bool,
-) -> anyhow::Result<bool> {
-    let prefix = environment.prefix(paths)?;
-    if wineo_core::desktop::check(paths, &prefix, exe).is_err() {
-        return Ok(false);
-    }
-    let mut batch = Batch::new(environment.config.targets.clone());
-    batch.add(
-        &environment.name,
-        Spec {
-            exe: exe.to_owned(),
-            args: Vec::new(),
-            cwd: None,
-            name: None,
-            desktop,
-        },
-    )?;
-    batch.set_default(Some(&environment.name));
-    match targets::write(paths, &environment.name, &batch)? {
-        Written::Saved => Ok(true),
-        Written::Changed(_) => bail!(
-            "{}'s config changed while its target was being added",
-            environment.name
-        ),
-    }
+    message
 }
 
 /// Asks for everything, starting from whatever flags were given.
