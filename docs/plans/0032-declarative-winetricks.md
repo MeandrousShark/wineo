@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0032: Declarative winetricks dependencies
 

@@ -3,6 +3,19 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.13.0 - 2026-09-28
+
+- `winetricks` lists the verbs an environment needs, and `start`, `run`, and
+  `restart` install the missing ones first in one unattended call
+  ([0032](docs/plans/0032-declarative-winetricks.md)). See
+  [Winetricks dependencies](docs/config-files.md#winetricks-dependencies).
+- What counts as installed is the prefix's own `winetricks.log`, so verbs
+  installed by hand count too. A failed install fails the launch and the
+  next one retries only the missing verbs.
+- `status NAME` lists the verbs and marks missing ones, and
+  `wineo validate --fix` installs them ahead of time.
+- The winetricks runner moved into core.
+
 ## 0.12.0 - 2026-09-27
 
 - `wayland`, `mangohud`, and a `[gamescope]` table are launch settings on the
