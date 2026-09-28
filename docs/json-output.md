@@ -22,6 +22,7 @@ launch arguments and environment variables are never included.
 ```json
 {
   "name": "hades",
+  "tags": ["game"],
   "state": "running",
   "lost": false,
   "busy": null,
@@ -38,7 +39,7 @@ launch arguments and environment variables are never included.
 }
 ```
 
-`run` is `null` when there is no saved run. Its timestamps and exit code are
+`tags` is the environment's tags, an empty array when it has none. `run` is `null` when there is no saved run. Its timestamps and exit code are
 nullable. `busy` is a lowercase operation value such as `launch` or
 `winetricks`. `state` reports runtime state independently of `busy` and
 `unresolved`.
@@ -73,12 +74,15 @@ Nameless `status --json` and `list --json` return the same envelope:
 ```
 
 Each item in `environments` contains the common status fields shown above.
-`list` includes every environment whose runtime status can be read. Nameless
-`status` includes running, busy, or unresolved environments. Both sort by
-environment name and do not load environment configs.
+`list` includes every environment whose runtime status can be read, and
+`list --tag` only those with every given tag. Nameless `status` includes
+running, busy, or unresolved environments. Both sort by environment name.
+They read each config only for its tags, so a config that can't be read still
+appears, with empty `tags`, unless `--tag` is given.
 
-If a runtime status cannot be read for one environment, it is omitted from
-`environments` and an error with its `name` and `message` is added to `errors`.
+If a runtime status cannot be read for one environment, or with `--tag` its
+config can't be read, it is omitted from `environments` and an error with its
+`name` and `message` is added to `errors`.
 The command still prints the complete partial result and exits with status 1.
 Failures before a complete collection can be gathered, and failures of named
 status, exit 1 with a diagnostic on stderr and no JSON on stdout. Clap

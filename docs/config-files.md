@@ -90,6 +90,25 @@ the same reason: an older wineo refuses a config using them with
 `unknown field` instead of launching without them. They can also go in a
 template. See [Launch options](launch-options.md).
 
+## Tags
+
+`tags` groups environments, like `game`, `work`, or `creative`. Tags use the
+same characters as environment names (letters, digits, `-`, and `_`), match
+exactly, and can't repeat. They work on Wine and native environments and in
+templates, and needed no schema bump for the same reason as the launch
+options.
+
+```sh
+wineo set hades 'tags=["game", "co-op"]'
+wineo list --tag game
+wineo list --tag game --tag co-op   # both tags
+wineo set hades --unset tags
+```
+
+Several `--tag` flags list only environments with all of them. When nothing
+matches, `list` prints `No environments are tagged game` and exits 0.
+`status NAME` shows a `tags` line, and `--tag` completes the tags in use.
+
 ## Creating an environment from a template
 
 To reuse the same settings across environments instead of writing each one by
