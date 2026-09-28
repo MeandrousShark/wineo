@@ -170,9 +170,14 @@ prefix, installing verbs, starting, started). No shared event bus.
 ### 4. Where child output goes
 
 **Decided:** wineboot, umu, and winetricks take the installer's existing
-`Output` (inherit or a log file). The CLI keeps inheriting, so the terminal
-looks the same. A GUI uses a log file and follows it with the tailer from
-finding 9.
+`Output` (inherit or a log file). The CLI keeps what each does today, so the
+terminal looks the same: winetricks inherits, and prefix creation writes
+`create.log` in the runtime directory. A GUI uses a log file and follows it
+with the tailer from finding 9.
+
+Corrected during step 2 (2026-09-28): the draft said the CLI inherits for
+all three, but wineboot and umu already wrote to `create.log`. The intent
+was always an unchanged terminal.
 
 ### 5. Process groups for winetricks and wineboot
 
