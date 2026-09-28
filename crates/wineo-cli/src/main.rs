@@ -107,13 +107,8 @@ fn main() -> ExitCode {
 fn run() -> anyhow::Result<ExitCode> {
     // Owns a detached run for `start`. Deliberately not a clap subcommand, so
     // it stays out of help and generated completion scripts.
-    if std::env::args_os()
-        .nth(1)
-        .is_some_and(|arg| arg == supervisor::SUPERVISE_COMMAND)
-    {
-        return supervisor::serve()
-            .map(|()| ExitCode::SUCCESS)
-            .map_err(Into::into);
+    if let Some(result) = supervisor::dispatch_if_supervise() {
+        return result.map(|()| ExitCode::SUCCESS).map_err(Into::into);
     }
 
     clap_complete::CompleteEnv::with_factory(Cli::command).complete();

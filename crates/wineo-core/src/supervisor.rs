@@ -27,6 +27,14 @@ use crate::runtime::{RunMode, RunState, RunStatus, Runtime, exit_code};
 /// The hidden command a detached supervisor runs as.
 pub const SUPERVISE_COMMAND: &str = "__supervise";
 
+/// Runs the private supervisor entrypoint before a caller parses arguments.
+pub fn dispatch_if_supervise() -> Option<Result<()>> {
+    std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == SUPERVISE_COMMAND)
+        .then(serve)
+}
+
 /// How often a kill repeats until the run ends. A program that was still
 /// starting up can be invisible to wineserver the first time.
 const KILL_RETRY: Duration = Duration::from_secs(1);
