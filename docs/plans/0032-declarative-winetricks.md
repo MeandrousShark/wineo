@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0032: Declarative winetricks dependencies
 
@@ -51,7 +51,7 @@ wineo set palworld 'winetricks=["vcrun2022", "corefonts"]'
   rule, so it needs no bump either. The `features.md` row calling this "the
   first real test of 0018" predates that and should be updated.
 
-## Decisions for the maintainer
+## Decisions (settled with the maintainer, 2026-09-27)
 
 ### 1. The installed record
 
