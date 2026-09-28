@@ -93,6 +93,31 @@ fn ctrl_c_during_new_wineboot_removes_the_prefix_and_config() {
 }
 
 #[test]
+fn ctrl_c_during_new_in_an_existing_empty_dir_empties_it_and_keeps_it() {
+    let f = Fixture::new();
+    slow_wineboot(&f);
+    let prefix = f.root.path().join("chosen");
+    fs::create_dir(&prefix).unwrap();
+    let child = f
+        .wineo()
+        .args(["new", "-n", "app", "--dir", prefix.to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for("wineboot to begin", || prefix.join("partial").exists());
+
+    interrupt(&child);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(130), "{}", stderr(&output));
+    assert!(stdout(&output).is_empty());
+    assert!(stderr(&output).ends_with("Canceled. Nothing was created.\n"));
+    assert!(prefix.is_dir());
+    assert_eq!(fs::read_dir(&prefix).unwrap().count(), 0);
+    assert!(f.created_config("app").is_empty());
+}
+
+#[test]
 fn ctrl_c_during_start_wineboot_keeps_the_config() {
     let f = Fixture::new();
     slow_wineboot(&f);

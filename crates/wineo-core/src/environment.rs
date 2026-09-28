@@ -482,7 +482,8 @@ fn adopted_arch(dir: &Path, fallback: Arch, requested: Option<Arch>) -> Result<A
 }
 
 /// Initializes a prefix in `dir`, logging to the environment's create.log. A
-/// failed build removes `dir` only if this made it.
+/// failed build removes `dir` only if this made it. A canceled build also
+/// empties a directory that already existed empty, but leaves the directory.
 #[allow(clippy::too_many_arguments)]
 fn build_new_prefix(
     paths: &Paths,
@@ -510,11 +511,27 @@ fn build_new_prefix(
             )
         });
     if let Err(err) = result {
+        // Best effort, the error that got us here matters more.
         if created {
-            // Best effort, the error that got us here matters more.
             let _ = fs::remove_dir_all(dir);
+        } else if matches!(err, Error::Canceled(_)) {
+            // The user supplied the directory, so keep it but drop what wineboot wrote.
+            let _ = empty_dir(dir);
         }
         return Err(err);
+    }
+    Ok(())
+}
+
+/// Removes everything inside `dir`. Symlinks are unlinked, never followed.
+fn empty_dir(dir: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            fs::remove_dir_all(entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
+        }
     }
     Ok(())
 }
@@ -1158,6 +1175,67 @@ mod tests {
         );
         assert!(!prefix.exists());
         assert!(!paths.environment_config("canceled").exists());
+    }
+
+    #[test]
+    fn canceling_into_an_existing_empty_dir_empties_it_and_keeps_it() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let prefix = root.path().join("home/prefixes/existing");
+        fs::create_dir_all(&prefix).unwrap();
+        let outside = root.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep"), "keep").unwrap();
+        let marker = prefix.join("partial");
+        let runner_path = root.path().join("fake-wine");
+        // Leaves a subdirectory and a symlink out of the prefix behind.
+        fs::write(
+            &runner_path,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in\n  wineboot)\n    mkdir -p \"$WINEPREFIX/sub/deeper\"\n    ln -s '{}' \"$WINEPREFIX/link\"\n    printf partial > \"$WINEPREFIX/partial\"\n    trap 'exit 0' TERM\n    while :; do sleep 1; done\n    ;;\n  reg|-w|-k) exit 0 ;;\nesac\nexit 0\n",
+                outside.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&runner_path, fs::Permissions::from_mode(0o755)).unwrap();
+        let runner = Runner::wine_build("fake".to_owned(), runner_path.clone(), runner_path);
+        let token = Token::new();
+        let worker_token = token.clone();
+        let new = new("existing", &prefix);
+        let worker_paths = paths.clone();
+        let worker_runner = runner.clone();
+        let worker = thread::spawn(move || {
+            Environment::create(
+                &worker_paths,
+                &GlobalConfig::default(),
+                &worker_runner,
+                &new,
+                &worker_token,
+                Output::Log(&worker_paths.runtime_dir("existing").join("create.log")),
+                |_| {},
+            )
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !marker.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(marker.exists(), "fake wineboot did not start");
+        token.cancel();
+
+        let error = worker.join().unwrap().unwrap_err();
+        assert!(
+            matches!(error, Error::Canceled("prefix creation")),
+            "{error}"
+        );
+        assert!(prefix.is_dir());
+        assert_eq!(fs::read_dir(&prefix).unwrap().count(), 0);
+        assert_eq!(fs::read_to_string(outside.join("keep")).unwrap(), "keep");
+        assert!(!paths.environment_config("existing").exists());
     }
 
     #[test]
