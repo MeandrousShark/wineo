@@ -1,12 +1,10 @@
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
-use wineo_core::environment::{self, Environment};
-use wineo_core::operation::{Locks, Operation};
-use wineo_core::paths::Paths;
-use wineo_core::report;
-use wineo_core::runtime::{Runtime, State, Status};
+use wineo_core::operation::Operation;
+use wineo_core::report::Overview;
+use wineo_core::runtime::{State, Status};
+use wineo_core::view::{CollectionError, CollectionOutput, StatusOutput};
 
-use super::json::{CollectionError, CollectionOutput, StatusOutput};
 use super::time::{clock, relative};
 
 /// One line of `wineo status` or `wineo list`: name, state, target, and time.
@@ -83,6 +81,33 @@ impl Gathered {
     }
 }
 
+pub fn format_overview(overview: Overview, now: Timestamp, tz: &TimeZone) -> Gathered {
+    let rows = overview
+        .environments
+        .iter()
+        .map(|environment| {
+            Row::new(
+                &environment.name,
+                &environment.status,
+                environment.busy,
+                environment.unresolved,
+                &environment.tags,
+                now,
+                tz,
+            )
+        })
+        .collect();
+    let errors = overview
+        .errors
+        .into_iter()
+        .map(|error| CollectionError {
+            name: error.name,
+            message: error.message,
+        })
+        .collect();
+    Gathered { rows, errors }
+}
+
 fn time_column(status: &Status, now: Timestamp, tz: &TimeZone) -> String {
     let Some(run) = &status.run else {
         return String::new();
@@ -100,61 +125,6 @@ fn time_column(status: &Status, now: Timestamp, tz: &TimeZone) -> String {
         }
         State::Inactive => String::new(),
     }
-}
-
-/// Gathers a row for every environment name, keeping only the ones `keep`
-/// accepts. A tag filter requires a readable config; otherwise unreadable
-/// configs still appear with empty tags, as they did before tags were added.
-pub fn gather(
-    paths: &Paths,
-    now: Timestamp,
-    tz: &TimeZone,
-    tags: Option<&[String]>,
-    mut keep: impl FnMut(&Status, bool) -> bool,
-) -> anyhow::Result<Gathered> {
-    let locks = Locks::new(paths);
-    let mut rows = Vec::new();
-    let mut errors = Vec::new();
-    for name in environment::names(paths)? {
-        let busy = locks.busy_with(&name).unwrap_or(None);
-        let unresolved = busy.is_none() && report::unresolved(paths, &name);
-        match Runtime::new(paths, &name).status() {
-            Ok(status) if keep(&status, busy.is_some() || unresolved) => {
-                let config = Environment::load(paths, &name);
-                match config {
-                    Ok(environment) => {
-                        let environment_tags = &environment.config.tags;
-                        if tags.is_none_or(|filter| {
-                            filter.iter().all(|tag| environment_tags.contains(tag))
-                        }) {
-                            rows.push(Row::new(
-                                &name,
-                                &status,
-                                busy,
-                                unresolved,
-                                environment_tags,
-                                now,
-                                tz,
-                            ));
-                        }
-                    }
-                    Err(err) if tags.is_some() => errors.push(CollectionError {
-                        name,
-                        message: format!("{:#}", anyhow::Error::from(err)),
-                    }),
-                    Err(_) => rows.push(Row::new(&name, &status, busy, unresolved, &[], now, tz)),
-                }
-            }
-            Ok(_) => {}
-            Err(err) => {
-                errors.push(CollectionError {
-                    name,
-                    message: format!("{:#}", anyhow::Error::from(err)),
-                });
-            }
-        }
-    }
-    Ok(Gathered { rows, errors })
 }
 
 /// Aligns columns, padded to the widest value in that column with two spaces

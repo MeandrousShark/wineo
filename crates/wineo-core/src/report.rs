@@ -5,7 +5,7 @@ use serde::Serialize;
 use crate::components::{Builds, Component, LATEST};
 use crate::config::GlobalConfig;
 use crate::desktop;
-use crate::environment::Environment;
+use crate::environment::{self, Environment};
 use crate::error::Result;
 use crate::install::{self, Wanted};
 use crate::operation::{Locks, Operation};
@@ -68,6 +68,38 @@ pub struct Played {
     pub seconds: i64,
     pub sessions: usize,
     pub last_played: Option<Timestamp>,
+}
+
+/// What `wineo list` and `wineo status` without a name need from every
+/// environment.
+#[derive(Debug, Clone)]
+pub struct OverviewEnvironment {
+    pub name: String,
+    pub status: Status,
+    pub busy: Option<Operation>,
+    pub unresolved: bool,
+    pub tags: Vec<String>,
+}
+
+/// An environment that could not be included in an overview.
+#[derive(Debug, Clone)]
+pub struct OverviewError {
+    pub name: String,
+    pub message: String,
+}
+
+/// Environments and per-environment errors from an overview query.
+#[derive(Debug, Default, Clone)]
+pub struct Overview {
+    pub environments: Vec<OverviewEnvironment>,
+    pub errors: Vec<OverviewError>,
+}
+
+/// Optional filters shared by the list and running-status queries.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OverviewFilter<'a> {
+    pub tags: Option<&'a [String]>,
+    pub running_only: bool,
 }
 
 /// What a config asks for against what its prefix actually has.
@@ -203,6 +235,60 @@ impl EnvironmentReport {
 /// environment. Only a momentary answer, like `busy`.
 pub fn unresolved(paths: &Paths, name: &str) -> bool {
     Runtime::new(paths, name).check_resolved(name).is_err()
+}
+
+/// Reads the state, lock, installer record, and tags needed for every
+/// environment shown by `list` or `status` without a name.
+pub fn overview(paths: &Paths, filter: OverviewFilter<'_>) -> Result<Overview> {
+    let locks = Locks::new(paths);
+    let mut overview = Overview::default();
+    for name in environment::names(paths)? {
+        let busy = locks.busy_with(&name).unwrap_or(None);
+        let unresolved = busy.is_none() && unresolved(paths, &name);
+        match Runtime::new(paths, &name).status() {
+            Ok(status)
+                if !filter.running_only
+                    || status.state == crate::runtime::State::Running
+                    || busy.is_some()
+                    || unresolved =>
+            {
+                match Environment::load(paths, &name) {
+                    Ok(environment) => {
+                        let tags = &environment.config.tags;
+                        if filter
+                            .tags
+                            .is_none_or(|filter| filter.iter().all(|tag| tags.contains(tag)))
+                        {
+                            overview.environments.push(OverviewEnvironment {
+                                name,
+                                status,
+                                busy,
+                                unresolved,
+                                tags: tags.clone(),
+                            });
+                        }
+                    }
+                    Err(err) if filter.tags.is_some() => overview.errors.push(OverviewError {
+                        name,
+                        message: format!("{:#}", anyhow::Error::from(err)),
+                    }),
+                    Err(_) => overview.environments.push(OverviewEnvironment {
+                        name,
+                        status,
+                        busy,
+                        unresolved,
+                        tags: Vec::new(),
+                    }),
+                }
+            }
+            Ok(_) => {}
+            Err(err) => overview.errors.push(OverviewError {
+                name,
+                message: format!("{:#}", anyhow::Error::from(err)),
+            }),
+        }
+    }
+    Ok(overview)
 }
 
 /// Reading the manifest needs the runner and the prefix, and neither is

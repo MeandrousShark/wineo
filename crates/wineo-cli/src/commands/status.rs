@@ -6,10 +6,11 @@ use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
 use wineo_core::paths::Paths;
-use wineo_core::report::{self, EnvironmentReport};
+use wineo_core::report::{self, EnvironmentReport, OverviewFilter};
 use wineo_core::runtime::{RunMode, RunState, State};
+use wineo_core::view::NamedOutput;
 
-use super::json::{self, NamedOutput};
+use super::json;
 use super::table;
 use super::time::{absolute, day_label, duration_hm, relative};
 
@@ -64,9 +65,14 @@ fn running(paths: &Paths, json_output: bool) -> anyhow::Result<ExitCode> {
     let tz = TimeZone::system();
     // Something holding an environment is happening now too, and so may be
     // whatever an unresolved installer left, so both show up here.
-    let gathered = table::gather(paths, now, &tz, None, |status, held| {
-        status.state == State::Running || held
-    })?;
+    let overview = report::overview(
+        paths,
+        OverviewFilter {
+            tags: None,
+            running_only: true,
+        },
+    )?;
+    let gathered = table::format_overview(overview, now, &tz);
     if json_output {
         json::print(&gathered.json())?;
     } else {

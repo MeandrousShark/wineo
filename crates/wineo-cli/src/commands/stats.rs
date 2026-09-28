@@ -2,12 +2,13 @@ use std::process::ExitCode;
 
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
-use wineo_core::environment::{self, Environment};
+use wineo_core::environment::Environment;
 use wineo_core::heroic::HeroicSource;
 use wineo_core::paths::Paths;
-use wineo_core::stats::{self, Log, Summary};
+use wineo_core::stats::{self, HeroicImportResult, Log, Overview, Summary};
+use wineo_core::view::{CollectionError, StatsCollectionOutput, StatsOutput};
 
-use super::json::{self, CollectionError, StatsOutput};
+use super::json;
 use super::time::{day_label, duration_hm};
 
 /// Width of the label column in `stats <name>`'s detail lines, wide enough
@@ -36,71 +37,68 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     if args.import_heroic {
         return import_heroic(paths);
     }
-    let now = Timestamp::now();
-    let tz = TimeZone::system();
     match args.name {
-        Some(name) => named(paths, &name, now, &tz, args.json, args.sessions),
-        None => overview(paths, now, &tz, args.json),
+        Some(name) => named(
+            paths,
+            &name,
+            Timestamp::now(),
+            &TimeZone::system(),
+            args.json,
+            args.sessions,
+        ),
+        None => overview(paths, args.json),
     }
 }
 
-fn overview(
-    paths: &Paths,
-    now: Timestamp,
-    tz: &TimeZone,
-    json_output: bool,
-) -> anyhow::Result<ExitCode> {
-    let names = environment::names(paths)?;
-    let mut rows: Vec<(String, Summary)> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-    let mut errors: Vec<CollectionError> = Vec::new();
-    for name in names {
-        match stats::summary(paths, &name, now, tz) {
-            Ok((summary, warns)) => {
-                warnings.extend(warns);
-                rows.push((name, summary));
-            }
-            Err(err) => errors.push(CollectionError {
-                name,
-                message: format!("{:#}", anyhow::Error::from(err)),
-            }),
-        }
-    }
-    for warning in &warnings {
+fn overview(paths: &Paths, json_output: bool) -> anyhow::Result<ExitCode> {
+    let overview = stats::overview(paths)?;
+    for warning in &overview.warnings {
         eprintln!("warning: {warning}");
     }
     if json_output {
-        let environments = rows
+        let environments = overview
+            .rows
             .iter()
             .map(|(name, summary)| StatsOutput::new(name, summary, None))
             .collect();
-        json::print(&json::StatsCollectionOutput {
+        let errors: Vec<CollectionError> = overview
+            .errors
+            .iter()
+            .map(|error| CollectionError {
+                name: error.name.clone(),
+                message: error.message.clone(),
+            })
+            .collect();
+        json::print(&StatsCollectionOutput {
             environments,
             errors: &errors,
         })?;
-        return Ok(if errors.is_empty() {
+        return Ok(if overview.errors.is_empty() {
             ExitCode::SUCCESS
         } else {
             ExitCode::FAILURE
         });
     }
-    for error in &errors {
+    for error in &overview.errors {
         eprintln!("error: {}", error.message);
     }
-    print_overview(&rows, now, tz);
-    Ok(if errors.is_empty() {
+    print_overview(&overview, &overview.tz);
+    Ok(if overview.errors.is_empty() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     })
 }
 
-fn print_overview(rows: &[(String, Summary)], now: Timestamp, tz: &TimeZone) {
-    if rows.is_empty() {
+fn print_overview(overview: &Overview, tz: &TimeZone) {
+    if overview.rows.is_empty() {
         return;
     }
-    let mut played: Vec<&(String, Summary)> = rows.iter().filter(|(_, s)| s.seconds > 0).collect();
-    played.sort_by(|a, b| b.1.seconds.cmp(&a.1.seconds).then_with(|| a.0.cmp(&b.0)));
+    let played: Vec<&(String, Summary)> = overview
+        .played
+        .iter()
+        .map(|&index| &overview.rows[index])
+        .collect();
     if !played.is_empty() {
         let name_w = played.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
         let played_w = played
@@ -122,7 +120,7 @@ fn print_overview(rows: &[(String, Summary)], now: Timestamp, tz: &TimeZone) {
         for (name, summary) in &played {
             let mut last = summary
                 .last_played
-                .map(|ts| day_label(now, ts, tz))
+                .map(|ts| day_label(overview.now, ts, tz))
                 .unwrap_or_default();
             if summary.running {
                 last.push_str(" (running)");
@@ -134,9 +132,11 @@ fn print_overview(rows: &[(String, Summary)], now: Timestamp, tz: &TimeZone) {
             );
         }
     }
-    let never = rows.len() - played.len();
-    let total: i64 = rows.iter().map(|(_, summary)| summary.seconds).sum();
-    println!("{never} never played. Total {}.", duration_hm(total));
+    println!(
+        "{} never played. Total {}.",
+        overview.never_played,
+        duration_hm(overview.total_seconds)
+    );
 }
 
 fn named(
@@ -161,21 +161,6 @@ fn named(
         print!("{}", render_named(name, &log, &summary, now, tz));
     }
     Ok(ExitCode::SUCCESS)
-}
-
-/// The duration of the session `summary.last_played` names: the running one
-/// so far, or whichever logged session has that start time.
-fn last_session_seconds(log: &Log, summary: &Summary, now: Timestamp) -> Option<i64> {
-    if summary.running {
-        return summary
-            .last_played
-            .map(|started_at| now.duration_since(started_at).as_secs().max(0));
-    }
-    let last_played = summary.last_played?;
-    log.sessions
-        .iter()
-        .find(|session| session.started_at == last_played)
-        .map(|session| session.seconds)
 }
 
 fn render_named(name: &str, log: &Log, summary: &Summary, now: Timestamp, tz: &TimeZone) -> String {
@@ -217,7 +202,7 @@ fn render_named(name: &str, log: &Log, summary: &Summary, now: Timestamp, tz: &T
     }
     if let Some(last) = summary.last_played {
         let mut value = day_label(now, last, tz);
-        if let Some(seconds) = last_session_seconds(log, summary, now) {
+        if let Some(seconds) = stats::last_session_seconds(log, summary, now) {
             value.push_str(&format!(", {}", duration_hm(seconds)));
         }
         if summary.running {
@@ -269,46 +254,32 @@ fn label_line(label: &str, value: &str) -> String {
 fn import_heroic(paths: &Paths) -> anyhow::Result<ExitCode> {
     let sources = HeroicSource::discover_from_env()?;
     let mut failed = false;
-    for name in environment::names(paths)? {
-        let environment = match Environment::load(paths, &name) {
-            Ok(environment) => environment,
-            Err(error) => {
+    for result in stats::import_heroic_all(paths, &sources)? {
+        match result {
+            HeroicImportResult::EnvironmentError { name, error } => {
                 eprintln!(
                     "warning: could not read {name}: {:#}",
                     anyhow::Error::from(error)
                 );
                 failed = true;
-                continue;
             }
-        };
-        let Some(heroic_id) = &environment.config.heroic_id else {
-            continue;
-        };
-        let playtime = sources.iter().find_map(|source| {
-            source.playtime(heroic_id).unwrap_or_else(|error| {
+            HeroicImportResult::PlaytimeError { name, error } => {
                 eprintln!(
                     "warning: could not read Heroic's playtime for {name}: {:#}",
                     anyhow::Error::from(error)
                 );
-                None
-            })
-        });
-        let Some(playtime) = playtime else {
-            continue;
-        };
-        let imported = stats::Imported {
-            seconds: playtime.seconds,
-            last_played: playtime.last_played,
-        };
-        if let Err(error) = stats::set_imported(paths, &name, imported) {
-            eprintln!(
-                "warning: could not import playtime for {name}: {:#}",
-                anyhow::Error::from(error)
-            );
-            failed = true;
-            continue;
+            }
+            HeroicImportResult::ImportError { name, error } => {
+                eprintln!(
+                    "warning: could not import playtime for {name}: {:#}",
+                    anyhow::Error::from(error)
+                );
+                failed = true;
+            }
+            HeroicImportResult::Imported { name, seconds } => {
+                println!("{name}: {} from Heroic", duration_hm(seconds));
+            }
         }
-        println!("{name}: {} from Heroic", duration_hm(playtime.seconds));
     }
     Ok(if failed {
         ExitCode::FAILURE

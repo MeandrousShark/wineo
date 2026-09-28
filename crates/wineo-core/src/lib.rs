@@ -43,6 +43,7 @@ pub mod targets;
 pub mod templates;
 pub mod trash;
 pub mod validate;
+pub mod view;
 pub mod winetricks;
 pub mod winpath;
 

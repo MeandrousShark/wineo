@@ -16,8 +16,10 @@ use jiff::tz::TimeZone;
 use jiff::{Span, Timestamp};
 use serde::{Deserialize, Serialize};
 
+use crate::environment::{self, Environment};
 use crate::error::{IoContext, Result};
 use crate::files::write_atomic;
+use crate::heroic::HeroicSource;
 use crate::paths::Paths;
 use crate::runtime::{Runtime, State};
 
@@ -217,6 +219,144 @@ pub struct Summary {
     pub targets: Vec<TargetSummary>,
 }
 
+/// One environment whose stats could not be read for the overview.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverviewError {
+    pub name: String,
+    pub message: String,
+}
+
+/// Every readable environment's playtime and the totals for a library view.
+#[derive(Debug, Clone)]
+pub struct Overview {
+    /// Environment name order, including never-played environments.
+    pub rows: Vec<(String, Summary)>,
+    /// Indices into `rows`, sorted by time played and then name.
+    pub played: Vec<usize>,
+    pub total_seconds: i64,
+    pub never_played: usize,
+    pub warnings: Vec<String>,
+    pub errors: Vec<OverviewError>,
+    pub now: Timestamp,
+    pub tz: TimeZone,
+}
+
+/// Collects every environment's playtime without stopping for one bad log.
+pub fn overview(paths: &Paths) -> Result<Overview> {
+    let now = Timestamp::now();
+    let tz = TimeZone::system();
+    let mut rows = Vec::new();
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    for name in environment::names(paths)? {
+        match summary(paths, &name, now, &tz) {
+            Ok((summary, warns)) => {
+                warnings.extend(warns);
+                rows.push((name, summary));
+            }
+            Err(err) => errors.push(OverviewError {
+                name,
+                message: format!("{:#}", anyhow::Error::from(err)),
+            }),
+        }
+    }
+    let mut played: Vec<usize> = (0..rows.len())
+        .filter(|&index| rows[index].1.seconds > 0)
+        .collect();
+    played.sort_by(|&a, &b| {
+        rows[b]
+            .1
+            .seconds
+            .cmp(&rows[a].1.seconds)
+            .then_with(|| rows[a].0.cmp(&rows[b].0))
+    });
+    let never_played = rows.len() - played.len();
+    let total_seconds = rows.iter().map(|(_, summary)| summary.seconds).sum();
+    Ok(Overview {
+        rows,
+        played,
+        total_seconds,
+        never_played,
+        warnings,
+        errors,
+        now,
+        tz,
+    })
+}
+
+/// The duration of the last played session, including a run still in progress.
+pub fn last_session_seconds(log: &Log, summary: &Summary, now: Timestamp) -> Option<i64> {
+    if summary.running {
+        return summary
+            .last_played
+            .map(|started_at| now.duration_since(started_at).as_secs().max(0));
+    }
+    let last_played = summary.last_played?;
+    log.sessions
+        .iter()
+        .find(|session| session.started_at == last_played)
+        .map(|session| session.seconds)
+}
+
+/// One result from refreshing Heroic playtime across all environments.
+#[derive(Debug)]
+pub enum HeroicImportResult {
+    Imported { name: String, seconds: i64 },
+    EnvironmentError { name: String, error: crate::Error },
+    PlaytimeError { name: String, error: crate::Error },
+    ImportError { name: String, error: crate::Error },
+}
+
+/// Refreshes every linked environment, preserving the discovered source order.
+pub fn import_heroic_all(
+    paths: &Paths,
+    sources: &[HeroicSource],
+) -> Result<Vec<HeroicImportResult>> {
+    let mut results = Vec::new();
+    for name in environment::names(paths)? {
+        let environment = match Environment::load(paths, &name) {
+            Ok(environment) => environment,
+            Err(error) => {
+                results.push(HeroicImportResult::EnvironmentError { name, error });
+                continue;
+            }
+        };
+        let Some(heroic_id) = &environment.config.heroic_id else {
+            continue;
+        };
+        let mut playtime = None;
+        for source in sources {
+            match source.playtime(heroic_id) {
+                Ok(Some(found)) => {
+                    playtime = Some(found);
+                    break;
+                }
+                Ok(None) => {}
+                Err(error) => results.push(HeroicImportResult::PlaytimeError {
+                    name: name.clone(),
+                    error,
+                }),
+            }
+        }
+        let Some(playtime) = playtime else {
+            continue;
+        };
+        let imported = Imported {
+            seconds: playtime.seconds,
+            last_played: playtime.last_played,
+        };
+        if let Err(error) = set_imported(paths, &name, imported) {
+            results.push(HeroicImportResult::ImportError { name, error });
+            continue;
+        }
+        results.push(HeroicImportResult::Imported {
+            name,
+            seconds: playtime.seconds,
+        });
+    }
+    Ok(results)
+}
+
 /// Builds the summary a `Log` and an optional in-progress session add up to,
 /// as of `now`. `this_week` and `this_month` bucket by each session's local
 /// start date in `tz`.
@@ -344,6 +484,8 @@ fn start_of_month(now: Timestamp, tz: &TimeZone) -> Date {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+
     use super::*;
 
     fn ts(s: &str) -> Timestamp {
@@ -648,5 +790,78 @@ mod tests {
         let summary = summarize(&log, None, now, &TimeZone::UTC);
         assert_eq!(summary.this_month_seconds, 3600 + 5400 + 900);
         assert_eq!(summary.this_week_seconds, 5400 + 900);
+    }
+
+    #[test]
+    fn overview_keeps_name_order_and_sorts_played_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let paths = Paths::from_lookup(move |key| {
+            (key == "HOME").then(|| OsString::from(home.as_os_str()))
+        })
+        .unwrap();
+        fs::create_dir_all(paths.environments_dir()).unwrap();
+        for name in ["alpha", "beta", "never", "zeta"] {
+            fs::write(paths.environments_dir().join(format!("{name}.toml")), "").unwrap();
+        }
+        for (name, seconds) in [("alpha", 3600), ("beta", 7200), ("zeta", 7200)] {
+            let start = ts("2026-09-20T19:00:00Z");
+            append(
+                &paths.stats_log(name),
+                &Session {
+                    target: "game".to_owned(),
+                    started_at: start,
+                    ended_at: start + jiff::SignedDuration::from_secs(seconds),
+                    seconds,
+                    end: End::Exited,
+                },
+            )
+            .unwrap();
+        }
+
+        let overview = super::overview(&paths).unwrap();
+        assert_eq!(
+            overview
+                .rows
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "beta", "never", "zeta"]
+        );
+        assert_eq!(overview.played, [1, 3, 0]);
+        assert_eq!(overview.never_played, 1);
+        assert_eq!(overview.total_seconds, 18_000);
+        assert!(overview.errors.is_empty());
+    }
+
+    #[test]
+    fn last_session_duration_uses_the_session_named_by_last_played() {
+        let now = ts("2026-09-26T12:00:00Z");
+        let log = Log {
+            sessions: vec![
+                session(
+                    "game",
+                    "2026-09-24T10:00:00Z",
+                    "2026-09-24T11:00:00Z",
+                    End::Exited,
+                ),
+                session(
+                    "game",
+                    "2026-09-25T10:00:00Z",
+                    "2026-09-25T10:30:00Z",
+                    End::Exited,
+                ),
+            ],
+            ..Log::default()
+        };
+        let summary = summarize(&log, None, now, &TimeZone::UTC);
+        assert_eq!(last_session_seconds(&log, &summary, now), Some(1800));
+
+        let running = Running {
+            target: "game".to_owned(),
+            started_at: ts("2026-09-26T11:45:00Z"),
+        };
+        let summary = summarize(&log, Some(&running), now, &TimeZone::UTC);
+        assert_eq!(last_session_seconds(&log, &summary, now), Some(900));
     }
 }

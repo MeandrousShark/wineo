@@ -3,6 +3,7 @@ use std::process::ExitCode;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use wineo_core::paths::Paths;
+use wineo_core::report::{self, OverviewFilter};
 
 use super::json;
 use super::table;
@@ -23,13 +24,16 @@ pub struct Args {
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let tags = (!args.tags.is_empty()).then_some(args.tags.as_slice());
-    let gathered = table::gather(
+    let now = Timestamp::now();
+    let tz = TimeZone::system();
+    let overview = report::overview(
         paths,
-        Timestamp::now(),
-        &TimeZone::system(),
-        tags,
-        |_, _| true,
+        OverviewFilter {
+            tags,
+            running_only: false,
+        },
     )?;
+    let gathered = table::format_overview(overview, now, &tz);
     if args.json {
         json::print(&gathered.json())?;
     } else {
