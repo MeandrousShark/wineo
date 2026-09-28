@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0034: GUI-facing core API review
 
@@ -130,13 +130,13 @@ backfilled during planning, before the user confirms. A core
 `heroic_import` module with a per-game plan, typed findings and warnings, and
 a two-phase apply would move about 1,500 lines and delete a few hundred more.
 
-## Open questions
+## Decisions (settled with the maintainer, 2026-09-28)
 
-Each has a recommendation. Nothing is settled until the maintainer approves.
+The maintainer approved every recommendation below as written.
 
 ### 1. One plan or two
 
-**Recommended:** this plan covers findings 1-14. The Heroic import move gets
+**Decided:** this plan covers findings 1-14. The Heroic import move gets
 its own plan, 0035, drafted after this one lands. Criterion 8 is done when
 both are.
 
@@ -146,7 +146,7 @@ of the same code.
 
 ### 2. How cancellation reaches core
 
-**Recommended:** a small `wineo_core::cancel::Token`, cheap to clone, with
+**Decided:** a small `wineo_core::cancel::Token`, cheap to clone, with
 two levels: `cancel()` (stop cleanly) and `force()` (kill now). This matches
 today's first and second Ctrl+C. Every long operation takes `&Token`. The CLI
 turns signals into token calls in one place, and core stops registering
@@ -161,7 +161,7 @@ That's less code today but leaves two conventions.
 
 ### 3. How progress reaches the caller
 
-**Recommended:** keep one typed event enum per operation through `FnMut`,
+**Decided:** keep one typed event enum per operation through `FnMut`,
 like `ImportProgress` and download's `Progress`. New ones:
 `PrefixEvent` (started, output line, finished), `WinetricksEvent` (installing
 verbs, output line, stopping, killing, done), and `LaunchEvent` (building
@@ -169,14 +169,14 @@ prefix, installing verbs, starting, started). No shared event bus.
 
 ### 4. Where child output goes
 
-**Recommended:** wineboot, umu, and winetricks take the installer's existing
+**Decided:** wineboot, umu, and winetricks take the installer's existing
 `Output` (inherit or a log file). The CLI keeps inheriting, so the terminal
 looks the same. A GUI uses a log file and follows it with the tailer from
 finding 9.
 
 ### 5. Process groups for winetricks and wineboot
 
-**Recommended:** both move into their own process group, like the installer
+**Decided:** both move into their own process group, like the installer
 already is, and core signals the group when the token fires.
 
 This is the one visible CLI change. Ctrl+C now goes to wineo, which asks the
@@ -185,7 +185,7 @@ look the same, but it's worth trying by hand during acceptance.
 
 ### 6. Where the new entry points live
 
-**Recommended:**
+**Decided:**
 
 | Entry point | Module | Replaces |
 |---|---|---|
@@ -205,7 +205,7 @@ only ever uses the detached `start`.
 
 ### 7. Error types
 
-**Recommended:** add `Error::Canceled` and `Error::Network`, use
+**Decided:** add `Error::Canceled` and `Error::Network`, use
 `Error::Running` and `Error::EnvironmentExists` for the string cases
 in finding 12, and give `Error::Busy` an `Option<Operation>` holder. Modules
 that return `anyhow` keep it, so a GUI downcasts the chain the way the CLI
@@ -213,14 +213,14 @@ already does. A full move off `anyhow` isn't worth it.
 
 ### 8. `view` and the JSON contract
 
-**Recommended:** the view types move to core unchanged, and
+**Decided:** the view types move to core unchanged, and
 `docs/json-output.md` stays the contract. The GUI reads the same structs the
 CLI serializes, so the two can't drift. Renaming or reshaping anything is out
 of scope.
 
 ### 9. Validate's fixes report notes
 
-**Recommended:** `Fix::apply` returns `Vec<Note>` instead of `()`, so the
+**Decided:** `Fix::apply` returns `Vec<Note>` instead of `()`, so the
 lost-run fix can say its session wasn't logged, as `stop` already does.
 
 ## Implementation sequence
