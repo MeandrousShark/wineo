@@ -248,6 +248,25 @@ Each step keeps every existing test green and is committed on its own.
 5. **Docs.** A short `docs/core-api.md` for the GUI: the entry points, the
    token, the event enums, errors, and the supervisor dispatch rule.
 
+## QA review (2026-09-28)
+
+An independent review found one regression, now fixed: `validate --fix` held
+a signal handler across every fix, so Ctrl+C was swallowed during fixes that
+ignore the token. The handler now covers only the winetricks fix.
+
+Three findings predate this plan and are left for the maintainer:
+
+- **Canceling a build in an existing empty `--dir`.** Core removes a prefix
+  directory only if it created it, so wineboot's partial files stay in a
+  directory the user supplied, while `new` prints "Canceled. Nothing was
+  created." Failures have always left it that way. Cleaning it up would
+  mean deleting inside a user's directory, which needs a decision.
+- **Guided `wineo download` holds its handler across prompts.** The scope is
+  unchanged from before this plan.
+- **Proton winetricks settles when umu exits.** It always has. Now that
+  winetricks runs in its own process group, wineo could wait for the group
+  to empty, but that needs testing against real umu containers first.
+
 ## Verification and acceptance
 
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`
