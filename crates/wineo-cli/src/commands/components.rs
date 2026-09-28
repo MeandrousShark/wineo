@@ -112,7 +112,7 @@ pub fn download_build(
     Ok(())
 }
 
-fn describe(change: &Change, name: &str) -> String {
+pub(crate) fn describe(change: &Change, name: &str) -> String {
     let label = |component: &Component| component.label();
     match change {
         Change::Installed { component, build } => {

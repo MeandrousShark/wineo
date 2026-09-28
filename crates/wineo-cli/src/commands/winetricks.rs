@@ -1,18 +1,11 @@
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
-use anyhow::bail;
-use wineo_core::cancel::Token;
-use wineo_core::config::GlobalConfig;
-use wineo_core::environment::Environment;
 use wineo_core::error::Error;
 use wineo_core::installer::Output;
 use wineo_core::launch::parse_env_assignment;
-use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
-use wineo_core::prefix;
-use wineo_core::runners::Runners;
-use wineo_core::runtime::{Runtime, exit_code};
+use wineo_core::runtime::exit_code;
 use wineo_core::winetricks::{self, WinetricksEvent};
 
 use super::transfer::Cancellation;
@@ -31,24 +24,13 @@ pub fn print_event(event: WinetricksEvent) {
     }
 }
 
-pub fn print_and_run(
-    runner: &wineo_core::runner::Runner,
-    prefix: &std::path::Path,
-    env: &BTreeMap<String, String>,
-    args: &[String],
-    stop_timeout: u32,
-    token: &Token,
-) -> anyhow::Result<std::process::ExitStatus> {
-    winetricks::run(
-        runner,
-        prefix,
-        env,
-        args,
-        stop_timeout,
-        token,
-        Output::Inherit,
-        print_event,
-    )
+fn print_ensure_event(paths: &Paths, name: &str, event: winetricks::EnsureEvent) {
+    match event {
+        winetricks::EnsureEvent::Launch(event) => {
+            crate::commands::build::print_event(paths, name, event);
+        }
+        winetricks::EnsureEvent::Winetricks(event) => print_event(event),
+    }
 }
 
 #[derive(clap::Args)]
@@ -93,68 +75,17 @@ impl Args {
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let (name, forwarded) = args.split();
-    let global = GlobalConfig::load(paths)?;
-    let environment = Environment::load(paths, name)?;
-    let runner = Runners::new(paths, &global)?.resolve(&environment.wine()?.runner)?;
-
     let overrides: BTreeMap<String, String> = args.env.iter().cloned().collect();
-    let env = winetricks::merged_env(&runner, &global, &environment, &overrides)?;
-    let prefix = environment.prefix(paths)?;
-    // Only ahead of a build, so a typo never waits on one. Otherwise the
-    // checks below come first, as they report what to clean up.
-    if !runner.is_proton() && !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
-        winetricks::check_available(&runner)?;
-    }
     let cancellation = Cancellation::new()?;
-    match crate::commands::build::ensure_prefix(
+    match winetricks::run_in(
         paths,
-        &global,
-        &environment,
-        &runner,
-        &cancellation.token,
-    ) {
-        Err(err)
-            if err
-                .downcast_ref::<Error>()
-                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
-        {
-            return Ok(ExitCode::from(130));
-        }
-        Err(err) => return Err(err),
-        Ok(()) => {}
-    }
-    let locks = Locks::new(paths);
-    // Held until winetricks is done and the prefix is idle. Several winetricks
-    // verbs wait for every wine process to exit, so nothing else may start one.
-    let _guard = locks.acquire(Operation::Winetricks, name, &[&prefix])?;
-    Environment::ensure_exists(paths, name)?;
-    if !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
-        return Err(Error::MissingPrefix(prefix).into());
-    }
-    // Refused before anything writes into the prefix.
-    let runtime = Runtime::new(paths, name);
-    if runtime.is_running()? {
-        bail!("{name} is running, stop it before running winetricks");
-    }
-    if runtime.status().is_ok_and(|status| status.lost) {
-        bail!(
-            "{name}'s last run was lost, so wine may still be running in its prefix. Clean it up with `wineo stop {name}` first"
-        );
-    }
-    runtime.check_resolved(name)?;
-    crate::commands::components::reconcile_config(paths, &global, &environment, &runner, &prefix)?;
-
-    crate::commands::desktop::reconcile(paths, &global, &environment, Some(&runner), &prefix)?;
-
-    let result = print_and_run(
-        &runner,
-        &prefix,
-        &env,
+        name,
+        &overrides,
         forwarded,
-        global.stop_timeout,
         &cancellation.token,
-    );
-    match result {
+        Output::Inherit,
+        |event| print_ensure_event(paths, name, event),
+    ) {
         Ok(status) => Ok(ExitCode::from(u8::try_from(exit_code(status)).unwrap_or(1))),
         Err(err)
             if err

@@ -1,15 +1,12 @@
 use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
 use std::process::{ExitCode, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use wineo_core::config::GlobalConfig;
-use wineo_core::environment::Environment;
 use wineo_core::error::Error;
-use wineo_core::launch::{Launch, Overrides, Wayland, parse_launch_env_assignment};
-use wineo_core::operation::{Locks, Operation};
+use wineo_core::installer::Output;
+use wineo_core::launch::{self, Overrides, Wayland, parse_launch_env_assignment};
 use wineo_core::paths::Paths;
 use wineo_core::process;
 use wineo_core::runtime::{RunMode, RunState, Runtime};
@@ -59,16 +56,14 @@ impl LaunchArgs {
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
-    let global = GlobalConfig::load(paths)?;
-    let environment = Environment::load(paths, &args.name)?;
     let overrides = args.launch.into_overrides();
     let cancellation = Cancellation::new()?;
-    match build::prepare_target(
+    let prepared = match launch::prepare(
         paths,
-        &global,
-        &environment,
+        &args.name,
         &overrides,
         &cancellation.token,
+        |event| build::print_event(paths, &args.name, event),
     ) {
         Err(err)
             if err
@@ -78,26 +73,24 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             return Ok(ExitCode::from(130));
         }
         Err(err) => return Err(err),
-        Ok(()) => {}
-    }
-    let launch = Launch::target(paths, &global, &environment, &overrides)?;
-    let locks = Locks::new(paths);
-    let held: Vec<&Path> = launch.host.prefix().into_iter().collect();
-    let _guard = locks.acquire(Operation::Launch, &environment.name, &held)?;
-    Environment::ensure_exists(paths, &environment.name)?;
+        Ok(prepared) => prepared,
+    };
+    let global = &prepared.global;
+    let environment = &prepared.environment;
+    let launch = &prepared.launch;
     let runtime = Runtime::new(paths, &environment.name);
-    runtime.check_resolved(&environment.name)?;
-    build::reconcile(paths, &global, &environment, &launch)?;
 
     let Some(_lock) = runtime.try_lock()? else {
         bail!("{} is already running", environment.name);
     };
-    match build::install_winetricks(
-        &global,
-        &environment,
-        &launch,
+    match launch::install_winetricks(
+        global,
+        environment,
+        launch,
         &overrides,
         &cancellation.token,
+        Output::Inherit,
+        |event| build::print_event(paths, &environment.name, event),
     ) {
         Err(err)
             if err
@@ -145,7 +138,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let name = &environment.name;
     supervisor.wait(
         &runtime,
-        &launch,
+        launch,
         child,
         &mut state,
         Duration::from_secs(global.stop_timeout.into()),

@@ -7,14 +7,12 @@ use signal_hook::consts::SIGINT;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
-use wineo_core::launch::{Host, Launch, parse_env_assignment};
+use wineo_core::launch::{self, Host, Launch, parse_env_assignment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::{Runtime, exit_code};
 
 use crate::commands::build;
-use crate::commands::components;
-use crate::commands::desktop;
 use crate::commands::transfer::Cancellation;
 
 #[derive(clap::Args)]
@@ -40,10 +38,17 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, &args.name)?;
     let env = args.env.into_iter().collect();
-    let runner = build::runner(paths, &global, &environment)?;
+    let runner = launch::runner(paths, &global, &environment)?;
     Launch::check_exec(paths, &global, &environment, &runner, &args.program, &env)?;
     let cancellation = Cancellation::new()?;
-    match build::ensure_prefix(paths, &global, &environment, &runner, &cancellation.token) {
+    match launch::ensure_prefix(
+        paths,
+        &global,
+        &environment,
+        &runner,
+        &cancellation.token,
+        |event| build::print_event(paths, &environment.name, event),
+    ) {
         Err(err)
             if err
                 .downcast_ref::<Error>()
@@ -63,15 +68,16 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         &args.args,
         &env,
     )?;
-    let Host::Wine { runner, prefix } = &launch.host else {
+    let Host::Wine { prefix, .. } = &launch.host else {
         unreachable!("exec launches always run in a prefix");
     };
     let locks = Locks::new(paths);
     let _guard = locks.acquire(Operation::Launch, &environment.name, &[prefix])?;
     Environment::ensure_exists(paths, &environment.name)?;
     Runtime::new(paths, &environment.name).check_resolved(&environment.name)?;
-    components::reconcile_config(paths, &global, &environment, runner, prefix)?;
-    desktop::reconcile(paths, &global, &environment, Some(runner), prefix)?;
+    launch::reconcile(paths, &global, &environment, &launch, |event| {
+        build::print_event(paths, &environment.name, event)
+    })?;
 
     let code = run_attached(&launch)?;
     Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))

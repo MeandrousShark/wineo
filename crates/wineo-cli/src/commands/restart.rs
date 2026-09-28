@@ -3,13 +3,13 @@ use std::process::ExitCode;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
-use wineo_core::launch::Launch;
+use wineo_core::launch::{self, Launch};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::Runtime;
 
 use crate::commands::run::LaunchArgs;
 use crate::commands::transfer::Cancellation;
-use crate::commands::{build, start, stop};
+use crate::commands::{build, start};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -37,12 +37,13 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // leave the environment stopped. A missing prefix has nothing running in
     // it, so it is built here like `start` would.
     let cancellation = Cancellation::new()?;
-    let prepared = build::prepare_target(
+    let prepared = launch::prepare_target(
         paths,
         &global,
         &environment,
         &overrides,
         &cancellation.token,
+        |event| build::print_event(paths, name, event),
     );
     // Dropped before stopping, so Ctrl+C can still abort a slow stop.
     drop(cancellation);
@@ -59,7 +60,11 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     }
     Launch::target(paths, &global, &environment, &overrides)?;
 
-    let was_running = matches!(stop::stop(paths, name, false)?, stop::Outcome::Stopped);
+    let stopped = launch::stop_run(paths, name, false)?;
+    for message in stopped.messages() {
+        eprintln!("{message}");
+    }
+    let was_running = matches!(stopped, launch::StopOutcome::Stopped { .. });
     match start::start(paths, name, overrides) {
         Ok(true) => {
             let verb = if was_running { "Restarted" } else { "Started" };

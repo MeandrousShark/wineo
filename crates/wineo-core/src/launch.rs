@@ -17,6 +17,17 @@ use crate::runner::{self, Runner, with_menu_builder_disabled};
 use crate::runners::Runners;
 use crate::winpath;
 
+mod orchestration;
+mod stop;
+pub use orchestration::{
+    LaunchEvent, PreparedLaunch, StartOutcome, ensure_prefix, install_winetricks, prepare,
+    prepare_target, reconcile, runner, start,
+};
+pub(crate) use stop::{
+    LostRunOutcome, busy_with, clean_up_installer, clean_up_lost_run, stop_timeout,
+};
+pub use stop::{StopOutcome, stop, stop_run};
+
 /// The binary gamemode ships, which is not what the setting is called.
 pub(crate) const GAMEMODE: &str = "gamemoderun";
 const GAMESCOPE: &str = "gamescope";

@@ -20,9 +20,14 @@ use crate::cancel::Token;
 use crate::config::GlobalConfig;
 use crate::environment::Environment;
 use crate::error::Error;
+use crate::install::{self, Wanted};
 use crate::installer::Output;
-use crate::launch::merge_env;
+use crate::launch::{self, LaunchEvent, merge_env};
+use crate::operation::{Locks, Operation};
+use crate::paths::Paths;
+use crate::prefix;
 use crate::runner::{self, Runner, with_menu_builder_disabled};
+use crate::runtime::Runtime;
 
 const MANAGED: [&str; 3] = ["WINEPREFIX", "WINE", "WINESERVER"];
 const MANAGED_PROTON: [&str; 1] = ["WINEPREFIX"];
@@ -36,6 +41,217 @@ pub enum WinetricksEvent {
     Killing,
     Warning(String),
     Done(ExitStatus),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum EnsureOutput<'a> {
+    Inherit,
+    Stderr,
+    Log(&'a Path),
+}
+
+#[derive(Debug)]
+pub enum EnsureEvent {
+    Launch(LaunchEvent),
+    Winetricks(WinetricksEvent),
+}
+
+struct OperationContext {
+    global: GlobalConfig,
+    environment: Environment,
+    runner: Runner,
+    prefix: std::path::PathBuf,
+}
+
+fn context(
+    paths: &Paths,
+    global: GlobalConfig,
+    environment: Environment,
+) -> anyhow::Result<OperationContext> {
+    let runner = launch::runner(paths, &global, &environment)?;
+    let prefix = environment.prefix(paths)?;
+    Ok(OperationContext {
+        global,
+        environment,
+        runner,
+        prefix,
+    })
+}
+
+/// Installs the missing verbs declared by an environment config.
+pub fn ensure(
+    paths: &Paths,
+    name: &str,
+    overrides: &BTreeMap<String, String>,
+    token: &Token,
+    output: EnsureOutput<'_>,
+    mut events: impl FnMut(EnsureEvent),
+) -> anyhow::Result<()> {
+    let environment = Environment::load(paths, name)?;
+    let global = GlobalConfig::load_or_default(paths)?;
+    let context = context(paths, global, environment)?;
+    let wanted = &context.environment.config.winetricks;
+    if wanted.is_empty() {
+        return Ok(());
+    }
+
+    let runtime = Runtime::new(paths, name);
+    if runtime.is_running()? {
+        return Err(Error::Running {
+            name: name.to_owned(),
+            action: "before running winetricks",
+        }
+        .into());
+    }
+    runtime.check_resolved(name)?;
+    if !missing_for(&context.runner, &context.prefix, wanted)?.is_empty() {
+        check_available(&context.runner)?;
+    }
+    let _guard = Locks::new(paths).acquire(Operation::Winetricks, name, &[&context.prefix])?;
+    Environment::ensure_exists(paths, name)?;
+    if !prefix::is_prefix(&context.runner.wine_prefix(&context.prefix)) {
+        return Err(Error::MissingPrefix(context.prefix).into());
+    }
+    ensure_idle(&runtime, name, true)?;
+    reconcile(paths, &context, &mut events)?;
+    let env = merged_env(
+        &context.runner,
+        &context.global,
+        &context.environment,
+        overrides,
+    )?;
+    install_missing_for_context(name, &context, &env, token, output, |event| {
+        events(EnsureEvent::Winetricks(event));
+    })
+}
+
+/// Runs arbitrary winetricks arguments in an environment.
+pub fn run_in(
+    paths: &Paths,
+    name: &str,
+    overrides: &BTreeMap<String, String>,
+    args: &[String],
+    token: &Token,
+    output: Output<'_>,
+    mut events: impl FnMut(EnsureEvent),
+) -> anyhow::Result<ExitStatus> {
+    let global = GlobalConfig::load(paths)?;
+    let environment = Environment::load(paths, name)?;
+    let context = context(paths, global, environment)?;
+    let env = merged_env(
+        &context.runner,
+        &context.global,
+        &context.environment,
+        overrides,
+    )?;
+    if !context.runner.is_proton()
+        && !prefix::is_prefix(&context.runner.wine_prefix(&context.prefix))
+    {
+        check_available(&context.runner)?;
+    }
+    launch::ensure_prefix(
+        paths,
+        &context.global,
+        &context.environment,
+        &context.runner,
+        token,
+        |event| events(EnsureEvent::Launch(event)),
+    )?;
+
+    let _guard = Locks::new(paths).acquire(Operation::Winetricks, name, &[&context.prefix])?;
+    Environment::ensure_exists(paths, name)?;
+    if !prefix::is_prefix(&context.runner.wine_prefix(&context.prefix)) {
+        return Err(Error::MissingPrefix(context.prefix).into());
+    }
+    ensure_idle(&Runtime::new(paths, name), name, false)?;
+    reconcile(paths, &context, &mut events)?;
+    run(
+        &context.runner,
+        &context.prefix,
+        &env,
+        args,
+        context.global.stop_timeout,
+        token,
+        output,
+        |event| events(EnsureEvent::Winetricks(event)),
+    )
+}
+
+fn ensure_idle(runtime: &Runtime, name: &str, validate_style: bool) -> anyhow::Result<()> {
+    if runtime.is_running()? {
+        return Err(Error::Running {
+            name: name.to_owned(),
+            action: "before running winetricks",
+        }
+        .into());
+    }
+    if runtime.status().is_ok_and(|status| status.lost) {
+        if validate_style {
+            bail!("{name}'s last run was lost, clean it up with `wineo stop {name}` first");
+        }
+        bail!(
+            "{name}'s last run was lost, so wine may still be running in its prefix. Clean it up with `wineo stop {name}` first"
+        );
+    }
+    runtime.check_resolved(name)?;
+    Ok(())
+}
+
+fn reconcile(
+    paths: &Paths,
+    context: &OperationContext,
+    events: &mut impl FnMut(EnsureEvent),
+) -> anyhow::Result<()> {
+    let wanted = Wanted::from_config(&context.environment.config);
+    let changes = install::reconcile(
+        paths,
+        &context.global,
+        &context.environment.name,
+        &context.runner,
+        &context.prefix,
+        &wanted,
+    )?;
+    if !changes.is_empty() {
+        events(EnsureEvent::Launch(LaunchEvent::Components(changes)));
+    }
+    let changes = crate::desktop::reconcile(
+        paths,
+        &context.global,
+        &context.environment,
+        Some(&context.runner),
+        &context.prefix,
+    )?;
+    if !changes.is_empty() {
+        events(EnsureEvent::Launch(LaunchEvent::Desktop(changes)));
+    }
+    Ok(())
+}
+
+fn install_missing_for_context(
+    name: &str,
+    context: &OperationContext,
+    env: &BTreeMap<String, String>,
+    token: &Token,
+    output: EnsureOutput<'_>,
+    events: impl FnMut(WinetricksEvent),
+) -> anyhow::Result<()> {
+    let (output, to_stderr) = match output {
+        EnsureOutput::Inherit => (Output::Inherit, false),
+        EnsureOutput::Stderr => (Output::Inherit, true),
+        EnsureOutput::Log(path) => (Output::Log(path), false),
+    };
+    install_missing_with_output(
+        name,
+        &context.runner,
+        &context.prefix,
+        env,
+        &context.environment.config.winetricks,
+        context.global.stop_timeout,
+        token,
+        output,
+        to_stderr,
+        events,
+    )
 }
 
 /// Read winetricks' installed record from the actual Wine prefix. For Proton,

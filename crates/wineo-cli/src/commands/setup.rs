@@ -8,7 +8,7 @@ use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
 use wineo_core::installer::{self, Cleaned, Installer, Outcome, Output};
-use wineo_core::launch::Host;
+use wineo_core::launch::{self, Host};
 use wineo_core::operation::Locks;
 use wineo_core::paths::Paths;
 use wineo_core::prefix::{self, BuildPlan, PrefixEvent};
@@ -164,7 +164,7 @@ fn offer_build<I: Input, W: Write>(
 ) -> anyhow::Result<Option<PathBuf>> {
     let name = &environment.name;
     let dir = environment.prefix(paths)?;
-    let checked = build::runner(paths, global, environment).and_then(|runner| {
+    let checked = launch::runner(paths, global, environment).and_then(|runner| {
         let root = global.prefix_root(paths)?;
         let plan = prefix::build_plan(paths, &root, &runner, &dir, true)?;
         Ok((runner, plan))

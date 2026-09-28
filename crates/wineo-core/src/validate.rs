@@ -16,7 +16,7 @@ use serde::{Serialize, Serializer};
 
 use crate::art::{self, Kind as ArtKind};
 use crate::components::{Builds, Component, LATEST};
-use crate::config::{DEFAULT_STOP_TIMEOUT, EnvironmentConfig, GlobalConfig};
+use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::desktop::{self, Entry, Pending};
 use crate::environment::{self, Environment};
 use crate::error::{Error, IoContext, Result, chain};
@@ -29,7 +29,7 @@ use crate::paths::Paths;
 use crate::prefix::{self, BuildPlan};
 use crate::runner::{self, Runner};
 use crate::runners::Runners;
-use crate::runtime::{LostRunCleanup, Runtime};
+use crate::runtime::Runtime;
 use crate::templates::{Template, Templates};
 use crate::trash::{self, Phase};
 use crate::winetricks;
@@ -1362,80 +1362,43 @@ fn install_winetricks(
     paths: &Paths,
     name: &str,
     token: &crate::cancel::Token,
-    events: impl FnMut(winetricks::WinetricksEvent),
+    mut events: impl FnMut(winetricks::WinetricksEvent),
 ) -> anyhow::Result<()> {
-    let environment = Environment::load(paths, name)?;
-    let global = GlobalConfig::load_or_default(paths)?;
-    let runner = Runners::new(paths, &global)?.resolve(&environment.wine()?.runner)?;
-    let prefix = environment.prefix(paths)?;
-    let runtime = Runtime::new(paths, name);
-    if runtime.is_running()? {
-        return Err(Error::Running {
-            name: name.to_owned(),
-            action: "before running winetricks",
-        }
-        .into());
-    }
-    runtime.check_resolved(name)?;
-    if !winetricks::missing_for(&runner, &prefix, &environment.config.winetricks)?.is_empty() {
-        winetricks::check_available(&runner)?;
-    }
-    let _guard = Locks::new(paths).acquire(Operation::Winetricks, name, &[&prefix])?;
-    Environment::ensure_exists(paths, name)?;
-    if !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
-        return Err(Error::MissingPrefix(prefix).into());
-    }
-    if runtime.is_running()? {
-        return Err(Error::Running {
-            name: name.to_owned(),
-            action: "before running winetricks",
-        }
-        .into());
-    }
-    if runtime.status().is_ok_and(|status| status.lost) {
-        anyhow::bail!("{name}'s last run was lost, clean it up with `wineo stop {name}` first");
-    }
-    runtime.check_resolved(name)?;
-    let wanted = Wanted::from_config(&environment.config);
-    install::reconcile(paths, &global, name, &runner, &prefix, &wanted)?;
-    desktop::reconcile(paths, &global, &environment, Some(&runner), &prefix)?;
-    let env = winetricks::merged_env(&runner, &global, &environment, &Default::default())?;
-    winetricks::install_missing_to_stderr(
+    winetricks::ensure(
+        paths,
         name,
-        &runner,
-        &prefix,
-        &env,
-        &environment.config.winetricks,
-        global.stop_timeout,
+        &Default::default(),
         token,
-        events,
+        winetricks::EnsureOutput::Stderr,
+        |event| {
+            if let winetricks::EnsureEvent::Winetricks(event) = event {
+                events(event);
+            }
+        },
     )
 }
 
 /// What `wineo stop` does for a lost run, which is all there is to stop.
 fn clean_up_lost_run(paths: &Paths, name: &str) -> Result<Vec<Note>> {
     Environment::ensure_exists(paths, name)?;
-    if let Some(operation) = Locks::new(paths).busy_with(name)? {
+    if let Some(operation) = launch::busy_with(paths, name)? {
         return Err(Error::Busy {
             subject: format!("environment `{name}`"),
             holder: Some(operation),
             holder_label: operation.describe(),
         });
     }
-    let stop_timeout =
-        GlobalConfig::load(paths).map_or(DEFAULT_STOP_TIMEOUT, |global| global.stop_timeout);
-    let runtime = Runtime::new(paths, name);
+    let (stop_timeout, _) = launch::stop_timeout(paths);
     let timeout = Duration::from_secs(u64::from(stop_timeout) + 10);
-    match runtime.clean_up_lost_run(timeout, &paths.stats_log(name))? {
-        LostRunCleanup::Unresolved { warning } => {
-            let message = runtime.unresolved_run_message(name);
+    match launch::clean_up_lost_run(paths, name, timeout)? {
+        launch::LostRunOutcome::Unresolved { warning, message } => {
             Err(Error::Unsettled(match warning {
                 Some(warning) => format!("{warning}. {message}"),
                 None => message,
             }))
         }
-        LostRunCleanup::NotLost => Ok(Vec::new()),
-        LostRunCleanup::Gone { warning } | LostRunCleanup::Killed { warning } => {
+        launch::LostRunOutcome::NotLost => Ok(Vec::new()),
+        launch::LostRunOutcome::Gone { warning } | launch::LostRunOutcome::Killed { warning } => {
             Ok(warning.into_iter().map(Note::Warning).collect())
         }
     }
@@ -1443,9 +1406,7 @@ fn clean_up_lost_run(paths: &Paths, name: &str) -> Result<Vec<Note>> {
 
 fn clean_up_installer(paths: &Paths, name: &str) -> Result<()> {
     Environment::ensure_exists(paths, name)?;
-    let global = GlobalConfig::load_or_default(paths)?;
-    let timeout = installer::clean_up_timeout(&global);
-    match installer::clean_up(paths, &global, name, timeout)? {
+    match launch::clean_up_installer(paths, name)? {
         Some(Cleaned::Untracked | Cleaned::Unresolved) => {
             Err(Error::Unsettled(installer::unresolved_message(paths, name)))
         }

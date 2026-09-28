@@ -128,7 +128,7 @@ pub fn reconcile_native(
     Ok(())
 }
 
-fn describe(change: &Change, name: &str) -> String {
+pub(crate) fn describe(change: &Change, name: &str) -> String {
     match change {
         Change::Wrote { target, icon } => {
             let icon = if *icon { "" } else { ", with no icon" };

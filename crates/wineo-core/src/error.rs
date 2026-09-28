@@ -293,6 +293,13 @@ pub enum Error {
     #[error("{name} is running, stop it {action}")]
     Running { name: String, action: &'static str },
 
+    #[error("{name} is already running target `{running}`, stop it before starting `{requested}`")]
+    DifferentTargetRunning {
+        name: String,
+        running: String,
+        requested: String,
+    },
+
     #[error(
         "{0}'s last run was lost, so wine may still be running in its prefix. Clean it up with `wineo stop {0}` first"
     )]
