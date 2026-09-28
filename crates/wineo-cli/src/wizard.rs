@@ -9,11 +9,12 @@ use std::process::ExitCode;
 
 use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::environment::{Environment, NewEnvironment};
+use wineo_core::error::Error;
 use wineo_core::install::{self, Wanted};
-use wineo_core::installer::Installer;
+use wineo_core::installer::{Installer, Output};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
-use wineo_core::prefix;
+use wineo_core::prefix::{self, PrefixEvent};
 use wineo_core::programs::{Program, Source};
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
@@ -24,6 +25,7 @@ use wineo_core::winpath;
 
 use crate::commands::art::{Access, AutoFetch, KeyCheck, Pick};
 use crate::commands::setup::{self, Ran};
+use crate::commands::transfer::Cancellation;
 use crate::commands::{components, desktop};
 use crate::picker::{self, Place};
 use crate::prompt::{Canceled, Input, Prompt, Reply, numbered};
@@ -1115,17 +1117,29 @@ fn create<I: Input, W: Write>(
         .contract(&dir)
         .unwrap_or_else(|_| dir.display().to_string());
     let mut created = false;
-    let environment = match Environment::create(paths, global, &runner, &new, |_| {
-        created = true;
-        let _ = prompt.say(if runner.is_proton() {
-            format!("Creating a Proton prefix in {shown}, which takes a while")
-        } else {
-            format!("Creating a wine prefix in {shown}, which takes a few seconds")
-        });
-    }) {
+    let cancellation = Cancellation::new()?;
+    let log = paths.runtime_dir(&name).join("create.log");
+    let environment = match Environment::create(
+        paths,
+        global,
+        &runner,
+        &new,
+        &cancellation.token,
+        Output::Log(&log),
+        |event| {
+            if let PrefixEvent::Started { .. } = event {
+                created = true;
+                let _ = prompt.say(if runner.is_proton() {
+                    format!("Creating a Proton prefix in {shown}, which takes a while")
+                } else {
+                    format!("Creating a wine prefix in {shown}, which takes a few seconds")
+                });
+            }
+        },
+    ) {
         Ok(environment) => environment,
         Err(err) => {
-            if prompt.input().interrupted() {
+            if matches!(err, Error::Canceled(_)) || prompt.input().interrupted() {
                 return Err(Canceled.into());
             }
             prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
@@ -1135,6 +1149,7 @@ fn create<I: Input, W: Write>(
             return Ok(ExitCode::FAILURE);
         }
     };
+    drop(cancellation);
     guided.registered = Some(name.clone());
     prompt.say(if created {
         format!("Created {name}.")

@@ -3,12 +3,14 @@
 use std::path::Path;
 
 use anyhow::anyhow;
+use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
 use wineo_core::installer::Output;
 use wineo_core::launch::{Host, Launch, Overrides};
 use wineo_core::paths::Paths;
+use wineo_core::prefix::PrefixEvent;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 use wineo_core::runtime::Runtime;
@@ -30,6 +32,7 @@ pub fn prepare_target(
     global: &GlobalConfig,
     environment: &Environment,
     overrides: &Overrides,
+    token: &Token,
 ) -> anyhow::Result<()> {
     if environment.config.wine().is_none() {
         return Ok(Launch::check_native_target(
@@ -52,7 +55,7 @@ pub fn prepare_target(
     {
         winetricks::check_available(&runner)?;
     }
-    ensure_prefix(paths, global, environment, &runner)
+    ensure_prefix(paths, global, environment, &runner, token)
 }
 
 /// Brings the prefix's components and the desktop entries in line with the
@@ -76,6 +79,7 @@ pub fn install_winetricks(
     environment: &Environment,
     launch: &Launch,
     overrides: &Overrides,
+    token: &Token,
 ) -> anyhow::Result<()> {
     let Host::Wine { runner, prefix } = &launch.host else {
         return Ok(());
@@ -88,7 +92,6 @@ pub fn install_winetricks(
         return Ok(());
     }
     let env = winetricks::merged_env(runner, global, environment, &overrides.env)?;
-    let cancellation = super::transfer::Cancellation::new()?;
     winetricks::install_missing(
         &environment.name,
         runner,
@@ -96,7 +99,7 @@ pub fn install_winetricks(
         &env,
         &environment.config.winetricks,
         global.stop_timeout,
-        &cancellation.token,
+        token,
         Output::Inherit,
         super::winetricks::print_event,
     )
@@ -121,11 +124,23 @@ pub fn ensure_prefix(
     global: &GlobalConfig,
     environment: &Environment,
     runner: &Runner,
+    token: &Token,
 ) -> anyhow::Result<()> {
     let name = &environment.name;
-    match environment.build_prefix(paths, global, runner, false, |dir| {
-        eprintln!("{}", creating_note(paths, name, runner, dir));
-    }) {
+    let log = paths.runtime_dir(name).join("create.log");
+    match environment.build_prefix(
+        paths,
+        global,
+        runner,
+        false,
+        token,
+        Output::Log(&log),
+        |event| {
+            if let PrefixEvent::Started { dir } = event {
+                eprintln!("{}", creating_note(paths, name, runner, &dir));
+            }
+        },
+    ) {
         Ok(_) => Ok(()),
         // Only setup builds there, after asking.
         Err(err @ (Error::EmptyPrefix(_) | Error::EmptyPrefixParent { .. })) => Err(anyhow!(

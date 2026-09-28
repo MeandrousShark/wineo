@@ -6,11 +6,12 @@ use std::time::Duration;
 use anyhow::bail;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
+use wineo_core::error::Error;
 use wineo_core::installer::{self, Cleaned, Installer, Outcome, Output};
 use wineo_core::launch::Host;
 use wineo_core::operation::Locks;
 use wineo_core::paths::Paths;
-use wineo_core::prefix::{self, BuildPlan};
+use wineo_core::prefix::{self, BuildPlan, PrefixEvent};
 use wineo_core::runners::Runners;
 use wineo_core::runtime::Runtime;
 use wineo_core::supervisor::{Notice, Watched};
@@ -188,11 +189,23 @@ fn offer_build<I: Input, W: Write>(
         prompt.say("Its prefix is missing, so there is nothing installed to pick from.")?;
         return Ok(None);
     }
-    let built = environment.build_prefix(paths, global, &runner, true, |dir| {
-        let _ = prompt.say(build::creating_note(paths, name, &runner, dir));
-    });
+    let cancellation = Cancellation::new()?;
+    let log = paths.runtime_dir(name).join("create.log");
+    let built = environment.build_prefix(
+        paths,
+        global,
+        &runner,
+        true,
+        &cancellation.token,
+        Output::Log(&log),
+        |event| {
+            if let PrefixEvent::Started { dir } = event {
+                let _ = prompt.say(build::creating_note(paths, name, &runner, &dir));
+            }
+        },
+    );
     if let Err(err) = built {
-        if prompt.input().interrupted() {
+        if matches!(err, Error::Canceled(_)) || prompt.input().interrupted() {
             return Err(Canceled.into());
         }
         return Err(err.into());

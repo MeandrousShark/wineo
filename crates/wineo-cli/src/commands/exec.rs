@@ -6,6 +6,7 @@ use anyhow::Context;
 use signal_hook::consts::SIGINT;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
+use wineo_core::error::Error;
 use wineo_core::launch::{Host, Launch, parse_env_assignment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
@@ -14,6 +15,7 @@ use wineo_core::runtime::{Runtime, exit_code};
 use crate::commands::build;
 use crate::commands::components;
 use crate::commands::desktop;
+use crate::commands::transfer::Cancellation;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -40,7 +42,19 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let env = args.env.into_iter().collect();
     let runner = build::runner(paths, &global, &environment)?;
     Launch::check_exec(paths, &global, &environment, &runner, &args.program, &env)?;
-    build::ensure_prefix(paths, &global, &environment, &runner)?;
+    let cancellation = Cancellation::new()?;
+    match build::ensure_prefix(paths, &global, &environment, &runner, &cancellation.token) {
+        Err(err)
+            if err
+                .downcast_ref::<Error>()
+                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
+        {
+            return Ok(ExitCode::from(130));
+        }
+        Err(err) => return Err(err),
+        Ok(()) => {}
+    }
+    drop(cancellation);
     let launch = Launch::exec(
         paths,
         &global,

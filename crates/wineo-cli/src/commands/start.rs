@@ -13,6 +13,7 @@ use wineo_core::supervisor::{self, Claim, Spec, Started};
 
 use crate::commands::build;
 use crate::commands::run::LaunchArgs;
+use crate::commands::transfer::Cancellation;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -45,7 +46,18 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<bool> {
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, name)?;
-    build::prepare_target(paths, &global, &environment, &overrides)?;
+    // Each handler lives only as long as the step it cancels, so Ctrl+C
+    // while waiting on the supervisor still ends wineo right away.
+    {
+        let cancellation = Cancellation::new()?;
+        build::prepare_target(
+            paths,
+            &global,
+            &environment,
+            &overrides,
+            &cancellation.token,
+        )?;
+    }
     let launch = Launch::target(paths, &global, &environment, &overrides)?;
     let locks = Locks::new(paths);
     let held: Vec<&Path> = launch.host.prefix().into_iter().collect();
@@ -77,7 +89,16 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
         return Ok(false);
     }
 
-    build::install_winetricks(&global, &environment, &launch, &overrides)?;
+    {
+        let cancellation = Cancellation::new()?;
+        build::install_winetricks(
+            &global,
+            &environment,
+            &launch,
+            &overrides,
+            &cancellation.token,
+        )?;
+    }
 
     if launch.wayland == Wayland::NoSession {
         eprintln!("Not a Wayland session, starting {name} on X11.");

@@ -171,21 +171,8 @@ pub fn prepare_dir(dir: &Path) -> Result<bool> {
     }
 }
 
-/// Initializes a prefix in `dir`, sending wine's output to `log`.
-pub fn create(runner: &Runner, dir: &Path, arch: Arch, log: &Path) -> Result<()> {
-    create_with(
-        runner,
-        dir,
-        arch,
-        log,
-        &Token::new(),
-        Output::Log(log),
-        |_| {},
-    )
-}
-
 /// Initializes a prefix, allowing a caller to cancel and follow the child.
-pub fn create_with(
+pub fn create(
     runner: &Runner,
     dir: &Path,
     arch: Arch,
@@ -249,7 +236,7 @@ pub fn create_with(
         // nothing and the prefix itself is checked instead.
         let initialized = runner.is_proton() || status.success();
         let menu_builder_disabled = if initialized {
-            match disable_menu_builder_with(runner, dir, log, token, output) {
+            match disable_menu_builder(runner, dir, log, token, output) {
                 Ok(()) => true,
                 Err(err @ Error::Canceled(_)) => return Err(err),
                 Err(_) => false,
@@ -337,11 +324,7 @@ fn group_is_running(group: Pid) -> Result<bool> {
 /// Writes `HKCU\Software\Wine\DllOverrides\winemenubuilder.exe=""`, so wine
 /// run outside wineo doesn't build menu entries in this prefix either.
 /// Shared by a freshly created prefix and one `new` adopts as is.
-pub fn disable_menu_builder(runner: &Runner, dir: &Path, log: &Path) -> Result<()> {
-    disable_menu_builder_with(runner, dir, log, &Token::new(), Output::Log(log))
-}
-
-fn disable_menu_builder_with(
+pub fn disable_menu_builder(
     runner: &Runner,
     dir: &Path,
     log: &Path,

@@ -62,7 +62,24 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, &args.name)?;
     let overrides = args.launch.into_overrides();
-    build::prepare_target(paths, &global, &environment, &overrides)?;
+    let cancellation = Cancellation::new()?;
+    match build::prepare_target(
+        paths,
+        &global,
+        &environment,
+        &overrides,
+        &cancellation.token,
+    ) {
+        Err(err)
+            if err
+                .downcast_ref::<Error>()
+                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
+        {
+            return Ok(ExitCode::from(130));
+        }
+        Err(err) => return Err(err),
+        Ok(()) => {}
+    }
     let launch = Launch::target(paths, &global, &environment, &overrides)?;
     let locks = Locks::new(paths);
     let held: Vec<&Path> = launch.host.prefix().into_iter().collect();
@@ -75,7 +92,13 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let Some(_lock) = runtime.try_lock()? else {
         bail!("{} is already running", environment.name);
     };
-    match build::install_winetricks(&global, &environment, &launch, &overrides) {
+    match build::install_winetricks(
+        &global,
+        &environment,
+        &launch,
+        &overrides,
+        &cancellation.token,
+    ) {
         Err(err)
             if err
                 .downcast_ref::<Error>()
@@ -94,7 +117,6 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         ));
     }
 
-    let cancellation = Cancellation::new()?;
     let supervisor = Supervisor::with_token(&cancellation.token);
     // A separate process group keeps the terminal's Ctrl+C away from wine, so
     // wineo can ask the app to close instead of it being cut off. It is also

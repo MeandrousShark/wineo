@@ -8,6 +8,7 @@ use wineo_core::paths::Paths;
 use wineo_core::runtime::Runtime;
 
 use crate::commands::run::LaunchArgs;
+use crate::commands::transfer::Cancellation;
 use crate::commands::{build, start, stop};
 
 #[derive(clap::Args)]
@@ -35,7 +36,27 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // Checked before stopping, so a bad config or a missing target doesn't
     // leave the environment stopped. A missing prefix has nothing running in
     // it, so it is built here like `start` would.
-    build::prepare_target(paths, &global, &environment, &overrides)?;
+    let cancellation = Cancellation::new()?;
+    let prepared = build::prepare_target(
+        paths,
+        &global,
+        &environment,
+        &overrides,
+        &cancellation.token,
+    );
+    // Dropped before stopping, so Ctrl+C can still abort a slow stop.
+    drop(cancellation);
+    match prepared {
+        Err(err)
+            if err
+                .downcast_ref::<Error>()
+                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
+        {
+            return Ok(ExitCode::from(130));
+        }
+        Err(err) => return Err(err),
+        Ok(()) => {}
+    }
     Launch::target(paths, &global, &environment, &overrides)?;
 
     let was_running = matches!(stop::stop(paths, name, false)?, stop::Outcome::Stopped);

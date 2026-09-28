@@ -326,29 +326,8 @@ fn run_with_output(
 
 /// Install the supplied verbs in one unattended call. The caller owns the
 /// lock, idle check, and missing-verb decision.
-pub fn install_unattended(
-    name: &str,
-    runner: &Runner,
-    prefix: &Path,
-    env: &BTreeMap<String, String>,
-    verbs: &[String],
-    stop_timeout: u32,
-) -> anyhow::Result<()> {
-    install_unattended_with(
-        name,
-        runner,
-        prefix,
-        env,
-        verbs,
-        stop_timeout,
-        &Token::new(),
-        Output::Inherit,
-        |_| {},
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
-pub fn install_unattended_with(
+pub fn install_unattended(
     name: &str,
     runner: &Runner,
     prefix: &Path,

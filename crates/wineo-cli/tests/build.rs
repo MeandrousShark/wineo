@@ -6,6 +6,7 @@ mod common;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use common::*;
 
@@ -41,6 +42,78 @@ fn wine_note(name: &str, prefix: &Path) -> String {
         "Creating a wine prefix for {name} in {}, this takes a few seconds\n",
         prefix.display()
     )
+}
+
+fn slow_wineboot(f: &Fixture) {
+    let wine = f.root.path().join("bin/wine");
+    let script = FAKE_WINE.replacen(
+        "if [ \"$2\" = --init ]; then",
+        "if [ \"$2\" = --init ]; then\n        touch \"$WINEPREFIX/partial\"\n        trap 'exit 0' TERM\n        while :; do sleep 0.1; done",
+        1,
+    );
+    assert_ne!(script, FAKE_WINE);
+    fs::write(wine, script).unwrap();
+}
+
+fn interrupt(child: &std::process::Child) {
+    let sent = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+}
+
+#[test]
+fn ctrl_c_during_new_wineboot_removes_the_prefix_and_config() {
+    let f = Fixture::new();
+    slow_wineboot(&f);
+    let prefix = f.prefix_root().join("app");
+    let child = f
+        .wineo()
+        .args(["new", "-n", "app"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for("wineboot to begin", || prefix.join("partial").exists());
+
+    interrupt(&child);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(130), "{}", stderr(&output));
+    assert!(stdout(&output).is_empty());
+    assert_eq!(
+        stderr(&output),
+        format!(
+            "Creating a wine prefix in {}, this takes a few seconds\nCanceled. Nothing was created.\n",
+            prefix.display()
+        )
+    );
+    assert!(!prefix.exists());
+    assert!(f.created_config("app").is_empty());
+}
+
+#[test]
+fn ctrl_c_during_start_wineboot_keeps_the_config() {
+    let f = Fixture::new();
+    slow_wineboot(&f);
+    let prefix = f.prefix_root().join("app");
+    let text = f.hand_written("app", "wine", &prefix, APP);
+    let child = f
+        .wineo()
+        .args(["start", "app"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for("wineboot to begin", || prefix.join("partial").exists());
+
+    interrupt(&child);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(130), "{}", stderr(&output));
+    assert!(stdout(&output).is_empty());
+    assert_eq!(stderr(&output), wine_note("app", &prefix));
+    assert!(!prefix.exists());
+    assert_eq!(f.config_text("app"), text);
 }
 
 #[test]

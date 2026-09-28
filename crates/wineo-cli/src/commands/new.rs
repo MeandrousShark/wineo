@@ -6,12 +6,13 @@ use std::time::Duration;
 use anyhow::bail;
 use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::environment::{Environment, NewEnvironment};
+use wineo_core::error::Error;
 use wineo_core::install::{self, Wanted};
 use wineo_core::installer::{Installer, Outcome, Output};
 use wineo_core::launch;
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
-use wineo_core::prefix;
+use wineo_core::prefix::{self, PrefixEvent};
 use wineo_core::programs::Listing;
 use wineo_core::runners::Runners;
 use wineo_core::runtime::Runtime;
@@ -154,20 +155,41 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let prefix = new.prefix_dir(paths, &global)?;
     let guard = locks.acquire(Operation::Create, &new.name, &[&prefix])?;
 
+    let cancellation = Cancellation::new()?;
+    let log = paths.runtime_dir(&new.name).join("create.log");
     let mut created_prefix = false;
-    let environment = Environment::create(paths, &global, &runner, &new, |dir| {
-        created_prefix = true;
-        let dir = paths
-            .contract(dir)
-            .unwrap_or_else(|_| dir.display().to_string());
-        if runner.is_proton() {
-            eprintln!(
-                "Creating a Proton prefix in {dir}. The first umu run also downloads the Steam Linux Runtime, which takes a while"
-            );
-        } else {
-            eprintln!("Creating a wine prefix in {dir}, this takes a few seconds");
+    let environment = match Environment::create(
+        paths,
+        &global,
+        &runner,
+        &new,
+        &cancellation.token,
+        Output::Log(&log),
+        |event| {
+            if let PrefixEvent::Started { dir } = event {
+                created_prefix = true;
+                let dir = paths
+                    .contract(&dir)
+                    .unwrap_or_else(|_| dir.display().to_string());
+                if runner.is_proton() {
+                    eprintln!(
+                        "Creating a Proton prefix in {dir}. The first umu run also downloads the Steam Linux Runtime, which takes a while"
+                    );
+                } else {
+                    eprintln!("Creating a wine prefix in {dir}, this takes a few seconds");
+                }
+            }
+        },
+    ) {
+        Ok(environment) => environment,
+        Err(Error::Canceled(_)) => {
+            eprintln!("Canceled. Nothing was created.");
+            return Ok(ExitCode::from(CANCELED));
         }
-    })?;
+        Err(err) => return Err(err.into()),
+    };
+    // Released so the art picker and other prompts get Ctrl+C as before.
+    drop(cancellation);
     let environment = match &args.exe {
         Some(exe) if add_default_target(paths, &environment, exe, args.desktop)? => {
             println!(

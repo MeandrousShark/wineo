@@ -106,7 +106,23 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         winetricks::check_available(&runner)?;
     }
     let cancellation = Cancellation::new()?;
-    crate::commands::build::ensure_prefix(paths, &global, &environment, &runner)?;
+    match crate::commands::build::ensure_prefix(
+        paths,
+        &global,
+        &environment,
+        &runner,
+        &cancellation.token,
+    ) {
+        Err(err)
+            if err
+                .downcast_ref::<Error>()
+                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
+        {
+            return Ok(ExitCode::from(130));
+        }
+        Err(err) => return Err(err),
+        Ok(()) => {}
+    }
     let locks = Locks::new(paths);
     // Held until winetricks is done and the prefix is idle. Several winetricks
     // verbs wait for every wine process to exit, so nothing else may start one.

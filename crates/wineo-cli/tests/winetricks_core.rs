@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use common::Fixture;
+use wineo_core::cancel::Token;
+use wineo_core::installer::Output;
 use wineo_core::runners::Runners;
 use wineo_core::winetricks;
 
@@ -67,6 +69,9 @@ fn unattended_child() {
         &BTreeMap::new(),
         &["corefonts".to_owned(), "win10".to_owned()],
         5,
+        &Token::new(),
+        Output::Inherit,
+        |_| {},
     )
     .unwrap();
 }

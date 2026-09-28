@@ -128,37 +128,9 @@ impl Environment {
         }
     }
 
-    /// Creates the prefix, or adopts an existing one, then writes the environment config.
-    /// `on_create_prefix` runs just before a new prefix is initialized, since that takes a while.
-    pub fn create(
-        paths: &Paths,
-        global: &GlobalConfig,
-        runner: &Runner,
-        new: &NewEnvironment,
-        on_create_prefix: impl FnOnce(&Path),
-    ) -> Result<Self> {
-        let log = paths.runtime_dir(&new.name).join("create.log");
-        let mut on_create_prefix = Some(on_create_prefix);
-        Self::create_with(
-            paths,
-            global,
-            runner,
-            new,
-            &Token::new(),
-            Output::Log(&log),
-            |event| {
-                if let PrefixEvent::Started { dir } = event
-                    && let Some(on_create_prefix) = on_create_prefix.take()
-                {
-                    on_create_prefix(&dir);
-                }
-            },
-        )
-    }
-
     /// Creates an environment while reporting prefix creation progress.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_with(
+    pub fn create(
         paths: &Paths,
         global: &GlobalConfig,
         runner: &Runner,
@@ -188,7 +160,7 @@ impl Environment {
             let runtime = paths.runtime_dir(&new.name);
             fs::create_dir_all(&runtime)
                 .context(|| format!("failed to create {}", runtime.display()))?;
-            prefix::disable_menu_builder(runner, &dir, &runtime.join("create.log"))?;
+            prefix::disable_menu_builder(runner, &dir, &runtime.join("create.log"), token, output)?;
             arch
         } else {
             let arch = new.arch.unwrap_or(global.defaults.arch);
@@ -301,41 +273,9 @@ impl Environment {
         runner.wait_idle_noting(&prefix, on_wait)
     }
 
-    /// Builds the prefix of an environment whose config already exists, when
-    /// `prefix::build_plan` says it is safe to. Never writes the config.
-    /// `runner` is the one the config names, already resolved. Returns true if
-    /// it built one, false if the prefix was already there.
-    /// `on_create_prefix` runs just before the prefix is initialized.
-    pub fn build_prefix(
-        &self,
-        paths: &Paths,
-        global: &GlobalConfig,
-        runner: &Runner,
-        empty_confirmed: bool,
-        on_create_prefix: impl FnOnce(&Path),
-    ) -> Result<bool> {
-        let log = paths.runtime_dir(&self.name).join("create.log");
-        let mut on_create_prefix = Some(on_create_prefix);
-        self.build_prefix_with(
-            paths,
-            global,
-            runner,
-            empty_confirmed,
-            &Token::new(),
-            Output::Log(&log),
-            |event| {
-                if let PrefixEvent::Started { dir } = event
-                    && let Some(on_create_prefix) = on_create_prefix.take()
-                {
-                    on_create_prefix(&dir);
-                }
-            },
-        )
-    }
-
     /// Builds a missing prefix with cancellation and progress events.
     #[allow(clippy::too_many_arguments)]
-    pub fn build_prefix_with(
+    pub fn build_prefix(
         &self,
         paths: &Paths,
         global: &GlobalConfig,
@@ -559,7 +499,7 @@ fn build_new_prefix(
     let result = fs::create_dir_all(&runtime)
         .context(|| format!("failed to create {}", runtime.display()))
         .and_then(|()| {
-            prefix::create_with(
+            prefix::create(
                 runner,
                 dir,
                 arch,
@@ -635,6 +575,8 @@ mod tests {
             &GlobalConfig::default(),
             &Runner::fake("wine"),
             &new("thing", &prefix),
+            &Token::new(),
+            Output::Log(&paths.runtime_dir("thing").join("create.log")),
             |_| {},
         )
         .unwrap();
@@ -655,6 +597,8 @@ mod tests {
                 &GlobalConfig::default(),
                 &Runner::fake("wine"),
                 &new("thing", &prefix),
+                &Token::new(),
+                Output::Log(&paths.runtime_dir("thing").join("create.log")),
                 |_| {},
             ),
             Err(Error::EnvironmentExists(_))
@@ -676,6 +620,8 @@ mod tests {
                 &GlobalConfig::default(),
                 &Runner::fake("wine"),
                 &options,
+                &Token::new(),
+                Output::Log(&paths.runtime_dir("old").join("create.log")),
                 |_| {},
             ),
             Err(Error::ArchMismatch { .. })
@@ -852,6 +798,8 @@ mod tests {
                 &GlobalConfig::default(),
                 &Runner::fake("wine"),
                 &new("stuff", &dir),
+                &Token::new(),
+                Output::Log(&paths.runtime_dir("stuff").join("create.log")),
                 |_| {},
             ),
             Err(Error::NotAPrefix(_))
@@ -912,6 +860,8 @@ mod tests {
                 &GlobalConfig::default(),
                 &Runner::fake("wine"),
                 false,
+                &Token::new(),
+                Output::Log(&paths.runtime_dir("dusklight").join("create.log")),
                 |_| panic!("nothing to build"),
             ),
             Err(Error::NoPrefix(_))
@@ -958,10 +908,20 @@ mod tests {
 
         let mut announced = None;
         let built = env
-            .build_prefix(&paths, &global, &Runner::fake("wine"), false, |dir| {
-                announced = Some(dir.to_owned());
-                wine_builds_it(dir);
-            })
+            .build_prefix(
+                &paths,
+                &global,
+                &Runner::fake("wine"),
+                false,
+                &Token::new(),
+                Output::Log(&paths.runtime_dir("palworld").join("create.log")),
+                |event| {
+                    if let PrefixEvent::Started { dir } = event {
+                        announced = Some(dir.clone());
+                        wine_builds_it(&dir);
+                    }
+                },
+            )
             .unwrap();
         assert!(built);
         assert_eq!(announced.as_deref(), Some(prefix.as_path()));
@@ -971,9 +931,15 @@ mod tests {
         assert_eq!(fs::metadata(&config).unwrap().modified().unwrap(), before);
 
         let built = env
-            .build_prefix(&paths, &global, &Runner::fake("wine"), false, |_| {
-                panic!("already built")
-            })
+            .build_prefix(
+                &paths,
+                &global,
+                &Runner::fake("wine"),
+                false,
+                &Token::new(),
+                Output::Log(&paths.runtime_dir("palworld").join("create.log")),
+                |_| panic!("already built"),
+            )
             .unwrap();
         assert!(!built);
         assert_eq!(fs::read_to_string(&config).unwrap(), text);
@@ -988,7 +954,15 @@ mod tests {
         let (env, text) = hand_written(&paths, "palworld", &prefix);
 
         let err = env
-            .build_prefix(&paths, &global, &Runner::fake("wine"), false, |_| {})
+            .build_prefix(
+                &paths,
+                &global,
+                &Runner::fake("wine"),
+                false,
+                &Token::new(),
+                Output::Log(&paths.runtime_dir("palworld").join("create.log")),
+                |_| {},
+            )
             .unwrap_err();
         assert!(matches!(err, Error::PrefixCreation { .. }), "{err}");
         assert!(!prefix.exists());
@@ -1008,7 +982,15 @@ mod tests {
         let (env, _) = hand_written(&paths, "palworld", &prefix);
 
         let err = env
-            .build_prefix(&paths, &global, &Runner::fake("wine"), false, |_| {})
+            .build_prefix(
+                &paths,
+                &global,
+                &Runner::fake("wine"),
+                false,
+                &Token::new(),
+                Output::Log(&paths.runtime_dir("palworld").join("create.log")),
+                |_| {},
+            )
             .unwrap_err();
         assert!(matches!(err, Error::PrefixCreation { .. }), "{err}");
         assert!(prefix.is_dir());
@@ -1024,15 +1006,33 @@ mod tests {
         let (env, _) = hand_written(&paths, "palworld", &prefix);
 
         assert!(matches!(
-            env.build_prefix(&paths, &global, &Runner::fake("wine"), false, |_| {
-                panic!("refused")
-            }),
+            env.build_prefix(
+                &paths,
+                &global,
+                &Runner::fake("wine"),
+                false,
+                &Token::new(),
+                Output::Log(&paths.runtime_dir("palworld").join("create.log")),
+                |_| { panic!("refused") }
+            ),
             Err(Error::EmptyPrefix(_))
         ));
         assert!(!paths.runtime_dir("palworld").exists());
 
         let built = env
-            .build_prefix(&paths, &global, &Runner::fake("wine"), true, wine_builds_it)
+            .build_prefix(
+                &paths,
+                &global,
+                &Runner::fake("wine"),
+                true,
+                &Token::new(),
+                Output::Log(&paths.runtime_dir("palworld").join("create.log")),
+                |event| {
+                    if let PrefixEvent::Started { dir } = event {
+                        wine_builds_it(&dir);
+                    }
+                },
+            )
             .unwrap();
         assert!(built);
         assert!(prefix::is_prefix(&prefix));
@@ -1050,9 +1050,15 @@ mod tests {
             .acquire(Operation::Create, "palworld", &[&prefix])
             .unwrap();
         assert!(matches!(
-            env.build_prefix(&paths, &global, &Runner::fake("wine"), false, |_| {
-                panic!("busy")
-            }),
+            env.build_prefix(
+                &paths,
+                &global,
+                &Runner::fake("wine"),
+                false,
+                &Token::new(),
+                Output::Log(&paths.runtime_dir("palworld").join("create.log")),
+                |_| { panic!("busy") }
+            ),
             Err(Error::Busy { .. })
         ));
         assert!(!prefix.exists());
@@ -1068,9 +1074,15 @@ mod tests {
         fs::remove_file(paths.environment_config("palworld")).unwrap();
 
         assert!(matches!(
-            env.build_prefix(&paths, &global, &Runner::fake("wine"), false, |_| {
-                panic!("removed")
-            }),
+            env.build_prefix(
+                &paths,
+                &global,
+                &Runner::fake("wine"),
+                false,
+                &Token::new(),
+                Output::Log(&paths.runtime_dir("palworld").join("create.log")),
+                |_| { panic!("removed") }
+            ),
             Err(Error::UnknownEnvironment(_))
         ));
         assert!(!prefix.exists());
@@ -1087,6 +1099,8 @@ mod tests {
             &GlobalConfig::default(),
             &Runner::fake("wine"),
             &new("fails", &prefix),
+            &Token::new(),
+            Output::Log(&paths.runtime_dir("fails").join("create.log")),
             |_| {},
         )
         .unwrap_err();
@@ -1119,7 +1133,7 @@ mod tests {
         let worker_paths = paths.clone();
         let worker_runner = runner.clone();
         let worker = thread::spawn(move || {
-            Environment::create_with(
+            Environment::create(
                 &worker_paths,
                 &GlobalConfig::default(),
                 &worker_runner,
@@ -1196,6 +1210,8 @@ mod tests {
             &GlobalConfig::default(),
             &Runner::system().unwrap(),
             &new("real", &prefix),
+            &Token::new(),
+            Output::Log(&paths.runtime_dir("real").join("create.log")),
             |_| {},
         )
         .unwrap();
@@ -1217,6 +1233,8 @@ mod tests {
             &GlobalConfig::default(),
             &Runner::system().unwrap(),
             &options,
+            &Token::new(),
+            Output::Log(&paths.runtime_dir("win32").join("create.log")),
             |_| {},
         )
         .unwrap_err();
