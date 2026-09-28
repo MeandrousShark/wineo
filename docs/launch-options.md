@@ -80,6 +80,14 @@ script that starts the game in the background and exits doesn't work under
 gamescope; use one that `exec`s the game, or point the target at the game
 itself.
 
+On Hyprland, gamescope 3.16's default Wayland backend can drop its window as
+soon as a Wine or Proton program opens one. The game keeps running inside
+gamescope with nothing on screen. The SDL backend doesn't have this problem:
+
+```sh
+wineo set palworld 'gamescope.args=["--backend", "sdl"]'
+```
+
 ## MangoHud
 
 With `mangohud` on, the launch runs under `mangohud`. Under gamescope,
