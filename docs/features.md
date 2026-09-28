@@ -39,6 +39,10 @@ Completed: [0030: Recoverable removal and prune](plans/0030-trash-and-prune.md).
 See [Trash and removal](trash.md) for restoring and pruning.
 Completed: [0031: Wine Wayland, gamescope, and MangoHud](plans/0031-wayland-gamescope-mangohud.md).
 See [Launch options](launch-options.md) for the settings and how they combine.
+Completed: [0032: Declarative winetricks dependencies](plans/0032-declarative-winetricks.md).
+See [Winetricks dependencies](config-files.md#winetricks-dependencies) for the key and when verbs install.
+Completed: [0033: Tags and `wineo list --tag`](plans/0033-tags.md).
+See [Tags](config-files.md#tags) for the key and filtering.
 
 **Category**
 
@@ -61,10 +65,8 @@ See [Launch options](launch-options.md) for the settings and how they combine.
 |---|---|---:|---|---|---|
 | `--dry-run` for `import` and non-guided `new` | Automation | **2** | | Preview what would be created, copied, or registered without touching disk | Import already builds a review before writing, which a dry run could print and stop at. |
 | Pre-launch and post-exit hooks | Core | **2** | | Run a user command before a target starts or after it exits, e.g. mounting a drive or syncing saves | The supervisor already owns the process lifetime, so post-exit fits there. Needs decisions on failure handling, env vars passed in, and per-environment versus per-target hooks. |
-| Declarative winetricks dependencies | Compatibility | **2** | 0018 | List verbs in config, e.g. `winetricks = ["vcrun2022", "corefonts"]`, and have wineo install whatever is missing | Needs a record of installed verbs so it stays idempotent. A new config key is the first real test of 0018's versioning rules, since older wineo rejects unknown keys. |
 | ProtonDB lookup in the CLI | UX | **3** | | Check a game's compatibility information before launching or changing runners | Resolve a wineo environment to the right ProtonDB game, handle missing matches, and make the result reusable by the future GUI. The command shape and online behavior need a plan. |
 | GUI-facing core API review | Core | **2** | GUI entry criteria 1-7 | Keep GUI actions on shared core operations | Review setup, import, launch, stop, and validation entry points for useful progress, cancellation, and errors. Also look for simplifications: logic in the CLI that belongs in core (`import_heroic.rs` holds about 3,300 lines of non-test code) and duplication across the interactive flows and the copy operations (clone, portable copy, snapshots). Resolve blockers found in the review before GUI work starts. |
-| Tags and `wineo list --tag` | UX | **2** | 0018 | Sort a long environment list into groups like game, work, or creative | e.g. `tags = ["game"]` in the environment config. Could also filter `status` and completion. |
 | Tag breakdown in `wineo stats` | UX | **3** | 0029, 0033 | See playtime and membership by tag, like how much time went into every `game` | Suggested by the maintainer (2026-09-27). Shape is open: `wineo stats --tag game` for one tag or a flag for all of them, or a `stats tags` form. `stats [NAME]` already takes an environment name, so a bare `tags` word would clash with an environment called `tags`. Needs a plan. |
 | Manpages | UX | **3** | 0015 | `man wineo` is the first thing many Linux users try | Generate them from the clap definitions with `clap_mangen`, like completions, so they never drift from `--help`. The PKGBUILD installs them to `/usr/share/man/man1`. |
 | Steam shortcuts | UX | **3** | | Add wineo targets to Steam as non-Steam games, for Big Picture and Steam Deck | Steam's `shortcuts.vdf` is binary and Steam must be closed while it's edited. |
