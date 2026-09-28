@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0031: Wine Wayland, gamescope, and MangoHud
 

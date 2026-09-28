@@ -3,6 +3,24 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.12.0 - 2026-09-27
+
+- `wayland`, `mangohud`, and a `[gamescope]` table are launch settings on the
+  global config, environments, targets, and templates
+  ([0031](docs/plans/0031-wayland-gamescope-mangohud.md)). See
+  [Launch options](docs/launch-options.md).
+- Launches run under `gamescope [flags] -- mangohud gamemoderun`, in Heroic's
+  order. Under gamescope, MangoHud becomes `--mangoapp`, and Wayland adds
+  `--expose-wayland`.
+- On Wine, gamescope stays open until the prefix is idle, so a launcher that
+  hands off to the game and exits still works.
+- `status`, its JSON, and `validate` report the new settings and missing
+  binaries. Runners without Wayland support are an error at launch.
+- Heroic imports carry over gamescope, MangoHud, Wine Wayland, and HDR (as
+  an `[env]` entry when Wayland is on).
+- Docs note the `--backend sdl` workaround for gamescope's window vanishing
+  on Hyprland.
+
 ## 0.11.1 - 2026-09-26
 
 - `wineo trash` no longer mentions a prefix for entries that had none at
