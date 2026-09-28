@@ -1,26 +1,25 @@
 use anyhow::bail;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use wineo_core::components::Component;
 use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::download::Provider;
-use wineo_core::environment::{self, Environment, HeroicIdSnapshot};
 use wineo_core::gamescope::GamescopeSetting;
 use wineo_core::heroic::{
-    HeroicCandidate, HeroicGameKind, HeroicImport, HeroicIssue, HeroicIssueKind, HeroicRunnerKind,
-    HeroicSharedPrefix, HeroicSource, SettingsReview,
+    HeroicGameKind, HeroicImport, HeroicIssue, HeroicIssueKind, HeroicRunnerKind, HeroicSource,
+    SettingsReview,
 };
 use wineo_core::heroic_import::{
-    COVERED_BY_PROTON, DesktopEntry, GamePlan, InputKind, MissingBuild, Options, Playtime, Policy,
-    Registered, RunnerCopy, RunnerSuggestion, SkipReason, Warning, apply, inspect_copyable_runner,
-    is_dropped_conflict, redact_env_value, runner_dependency_lines, shared_prefix_lines,
-    suggest_runner, write_import_log,
+    self, COVERED_BY_PROTON, DesktopEntry, Entry, Game, GamePlan, InputKind, LibraryOptions,
+    LibraryPlan, MissingBuild, Options, Playtime, Policy, Registered, RunnerCopy, RunnerSuggestion,
+    SkipReason, Warning, apply, blocker, inspect_copyable_runner, is_dropped_conflict, listing,
+    plan_library, redact_env_value, runner_dependency_lines, shared_prefix_lines, suggest_runner,
+    write_import_log,
 };
 use wineo_core::import::{self, ExternalDependency};
 use wineo_core::paths::Paths;
-use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 use wineo_core::steamgriddb::Key;
 
@@ -313,10 +312,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
 }
 
 fn sources(paths: &Paths, explicit: Option<&str>) -> anyhow::Result<Vec<HeroicSource>> {
-    if let Some(path) = explicit {
-        return Ok(vec![HeroicSource::from_config_dir(paths.absolute(path)?)]);
-    }
-    let sources = HeroicSource::discover_from_env()?;
+    let sources = heroic_import::sources(paths, explicit)?;
     anyhow::ensure!(
         !sources.is_empty(),
         "no Heroic configuration found; pass --config-dir /path/to/heroic"
@@ -360,7 +356,7 @@ fn source_guided<I: Input, W: Write>(
 }
 
 fn list(paths: &Paths, global: &GlobalConfig, source: &HeroicSource) -> anyhow::Result<ExitCode> {
-    let listing = native::listing(paths, global, source)?;
+    let listing = listing(paths, global, source)?;
     println!(
         "Heroic source: {} ({:?})",
         source.config_dir().display(),
@@ -400,11 +396,11 @@ fn guided<I: Input, W: Write>(
     prompt: &mut Prompt<I, W>,
     verbose: bool,
 ) -> anyhow::Result<ExitCode> {
-    let listing = native::listing(paths, global, &source)?;
+    let listing = listing(paths, global, &source)?;
     let candidates: Vec<_> = listing
         .candidates
         .iter()
-        .filter(|candidate| candidate_filter_issue(candidate).is_none())
+        .filter(|candidate| blocker(candidate).is_none())
         .cloned()
         .collect();
     anyhow::ensure!(
@@ -615,24 +611,6 @@ enum RowStatus {
     Skipped(String),
 }
 
-/// A candidate ready to import, with everything already inspected and
-/// reviewed so importing it needs no further Heroic reads.
-struct ReadyGame {
-    plan: GamePlan,
-}
-
-/// A candidate that's ready except for one missing DXVK/vkd3d-proton build,
-/// so it's held back until `--all` decides whether to download it.
-struct PendingGame {
-    warn: Option<String>,
-    component: Component,
-    version: Option<String>,
-    /// The resolve error's own message, hint included, reused as the skip
-    /// reason if this doesn't end up downloaded.
-    reason: String,
-    plan: GamePlan,
-}
-
 fn run_all(
     paths: &Paths,
     global: &GlobalConfig,
@@ -652,20 +630,22 @@ fn run_all(
         Some(Prompt::new(Terminal::open()?, io::stdout()).with_color(style::stdout_enabled()))
     };
 
-    let listing = native::listing(paths, global, &source)?;
-    let (natives, windows): (Vec<HeroicCandidate>, Vec<HeroicCandidate>) = listing
+    let listing = listing(paths, global, &source)?;
+    // Native games need no runner, so a library of only those never asks for one.
+    let has_windows = listing
         .candidates
         .iter()
-        .cloned()
-        .partition(|candidate| candidate.kind == HeroicGameKind::Native);
-    // Native games need no runner, so a library of only those never asks for one.
-    let runner = if windows.is_empty() && args.runner.is_none() {
+        .any(|candidate| candidate.kind != HeroicGameKind::Native);
+    let runner = if !has_windows && args.runner.is_none() {
         None
     } else {
         Some(match &args.runner {
-            Some(name) => (name.clone(), runners.resolve(name)?),
+            Some(name) => {
+                runners.resolve(name)?;
+                name.clone()
+            }
             None => match runners.newest_proton()? {
-                Some(runner) => (runner.selection().to_owned(), runner),
+                Some(runner) => runner.selection().to_owned(),
                 None => {
                     anyhow::ensure!(
                         !args.yes,
@@ -679,82 +659,34 @@ fn run_all(
     };
 
     println!("Checking {} Heroic games...", listing.candidates.len());
-    let mut existing = existing_environments(paths)?;
-    let mut rows = Vec::new();
-    let mut already = Vec::new();
-    let mut ready_native = Vec::new();
-    for candidate in &natives {
-        let default_name = default_name_for(&candidate.title, candidate.executable.as_deref());
-        if let Some(matched) = match_existing(
-            &existing,
-            &candidate.id,
-            None,
-            candidate.executable.as_deref(),
-            &default_name,
-        ) {
-            if matched.needs_id {
-                backfill_match(paths, &mut existing, &matched, &candidate.id)?;
-            }
-            already.push(matched.name);
-            continue;
-        }
-        let taken = |name: &str| {
-            existing.iter().any(|environment| environment.name == name)
-                || ready_native
-                    .iter()
-                    .any(|game: &native::ReadyNative| game.name == name)
-        };
-        let (row, game) = native::classify(paths, global, &source, candidate, taken);
-        rows.push(row);
-        ready_native.extend(game);
-    }
-    // Stands in for the native games about to be imported, so a Windows game
-    // can't take one of their names. The id keeps them from being matched.
-    let mut claimed = existing.clone();
-    for game in &ready_native {
-        claimed.push(ExistingEnvironment {
-            name: game.name.clone(),
-            heroic_id: Some(game.id().to_owned()),
-            snapshot: None,
-            prefix: None,
-            target_exes: Vec::new(),
-        });
-    }
-    let mut ready = Vec::new();
-    if let Some((runner_name, runner)) = &runner {
-        let (windows_rows, windows_ready, windows_already, pending) = classify_candidates(
-            paths,
-            global,
-            &source,
-            &windows,
-            &claimed,
-            runner_name,
-            runner,
-            &args,
-        )?;
-        rows.extend(windows_rows);
-        ready.extend(windows_ready);
-        already.extend(windows_already);
-        let (pending_rows, pending_ready) =
-            resolve_pending(paths, global, pending, args.yes, prompt.as_mut())?;
-        rows.extend(pending_rows);
-        ready.extend(pending_ready);
-    }
-    let runner_name = runner
-        .as_ref()
-        .map(|(name, _)| name.as_str())
-        .unwrap_or_default();
+    let mut library = plan_library(
+        paths,
+        global,
+        &listing,
+        runner.as_deref(),
+        &LibraryOptions {
+            adopt: args.adopt,
+            arch: args.arch,
+        },
+    )?;
+    library.record_backfills(paths)?;
+    resolve_pending(paths, global, &mut library, args.yes, prompt.as_mut())?;
+    let runner_name = library.runner().unwrap_or_default();
 
     let mode_label = if args.adopt { "adopt" } else { "copy" };
     println!(
         "{}",
-        render_bulk_table(runner_name, mode_label, &rows, &already)
+        render_bulk_table(
+            runner_name,
+            mode_label,
+            &bulk_rows(&library),
+            library.already()
+        )
     );
-    if ready.is_empty() && ready_native.is_empty() {
+    if library.ready_count() == 0 {
         println!("No Heroic games are ready to import.");
         return Ok(ExitCode::SUCCESS);
     }
-
     let portable = paths.portable_root().is_some();
     let desktop_enabled = match bulk_desktop_choice(args.desktop, args.yes || portable) {
         Some(value) => value,
@@ -771,7 +703,7 @@ fn run_all(
 
     if !args.yes {
         let prompt = prompt.as_mut().expect("interactive was checked above");
-        let count = ready.len() + ready_native.len();
+        let count = library.ready_count();
         match prompt.confirm(&format!("Import {count} games?"), true)? {
             Reply::Value(true) => {}
             _ => return Err(Canceled.into()),
@@ -787,7 +719,7 @@ fn run_all(
         art,
         verbose,
     };
-    import_all(&bulk, ready, ready_native)
+    import_all(&bulk, library.into_ready())
 }
 
 /// The key `--all` fetches art with, or None for no art. `--art` answers yes
@@ -822,14 +754,12 @@ fn bulk_art<I: Input, W: Write>(
     }
 }
 
-/// Confirms once, then downloads the newest stable GE-Proton release with
-/// the same install routine the guided runner chooser's download uses.
 fn download_latest_ge_proton<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
     runners: &Runners,
     prompt: &mut Prompt<I, W>,
-) -> anyhow::Result<(String, Runner)> {
+) -> anyhow::Result<String> {
     match prompt.confirm(
         "No Proton runner is installed. Download the latest GE-Proton?",
         true,
@@ -838,322 +768,18 @@ fn download_latest_ge_proton<I: Input, W: Write>(
         _ => return Err(Canceled.into()),
     }
     let name = download::install_latest(paths, global, Provider::GeProton)?;
-    let runner = runners.resolve(&name)?;
-    Ok((name, runner))
+    runners.resolve(&name)?;
+    Ok(name)
 }
 
-/// An environment already on disk, as much as matching a Heroic candidate
-/// against it needs.
-#[derive(Clone)]
-struct ExistingEnvironment {
-    name: String,
-    heroic_id: Option<String>,
-    snapshot: Option<HeroicIdSnapshot>,
-    /// None for a native environment.
-    prefix: Option<PathBuf>,
-    /// Every target's exe, expanded and resolved the same way as `prefix`.
-    target_exes: Vec<PathBuf>,
-}
-
-fn existing_environments(paths: &Paths) -> anyhow::Result<Vec<ExistingEnvironment>> {
-    let mut found = Vec::new();
-    for name in environment::names(paths)? {
-        let Ok((loaded, snapshot)) = Environment::load_for_heroic_match(paths, &name) else {
-            continue;
-        };
-        let prefix = match loaded.prefix(paths) {
-            Ok(prefix) => Some(prefix),
-            Err(wineo_core::error::Error::NoPrefix(_)) => None,
-            Err(_) => continue,
-        };
-        let target_exes = loaded
-            .config
-            .targets
-            .values()
-            .filter_map(|target| paths.resolve_stored(&target.exe).ok().flatten())
-            .map(|exe| wineo_core::paths::resolve(&exe))
-            .collect();
-        found.push(ExistingEnvironment {
-            name,
-            heroic_id: loaded.config.heroic_id.clone(),
-            snapshot: Some(snapshot),
-            prefix: prefix.as_deref().map(wineo_core::paths::resolve),
-            target_exes,
-        });
-    }
-    Ok(found)
-}
-
-/// Which existing environment a Heroic candidate was already imported as.
-struct ExistingMatch {
-    name: String,
-    /// Whether that environment predates recording the Heroic id, and so
-    /// still needs it backfilled.
-    needs_id: bool,
-}
-
-/// Matches a Heroic candidate to an environment already imported from it: by
-/// its recorded id first, then for older imports, by the prefix it adopted,
-/// a target that runs its exe, or its default name.
-fn match_existing(
-    existing: &[ExistingEnvironment],
-    candidate_id: &str,
-    candidate_prefix: Option<&Path>,
-    candidate_exe: Option<&Path>,
-    default_name: &str,
-) -> Option<ExistingMatch> {
-    if let Some(environment) = existing
-        .iter()
-        .find(|environment| environment.heroic_id.as_deref() == Some(candidate_id))
-    {
-        return Some(ExistingMatch {
-            name: environment.name.clone(),
-            needs_id: false,
-        });
-    }
-    if let Some(prefix) = candidate_prefix {
-        let resolved = wineo_core::paths::resolve(prefix);
-        if let Some(environment) = existing.iter().find(|environment| {
-            environment.heroic_id.is_none() && environment.prefix.as_ref() == Some(&resolved)
-        }) {
-            return Some(ExistingMatch {
-                name: environment.name.clone(),
-                needs_id: true,
-            });
-        }
-    }
-    if let Some(exe) = candidate_exe {
-        let resolved = wineo_core::paths::resolve(exe);
-        if let Some(environment) = existing.iter().find(|environment| {
-            environment.heroic_id.is_none() && environment.target_exes.contains(&resolved)
-        }) {
-            return Some(ExistingMatch {
-                name: environment.name.clone(),
-                needs_id: true,
-            });
-        }
-    }
-    existing
-        .iter()
-        .find(|environment| environment.heroic_id.is_none() && environment.name == default_name)
-        .map(|environment| ExistingMatch {
-            name: environment.name.clone(),
-            needs_id: true,
-        })
-}
-
-fn backfill_match(
-    paths: &Paths,
-    existing: &mut [ExistingEnvironment],
-    matched: &ExistingMatch,
-    candidate_id: &str,
-) -> anyhow::Result<()> {
-    let environment = existing
-        .iter_mut()
-        .find(|environment| environment.name == matched.name)
-        .expect("matched environment is present");
-    Environment::record_heroic_id(
-        paths,
-        &matched.name,
-        candidate_id,
-        environment
-            .snapshot
-            .as_ref()
-            .expect("disk snapshot is present"),
-    )?;
-    environment.heroic_id = Some(candidate_id.to_owned());
-    Ok(())
-}
-
-fn default_name_for(title: &str, executable: Option<&Path>) -> String {
-    let exe = executable
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    wineo_core::targets::suggest_name(title, &exe)
-}
-
-/// Rows and games sorted three ways: ready, skipped, and pending on a
-/// missing DXVK/vkd3d-proton build, plus the environment names already
-/// imported.
-type Classified = (Vec<BulkRow>, Vec<ReadyGame>, Vec<String>, Vec<PendingGame>);
-
-/// Sorts every Heroic candidate into already imported, skipped with a
-/// reason, or ready to import, backfilling `heroic_id` onto legacy matches
-/// as it goes.
-#[allow(clippy::too_many_arguments)]
-fn classify_candidates(
-    paths: &Paths,
-    global: &GlobalConfig,
-    source: &HeroicSource,
-    candidates: &[HeroicCandidate],
-    existing: &[ExistingEnvironment],
-    runner_name: &str,
-    runner: &Runner,
-    args: &Args,
-) -> anyhow::Result<Classified> {
-    let mut rows = Vec::new();
-    let mut ready = Vec::new();
-    let mut already = Vec::new();
-    let mut pending = Vec::new();
-    let mut used_names: BTreeSet<String> = BTreeSet::new();
-    let mut existing = existing.to_vec();
-    let mut shared_by_prefix: BTreeMap<PathBuf, Vec<HeroicSharedPrefix>> = BTreeMap::new();
-    for candidate in candidates {
-        if let Some(prefix) = candidate.prefix.as_deref() {
-            shared_by_prefix
-                .entry(wineo_core::paths::resolve(prefix))
-                .or_default()
-                .push(HeroicSharedPrefix {
-                    id: candidate.id.clone(),
-                    title: candidate.title.clone(),
-                });
-        }
-    }
-    for group in shared_by_prefix.values_mut() {
-        group.sort_by(|a, b| a.title.cmp(&b.title).then(a.id.cmp(&b.id)));
-    }
-
-    for candidate in candidates {
-        let default_name = default_name_for(&candidate.title, candidate.executable.as_deref());
-        if let Some(matched) = match_existing(
-            &existing,
-            &candidate.id,
-            candidate.prefix.as_deref(),
-            candidate.executable.as_deref(),
-            &default_name,
-        ) {
-            if matched.needs_id {
-                backfill_match(paths, &mut existing, &matched, &candidate.id)?;
-            }
-            already.push(matched.name);
-            continue;
-        }
-        if let Some(issue) = candidate_filter_issue(candidate) {
-            rows.push(BulkRow {
-                name: default_name,
-                title: candidate.title.clone(),
-                status: RowStatus::Skipped(issue.message.clone()),
-            });
-            continue;
-        }
-        let imported = match source.inspect(&candidate.id) {
-            Ok(imported) => imported,
-            Err(error) => {
-                rows.push(BulkRow {
-                    name: default_name,
-                    title: candidate.title.clone(),
-                    status: RowStatus::Skipped(format!("{error:#}")),
-                });
-                continue;
-            }
-        };
-        let shared = shared_by_prefix
-            .get(&wineo_core::paths::resolve(&imported.prefix))
-            .into_iter()
-            .flatten()
-            .filter(|other| other.id != candidate.id)
-            .cloned()
-            .collect();
-        let candidate_is_proton = imported.runner.kind == HeroicRunnerKind::Proton;
-        if candidate_is_proton != runner.is_proton() {
-            let reason = if candidate_is_proton {
-                "Proton runner, needs --runner"
-            } else {
-                "Wine runner, needs --runner"
-            };
-            rows.push(BulkRow {
-                name: default_name,
-                title: imported.title,
-                status: RowStatus::Skipped(reason.to_owned()),
-            });
-            continue;
-        }
-        let title = imported.title.clone();
-        let name =
-            wineo_core::targets::suggest_name(&imported.title, &imported.exe.to_string_lossy());
-        let mut plan = match GamePlan::with_runner(
-            paths,
-            global,
-            imported,
-            shared,
-            runner_name,
-            runner.clone(),
-            Options {
-                name: Some(name.clone()),
-                adopt: args.adopt,
-                destination: None,
-                arch: args.arch,
-            },
-        ) {
-            Ok(plan) => plan,
-            Err(error) => {
-                rows.push(BulkRow {
-                    name: default_name,
-                    title,
-                    status: RowStatus::Skipped(format!("{error:#}")),
-                });
-                continue;
-            }
-        };
-        plan.resolve(Policy::Defaults);
-        if let Some(reason) = plan.skip_reason() {
-            rows.push(BulkRow {
-                name: default_name,
-                title,
-                status: RowStatus::Skipped(skip_text(&reason)),
-            });
-            continue;
-        }
-        let warn = warnings_line(&plan.warnings(), plan.is_adopt());
-        if existing.iter().any(|environment| environment.name == name) || used_names.contains(&name)
-        {
-            let reason = format!("name `{name}` is already taken");
-            rows.push(BulkRow {
-                name,
-                title,
-                status: RowStatus::Skipped(reason),
-            });
-            continue;
-        }
-        used_names.insert(name.clone());
-        match plan.missing_build(paths, global) {
-            Ok(None) => {
-                rows.push(BulkRow {
-                    name,
-                    title,
-                    status: RowStatus::Ready { warn },
-                });
-                ready.push(ReadyGame { plan });
-            }
-            Ok(Some(missing)) => pending.push(PendingGame {
-                warn,
-                component: missing.component,
-                version: missing.version.clone(),
-                reason: missing.message(),
-                plan,
-            }),
-            Err(error) => rows.push(BulkRow {
-                name,
-                title,
-                status: RowStatus::Skipped(format!("{error:#}")),
-            }),
-        }
-    }
-    Ok((rows, ready, already, pending))
-}
-
-/// Resolves games only blocked on a missing DXVK/vkd3d-proton build.
-/// `--yes` never downloads and fails each one with the same hint `wineo set`
-/// gives; interactively, this asks once per missing component, grouped
-/// across every game that needs it, before the table.
 fn resolve_pending<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
-    pending: Vec<PendingGame>,
+    library: &mut LibraryPlan,
     yes: bool,
     prompt: Option<&mut Prompt<I, W>>,
-) -> anyhow::Result<(Vec<BulkRow>, Vec<ReadyGame>)> {
-    resolve_pending_with(paths, global, pending, yes, prompt, |component, version| {
+) -> anyhow::Result<()> {
+    resolve_pending_with(paths, global, library, yes, prompt, |component, version| {
         components::download_build(paths, global, component, version)
     })
 }
@@ -1161,37 +787,23 @@ fn resolve_pending<I: Input, W: Write>(
 fn resolve_pending_with<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
-    mut pending: Vec<PendingGame>,
+    library: &mut LibraryPlan,
     yes: bool,
     mut prompt: Option<&mut Prompt<I, W>>,
     mut download: impl FnMut(Component, Option<&str>) -> anyhow::Result<()>,
-) -> anyhow::Result<(Vec<BulkRow>, Vec<ReadyGame>)> {
-    let mut rows = Vec::new();
-    let mut ready = Vec::new();
+) -> anyhow::Result<()> {
     let mut offered = Vec::new();
 
     while !yes && let Some(prompt) = prompt.as_mut() {
-        let Some(component) = Component::ALL.into_iter().find(|component| {
-            pending.iter().any(|game| game.component == *component) && !offered.contains(component)
-        }) else {
+        let Some(offer) = library
+            .pending_builds()
+            .into_iter()
+            .find(|offer| !offered.contains(&offer.component))
+        else {
             break;
         };
+        let (component, count, unique) = (offer.component, offer.games, offer.versions);
         offered.push(component);
-        let versions: Vec<Option<String>> = pending
-            .iter()
-            .filter(|game| game.component == component)
-            .map(|game| game.version.clone())
-            .collect();
-        let mut unique = Vec::new();
-        for version in versions {
-            if !unique.contains(&version) {
-                unique.push(version);
-            }
-        }
-        let count = pending
-            .iter()
-            .filter(|game| game.component == component)
-            .count();
         let pinned: Vec<&str> = unique.iter().filter_map(|v| v.as_deref()).collect();
         let question = if pinned.is_empty() {
             format!(
@@ -1217,38 +829,45 @@ fn resolve_pending_with<I: Input, W: Write>(
             }
             download(component, version.as_deref())?;
         }
-        for game in &mut pending {
-            match game.plan.missing_build(paths, global) {
-                Ok(None) => {}
-                Ok(Some(missing)) => {
-                    game.component = missing.component;
-                    game.version = missing.version.clone();
-                    game.reason = missing.message();
-                }
-                Err(error) => game.reason = error.to_string(),
-            }
-        }
+        library.recheck(paths, global);
     }
 
-    for game in pending {
-        let name = game.plan.name().to_owned();
-        let title = game.plan.heroic().title.clone();
-        if game.plan.check_builds(paths, global).is_ok() {
-            rows.push(BulkRow {
-                name,
-                title,
-                status: RowStatus::Ready { warn: game.warn },
-            });
-            ready.push(ReadyGame { plan: game.plan });
-        } else {
-            rows.push(BulkRow {
-                name,
-                title,
-                status: RowStatus::Skipped(game.reason),
-            });
-        }
-    }
-    Ok((rows, ready))
+    library.settle(paths, global);
+    Ok(())
+}
+
+/// The bulk table's rows, in the order the plan lists its games.
+fn bulk_rows(library: &LibraryPlan) -> Vec<BulkRow> {
+    library
+        .entries()
+        .iter()
+        .map(|entry| match entry {
+            Entry::Ready(Game::Windows(plan)) => BulkRow {
+                name: plan.name().to_owned(),
+                title: plan.heroic().title.clone(),
+                status: RowStatus::Ready {
+                    warn: warnings_line(&plan.warnings(), plan.is_adopt()),
+                },
+            },
+            Entry::Ready(Game::Native(plan)) => BulkRow {
+                name: plan.name().to_owned(),
+                title: plan.heroic().title.clone(),
+                status: RowStatus::ReadyNative {
+                    warn: warnings_line(&plan.warnings(), false),
+                },
+            },
+            Entry::Pending(game) => BulkRow {
+                name: game.plan().name().to_owned(),
+                title: game.plan().heroic().title.clone(),
+                status: RowStatus::Skipped(game.reason().to_owned()),
+            },
+            Entry::Skipped(skipped) => BulkRow {
+                name: skipped.name.clone(),
+                title: skipped.title.clone(),
+                status: RowStatus::Skipped(skip_text(&skipped.reason)),
+            },
+        })
+        .collect()
 }
 
 /// The text a warning has in the bulk table and the final review. Core only
@@ -1278,11 +897,15 @@ fn warnings_line(warnings: &[Warning], adopt: bool) -> Option<String> {
     (!texts.is_empty()).then(|| texts.join("; "))
 }
 
-/// The wording for why `--all` skips a game.
 fn skip_text(reason: &SkipReason) -> String {
     match reason {
         SkipReason::LauncherArgs => "invalid launcher arguments".to_owned(),
-        SkipReason::Blocked(message) => message.clone(),
+        SkipReason::NeedsRunner { proton: true } => "Proton runner, needs --runner".to_owned(),
+        SkipReason::NeedsRunner { proton: false } => "Wine runner, needs --runner".to_owned(),
+        SkipReason::NameTaken(name) => format!("name `{name}` is already taken"),
+        SkipReason::Blocked(message)
+        | SkipReason::Unreadable(message)
+        | SkipReason::Unavailable(message) => message.clone(),
     }
 }
 
@@ -1372,27 +995,30 @@ struct Bulk<'a> {
     verbose: bool,
 }
 
-fn import_all(
-    bulk: &Bulk,
-    ready: Vec<ReadyGame>,
-    ready_native: Vec<native::ReadyNative>,
-) -> anyhow::Result<ExitCode> {
+fn import_all(bulk: &Bulk, games: Vec<Game>) -> anyhow::Result<ExitCode> {
     let paths = bulk.paths;
     let verbose = bulk.verbose;
-    let total = ready.len() + ready_native.len();
+    let total = games.len();
     let mut done = 0usize;
     let mut failed = Vec::new();
-    for game in ready {
-        let name = game.plan.name().to_owned();
-        if verbose {
-            let mut output = Prompt::new(OutputOnly, io::stdout());
-            show_game_summary(&mut output, paths, game.plan.resolved(), verbose)?;
-        }
+    for game in games {
+        let name = game.name().to_owned();
         // Art lines wait for the progress line to end.
         let (mut art_out, mut art_err) = (Vec::new(), Vec::new());
-        let imported = import_progress(&mut io::stdout().lock(), &name, || {
-            import_one(bulk, &game, &mut art_out, &mut art_err)
-        })?;
+        let imported = match &game {
+            Game::Windows(plan) => {
+                if verbose {
+                    let mut output = Prompt::new(OutputOnly, io::stdout());
+                    show_game_summary(&mut output, paths, plan.resolved(), verbose)?;
+                }
+                import_progress(&mut io::stdout().lock(), &name, || {
+                    import_one(bulk, plan, &mut art_out, &mut art_err)
+                })?
+            }
+            Game::Native(plan) => import_progress(&mut io::stdout().lock(), &name, || {
+                native::import_one(bulk, plan, &mut art_out, &mut art_err).map(|()| None)
+            })?,
+        };
         io::stdout().write_all(&art_out)?;
         io::stderr().write_all(&art_err)?;
         match imported {
@@ -1402,21 +1028,7 @@ fn import_all(
                 }
                 done += 1;
             }
-            Err(_) => {
-                failed.push(name);
-            }
-        }
-    }
-    for game in ready_native {
-        let (mut art_out, mut art_err) = (Vec::new(), Vec::new());
-        let imported = import_progress(&mut io::stdout().lock(), &game.name, || {
-            native::import_one(bulk, &game, &mut art_out, &mut art_err)
-        })?;
-        io::stdout().write_all(&art_out)?;
-        io::stderr().write_all(&art_err)?;
-        match imported {
-            Ok(()) => done += 1,
-            Err(_) => failed.push(game.name),
+            Err(_) => failed.push(name),
         }
     }
     if failed.is_empty() {
@@ -1455,12 +1067,12 @@ fn import_progress<W: Write, T>(
 /// lines and warnings go to `out` and `err`. Art failures never fail the game.
 fn import_one(
     bulk: &Bulk,
-    game: &ReadyGame,
+    game: &GamePlan,
     out: &mut Vec<u8>,
     err: &mut Vec<u8>,
 ) -> anyhow::Result<Option<String>> {
     let (paths, global) = (bulk.paths, bulk.global);
-    let mut plan = game.plan.clone();
+    let mut plan = game.clone();
     plan.set_desktop_enabled(bulk.desktop);
     let art = ArtChoice {
         key: bulk.art.clone(),
@@ -1934,34 +1546,6 @@ fn copy_heroic_runner<I: Input, W: Write>(
     Ok(ChosenRunner {
         name: receipt.name,
         dependencies: receipt.external_dependencies,
-    })
-}
-
-/// The issue that makes `candidate` unimportable, the same rule guided
-/// selection and `--all` both filter candidates by. `None` means it can be
-/// imported.
-fn candidate_filter_issue(candidate: &HeroicCandidate) -> Option<&HeroicIssue> {
-    if candidate.kind == HeroicGameKind::Native
-        && !candidate
-            .issues
-            .iter()
-            .any(|issue| issue.field.as_deref() == Some("platform"))
-    {
-        return native::filter_issue(candidate);
-    }
-    if candidate.kind != HeroicGameKind::Windows {
-        return candidate
-            .issues
-            .iter()
-            .find(|issue| issue.kind == HeroicIssueKind::Unsupported);
-    }
-    candidate.issues.iter().find(|issue| {
-        (matches!(
-            issue.kind,
-            HeroicIssueKind::Missing | HeroicIssueKind::Invalid
-        ) && issue.field.as_deref() != Some("launcherArgs"))
-            || (issue.field.as_deref() == Some("runner")
-                && issue.kind == HeroicIssueKind::Unsupported)
     })
 }
 
@@ -2682,9 +2266,13 @@ mod tests {
     use std::collections::VecDeque;
     use std::fs;
 
+    use std::path::PathBuf;
+
     use tempfile::tempdir;
     use wineo_core::heroic::{HeroicRunner, InputFingerprint};
+    use wineo_core::heroic_import::PendingGame;
     use wineo_core::import;
+    use wineo_core::runner::Runner;
 
     use super::*;
     use crate::commands::art::fake::Fake;
@@ -3443,245 +3031,6 @@ mod tests {
 
     // -- --all (bulk import) --
 
-    fn candidate(kind: HeroicGameKind, issues: Vec<HeroicIssue>) -> HeroicCandidate {
-        HeroicCandidate {
-            id: "game".to_owned(),
-            title: "Game".to_owned(),
-            kind,
-            prefix: None,
-            runner: None,
-            executable: None,
-            issues,
-        }
-    }
-
-    #[test]
-    fn candidate_filter_issue_allows_a_clean_windows_candidate() {
-        assert!(candidate_filter_issue(&candidate(HeroicGameKind::Windows, Vec::new())).is_none());
-    }
-
-    #[test]
-    fn candidate_filter_issue_allows_invalid_launcher_args() {
-        let candidate = candidate(
-            HeroicGameKind::Windows,
-            vec![HeroicIssue {
-                kind: HeroicIssueKind::Invalid,
-                field: Some("launcherArgs".to_owned()),
-                message: "bad args".to_owned(),
-            }],
-        );
-        assert!(candidate_filter_issue(&candidate).is_none());
-    }
-
-    #[test]
-    fn candidate_filter_issue_rejects_non_windows_kinds() {
-        let candidate = candidate(
-            HeroicGameKind::Native,
-            vec![HeroicIssue {
-                kind: HeroicIssueKind::Unsupported,
-                field: Some("platform".to_owned()),
-                message: "native games are not Windows prefix imports".to_owned(),
-            }],
-        );
-        let issue = candidate_filter_issue(&candidate).unwrap();
-        assert_eq!(issue.message, "native games are not Windows prefix imports");
-    }
-
-    #[test]
-    fn candidate_filter_issue_rejects_missing_settings() {
-        let candidate = candidate(
-            HeroicGameKind::Windows,
-            vec![HeroicIssue {
-                kind: HeroicIssueKind::Missing,
-                field: Some("exe".to_owned()),
-                message: "no executable set".to_owned(),
-            }],
-        );
-        let issue = candidate_filter_issue(&candidate).unwrap();
-        assert_eq!(issue.message, "no executable set");
-    }
-
-    #[test]
-    fn candidate_filter_issue_rejects_unsupported_runner() {
-        let candidate = candidate(
-            HeroicGameKind::Windows,
-            vec![HeroicIssue {
-                kind: HeroicIssueKind::Unsupported,
-                field: Some("runner".to_owned()),
-                message: "only manually added sideloaded games are supported".to_owned(),
-            }],
-        );
-        assert!(candidate_filter_issue(&candidate).is_some());
-    }
-
-    fn existing(
-        name: &str,
-        heroic_id: Option<&str>,
-        prefix: &Path,
-        target_exes: &[&Path],
-    ) -> ExistingEnvironment {
-        ExistingEnvironment {
-            name: name.to_owned(),
-            heroic_id: heroic_id.map(str::to_owned),
-            snapshot: None,
-            prefix: Some(prefix.to_owned()),
-            target_exes: target_exes.iter().map(|exe| exe.to_path_buf()).collect(),
-        }
-    }
-
-    #[test]
-    fn match_existing_matches_by_recorded_id_first() {
-        let existing = vec![existing(
-            "palworld",
-            Some("abc"),
-            Path::new("/prefixes/palworld"),
-            &[],
-        )];
-        let matched = match_existing(&existing, "abc", None, None, "something-else").unwrap();
-        assert_eq!(matched.name, "palworld");
-        assert!(!matched.needs_id);
-    }
-
-    #[test]
-    fn match_existing_does_not_claim_another_id_through_legacy_fallbacks() {
-        let prefix = Path::new("/prefixes/shared");
-        let exe = Path::new("/games/shared.exe");
-        let existing = vec![
-            existing("shared", Some("game-a"), prefix, &[exe]),
-            existing("legacy", None, prefix, &[exe]),
-        ];
-        let matched =
-            match_existing(&existing, "game-b", Some(prefix), Some(exe), "shared").unwrap();
-        assert_eq!(matched.name, "legacy");
-        assert!(matched.needs_id);
-
-        let recorded_only = &existing[..1];
-        assert!(
-            match_existing(recorded_only, "game-b", Some(prefix), Some(exe), "shared").is_none()
-        );
-        let matched =
-            match_existing(recorded_only, "game-a", Some(prefix), Some(exe), "other").unwrap();
-        assert_eq!(matched.name, "shared");
-        assert!(!matched.needs_id);
-    }
-
-    #[test]
-    fn backfill_match_rejects_stale_classification_without_changing_the_config() {
-        for change in ["config", "id", "removed"] {
-            let root = tempdir().unwrap();
-            let paths = paths(root.path());
-            let path = paths.environment_config("legacy");
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let prefix = root.path().join("shared-prefix");
-            let original = format!(
-                "# keep this\nprefix = {:?}\nrunner = \"wine\"\narch = \"win64\"\n",
-                prefix.to_string_lossy()
-            );
-            fs::write(&path, &original).unwrap();
-            let mut existing = existing_environments(&paths).unwrap();
-            let matched =
-                match_existing(&existing, "candidate", Some(&prefix), None, "other").unwrap();
-            assert!(matched.needs_id);
-
-            let changed = match change {
-                "config" => original.replace("wine", "other"),
-                "id" => format!("{original}heroic_id = \"different\"\n"),
-                _ => String::new(),
-            };
-            if change == "removed" {
-                fs::remove_file(&path).unwrap();
-            } else {
-                fs::write(&path, &changed).unwrap();
-            }
-            let error = backfill_match(&paths, &mut existing, &matched, "candidate").unwrap_err();
-            assert!(
-                error.to_string().contains("retry the import")
-                    || error.to_string().contains("does not exist"),
-                "{error:#}"
-            );
-            assert_eq!(existing[0].heroic_id, None);
-            if change == "removed" {
-                assert!(!path.exists());
-            } else {
-                assert_eq!(fs::read_to_string(&path).unwrap(), changed);
-            }
-        }
-    }
-
-    #[test]
-    fn match_existing_falls_back_to_the_adopted_prefix() {
-        let existing = vec![existing(
-            "zomboid",
-            None,
-            Path::new("/prefixes/zomboid"),
-            &[],
-        )];
-        let matched = match_existing(
-            &existing,
-            "different-id",
-            Some(Path::new("/prefixes/zomboid")),
-            None,
-            "not-the-name",
-        )
-        .unwrap();
-        assert_eq!(matched.name, "zomboid");
-        assert!(matched.needs_id, "a legacy match should be backfilled");
-    }
-
-    #[test]
-    fn match_existing_falls_back_to_a_target_running_the_same_exe() {
-        let existing = vec![existing(
-            "Zomboid",
-            None,
-            Path::new("/prefixes/other"),
-            &[Path::new(
-                "/home/me/Games/ProjectZomboid/ProjectZomboid64.exe",
-            )],
-        )];
-        let matched = match_existing(
-            &existing,
-            "5HYciurSM5YdUGzasx38E7",
-            Some(Path::new("/elsewhere")),
-            Some(Path::new(
-                "/home/me/Games/ProjectZomboid/ProjectZomboid64.exe",
-            )),
-            "project-zomboid",
-        )
-        .unwrap();
-        assert_eq!(matched.name, "Zomboid");
-        assert!(matched.needs_id, "a legacy match should be backfilled");
-    }
-
-    #[test]
-    fn match_existing_falls_back_to_the_default_name() {
-        let existing = vec![existing("hades", None, Path::new("/prefixes/other"), &[])];
-        let matched = match_existing(
-            &existing,
-            "different-id",
-            Some(Path::new("/elsewhere")),
-            None,
-            "hades",
-        )
-        .unwrap();
-        assert_eq!(matched.name, "hades");
-        assert!(matched.needs_id);
-    }
-
-    #[test]
-    fn match_existing_returns_none_when_nothing_matches() {
-        let existing = vec![existing("hades", None, Path::new("/prefixes/hades"), &[])];
-        assert!(
-            match_existing(
-                &existing,
-                "id",
-                Some(Path::new("/elsewhere")),
-                Some(Path::new("/elsewhere/Game.exe")),
-                "not-hades"
-            )
-            .is_none()
-        );
-    }
-
     #[test]
     fn bulk_desktop_choice_follows_desktop_and_yes_flags() {
         assert_eq!(bulk_desktop_choice(true, true), Some(true));
@@ -3806,20 +3155,24 @@ mod tests {
         dxvk: Option<&str>,
         vkd3d: Option<&str>,
         version: Option<&str>,
-    ) -> PendingGame {
+    ) -> Entry {
         let mut imported = reviewed_import(root);
         imported.dxvk = dxvk.map(str::to_owned);
         imported.vkd3d = vkd3d.map(str::to_owned);
-        PendingGame {
-            warn: None,
+        Entry::Pending(PendingGame::new(
+            plan_for(root, imported),
             component,
-            version: version.map(str::to_owned),
-            reason: reason.to_owned(),
-            plan: plan_for(root, imported),
-        }
+            version.map(str::to_owned),
+            reason.to_owned(),
+        ))
     }
 
-    fn pending_game(root: &Path, component: Component, reason: &str) -> PendingGame {
+    /// A plan whose only games are waiting on builds.
+    fn waiting(games: Vec<Entry>) -> LibraryPlan {
+        LibraryPlan::from_entries(Some("wine-tkg".to_owned()), Vec::new(), games)
+    }
+
+    fn pending_game(root: &Path, component: Component, reason: &str) -> Entry {
         pending_game_wanting(
             root,
             component,
@@ -3933,13 +3286,13 @@ mod tests {
                 Some("dxvk-2.7"),
             )
         };
-        let (a, b) = (pinned(), pinned());
+        let mut library = waiting(vec![pinned(), pinned()]);
         let mut prompt = Prompt::new(Script::new(&["y"]), Vec::new());
         let mut requests = Vec::new();
-        let (rows, ready) = resolve_pending_with(
+        resolve_pending_with(
             &paths,
             &global,
-            vec![a, b],
+            &mut library,
             false,
             Some(&mut prompt),
             |component, version| {
@@ -3953,7 +3306,8 @@ mod tests {
             requests,
             vec![(Component::Dxvk, Some("dxvk-2.7".to_owned()))]
         );
-        assert_eq!(ready.len(), 2);
+        let rows = bulk_rows(&library);
+        assert_eq!(library.into_ready().len(), 2);
         assert!(
             rows.iter()
                 .all(|row| matches!(row.status, RowStatus::Ready { .. }))
@@ -3979,13 +3333,13 @@ mod tests {
             Some("latest"),
             None,
         );
-        let pending = vec![game];
+        let mut library = waiting(vec![game]);
         let mut prompt = Prompt::new(Script::new(&["y", "y"]), Vec::new());
         let mut requested = Vec::new();
-        let (rows, ready) = resolve_pending_with(
+        resolve_pending_with(
             &paths,
             &global,
-            pending,
+            &mut library,
             false,
             Some(&mut prompt),
             |component, version| {
@@ -4004,7 +3358,8 @@ mod tests {
             requested,
             vec![(Component::Dxvk, None), (Component::Vkd3d, None)]
         );
-        assert_eq!(ready.len(), 1);
+        let rows = bulk_rows(&library);
+        assert_eq!(library.into_ready().len(), 1);
         assert!(matches!(rows[0].status, RowStatus::Ready { .. }));
         assert_eq!(
             String::from_utf8_lossy(prompt.output())
@@ -4017,20 +3372,21 @@ mod tests {
     #[test]
     fn resolve_pending_with_yes_skips_without_asking() {
         let root = tempdir().unwrap();
-        let pending = vec![pending_game(
+        let mut library = waiting(vec![pending_game(
             root.path(),
             Component::Dxvk,
             "no DXVK build, run wineo download dxvk",
-        )];
-        let (rows, ready) = resolve_pending::<Script, Vec<u8>>(
+        )]);
+        resolve_pending::<Script, Vec<u8>>(
             &paths(root.path()),
             &GlobalConfig::default(),
-            pending,
+            &mut library,
             true,
             None,
         )
         .unwrap();
-        assert!(ready.is_empty());
+        let rows = bulk_rows(&library);
+        assert!(library.into_ready().is_empty());
         assert_eq!(rows.len(), 1);
         let RowStatus::Skipped(reason) = &rows[0].status else {
             panic!("expected a skip row");
@@ -4041,21 +3397,22 @@ mod tests {
     #[test]
     fn resolve_pending_interactive_decline_keeps_the_original_reason() {
         let root = tempdir().unwrap();
-        let pending = vec![pending_game(
+        let mut library = waiting(vec![pending_game(
             root.path(),
             Component::Dxvk,
             "no dxvk builds are installed",
-        )];
+        )]);
         let mut prompt = Prompt::new(Script::new(&["n"]), Vec::new());
-        let (rows, ready) = resolve_pending(
+        resolve_pending(
             &paths(root.path()),
             &GlobalConfig::default(),
-            pending,
+            &mut library,
             false,
             Some(&mut prompt),
         )
         .unwrap();
-        assert!(ready.is_empty());
+        let rows = bulk_rows(&library);
+        assert!(library.into_ready().is_empty());
         assert_eq!(rows.len(), 1);
         assert!(
             matches!(&rows[0].status, RowStatus::Skipped(reason) if reason == "no dxvk builds are installed")
@@ -4065,20 +3422,20 @@ mod tests {
     #[test]
     fn resolve_pending_asks_once_per_component_across_every_game_that_needs_it() {
         let root = tempdir().unwrap();
-        let pending = vec![
+        let mut library = waiting(vec![
             pending_game(root.path(), Component::Dxvk, "dxvk missing"),
             pending_game(root.path(), Component::Dxvk, "dxvk missing"),
-        ];
+        ]);
         let mut prompt = Prompt::new(Script::new(&["n"]), Vec::new());
-        let (rows, _) = resolve_pending(
+        resolve_pending(
             &paths(root.path()),
             &GlobalConfig::default(),
-            pending,
+            &mut library,
             false,
             Some(&mut prompt),
         )
         .unwrap();
-        assert_eq!(rows.len(), 2);
+        assert_eq!(bulk_rows(&library).len(), 2);
         let printed = String::from_utf8_lossy(prompt.output()).into_owned();
         // One question covering both games, not one each.
         assert_eq!(printed.matches("Download the latest release?").count(), 1);
@@ -4213,7 +3570,7 @@ mod tests {
 
     /// A Heroic config with one sideloaded game, Alpha, and a fake wine
     /// runner, classified the way `--all` does.
-    fn bulk_fixture(root: &Path) -> (Paths, GlobalConfig, HeroicSource, ReadyGame) {
+    fn bulk_fixture(root: &Path) -> (Paths, GlobalConfig, HeroicSource, GamePlan) {
         let paths = paths(root);
         let prefix = root.join("heroic-prefix");
         fs::create_dir_all(prefix.join("drive_c/Games")).unwrap();
@@ -4245,7 +3602,7 @@ mod tests {
         )
         .unwrap();
         let runner_root = root.join("runners");
-        let runner = fake_wine_runner(&runner_root, "fake");
+        fake_wine_runner(&runner_root, "fake");
         let global = GlobalConfig {
             defaults: wineo_core::config::Defaults {
                 runner_root: Some(runner_root.display().to_string()),
@@ -4255,24 +3612,20 @@ mod tests {
             ..GlobalConfig::default()
         };
         let source = heroic_source(root);
-        let listing = source.list_candidates().unwrap();
-        let args = Args {
-            runner: Some("fake".to_owned()),
-            ..Args::default()
-        };
-        let (_, mut ready, _, _) = classify_candidates(
+        let listing = listing(&paths, &global, &source).unwrap();
+        let library = plan_library(
             &paths,
             &global,
-            &source,
-            &listing.candidates,
-            &[],
-            "fake",
-            &runner,
-            &args,
+            &listing,
+            Some("fake"),
+            &LibraryOptions::default(),
         )
         .unwrap();
+        let mut ready = library.into_ready();
         assert_eq!(ready.len(), 1);
-        let game = ready.remove(0);
+        let Game::Windows(game) = ready.remove(0) else {
+            panic!("expected a Windows game");
+        };
         (paths, global, source, game)
     }
 
