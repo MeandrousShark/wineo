@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0035: Heroic import in core
 
@@ -101,7 +101,7 @@ The three flows map onto it like this:
 
 ## Open questions
 
-Each has a recommendation. Nothing is settled until the maintainer approves.
+The maintainer accepted every recommendation (2026-09-28).
 
 ### 1. When `heroic_id` gets backfilled
 
