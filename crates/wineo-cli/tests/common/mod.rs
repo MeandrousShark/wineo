@@ -154,7 +154,20 @@ fi
 echo "umu-run: FAKE_VAR=${FAKE_VAR-}"
 pids="$WINEPREFIX/fake-pids"
 case "$1" in
-reg | winetricks | winecfg)
+winetricks)
+    shift
+    if [ "${1-}" = -q ]; then
+        shift
+        for verb in "$@"; do
+            if [ "$verb" = "${WINEO_TEST_FAIL_VERB-}" ]; then
+                exit 1
+            fi
+            printf '%s\n' "$verb" >>"$WINEPREFIX/pfx/winetricks.log"
+        done
+    fi
+    exit 0
+    ;;
+reg | winecfg)
     exit 0
     ;;
 exit-*)

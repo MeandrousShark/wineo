@@ -67,6 +67,8 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
         return Ok(false);
     }
 
+    build::install_winetricks(&global, &environment, &launch, &overrides)?;
+
     if launch.wayland == Wayland::NoSession {
         eprintln!("Not a Wayland session, starting {name} on X11.");
     }

@@ -10,7 +10,11 @@ use super::table;
 #[derive(clap::Args)]
 pub struct Args {
     /// Show environments with every given tag
-    #[arg(long = "tag", add = clap_complete::ArgValueCompleter::new(crate::completion::tags))]
+    #[arg(
+        long = "tag",
+        value_name = "TAG",
+        add = clap_complete::ArgValueCompleter::new(crate::completion::tags)
+    )]
     tags: Vec<String>,
     /// Print machine-readable JSON
     #[arg(long)]

@@ -17,6 +17,22 @@ const APP: &str = "[targets.app]\nexe = \"app\"\n";
 const NOISY: &str = "[targets.noisy]\nexe = \"noisy\"\n";
 
 #[test]
+#[ignore = "runs real Wine and winetricks"]
+fn declarative_winetricks_runs_once_against_real_wine() {
+    let f = Fixture::real();
+    assert_success(&f.run(&["new", "-n", "verbs"]));
+    assert_success(&f.run(&["set", "verbs", "targets.app.exe=cmd"]));
+    assert_success(&f.run(&["set", "verbs", "targets.app.args=[\"/c\",\"exit\"]"]));
+    assert_success(&f.run(&["set", "verbs", "winetricks=[\"win10\"]"]));
+    let first = f.run(&["run", "verbs"]);
+    assert_success(&first);
+    assert!(stderr(&first).contains("Installing win10 with winetricks"));
+    let second = f.run(&["run", "verbs"]);
+    assert_success(&second);
+    assert!(!stderr(&second).contains("Installing win10 with winetricks"));
+}
+
+#[test]
 fn start_then_stop() {
     let f = Fixture::new();
     f.environment("app", APP);
@@ -506,7 +522,7 @@ fn start_status_logs_restart_and_stop_with_real_wine() {
     );
     let status = stdout(&f.run(&["status", "notepad"]));
     assert!(status.starts_with("notepad: running since "), "{status}");
-    assert!(status.contains("  runner     wine (wine-"), "{status}");
+    assert!(status.contains("  runner      wine (wine-"), "{status}");
     let list = stdout(&f.run(&["list"]));
     assert!(list.contains("running"), "{list}");
     assert_success(&f.run(&["logs", "notepad", "-n", "5"]));
@@ -1127,7 +1143,7 @@ fn status_shows_launch_settings_in_text_and_json() {
     );
     let shown = f.run(&["status", "app"]);
     assert_success(&shown);
-    for line in ["gamescope  on", "mangohud   on", "wayland    on"] {
+    for line in ["gamescope   on", "mangohud    on", "wayland     on"] {
         assert!(stdout(&shown).contains(line), "{}", stdout(&shown));
     }
     let json = f.run(&["status", "app", "--json"]);
@@ -1291,8 +1307,8 @@ fn gameid_and_store_round_trip_and_show_in_status() {
     assert!(text.contains("store = \"gog\""), "{text}");
 
     let shown = stdout(&f.run(&["status", "hades"]));
-    assert!(shown.contains("gameid     umu-hades"), "{shown}");
-    assert!(shown.contains("store      gog"), "{shown}");
+    assert!(shown.contains("gameid      umu-hades"), "{shown}");
+    assert!(shown.contains("store       gog"), "{shown}");
 
     assert_success(&f.run(&["set", "hades", "--unset", "gameid", "--unset", "store"]));
     let text = fs::read_to_string(&config).unwrap();
@@ -1443,7 +1459,7 @@ fn a_real_proton_environment_is_created_used_and_removed() {
     thread::sleep(Duration::from_secs(10));
     let status = stdout(&f.run(&["status", "hades"]));
     assert!(status.starts_with("hades: running"), "{status}");
-    assert!(status.contains("gameid     umu-default"), "{status}");
+    assert!(status.contains("gameid      umu-default"), "{status}");
 
     assert_success(&f.run(&["stop", "hades"]));
     assert!(f.state("hades").contains("status = \"stopped\""));
@@ -1834,7 +1850,7 @@ fn latest_picks_up_a_build_dropped_in_later() {
     let config = fs::read_to_string(f.config_dir().join("environments/app.toml")).unwrap();
     assert!(config.contains("dxvk = \"latest\""), "{config}");
     let shown = stdout(&f.run(&["status", "app"]));
-    assert!(shown.contains("dxvk       latest (dxvk-2.7)"), "{shown}");
+    assert!(shown.contains("dxvk        latest (dxvk-2.7)"), "{shown}");
 
     // Extracting a newer one moves the prefix to it on the next launch, with
     // no `wineo set` in between.
@@ -1957,8 +1973,8 @@ fn vkd3d_needs_dxvk_beside_it() {
     // Together they are fine, and both show in status.
     assert_success(&f.run(&["set", "app", "dxvk=dxvk-2.7", "vkd3d=2.14"]));
     let shown = stdout(&f.run(&["status", "app"]));
-    assert!(shown.contains("dxvk       dxvk-2.7"), "{shown}");
-    assert!(shown.contains("vkd3d      2.14"), "{shown}");
+    assert!(shown.contains("dxvk        dxvk-2.7"), "{shown}");
+    assert!(shown.contains("vkd3d       2.14"), "{shown}");
     assert!(f.system32("app").join("d3d12.dll").is_file());
 
     // Dropping DXVK alone would leave vkd3d without a DXGI, so it is refused.
@@ -2074,7 +2090,7 @@ fn the_built_in_gaming_template_sets_up_a_whole_environment() {
     assert!(prefix.join("drive_c/windows/system32/dxgi.dll").is_file());
     assert!(prefix.join("drive_c/windows/system32/d3d12.dll").is_file());
     let shown = stdout(&f.run(&["status", "hades"]));
-    assert!(shown.contains("dxvk       latest (dxvk-2.7)"), "{shown}");
+    assert!(shown.contains("dxvk        latest (dxvk-2.7)"), "{shown}");
 }
 
 #[test]

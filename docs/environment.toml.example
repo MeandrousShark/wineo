@@ -21,6 +21,9 @@ arch = "win64"
 # Tags for filtering with `wineo list --tag`. Default: none.
 # tags = ["game", "co-op"]
 
+# Winetricks verbs installed into the prefix before launch. Default: none.
+# winetricks = ["vcrun2022", "corefonts"]
+
 # Run under gamemode. Default: the global setting.
 # gamemode = true
 

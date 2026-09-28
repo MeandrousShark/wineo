@@ -15,7 +15,7 @@ use super::time::{absolute, day_label, duration_hm, relative};
 
 /// Width of the label column in `status <name>`'s detail lines. Wide enough
 /// for the longest label there is, so no line pushes its value out of line.
-const LABEL_WIDTH: usize = 9;
+const LABEL_WIDTH: usize = 10;
 /// Spaces before the label, and between the label and its value.
 const LABEL_INDENT: usize = 2;
 const LABEL_GAP: usize = 2;
@@ -115,6 +115,21 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
     }
     if !report.tags.is_empty() {
         lines.push(label_line("tags", &report.tags.join(", ")));
+    }
+    if !report.winetricks.is_empty() {
+        let verbs = report
+            .winetricks
+            .iter()
+            .map(|verb| {
+                if report.winetricks_missing.contains(verb) {
+                    format!("{verb} (missing)")
+                } else {
+                    verb.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(label_line("winetricks", &verbs));
     }
     if report.gamemode {
         lines.push(label_line("gamemode", "on"));
@@ -315,6 +330,8 @@ mod tests {
         EnvironmentReport {
             name: "notepad".to_owned(),
             tags: Vec::new(),
+            winetricks: Vec::new(),
+            winetricks_missing: Vec::new(),
             status,
             native: false,
             runner: Some("wine".to_owned()),
@@ -351,10 +368,10 @@ mod tests {
         assert_eq!(
             render(&report(status), now(), &TimeZone::UTC),
             "notepad: running since 2026-09-16 14:02:11 (3 min ago)\n\
-             \x20\x20target     notepad (notepad)\n\
-             \x20\x20runner     wine (wine-11.17)\n\
-             \x20\x20prefix     ~/.local/share/wineo/prefixes/notepad\n\
-             \x20\x20pid        48213\n"
+             \x20\x20target      notepad (notepad)\n\
+             \x20\x20runner      wine (wine-11.17)\n\
+             \x20\x20prefix      ~/.local/share/wineo/prefixes/notepad\n\
+             \x20\x20pid         48213\n"
         );
     }
 
@@ -382,8 +399,8 @@ mod tests {
         assert_eq!(
             render(&report(status), now(), &TimeZone::UTC),
             "notepad: running\n\
-             \x20\x20runner     wine (wine-11.17)\n\
-             \x20\x20prefix     ~/.local/share/wineo/prefixes/notepad\n"
+             \x20\x20runner      wine (wine-11.17)\n\
+             \x20\x20prefix      ~/.local/share/wineo/prefixes/notepad\n"
         );
     }
 
@@ -400,8 +417,8 @@ mod tests {
         let text = render(&report(status), now(), &TimeZone::UTC);
         assert!(
             text.ends_with(
-                "  pid        48213, exited 1 min ago with code 0\n\
-                 \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20other processes are keeping the prefix running\n"
+                "  pid         48213, exited 1 min ago with code 0\n\
+                 \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20other processes are keeping the prefix running\n"
             ),
             "{text}"
         );
@@ -420,7 +437,7 @@ mod tests {
         let text = render(&report(status), now(), &TimeZone::UTC);
         assert!(
             text.ends_with(
-                "\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20other processes are keeping notepad running\n"
+                "\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20other processes are keeping notepad running\n"
             ),
             "{text}"
         );
@@ -439,9 +456,9 @@ mod tests {
         assert_eq!(
             render(&report(status), now(), &TimeZone::UTC),
             "notepad: exited with code 0 at 2026-09-16 14:05:02 (9 s ago)\n\
-             \x20\x20target     notepad (notepad)\n\
-             \x20\x20runner     wine (wine-11.17)\n\
-             \x20\x20prefix     ~/.local/share/wineo/prefixes/notepad\n"
+             \x20\x20target      notepad (notepad)\n\
+             \x20\x20runner      wine (wine-11.17)\n\
+             \x20\x20prefix      ~/.local/share/wineo/prefixes/notepad\n"
         );
     }
 
@@ -524,8 +541,8 @@ mod tests {
         assert_eq!(
             render(&report(status), now(), &TimeZone::UTC),
             "notepad: inactive\n\
-             \x20\x20runner     wine (wine-11.17)\n\
-             \x20\x20prefix     ~/.local/share/wineo/prefixes/notepad\n"
+             \x20\x20runner      wine (wine-11.17)\n\
+             \x20\x20prefix      ~/.local/share/wineo/prefixes/notepad\n"
         );
     }
 
@@ -544,7 +561,7 @@ mod tests {
         let mut report = report(status);
         report.target_exe = None;
         let text = render(&report, now(), &TimeZone::UTC);
-        assert!(text.contains("\n  target     notepad\n"), "{text}");
+        assert!(text.contains("\n  target      notepad\n"), "{text}");
     }
 
     #[test]
@@ -562,7 +579,7 @@ mod tests {
         });
         let text = render(&report, now(), &TimeZone::UTC);
         assert!(
-            text.contains("\n  played     18 h 5 m over 11 sessions, last today\n"),
+            text.contains("\n  played      18 h 5 m over 11 sessions, last today\n"),
             "{text}"
         );
     }
@@ -582,7 +599,7 @@ mod tests {
         });
         let text = render(&report, now(), &TimeZone::UTC);
         assert!(
-            text.contains("\n  played     97 h from Heroic, last today\n"),
+            text.contains("\n  played      97 h from Heroic, last today\n"),
             "{text}"
         );
     }
@@ -608,7 +625,7 @@ mod tests {
         let mut report = report(status);
         report.runner_version = None;
         let text = render(&report, now(), &TimeZone::UTC);
-        assert!(text.contains("\n  runner     wine\n"), "{text}");
+        assert!(text.contains("\n  runner      wine\n"), "{text}");
     }
 
     #[test]
@@ -624,7 +641,9 @@ mod tests {
         report.wayland = true;
         let text = render(&report, now(), &TimeZone::UTC);
         assert!(
-            text.contains("  gamemode   on\n  gamescope  on\n  mangohud   on\n  wayland    on\n"),
+            text.contains(
+                "  gamemode    on\n  gamescope   on\n  mangohud    on\n  wayland     on\n"
+            ),
             "{text}"
         );
     }

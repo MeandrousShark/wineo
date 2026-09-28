@@ -37,6 +37,8 @@ pub const NEWEST_PROTON: &str = "proton";
 pub struct Template {
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub winetricks: Vec<String>,
     pub runner: Option<String>,
     pub arch: Option<Arch>,
     pub gamemode: Option<bool>,
@@ -88,6 +90,13 @@ impl Template {
                 tags.push(tag.as_str());
             }
             doc["tags"] = value(tags);
+        }
+        if !self.winetricks.is_empty() {
+            let mut verbs = Array::new();
+            for verb in &self.winetricks {
+                verbs.push(verb.as_str());
+            }
+            doc["winetricks"] = value(verbs);
         }
         for (key, set) in [
             ("gamemode", self.gamemode),
@@ -244,6 +253,10 @@ fn parse(path: &Path, text: &str) -> Result<Template> {
         path: path.to_owned(),
         message,
     })?;
+    config::validate_winetricks(&template.winetricks).map_err(|message| Error::ConfigInvalid {
+        path: path.to_owned(),
+        message,
+    })?;
     Ok(template)
 }
 
@@ -342,6 +355,28 @@ mod tests {
                 templates(root.path()).resolve("bad"),
                 Err(Error::ConfigInvalid { .. })
             ));
+        }
+    }
+
+    #[test]
+    fn template_winetricks_are_validated_and_applied() {
+        let root = tempfile::tempdir().unwrap();
+        write(
+            root.path(),
+            "verbs",
+            "winetricks = ['vcrun2022', 'corefonts']\n",
+        );
+        let template = templates(root.path()).resolve("verbs").unwrap();
+        let mut doc: DocumentMut = "prefix = '/p'\nrunner = 'wine'\narch = 'win64'\n"
+            .parse()
+            .unwrap();
+        template.apply(&mut doc);
+        let config =
+            config::EnvironmentConfig::parse(Path::new("/wine.toml"), &doc.to_string()).unwrap();
+        assert_eq!(config.winetricks, ["vcrun2022", "corefonts"]);
+        for verbs in ["['a', 'a']", "['-q']", "[1]"] {
+            write(root.path(), "bad", &format!("winetricks = {verbs}\n"));
+            assert!(templates(root.path()).resolve("bad").is_err(), "{verbs}");
         }
     }
 

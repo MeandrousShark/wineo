@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::process::{Command, ExitStatus};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -56,6 +56,62 @@ pub fn missing(wanted: &[String], installed: &HashSet<String>) -> Vec<String> {
         .collect()
 }
 
+pub fn missing_for(runner: &Runner, prefix: &Path, wanted: &[String]) -> io::Result<Vec<String>> {
+    Ok(missing(wanted, &installed(&runner.wine_prefix(prefix))?))
+}
+
+/// The caller holds the environment and prefix lock and has checked the
+/// environment is idle.
+pub fn install_missing(
+    name: &str,
+    runner: &Runner,
+    prefix: &Path,
+    env: &BTreeMap<String, String>,
+    wanted: &[String],
+    stop_timeout: u32,
+) -> anyhow::Result<()> {
+    install_missing_with_output(name, runner, prefix, env, wanted, stop_timeout, false)
+}
+
+pub fn install_missing_to_stderr(
+    name: &str,
+    runner: &Runner,
+    prefix: &Path,
+    env: &BTreeMap<String, String>,
+    wanted: &[String],
+    stop_timeout: u32,
+) -> anyhow::Result<()> {
+    install_missing_with_output(name, runner, prefix, env, wanted, stop_timeout, true)
+}
+
+fn install_missing_with_output(
+    name: &str,
+    runner: &Runner,
+    prefix: &Path,
+    env: &BTreeMap<String, String>,
+    wanted: &[String],
+    stop_timeout: u32,
+    to_stderr: bool,
+) -> anyhow::Result<()> {
+    let missing = missing_for(runner, prefix, wanted)?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+    check_available(runner)?;
+    eprintln!("Installing {} with winetricks", missing.join(", "));
+    if install_unattended_with_output(name, runner, prefix, env, &missing, stop_timeout, to_stderr)
+        .is_err()
+    {
+        let remaining = missing_for(runner, prefix, wanted)?;
+        let named = match remaining.as_slice() {
+            [] => missing.join(" and "),
+            _ => remaining.join(" and "),
+        };
+        bail!("winetricks failed installing {named} for {name}");
+    }
+    Ok(())
+}
+
 pub fn validate_verb(verb: &str) -> anyhow::Result<()> {
     if verb.is_empty() {
         bail!("Invalid winetricks verb: can't be empty.");
@@ -105,6 +161,17 @@ pub fn run(
     args: &[String],
     stop_timeout: u32,
 ) -> anyhow::Result<ExitStatus> {
+    run_with_output(runner, prefix, env, args, stop_timeout, false)
+}
+
+fn run_with_output(
+    runner: &Runner,
+    prefix: &Path,
+    env: &BTreeMap<String, String>,
+    args: &[String],
+    stop_timeout: u32,
+    to_stderr: bool,
+) -> anyhow::Result<ExitStatus> {
     // umu ships winetricks and runs it inside the container.
     let mut command = if runner.is_proton() {
         let mut command = runner.command(prefix, &[])?;
@@ -129,6 +196,9 @@ pub fn run(
     // The prefix is reapplied last: for Proton it is the compatdata directory
     // umu makes `pfx/` under, which is the same path the config names.
     command.args(args).envs(env).env("WINEPREFIX", prefix);
+    if to_stderr {
+        command.stdout(Stdio::from(std::io::stderr()));
+    }
 
     // Counted rather than flagged, so a second Ctrl+C can force the cleanup.
     let interrupts = Arc::new(AtomicUsize::new(0));
@@ -184,10 +254,22 @@ pub fn install_unattended(
     verbs: &[String],
     stop_timeout: u32,
 ) -> anyhow::Result<()> {
+    install_unattended_with_output(name, runner, prefix, env, verbs, stop_timeout, false)
+}
+
+fn install_unattended_with_output(
+    name: &str,
+    runner: &Runner,
+    prefix: &Path,
+    env: &BTreeMap<String, String>,
+    verbs: &[String],
+    stop_timeout: u32,
+    to_stderr: bool,
+) -> anyhow::Result<()> {
     let args: Vec<String> = std::iter::once("-q".to_owned())
         .chain(verbs.iter().cloned())
         .collect();
-    if !run(runner, prefix, env, &args, stop_timeout)?.success() {
+    if !run_with_output(runner, prefix, env, &args, stop_timeout, to_stderr)?.success() {
         bail!("winetricks failed for {name}");
     }
     Ok(())

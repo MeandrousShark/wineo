@@ -1,10 +1,9 @@
 //! Finds config mistakes and leftover state before a launch trips over them,
 //! and fixes the ones that are safe to fix.
 //!
-//! Checks only read, and nothing launches wine or runs a program. A fix never
-//! touches a config the user wrote, a prefix, or an art file. The one config a
-//! fix edits is `art.toml`, and only to drop a record whose file or target is
-//! gone.
+//! Checks only read, and nothing launches wine or runs a program. Fixes never
+//! edit an environment config. The winetricks fix installs into an idle
+//! prefix; art fixes only drop records whose file or target is gone.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -33,6 +32,7 @@ use crate::runners::Runners;
 use crate::runtime::{LostRunCleanup, Runtime};
 use crate::templates::{Template, Templates};
 use crate::trash::{self, Phase};
+use crate::winetricks;
 use crate::winpath;
 
 /// How bad a problem is. An error means something will fail: a command
@@ -112,6 +112,8 @@ pub enum Code {
     EnvironmentConfigInvalid,
     RunnerMissing,
     BuildMissing,
+    WinetricksMissing,
+    WinetricksUnavailable,
     PrefixMissing,
     PrefixRefused,
     ExeMissing,
@@ -140,13 +142,15 @@ pub enum Code {
 }
 
 impl Code {
-    pub const ALL: [Code; 31] = [
+    pub const ALL: [Code; 33] = [
         Code::GlobalConfigInvalid,
         Code::TemplateInvalid,
         Code::TemplateUnresolved,
         Code::EnvironmentConfigInvalid,
         Code::RunnerMissing,
         Code::BuildMissing,
+        Code::WinetricksMissing,
+        Code::WinetricksUnavailable,
         Code::PrefixMissing,
         Code::PrefixRefused,
         Code::ExeMissing,
@@ -182,6 +186,8 @@ impl Code {
             Code::EnvironmentConfigInvalid => "environment_config_invalid",
             Code::RunnerMissing => "runner_missing",
             Code::BuildMissing => "build_missing",
+            Code::WinetricksMissing => "winetricks_missing",
+            Code::WinetricksUnavailable => "winetricks_unavailable",
             Code::PrefixMissing => "prefix_missing",
             Code::PrefixRefused => "prefix_refused",
             Code::ExeMissing => "exe_missing",
@@ -218,6 +224,7 @@ impl Code {
             | Code::EnvironmentConfigInvalid
             | Code::RunnerMissing
             | Code::BuildMissing
+            | Code::WinetricksUnavailable
             | Code::PrefixRefused
             | Code::ExeMissing
             | Code::CwdMissing
@@ -231,6 +238,7 @@ impl Code {
             Code::TrashInterrupted | Code::TrashInvalid => Level::Error,
             Code::TemplateUnresolved
             | Code::PrefixMissing
+            | Code::WinetricksMissing
             | Code::TargetAmbiguous
             | Code::LostRun
             | Code::InstallerUnresolved
@@ -253,6 +261,8 @@ impl Code {
             Code::EnvironmentConfigInvalid => Area::EnvironmentConfig,
             Code::RunnerMissing
             | Code::BuildMissing
+            | Code::WinetricksMissing
+            | Code::WinetricksUnavailable
             | Code::PrefixMissing
             | Code::PrefixRefused => Area::Wine,
             Code::ExeMissing
@@ -298,6 +308,9 @@ pub enum Fix {
         component: Component,
         version: Option<String>,
     },
+    InstallWinetricks {
+        environment: String,
+    },
     CleanUpLostRun {
         environment: String,
     },
@@ -338,6 +351,9 @@ impl Fix {
     /// What the fix does, in a few words.
     pub fn label(&self) -> String {
         match self {
+            Fix::InstallWinetricks { environment } => {
+                format!("Install {environment}'s missing winetricks verbs")
+            }
             Fix::Download {
                 component,
                 version: Some(version),
@@ -844,6 +860,40 @@ fn check_wine(
         }
     }
 
+    if !environment.config.winetricks.is_empty() {
+        if let Some(runner) = &runner
+            && let Err(err) = winetricks::check_available(runner)
+        {
+            report.push(Problem::new(
+                Code::WinetricksUnavailable,
+                Some(name),
+                err.to_string(),
+                None,
+            ));
+        }
+        // A missing prefix is already reported, and `start` builds it before
+        // installing, so the verbs wait for that.
+        if let (Some(runner), Some(prefix), true) = (&runner, &prefix, usable) {
+            match winetricks::missing_for(runner, prefix, &environment.config.winetricks) {
+                Ok(missing) if !missing.is_empty() => report.push(Problem::new(
+                    Code::WinetricksMissing,
+                    Some(name),
+                    format!("winetricks verbs missing: {}", missing.join(", ")),
+                    Some(Fix::InstallWinetricks {
+                        environment: name.to_owned(),
+                    }),
+                )),
+                Err(err) => report.push(Problem::new(
+                    Code::WinetricksMissing,
+                    Some(name),
+                    format!("cannot read winetricks log: {err}"),
+                    None,
+                )),
+                Ok(_) => {}
+            }
+        }
+    }
+
     WineState {
         runner,
         prefix,
@@ -1260,6 +1310,7 @@ pub fn apply(
     download: impl FnOnce(Component, Option<&str>) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     match fix {
+        Fix::InstallWinetricks { environment } => install_winetricks(paths, environment),
         Fix::Download { component, version } => {
             let global = GlobalConfig::load_or_default(paths)?;
             let asked = version.as_deref().unwrap_or(LATEST);
@@ -1295,6 +1346,45 @@ pub fn apply(
         Fix::RemoveStatsLog { environment } => Ok(remove_stats_log(paths, environment)?),
         Fix::RecoverTrash { id } => trash::recover(paths, id),
     }
+}
+
+fn install_winetricks(paths: &Paths, name: &str) -> anyhow::Result<()> {
+    let environment = Environment::load(paths, name)?;
+    let global = GlobalConfig::load_or_default(paths)?;
+    let runner = Runners::new(paths, &global)?.resolve(&environment.wine()?.runner)?;
+    let prefix = environment.prefix(paths)?;
+    let runtime = Runtime::new(paths, name);
+    if runtime.is_running()? {
+        anyhow::bail!("{name} is running, stop it before running winetricks");
+    }
+    runtime.check_resolved(name)?;
+    if !winetricks::missing_for(&runner, &prefix, &environment.config.winetricks)?.is_empty() {
+        winetricks::check_available(&runner)?;
+    }
+    let _guard = Locks::new(paths).acquire(Operation::Winetricks, name, &[&prefix])?;
+    Environment::ensure_exists(paths, name)?;
+    if !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
+        return Err(Error::MissingPrefix(prefix).into());
+    }
+    if runtime.is_running()? {
+        anyhow::bail!("{name} is running, stop it before running winetricks");
+    }
+    if runtime.status().is_ok_and(|status| status.lost) {
+        anyhow::bail!("{name}'s last run was lost, clean it up with `wineo stop {name}` first");
+    }
+    runtime.check_resolved(name)?;
+    let wanted = Wanted::from_config(&environment.config);
+    install::reconcile(paths, &global, name, &runner, &prefix, &wanted)?;
+    desktop::reconcile(paths, &global, &environment, Some(&runner), &prefix)?;
+    let env = winetricks::merged_env(&runner, &global, &environment, &Default::default())?;
+    winetricks::install_missing_to_stderr(
+        name,
+        &runner,
+        &prefix,
+        &env,
+        &environment.config.winetricks,
+        global.stop_timeout,
+    )
 }
 
 /// What `wineo stop` does for a lost run, which is all there is to stop.

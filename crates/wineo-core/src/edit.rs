@@ -22,7 +22,7 @@ pub enum EditError {
     #[error("`{key}` can't be changed: {reason}")]
     ReadOnly { key: String, reason: String },
     #[error("{0}")]
-    InvalidTag(String),
+    InvalidList(String),
 }
 
 /// Splits `key=value` at the first `=`.
@@ -66,15 +66,19 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
             Ok(())
         }
         "gamescope" => set_gamescope(root, key, raw),
-        "tags" => {
+        "tags" | "winetricks" => {
             let value = parse_args_value(key, raw)?;
-            let tags: Vec<String> = value
+            let values: Vec<String> = value
                 .as_array()
                 .expect("parse_args_value returns an array")
                 .iter()
                 .map(|item| item.as_str().expect("array of strings").to_owned())
                 .collect();
-            crate::config::validate_tags(&tags).map_err(EditError::InvalidTag)?;
+            if key == "tags" {
+                crate::config::validate_tags(&values).map_err(EditError::InvalidList)?;
+            } else {
+                crate::config::validate_winetricks(&values).map_err(EditError::InvalidList)?;
+            }
             store_value(root, key, value);
             Ok(())
         }
@@ -335,7 +339,7 @@ fn unset_gamescope_field(root: &mut Table, key: &str, field: &str) -> Result<boo
 fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
         "prefix" | "runner" | "gamemode" | "wayland" | "mangohud" | "gamescope" | "gameid"
-        | "tags" | "store" | "dxvk" | "vkd3d" => Ok(root.remove(key).is_some()),
+        | "tags" | "winetricks" | "store" | "dxvk" | "vkd3d" => Ok(root.remove(key).is_some()),
         "arch" => Err(read_only_arch()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
@@ -769,6 +773,27 @@ mod tests {
         assert!(!unset(&mut doc, Scope::Environment, "tags").unwrap());
         set(&mut doc, Scope::Environment, "tags", "[]").unwrap();
         assert!(doc.to_string().contains("tags = []\n"));
+    }
+
+    #[test]
+    fn winetricks_set_and_unset_preserve_comments() {
+        let mut doc = parse("# mine\nprefix = '/p' # keep\n");
+        set(
+            &mut doc,
+            Scope::Environment,
+            "winetricks",
+            r#"["win10", "corefonts"]"#,
+        )
+        .unwrap();
+        assert!(
+            doc.to_string()
+                .contains("prefix = '/p' # keep\nwinetricks = [\"win10\", \"corefonts\"]")
+        );
+        for bad in ["[1]", "['-q']", "['a', 'a']"] {
+            assert!(set(&mut doc, Scope::Environment, "winetricks", bad).is_err());
+        }
+        assert!(unset(&mut doc, Scope::Environment, "winetricks").unwrap());
+        assert_eq!(doc.to_string(), "# mine\nprefix = '/p' # keep\n");
     }
 
     #[test]

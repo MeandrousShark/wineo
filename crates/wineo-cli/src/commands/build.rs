@@ -10,6 +10,8 @@ use wineo_core::launch::{Host, Launch, Overrides};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
+use wineo_core::runtime::Runtime;
+use wineo_core::winetricks;
 
 /// The runner an environment's config names, resolved the way a launch does.
 pub fn runner(
@@ -38,6 +40,17 @@ pub fn prepare_target(
     }
     let runner = runner(paths, global, environment)?;
     Launch::check_target(paths, global, environment, &runner, overrides)?;
+    if !environment.config.winetricks.is_empty()
+        && !Runtime::new(paths, &environment.name).is_running()?
+        && !winetricks::missing_for(
+            &runner,
+            &environment.prefix(paths)?,
+            &environment.config.winetricks,
+        )?
+        .is_empty()
+    {
+        winetricks::check_available(&runner)?;
+    }
     ensure_prefix(paths, global, environment, &runner)
 }
 
@@ -54,6 +67,34 @@ pub fn reconcile(
     };
     crate::commands::components::reconcile_config(paths, global, environment, runner, prefix)?;
     crate::commands::desktop::reconcile(paths, global, environment, Some(runner), prefix)
+}
+
+/// Called under the launch lock after the running check and reconciliation.
+pub fn install_winetricks(
+    global: &GlobalConfig,
+    environment: &Environment,
+    launch: &Launch,
+    overrides: &Overrides,
+) -> anyhow::Result<()> {
+    let Host::Wine { runner, prefix } = &launch.host else {
+        return Ok(());
+    };
+    if environment.config.winetricks.is_empty() {
+        return Ok(());
+    }
+    let missing = winetricks::missing_for(runner, prefix, &environment.config.winetricks)?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let env = winetricks::merged_env(runner, global, environment, &overrides.env)?;
+    winetricks::install_missing(
+        &environment.name,
+        runner,
+        prefix,
+        &env,
+        &environment.config.winetricks,
+        global.stop_timeout,
+    )
 }
 
 /// What is printed right before a prefix is built, since that takes a while.

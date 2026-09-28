@@ -73,6 +73,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let Some(_lock) = runtime.try_lock()? else {
         bail!("{} is already running", environment.name);
     };
+    build::install_winetricks(&global, &environment, &launch, &overrides)?;
 
     if launch.wayland == Wayland::NoSession {
         note(&format!(

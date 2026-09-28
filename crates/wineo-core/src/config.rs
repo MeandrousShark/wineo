@@ -12,6 +12,7 @@ use crate::error::{Error, IoContext, Result};
 pub use crate::gamescope::GamescopeSetting;
 use crate::name;
 use crate::paths::Paths;
+use crate::winetricks;
 
 pub const DEFAULT_RUNNER: &str = "wine";
 pub const DEFAULT_STOP_TIMEOUT: u32 = 10;
@@ -124,6 +125,7 @@ pub struct EnvironmentConfig {
     /// imports set this; older configs load fine without it.
     pub heroic_id: Option<String>,
     pub tags: Vec<String>,
+    pub winetricks: Vec<String>,
     pub env: BTreeMap<String, String>,
     pub targets: BTreeMap<String, Target>,
 }
@@ -179,6 +181,7 @@ struct RawEnvironmentConfig {
     heroic_id: Option<String>,
     #[serde(default)]
     tags: Vec<String>,
+    winetricks: Option<Vec<String>>,
     #[serde(default)]
     env: BTreeMap<String, String>,
     #[serde(default)]
@@ -207,6 +210,7 @@ impl RawEnvironmentConfig {
                     "dxvk" => self.dxvk.is_some(),
                     "vkd3d" => self.vkd3d.is_some(),
                     "wayland" => self.wayland.is_some(),
+                    "winetricks" => self.winetricks.is_some(),
                     _ => unreachable!("not a Wine-only key"),
                 };
                 if let Some(key) = WINE_ONLY_KEYS.iter().find(|key| set(key)) {
@@ -234,6 +238,7 @@ impl RawEnvironmentConfig {
             gamescope: self.gamescope,
             heroic_id: self.heroic_id,
             tags: self.tags,
+            winetricks: self.winetricks.unwrap_or_default(),
             env: self.env,
             targets: self.targets,
         })
@@ -245,8 +250,16 @@ fn missing(key: &str) -> String {
 }
 
 /// Keys only a Wine environment can have.
-pub const WINE_ONLY_KEYS: [&str; 8] = [
-    "prefix", "runner", "arch", "gameid", "store", "dxvk", "vkd3d", "wayland",
+pub const WINE_ONLY_KEYS: [&str; 9] = [
+    "prefix",
+    "runner",
+    "arch",
+    "gameid",
+    "store",
+    "dxvk",
+    "vkd3d",
+    "wayland",
+    "winetricks",
 ];
 
 /// The refusal for a Wine-only key on a native environment.
@@ -391,6 +404,7 @@ impl EnvironmentConfig {
 
     fn validate(&self) -> Result<(), String> {
         validate_tags(&self.tags)?;
+        validate_winetricks(&self.winetricks)?;
         // Only wine reads WINEPREFIX, so a native program may have its own.
         match self.kind {
             Kind::Wine(_) => validate_env(&self.env)?,
@@ -425,6 +439,17 @@ pub fn validate_tags(tags: &[String]) -> Result<(), String> {
         }
         if !seen.insert(tag) {
             return Err(format!("Duplicate tag {tag:?}."));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_winetricks(verbs: &[String]) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for verb in verbs {
+        winetricks::validate_verb(verb).map_err(|err| err.to_string())?;
+        if !seen.insert(verb) {
+            return Err(format!("Duplicate winetricks verb {verb:?}."));
         }
     }
     Ok(())
@@ -649,6 +674,24 @@ mod tests {
         );
         let native = environment("kind = 'native'\ntags = ['work']\n").unwrap();
         assert_eq!(native.tags, ["work"]);
+    }
+
+    #[test]
+    fn winetricks_is_wine_only_and_validated() {
+        let base = "prefix = '/p'\nrunner = 'wine'\narch = 'win64'\n";
+        let config = environment(&format!("{base}winetricks = ['vcrun2022', 'win10']\n")).unwrap();
+        assert_eq!(config.winetricks, ["vcrun2022", "win10"]);
+        assert!(environment(base).unwrap().winetricks.is_empty());
+        for value in ["['a', 'a']", "['two words']", "['-q']", "[1]", "'win10'"] {
+            assert!(
+                environment(&format!("{base}winetricks = {value}\n")).is_err(),
+                "{value}"
+            );
+        }
+        for value in ["[]", "['win10']"] {
+            let err = environment(&format!("kind = 'native'\nwinetricks = {value}\n")).unwrap_err();
+            assert!(err.to_string().contains("can't set winetricks"), "{err}");
+        }
     }
 
     #[test]

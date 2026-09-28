@@ -6,7 +6,7 @@
 schema_version = 1
 
 # Required. Makes this a native environment. The Wine-only keys prefix,
-# runner, arch, gameid, store, dxvk, vkd3d, and wayland are refused.
+# runner, arch, gameid, store, dxvk, vkd3d, wayland, and winetricks are refused.
 kind = "native"
 
 # Tags for filtering with `wineo list --tag`. Default: none.

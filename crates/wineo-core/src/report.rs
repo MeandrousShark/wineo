@@ -13,6 +13,7 @@ use crate::paths::Paths;
 use crate::runners::Runners;
 use crate::runtime::{Runtime, Status};
 use crate::stats;
+use crate::winetricks;
 
 /// Everything `wineo status <name>` shows, gathered here so `--json` stays
 /// cheap to add later.
@@ -20,6 +21,8 @@ use crate::stats;
 pub struct EnvironmentReport {
     pub name: String,
     pub tags: Vec<String>,
+    pub winetricks: Vec<String>,
+    pub winetricks_missing: Vec<String>,
     pub status: Status,
     /// A native environment, which has no runner or prefix.
     pub native: bool,
@@ -100,6 +103,25 @@ impl EnvironmentReport {
             });
         let runner_version = resolved.as_ref().and_then(|runner| runner.version());
         let runner_resolved = resolved.as_ref().map(|runner| runner.name().to_owned());
+        let winetricks_missing = if environment.config.winetricks.is_empty() {
+            Vec::new()
+        } else {
+            match resolved.as_ref().zip(environment.prefix(paths).ok()) {
+                Some((runner, prefix)) => {
+                    match winetricks::missing_for(runner, &prefix, &environment.config.winetricks) {
+                        Ok(missing) => missing,
+                        Err(err) => {
+                            eprintln!(
+                                "warning: cannot read winetricks log for {}: {err}",
+                                environment.name
+                            );
+                            environment.config.winetricks.clone()
+                        }
+                    }
+                }
+                None => environment.config.winetricks.clone(),
+            }
+        };
         let runner_name = wine.map(|wine| match &resolved {
             Some(runner) if runner.name() != wine.runner => {
                 format!("{} -> {}", wine.runner, runner.name())
@@ -135,6 +157,8 @@ impl EnvironmentReport {
             wayland: crate::launch::wayland(global, environment, target),
             name: environment.name.clone(),
             tags: environment.config.tags.clone(),
+            winetricks: environment.config.winetricks.clone(),
+            winetricks_missing,
             native: wine.is_none(),
             runner: runner_name,
             runner_resolved,
