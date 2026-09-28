@@ -142,17 +142,8 @@ pub fn choose_and_install<I: Input, W: Write>(
                 Reply::Value(provider) => provider,
             }
         };
-        let cancellation = Cancellation::new()?;
         let client = Client::new()?;
-        match pick_release(
-            paths,
-            global,
-            prompt,
-            provider,
-            &client,
-            &cancellation,
-            verbose,
-        )? {
+        match pick_release(paths, global, prompt, provider, &client, verbose)? {
             Reply::Back => {
                 if providers.len() == 1 {
                     return Ok(Reply::Back);
@@ -170,11 +161,10 @@ fn pick_release<I: Input, W: Write, T: Transport>(
     prompt: &mut Prompt<I, W>,
     provider: Provider,
     client: &Client<T>,
-    cancellation: &Cancellation,
     verbose: bool,
 ) -> anyhow::Result<Reply<String>> {
     loop {
-        let catalog = match cancellation.result(client.list(provider, 1)) {
+        let catalog = match listed(client, provider, 1) {
             Ok(catalog) => catalog,
             Err(error) if error.is::<Canceled>() => return Err(error),
             Err(error) => {
@@ -206,15 +196,7 @@ fn pick_release<I: Input, W: Write, T: Transport>(
         )? {
             Reply::Back => return Ok(Reply::Back),
             Reply::Value(Pick::More) => {
-                match pick_from_full_list(
-                    paths,
-                    global,
-                    prompt,
-                    provider,
-                    client,
-                    cancellation,
-                    verbose,
-                )? {
+                match pick_from_full_list(paths, global, prompt, provider, client, verbose)? {
                     Reply::Back => continue,
                     Reply::Value(name) => return Ok(Reply::Value(name)),
                 }
@@ -228,7 +210,7 @@ fn pick_release<I: Input, W: Write, T: Transport>(
                 ) {
                     continue;
                 }
-                match install(paths, global, client, release, cancellation) {
+                match installed(paths, global, client, release) {
                     Ok(name) => return Ok(Reply::Value(name)),
                     Err(error) if error.is::<Canceled>() => return Err(error),
                     Err(error) => {
@@ -247,12 +229,11 @@ fn pick_from_full_list<I: Input, W: Write, T: Transport>(
     prompt: &mut Prompt<I, W>,
     provider: Provider,
     client: &Client<T>,
-    cancellation: &Cancellation,
     verbose: bool,
 ) -> anyhow::Result<Reply<String>> {
     let mut page = 1;
     loop {
-        let catalog = match cancellation.result(client.list(provider, page)) {
+        let catalog = match listed(client, provider, page) {
             Ok(catalog) => catalog,
             Err(error) if error.is::<Canceled>() => return Err(error),
             Err(error) => {
@@ -298,7 +279,7 @@ fn pick_from_full_list<I: Input, W: Write, T: Transport>(
                 ) {
                     continue;
                 }
-                match install(paths, global, client, release, cancellation) {
+                match installed(paths, global, client, release) {
                     Ok(name) => return Ok(Reply::Value(name)),
                     Err(error) if error.is::<Canceled>() => return Err(error),
                     Err(error) => {
@@ -308,6 +289,27 @@ fn pick_from_full_list<I: Input, W: Write, T: Transport>(
             }
         }
     }
+}
+
+// The handler is scoped to each network step rather than the whole guided
+// flow, so Ctrl+C at a prompt takes the prompt's own path.
+fn listed<T: Transport>(
+    client: &Client<T>,
+    provider: Provider,
+    page: u32,
+) -> anyhow::Result<wineo_core::download::Catalog> {
+    let cancellation = Cancellation::new()?;
+    cancellation.result(client.list(provider, page))
+}
+
+fn installed<T: Transport>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    client: &Client<T>,
+    release: &Release,
+) -> anyhow::Result<String> {
+    let cancellation = Cancellation::new()?;
+    install(paths, global, client, release, &cancellation)
 }
 
 /// A release's listing row: tag and size, with the installed name added by
@@ -570,14 +572,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let client = fixture(&[vec!["v2.6", "v2.5", "v2.4", "v2.3"]]);
         let mut prompt = Prompt::new(Script::new(&["1", "n", "b"]), Vec::new());
-        let cancellation = Cancellation::new().unwrap();
         let result = pick_release(
             &paths(root.path()),
             &GlobalConfig::default(),
             &mut prompt,
             Provider::Dxvk,
             &client,
-            &cancellation,
             false,
         )
         .unwrap();
@@ -600,7 +600,6 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let client = fixture(&[vec!["v2.6"]]);
         let mut prompt = Prompt::new(BackInput, Vec::new());
-        let cancellation = Cancellation::new().unwrap();
         assert!(matches!(
             pick_release(
                 &paths(root.path()),
@@ -608,7 +607,6 @@ mod tests {
                 &mut prompt,
                 Provider::Dxvk,
                 &client,
-                &cancellation,
                 false,
             )
             .unwrap(),
@@ -623,7 +621,6 @@ mod tests {
         let first: Vec<&str> = first.iter().map(String::as_str).collect();
         let client = fixture(&[first, vec!["v1.9", "v1.8"]]);
         let mut prompt = Prompt::new(Script::new(&["m", "n", "p", "b", "b"]), Vec::new());
-        let cancellation = Cancellation::new().unwrap();
         assert!(matches!(
             pick_release(
                 &paths(root.path()),
@@ -631,7 +628,6 @@ mod tests {
                 &mut prompt,
                 Provider::Dxvk,
                 &client,
-                &cancellation,
                 false,
             )
             .unwrap(),
@@ -650,14 +646,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let client = fixture(&[vec!["v2.6", "v2.5"]]);
         let mut prompt = Prompt::new(Script::new(&["b"]), Vec::new());
-        let cancellation = Cancellation::new().unwrap();
         pick_release(
             &paths(root.path()),
             &GlobalConfig::default(),
             &mut prompt,
             Provider::Dxvk,
             &client,
-            &cancellation,
             false,
         )
         .unwrap();
@@ -809,15 +803,8 @@ mod tests {
             }
             "picker" => {
                 let mut prompt = Prompt::new(Script::new(&["1", ""]), Vec::new());
-                let reply = pick_release(
-                    &paths,
-                    &global,
-                    &mut prompt,
-                    Provider::Dxvk,
-                    &client,
-                    &cancellation,
-                    false,
-                )?;
+                let reply =
+                    pick_release(&paths, &global, &mut prompt, Provider::Dxvk, &client, false)?;
                 let Reply::Value(name) = reply else {
                     anyhow::bail!("fixture picker returned back");
                 };
