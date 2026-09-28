@@ -15,6 +15,7 @@ mod files;
 pub mod gamescope;
 pub mod heroic;
 pub(crate) mod heroic_args;
+pub mod heroic_import;
 pub mod import;
 pub mod install;
 pub mod installer;

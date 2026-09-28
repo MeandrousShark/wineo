@@ -13,14 +13,14 @@ use wineo_core::heroic::{
     HeroicCandidate, HeroicGameKind, HeroicIssue, HeroicIssueKind, HeroicListing,
     HeroicNativeImport, HeroicSource,
 };
+use wineo_core::heroic_import::{DesktopEntry, redact_env_value};
 use wineo_core::import::{self, ImportedSettings};
 use wineo_core::launch;
 use wineo_core::paths::Paths;
 
 use super::{
-    Args, ArtChoice, Block, Bulk, BulkRow, DesktopChoice, OutputOnly, RowStatus, display_args,
-    display_env_value, edit_art, edit_desktop, fetch_art, gamescope_display, on_off, print_issue,
-    render_blocks, review_art,
+    Args, ArtChoice, Block, Bulk, BulkRow, OutputOnly, RowStatus, display_args, edit_art,
+    edit_desktop, fetch_art, gamescope_display, on_off, print_issue, render_blocks, review_art,
 };
 use crate::commands::art::{Access, Pick};
 use crate::commands::desktop;
@@ -126,7 +126,7 @@ fn ensure_unchanged(source: &HeroicSource, imported: &HeroicNativeImport) -> any
     Ok(())
 }
 
-fn settings(imported: &HeroicNativeImport, desktop: &DesktopChoice) -> ImportedSettings {
+fn settings(imported: &HeroicNativeImport, desktop: &DesktopEntry) -> ImportedSettings {
     let target = Target {
         exe: imported.exe.to_string_lossy().into_owned(),
         args: imported.args.clone(),
@@ -175,7 +175,7 @@ fn summary(paths: &Paths, imported: &HeroicNativeImport, name: &str) -> String {
             lines: imported
                 .env
                 .iter()
-                .map(|(key, value)| format!("{key}={}", display_env_value(key, value)))
+                .map(|(key, value)| format!("{key}={}", redact_env_value(key, value)))
                 .collect(),
         });
     }
@@ -263,7 +263,7 @@ pub(super) fn direct(
     if let Some(problem) = exe_problem(paths, global, &name, &imported.env, &imported.exe) {
         anyhow::bail!("{problem}");
     }
-    let desktop_choice = DesktopChoice {
+    let desktop_choice = DesktopEntry {
         enabled: args.desktop,
         name: imported.title.clone(),
     };
@@ -340,7 +340,7 @@ pub(super) fn guided<I: Input, W: Write>(
         Reply::Value(value) => value,
         Reply::Back => return Ok(ExitCode::SUCCESS),
     };
-    let mut desktop_choice = DesktopChoice {
+    let mut desktop_choice = DesktopEntry {
         enabled: paths.portable_root().is_none(),
         name: imported.title.clone(),
     };
@@ -392,7 +392,8 @@ pub(super) fn guided<I: Input, W: Write>(
                 }
             }
             Reply::Value(Some(Field::Desktop)) => {
-                edit_desktop(paths, &imported.title, &mut desktop_choice, prompt)?;
+                desktop_choice =
+                    edit_desktop(paths, &imported.title, desktop_choice.clone(), prompt)?;
             }
             Reply::Value(Some(Field::Art)) => edit_art(&mut art, prompt)?,
             Reply::Back => return Err(Canceled.into()),
@@ -511,7 +512,7 @@ pub(super) fn import_one(
         )?;
         out.extend(summary_out);
     }
-    let desktop_choice = DesktopChoice {
+    let desktop_choice = DesktopEntry {
         enabled: bulk.desktop,
         name: game.imported.title.clone(),
     };
@@ -609,7 +610,6 @@ mod tests {
             global: &global,
             access: &access,
             source: &source,
-            runner: None,
             desktop: true,
             art: Some(Key {
                 value: "k".into(),

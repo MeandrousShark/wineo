@@ -21,7 +21,7 @@ const NATIVE_UNSUPPORTED: [&str; 3] = [
     "beforeLaunchScriptPath",
     "afterLaunchScriptPath",
 ];
-const MANAGED_ENV: [&str; 5] = [
+pub(crate) const MANAGED_ENV: [&str; 5] = [
     "WINEPREFIX",
     "PROTONPATH",
     "STEAM_COMPAT_DATA_PATH",

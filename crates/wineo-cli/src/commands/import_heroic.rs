@@ -4,18 +4,21 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use wineo_core::components::Component;
-use wineo_core::config::{Arch, GlobalConfig, Target};
+use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::download::Provider;
 use wineo_core::environment::{self, Environment, HeroicIdSnapshot};
 use wineo_core::gamescope::GamescopeSetting;
 use wineo_core::heroic::{
     HeroicCandidate, HeroicGameKind, HeroicImport, HeroicIssue, HeroicIssueKind, HeroicRunnerKind,
-    HeroicSharedPrefix, HeroicSource, ReviewItem, SettingsReview,
+    HeroicSharedPrefix, HeroicSource, SettingsReview,
 };
-use wineo_core::import::{
-    self, ExternalDependency, ImportRequest, ImportedSettings, Inspection, RunnerCopyInspection,
+use wineo_core::heroic_import::{
+    COVERED_BY_PROTON, DesktopEntry, GamePlan, InputKind, MissingBuild, Options, Policy,
+    RunnerCopy, RunnerSuggestion, SkipReason, Warning, inspect_copyable_runner,
+    is_dropped_conflict, redact_env_value, runner_dependency_lines, shared_prefix_lines,
+    suggest_runner,
 };
-use wineo_core::install::{self, Wanted};
+use wineo_core::import::{self, ExternalDependency};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
@@ -82,15 +85,6 @@ impl Input for OutputOnly {
     fn line(&mut self, _: &str) -> io::Result<crate::prompt::Line> {
         unreachable!("Heroic review should not prompt in noninteractive mode")
     }
-}
-
-/// Whether to write a desktop entry for the imported target, and what to
-/// call it. Kept separate from `HeroicImport` since it isn't a Heroic
-/// setting, and separate from `ImportRequest` since it isn't generic to
-/// every import.
-struct DesktopChoice {
-    enabled: bool,
-    name: String,
 }
 
 /// Whether to fetch SteamGridDB art once the import is registered, and the
@@ -173,48 +167,6 @@ fn fetch_art<I: Input, W: Write>(
     access.fetch(paths, key, &request, pick, err)
 }
 
-#[derive(Clone, Default)]
-struct ReviewEvidence {
-    issues: Vec<HeroicIssue>,
-    settings: SettingsReview,
-    shared_prefix: Vec<HeroicSharedPrefix>,
-    runner_dependencies: Vec<ExternalDependency>,
-}
-
-impl ReviewEvidence {
-    fn new(imported: &HeroicImport, shared_prefix: Vec<HeroicSharedPrefix>) -> Self {
-        Self {
-            issues: imported.issues.clone(),
-            settings: imported.settings_review.clone(),
-            shared_prefix,
-            runner_dependencies: Vec::new(),
-        }
-    }
-
-    fn resolved(&mut self, imported: &HeroicImport, runner: &Runner) {
-        self.issues.retain(|issue| {
-            let field = issue.field.as_deref();
-            !(runner.is_proton() && field.is_some_and(|field| COVERED_BY_PROTON.contains(&field)))
-                && !(field == Some("wineVersion")
-                    && matches!(
-                        issue.kind,
-                        HeroicIssueKind::NeedsAttention | HeroicIssueKind::External
-                    ))
-                && !(matches!(field, Some("wineVersion") | Some("winePrefix"))
-                    && issue.kind == HeroicIssueKind::Conflict)
-                && !(field == Some("autoInstallDxvk") && imported.dxvk.is_some())
-                && !(field == Some("autoInstallVkd3d") && imported.vkd3d.is_some())
-                && !(field == Some("enableHDR") && imported.wayland == Some(true))
-        });
-        for issue in &imported.issues {
-            if issue.field.as_deref() == Some("enableWineWayland") && !self.issues.contains(issue) {
-                self.issues.push(issue.clone());
-            }
-        }
-        self.settings = imported.settings_review.clone();
-    }
-}
-
 pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
     if args.desktop {
         wineo_core::desktop::supported(paths)?;
@@ -259,88 +211,48 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
     if !needs_guided {
         let source = source(paths, args.config_dir.as_deref())?;
         let game_id = args.game.as_deref().unwrap();
-        let mut imported = source.inspect(game_id)?;
-        let mut evidence =
-            ReviewEvidence::new(&imported, source.shared_prefix_candidates(game_id)?);
+        let imported = source.inspect(game_id)?;
+        let shared = source.shared_prefix_candidates(game_id)?;
         let name = args.name.clone().unwrap();
         let runner_name = args.runner.clone().unwrap();
-        let desktop_enabled = args.desktop;
-        let args_art = args.art;
-        let runner = Runners::new(paths, &global)?.resolve(&runner_name)?;
-        let inspection = prefix_inspection(&imported, &runner, args.arch)?;
-        clear_runner_dependency(&mut imported);
-        drop_runner_conflicts(&mut imported);
-        suppress_covered_settings(&mut imported, &runner);
-        carry_over_components(&mut imported, &runner);
-        carry_over_wayland(&mut imported, &runner);
-        evidence.resolved(&imported, &runner);
-        install::check_available(
+        let mut plan = GamePlan::new(
             paths,
             &global,
-            &name,
-            &runner,
-            &Wanted {
-                dxvk: imported.dxvk.clone(),
-                vkd3d: imported.vkd3d.clone(),
-            },
+            imported,
+            shared,
+            &runner_name,
+            plan_options(paths, &args, Some(name))?,
         )?;
-        let mut request = request(
-            paths,
-            imported.prefix.clone(),
-            name,
-            runner_name,
-            args,
-            &inspection,
-        )?;
-        if !request.adopt && request.destination.is_none() {
-            request.destination = Some(global.prefix_root(paths)?.join(&request.name));
-        }
-        let desktop_choice = DesktopChoice {
-            enabled: desktop_enabled,
-            name: imported.title.clone(),
-        };
-        let art = if args_art {
+        plan.check_builds(paths, &global)?;
+        plan.set_desktop_enabled(args.desktop);
+        let art = if args.art {
             let check = (access.check_key)();
             check.print_skip();
-            ArtChoice::checked(check, &imported.title)
+            ArtChoice::checked(check, &plan.resolved().title)
         } else {
             ArtChoice::off()
         };
         let mut output = Prompt::new(OutputOnly, io::stdout());
-        show_game_summary_with_evidence(&mut output, paths, &imported, &evidence, verbose)?;
-        let resolved = Runners::new(paths, &global)?.resolve(&request.runner)?;
+        show_game_summary(&mut output, paths, plan.resolved(), verbose)?;
         let ctx = ReviewContext {
             paths,
             global: &global,
             source: &source,
-            evidence: &evidence,
             verbose,
         };
-        output.say(final_facts_text(
-            &ctx,
-            &imported,
-            &inspection,
-            &request,
-            &resolved,
-            verbose,
-        ))?;
-        reject_unresolved(&imported)?;
-        ensure_source_unchanged(&source, &imported)?;
-        let settings = imported_settings(&imported, &inspection, &request, &desktop_choice);
-        let log_body = verbose.then(|| {
-            log_text_with_evidence(
-                &global,
-                &source,
-                &imported,
-                &evidence,
-                &inspection,
-                &request,
-                &desktop_choice,
-            ) + &art.log_line()
-        });
-        let destination = resolved_destination(paths, &global, &request, &inspection)?;
-        let environment = import_reviewed(paths, &global, request, &inspection, Some(&settings))?;
-        import_playtime(paths, &source, &imported.id, &environment.name);
+        output.say(final_facts_text(&ctx, &plan, verbose))?;
+        plan.resolve(Policy::Strict);
+        reject_unresolved(&plan)?;
+        ensure_source_unchanged(&source, plan.heroic())?;
+        let log_body = verbose.then(|| plan.log_text(&global, &source) + &art.log_line());
+        let environment = import_reviewed(
+            paths,
+            &global,
+            plan.request().clone(),
+            plan.inspection(),
+            Some(&plan.settings()),
+        )?;
+        import_playtime(paths, &source, &plan.heroic().id, &environment.name);
         let mut prompt = (art.enabled && prompt::interactive())
             .then(|| Terminal::open().ok())
             .flatten()
@@ -360,7 +272,13 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
             &mut io::stderr(),
         );
         drop(prompt);
-        desktop::reconcile(paths, &global, &environment, Some(&resolved), &destination)?;
+        desktop::reconcile(
+            paths,
+            &global,
+            &environment,
+            Some(plan.runner()),
+            plan.destination(),
+        )?;
         if fetched.is_err() {
             let name = &environment.name;
             eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
@@ -375,7 +293,6 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         }
         return Ok(ExitCode::SUCCESS);
     }
-
     if !prompt::interactive()
         && args.runner.is_none()
         && let Some(game) = args.game.as_deref()
@@ -534,8 +451,7 @@ fn guided<I: Input, W: Write>(
         return native::guided(paths, global, access, &source, &game, &args, prompt);
     }
     let imported = source.inspect(&game.id)?;
-    let mut imported = imported;
-    let mut evidence = ReviewEvidence::new(&imported, source.shared_prefix_candidates(&game.id)?);
+    let shared = source.shared_prefix_candidates(&game.id)?;
     show_game_summary(prompt, paths, &imported, verbose)?;
 
     let suggested_name =
@@ -552,53 +468,26 @@ fn guided<I: Input, W: Write>(
         Reply::Back => return Ok(ExitCode::SUCCESS),
     };
 
-    let proton = Some(imported.runner.kind == HeroicRunnerKind::Proton);
-    let runner_options = RunnerOptions { proton, verbose };
-    let runner_name = if let Some(runner) = args.runner.clone() {
-        ensure_selected_runner(
-            paths,
-            global,
-            &imported,
-            runner,
-            &mut evidence,
-            prompt,
-            runner_options,
-        )?
-    } else {
-        choose_heroic_runner(
-            paths,
-            global,
-            &imported,
-            &mut evidence,
-            prompt,
-            runner_options,
-        )?
-    };
-    let resolved = Runners::new(paths, global)?.resolve(&runner_name)?;
-    let inspection = prefix_inspection(&imported, &resolved, args.arch)?;
-    clear_runner_dependency(&mut imported);
-    drop_runner_conflicts(&mut imported);
-    suppress_covered_settings(&mut imported, &resolved);
-    carry_over_components(&mut imported, &resolved);
-    carry_over_wayland(&mut imported, &resolved);
-    evidence.resolved(&imported, &resolved);
-    ensure_components_available(
+    let chosen = pick_runner(
         paths,
         global,
-        &name,
-        &resolved,
-        &Wanted {
-            dxvk: imported.dxvk.clone(),
-            vkd3d: imported.vkd3d.clone(),
-        },
+        &imported,
+        args.runner.as_deref(),
         prompt,
+        verbose,
     )?;
-    review_settings(prompt, &mut imported)?;
-    let adopt = if args.adopt {
-        true
-    } else if args.dir.is_some() {
-        false
-    } else {
+    let mut plan = GamePlan::new(
+        paths,
+        global,
+        imported,
+        shared,
+        &chosen.name,
+        plan_options(paths, &args, Some(name))?,
+    )?;
+    plan.set_runner_dependencies(chosen.dependencies);
+    ensure_components_available(paths, global, &plan, prompt)?;
+    review_settings(prompt, &mut plan)?;
+    if !args.adopt && args.dir.is_none() {
         match prompt.choose(
             "How should the prefix be imported?",
             "Mode",
@@ -609,62 +498,30 @@ fn guided<I: Input, W: Write>(
             Some("1"),
             true,
         )? {
-            Reply::Value(value) => value,
+            Reply::Value(true) => plan.set_adopt(),
+            Reply::Value(false) => {}
             Reply::Back => return Ok(ExitCode::SUCCESS),
         }
-    };
-    let dir = if adopt {
-        None
-    } else if let Some(dir) = args.dir.clone() {
-        Some(paths.absolute(&dir)?)
-    } else {
-        Some(global.prefix_root(paths)?.join(&name))
-    };
-    let mut request = ImportRequest {
-        source: imported.prefix.clone(),
-        name,
-        runner: runner_name,
-        destination: dir,
-        adopt,
-        arch: args.arch,
-    };
-    let mut desktop_choice = DesktopChoice {
-        enabled: paths.portable_root().is_none(),
-        name: imported.title.clone(),
-    };
-    let mut art = review_art(access, prompt, &imported.title)?;
+    }
+    plan.set_desktop_enabled(paths.portable_root().is_none());
+    let mut art = review_art(access, prompt, &plan.resolved().title)?;
     let ctx = ReviewContext {
         paths,
         global,
         source: &source,
-        evidence: &evidence,
         verbose,
     };
-    final_review(
-        &ctx,
-        &mut imported,
-        &inspection,
-        &mut request,
-        &mut desktop_choice,
-        &mut art,
-        prompt,
+    final_review(&ctx, &mut plan, &mut art, prompt)?;
+    let log_body = verbose.then(|| plan.log_text(global, &source) + &art.log_line());
+    ensure_source_unchanged(&source, plan.heroic())?;
+    let environment = import_reviewed(
+        paths,
+        global,
+        plan.request().clone(),
+        plan.inspection(),
+        Some(&plan.settings()),
     )?;
-    let settings = imported_settings(&imported, &inspection, &request, &desktop_choice);
-    let log_body = verbose.then(|| {
-        log_text_with_evidence(
-            global,
-            &source,
-            &imported,
-            &evidence,
-            &inspection,
-            &request,
-            &desktop_choice,
-        ) + &art.log_line()
-    });
-    ensure_source_unchanged(&source, &imported)?;
-    let destination = resolved_destination(paths, global, &request, &inspection)?;
-    let environment = import_reviewed(paths, global, request, &inspection, Some(&settings))?;
-    import_playtime(paths, &source, &imported.id, &environment.name);
+    import_playtime(paths, &source, &plan.heroic().id, &environment.name);
     let fetched = fetch_art(
         paths,
         global,
@@ -674,7 +531,13 @@ fn guided<I: Input, W: Write>(
         Pick::Ask(prompt),
         &mut io::stderr(),
     );
-    desktop::reconcile(paths, global, &environment, Some(&resolved), &destination)?;
+    desktop::reconcile(
+        paths,
+        global,
+        &environment,
+        Some(plan.runner()),
+        plan.destination(),
+    )?;
     if fetched.is_err() {
         prompt.say(format!(
             "Kept {} and its prefix. Continue with `wineo setup {}`",
@@ -686,6 +549,22 @@ fn guided<I: Input, W: Write>(
         print_log_path(paths, &environment.name, &body);
     }
     finish_guided(paths, global, &environment, prompt)
+}
+
+fn plan_options(paths: &Paths, args: &Args, name: Option<String>) -> anyhow::Result<Options> {
+    Ok(Options {
+        name,
+        adopt: args.adopt,
+        destination: if args.adopt {
+            None
+        } else {
+            args.dir
+                .as_deref()
+                .map(|dir| paths.absolute(dir))
+                .transpose()?
+        },
+        arch: args.arch,
+    })
 }
 
 // -- Bulk import (`--all`) --
@@ -712,29 +591,19 @@ enum RowStatus {
 /// A candidate ready to import, with everything already inspected and
 /// reviewed so importing it needs no further Heroic reads.
 struct ReadyGame {
-    name: String,
-    title: String,
-    imported: HeroicImport,
-    evidence: ReviewEvidence,
-    inspection: Inspection,
-    request: ImportRequest,
+    plan: GamePlan,
 }
 
 /// A candidate that's ready except for one missing DXVK/vkd3d-proton build,
 /// so it's held back until `--all` decides whether to download it.
 struct PendingGame {
-    name: String,
-    title: String,
     warn: Option<String>,
     component: Component,
     version: Option<String>,
     /// The resolve error's own message, hint included, reused as the skip
     /// reason if this doesn't end up downloaded.
     reason: String,
-    imported: HeroicImport,
-    evidence: ReviewEvidence,
-    inspection: Inspection,
-    request: ImportRequest,
+    plan: GamePlan,
 }
 
 fn run_all(
@@ -840,7 +709,7 @@ fn run_all(
         ready.extend(windows_ready);
         already.extend(windows_already);
         let (pending_rows, pending_ready) =
-            resolve_pending(paths, global, runner, pending, args.yes, prompt.as_mut())?;
+            resolve_pending(paths, global, pending, args.yes, prompt.as_mut())?;
         rows.extend(pending_rows);
         ready.extend(pending_ready);
     }
@@ -887,7 +756,6 @@ fn run_all(
         global,
         access,
         source: &source,
-        runner: runner.as_ref().map(|(_, runner)| runner),
         desktop: desktop_enabled,
         art,
         verbose,
@@ -1141,7 +1009,7 @@ fn classify_candidates(
             });
             continue;
         }
-        let mut imported = match source.inspect(&candidate.id) {
+        let imported = match source.inspect(&candidate.id) {
             Ok(imported) => imported,
             Err(error) => {
                 rows.push(BulkRow {
@@ -1159,7 +1027,6 @@ fn classify_candidates(
             .filter(|other| other.id != candidate.id)
             .cloned()
             .collect();
-        let mut evidence = ReviewEvidence::new(&imported, shared);
         let candidate_is_proton = imported.runner.kind == HeroicRunnerKind::Proton;
         if candidate_is_proton != runner.is_proton() {
             let reason = if candidate_is_proton {
@@ -1174,99 +1041,75 @@ fn classify_candidates(
             });
             continue;
         }
-        clear_runner_dependency(&mut imported);
-        drop_runner_conflicts(&mut imported);
-        suppress_covered_settings(&mut imported, runner);
-        carry_over_components(&mut imported, runner);
-        carry_over_wayland(&mut imported, runner);
-        evidence.resolved(&imported, runner);
-        let inspection = match prefix_inspection(&imported, runner, args.arch) {
-            Ok(inspection) => inspection,
+        let title = imported.title.clone();
+        let name =
+            wineo_core::targets::suggest_name(&imported.title, &imported.exe.to_string_lossy());
+        let mut plan = match GamePlan::with_runner(
+            paths,
+            global,
+            imported,
+            shared,
+            runner_name,
+            runner.clone(),
+            Options {
+                name: Some(name.clone()),
+                adopt: args.adopt,
+                destination: None,
+                arch: args.arch,
+            },
+        ) {
+            Ok(plan) => plan,
             Err(error) => {
                 rows.push(BulkRow {
                     name: default_name,
-                    title: imported.title,
+                    title,
                     status: RowStatus::Skipped(format!("{error:#}")),
                 });
                 continue;
             }
         };
-        let warn = match bulk_review_issues_with_evidence(&mut imported, &evidence, args.adopt) {
-            Ok(warn) => warn,
-            Err(reason) => {
-                rows.push(BulkRow {
-                    name: default_name,
-                    title: imported.title,
-                    status: RowStatus::Skipped(reason),
-                });
-                continue;
-            }
-        };
-        let name =
-            wineo_core::targets::suggest_name(&imported.title, &imported.exe.to_string_lossy());
+        plan.resolve(Policy::Defaults);
+        if let Some(reason) = plan.skip_reason() {
+            rows.push(BulkRow {
+                name: default_name,
+                title,
+                status: RowStatus::Skipped(skip_text(&reason)),
+            });
+            continue;
+        }
+        let warn = warnings_line(&plan.warnings(), plan.is_adopt());
         if existing.iter().any(|environment| environment.name == name) || used_names.contains(&name)
         {
             let reason = format!("name `{name}` is already taken");
             rows.push(BulkRow {
                 name,
-                title: imported.title,
+                title,
                 status: RowStatus::Skipped(reason),
             });
             continue;
         }
         used_names.insert(name.clone());
-        let destination = if args.adopt {
-            None
-        } else {
-            Some(global.prefix_root(paths)?.join(&name))
-        };
-        let request = ImportRequest {
-            source: imported.prefix.clone(),
-            name: name.clone(),
-            runner: runner_name.to_owned(),
-            destination,
-            adopt: args.adopt,
-            arch: args.arch,
-        };
-        let wanted = Wanted {
-            dxvk: imported.dxvk.clone(),
-            vkd3d: imported.vkd3d.clone(),
-        };
-        match install::check_available(paths, global, &name, runner, &wanted) {
-            Ok(()) => {
+        match plan.missing_build(paths, global) {
+            Ok(None) => {
                 rows.push(BulkRow {
-                    name: name.clone(),
-                    title: imported.title.clone(),
+                    name,
+                    title,
                     status: RowStatus::Ready { warn },
                 });
-                ready.push(ReadyGame {
-                    name,
-                    title: imported.title.clone(),
-                    imported,
-                    evidence,
-                    inspection,
-                    request,
-                });
+                ready.push(ReadyGame { plan });
             }
-            Err(error) => match components::missing_build_component(&error) {
-                Some(component) => pending.push(PendingGame {
-                    name,
-                    title: imported.title.clone(),
-                    warn,
-                    component,
-                    version: components::missing_build_version(&error).map(str::to_owned),
-                    reason: error.to_string(),
-                    imported,
-                    evidence,
-                    inspection,
-                    request,
-                }),
-                None => rows.push(BulkRow {
-                    name,
-                    title: imported.title,
-                    status: RowStatus::Skipped(format!("{error:#}")),
-                }),
-            },
+            Ok(Some(missing)) => pending.push(PendingGame {
+                warn,
+                component: missing.component,
+                version: missing.version.clone(),
+                reason: missing.message(),
+                plan,
+            }),
+            Err(error) => rows.push(BulkRow {
+                name,
+                title,
+                status: RowStatus::Skipped(format!("{error:#}")),
+            }),
         }
     }
     Ok((rows, ready, already, pending))
@@ -1279,26 +1122,18 @@ fn classify_candidates(
 fn resolve_pending<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
-    runner: &Runner,
     pending: Vec<PendingGame>,
     yes: bool,
     prompt: Option<&mut Prompt<I, W>>,
 ) -> anyhow::Result<(Vec<BulkRow>, Vec<ReadyGame>)> {
-    resolve_pending_with(
-        paths,
-        global,
-        runner,
-        pending,
-        yes,
-        prompt,
-        |component, version| components::download_build(paths, global, component, version),
-    )
+    resolve_pending_with(paths, global, pending, yes, prompt, |component, version| {
+        components::download_build(paths, global, component, version)
+    })
 }
 
 fn resolve_pending_with<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
-    runner: &Runner,
     mut pending: Vec<PendingGame>,
     yes: bool,
     mut prompt: Option<&mut Prompt<I, W>>,
@@ -1356,47 +1191,32 @@ fn resolve_pending_with<I: Input, W: Write>(
             download(component, version.as_deref())?;
         }
         for game in &mut pending {
-            let wanted = Wanted {
-                dxvk: game.imported.dxvk.clone(),
-                vkd3d: game.imported.vkd3d.clone(),
-            };
-            match install::check_available(paths, global, &game.name, runner, &wanted) {
-                Ok(()) => {}
-                Err(error) => {
-                    if let Some(component) = components::missing_build_component(&error) {
-                        game.component = component;
-                        game.version = components::missing_build_version(&error).map(str::to_owned);
-                    }
-                    game.reason = error.to_string();
+            match game.plan.missing_build(paths, global) {
+                Ok(None) => {}
+                Ok(Some(missing)) => {
+                    game.component = missing.component;
+                    game.version = missing.version.clone();
+                    game.reason = missing.message();
                 }
+                Err(error) => game.reason = error.to_string(),
             }
         }
     }
 
     for game in pending {
-        let wanted = Wanted {
-            dxvk: game.imported.dxvk.clone(),
-            vkd3d: game.imported.vkd3d.clone(),
-        };
-        let available = install::check_available(paths, global, &game.name, runner, &wanted);
-        if available.is_ok() {
+        let name = game.plan.name().to_owned();
+        let title = game.plan.heroic().title.clone();
+        if game.plan.check_builds(paths, global).is_ok() {
             rows.push(BulkRow {
-                name: game.name.clone(),
-                title: game.title.clone(),
+                name,
+                title,
                 status: RowStatus::Ready { warn: game.warn },
             });
-            ready.push(ReadyGame {
-                name: game.name,
-                title: game.title,
-                imported: game.imported,
-                evidence: game.evidence,
-                inspection: game.inspection,
-                request: game.request,
-            });
+            ready.push(ReadyGame { plan: game.plan });
         } else {
             rows.push(BulkRow {
-                name: game.name,
-                title: game.title,
+                name,
+                title,
                 status: RowStatus::Skipped(game.reason),
             });
         }
@@ -1404,154 +1224,39 @@ fn resolve_pending_with<I: Input, W: Write>(
     Ok((rows, ready))
 }
 
-/// Applies `review_settings`'s guided "yes" defaults without prompting, as
-/// `--all` does: conflicting managed settings are dropped and unsupported
-/// ones are omitted. Returns a short warning when anything needing
-/// attention was kept, or a one-line reason this game can't be imported.
-#[cfg(test)]
-fn bulk_review_issues(imported: &mut HeroicImport) -> Result<Option<String>, String> {
-    let warn = bulk_warning(imported);
-    bulk_review_issues_inner(imported, warn)
-}
-
-fn bulk_review_issues_with_evidence(
-    imported: &mut HeroicImport,
-    evidence: &ReviewEvidence,
-    adopt: bool,
-) -> Result<Option<String>, String> {
-    bulk_review_issues_inner(imported, bulk_evidence_warning(evidence, adopt))
-}
-
-fn bulk_review_issues_inner(
-    imported: &mut HeroicImport,
-    warn: Option<String>,
-) -> Result<Option<String>, String> {
-    if let Some(issue) = imported.issues.iter().find(|issue| {
-        issue.kind == HeroicIssueKind::Invalid && issue.field.as_deref() != Some("launcherArgs")
-    }) {
-        return Err(issue.message.clone());
-    }
-    if imported
-        .issues
-        .iter()
-        .any(|issue| issue.field.as_deref() == Some("launcherArgs"))
-    {
-        return Err("invalid launcher arguments".to_owned());
-    }
-    imported.issues.retain(|issue| {
-        !matches!(
-            issue.kind,
-            HeroicIssueKind::Conflict | HeroicIssueKind::Unsupported
-        )
-    });
-    if let Some(issue) = imported.issues.iter().find(|issue| {
-        matches!(
-            issue.kind,
-            HeroicIssueKind::Missing | HeroicIssueKind::Invalid | HeroicIssueKind::Conflict
-        )
-    }) {
-        return Err(issue.message.clone());
-    }
-    Ok(warn)
-}
-
-/// The short table note for a game `--all` keeps settings needing attention
-/// for: EAC/BattlEye specifically, since it's common enough to name, or a
-/// generic nudge toward `-v` for anything else.
-#[cfg(test)]
-fn bulk_warning(imported: &HeroicImport) -> Option<String> {
-    let eac_or_battleye = imported.issues.iter().any(|issue| {
-        matches!(
-            issue.field.as_deref(),
-            Some("eacRuntime") | Some("battlEyeRuntime")
-        )
-    });
-    if eac_or_battleye {
-        return Some("EAC/BattlEye runtimes aren't imported".to_owned());
-    }
-    imported
-        .issues
-        .iter()
-        .any(|issue| {
-            matches!(
-                issue.kind,
-                HeroicIssueKind::NeedsAttention | HeroicIssueKind::External
-            )
-        })
-        .then(|| "settings need attention, see -v".to_owned())
-}
-
-fn bulk_evidence_warning(evidence: &ReviewEvidence, adopt: bool) -> Option<String> {
-    let mut warnings = Vec::new();
-    warnings.extend(shared_prefix_lines(&evidence.shared_prefix, adopt, false));
-    if let Some(review) = review_evidence_warning(evidence) {
-        warnings.push(review);
-    }
-    (!warnings.is_empty()).then(|| warnings.join("; "))
-}
-
-fn review_evidence_warning(evidence: &ReviewEvidence) -> Option<String> {
-    let mut warnings = Vec::new();
-    for field in ["disableUMU", "autoInstallDxvkNvapi"] {
-        if let Some(issue) = evidence
-            .issues
-            .iter()
-            .find(|issue| issue.field.as_deref() == Some(field))
-        {
-            warnings.push(issue.message.clone());
+/// The text a warning has in the bulk table and the final review. Core only
+/// says what the warning is, this is the wording.
+fn warning_text(warning: &Warning, adopt: bool) -> String {
+    let plural = |count: &usize| if *count == 1 { "" } else { "s" };
+    match warning {
+        Warning::SharedPrefix(shared) => shared_prefix_lines(shared, adopt, false).join(" "),
+        Warning::UmuDisabled(message) | Warning::NvapiNotInstalled(message) => message.clone(),
+        Warning::AntiCheatNotImported => "EAC/BattlEye runtimes aren't imported".to_owned(),
+        Warning::Omitted(count) => {
+            format!("{count} unsupported setting{} omitted", plural(count))
         }
+        Warning::Dropped(count) => {
+            format!("{count} managed conflict{} dropped", plural(count))
+        }
+        Warning::NeedsAttention(_) => "settings need attention, see -v".to_owned(),
     }
-    let eac = evidence.issues.iter().any(|issue| {
-        matches!(
-            issue.field.as_deref(),
-            Some("eacRuntime") | Some("battlEyeRuntime")
-        )
-    });
-    if eac {
-        warnings.push("EAC/BattlEye runtimes aren't imported".to_owned());
-    }
-    let omitted = evidence
-        .issues
+}
+
+/// Every warning on one line, or None when there is nothing to warn about.
+fn warnings_line(warnings: &[Warning], adopt: bool) -> Option<String> {
+    let texts: Vec<String> = warnings
         .iter()
-        .filter(|issue| {
-            issue.kind == HeroicIssueKind::Unsupported
-                && !matches!(
-                    issue.field.as_deref(),
-                    Some("eacRuntime") | Some("battlEyeRuntime")
-                )
-                && issue.field.as_deref() != Some("disableUMU")
-        })
-        .count();
-    if omitted > 0 {
-        warnings.push(format!(
-            "{omitted} unsupported setting{} omitted",
-            if omitted == 1 { "" } else { "s" }
-        ));
+        .map(|warning| warning_text(warning, adopt))
+        .collect();
+    (!texts.is_empty()).then(|| texts.join("; "))
+}
+
+/// The wording for why `--all` skips a game.
+fn skip_text(reason: &SkipReason) -> String {
+    match reason {
+        SkipReason::LauncherArgs => "invalid launcher arguments".to_owned(),
+        SkipReason::Blocked(message) => message.clone(),
     }
-    let dropped = evidence
-        .issues
-        .iter()
-        .filter(|issue| dropped_conflict(issue))
-        .count();
-    if dropped > 0 {
-        warnings.push(format!(
-            "{dropped} managed conflict{} dropped",
-            if dropped == 1 { "" } else { "s" }
-        ));
-    }
-    let attention = evidence.issues.iter().any(|issue| {
-        matches!(
-            issue.kind,
-            HeroicIssueKind::NeedsAttention | HeroicIssueKind::External
-        ) && !matches!(
-            issue.field.as_deref(),
-            Some("eacRuntime") | Some("battlEyeRuntime")
-        ) && issue.field.as_deref() != Some("autoInstallDxvkNvapi")
-    });
-    if attention {
-        warnings.push("settings need attention, see -v".to_owned());
-    }
-    (!warnings.is_empty()).then(|| warnings.join("; "))
 }
 
 /// `Some` skips asking: `--desktop` always answers yes, and `--yes` alone
@@ -1634,8 +1339,6 @@ struct Bulk<'a> {
     global: &'a GlobalConfig,
     access: &'a Access<'a>,
     source: &'a HeroicSource,
-    /// None when every game is native.
-    runner: Option<&'a Runner>,
     desktop: bool,
     /// The key to fetch art with, or None for no art.
     art: Option<Key>,
@@ -1653,19 +1356,14 @@ fn import_all(
     let mut done = 0usize;
     let mut failed = Vec::new();
     for game in ready {
+        let name = game.plan.name().to_owned();
         if verbose {
             let mut output = Prompt::new(OutputOnly, io::stdout());
-            show_game_summary_with_evidence(
-                &mut output,
-                paths,
-                &game.imported,
-                &game.evidence,
-                verbose,
-            )?;
+            show_game_summary(&mut output, paths, game.plan.resolved(), verbose)?;
         }
         // Art lines wait for the progress line to end.
         let (mut art_out, mut art_err) = (Vec::new(), Vec::new());
-        let imported = import_progress(&mut io::stdout().lock(), &game.name, || {
+        let imported = import_progress(&mut io::stdout().lock(), &name, || {
             import_one(bulk, &game, &mut art_out, &mut art_err)
         })?;
         io::stdout().write_all(&art_out)?;
@@ -1673,12 +1371,12 @@ fn import_all(
         match imported {
             Ok(log_body) => {
                 if let Some(body) = log_body {
-                    print_log_path(paths, &game.name, &body);
+                    print_log_path(paths, &name, &body);
                 }
                 done += 1;
             }
             Err(_) => {
-                failed.push(game.name);
+                failed.push(name);
             }
         }
     }
@@ -1735,40 +1433,26 @@ fn import_one(
     err: &mut Vec<u8>,
 ) -> anyhow::Result<Option<String>> {
     let (paths, global) = (bulk.paths, bulk.global);
-    let runner = bulk
-        .runner
-        .expect("a Windows game is only ready once a runner is chosen");
-    let desktop = &DesktopChoice {
-        enabled: bulk.desktop,
-        name: game.title.clone(),
-    };
+    let mut plan = game.plan.clone();
+    plan.set_desktop_enabled(bulk.desktop);
     let art = ArtChoice {
         key: bulk.art.clone(),
         enabled: bulk.art.is_some(),
-        term: game.title.clone(),
+        term: plan.heroic().title.clone(),
     };
-    ensure_source_unchanged(bulk.source, &game.imported)?;
-    let settings = imported_settings(&game.imported, &game.inspection, &game.request, desktop);
-    let log_body = bulk.verbose.then(|| {
-        log_text_with_evidence(
-            global,
-            bulk.source,
-            &game.imported,
-            &game.evidence,
-            &game.inspection,
-            &game.request,
-            desktop,
-        ) + &art.log_line()
-    });
-    let destination = resolved_destination(paths, global, &game.request, &game.inspection)?;
+    ensure_source_unchanged(bulk.source, plan.heroic())?;
+    let settings = plan.settings();
+    let log_body = bulk
+        .verbose
+        .then(|| plan.log_text(global, bulk.source) + &art.log_line());
     let environment = import_reviewed(
         paths,
         global,
-        game.request.clone(),
-        &game.inspection,
+        plan.request().clone(),
+        plan.inspection(),
         Some(&settings),
     )?;
-    import_playtime(paths, bulk.source, &game.imported.id, &environment.name);
+    import_playtime(paths, bulk.source, &plan.heroic().id, &environment.name);
     let top = Pick::<OutputOnly, Vec<u8>>::Top(out);
     // A top match can't be canceled.
     let _ = fetch_art(
@@ -1780,7 +1464,13 @@ fn import_one(
         top,
         err,
     );
-    desktop::reconcile(paths, global, &environment, Some(runner), &destination)?;
+    desktop::reconcile(
+        paths,
+        global,
+        &environment,
+        Some(plan.runner()),
+        plan.destination(),
+    )?;
     Ok(log_body)
 }
 
@@ -1803,16 +1493,12 @@ struct ReviewContext<'a> {
     paths: &'a Paths,
     global: &'a GlobalConfig,
     source: &'a HeroicSource,
-    evidence: &'a ReviewEvidence,
     verbose: bool,
 }
 
 fn final_review<I: Input, W: Write>(
     ctx: &ReviewContext,
-    imported: &mut HeroicImport,
-    inspection: &Inspection,
-    request: &mut ImportRequest,
-    desktop: &mut DesktopChoice,
+    plan: &mut GamePlan,
     art: &mut ArtChoice,
     prompt: &mut Prompt<I, W>,
 ) -> anyhow::Result<()> {
@@ -1820,21 +1506,20 @@ fn final_review<I: Input, W: Write>(
     let global = ctx.global;
     let verbose = ctx.verbose;
     loop {
-        let resolved = Runners::new(paths, global)?.resolve(&request.runner)?;
-        let destination = resolved_destination(paths, global, request, inspection)?;
-        let facts = final_facts_text(ctx, imported, inspection, request, &resolved, verbose);
+        let facts = final_facts_text(ctx, plan, verbose);
         let heading = format!("{facts}\n");
 
+        let imported = plan.resolved();
         let cwd_display = match &imported.cwd {
             Some(cwd) => style::path(paths, cwd),
             None => "default".to_owned(),
         };
-        let copy_to_display = if request.adopt {
+        let copy_to_display = if plan.is_adopt() {
             "adopt in place".to_owned()
         } else {
-            style::path(paths, &destination)
+            style::path(paths, plan.destination())
         };
-        let desktop_display = if desktop.enabled { "yes" } else { "no" }.to_owned();
+        let desktop_display = if plan.desktop().enabled { "yes" } else { "no" }.to_owned();
         let mut items: Vec<(&str, String, EditField)> = vec![
             (
                 "exe",
@@ -1857,7 +1542,7 @@ fn final_review<I: Input, W: Write>(
                 on_off(imported.gamemode.unwrap_or(false)).to_owned(),
                 EditField::GameMode,
             ),
-            ("name", request.name.clone(), EditField::Name),
+            ("name", plan.name().to_owned(), EditField::Name),
             ("copy to", copy_to_display, EditField::Destination),
             ("desktop", desktop_display, EditField::Desktop),
         ];
@@ -1885,14 +1570,21 @@ fn final_review<I: Input, W: Write>(
         match choice {
             Reply::Value(None) => return Ok(()),
             Reply::Value(Some(field)) => match field {
-                EditField::Executable => edit_executable(paths, imported, prompt)?,
-                EditField::WorkingDirectory => edit_working_directory(paths, imported, prompt)?,
-                EditField::Arguments => edit_arguments(imported, prompt)?,
-                EditField::Environment => edit_environment(imported, prompt)?,
-                EditField::GameMode => edit_gamemode(imported, prompt)?,
-                EditField::Name => edit_name(paths, global, request, prompt)?,
-                EditField::Destination => edit_destination(paths, global, request, prompt)?,
-                EditField::Desktop => edit_desktop(paths, &imported.title, desktop, prompt)?,
+                EditField::Executable => edit_executable(paths, plan, prompt)?,
+                EditField::WorkingDirectory => edit_working_directory(paths, plan, prompt)?,
+                EditField::Arguments => edit_arguments(plan, prompt)?,
+                EditField::Environment => edit_environment(plan, prompt)?,
+                EditField::GameMode => edit_gamemode(plan, prompt)?,
+                EditField::Name => edit_name(paths, global, plan, prompt)?,
+                EditField::Destination => edit_destination(paths, global, plan, prompt)?,
+                EditField::Desktop => {
+                    let title = plan.resolved().title.clone();
+                    let edited = edit_desktop(paths, &title, plan.desktop().clone(), prompt)?;
+                    plan.set_desktop_enabled(edited.enabled);
+                    if edited.enabled {
+                        plan.set_desktop_name(&edited.name)?;
+                    }
+                }
                 EditField::Art => edit_art(art, prompt)?,
             },
             Reply::Back => return Err(Canceled.into()),
@@ -1902,10 +1594,10 @@ fn final_review<I: Input, W: Write>(
 
 fn edit_executable<I: Input, W: Write>(
     paths: &Paths,
-    imported: &mut HeroicImport,
+    plan: &mut GamePlan,
     prompt: &mut Prompt<I, W>,
 ) -> anyhow::Result<()> {
-    let current = imported.exe.display().to_string();
+    let current = plan.resolved().exe.display().to_string();
     match prompt.text("Executable path", Some(&current), |value| {
         if value.trim().is_empty() {
             Err("Executable path cannot be empty".to_owned())
@@ -1913,7 +1605,10 @@ fn edit_executable<I: Input, W: Write>(
             Ok(value.to_owned())
         }
     })? {
-        Reply::Value(value) => imported.exe = review_path(paths, &imported.prefix, &value)?,
+        Reply::Value(value) => {
+            let exe = plan.resolve_path(paths, &picker::clean_path(&value))?;
+            plan.set_executable(exe)?;
+        }
         Reply::Back => {}
     }
     Ok(())
@@ -1921,10 +1616,11 @@ fn edit_executable<I: Input, W: Write>(
 
 fn edit_working_directory<I: Input, W: Write>(
     paths: &Paths,
-    imported: &mut HeroicImport,
+    plan: &mut GamePlan,
     prompt: &mut Prompt<I, W>,
 ) -> anyhow::Result<()> {
-    let current = imported
+    let current = plan
+        .resolved()
         .cwd
         .as_deref()
         .map(|path| path.display().to_string())
@@ -1934,32 +1630,32 @@ fn edit_working_directory<I: Input, W: Write>(
         Some(&current),
         |value| Ok(value.to_owned()),
     )? {
-        Reply::Value(value) if value.is_empty() => imported.cwd = None,
-        Reply::Value(value) => imported.cwd = Some(review_path(paths, &imported.prefix, &value)?),
-        Reply::Back => {}
-    }
-    Ok(())
-}
-
-fn edit_arguments<I: Input, W: Write>(
-    imported: &mut HeroicImport,
-    prompt: &mut Prompt<I, W>,
-) -> anyhow::Result<()> {
-    match prompt.text("Launch arguments", Some(&imported.launcher_args), |value| {
-        wineo_core::heroic::parse_launcher_args(value).map(|_| value.to_owned())
-    })? {
+        Reply::Value(value) if value.is_empty() => plan.set_working_directory(None),
         Reply::Value(value) => {
-            imported.args = wineo_core::heroic::parse_launcher_args(&value)
-                .map_err(|error| anyhow::anyhow!(error))?;
-            imported.launcher_args = value;
+            let cwd = plan.resolve_path(paths, &picker::clean_path(&value))?;
+            plan.set_working_directory(Some(cwd));
         }
         Reply::Back => {}
     }
     Ok(())
 }
 
+fn edit_arguments<I: Input, W: Write>(
+    plan: &mut GamePlan,
+    prompt: &mut Prompt<I, W>,
+) -> anyhow::Result<()> {
+    let current = plan.resolved().launcher_args.clone();
+    match prompt.text("Launch arguments", Some(&current), |value| {
+        wineo_core::heroic::parse_launcher_args(value).map(|_| value.to_owned())
+    })? {
+        Reply::Value(value) => plan.set_launcher_args(&value)?,
+        Reply::Back => {}
+    }
+    Ok(())
+}
+
 fn edit_environment<I: Input, W: Write>(
-    imported: &mut HeroicImport,
+    plan: &mut GamePlan,
     prompt: &mut Prompt<I, W>,
 ) -> anyhow::Result<()> {
     prompt.say("Enter environment values as KEY=VALUE, one per line. An empty line keeps the current values.")?;
@@ -1969,38 +1665,17 @@ fn edit_environment<I: Input, W: Write>(
     if values.is_empty() {
         return Ok(());
     }
-    let mut env = BTreeMap::new();
-    for value in values {
-        let Some((key, value)) = value.split_once('=') else {
-            bail!("environment entries must use KEY=VALUE");
-        };
-        if key.is_empty() || key.contains(['=', '\0']) {
-            bail!("invalid environment variable name `{key}`");
-        }
-        if [
-            "WINEPREFIX",
-            "PROTONPATH",
-            "STEAM_COMPAT_DATA_PATH",
-            "STEAM_COMPAT_CLIENT_INSTALL_PATH",
-            "CX_BOTTLE",
-        ]
-        .contains(&key)
-        {
-            bail!("{key} is managed by wineo and cannot be imported");
-        }
-        env.insert(key.to_owned(), value.to_owned());
-    }
-    imported.env = env;
+    plan.set_environment(values)?;
     Ok(())
 }
 
 fn edit_gamemode<I: Input, W: Write>(
-    imported: &mut HeroicImport,
+    plan: &mut GamePlan,
     prompt: &mut Prompt<I, W>,
 ) -> anyhow::Result<()> {
-    let current = imported.gamemode.unwrap_or(false);
+    let current = plan.resolved().gamemode.unwrap_or(false);
     match prompt.confirm("Enable GameMode?", current)? {
-        Reply::Value(value) => imported.gamemode = Some(value),
+        Reply::Value(value) => plan.set_gamemode(value),
         Reply::Back => {}
     }
     Ok(())
@@ -2009,20 +1684,14 @@ fn edit_gamemode<I: Input, W: Write>(
 fn edit_name<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
-    request: &mut ImportRequest,
+    plan: &mut GamePlan,
     prompt: &mut Prompt<I, W>,
 ) -> anyhow::Result<()> {
-    let old_default = global.prefix_root(paths)?.join(&request.name);
-    let uses_default = request.destination.as_deref() == Some(old_default.as_path());
-    match prompt.text("Environment name", Some(&request.name), |value| {
+    let current = plan.name().to_owned();
+    match prompt.text("Environment name", Some(&current), |value| {
         picker::name_problem(value).map_or_else(|| Ok(value.to_owned()), Err)
     })? {
-        Reply::Value(value) => {
-            request.name = value;
-            if uses_default && !request.adopt {
-                request.destination = Some(global.prefix_root(paths)?.join(&request.name));
-            }
-        }
+        Reply::Value(value) => plan.set_name(paths, global, &value)?,
         Reply::Back => {}
     }
     Ok(())
@@ -2031,7 +1700,7 @@ fn edit_name<I: Input, W: Write>(
 fn edit_destination<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
-    request: &mut ImportRequest,
+    plan: &mut GamePlan,
     prompt: &mut Prompt<I, W>,
 ) -> anyhow::Result<()> {
     let adopt = match prompt.choose(
@@ -2041,31 +1710,24 @@ fn edit_destination<I: Input, W: Write>(
             ("Copy into wineo".to_owned(), false),
             ("Adopt the original files in place".to_owned(), true),
         ]),
-        Some(if request.adopt { "2" } else { "1" }),
+        Some(if plan.is_adopt() { "2" } else { "1" }),
         true,
     )? {
         Reply::Value(value) => value,
         Reply::Back => return Ok(()),
     };
-    request.adopt = adopt;
     if adopt {
-        request.destination = None;
+        plan.set_adopt();
         return Ok(());
     }
-    let default = request
-        .destination
-        .clone()
-        .unwrap_or(global.prefix_root(paths)?.join(&request.name));
-    match prompt.text(
-        "Copy destination",
-        Some(&default.display().to_string()),
-        |value| {
-            paths
-                .absolute(&picker::clean_path(value))
-                .map_err(|error| error.to_string())
-        },
-    )? {
-        Reply::Value(value) => request.destination = Some(value),
+    plan.set_copy(paths, global, None)?;
+    let default = plan.destination().display().to_string();
+    match prompt.text("Copy destination", Some(&default), |value| {
+        paths
+            .absolute(&picker::clean_path(value))
+            .map_err(|error| error.to_string())
+    })? {
+        Reply::Value(value) => plan.set_copy(paths, global, Some(value))?,
         Reply::Back => {}
     }
     Ok(())
@@ -2074,13 +1736,13 @@ fn edit_destination<I: Input, W: Write>(
 fn edit_desktop<I: Input, W: Write>(
     paths: &Paths,
     title: &str,
-    desktop: &mut DesktopChoice,
+    mut desktop: DesktopEntry,
     prompt: &mut Prompt<I, W>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<DesktopEntry> {
     if let Err(err) = wineo_core::desktop::supported(paths) {
         desktop.enabled = false;
         prompt.say(format!("{err}."))?;
-        return Ok(());
+        return Ok(desktop);
     }
     match prompt.confirm("Create a desktop entry?", desktop.enabled)? {
         Reply::Value(true) => {
@@ -2106,7 +1768,7 @@ fn edit_desktop<I: Input, W: Write>(
         Reply::Value(false) => desktop.enabled = false,
         Reply::Back => {}
     }
-    Ok(())
+    Ok(desktop)
 }
 
 fn edit_art<I: Input, W: Write>(
@@ -2135,172 +1797,81 @@ fn edit_art<I: Input, W: Write>(
     Ok(())
 }
 
-fn review_path(paths: &Paths, prefix: &Path, value: &str) -> anyhow::Result<PathBuf> {
-    let clean = picker::clean_path(value);
-    let path = Path::new(&clean);
-    if path.is_absolute() || clean == "~" || clean.starts_with("~/") {
-        paths.absolute(&clean).map_err(Into::into)
-    } else {
-        Ok(prefix.join(path))
+/// The runner picked for a game, and what copying Heroic's runner left linked
+/// outside wineo.
+struct ChosenRunner {
+    name: String,
+    dependencies: Vec<ExternalDependency>,
+}
+
+impl ChosenRunner {
+    fn named(name: String) -> Self {
+        Self {
+            name,
+            dependencies: Vec::new(),
+        }
     }
 }
 
-#[derive(Clone, Copy)]
-struct RunnerOptions {
-    proton: Option<bool>,
+/// Asks about the game's runner, or takes the `selected` one when it's there.
+fn pick_runner<I: Input, W: Write>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    imported: &HeroicImport,
+    requested: Option<&str>,
+    prompt: &mut Prompt<I, W>,
     verbose: bool,
-}
-
-fn choose_heroic_runner<I: Input, W: Write>(
-    paths: &Paths,
-    global: &GlobalConfig,
-    imported: &HeroicImport,
-    evidence: &mut ReviewEvidence,
-    prompt: &mut Prompt<I, W>,
-    options: RunnerOptions,
-) -> anyhow::Result<String> {
-    if let Ok(runner) = Runners::new(paths, global)?.resolve(&imported.runner.name)
-        && runner_matches_source(paths, global, imported, &runner)
-        && options
-            .proton
-            .is_none_or(|expected| expected == runner.is_proton())
-    {
-        return Ok(runner.selection().to_owned());
-    }
-    if let Some(source) = imported.runner.source.as_deref() {
-        let reviewed = match inspect_copyable_runner(imported) {
-            Ok(reviewed) => Some(reviewed),
-            Err(error) => {
-                prompt.say(format!(
-                    "Heroic runner cannot be copied: {error:#}. Choose a compatible host runner."
-                ))?;
-                None
-            }
-        };
-        if let Some(reviewed) = reviewed {
-            let label = format!(
-                "Copy Heroic runner {} from {}",
-                imported.runner.name,
-                source.display()
-            );
-            let choices = numbered([
-                (label, true),
-                (
-                    "Choose another installed or downloaded runner".to_owned(),
-                    false,
+) -> anyhow::Result<ChosenRunner> {
+    match suggest_runner(paths, global, imported, requested)? {
+        RunnerSuggestion::Use(name) => return Ok(ChosenRunner::named(name)),
+        RunnerSuggestion::Copy(copy) => {
+            let (heading, label, other) = match requested {
+                None => (
+                    "Heroic runner is not installed",
+                    format!(
+                        "Copy Heroic runner {} from {}",
+                        copy.name,
+                        copy.source.display()
+                    ),
+                    "Choose another installed or downloaded runner",
                 ),
-            ]);
-            match prompt.choose(
-                "Heroic runner is not installed",
-                "Runner",
-                &choices,
-                Some("1"),
-                true,
-            )? {
+                Some(_) => (
+                    "Selected runner is not installed",
+                    format!("Copy Heroic runner from {}", copy.source.display()),
+                    "Choose another runner",
+                ),
+            };
+            let choices = numbered([(label, true), (other.to_owned(), false)]);
+            match prompt.choose(heading, "Runner", &choices, Some("1"), true)? {
                 Reply::Value(true) => {
-                    return copy_heroic_runner(
-                        paths, global, imported, &reviewed, evidence, prompt,
-                    );
+                    return copy_heroic_runner(paths, global, imported, &copy, prompt);
                 }
                 Reply::Value(false) => {}
                 Reply::Back => return Err(anyhow::anyhow!(Canceled)),
             }
         }
-    }
-    match choose_runner(prompt, paths, global, None, options.proton, options.verbose)? {
-        Reply::Value(value) => Ok(value),
-        Reply::Back => Err(anyhow::anyhow!(Canceled)),
-    }
-}
-
-fn ensure_selected_runner<I: Input, W: Write>(
-    paths: &Paths,
-    global: &GlobalConfig,
-    imported: &HeroicImport,
-    selected: String,
-    evidence: &mut ReviewEvidence,
-    prompt: &mut Prompt<I, W>,
-    options: RunnerOptions,
-) -> anyhow::Result<String> {
-    if let Ok(runner) = Runners::new(paths, global)?.resolve(&selected)
-        && (selected != imported.runner.name
-            || runner_matches_source(paths, global, imported, &runner))
-    {
-        return Ok(selected);
-    }
-    if selected == imported.runner.name
-        && let Some(source) = imported.runner.source.as_deref()
-    {
-        let reviewed = match inspect_copyable_runner(imported) {
-            Ok(reviewed) => Some(reviewed),
-            Err(error) => {
+        RunnerSuggestion::Choose { copy_blocked, .. } => {
+            if let Some(reason) = copy_blocked {
                 prompt.say(format!(
-                    "Heroic runner cannot be copied: {error:#}. Choose a compatible host runner."
+                    "Heroic runner cannot be copied: {reason}. Choose a compatible host runner."
                 ))?;
-                None
-            }
-        };
-        if let Some(reviewed) = reviewed {
-            let choices = numbered([
-                (
-                    format!("Copy Heroic runner from {}", source.display()),
-                    true,
-                ),
-                ("Choose another runner".to_owned(), false),
-            ]);
-            match prompt.choose(
-                "Selected runner is not installed",
-                "Runner",
-                &choices,
-                Some("1"),
-                true,
-            )? {
-                Reply::Value(true) => {
-                    return copy_heroic_runner(
-                        paths, global, imported, &reviewed, evidence, prompt,
-                    );
-                }
-                Reply::Value(false) => {}
-                Reply::Back => return Err(anyhow::anyhow!(Canceled)),
             }
         }
     }
-    match choose_runner(
-        prompt,
-        paths,
-        global,
-        Some(&selected),
-        options.proton,
-        options.verbose,
-    )? {
-        Reply::Value(value) => Ok(value),
+    let proton = Some(imported.runner.kind == HeroicRunnerKind::Proton);
+    match choose_runner(prompt, paths, global, requested, proton, verbose)? {
+        Reply::Value(value) => Ok(ChosenRunner::named(value)),
         Reply::Back => Err(anyhow::anyhow!(Canceled)),
     }
-}
-
-fn runner_matches_source(
-    paths: &Paths,
-    global: &GlobalConfig,
-    imported: &HeroicImport,
-    runner: &Runner,
-) -> bool {
-    let Some(source) = imported.runner.source.as_deref() else {
-        return true;
-    };
-    let Ok(root) = global.runner_root(paths) else {
-        return false;
-    };
-    wineo_core::paths::resolve(source) == wineo_core::paths::resolve(&root.join(runner.name()))
 }
 
 fn copy_heroic_runner<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
     imported: &HeroicImport,
-    reviewed: &RunnerCopyInspection,
-    evidence: &mut ReviewEvidence,
+    copy: &RunnerCopy,
     prompt: &mut Prompt<I, W>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<ChosenRunner> {
     let root = global.runner_root(paths)?;
     let name = if wineo_core::name::is_valid_runner(&imported.runner.name)
         && !wineo_core::runner_alias::is_alias(&imported.runner.name)
@@ -2331,7 +1902,7 @@ fn copy_heroic_runner<I: Input, W: Write>(
     };
     let cancellation = Cancellation::new()?;
     let receipt = cancellation.published_result(import::copy_runner_reviewed(
-        reviewed,
+        &copy.inspection,
         root,
         &name,
         &cancellation.token,
@@ -2343,59 +1914,12 @@ fn copy_heroic_runner<I: Input, W: Write>(
         receipt.path.display()
     );
     eprintln!("This runner copy is retained if the prefix import is canceled.");
-    evidence.runner_dependencies = receipt.external_dependencies.clone();
     for line in runner_dependency_lines(&receipt.external_dependencies, false) {
         eprintln!("Runner dependency: {line}");
     }
-    Ok(receipt.name)
-}
-
-fn inspect_copyable_runner(imported: &HeroicImport) -> anyhow::Result<RunnerCopyInspection> {
-    let source = imported
-        .runner
-        .source
-        .as_deref()
-        .context("Heroic did not provide a runner source")?;
-    let reviewed = import::inspect_runner_copy(source)?;
-    let compatible = match imported.runner.kind {
-        HeroicRunnerKind::Proton => reviewed.supports_proton,
-        HeroicRunnerKind::Wine | HeroicRunnerKind::System => reviewed.supports_wine,
-        HeroicRunnerKind::Unknown => false,
-    };
-    anyhow::ensure!(
-        compatible,
-        "{} is not a compatible {} build",
-        source.display(),
-        if imported.runner.kind == HeroicRunnerKind::Proton {
-            "Proton"
-        } else {
-            "Wine"
-        }
-    );
-    Ok(reviewed)
-}
-
-fn prefix_inspection(
-    imported: &HeroicImport,
-    runner: &Runner,
-    arch: Option<Arch>,
-) -> anyhow::Result<Inspection> {
-    import::inspect(&imported.prefix, Some(runner), arch).context("inspect Heroic prefix")
-}
-
-fn resolved_destination(
-    paths: &Paths,
-    global: &GlobalConfig,
-    request: &ImportRequest,
-    inspection: &Inspection,
-) -> anyhow::Result<PathBuf> {
-    Ok(if request.adopt {
-        inspection.source_root.clone()
-    } else {
-        request
-            .destination
-            .clone()
-            .unwrap_or(global.prefix_root(paths)?.join(&request.name))
+    Ok(ChosenRunner {
+        name: receipt.name,
+        dependencies: receipt.external_dependencies,
     })
 }
 
@@ -2405,111 +1929,6 @@ fn ensure_source_unchanged(source: &HeroicSource, imported: &HeroicImport) -> an
         "Heroic settings changed while they were being reviewed; inspect the game again"
     );
     Ok(())
-}
-
-fn request(
-    paths: &Paths,
-    prefix: PathBuf,
-    name: String,
-    runner: String,
-    args: Args,
-    _inspection: &Inspection,
-) -> anyhow::Result<ImportRequest> {
-    Ok(ImportRequest {
-        source: prefix,
-        name,
-        runner,
-        destination: if args.adopt {
-            None
-        } else {
-            args.dir
-                .as_deref()
-                .map(|dir| paths.absolute(dir))
-                .transpose()?
-        },
-        adopt: args.adopt,
-        arch: args.arch,
-    })
-}
-
-fn imported_settings(
-    imported: &HeroicImport,
-    inspection: &Inspection,
-    request: &ImportRequest,
-    desktop: &DesktopChoice,
-) -> ImportedSettings {
-    let destination = request
-        .destination
-        .as_deref()
-        .unwrap_or(&inspection.source_root);
-    let rebase = |path: &Path| {
-        if request.adopt {
-            return path.to_owned();
-        }
-        path.strip_prefix(&inspection.source_root)
-            .map(|relative| destination.join(relative))
-            .unwrap_or_else(|_| path.to_owned())
-    };
-    let exe = rebase(&imported.exe);
-    let cwd = imported.cwd.as_deref().map(rebase);
-    let target_name = wineo_core::targets::suggest_name(&imported.title, &exe.to_string_lossy());
-    let mut targets = BTreeMap::new();
-    targets.insert(
-        target_name,
-        Target {
-            exe: exe.to_string_lossy().into_owned(),
-            args: imported.args.clone(),
-            cwd: cwd.map(|path| path.to_string_lossy().into_owned()),
-            default: true,
-            gamemode: None,
-            wayland: None,
-            mangohud: None,
-            gamescope: None,
-            desktop: desktop.enabled,
-            name: desktop.enabled.then(|| desktop.name.clone()),
-        },
-    );
-    ImportedSettings {
-        targets,
-        env: imported.env.clone(),
-        gamemode: imported.gamemode,
-        wayland: imported.wayland,
-        mangohud: imported.mangohud,
-        gamescope: imported.gamescope.clone(),
-        dxvk: imported.dxvk.clone(),
-        vkd3d: imported.vkd3d.clone(),
-        heroic_id: Some(imported.id.clone()),
-        ..ImportedSettings::default()
-    }
-}
-
-fn clear_runner_dependency(imported: &mut HeroicImport) {
-    imported.issues.retain(|issue| {
-        !(issue.field.as_deref() == Some("wineVersion")
-            && matches!(
-                issue.kind,
-                HeroicIssueKind::NeedsAttention | HeroicIssueKind::External
-            ))
-    });
-    imported
-        .settings_review
-        .needs_attention
-        .retain(|item| item.field != "wineVersion");
-    if let Some(source) = imported.runner.source.as_ref() {
-        imported.external_dependencies.retain(|path| path != source);
-    }
-}
-
-/// Drops the wineVersion/winePrefix Conflict issues, which just flag that
-/// Heroic's own runner choice doesn't apply once wineo picks its own.
-fn drop_runner_conflicts(imported: &mut HeroicImport) {
-    imported.issues.retain(|issue| {
-        !(issue.kind == HeroicIssueKind::Conflict
-            && matches!(
-                issue.field.as_deref(),
-                Some("wineVersion") | Some("winePrefix")
-            ))
-    });
 }
 
 /// The issue that makes `candidate` unimportable, the same rule guided
@@ -2540,128 +1959,6 @@ fn candidate_filter_issue(candidate: &HeroicCandidate) -> Option<&HeroicIssue> {
     })
 }
 
-/// Heroic settings wineo already covers by way of the chosen runner, so
-/// they don't need review or a place in the output: Proton bundles its own
-/// DXVK, vkd3d-proton, and NVAPI, so a Proton import can ignore whatever
-/// Heroic recorded for them. What matters is the runner wineo ends up
-/// using, not what Heroic itself recorded.
-const COVERED_BY_PROTON: [&str; 3] = [
-    "autoInstallDxvk",
-    "autoInstallVkd3d",
-    "autoInstallDxvkNvapi",
-];
-
-fn suppress_covered_settings(imported: &mut HeroicImport, runner: &Runner) {
-    if !runner.is_proton() {
-        return;
-    }
-    imported
-        .issues
-        .retain(|issue| !matches!(issue.field.as_deref(), Some(field) if COVERED_BY_PROTON.contains(&field)));
-    imported
-        .settings_review
-        .unsupported
-        .retain(|item| !COVERED_BY_PROTON.contains(&item.field.as_str()));
-    imported
-        .settings_review
-        .carried
-        .retain(|item| !COVERED_BY_PROTON.contains(&item.field.as_str()));
-}
-
-/// Heroic's `autoInstallDxvk`/`autoInstallVkd3d` become `dxvk`/`vkd3d =
-/// "latest"` for a Wine (or system) chosen runner, which install their own
-/// way; a Proton runner still drops them, which `suppress_covered_settings`
-/// already handles.
-fn carry_over_components(imported: &mut HeroicImport, runner: &Runner) {
-    if runner.is_proton() {
-        return;
-    }
-    if take_unsupported_issue(imported, "autoInstallDxvk") {
-        imported.dxvk = Some(wineo_core::components::LATEST.to_owned());
-        imported.settings_review.carried.push(ReviewItem {
-            field: "autoInstallDxvk".to_owned(),
-            detail: "dxvk=latest".to_owned(),
-        });
-    }
-    if take_unsupported_issue(imported, "autoInstallVkd3d") {
-        imported.vkd3d = Some(wineo_core::components::LATEST.to_owned());
-        imported.settings_review.carried.push(ReviewItem {
-            field: "autoInstallVkd3d".to_owned(),
-            detail: "vkd3d=latest".to_owned(),
-        });
-    }
-}
-
-fn carry_over_wayland(imported: &mut HeroicImport, runner: &Runner) {
-    if !imported.enable_wine_wayland {
-        if imported.wayland == Some(false) {
-            imported.settings_review.carried.push(ReviewItem {
-                field: "enableWineWayland".to_owned(),
-                detail: "wayland=false".to_owned(),
-            });
-        }
-        return;
-    }
-    if !runner.supports_wayland() {
-        let detail = format!("{} does not support Wine Wayland; skipped", runner.name());
-        imported.issues.push(HeroicIssue {
-            kind: HeroicIssueKind::NeedsAttention,
-            field: Some("enableWineWayland".to_owned()),
-            message: detail.clone(),
-        });
-        imported.settings_review.needs_attention.push(ReviewItem {
-            field: "enableWineWayland".to_owned(),
-            detail,
-        });
-        return;
-    }
-    imported.wayland = Some(true);
-    imported.settings_review.carried.push(ReviewItem {
-        field: "enableWineWayland".to_owned(),
-        detail: "wayland=true".to_owned(),
-    });
-    if imported.enable_hdr {
-        let key = if runner.is_proton() {
-            "PROTON_ENABLE_HDR"
-        } else {
-            "DXVK_HDR"
-        };
-        imported
-            .env
-            .entry(key.to_owned())
-            .or_insert_with(|| "1".to_owned());
-        imported.settings_review.carried.push(ReviewItem {
-            field: "enableHDR".to_owned(),
-            detail: format!("{key} retained"),
-        });
-        imported
-            .issues
-            .retain(|issue| issue.field.as_deref() != Some("enableHDR"));
-        imported
-            .settings_review
-            .unsupported
-            .retain(|item| item.field != "enableHDR");
-    }
-}
-
-/// Removes the Unsupported issue for `field`, if there is one, and says
-/// whether there was: Heroic's own setting was on.
-fn take_unsupported_issue(imported: &mut HeroicImport, field: &str) -> bool {
-    let had = imported.issues.iter().any(|issue| {
-        issue.kind == HeroicIssueKind::Unsupported && issue.field.as_deref() == Some(field)
-    });
-    if had {
-        imported
-            .issues
-            .retain(|issue| issue.field.as_deref() != Some(field));
-        imported
-            .settings_review
-            .unsupported
-            .retain(|item| item.field != field);
-    }
-    had
-}
-
 /// Offers to download a missing DXVK/vkd3d-proton build for guided Heroic
 /// import, the same way guided `new` does, one component at a time until
 /// everything resolves or a person declines. Declining leaves the usual
@@ -2669,78 +1966,57 @@ fn take_unsupported_issue(imported: &mut HeroicImport, field: &str) -> bool {
 fn ensure_components_available<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
-    name: &str,
-    runner: &Runner,
-    wanted: &Wanted,
+    plan: &GamePlan,
     prompt: &mut Prompt<I, W>,
 ) -> anyhow::Result<()> {
-    ensure_components_available_with(
-        paths,
-        global,
-        name,
-        runner,
-        wanted,
-        prompt,
-        |component, version| components::download_build(paths, global, component, version),
-    )
+    ensure_components_available_with(paths, global, plan, prompt, |component, version| {
+        components::download_build(paths, global, component, version)
+    })
 }
 
 fn ensure_components_available_with<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
-    name: &str,
-    runner: &Runner,
-    wanted: &Wanted,
+    plan: &GamePlan,
     prompt: &mut Prompt<I, W>,
     mut download: impl FnMut(Component, Option<&str>) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     loop {
-        match install::check_available(paths, global, name, runner, wanted) {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                let Some(component) = components::missing_build_component(&error) else {
-                    return Err(error.into());
-                };
-                let version = components::missing_build_version(&error);
-                let question = match version {
-                    Some(name) => format!(
-                        "{} build `{name}` is not installed. Download that exact version?",
-                        component.label()
-                    ),
-                    None => format!(
-                        "No matching {} build is installed. Download the latest release?",
-                        component.label()
-                    ),
-                };
-                if !components::offer_download_with(
-                    prompt,
-                    component,
-                    version,
-                    &question,
-                    &mut download,
-                )? {
-                    return Err(error.into());
-                }
-            }
+        let Some(missing) = plan.missing_build(paths, global)? else {
+            return Ok(());
+        };
+        let MissingBuild {
+            component,
+            ref version,
+            ..
+        } = missing;
+        let question = match version.as_deref() {
+            Some(name) => format!(
+                "{} build `{name}` is not installed. Download that exact version?",
+                component.label()
+            ),
+            None => format!(
+                "No matching {} build is installed. Download the latest release?",
+                component.label()
+            ),
+        };
+        if !components::offer_download_with(
+            prompt,
+            component,
+            version.as_deref(),
+            &question,
+            &mut download,
+        )? {
+            return Err(missing.into_error().into());
         }
     }
 }
 
-fn reject_unresolved(imported: &HeroicImport) -> anyhow::Result<()> {
-    let blocking: Vec<_> = imported
-        .issues
-        .iter()
-        .filter(|issue| {
-            !matches!(issue.kind, HeroicIssueKind::External)
-                && !(issue.kind == HeroicIssueKind::NeedsAttention
-                    && issue.field.as_deref().is_some_and(|field| {
-                        field == "enableWineWayland" || field.starts_with("gamescope.")
-                    }))
-        })
-        .collect();
+fn reject_unresolved(plan: &GamePlan) -> anyhow::Result<()> {
+    let blocking: Vec<_> = plan.blocking().collect();
     if !blocking.is_empty() {
-        for issue in blocking {
-            print_issue("unresolved", issue);
+        for finding in blocking {
+            print_issue("unresolved", &finding.issue);
         }
         bail!("Heroic launch settings need review; rerun with --interactive");
     }
@@ -2749,49 +2025,30 @@ fn reject_unresolved(imported: &HeroicImport) -> anyhow::Result<()> {
 
 fn review_settings<I: Input, W: Write>(
     prompt: &mut Prompt<I, W>,
-    imported: &mut HeroicImport,
+    plan: &mut GamePlan,
 ) -> anyhow::Result<()> {
-    if imported.issues.iter().any(|issue| {
-        issue.kind == HeroicIssueKind::Invalid && issue.field.as_deref() != Some("launcherArgs")
-    }) {
+    // The summary already showed the dropped conflicts, the omitted settings,
+    // and the ones needing attention as warnings, and the final review edits
+    // the paths that need it. Only what can't be imported blocks, or needs an
+    // answer.
+    plan.resolve(Policy::Defaults);
+    if plan
+        .blocking()
+        .any(|finding| finding.issue.kind == HeroicIssueKind::Invalid)
+    {
         bail!("Heroic has invalid launch settings that cannot be imported automatically");
     }
-    if imported
-        .issues
-        .iter()
-        .any(|issue| issue.field.as_deref() == Some("launcherArgs"))
-    {
-        let args = match prompt.text(
-            "Correct launcher arguments",
-            Some(&imported.launcher_args),
-            |value| wineo_core::heroic::parse_launcher_args(value).map(|_| value.to_owned()),
-        )? {
+    if plan.needs_input() == Some(InputKind::LauncherArgs) {
+        let current = plan.resolved().launcher_args.clone();
+        let args = match prompt.text("Correct launcher arguments", Some(&current), |value| {
+            wineo_core::heroic::parse_launcher_args(value).map(|_| value.to_owned())
+        })? {
             Reply::Value(value) => value,
             Reply::Back => return Err(anyhow::anyhow!(Canceled)),
         };
-        imported.args = wineo_core::heroic::parse_launcher_args(&args)
-            .map_err(|error| anyhow::anyhow!(error))?;
-        imported.launcher_args = args;
-        imported
-            .issues
-            .retain(|issue| issue.field.as_deref() != Some("launcherArgs"));
+        plan.set_launcher_args(&args)?;
     }
-    // The summary already showed these as warnings. Conflicting settings are
-    // ones wineo manages itself, unsupported ones have nowhere to go, and the
-    // final review edits the paths needing attention.
-    imported.issues.retain(|issue| match issue.kind {
-        HeroicIssueKind::Conflict => !dropped_conflict(issue),
-        HeroicIssueKind::Unsupported
-        | HeroicIssueKind::NeedsAttention
-        | HeroicIssueKind::External => false,
-        _ => true,
-    });
-    if imported.issues.iter().any(|issue| {
-        matches!(
-            issue.kind,
-            HeroicIssueKind::Missing | HeroicIssueKind::Invalid | HeroicIssueKind::Conflict
-        )
-    }) {
+    if plan.blocking().next().is_some() {
         bail!("Heroic import still has unresolved settings");
     }
     Ok(())
@@ -2878,18 +2135,6 @@ fn sync_block(review: &SettingsReview) -> Option<Block> {
         }),
         (None, None) => None,
     }
-}
-
-/// The settings that are set for this game, one row each. `-v` also shows
-/// the Heroic fields normally left out.
-/// A conflict with a setting wineo manages itself, which import drops
-/// rather than refusing over. Runner and prefix conflicts still block.
-fn dropped_conflict(issue: &HeroicIssue) -> bool {
-    issue.kind == HeroicIssueKind::Conflict
-        && !matches!(
-            issue.field.as_deref(),
-            Some("wineVersion") | Some("winePrefix")
-        )
 }
 
 fn gamescope_display(setting: &GamescopeSetting) -> String {
@@ -3002,7 +2247,7 @@ fn show_game_summary<I: Input, W: Write>(
             lines: imported
                 .env
                 .iter()
-                .map(|(key, value)| format!("{key}={}", display_env_value(key, value)))
+                .map(|(key, value)| format!("{key}={}", redact_env_value(key, value)))
                 .collect(),
         });
     }
@@ -3035,7 +2280,7 @@ fn show_game_summary<I: Input, W: Write>(
             HeroicIssueKind::Unsupported if field == "disableUMU" => {
                 warnings.push(issue.message.clone());
             }
-            HeroicIssueKind::Conflict if dropped_conflict(issue) => {
+            HeroicIssueKind::Conflict if is_dropped_conflict(issue) => {
                 warnings.push(format!("{field} is dropped, wineo manages it"));
             }
             _ => {}
@@ -3082,7 +2327,7 @@ fn show_game_summary<I: Input, W: Write>(
                 issue.kind,
                 HeroicIssueKind::Missing | HeroicIssueKind::Invalid | HeroicIssueKind::Conflict
             ) && !covered_prefix_conflict(imported, issue)
-                && !dropped_conflict(issue)
+                && !is_dropped_conflict(issue)
         })
         .map(|issue| style::error(&issue.message))
         .collect();
@@ -3096,33 +2341,16 @@ fn show_game_summary<I: Input, W: Write>(
     Ok(prompt.say(format!("{title}\n{}", render_blocks(&blocks)))?)
 }
 
-fn show_game_summary_with_evidence<I: Input, W: Write>(
-    prompt: &mut Prompt<I, W>,
-    paths: &Paths,
-    imported: &HeroicImport,
-    evidence: &ReviewEvidence,
-    verbose: bool,
-) -> anyhow::Result<()> {
-    let mut view = imported.clone();
-    view.issues = evidence.issues.clone();
-    view.settings_review = evidence.settings.clone();
-    show_game_summary(prompt, paths, &view, verbose)
-}
-
 /// The facts the final review shows above the editable settings: what stays
 /// where it is, and what the runner and links resolve to.
-fn final_facts_text(
-    ctx: &ReviewContext,
-    imported: &HeroicImport,
-    inspection: &Inspection,
-    request: &ImportRequest,
-    resolved: &Runner,
-    verbose: bool,
-) -> String {
+fn final_facts_text(ctx: &ReviewContext, plan: &GamePlan, verbose: bool) -> String {
     let paths = ctx.paths;
     let global = ctx.global;
     let source = ctx.source;
-    let evidence = ctx.evidence;
+    let imported = plan.resolved();
+    let inspection = plan.inspection();
+    let request = plan.request();
+    let resolved = plan.runner();
     let title = style::title(format!("{} -> {}", imported.title, request.name));
     let mut blocks = Vec::new();
 
@@ -3194,28 +2422,33 @@ fn final_facts_text(
         });
     }
 
-    let shared = shared_prefix_lines(&evidence.shared_prefix, request.adopt, verbose);
+    let shared = shared_prefix_lines(plan.shared_prefix(), request.adopt, verbose);
     if !shared.is_empty() {
         blocks.push(Block {
             label: "shared prefix",
             lines: shared,
         });
     }
-    let runner_deps = runner_dependency_lines(&evidence.runner_dependencies, verbose);
+    let runner_deps = runner_dependency_lines(plan.runner_dependencies(), verbose);
     if !runner_deps.is_empty() {
         blocks.push(Block {
             label: "runner links",
             lines: runner_deps,
         });
     }
-    if let Some(warn) = review_evidence_warning(evidence) {
+    let review_warnings: Vec<Warning> = plan
+        .warnings()
+        .into_iter()
+        .filter(|warning| !matches!(warning, Warning::SharedPrefix(_)))
+        .collect();
+    if let Some(warn) = warnings_line(&review_warnings, request.adopt) {
         blocks.push(Block {
             label: "warning",
             lines: vec![style::warning(warn)],
         });
     }
     if verbose {
-        let detail: Vec<String> = evidence
+        let detail: Vec<String> = imported
             .issues
             .iter()
             .filter(|issue| {
@@ -3266,52 +2499,6 @@ fn final_facts_text(
     format!("{title}\n{}", render_blocks(&blocks))
 }
 
-fn shared_prefix_lines(shared: &[HeroicSharedPrefix], adopt: bool, verbose: bool) -> Vec<String> {
-    if shared.is_empty() {
-        return Vec::new();
-    }
-    let names = shared
-        .iter()
-        .map(|game| {
-            if verbose {
-                format!("{} ({})", game.title, game.id)
-            } else {
-                game.title.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    vec![format!(
-        "{} other Heroic game{} {} this prefix: {names}. {}",
-        shared.len(),
-        if shared.len() == 1 { "" } else { "s" },
-        if shared.len() == 1 { "uses" } else { "use" },
-        if adopt {
-            "Adoption shares mutable state."
-        } else {
-            "Copying includes the whole prefix."
-        }
-    )]
-}
-
-fn runner_dependency_lines(deps: &[ExternalDependency], verbose: bool) -> Vec<String> {
-    if deps.is_empty() {
-        return Vec::new();
-    }
-    let mut lines = vec![format!(
-        "{} external link{} remain required by the copied runner",
-        deps.len(),
-        if deps.len() == 1 { "" } else { "s" }
-    )];
-    if verbose {
-        lines.extend(
-            deps.iter()
-                .map(|dep| format!("{} -> {}", dep.source.display(), dep.target.display())),
-        );
-    }
-    lines
-}
-
 fn global_block(global: &GlobalConfig, verbose: bool) -> Block {
     if verbose {
         let mut lines = Vec::new();
@@ -3319,7 +2506,7 @@ fn global_block(global: &GlobalConfig, verbose: bool) -> Block {
             lines.push(format!("gamemode {}", on_off(enabled)));
         }
         for (key, value) in &global.env {
-            lines.push(format!("{key}={}", display_env_value(key, value)));
+            lines.push(format!("{key}={}", redact_env_value(key, value)));
         }
         Block {
             label: "global",
@@ -3404,18 +2591,6 @@ fn link_group_label(paths: &Paths, config_dir: &Path, target: &Path) -> String {
     style::path(paths, target.parent().unwrap_or(target))
 }
 
-fn display_env_value(key: &str, value: &str) -> String {
-    let key = key.to_ascii_lowercase();
-    if ["pass", "secret", "token", "key", "auth", "credential"]
-        .iter()
-        .any(|part| key.contains(part))
-    {
-        "<redacted>".to_owned()
-    } else {
-        value.to_owned()
-    }
-}
-
 fn print_issue(prefix: &str, issue: &HeroicIssue) {
     eprintln!(
         "{prefix}: {}{}",
@@ -3426,159 +2601,6 @@ fn print_issue(prefix: &str, issue: &HeroicIssue) {
             .unwrap_or_default(),
         issue.message
     );
-}
-
-/// The full detail an import log records: every Heroic field, every link,
-/// and the global settings that apply, none of it collapsed or hidden.
-fn log_text(
-    global: &GlobalConfig,
-    source: &HeroicSource,
-    imported: &HeroicImport,
-    inspection: &Inspection,
-    request: &ImportRequest,
-    desktop: &DesktopChoice,
-) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "Heroic game: {} ({})\n",
-        imported.title, imported.id
-    ));
-    out.push_str(&format!("  source: {}\n", source.config_dir().display()));
-    out.push_str(&format!("  prefix: {}\n", imported.prefix.display()));
-    out.push_str(&format!(
-        "  runner: {} ({:?})\n",
-        imported.runner.name, imported.runner.kind
-    ));
-    if let Some(runner_source) = &imported.runner.source {
-        out.push_str(&format!("    copied from: {}\n", runner_source.display()));
-    }
-    out.push_str(&format!("  executable: {}\n", imported.exe.display()));
-    out.push_str(&format!("  arguments: {:?}\n", imported.args));
-    out.push_str(&format!(
-        "  working directory: {}\n",
-        imported
-            .cwd
-            .as_deref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "default".to_owned())
-    ));
-    out.push_str(&format!("  gamemode: {:?}\n", imported.gamemode));
-    out.push_str(&format!("  wayland: {:?}\n", imported.wayland));
-    out.push_str(&format!("  mangohud: {:?}\n", imported.mangohud));
-    out.push_str(&format!("  gamescope: {:?}\n", imported.gamescope));
-    if !imported.env.is_empty() {
-        out.push_str("  environment:\n");
-        for (key, value) in &imported.env {
-            out.push_str(&format!("    {key}={}\n", display_env_value(key, value)));
-        }
-    }
-    if !imported.external_dependencies.is_empty() {
-        out.push_str("  external files:\n");
-        for path in &imported.external_dependencies {
-            out.push_str(&format!("    {}\n", path.display()));
-        }
-    }
-    out.push_str("  settings review:\n");
-    for item in &imported.settings_review.carried {
-        out.push_str(&format!("    carried: {} = {}\n", item.field, item.detail));
-    }
-    for item in &imported.settings_review.needs_attention {
-        out.push_str(&format!("    review: {} = {}\n", item.field, item.detail));
-    }
-    for item in &imported.settings_review.unsupported {
-        out.push_str(&format!(
-            "    unsupported: {} = {}\n",
-            item.field, item.detail
-        ));
-    }
-    if !imported.issues.is_empty() {
-        out.push_str("  issues:\n");
-        for issue in &imported.issues {
-            out.push_str(&format!(
-                "    {:?}{}: {}\n",
-                issue.kind,
-                issue
-                    .field
-                    .as_deref()
-                    .map(|field| format!(" {field}"))
-                    .unwrap_or_default(),
-                issue.message
-            ));
-        }
-    }
-    out.push_str(&format!(
-        "  inspection: layout {:?}, arch {}, source {}\n",
-        inspection.layout,
-        inspection.arch,
-        inspection.source_root.display()
-    ));
-    if !inspection.external_dependencies.is_empty() {
-        out.push_str("  links:\n");
-        for link in &inspection.external_dependencies {
-            out.push_str(&format!(
-                "    {} -> {}\n",
-                link.source.display(),
-                link.target.display()
-            ));
-        }
-    }
-    out.push_str(&format!(
-        "  import: name {}, runner {}, {}\n",
-        request.name,
-        request.runner,
-        if request.adopt {
-            "adopted in place".to_owned()
-        } else {
-            format!(
-                "copied to {}",
-                request
-                    .destination
-                    .as_deref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_default()
-            )
-        }
-    ));
-    out.push_str(&format!(
-        "  desktop entry: {}\n",
-        if desktop.enabled {
-            desktop.name.as_str()
-        } else {
-            "no"
-        }
-    ));
-    if global.gamemode.is_some() || !global.env.is_empty() {
-        out.push_str("  global settings:\n");
-        if let Some(enabled) = global.gamemode {
-            out.push_str(&format!("    gamemode: {enabled}\n"));
-        }
-        for (key, value) in &global.env {
-            out.push_str(&format!("    {key}={}\n", display_env_value(key, value)));
-        }
-    }
-    out
-}
-
-fn log_text_with_evidence(
-    global: &GlobalConfig,
-    source: &HeroicSource,
-    imported: &HeroicImport,
-    evidence: &ReviewEvidence,
-    inspection: &Inspection,
-    request: &ImportRequest,
-    desktop: &DesktopChoice,
-) -> String {
-    let mut view = imported.clone();
-    view.issues = evidence.issues.clone();
-    view.settings_review = evidence.settings.clone();
-    let mut out = log_text(global, source, &view, inspection, request, desktop);
-    for line in shared_prefix_lines(&evidence.shared_prefix, request.adopt, true) {
-        out.push_str(&format!("  shared prefix: {line}\n"));
-    }
-    for line in runner_dependency_lines(&evidence.runner_dependencies, true) {
-        out.push_str(&format!("  runner dependency: {line}\n"));
-    }
-    out
 }
 
 fn write_import_log(paths: &Paths, name: &str, body: &str) -> anyhow::Result<PathBuf> {
@@ -3686,15 +2708,14 @@ mod tests {
         Paths::from_lookup(|key| (key == "HOME").then(|| home.as_os_str().to_owned())).unwrap()
     }
 
-    fn reviewed_import(root: &Path) -> (HeroicImport, Inspection, ImportRequest) {
+    fn reviewed_import(root: &Path) -> HeroicImport {
         fs::create_dir_all(root.join("drive_c")).unwrap();
         fs::write(
             root.join("system.reg"),
             "WINE REGISTRY Version 2\n#arch=win64\n",
         )
         .unwrap();
-        let inspection = import::inspect(root, None, None).unwrap();
-        let imported = HeroicImport {
+        HeroicImport {
             id: "game".to_owned(),
             title: "Game".to_owned(),
             prefix: root.to_owned(),
@@ -3725,16 +2746,40 @@ mod tests {
                 files: Vec::new(),
             },
             settings_review: SettingsReview::default(),
-        };
-        let request = ImportRequest {
-            source: root.to_owned(),
-            name: "game".to_owned(),
-            runner: "wine".to_owned(),
-            destination: Some(root.join("copy")),
-            adopt: false,
-            arch: None,
-        };
-        (imported, inspection, request)
+        }
+    }
+
+    /// A global config whose runners are the ones a test writes in `root/runners`.
+    fn global_with_runners(root: &Path) -> GlobalConfig {
+        GlobalConfig {
+            defaults: wineo_core::config::Defaults {
+                runner_root: Some(root.join("runners").display().to_string()),
+                ..wineo_core::config::Defaults::default()
+            },
+            ..GlobalConfig::default()
+        }
+    }
+
+    /// Plans `imported` against a fake wine runner, named `game` and copied to
+    /// `root/copy`.
+    fn plan_for(root: &Path, imported: HeroicImport) -> GamePlan {
+        let runners = root.join("runners");
+        if !runners.join("wine-tkg").exists() {
+            fake_wine_runner(&runners, "wine-tkg");
+        }
+        GamePlan::new(
+            &paths(root),
+            &global_with_runners(root),
+            imported,
+            Vec::new(),
+            "wine-tkg",
+            Options {
+                name: Some("game".to_owned()),
+                destination: Some(root.join("copy")),
+                ..Options::default()
+            },
+        )
+        .unwrap()
     }
 
     fn heroic_source(root: &Path) -> HeroicSource {
@@ -3769,91 +2814,13 @@ mod tests {
     }
 
     #[test]
-    fn wayland_and_hdr_use_the_chosen_runner_without_overriding_heroic_env() {
-        let root = tempdir().unwrap();
-        let runners = root.path().join("runners");
-        let wine = fake_wine_runner(&runners, "wine-tkg");
-        let (mut imported, inspection, request) = reviewed_import(root.path());
-        imported.enable_wine_wayland = true;
-        imported.enable_hdr = true;
-        carry_over_wayland(&mut imported, &wine);
-        assert_eq!(imported.wayland, None);
-        assert_eq!(imported.env.get("DXVK_HDR"), None);
-        assert!(
-            imported
-                .issues
-                .iter()
-                .any(|issue| issue.field.as_deref() == Some("enableWineWayland"))
-        );
-        let settings = imported_settings(
-            &imported,
-            &inspection,
-            &request,
-            &DesktopChoice {
-                enabled: false,
-                name: "Game".to_owned(),
-            },
-        );
-        assert_eq!(settings.wayland, None);
-        fs::create_dir_all(runners.join("wine-tkg/lib/wine/x86_64-unix")).unwrap();
-        fs::write(
-            runners.join("wine-tkg/lib/wine/x86_64-unix/winewayland.so"),
-            "",
-        )
-        .unwrap();
-        let wine = Runners::at(runners.clone()).resolve("wine-tkg").unwrap();
-        let (mut imported, inspection, request) = reviewed_import(root.path());
-        imported.enable_wine_wayland = true;
-        imported.enable_hdr = true;
-        imported
-            .env
-            .insert("DXVK_HDR".to_owned(), "custom".to_owned());
-        carry_over_wayland(&mut imported, &wine);
-        assert_eq!(imported.wayland, Some(true));
-        assert_eq!(imported.env["DXVK_HDR"], "custom");
-        let settings = imported_settings(
-            &imported,
-            &inspection,
-            &request,
-            &DesktopChoice {
-                enabled: false,
-                name: "Game".to_owned(),
-            },
-        );
-        assert_eq!(settings.wayland, Some(true));
-        assert_eq!(settings.env["DXVK_HDR"], "custom");
-
-        fake_proton_runner(&runners, "proton-test");
-        fs::write(
-            runners.join("proton-test/proton"),
-            "#!/bin/sh\n# PROTON_ENABLE_WAYLAND\n",
-        )
-        .unwrap();
-        let proton = Runners::at(runners).resolve("proton-test").unwrap();
-        let (mut imported, _, _) = reviewed_import(root.path());
-        imported.enable_wine_wayland = true;
-        imported.enable_hdr = true;
-        carry_over_wayland(&mut imported, &proton);
-        assert_eq!(imported.wayland, Some(true));
-        assert_eq!(imported.env["PROTON_ENABLE_HDR"], "1");
-        assert!(!imported.env.contains_key("DXVK_HDR"));
-        let (mut imported, _, _) = reviewed_import(root.path());
-        imported.enable_hdr = true;
-        carry_over_wayland(&mut imported, &proton);
-        assert_eq!(imported.env.get("PROTON_ENABLE_HDR"), None);
-    }
-
-    #[test]
     fn final_review_edits_executable_before_import() {
         let root = tempdir().unwrap();
         let paths = paths(root.path());
-        let global = GlobalConfig::default();
+        let global = global_with_runners(root.path());
         let source = heroic_source(root.path());
-        let (mut imported, inspection, mut request) = reviewed_import(root.path());
-        let mut desktop = DesktopChoice {
-            enabled: true,
-            name: imported.title.clone(),
-        };
+        let mut plan = plan_for(root.path(), reviewed_import(root.path()));
+        plan.set_desktop_enabled(true);
         let mut prompt = Prompt::new(
             Script(VecDeque::from([
                 "1".to_owned(),
@@ -3867,18 +2834,14 @@ mod tests {
                 paths: &paths,
                 global: &global,
                 source: &source,
-                evidence: &ReviewEvidence::default(),
                 verbose: false,
             },
-            &mut imported,
-            &inspection,
-            &mut request,
-            &mut desktop,
+            &mut plan,
             &mut ArtChoice::off(),
             &mut prompt,
         )
         .unwrap();
-        assert_eq!(imported.exe, root.path().join("drive_c/edited.exe"));
+        assert_eq!(plan.resolved().exe, root.path().join("drive_c/edited.exe"));
     }
 
     #[test]
@@ -3886,50 +2849,34 @@ mod tests {
         let root = tempdir().unwrap();
         let paths = paths(root.path());
         let prefix = root.path().join("prefix");
-        let (mut imported, inspection, mut request) = reviewed_import(&prefix);
+        let mut plan = plan_for(&prefix, reviewed_import(&prefix));
         let mut prompt = Prompt::new(Script::new(&["\"~/Games/My Game/game.exe\""]), Vec::new());
-        edit_executable(&paths, &mut imported, &mut prompt).unwrap();
-        assert_eq!(imported.exe, root.path().join("Games/My Game/game.exe"));
+        edit_executable(&paths, &mut plan, &mut prompt).unwrap();
+        assert_eq!(
+            plan.resolved().exe,
+            root.path().join("Games/My Game/game.exe")
+        );
         let mut prompt = Prompt::new(Script::new(&["~/Games/My\\ Game"]), Vec::new());
-        edit_working_directory(&paths, &mut imported, &mut prompt).unwrap();
-        assert_eq!(imported.cwd, Some(root.path().join("Games/My Game")));
+        edit_working_directory(&paths, &mut plan, &mut prompt).unwrap();
+        assert_eq!(plan.resolved().cwd, Some(root.path().join("Games/My Game")));
 
         let mut prompt = Prompt::new(
             Script::new(&["drive_c/Program\\ Files/game.exe"]),
             Vec::new(),
         );
-        edit_executable(&paths, &mut imported, &mut prompt).unwrap();
-        assert_eq!(imported.exe, prefix.join("drive_c/Program Files/game.exe"));
-        request.destination = Some(root.path().join("copy"));
-        let settings = imported_settings(
-            &imported,
-            &inspection,
-            &request,
-            &DesktopChoice {
-                enabled: false,
-                name: String::new(),
-            },
-        );
-        let target = settings.targets.values().next().unwrap();
+        edit_executable(&paths, &mut plan, &mut prompt).unwrap();
         assert_eq!(
-            target.exe,
-            root.path()
-                .join("copy/drive_c/Program Files/game.exe")
-                .display()
-                .to_string()
-        );
-        assert_eq!(
-            target.cwd.as_deref(),
-            Some(root.path().join("Games/My Game").to_str().unwrap())
+            plan.resolved().exe,
+            prefix.join("drive_c/Program Files/game.exe")
         );
 
         let absolute = root.path().join("External Game/game.exe");
-        let edited = review_path(
-            &paths,
-            &imported.prefix,
-            &format!("'{}'", absolute.display()),
-        )
-        .unwrap();
+        let edited = plan
+            .resolve_path(
+                &paths,
+                &picker::clean_path(&format!("'{}'", absolute.display())),
+            )
+            .unwrap();
         assert_eq!(edited, absolute);
     }
 
@@ -3939,8 +2886,7 @@ mod tests {
         let paths = paths(root.path());
         let global = GlobalConfig::default();
         let source = heroic_source(root.path());
-        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
-        let (mut imported, inspection, request) = reviewed_import(root.path());
+        let mut imported = reviewed_import(root.path());
         imported.args = vec!["one word".to_owned(), "say\"hello".to_owned()];
         imported.issues = vec![
             HeroicIssue {
@@ -3961,44 +2907,29 @@ mod tests {
                         .to_owned(),
             },
         ];
-        imported.settings_review.unsupported.push(ReviewItem {
-            field: "wrapperOptions".to_owned(),
-            detail: "ignored".to_owned(),
-        });
-        let mut evidence = ReviewEvidence::new(&imported, Vec::new());
-        evidence.resolved(&imported, &runner);
-        let warning = bulk_review_issues_with_evidence(&mut imported, &evidence, false)
-            .unwrap()
-            .unwrap();
+        imported
+            .settings_review
+            .unsupported
+            .push(wineo_core::heroic::ReviewItem {
+                field: "wrapperOptions".to_owned(),
+                detail: "ignored".to_owned(),
+            });
+        let mut plan = plan_for(root.path(), imported);
+        plan.resolve(Policy::Defaults);
+        assert_eq!(plan.skip_reason(), None);
+        let warning = warnings_line(&plan.warnings(), false).unwrap();
         assert!(warning.contains("unsupported setting omitted"), "{warning}");
         assert!(warning.contains("managed conflict dropped"), "{warning}");
         assert!(warning.contains("Wine NVAPI requires"), "{warning}");
-        assert!(
-            imported
-                .issues
-                .iter()
-                .all(|issue| issue.kind != HeroicIssueKind::Unsupported)
-        );
 
         let mut prompt = Prompt::new(Script::new(&[]), Vec::new());
-        show_game_summary_with_evidence(&mut prompt, &paths, &imported, &evidence, true).unwrap();
+        show_game_summary(&mut prompt, &paths, plan.resolved(), true).unwrap();
         let output = String::from_utf8_lossy(prompt.output());
         assert!(output.contains("wrapperOptions"), "{output}");
         assert!(output.contains("WINEPREFIX"), "{output}");
         assert!(output.contains("\"one word\""), "{output}");
         assert!(output.contains("say\\\"hello"), "{output}");
-        let log = log_text_with_evidence(
-            &global,
-            &source,
-            &imported,
-            &evidence,
-            &inspection,
-            &request,
-            &DesktopChoice {
-                enabled: false,
-                name: String::new(),
-            },
-        );
+        let log = plan.log_text(&global, &source);
         assert!(log.contains("wrapperOptions"), "{log}");
         assert!(log.contains("WINEPREFIX"), "{log}");
         assert!(!log.contains("\u{1b}["), "{log}");
@@ -4008,8 +2939,7 @@ mod tests {
     fn resolved_layout_conflicts_do_not_reappear_as_current_errors() {
         let root = tempdir().unwrap();
         let paths = paths(root.path());
-        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
-        let (mut imported, _, _) = reviewed_import(root.path());
+        let mut imported = reviewed_import(root.path());
         imported.issues = ["wineVersion", "winePrefix", "WINEPREFIX"]
             .into_iter()
             .map(|field| HeroicIssue {
@@ -4018,36 +2948,17 @@ mod tests {
                 message: format!("{field} conflicts"),
             })
             .collect();
-        let mut evidence = ReviewEvidence::new(&imported, Vec::new());
-        drop_runner_conflicts(&mut imported);
-        evidence.resolved(&imported, &runner);
-        assert_eq!(evidence.issues.len(), 1);
-        assert_eq!(evidence.issues[0].field.as_deref(), Some("WINEPREFIX"));
+        let plan = plan_for(root.path(), imported);
         assert_eq!(
-            review_evidence_warning(&evidence).as_deref(),
+            warnings_line(&plan.warnings(), false).as_deref(),
             Some("1 managed conflict dropped")
         );
         let mut output = Prompt::new(Script::new(&[]), Vec::new());
-        show_game_summary_with_evidence(&mut output, &paths, &imported, &evidence, true).unwrap();
+        show_game_summary(&mut output, &paths, plan.resolved(), true).unwrap();
         let text = String::from_utf8_lossy(output.output());
         assert!(!text.contains("wineVersion conflicts"), "{text}");
         assert!(!text.contains("winePrefix conflicts"), "{text}");
         assert!(text.contains("WINEPREFIX is dropped"), "{text}");
-    }
-
-    #[test]
-    fn runner_copy_preflight_checks_access_and_kind() {
-        let root = tempdir().unwrap();
-        let (mut imported, _, _) = reviewed_import(root.path());
-        imported.runner.source = Some(root.path().join("missing"));
-        assert!(inspect_copyable_runner(&imported).is_err());
-        let runner_root = root.path().join("runners");
-        fake_wine_runner(&runner_root, "wine-tkg");
-        imported.runner.source = Some(runner_root.join("wine-tkg"));
-        imported.runner.kind = HeroicRunnerKind::Wine;
-        assert!(inspect_copyable_runner(&imported).is_ok());
-        imported.runner.kind = HeroicRunnerKind::Proton;
-        assert!(inspect_copyable_runner(&imported).is_err());
     }
 
     #[test]
@@ -4132,59 +3043,45 @@ mod tests {
     fn final_review_cancel_returns_canceled_without_changes() {
         let root = tempdir().unwrap();
         let paths = paths(root.path());
-        let global = GlobalConfig::default();
+        let global = global_with_runners(root.path());
         let source = heroic_source(root.path());
-        let (mut imported, inspection, mut request) = reviewed_import(root.path());
-        let mut desktop = DesktopChoice {
-            enabled: true,
-            name: imported.title.clone(),
-        };
-        let original = imported.exe.clone();
+        let mut plan = plan_for(root.path(), reviewed_import(root.path()));
+        plan.set_desktop_enabled(true);
+        let original = plan.resolved().exe.clone();
         let mut prompt = Prompt::new(Script::new(&["q"]), Vec::new());
         let error = final_review(
             &ReviewContext {
                 paths: &paths,
                 global: &global,
                 source: &source,
-                evidence: &ReviewEvidence::default(),
                 verbose: false,
             },
-            &mut imported,
-            &inspection,
-            &mut request,
-            &mut desktop,
+            &mut plan,
             &mut ArtChoice::off(),
             &mut prompt,
         )
         .unwrap_err();
         assert!(error.is::<Canceled>());
-        assert_eq!(imported.exe, original);
+        assert_eq!(plan.resolved().exe, original);
     }
 
     #[test]
     fn final_review_bare_enter_imports_without_editing() {
         let root = tempdir().unwrap();
         let paths = paths(root.path());
-        let global = GlobalConfig::default();
+        let global = global_with_runners(root.path());
         let source = heroic_source(root.path());
-        let (mut imported, inspection, mut request) = reviewed_import(root.path());
-        let mut desktop = DesktopChoice {
-            enabled: true,
-            name: imported.title.clone(),
-        };
+        let mut plan = plan_for(root.path(), reviewed_import(root.path()));
+        plan.set_desktop_enabled(true);
         let mut prompt = Prompt::new(Script::new(&[""]), Vec::new());
         final_review(
             &ReviewContext {
                 paths: &paths,
                 global: &global,
                 source: &source,
-                evidence: &ReviewEvidence::default(),
                 verbose: false,
             },
-            &mut imported,
-            &inspection,
-            &mut request,
-            &mut desktop,
+            &mut plan,
             &mut ArtChoice::off(),
             &mut prompt,
         )
@@ -4204,38 +3101,31 @@ mod tests {
     fn final_review_toggles_the_desktop_entry() {
         let root = tempdir().unwrap();
         let paths = paths(root.path());
-        let global = GlobalConfig::default();
+        let global = global_with_runners(root.path());
         let source = heroic_source(root.path());
-        let (mut imported, inspection, mut request) = reviewed_import(root.path());
-        let mut desktop = DesktopChoice {
-            enabled: true,
-            name: imported.title.clone(),
-        };
+        let mut plan = plan_for(root.path(), reviewed_import(root.path()));
+        plan.set_desktop_enabled(true);
         let mut prompt = Prompt::new(Script::new(&["8", "n", ""]), Vec::new());
         final_review(
             &ReviewContext {
                 paths: &paths,
                 global: &global,
                 source: &source,
-                evidence: &ReviewEvidence::default(),
                 verbose: false,
             },
-            &mut imported,
-            &inspection,
-            &mut request,
-            &mut desktop,
+            &mut plan,
             &mut ArtChoice::off(),
             &mut prompt,
         )
         .unwrap();
-        assert!(!desktop.enabled);
+        assert!(!plan.desktop().enabled);
     }
 
     #[test]
     fn game_summary_merges_eac_and_battleye_into_one_warning() {
         let root = tempdir().unwrap();
         let paths = paths(root.path());
-        let (mut imported, _, _) = reviewed_import(root.path());
+        let mut imported = reviewed_import(root.path());
         imported.issues.push(HeroicIssue {
             kind: HeroicIssueKind::Unsupported,
             field: Some("eacRuntime".to_owned()),
@@ -4259,7 +3149,7 @@ mod tests {
     #[test]
     fn review_items_are_summary_warnings_not_prompts() {
         let root = tempdir().unwrap();
-        let (mut imported, _, _) = reviewed_import(root.path());
+        let mut imported = reviewed_import(root.path());
         imported.issues = vec![
             HeroicIssue {
                 kind: HeroicIssueKind::NeedsAttention,
@@ -4300,113 +3190,23 @@ mod tests {
         );
         assert!(!printed.contains("error"), "{printed}");
 
-        review_settings(&mut prompt, &mut imported).unwrap();
-        assert!(imported.issues.is_empty());
-    }
-
-    #[test]
-    fn covered_proton_settings_are_suppressed() {
-        let root = tempdir().unwrap();
-        let runners_root = root.path().join("runners");
-        fake_proton_runner(&runners_root, "GE-Proton9-20");
-        let proton = Runners::at(runners_root.clone())
-            .resolve("GE-Proton9-20")
-            .unwrap();
-        let wine = fake_wine_runner(&runners_root, "wine-tkg");
-
-        let (mut imported, _, _) = reviewed_import(root.path());
-        imported.runner.kind = HeroicRunnerKind::Proton;
-        for field in COVERED_BY_PROTON {
-            imported.issues.push(HeroicIssue {
-                kind: HeroicIssueKind::Unsupported,
-                field: Some(field.to_owned()),
-                message: "Heroic component installation is not imported".to_owned(),
-            });
-            imported
-                .settings_review
-                .unsupported
-                .push(wineo_core::heroic::ReviewItem {
-                    field: field.to_owned(),
-                    detail: "true".to_owned(),
-                });
-        }
-        suppress_covered_settings(&mut imported, &proton);
-        assert!(imported.issues.is_empty());
-        assert!(imported.settings_review.unsupported.is_empty());
-        // Suppression follows the chosen wineo runner, not what Heroic itself
-        // recorded: a Wine choice leaves the issue for `carry_over_components`.
-        let (mut wine_import, _, _) = reviewed_import(root.path());
-        wine_import.runner.kind = HeroicRunnerKind::Proton;
-        wine_import.issues.push(HeroicIssue {
-            kind: HeroicIssueKind::Unsupported,
-            field: Some("autoInstallDxvk".to_owned()),
-            message: "Heroic component installation is not imported".to_owned(),
-        });
-        suppress_covered_settings(&mut wine_import, &wine);
-        assert_eq!(wine_import.issues.len(), 1);
-    }
-
-    #[test]
-    fn carry_over_components_sets_dxvk_and_vkd3d_for_a_wine_runner() {
-        let root = tempdir().unwrap();
-        let wine = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
-        let (mut imported, _, _) = reviewed_import(root.path());
-        for field in ["autoInstallDxvk", "autoInstallVkd3d"] {
-            imported.issues.push(HeroicIssue {
-                kind: HeroicIssueKind::Unsupported,
-                field: Some(field.to_owned()),
-                message: "Heroic component installation is not imported".to_owned(),
-            });
-        }
-        carry_over_components(&mut imported, &wine);
-        assert_eq!(imported.dxvk.as_deref(), Some("latest"));
-        assert_eq!(imported.vkd3d.as_deref(), Some("latest"));
-        assert!(imported.issues.is_empty(), "{:?}", imported.issues);
-    }
-
-    #[test]
-    fn carry_over_components_leaves_a_proton_choice_alone() {
-        let root = tempdir().unwrap();
-        let runners_root = root.path().join("runners");
-        fake_proton_runner(&runners_root, "GE-Proton9-20");
-        let proton = Runners::at(runners_root).resolve("GE-Proton9-20").unwrap();
-        let (mut imported, _, _) = reviewed_import(root.path());
-        imported.issues.push(HeroicIssue {
-            kind: HeroicIssueKind::Unsupported,
-            field: Some("autoInstallDxvk".to_owned()),
-            message: "Heroic component installation is not imported".to_owned(),
-        });
-        carry_over_components(&mut imported, &proton);
-        assert_eq!(imported.dxvk, None);
-        assert_eq!(imported.issues.len(), 1);
-    }
-
-    #[test]
-    fn imported_settings_carries_dxvk_and_vkd3d() {
-        let root = tempdir().unwrap();
-        let (mut imported, inspection, request) = reviewed_import(root.path());
-        imported.dxvk = Some("latest".to_owned());
-        imported.vkd3d = Some("latest".to_owned());
-        let desktop = DesktopChoice {
-            enabled: false,
-            name: String::new(),
-        };
-        let settings = imported_settings(&imported, &inspection, &request, &desktop);
-        assert_eq!(settings.dxvk.as_deref(), Some("latest"));
-        assert_eq!(settings.vkd3d.as_deref(), Some("latest"));
+        // Reviewing settles them without asking anything, since the script
+        // has no answers to give.
+        let mut plan = plan_for(root.path(), imported);
+        review_settings(&mut prompt, &mut plan).unwrap();
+        assert_eq!(plan.blocking().count(), 0);
+        assert_eq!(plan.needs_input(), None);
     }
 
     #[test]
     fn ensure_components_available_passes_through_when_nothing_is_missing() {
         let root = tempdir().unwrap();
-        let wine = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
+        let plan = plan_for(root.path(), reviewed_import(root.path()));
         let mut prompt = Prompt::new(Script::new(&[]), Vec::new());
         ensure_components_available(
             &paths(root.path()),
-            &GlobalConfig::default(),
-            "game",
-            &wine,
-            &Wanted::default(),
+            &global_with_runners(root.path()),
+            &plan,
             &mut prompt,
         )
         .unwrap();
@@ -4415,17 +3215,14 @@ mod tests {
     #[test]
     fn ensure_components_available_declining_leaves_the_usual_hinted_error() {
         let root = tempdir().unwrap();
-        let wine = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
+        let mut imported = reviewed_import(root.path());
+        imported.dxvk = Some("latest".to_owned());
+        let plan = plan_for(root.path(), imported);
         let mut prompt = Prompt::new(Script::new(&["n"]), Vec::new());
         let error = ensure_components_available(
             &paths(root.path()),
-            &GlobalConfig::default(),
-            "game",
-            &wine,
-            &Wanted {
-                dxvk: Some("latest".to_owned()),
-                vkd3d: None,
-            },
+            &global_with_runners(root.path()),
+            &plan,
             &mut prompt,
         )
         .unwrap_err();
@@ -4446,54 +3243,18 @@ mod tests {
     }
 
     #[test]
-    fn imported_settings_records_heroic_id_and_desktop_choice() {
+    fn import_log_appends_a_timestamped_section_each_time() {
         let root = tempdir().unwrap();
-        let (imported, inspection, request) = reviewed_import(root.path());
-        let desktop = DesktopChoice {
-            enabled: true,
-            name: "Game".to_owned(),
-        };
-        let settings = imported_settings(&imported, &inspection, &request, &desktop);
-        assert_eq!(settings.heroic_id.as_deref(), Some("game"));
-        let target = settings.targets.values().next().unwrap();
-        assert!(target.desktop);
-        assert_eq!(target.name.as_deref(), Some("Game"));
-
-        let desktop_off = DesktopChoice {
-            enabled: false,
-            name: "Game".to_owned(),
-        };
-        let settings = imported_settings(&imported, &inspection, &request, &desktop_off);
-        let target = settings.targets.values().next().unwrap();
-        assert!(!target.desktop);
-        assert_eq!(target.name, None);
-    }
-
-    #[test]
-    fn import_log_records_every_field_and_link() {
-        let root = tempdir().unwrap();
-        let global = GlobalConfig::default();
-        let source = heroic_source(root.path());
-        let (mut imported, inspection, request) = reviewed_import(root.path());
-        imported.env.insert("FOO".to_owned(), "bar".to_owned());
-        let desktop = DesktopChoice {
-            enabled: true,
-            name: "Game".to_owned(),
-        };
-        let body = log_text(&global, &source, &imported, &inspection, &request, &desktop);
-        assert!(body.contains("Heroic game: Game (game)"), "{body}");
-        assert!(body.contains("FOO=bar"), "{body}");
-        assert!(body.contains("desktop entry: Game"), "{body}");
-
+        let body = "Heroic game: Game (game)\n  desktop entry: Game\n";
         let paths = paths(root.path());
-        let log_path = write_import_log(&paths, "game", &body).unwrap();
+        let log_path = write_import_log(&paths, "game", body).unwrap();
         assert_eq!(log_path, paths.import_log("game"));
         let contents = fs::read_to_string(&log_path).unwrap();
         assert!(contents.contains("=== "), "{contents}");
         assert!(contents.contains("Heroic game: Game (game)"), "{contents}");
 
         // A second write appends another timestamped section.
-        write_import_log(&paths, "game", &body).unwrap();
+        write_import_log(&paths, "game", body).unwrap();
         let contents = fs::read_to_string(&log_path).unwrap();
         assert_eq!(contents.matches("=== ").count(), 2, "{contents}");
     }
@@ -4629,28 +3390,20 @@ mod tests {
             "WINE REGISTRY Version 2\n#arch=win64\n",
         )
         .unwrap();
+        // Fonts that link into Heroic's own copy of a runner.
         let runner_dir = config_dir.join("tools/proton/GE-Proton11-1");
-        let mut deps = Vec::new();
+        fs::create_dir_all(compatdata.join("pfx/drive_c/windows")).unwrap();
         for index in 0..24 {
-            deps.push(ExternalDependency {
-                source: compatdata
-                    .join("pfx/drive_c/windows")
-                    .join(format!("font{index}.ttf")),
-                target: runner_dir
+            std::os::unix::fs::symlink(
+                runner_dir
                     .join("files/share/fonts")
                     .join(format!("font{index}.ttf")),
-            });
+                compatdata
+                    .join("pfx/drive_c/windows")
+                    .join(format!("font{index}.ttf")),
+            )
+            .unwrap();
         }
-        let inspection = Inspection {
-            source_root: compatdata.clone(),
-            wine_prefix: compatdata.join("pfx"),
-            layout: import::ImportLayout::Proton,
-            arch: Arch::Win64,
-            external_dependencies: deps,
-            fingerprint: import::inspect(&compatdata, None, None)
-                .unwrap()
-                .fingerprint,
-        };
         let exe = root.join("Games/Palworld/Palworld.exe");
         let imported = HeroicImport {
             id: "kZXLzzKAFWBP4dpRatpPHu".to_owned(),
@@ -4684,32 +3437,30 @@ mod tests {
             },
             settings_review: SettingsReview::default(),
         };
-        let mut imported = imported;
-        let mut request = ImportRequest {
-            source: imported.prefix.clone(),
-            name: "palworld".to_owned(),
-            runner: runner_name.to_owned(),
-            destination: Some(root.join(".local/share/wineo/prefixes/palworld")),
-            adopt: false,
-            arch: None,
-        };
-        let mut desktop = DesktopChoice {
-            enabled: true,
-            name: "palworld".to_owned(),
-        };
+        let mut plan = GamePlan::new(
+            &paths,
+            &global,
+            imported,
+            Vec::new(),
+            runner_name,
+            Options {
+                name: Some("palworld".to_owned()),
+                destination: Some(root.join(".local/share/wineo/prefixes/palworld")),
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        plan.set_desktop_enabled(true);
+        plan.set_desktop_name("palworld").unwrap();
         let mut prompt = Prompt::new(Script::new(&[""]), Vec::new());
         final_review(
             &ReviewContext {
                 paths: &paths,
                 global: &global,
                 source: &source,
-                evidence: &ReviewEvidence::default(),
                 verbose: false,
             },
-            &mut imported,
-            &inspection,
-            &mut request,
-            &mut desktop,
+            &mut plan,
             &mut ArtChoice::off(),
             &mut prompt,
         )
@@ -4792,89 +3543,6 @@ mod tests {
             }],
         );
         assert!(candidate_filter_issue(&candidate).is_some());
-    }
-
-    #[test]
-    fn bulk_review_issues_drops_conflicts_and_unsupported_but_keeps_attention_as_a_warning() {
-        let root = tempdir().unwrap();
-        let (mut imported, _, _) = reviewed_import(root.path());
-        imported.issues = vec![
-            HeroicIssue {
-                kind: HeroicIssueKind::Conflict,
-                field: Some("useGameMode".to_owned()),
-                message: "conflicts with wineo's own setting".to_owned(),
-            },
-            HeroicIssue {
-                kind: HeroicIssueKind::Unsupported,
-                field: Some("autoInstallDxvk".to_owned()),
-                message: "not imported".to_owned(),
-            },
-            HeroicIssue {
-                kind: HeroicIssueKind::NeedsAttention,
-                field: Some("wrapperOptions".to_owned()),
-                message: "review this manually".to_owned(),
-            },
-        ];
-        let warn = bulk_review_issues(&mut imported).unwrap();
-        assert_eq!(warn.as_deref(), Some("settings need attention, see -v"));
-        // Conflict and unsupported issues are gone; the kept attention item stays.
-        assert_eq!(imported.issues.len(), 1);
-        assert_eq!(imported.issues[0].kind, HeroicIssueKind::NeedsAttention);
-    }
-
-    #[test]
-    fn bulk_review_issues_names_eac_and_battleye_specifically() {
-        let root = tempdir().unwrap();
-        let (mut imported, _, _) = reviewed_import(root.path());
-        imported.issues = vec![
-            HeroicIssue {
-                kind: HeroicIssueKind::Unsupported,
-                field: Some("eacRuntime".to_owned()),
-                message: "not imported".to_owned(),
-            },
-            HeroicIssue {
-                kind: HeroicIssueKind::Unsupported,
-                field: Some("battlEyeRuntime".to_owned()),
-                message: "not imported".to_owned(),
-            },
-        ];
-        let warn = bulk_review_issues(&mut imported).unwrap();
-        assert_eq!(
-            warn.as_deref(),
-            Some("EAC/BattlEye runtimes aren't imported")
-        );
-    }
-
-    #[test]
-    fn bulk_review_issues_has_no_warning_when_nothing_needs_attention() {
-        let root = tempdir().unwrap();
-        let (mut imported, _, _) = reviewed_import(root.path());
-        assert_eq!(bulk_review_issues(&mut imported).unwrap(), None);
-    }
-
-    #[test]
-    fn bulk_review_issues_rejects_invalid_settings() {
-        let root = tempdir().unwrap();
-        let (mut imported, _, _) = reviewed_import(root.path());
-        imported.issues = vec![HeroicIssue {
-            kind: HeroicIssueKind::Invalid,
-            field: Some("wrapperOptions".to_owned()),
-            message: "cannot be parsed".to_owned(),
-        }];
-        let error = bulk_review_issues(&mut imported).unwrap_err();
-        assert_eq!(error, "cannot be parsed");
-    }
-
-    #[test]
-    fn bulk_review_issues_rejects_invalid_launcher_args() {
-        let root = tempdir().unwrap();
-        let (mut imported, _, _) = reviewed_import(root.path());
-        imported.issues = vec![HeroicIssue {
-            kind: HeroicIssueKind::Invalid,
-            field: Some("launcherArgs".to_owned()),
-            message: "unbalanced quotes".to_owned(),
-        }];
-        assert!(bulk_review_issues(&mut imported).is_err());
     }
 
     fn existing(
@@ -5162,24 +3830,35 @@ mod tests {
         );
     }
 
-    fn pending_game(root: &Path, component: Component, reason: &str) -> PendingGame {
-        let (mut imported, inspection, request) = reviewed_import(root);
-        imported.dxvk = Some("latest".to_owned());
-        if component == Component::Vkd3d {
-            imported.vkd3d = Some("latest".to_owned());
-        }
+    fn pending_game_wanting(
+        root: &Path,
+        component: Component,
+        reason: &str,
+        dxvk: Option<&str>,
+        vkd3d: Option<&str>,
+        version: Option<&str>,
+    ) -> PendingGame {
+        let mut imported = reviewed_import(root);
+        imported.dxvk = dxvk.map(str::to_owned);
+        imported.vkd3d = vkd3d.map(str::to_owned);
         PendingGame {
-            name: "hades".to_owned(),
-            title: "Hades".to_owned(),
             warn: None,
             component,
-            version: None,
+            version: version.map(str::to_owned),
             reason: reason.to_owned(),
-            imported,
-            evidence: ReviewEvidence::default(),
-            inspection,
-            request,
+            plan: plan_for(root, imported),
         }
+    }
+
+    fn pending_game(root: &Path, component: Component, reason: &str) -> PendingGame {
+        pending_game_wanting(
+            root,
+            component,
+            reason,
+            Some("latest"),
+            (component == Component::Vkd3d).then_some("latest"),
+            None,
+        )
     }
 
     fn install_component_fixture(
@@ -5210,19 +3889,15 @@ mod tests {
         let root = tempdir().unwrap();
         let paths = paths(root.path());
         let global = GlobalConfig::default();
-        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
-        let wanted = Wanted {
-            dxvk: Some("dxvk-2.7".to_owned()),
-            vkd3d: None,
-        };
+        let mut imported = reviewed_import(root.path());
+        imported.dxvk = Some("dxvk-2.7".to_owned());
+        let plan = plan_for(root.path(), imported);
         let mut prompt = Prompt::new(Script::new(&["y"]), Vec::new());
         let mut requests = Vec::new();
         ensure_components_available_with(
             &paths,
             &global,
-            "game",
-            &runner,
-            &wanted,
+            &plan,
             &mut prompt,
             |component, version| {
                 requests.push((component, version.map(str::to_owned)));
@@ -5237,7 +3912,7 @@ mod tests {
         );
         let output = String::from_utf8_lossy(prompt.output());
         assert!(output.contains("Download that exact version?"), "{output}");
-        assert_eq!(wanted.dxvk.as_deref(), Some("dxvk-2.7"));
+        assert_eq!(plan.wanted().dxvk.as_deref(), Some("dxvk-2.7"));
     }
 
     #[test]
@@ -5245,19 +3920,16 @@ mod tests {
         let root = tempdir().unwrap();
         let paths = paths(root.path());
         let global = GlobalConfig::default();
-        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
-        let wanted = Wanted {
-            dxvk: Some("latest".to_owned()),
-            vkd3d: Some("latest".to_owned()),
-        };
+        let mut imported = reviewed_import(root.path());
+        imported.dxvk = Some("latest".to_owned());
+        imported.vkd3d = Some("latest".to_owned());
+        let plan = plan_for(root.path(), imported);
         let mut prompt = Prompt::new(Script::new(&["y", "y"]), Vec::new());
         let mut requests = Vec::new();
         ensure_components_available_with(
             &paths,
             &global,
-            "game",
-            &runner,
-            &wanted,
+            &plan,
             &mut prompt,
             |component, version| {
                 requests.push((component, version.map(str::to_owned)));
@@ -5282,20 +3954,22 @@ mod tests {
         let root = tempdir().unwrap();
         let paths = paths(root.path());
         let global = GlobalConfig::default();
-        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
-        let mut a = pending_game(root.path(), Component::Dxvk, "missing");
-        a.imported.dxvk = Some("dxvk-2.7".to_owned());
-        a.version = Some("dxvk-2.7".to_owned());
-        let mut b = pending_game(root.path(), Component::Dxvk, "missing");
-        b.name = "second".to_owned();
-        b.imported.dxvk = Some("dxvk-2.7".to_owned());
-        b.version = Some("dxvk-2.7".to_owned());
+        let pinned = || {
+            pending_game_wanting(
+                root.path(),
+                Component::Dxvk,
+                "missing",
+                Some("dxvk-2.7"),
+                None,
+                Some("dxvk-2.7"),
+            )
+        };
+        let (a, b) = (pinned(), pinned());
         let mut prompt = Prompt::new(Script::new(&["y"]), Vec::new());
         let mut requests = Vec::new();
         let (rows, ready) = resolve_pending_with(
             &paths,
             &global,
-            &runner,
             vec![a, b],
             false,
             Some(&mut prompt),
@@ -5328,16 +4002,20 @@ mod tests {
         let root = tempdir().unwrap();
         let paths = paths(root.path());
         let global = GlobalConfig::default();
-        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
-        let mut game = pending_game(root.path(), Component::Dxvk, "dxvk missing");
-        game.imported.vkd3d = Some("latest".to_owned());
+        let game = pending_game_wanting(
+            root.path(),
+            Component::Dxvk,
+            "dxvk missing",
+            Some("latest"),
+            Some("latest"),
+            None,
+        );
         let pending = vec![game];
         let mut prompt = Prompt::new(Script::new(&["y", "y"]), Vec::new());
         let mut requested = Vec::new();
         let (rows, ready) = resolve_pending_with(
             &paths,
             &global,
-            &runner,
             pending,
             false,
             Some(&mut prompt),
@@ -5370,7 +4048,6 @@ mod tests {
     #[test]
     fn resolve_pending_with_yes_skips_without_asking() {
         let root = tempdir().unwrap();
-        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
         let pending = vec![pending_game(
             root.path(),
             Component::Dxvk,
@@ -5379,7 +4056,6 @@ mod tests {
         let (rows, ready) = resolve_pending::<Script, Vec<u8>>(
             &paths(root.path()),
             &GlobalConfig::default(),
-            &runner,
             pending,
             true,
             None,
@@ -5396,7 +4072,6 @@ mod tests {
     #[test]
     fn resolve_pending_interactive_decline_keeps_the_original_reason() {
         let root = tempdir().unwrap();
-        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
         let pending = vec![pending_game(
             root.path(),
             Component::Dxvk,
@@ -5406,7 +4081,6 @@ mod tests {
         let (rows, ready) = resolve_pending(
             &paths(root.path()),
             &GlobalConfig::default(),
-            &runner,
             pending,
             false,
             Some(&mut prompt),
@@ -5422,7 +4096,6 @@ mod tests {
     #[test]
     fn resolve_pending_asks_once_per_component_across_every_game_that_needs_it() {
         let root = tempdir().unwrap();
-        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
         let pending = vec![
             pending_game(root.path(), Component::Dxvk, "dxvk missing"),
             pending_game(root.path(), Component::Dxvk, "dxvk missing"),
@@ -5431,7 +4104,6 @@ mod tests {
         let (rows, _) = resolve_pending(
             &paths(root.path()),
             &GlobalConfig::default(),
-            &runner,
             pending,
             false,
             Some(&mut prompt),
@@ -5449,26 +4121,19 @@ mod tests {
     /// Runs the final review on `answers` with `art`, returning the transcript.
     fn review_with_art(root: &Path, art: &mut ArtChoice, answers: &[&str]) -> String {
         let paths = paths(root);
-        let global = GlobalConfig::default();
+        let global = global_with_runners(root);
         let source = heroic_source(root);
-        let (mut imported, inspection, mut request) = reviewed_import(root);
-        let mut desktop = DesktopChoice {
-            enabled: true,
-            name: imported.title.clone(),
-        };
+        let mut plan = plan_for(root, reviewed_import(root));
+        plan.set_desktop_enabled(true);
         let mut prompt = Prompt::new(Script::new(answers), Vec::new());
         final_review(
             &ReviewContext {
                 paths: &paths,
                 global: &global,
                 source: &source,
-                evidence: &ReviewEvidence::default(),
                 verbose: false,
             },
-            &mut imported,
-            &inspection,
-            &mut request,
-            &mut desktop,
+            &mut plan,
             art,
             &mut prompt,
         )
@@ -5579,7 +4244,7 @@ mod tests {
 
     /// A Heroic config with one sideloaded game, Alpha, and a fake wine
     /// runner, classified the way `--all` does.
-    fn bulk_fixture(root: &Path) -> (Paths, GlobalConfig, HeroicSource, Runner, ReadyGame) {
+    fn bulk_fixture(root: &Path) -> (Paths, GlobalConfig, HeroicSource, ReadyGame) {
         let paths = paths(root);
         let prefix = root.join("heroic-prefix");
         fs::create_dir_all(prefix.join("drive_c/Games")).unwrap();
@@ -5639,14 +4304,14 @@ mod tests {
         .unwrap();
         assert_eq!(ready.len(), 1);
         let game = ready.remove(0);
-        (paths, global, source, runner, game)
+        (paths, global, source, game)
     }
 
     fn import_bulk_game(
         root: &Path,
         fake: Fake,
     ) -> (anyhow::Result<Option<String>>, String, String, Paths) {
-        let (paths, global, source, runner, game) = bulk_fixture(root);
+        let (paths, global, source, game) = bulk_fixture(root);
         let lookups = std::cell::Cell::new(0);
         let access = access(true, &lookups, fake);
         let bulk = Bulk {
@@ -5654,7 +4319,6 @@ mod tests {
             global: &global,
             access: &access,
             source: &source,
-            runner: Some(&runner),
             desktop: true,
             art: Some(Key {
                 value: "k".into(),
