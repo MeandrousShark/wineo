@@ -8,6 +8,7 @@ Only what is specific to Wine or Proton is refused for a native environment.
 Everything else, like gamemode, gamescope, MangoHud, `[env]`, targets, art,
 and desktop entries, works the same for both kinds. `wayland` is Wine-only,
 since it switches Wine's display driver; see [Launch options](launch-options.md).
+So is `winetricks`, since verbs install into a prefix.
 
 ## Creating one
 
@@ -134,7 +135,7 @@ leaves.
 
 | Command | Native behavior |
 |---|---|
-| `set` | `gamemode`, `mangohud`, `gamescope.*`, `env.*`, and `targets.*` work. Wine-only keys, including `wayland`, and `kind` are refused. |
+| `set` | `gamemode`, `mangohud`, `gamescope.*`, `env.*`, and `targets.*` work. Wine-only keys, including `wayland` and `winetricks`, and `kind` are refused. |
 | `setup` | Skips the prefix and program scan. Adding a target goes straight to entering a path. |
 | `desktop`, `art` | Work. The icon comes from art only, and an entry with no art uses the theme's generic icon. |
 | `clone` | Copies the config and art under the new name, with desktop entries off |

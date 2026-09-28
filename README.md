@@ -97,7 +97,7 @@ Every command has `--help`. The common ones:
 | Check and stop runs | `wineo status`, `wineo stop hades`, `wineo logs hades` |
 | Add, edit, or remove targets, or run an installer | `wineo setup hades` |
 | Run some other exe in the prefix | `wineo exec hades path/to/tool.exe` |
-| Install Windows components | `wineo winetricks hades vcrun2022` |
+| Install Windows components, once or on every launch | `wineo winetricks hades vcrun2022`, `wineo set hades 'winetricks=["vcrun2022"]'` |
 | Change settings | `wineo set hades key=value`, `wineo config hades` |
 | Use gamescope, MangoHud, or Wine Wayland | `wineo set hades mangohud=true wayland=true gamescope.window=fullscreen` |
 | Manage runners and components | `wineo runners`, `wineo download`, `wineo dxvk`, `wineo vkd3d` |

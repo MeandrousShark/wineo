@@ -109,6 +109,47 @@ Several `--tag` flags list only environments with all of them. When nothing
 matches, `list` prints `No environments are tagged game` and exits 0.
 `status NAME` shows a `tags` line, and `--tag` completes the tags in use.
 
+## Winetricks dependencies
+
+`winetricks` lists the verbs an environment needs. Before each `start`,
+`run`, or `restart`, wineo installs the ones missing from the prefix, in
+order, in one unattended `winetricks -q` call. A launch with nothing missing
+starts no extra process.
+
+```sh
+wineo set hades 'winetricks=["vcrun2022", "corefonts"]'
+```
+
+```
+$ wineo start hades
+Installing vcrun2022, corefonts with winetricks
+...
+Started hades
+```
+
+- What counts as installed is winetricks' own record,
+  `winetricks.log` in the prefix (`pfx/` for Proton). Verbs installed by hand
+  with `wineo winetricks` count too, and the log travels with the prefix
+  through clone, snapshots, and portable copies.
+- If winetricks fails, the launch fails and names the verbs still missing.
+  The next launch retries only those.
+- A running environment isn't touched; `start` on one that's already running
+  skips the install.
+- `-e` overrides from the launch reach winetricks too.
+- Removing a verb from the list only stops wineo from installing it again.
+  winetricks can't uninstall.
+- Settings verbs like `win10` or `renderer=vulkan` apply once. If the setting
+  is changed by hand later, wineo won't put it back.
+- Verbs are checked for shape only (no spaces, no leading `-`, no
+  duplicates). An unknown verb fails when winetricks runs, with its own error.
+- It's Wine-only, works in templates, and needed no schema bump, for the same
+  reason as the launch options.
+
+On Proton, umu runs its own winetricks, so nothing extra is needed. On Wine,
+`winetricks` has to be on `PATH`, and a launch that needs it fails before
+anything runs when it isn't. `status NAME` lists the verbs and marks missing
+ones, and `wineo validate --fix` installs them ahead of time.
+
 ## Creating an environment from a template
 
 To reuse the same settings across environments instead of writing each one by

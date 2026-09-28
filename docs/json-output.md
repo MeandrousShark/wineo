@@ -46,6 +46,9 @@ nullable. `busy` is a lowercase operation value such as `launch` or
 
 Named status also includes `kind`, `wine` or `native`; `runner` with
 `configured`, `resolved`, and `version`; `prefix`; nullable `target_exe`, `gameid`, and `store`; `gamemode`, `gamescope`, `mangohud`, and `wayland` (see [Launch options](launch-options.md));
+`winetricks`, the configured verbs, and `winetricks_missing`, those not yet in
+the prefix's `winetricks.log`, both arrays (see
+[Winetricks dependencies](config-files.md#winetricks-dependencies));
 `desktop`, an array of target names; and nullable `dxvk` and `vkd3d` component
 objects. Each component object has `wanted`, nullable `resolved`, nullable
 `installed`, and `current`.

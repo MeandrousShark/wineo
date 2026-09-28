@@ -71,8 +71,9 @@ Ctrl+C cancels without fixing anything.
 With no terminal, validate only reports. `--fix` applies every fix without
 asking, for scripts.
 
-Fixes never touch a config you wrote, a prefix, or an art file. The only
-config a fix edits is `art.toml`, to drop a record whose file or target is
+Fixes never touch a config you wrote or an art file, and the only fix that
+touches a prefix installs missing [winetricks verbs](config-files.md#winetricks-dependencies),
+the same way `start` would. The only config a fix edits is `art.toml`, to drop a record whose file or target is
 gone, and its comments are kept. A missing prefix or an unsupported
 `schema_version` is reported, never rewritten.
 
@@ -96,6 +97,8 @@ storage is reported for attention rather than recovered by ordinary commands.
 | Environment config | Same parse checks | error | |
 | Wine environment | Runner doesn't resolve | error | hint: `wineo download` |
 | Wine environment | DXVK or vkd3d build doesn't resolve | error | download it |
+| Wine environment | `winetricks` verbs missing from the prefix's `winetricks.log` | warning | install them, like `start` does |
+| Wine environment | `winetricks` verbs listed, but a Wine runner can't find `winetricks` on `PATH` | error | |
 | Wine environment | Prefix missing, but `start` would build it | warning | |
 | Wine environment | Prefix `start` would refuse, or one with the other layout | error | |
 | Target | Exe missing (a Unix path, or a `C:\` path in an existing prefix) | error | |
