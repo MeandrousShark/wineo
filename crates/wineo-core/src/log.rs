@@ -1,8 +1,9 @@
 //! A detached run's session log: the soft size cap the supervisor enforces,
 //! and the counter that lets a reader notice the log was cleared.
 
-use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
@@ -10,12 +11,16 @@ use std::time::Duration;
 
 use rustix::fs::{FlockOperation, flock};
 
+use crate::cancel::Token;
 use crate::error::{self, IoContext, Result};
+use crate::runtime::Runtime;
 
 /// How often the supervisor checks the log's size while a run is going.
 const CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 const BYTES_PER_MB: u64 = 1024 * 1024;
+const TAIL_CHUNK_SIZE: usize = 64 * 1024;
+const TAIL_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 /// A run's log, together with the reset counter beside it. The counter lives in
 /// its own file so clearing the log never has to touch the run's state.
@@ -216,6 +221,164 @@ impl Drop for Cap {
     }
 }
 
+/// Reads a log, noticing when the supervisor clears it. Every read is bounded
+/// and rechecks the reset counter under the same hold, so a log that was
+/// cleared and has already grown past the last read position is still picked up
+/// from the start of its new contents rather than from the middle.
+pub struct Tail {
+    file: File,
+    session: Option<Log>,
+    seen: u64,
+    buf: Vec<u8>,
+}
+
+impl Tail {
+    pub fn new(file: File, session: Option<Log>) -> Self {
+        Self {
+            file,
+            session,
+            seen: 0,
+            buf: vec![0u8; TAIL_CHUNK_SIZE],
+        }
+    }
+
+    pub fn seek_to_last_lines(&mut self, lines: u64) -> anyhow::Result<()> {
+        let Self {
+            file,
+            session,
+            seen,
+            ..
+        } = self;
+        guarded(session.as_ref(), |count| {
+            *seen = count;
+            let offset = tail_offset(file, lines, TAIL_CHUNK_SIZE)?;
+            file.seek(SeekFrom::Start(offset))?;
+            Ok(())
+        })
+    }
+
+    /// Copies everything up to the log's current end. `Ok(false)` means the
+    /// writer closed its end, like `wineo logs x | head`.
+    pub fn stream(&mut self, writer: &mut impl Write) -> anyhow::Result<bool> {
+        loop {
+            let Self {
+                file,
+                session,
+                seen,
+                buf,
+            } = self;
+            let read = guarded(session.as_ref(), |count| {
+                if count != *seen {
+                    *seen = count;
+                    // Cleared since the last read, so the new output starts at zero.
+                    file.seek(SeekFrom::Start(0))?;
+                }
+                file.read(buf)
+            })?;
+            if read == 0 {
+                return Ok(flush(writer)?);
+            }
+            if !write_all(writer, &self.buf[..read])? {
+                return Ok(false);
+            }
+        }
+    }
+}
+
+/// Runs `read` with the log held against a reset, when there is one to hold.
+fn guarded<T>(session: Option<&Log>, read: impl FnOnce(u64) -> io::Result<T>) -> anyhow::Result<T> {
+    match session {
+        Some(log) => Ok(log.read_guarded(read)?),
+        None => Ok(read(0)?),
+    }
+}
+
+impl Tail {
+    /// Watches the current run until it ends, the log rotates, or cancellation is requested.
+    pub fn follow(
+        &mut self,
+        runtime: &Runtime,
+        path: &Path,
+        writer: &mut impl Write,
+        token: &Token,
+    ) -> anyhow::Result<()> {
+        loop {
+            if token.is_canceled() {
+                return Ok(());
+            }
+            token.wait_timeout(TAIL_POLL_INTERVAL);
+            if token.is_canceled() || !self.stream(writer)? {
+                return Ok(());
+            }
+            if run_is_over(runtime, path, &self.file)? {
+                // Whatever was written between the last read and the run ending.
+                self.stream(writer)?;
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// True once nothing is running, or `path` was rotated to a new file out from under us.
+fn run_is_over(runtime: &Runtime, path: &Path, file: &File) -> anyhow::Result<bool> {
+    if !runtime.is_running()? {
+        return Ok(true);
+    }
+    let ino = file.metadata()?.ino();
+    Ok(!fs::metadata(path).is_ok_and(|meta| meta.ino() == ino))
+}
+
+fn write_all(writer: &mut impl Write, buf: &[u8]) -> io::Result<bool> {
+    match writer.write_all(buf) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+fn flush(writer: &mut impl Write) -> io::Result<bool> {
+    match writer.flush() {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+/// Finds the byte offset where the last `lines` lines of `file` start, reading
+/// backwards in chunks so the whole file never has to fit in memory. A final
+/// line without a trailing newline still counts as a line.
+fn tail_offset(file: &mut (impl Read + Seek), lines: u64, chunk_size: usize) -> io::Result<u64> {
+    let len = file.seek(SeekFrom::End(0))?;
+    if lines == 0 || len == 0 {
+        return Ok(len);
+    }
+
+    let mut pos = len;
+    let mut found = 0u64;
+    let mut buf = vec![0u8; chunk_size];
+    while pos > 0 {
+        let read_len = chunk_size.min(pos as usize);
+        pos -= read_len as u64;
+        file.seek(SeekFrom::Start(pos))?;
+        file.read_exact(&mut buf[..read_len])?;
+        for (i, &byte) in buf[..read_len].iter().enumerate().rev() {
+            if byte != b'\n' {
+                continue;
+            }
+            let byte_pos = pos + i as u64;
+            // The file's final newline ends the last line rather than starting an empty one.
+            if byte_pos == len - 1 {
+                continue;
+            }
+            found += 1;
+            if found == lines {
+                return Ok(byte_pos + 1);
+            }
+        }
+    }
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Read;
@@ -367,5 +530,70 @@ mod tests {
         drop(cap);
         assert_eq!(count(&log), 0);
         assert_eq!(contents(&log).len(), 2 * 1024 * 1024);
+    }
+}
+
+#[cfg(test)]
+mod tail_tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    fn tail(content: &str, lines: u64, chunk_size: usize) -> String {
+        let mut cursor = Cursor::new(content.as_bytes().to_vec());
+        let offset = tail_offset(&mut cursor, lines, chunk_size).unwrap();
+        content[offset as usize..].to_owned()
+    }
+
+    #[test]
+    fn empty_file_has_nothing_to_print() {
+        assert_eq!(tail("", 5, 4), "");
+        assert_eq!(tail("", 0, 4), "");
+    }
+
+    #[test]
+    fn zero_lines_prints_nothing() {
+        assert_eq!(tail("a\nb\nc\n", 0, 4), "");
+        assert_eq!(tail("a\nb\nc", 0, 4), "");
+    }
+
+    #[test]
+    fn more_lines_than_the_file_has_prints_everything() {
+        assert_eq!(tail("a\nb\nc\n", 10, 4), "a\nb\nc\n");
+        assert_eq!(tail("a\nb\nc", 10, 4), "a\nb\nc");
+    }
+
+    #[test]
+    fn trailing_line_without_a_newline_still_counts_as_a_line() {
+        assert_eq!(tail("a\nb\nc", 1, 4), "c");
+        assert_eq!(tail("a\nb\nc", 2, 4), "b\nc");
+        assert_eq!(tail("a\nb\nc", 3, 4), "a\nb\nc");
+    }
+
+    #[test]
+    fn small_chunk_sizes_still_find_the_right_offset() {
+        let content = "one\ntwo\nthree\nfour\n";
+        for chunk_size in 1..8 {
+            assert_eq!(
+                tail(content, 2, chunk_size),
+                "three\nfour\n",
+                "chunk_size={chunk_size}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_longer_than_the_chunk_size_is_still_found() {
+        let content = "short\nthis line is much longer than the chunk size\nlast\n";
+        assert_eq!(tail(content, 1, 4), "last\n");
+        assert_eq!(
+            tail(content, 2, 4),
+            "this line is much longer than the chunk size\nlast\n"
+        );
+    }
+
+    #[test]
+    fn newline_on_a_chunk_boundary_is_still_found() {
+        assert_eq!(tail("ab\ncd\n", 1, 3), "cd\n");
     }
 }
