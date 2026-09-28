@@ -37,6 +37,8 @@ Completed: [0029: Playtime statistics](plans/0029-playtime-stats.md).
 See [Playtime](stats.md) for what counts and where it's kept.
 Completed: [0030: Recoverable removal and prune](plans/0030-trash-and-prune.md).
 See [Trash and removal](trash.md) for restoring and pruning.
+Completed: [0031: Wine Wayland, gamescope, and MangoHud](plans/0031-wayland-gamescope-mangohud.md).
+See [Launch options](launch-options.md) for the settings and how they combine.
 
 **Category**
 
@@ -60,7 +62,6 @@ See [Trash and removal](trash.md) for restoring and pruning.
 | `--dry-run` for `import` and non-guided `new` | Automation | **2** | | Preview what would be created, copied, or registered without touching disk | Import already builds a review before writing, which a dry run could print and stop at. |
 | Pre-launch and post-exit hooks | Core | **2** | | Run a user command before a target starts or after it exits, e.g. mounting a drive or syncing saves | The supervisor already owns the process lifetime, so post-exit fits there. Needs decisions on failure handling, env vars passed in, and per-environment versus per-target hooks. |
 | Declarative winetricks dependencies | Compatibility | **2** | 0018 | List verbs in config, e.g. `winetricks = ["vcrun2022", "corefonts"]`, and have wineo install whatever is missing | Needs a record of installed verbs so it stays idempotent. A new config key is the first real test of 0018's versioning rules, since older wineo rejects unknown keys. |
-| Wine Wayland, gamescope, and MangoHud | Compatibility | **2** | 0018 | Launch settings instead of manual environment variables and wrapper scripts | Implemented; awaiting acceptance of [plan 0031](plans/0031-wayland-gamescope-mangohud.md). See [Launch options](launch-options.md). |
 | ProtonDB lookup in the CLI | UX | **3** | | Check a game's compatibility information before launching or changing runners | Resolve a wineo environment to the right ProtonDB game, handle missing matches, and make the result reusable by the future GUI. The command shape and online behavior need a plan. |
 | GUI-facing core API review | Core | **2** | GUI entry criteria 1-7 | Keep GUI actions on shared core operations | Review setup, import, launch, stop, and validation entry points for useful progress, cancellation, and errors. Also look for simplifications: logic in the CLI that belongs in core (`import_heroic.rs` holds about 3,300 lines of non-test code) and duplication across the interactive flows and the copy operations (clone, portable copy, snapshots). Resolve blockers found in the review before GUI work starts. |
 | Tags and `wineo list --tag` | UX | **2** | 0018 | Sort a long environment list into groups like game, work, or creative | e.g. `tags = ["game"]` in the environment config. Could also filter `status` and completion. |
