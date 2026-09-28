@@ -3,22 +3,298 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+use anyhow::bail;
 use toml_edit::DocumentMut;
 
 use crate::art::TargetCleanup;
-use crate::config::{self, EnvironmentConfig, GlobalConfig};
+use crate::config::{self, EnvironmentConfig, GlobalConfig, WINE_ONLY_KEYS, native_key_message};
+use crate::desktop;
 use crate::edit::{self, Scope};
+use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
+use crate::install::{self, Change, Wanted};
+use crate::launch;
 use crate::name;
 use crate::operation::Locks;
 use crate::paths::Paths;
+use crate::prefix;
+use crate::runner::Runner;
+use crate::runners::Runners;
 
 /// Which config file `update` edits.
 #[derive(Debug, Clone, Copy)]
 pub enum ConfigFile<'a> {
     Global,
     Environment(&'a str),
+}
+
+/// Validation failure that the caller may render with its own recovery hint.
+#[derive(Debug, thiserror::Error)]
+pub enum CheckError {
+    #[error("runner layouts are not compatible")]
+    RunnerKindMismatch {
+        current: String,
+        changed: String,
+        kind: String,
+    },
+}
+
+/// Validates environment settings and reconciles installed components before
+/// the config is written. Callers hold the environment lock while checking
+/// and updating, so the prefix and config cannot diverge during a launch.
+pub fn check(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    pairs: &[(&str, &str)],
+    unset: &[&str],
+) -> anyhow::Result<Vec<Change>> {
+    check_native(paths, global, name, pairs, unset)?;
+    let runner = check_runner(paths, global, name, pairs)?;
+    check_desktop(paths, name, pairs, unset)?;
+    apply_components(paths, global, name, runner.as_ref(), pairs, unset)
+}
+
+/// Settings that decide what the next launch runs, and against what. They all
+/// have to exclude whatever is using the environment, so nothing launches
+/// halfway between the old setting and the new one, and `dxvk` and `vkd3d`
+/// additionally write into the prefix while they are applied.
+pub fn changes_the_launch(pairs: &[(&str, &str)], unset: &[&str]) -> bool {
+    ["prefix", "runner", "dxvk", "vkd3d"]
+        .iter()
+        .any(|key| pairs.iter().any(|(set, _)| set == key) || unset.contains(key))
+}
+
+/// The value a key will hold once this set is written, so a check can look at
+/// the result rather than at the change.
+fn value_after(
+    current: Option<&str>,
+    pairs: &[(&str, &str)],
+    unset: &[&str],
+    key: &str,
+) -> Option<String> {
+    if unset.contains(&key) {
+        return None;
+    }
+    pairs
+        .iter()
+        .rev()
+        .find(|(set, _)| *set == key)
+        .map(|(_, raw)| unquote(raw).to_owned())
+        .or_else(|| current.map(str::to_owned))
+}
+
+/// Applies `dxvk` and `vkd3d` before the config is written, so a failed
+/// install leaves the config saying what the prefix actually has.
+fn apply_components(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    runner: Option<&Runner>,
+    pairs: &[(&str, &str)],
+    unset: &[&str],
+) -> anyhow::Result<Vec<Change>> {
+    let environment = Environment::load(paths, name).ok();
+    let config = environment.as_ref().map(|env| &env.config);
+    let wanted = Wanted {
+        dxvk: value_after(
+            config.and_then(|config| config.wine()?.dxvk.as_deref()),
+            pairs,
+            unset,
+            "dxvk",
+        ),
+        vkd3d: value_after(
+            config.and_then(|config| config.wine()?.vkd3d.as_deref()),
+            pairs,
+            unset,
+            "vkd3d",
+        ),
+    };
+    // Nothing resolvable to check against, so leave it to the next launch.
+    let Some(runner) = runner else {
+        return Ok(Vec::new());
+    };
+    // Refused whether or not there is a prefix to install into yet.
+    install::check(name, runner, &wanted)?;
+    let Some(prefix) = environment.as_ref().and_then(|env| env.prefix(paths).ok()) else {
+        return Ok(Vec::new());
+    };
+    // A prefix that does not exist yet is left to the next launch, which
+    // reconciles anyway.
+    if !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
+        return Ok(Vec::new());
+    }
+    Ok(install::reconcile(
+        paths, global, name, runner, &prefix, &wanted,
+    )?)
+}
+
+/// The targets a set turns a desktop entry on for.
+fn enabled_desktops(pairs: &[(&str, &str)]) -> Vec<String> {
+    pairs
+        .iter()
+        .filter_map(|(key, raw)| {
+            let (target, field) = key.strip_prefix("targets.")?.split_once('.')?;
+            (field == "desktop" && unquote(raw) == "true").then(|| target.to_owned())
+        })
+        .collect()
+}
+
+/// Refuses a `desktop = true` whose target points at something that is not
+/// there, before anything is written, so a typo never leaves a config asking
+/// for an entry that could not be made. A target with no `exe` at all is left
+/// to the schema, which requires one.
+fn check_desktop(
+    paths: &Paths,
+    name: &str,
+    pairs: &[(&str, &str)],
+    unset: &[&str],
+) -> anyhow::Result<()> {
+    let enabled = enabled_desktops(pairs);
+    if enabled.is_empty() {
+        return Ok(());
+    }
+    desktop::supported(paths)?;
+    let environment = Environment::load(paths, name).ok();
+    let Some(prefix) = environment.as_ref().and_then(|env| env.prefix(paths).ok()) else {
+        return Ok(());
+    };
+    // No prefix yet means nothing to resolve against, so the next launch,
+    // which reconciles anyway, is where this gets checked.
+    if !prefix::holds_prefix(&prefix) {
+        return Ok(());
+    }
+    for target in enabled {
+        let current = environment
+            .as_ref()
+            .and_then(|env| env.config.targets.get(&target))
+            .map(|target| target.exe.as_str());
+        if let Some(exe) = value_after(current, pairs, unset, &format!("targets.{target}.exe")) {
+            desktop::check(paths, &prefix, &exe)?;
+        }
+    }
+    Ok(())
+}
+
+/// Refuses the keys a native environment can't have, with the same line its
+/// config would be refused with, and checks the exes it is given the way a
+/// launch resolves them. Nothing to do for a Wine environment.
+fn check_native(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    pairs: &[(&str, &str)],
+    unset: &[&str],
+) -> anyhow::Result<()> {
+    let Ok(environment) = Environment::load(paths, name) else {
+        return Ok(());
+    };
+    if environment.config.wine().is_some() {
+        return Ok(());
+    }
+    if let Some((key, _)) = pairs.iter().find(|(key, _)| WINE_ONLY_KEYS.contains(key)) {
+        bail!("{}", native_key_message(name, key));
+    }
+    let mut targets: Vec<String> = pairs
+        .iter()
+        .filter_map(|(key, _)| {
+            let (target, field) = key.strip_prefix("targets.")?.split_once('.')?;
+            (field == "exe").then(|| target.to_owned())
+        })
+        .collect();
+    targets.extend(enabled_desktops(pairs));
+    for target in targets {
+        let current = environment
+            .config
+            .targets
+            .get(&target)
+            .map(|target| target.exe.as_str());
+        if let Some(exe) = value_after(current, pairs, unset, &format!("targets.{target}.exe")) {
+            launch::check_native_exe(paths, global, name, &environment.config.env, &exe)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn changed_runner<'a>(pairs: &[(&'a str, &'a str)]) -> Option<&'a str> {
+    pairs
+        .iter()
+        .rev()
+        .find(|(key, _)| *key == "runner")
+        .map(|(_, raw)| unquote(raw))
+}
+
+/// Quoting is optional on the command line, so both spellings mean the same.
+fn unquote(raw: &str) -> &str {
+    raw.strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .or_else(|| {
+            raw.strip_prefix('\'')
+                .and_then(|rest| rest.strip_suffix('\''))
+        })
+        .unwrap_or(raw)
+}
+
+/// Settings only a Proton environment has anything to do with.
+const PROTON_ONLY: [&str; 2] = ["gameid", "store"];
+
+/// Resolves a new runner and refuses the settings that would not survive it:
+/// a change across kinds, or protonfixes on something that is not Proton.
+fn check_runner(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    pairs: &[(&str, &str)],
+) -> anyhow::Result<Option<Runner>> {
+    let changed = changed_runner(pairs);
+    let runners = Runners::new(paths, global)?;
+    let current = Environment::load(paths, name)
+        .ok()
+        .and_then(|environment| runners.resolve(&environment.wine().ok()?.runner).ok());
+
+    let runner = match changed {
+        Some(changed) => {
+            let new = runners.resolve(changed)?;
+            // A wine prefix has no `pfx/`, and a Proton one keeps nothing where
+            // a plain wine looks for it, so crossing kinds is worse than not
+            // migrating.
+            if let Some(current) = &current
+                && current.is_proton() != new.is_proton()
+            {
+                bail!(CheckError::RunnerKindMismatch {
+                    current: current.name().to_owned(),
+                    changed: changed.to_owned(),
+                    kind: new.kind_name().to_owned(),
+                });
+            }
+            new
+        }
+        // Nothing resolvable to check against, and the write is still valid
+        // TOML, so this is not the place to complain.
+        None => match current {
+            Some(current) => current,
+            None => return Ok(None),
+        },
+    };
+    let proton_only = pairs.iter().any(|(key, _)| PROTON_ONLY.contains(key));
+
+    if proton_only && !runner.is_proton() {
+        let key = pairs
+            .iter()
+            .find_map(|(key, _)| PROTON_ONLY.contains(key).then_some(*key))
+            .expect("checked above");
+        bail!(
+            "`{key}` only means something to Proton, and `{name}` runs on {}",
+            runner.name()
+        );
+    }
+    Ok(Some(runner))
+}
+
+/// Where a `prefix=` setting would point.
+pub fn new_prefix(paths: &Paths, raw: &str) -> Option<PathBuf> {
+    paths.absolute(unquote(raw)).ok()
 }
 
 /// Applies `key=value` settings and removals to a config file, keeping its
