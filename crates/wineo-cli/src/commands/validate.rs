@@ -2,6 +2,7 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use serde::Serialize;
+use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
 use wineo_core::paths::Paths;
 use wineo_core::validate::{self, Fix, Level, Note, Problem, Report};
@@ -156,23 +157,38 @@ struct Failed {
 /// Returns the ones that worked and why the others didn't.
 fn apply_all(paths: &Paths, fixes: &[Fix]) -> (Vec<Fix>, Vec<Failed>) {
     let global = GlobalConfig::load_or_default(paths);
-    let cancellation = super::transfer::Cancellation::new();
     let mut applied = Vec::new();
     let mut failed = Vec::new();
     for fix in fixes {
-        let result = match &cancellation {
-            Ok(cancellation) => validate::apply(
-                paths,
-                fix,
-                &cancellation.token,
-                super::winetricks::print_event,
-                |component, version| {
-                    let global = global.as_ref().map_err(|err| anyhow::anyhow!("{err}"))?;
-                    components::download_build(paths, global, component, version)
-                },
-            ),
-            Err(err) => Err(anyhow::anyhow!("{err}")),
+        // Only winetricks honors the token here. A handler held across the
+        // other fixes would swallow Ctrl+C instead of ending wineo.
+        let cancellation = match fix {
+            Fix::InstallWinetricks { .. } => match super::transfer::Cancellation::new() {
+                Ok(cancellation) => Some(cancellation),
+                Err(err) => {
+                    failed.push(Failed {
+                        fix: fix.label(),
+                        message: paths.contract_text(&format!("{err:#}")),
+                    });
+                    continue;
+                }
+            },
+            _ => None,
         };
+        let token = cancellation
+            .as_ref()
+            .map_or_else(Token::new, |cancellation| cancellation.token.clone());
+        let result = validate::apply(
+            paths,
+            fix,
+            &token,
+            super::winetricks::print_event,
+            |component, version| {
+                let global = global.as_ref().map_err(|err| anyhow::anyhow!("{err}"))?;
+                components::download_build(paths, global, component, version)
+            },
+        );
+        drop(cancellation);
         match result {
             Ok(notes) => {
                 for note in notes {
