@@ -2,16 +2,54 @@ use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 use anyhow::bail;
+use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
+use wineo_core::installer::Output;
 use wineo_core::launch::parse_env_assignment;
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::prefix;
 use wineo_core::runners::Runners;
 use wineo_core::runtime::{Runtime, exit_code};
-use wineo_core::winetricks;
+use wineo_core::winetricks::{self, WinetricksEvent};
+
+use super::transfer::Cancellation;
+
+pub fn print_event(event: WinetricksEvent) {
+    match event {
+        WinetricksEvent::Installing(verbs) => {
+            eprintln!("Installing {} with winetricks", verbs.join(", "));
+        }
+        WinetricksEvent::Stopping => {
+            eprintln!("Canceling winetricks, press Ctrl+C again to force it");
+        }
+        WinetricksEvent::Killing => eprintln!("Killing everything left in the prefix"),
+        WinetricksEvent::Warning(warning) => eprintln!("warning: {warning}"),
+        WinetricksEvent::OutputLine(_) | WinetricksEvent::Done(_) => {}
+    }
+}
+
+pub fn print_and_run(
+    runner: &wineo_core::runner::Runner,
+    prefix: &std::path::Path,
+    env: &BTreeMap<String, String>,
+    args: &[String],
+    stop_timeout: u32,
+    token: &Token,
+) -> anyhow::Result<std::process::ExitStatus> {
+    winetricks::run(
+        runner,
+        prefix,
+        env,
+        args,
+        stop_timeout,
+        token,
+        Output::Inherit,
+        print_event,
+    )
+}
 
 #[derive(clap::Args)]
 // clap's own -h would otherwise be caught before the name's trailing arguments,
@@ -67,6 +105,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     if !runner.is_proton() && !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
         winetricks::check_available(&runner)?;
     }
+    let cancellation = Cancellation::new()?;
     crate::commands::build::ensure_prefix(paths, &global, &environment, &runner)?;
     let locks = Locks::new(paths);
     // Held until winetricks is done and the prefix is idle. Several winetricks
@@ -91,6 +130,23 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 
     crate::commands::desktop::reconcile(paths, &global, &environment, Some(&runner), &prefix)?;
 
-    let status = winetricks::run(&runner, &prefix, &env, forwarded, global.stop_timeout)?;
-    Ok(ExitCode::from(u8::try_from(exit_code(status)).unwrap_or(1)))
+    let result = print_and_run(
+        &runner,
+        &prefix,
+        &env,
+        forwarded,
+        global.stop_timeout,
+        &cancellation.token,
+    );
+    match result {
+        Ok(status) => Ok(ExitCode::from(u8::try_from(exit_code(status)).unwrap_or(1))),
+        Err(err)
+            if err
+                .downcast_ref::<Error>()
+                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
+        {
+            Ok(ExitCode::from(130))
+        }
+        Err(err) => Err(err),
+    }
 }

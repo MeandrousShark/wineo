@@ -3199,7 +3199,14 @@ mod tests {
             .find(|problem| problem.code == crate::validate::Code::TrashInterrupted)
             .unwrap();
         let fix = problem.fix.as_ref().unwrap();
-        crate::validate::apply(&f.paths, fix, |_, _| unreachable!()).unwrap();
+        crate::validate::apply(
+            &f.paths,
+            fix,
+            &crate::cancel::Token::new(),
+            |_| {},
+            |_, _| unreachable!(),
+        )
+        .unwrap();
         assert!(Environment::load(&f.paths, "game").is_ok());
     }
 

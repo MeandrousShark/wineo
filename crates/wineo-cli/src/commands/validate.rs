@@ -156,13 +156,23 @@ struct Failed {
 /// Returns the ones that worked and why the others didn't.
 fn apply_all(paths: &Paths, fixes: &[Fix]) -> (Vec<Fix>, Vec<Failed>) {
     let global = GlobalConfig::load_or_default(paths);
+    let cancellation = super::transfer::Cancellation::new();
     let mut applied = Vec::new();
     let mut failed = Vec::new();
     for fix in fixes {
-        let result = validate::apply(paths, fix, |component, version| {
-            let global = global.as_ref().map_err(|err| anyhow::anyhow!("{err}"))?;
-            components::download_build(paths, global, component, version)
-        });
+        let result = match &cancellation {
+            Ok(cancellation) => validate::apply(
+                paths,
+                fix,
+                &cancellation.token,
+                super::winetricks::print_event,
+                |component, version| {
+                    let global = global.as_ref().map_err(|err| anyhow::anyhow!("{err}"))?;
+                    components::download_build(paths, global, component, version)
+                },
+            ),
+            Err(err) => Err(anyhow::anyhow!("{err}")),
+        };
         match result {
             Ok(notes) => {
                 for note in notes {

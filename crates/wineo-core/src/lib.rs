@@ -1,6 +1,7 @@
 pub mod art;
 pub mod art_fetch;
 pub mod art_icon;
+pub mod cancel;
 pub mod clone;
 pub mod components;
 pub mod config;
@@ -45,3 +46,35 @@ pub mod winetricks;
 pub mod winpath;
 
 pub use error::{Error, Result};
+
+#[cfg(test)]
+mod source_tests {
+    use std::fs;
+    use std::path::Path;
+
+    #[test]
+    fn core_output_is_confined_to_supervisor() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let print = ["print", "ln!("].concat();
+        let eprint = ["eprint", "ln!("].concat();
+        for entry in fs::read_dir(source).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "rs")
+                || path.file_name().is_some_and(|name| name == "supervisor.rs")
+            {
+                continue;
+            }
+            let contents = fs::read_to_string(&path).unwrap();
+            assert!(
+                !contents.contains(&print),
+                "{} prints to stdout",
+                path.display()
+            );
+            assert!(
+                !contents.contains(&eprint),
+                "{} prints to stderr",
+                path.display()
+            );
+        }
+    }
+}

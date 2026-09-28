@@ -3,12 +3,12 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context, Result, anyhow, bail};
 use rustix::fs::{RenameFlags, renameat_with};
 use serde::{Deserialize, Serialize};
 
+use crate::cancel::Token;
 use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::environment::{self, Environment};
 use crate::import::{self, ExternalDependency, ImportLayout, ImportProgress, SourceFingerprint};
@@ -146,7 +146,7 @@ pub fn create_reviewed(
     paths: &Paths,
     global: &GlobalConfig,
     reviewed: &CreateInspection,
-    cancel: &AtomicBool,
+    cancel: &Token,
     mut progress: impl FnMut(ImportProgress),
 ) -> Result<SnapshotInfo> {
     let current = inspect_create(paths, global, &reviewed.name, &reviewed.label)?;
@@ -289,7 +289,7 @@ pub fn restore_reviewed(
     paths: &Paths,
     global: &GlobalConfig,
     reviewed: &RestoreInspection,
-    cancel: &AtomicBool,
+    cancel: &Token,
     mut progress: impl FnMut(ImportProgress),
 ) -> Result<RestoreOutcome> {
     let current = inspect_restore(paths, global, &reviewed.name, &reviewed.label)?;
@@ -799,7 +799,7 @@ mod tests {
         let (_root, paths, _prefix, config) = fixture(false);
         let global = GlobalConfig::default();
         let review = inspect_create(&paths, &global, "game", "legacy").unwrap();
-        create_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+        create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
         crate::settings::update(
             &paths,
             crate::settings::ConfigFile::Environment("game"),
@@ -811,7 +811,7 @@ mod tests {
         assert!(current.contains("schema_version = 1\n"), "{current}");
 
         let restore = inspect_restore(&paths, &global, "game", "legacy").unwrap();
-        restore_reviewed(&paths, &global, &restore, &AtomicBool::new(false), |_| {}).unwrap();
+        restore_reviewed(&paths, &global, &restore, &Token::new(), |_| {}).unwrap();
         let restored = fs::read_to_string(paths.environment_config("game")).unwrap();
         assert_eq!(restored, config);
         let path = paths.environment_config("game");
@@ -844,8 +844,7 @@ mod tests {
         let (_root, paths, _prefix, config) = fixture(false);
         let global = GlobalConfig::default();
         let review = inspect_create(&paths, &global, "game", "future").unwrap();
-        let info =
-            create_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+        let info = create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
         let saved = info.path.join("config.toml");
         fs::write(&saved, format!("schema_version = 2\n{config}")).unwrap();
         let err = inspect_restore(&paths, &global, "game", "future").unwrap_err();
@@ -869,8 +868,7 @@ mod tests {
             let global = GlobalConfig::default();
             let review = inspect_create(&paths, &global, "game", "before").unwrap();
             assert_eq!(review.layout == ImportLayout::Proton, proton);
-            let info =
-                create_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+            let info = create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
             assert_eq!(list(&paths, "game").unwrap()[0].label, "before");
             assert_eq!(
                 fs::read_to_string(info.path.join("config.toml")).unwrap(),
@@ -904,7 +902,7 @@ mod tests {
             let restore = inspect_restore(&paths, &global, "game", "before").unwrap();
             assert_eq!(restore.current_runner, "other");
             assert_eq!(restore.saved_runner, "wine");
-            restore_reviewed(&paths, &global, &restore, &AtomicBool::new(false), |_| {}).unwrap();
+            restore_reviewed(&paths, &global, &restore, &Token::new(), |_| {}).unwrap();
             assert_eq!(
                 fs::read_to_string(wine.join("drive_c/game.exe")).unwrap(),
                 "before"
@@ -930,12 +928,10 @@ mod tests {
         let global = GlobalConfig::default();
         let review = inspect_create(&paths, &global, "game", "one").unwrap();
         fs::write(prefix.join("drive_c/game.exe"), "changed").unwrap();
-        assert!(
-            create_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).is_err()
-        );
+        assert!(create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).is_err());
         assert!(!review.snapshot.exists());
         let review = inspect_create(&paths, &global, "game", "one").unwrap();
-        create_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+        create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
         assert!(inspect_create(&paths, &global, "game", "one").is_err());
         fs::write(paths.environment_config("other"), config).unwrap();
         assert!(inspect_create(&paths, &global, "game", "two").is_err());
@@ -976,7 +972,7 @@ mod tests {
         let global = GlobalConfig::default();
         let paths = portable(root.path(), &usb);
         let review = inspect_create(&paths, &global, "game", "one").unwrap();
-        create_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+        create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
         let manifest = usb
             .join("prefixes/.wineo-snapshots/game/one")
             .join(MANIFEST);
@@ -990,7 +986,7 @@ mod tests {
         assert_eq!(list(&paths, "game").unwrap().len(), 1);
         let restore = inspect_restore(&paths, &global, "game", "one").unwrap();
         assert_eq!(restore.prefix, moved.join("prefixes/game"));
-        restore_reviewed(&paths, &global, &restore, &AtomicBool::new(false), |_| {}).unwrap();
+        restore_reviewed(&paths, &global, &restore, &Token::new(), |_| {}).unwrap();
         assert_eq!(
             fs::read_to_string(moved.join("prefixes/game/drive_c/game.exe")).unwrap(),
             "before"
@@ -1007,7 +1003,7 @@ mod tests {
         let global = GlobalConfig::default();
         let paths = portable(root.path(), &usb);
         let review = inspect_create(&paths, &global, "game", "one").unwrap();
-        create_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+        create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
         let path = usb
             .join("prefixes/.wineo-snapshots/game/one")
             .join(MANIFEST);
@@ -1023,7 +1019,7 @@ mod tests {
         let paths = portable(root.path(), &usb);
         let prefix = usb.join("prefixes/game");
         let review = inspect_create(&paths, &global, "game", "one").unwrap();
-        create_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+        create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
         fs::write(prefix.join("drive_c/game.exe"), "later").unwrap();
         let old_fingerprint = import::fingerprint(&prefix).unwrap();
         let restore = inspect_restore(&paths, &global, "game", "one").unwrap();
@@ -1035,7 +1031,7 @@ mod tests {
             &restore.snapshot.join("prefix"),
             stage.path(),
             &prefix,
-            &AtomicBool::new(false),
+            &Token::new(),
             &mut |_| {},
         )
         .unwrap();
@@ -1096,7 +1092,7 @@ mod tests {
         let (_root, paths, prefix, original_config) = fixture(false);
         let global = GlobalConfig::default();
         let review = inspect_create(&paths, &global, "game", "one").unwrap();
-        create_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+        create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
         fs::write(prefix.join("drive_c/game.exe"), "later").unwrap();
         let old_fingerprint = import::fingerprint(&prefix).unwrap();
         let restore = inspect_restore(&paths, &global, "game", "one").unwrap();
@@ -1108,7 +1104,7 @@ mod tests {
             &restore.snapshot.join("prefix"),
             stage.path(),
             &prefix,
-            &AtomicBool::new(false),
+            &Token::new(),
             &mut |_| {},
         )
         .unwrap();
@@ -1184,7 +1180,7 @@ mod tests {
             &prefix,
             stage.path(),
             &prefix,
-            &AtomicBool::new(false),
+            &Token::new(),
             &mut |_| {},
         )
         .unwrap();
@@ -1223,11 +1219,11 @@ mod tests {
         let (_root, paths, prefix, config) = fixture(false);
         let global = GlobalConfig::default();
         let create = inspect_create(&paths, &global, "game", "one").unwrap();
-        create_reviewed(&paths, &global, &create, &AtomicBool::new(false), |_| {}).unwrap();
+        create_reviewed(&paths, &global, &create, &Token::new(), |_| {}).unwrap();
         fs::write(prefix.join("drive_c/game.exe"), "later").unwrap();
         let restore = inspect_restore(&paths, &global, "game", "one").unwrap();
         let mut changed = false;
-        let result = restore_reviewed(&paths, &global, &restore, &AtomicBool::new(false), |_| {
+        let result = restore_reviewed(&paths, &global, &restore, &Token::new(), |_| {
             if !changed {
                 fs::write(
                     restore.snapshot.join("config.toml"),

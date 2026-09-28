@@ -20,6 +20,7 @@ use wineo_core::targets::{self, Batch, Spec, Written};
 use wineo_core::templates::Templates;
 
 use super::art::{Access, AutoFetch, KeyCheck, Pick};
+use super::transfer::Cancellation;
 use super::{components, desktop, programs, setup};
 use crate::prompt::{self, Canceled, Prompt, Terminal};
 use crate::wizard::{self, Guided, Prefill};
@@ -231,7 +232,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
     };
     let name = &environment.name;
+    let cancellation = Cancellation::new()?;
     let outcome = match installer.run(
+        &cancellation.token,
         Duration::from_secs(global.stop_timeout.into()),
         Output::Inherit,
         |watched| match watched {

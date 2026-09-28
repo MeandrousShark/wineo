@@ -2,12 +2,12 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context, Result, anyhow, bail};
 use toml_edit::{DocumentMut, Value};
 
 use crate::art::StagedArt;
+use crate::cancel::Token;
 use crate::clone::{self, ConfigReview};
 use crate::config::{self, EnvironmentConfig, GlobalConfig};
 use crate::download::{InstallLock, publish};
@@ -208,7 +208,7 @@ pub fn execute_reviewed(
     to: &Paths,
     global: &GlobalConfig,
     reviewed: &CopyInspection,
-    cancel: &AtomicBool,
+    cancel: &Token,
     mut progress: impl FnMut(ImportProgress),
 ) -> Result<Environment> {
     let name = &reviewed.name;
@@ -564,7 +564,7 @@ pub fn execute_native(
     from: &Paths,
     to: &Paths,
     reviewed: &NativeCopyInspection,
-    cancel: &AtomicBool,
+    cancel: &Token,
 ) -> Result<Environment> {
     let name = &reviewed.name;
     let source_locks = Locks::new(from);
@@ -773,15 +773,9 @@ mod tests {
         .unwrap();
         let global = GlobalConfig::default();
         let reviewed = inspect(&from, &to, &global, "game").unwrap();
-        let err = execute_reviewed(
-            &from,
-            &to,
-            &global,
-            &reviewed,
-            &AtomicBool::new(true),
-            |_| {},
-        )
-        .unwrap_err();
+        let canceled = Token::new();
+        canceled.cancel();
+        let err = execute_reviewed(&from, &to, &global, &reviewed, &canceled, |_| {}).unwrap_err();
         assert!(err.is::<Canceled>(), "{err}");
         assert!(!usb.join("prefixes/game").exists());
         assert!(!to.environment_config("game").exists());

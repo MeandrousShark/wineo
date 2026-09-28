@@ -355,7 +355,7 @@ pub(crate) fn install<T: Transport>(
             paths,
             global,
             release,
-            &cancellation.flag,
+            &cancellation.token,
             |progress| match progress {
                 Progress::Downloading { received, total }
                     if last.elapsed() >= Duration::from_secs(1) =>

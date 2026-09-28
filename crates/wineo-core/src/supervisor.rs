@@ -7,6 +7,8 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -17,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
 use signal_hook::iterator::{Handle, Signals};
 
+use crate::cancel::Token;
 use crate::error::{self, Error, IoContext, Result};
 use crate::launch::{Host, Launch, Overrides};
 use crate::log::{Cap, Log};
@@ -48,6 +51,7 @@ enum Event {
     StopTimeout,
     /// Nothing else happened for `HEARTBEAT_INTERVAL`, so the run is still live.
     Heartbeat,
+    Pulse,
 }
 
 /// How long the run waits between events before it counts as a heartbeat.
@@ -101,8 +105,10 @@ pub(crate) struct Ending {
 pub struct Supervisor {
     events: Receiver<Event>,
     sender: Sender<Event>,
-    signals: Handle,
+    signals: Option<Handle>,
     signal_thread: Option<JoinHandle<()>>,
+    signal_stop: Option<Arc<AtomicBool>>,
+    token: Option<Token>,
 }
 
 impl Supervisor {
@@ -115,24 +121,44 @@ impl Supervisor {
         let handle = signals.handle();
         let (sender, events) = mpsc::channel();
         let signal_sender = sender.clone();
+        let signal_stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = signal_stop.clone();
         let signal_thread = thread::spawn(move || {
-            for signal in signals.forever() {
-                let event = if signal == SIGUSR1 {
-                    Event::Force
-                } else {
-                    Event::Stop
-                };
-                if signal_sender.send(event).is_err() {
-                    break;
+            while !thread_stop.load(Ordering::Relaxed) {
+                for signal in signals.pending() {
+                    let event = if signal == SIGUSR1 {
+                        Event::Force
+                    } else {
+                        Event::Stop
+                    };
+                    if signal_sender.send(event).is_err() {
+                        return;
+                    }
                 }
+                thread::sleep(Duration::from_millis(20));
             }
         });
         Ok(Self {
             events,
             sender,
-            signals: handle,
+            signals: Some(handle),
             signal_thread: Some(signal_thread),
+            signal_stop: Some(signal_stop),
+            token: None,
         })
+    }
+
+    /// Watches stop requests supplied by a caller rather than process signals.
+    pub fn with_token(token: &Token) -> Self {
+        let (sender, events) = mpsc::channel();
+        Self {
+            events,
+            sender,
+            signals: None,
+            signal_thread: None,
+            signal_stop: None,
+            token: Some(token.clone()),
+        }
     }
 
     /// Waits until the program has exited and nothing is left running in the
@@ -277,6 +303,9 @@ impl Supervisor {
         let mut exit = None;
         let mut observed_exit = false;
         let mut stopping = false;
+        let mut saw_cancel = false;
+        let mut saw_force = false;
+        let mut heartbeat_at = Instant::now() + HEARTBEAT_INTERVAL;
         let mut killing_since: Option<Instant> = None;
         // Tells when the request to close is done, since it runs wine too.
         let mut ending_session: Option<Receiver<()>> = None;
@@ -284,22 +313,52 @@ impl Supervisor {
         let mut deadline: Option<Instant> = None;
         let lost = || Err(Error::Unsettled("lost track of the program".to_owned()));
         let settled = loop {
-            let event = match deadline {
-                Some(deadline) => match self
-                    .events
-                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                {
+            let event = if self.token.as_ref().is_some_and(Token::is_forced) && !saw_force {
+                saw_force = true;
+                saw_cancel = true;
+                Event::Force
+            } else if self.token.as_ref().is_some_and(Token::is_canceled) && !saw_cancel {
+                saw_cancel = true;
+                Event::Stop
+            } else if self.token.is_some() {
+                let now = Instant::now();
+                let until = deadline.unwrap_or(heartbeat_at);
+                let timeout = until
+                    .saturating_duration_since(now)
+                    .min(Duration::from_millis(20));
+                match self.events.recv_timeout(timeout) {
                     Ok(event) => event,
-                    Err(RecvTimeoutError::Timeout) => Event::StopTimeout,
+                    Err(RecvTimeoutError::Timeout)
+                        if deadline.is_some_and(|d| d <= Instant::now()) =>
+                    {
+                        Event::StopTimeout
+                    }
+                    Err(RecvTimeoutError::Timeout) if heartbeat_at <= Instant::now() => {
+                        heartbeat_at = Instant::now() + HEARTBEAT_INTERVAL;
+                        Event::Heartbeat
+                    }
+                    Err(RecvTimeoutError::Timeout) => Event::Pulse,
                     Err(RecvTimeoutError::Disconnected) => break lost(),
-                },
-                None => match self.events.recv_timeout(HEARTBEAT_INTERVAL) {
-                    Ok(event) => event,
-                    Err(RecvTimeoutError::Timeout) => Event::Heartbeat,
-                    Err(RecvTimeoutError::Disconnected) => break lost(),
-                },
+                }
+            } else {
+                match deadline {
+                    Some(deadline) => match self
+                        .events
+                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    {
+                        Ok(event) => event,
+                        Err(RecvTimeoutError::Timeout) => Event::StopTimeout,
+                        Err(RecvTimeoutError::Disconnected) => break lost(),
+                    },
+                    None => match self.events.recv_timeout(HEARTBEAT_INTERVAL) {
+                        Ok(event) => event,
+                        Err(RecvTimeoutError::Timeout) => Event::Heartbeat,
+                        Err(RecvTimeoutError::Disconnected) => break lost(),
+                    },
+                }
             };
             match event {
+                Event::Pulse => continue,
                 Event::Heartbeat => watched(Watched::Notice(Notice::Heartbeat)),
                 Event::Exited(status) => {
                     observed_exit = true;
@@ -406,7 +465,12 @@ fn wait_status(status: rustix::process::WaitIdStatus) -> ExitStatus {
 
 impl Drop for Supervisor {
     fn drop(&mut self) {
-        self.signals.close();
+        if let Some(stop) = &self.signal_stop {
+            stop.store(true, Ordering::Relaxed);
+        }
+        if let Some(signals) = &self.signals {
+            signals.close();
+        }
         if let Some(thread) = self.signal_thread.take() {
             let _ = thread.join();
         }

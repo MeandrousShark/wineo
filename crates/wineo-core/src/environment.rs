@@ -7,14 +7,16 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, Value, value};
 
+use crate::cancel::Token;
 use crate::config::{self, Arch, EnvironmentConfig, GlobalConfig, WineConfig};
 use crate::edit;
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
+use crate::installer::Output;
 use crate::name;
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
-use crate::prefix::{self, BuildPlan};
+use crate::prefix::{self, BuildPlan, PrefixEvent};
 use crate::runner::Runner;
 use crate::runners::Runners;
 use crate::runtime::{Runtime, State};
@@ -135,6 +137,36 @@ impl Environment {
         new: &NewEnvironment,
         on_create_prefix: impl FnOnce(&Path),
     ) -> Result<Self> {
+        let log = paths.runtime_dir(&new.name).join("create.log");
+        let mut on_create_prefix = Some(on_create_prefix);
+        Self::create_with(
+            paths,
+            global,
+            runner,
+            new,
+            &Token::new(),
+            Output::Log(&log),
+            |event| {
+                if let PrefixEvent::Started { dir } = event
+                    && let Some(on_create_prefix) = on_create_prefix.take()
+                {
+                    on_create_prefix(&dir);
+                }
+            },
+        )
+    }
+
+    /// Creates an environment while reporting prefix creation progress.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_with(
+        paths: &Paths,
+        global: &GlobalConfig,
+        runner: &Runner,
+        new: &NewEnvironment,
+        token: &Token,
+        output: Output<'_>,
+        mut events: impl FnMut(PrefixEvent),
+    ) -> Result<Self> {
         check_name(&new.name)?;
         let path = paths.environment_config(&new.name);
         if path.exists() {
@@ -160,7 +192,16 @@ impl Environment {
             arch
         } else {
             let arch = new.arch.unwrap_or(global.defaults.arch);
-            build_new_prefix(paths, &new.name, runner, &dir, arch, on_create_prefix)?;
+            build_new_prefix(
+                paths,
+                &new.name,
+                runner,
+                &dir,
+                arch,
+                token,
+                output,
+                &mut events,
+            )?;
             arch
         };
 
@@ -273,6 +314,37 @@ impl Environment {
         empty_confirmed: bool,
         on_create_prefix: impl FnOnce(&Path),
     ) -> Result<bool> {
+        let log = paths.runtime_dir(&self.name).join("create.log");
+        let mut on_create_prefix = Some(on_create_prefix);
+        self.build_prefix_with(
+            paths,
+            global,
+            runner,
+            empty_confirmed,
+            &Token::new(),
+            Output::Log(&log),
+            |event| {
+                if let PrefixEvent::Started { dir } = event
+                    && let Some(on_create_prefix) = on_create_prefix.take()
+                {
+                    on_create_prefix(&dir);
+                }
+            },
+        )
+    }
+
+    /// Builds a missing prefix with cancellation and progress events.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_prefix_with(
+        &self,
+        paths: &Paths,
+        global: &GlobalConfig,
+        runner: &Runner,
+        empty_confirmed: bool,
+        token: &Token,
+        output: Output<'_>,
+        mut events: impl FnMut(PrefixEvent),
+    ) -> Result<bool> {
         let dir = self.prefix(paths)?;
         let root = global.prefix_root(paths)?;
         let plan = || prefix::build_plan(paths, &root, runner, &dir, empty_confirmed);
@@ -292,7 +364,9 @@ impl Environment {
             runner,
             &dir,
             self.wine()?.arch,
-            on_create_prefix,
+            token,
+            output,
+            &mut events,
         )?;
         Ok(true)
     }
@@ -469,20 +543,32 @@ fn adopted_arch(dir: &Path, fallback: Arch, requested: Option<Arch>) -> Result<A
 
 /// Initializes a prefix in `dir`, logging to the environment's create.log. A
 /// failed build removes `dir` only if this made it.
+#[allow(clippy::too_many_arguments)]
 fn build_new_prefix(
     paths: &Paths,
     name: &str,
     runner: &Runner,
     dir: &Path,
     arch: Arch,
-    on_create_prefix: impl FnOnce(&Path),
+    token: &Token,
+    output: Output<'_>,
+    events: &mut impl FnMut(PrefixEvent),
 ) -> Result<()> {
     let created = prefix::prepare_dir(dir)?;
-    on_create_prefix(dir);
     let runtime = paths.runtime_dir(name);
     let result = fs::create_dir_all(&runtime)
         .context(|| format!("failed to create {}", runtime.display()))
-        .and_then(|()| prefix::create(runner, dir, arch, &runtime.join("create.log")));
+        .and_then(|()| {
+            prefix::create_with(
+                runner,
+                dir,
+                arch,
+                &runtime.join("create.log"),
+                token,
+                output,
+                events,
+            )
+        });
     if let Err(err) = result {
         if created {
             // Best effort, the error that got us here matters more.
@@ -1007,6 +1093,57 @@ mod tests {
         assert!(matches!(err, Error::PrefixCreation { .. }), "{err}");
         assert!(!prefix.exists());
         assert!(!paths.environment_config("fails").exists());
+    }
+
+    #[test]
+    fn canceling_prefix_creation_from_another_thread_removes_partial_state() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let prefix = root.path().join("home/prefixes/canceled");
+        let marker = prefix.join("partial");
+        let runner_path = root.path().join("fake-wine");
+        fs::write(
+            &runner_path,
+            "#!/bin/sh\ncase \"$1\" in\n  wineboot)\n    printf partial > \"$WINEPREFIX/partial\"\n    trap 'exit 0' TERM\n    while :; do sleep 1; done\n    ;;\n  reg|-w|-k) exit 0 ;;\nesac\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&runner_path, fs::Permissions::from_mode(0o755)).unwrap();
+        let runner = Runner::wine_build("fake".to_owned(), runner_path.clone(), runner_path);
+        let token = Token::new();
+        let worker_token = token.clone();
+        let new = new("canceled", &prefix);
+        let worker_paths = paths.clone();
+        let worker_runner = runner.clone();
+        let worker = thread::spawn(move || {
+            Environment::create_with(
+                &worker_paths,
+                &GlobalConfig::default(),
+                &worker_runner,
+                &new,
+                &worker_token,
+                Output::Log(&worker_paths.runtime_dir("canceled").join("create.log")),
+                |_| {},
+            )
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !marker.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(marker.exists(), "fake wineboot did not start");
+        token.cancel();
+
+        let error = worker.join().unwrap().unwrap_err();
+        assert!(
+            matches!(error, Error::Canceled("prefix creation")),
+            "{error}"
+        );
+        assert!(!prefix.exists());
+        assert!(!paths.environment_config("canceled").exists());
     }
 
     #[test]

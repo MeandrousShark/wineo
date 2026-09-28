@@ -92,7 +92,7 @@ fn create(paths: &Paths, env: &str, label: &str, verbose: bool) -> anyhow::Resul
         paths,
         &global,
         &reviewed,
-        &cancellation.flag,
+        &cancellation.token,
         transfer::copy_progress(),
     );
     match result {
@@ -131,7 +131,7 @@ fn restore(paths: &Paths, env: &str, label: &str, yes: bool) -> anyhow::Result<E
         paths,
         &global,
         &reviewed,
-        &cancellation.flag,
+        &cancellation.token,
         transfer::copy_progress(),
     );
     match result {

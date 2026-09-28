@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
+use wineo_core::error::Error;
 use wineo_core::launch::Launch;
 use wineo_core::paths::Paths;
 use wineo_core::runtime::Runtime;
@@ -38,9 +39,20 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     Launch::target(paths, &global, &environment, &overrides)?;
 
     let was_running = matches!(stop::stop(paths, name, false)?, stop::Outcome::Stopped);
-    if start::start(paths, name, overrides)? {
-        let verb = if was_running { "Restarted" } else { "Started" };
-        println!("{verb} {name}");
+    match start::start(paths, name, overrides) {
+        Ok(true) => {
+            let verb = if was_running { "Restarted" } else { "Started" };
+            println!("{verb} {name}");
+        }
+        Ok(false) => {}
+        Err(err)
+            if err
+                .downcast_ref::<Error>()
+                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
+        {
+            return Ok(ExitCode::from(130));
+        }
+        Err(err) => return Err(err),
     }
     Ok(ExitCode::SUCCESS)
 }

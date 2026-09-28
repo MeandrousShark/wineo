@@ -1312,10 +1312,14 @@ fn files_with_extension(dir: &Path, extension: &str) -> Result<Vec<(PathBuf, Str
 pub fn apply(
     paths: &Paths,
     fix: &Fix,
+    token: &crate::cancel::Token,
+    winetricks_events: impl FnMut(winetricks::WinetricksEvent),
     download: impl FnOnce(Component, Option<&str>) -> anyhow::Result<()>,
 ) -> anyhow::Result<Vec<Note>> {
     match fix {
-        Fix::InstallWinetricks { environment } => install_winetricks(paths, environment)?,
+        Fix::InstallWinetricks { environment } => {
+            install_winetricks(paths, environment, token, winetricks_events)?
+        }
         Fix::Download { component, version } => {
             let global = GlobalConfig::load_or_default(paths)?;
             let asked = version.as_deref().unwrap_or(LATEST);
@@ -1354,7 +1358,12 @@ pub fn apply(
     Ok(Vec::new())
 }
 
-fn install_winetricks(paths: &Paths, name: &str) -> anyhow::Result<()> {
+fn install_winetricks(
+    paths: &Paths,
+    name: &str,
+    token: &crate::cancel::Token,
+    events: impl FnMut(winetricks::WinetricksEvent),
+) -> anyhow::Result<()> {
     let environment = Environment::load(paths, name)?;
     let global = GlobalConfig::load_or_default(paths)?;
     let runner = Runners::new(paths, &global)?.resolve(&environment.wine()?.runner)?;
@@ -1398,6 +1407,8 @@ fn install_winetricks(paths: &Paths, name: &str) -> anyhow::Result<()> {
         &env,
         &environment.config.winetricks,
         global.stop_timeout,
+        token,
+        events,
     )
 }
 
@@ -1529,6 +1540,14 @@ mod tests {
 
     use super::*;
     use crate::runtime::{OperationState, RunMode, RunState, RunStatus};
+
+    fn apply(
+        paths: &Paths,
+        fix: &Fix,
+        download: impl FnOnce(Component, Option<&str>) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Vec<Note>> {
+        super::apply(paths, fix, &crate::cancel::Token::new(), |_| {}, download)
+    }
 
     const HEALTHY: &str = "[targets.game]\nexe = 'C:\\Game\\game.exe'\n";
 

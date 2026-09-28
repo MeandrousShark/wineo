@@ -16,6 +16,7 @@ use wineo_core::runtime::Runtime;
 use wineo_core::supervisor::{Notice, Watched};
 use wineo_core::targets::{Batch, Written};
 
+use super::transfer::Cancellation;
 use super::{build, components, desktop};
 use crate::picker::{self, Place};
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
@@ -589,7 +590,9 @@ pub(crate) fn run_installer<I: Input, W: Write>(
         components::reconcile_config(paths, global, &environment, runner, prefix)?;
     }
     prompt.say("Running it now. Ctrl+C asks it to close.")?;
+    let cancellation = Cancellation::new()?;
     let outcome = installer.run(
+        &cancellation.token,
         Duration::from_secs(global.stop_timeout.into()),
         Output::Log(&log),
         |watched| {

@@ -7,13 +7,13 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 
+use crate::cancel::Token;
 use crate::config::GlobalConfig;
 use crate::error::Error;
 use crate::paths::{Paths, resolve};
@@ -325,7 +325,7 @@ impl<T: Transport> Client<T> {
         paths: &Paths,
         global: &GlobalConfig,
         release: &Release,
-        cancelled: &AtomicBool,
+        cancelled: &Token,
         progress: impl FnMut(Progress),
     ) -> Result<PathBuf> {
         self.install_with_phase(paths, global, release, cancelled, progress, |_| {})
@@ -335,7 +335,7 @@ impl<T: Transport> Client<T> {
         paths: &Paths,
         global: &GlobalConfig,
         release: &Release,
-        cancelled: &AtomicBool,
+        cancelled: &Token,
         mut progress: impl FnMut(Progress),
         mut phase: impl FnMut(InstallPhase),
     ) -> Result<PathBuf> {
@@ -677,8 +677,8 @@ fn parse_checksum(text: &str, asset: &str, document: &str) -> Result<String> {
     );
     Ok(matches.remove(0))
 }
-fn check_cancel(cancelled: &AtomicBool) -> Result<()> {
-    if cancelled.load(Ordering::Relaxed) {
+fn check_cancel(cancelled: &Token) -> Result<()> {
+    if cancelled.is_canceled() {
         return Err(Error::Canceled("download").into());
     }
     Ok(())
@@ -814,7 +814,7 @@ fn validate_link(path: &Path, links: &BTreeMap<PathBuf, PathBuf>) -> Result<()> 
     }
     Ok(())
 }
-fn extract(archive: &Path, name: &str, root: &Path, cancelled: &AtomicBool) -> Result<()> {
+fn extract(archive: &Path, name: &str, root: &Path, cancelled: &Token) -> Result<()> {
     let file = File::open(archive)?;
     let reader: Box<dyn Read> = if name.ends_with(".tar.gz") {
         Box::new(flate2::read::GzDecoder::new(file))
@@ -1003,7 +1003,9 @@ mod tests {
 
     #[test]
     fn canceled_download_has_a_typed_error() {
-        let error = check_cancel(&AtomicBool::new(true)).unwrap_err();
+        let cancelled = Token::new();
+        cancelled.cancel();
+        let error = check_cancel(&cancelled).unwrap_err();
         assert!(error.is::<Error>());
         assert!(matches!(
             error.downcast_ref::<Error>(),
@@ -1071,7 +1073,7 @@ mod tests {
     fn extract_bytes(bytes: &[u8], name: &str, root: &Path) -> Result<()> {
         let archive = root.parent().unwrap().join("archive");
         fs::write(&archive, bytes)?;
-        extract(&archive, name, root, &AtomicBool::new(false))
+        extract(&archive, name, root, &Token::new())
     }
     fn fixture_paths(root: &Path) -> Paths {
         Paths::from_lookup(|key| match key {
@@ -1309,7 +1311,7 @@ mod tests {
                     &paths,
                     &GlobalConfig::default(),
                     &release,
-                    &AtomicBool::new(false),
+                    &Token::new(),
                     |_| {},
                 )
                 .unwrap();
@@ -1323,7 +1325,7 @@ mod tests {
                     &paths,
                     &GlobalConfig::default(),
                     &release,
-                    &AtomicBool::new(false),
+                    &Token::new(),
                     |p| {
                         already |= matches!(p, Progress::AlreadyInstalled(_));
                     },
@@ -1339,7 +1341,7 @@ mod tests {
         let paths = fixture_paths(temp.path());
         let global = GlobalConfig::default();
         let destination = release.destination(&paths, &global).unwrap();
-        let cancelled = AtomicBool::new(false);
+        let cancelled = Token::new();
         let result = client.install_with_phase(
             &paths,
             &global,
@@ -1348,7 +1350,7 @@ mod tests {
             |_| {},
             |phase| {
                 if matches!(phase, InstallPhase::BeforePublication) {
-                    cancelled.store(true, Ordering::Relaxed);
+                    cancelled.cancel();
                 }
             },
         );
@@ -1363,21 +1365,21 @@ mod tests {
                 .starts_with(&stage_prefix(&destination))
         }));
 
-        cancelled.store(false, Ordering::Relaxed);
+        let after_cancelled = Token::new();
         let result = client.install_with_phase(
             &paths,
             &global,
             &release,
-            &cancelled,
+            &after_cancelled,
             |_| {},
             |phase| {
                 if matches!(phase, InstallPhase::AfterPublication) {
-                    cancelled.store(true, Ordering::Relaxed);
+                    after_cancelled.cancel();
                 }
             },
         );
         assert_eq!(result.unwrap(), destination);
-        assert!(cancelled.load(Ordering::Relaxed));
+        assert!(after_cancelled.is_canceled());
         assert_eq!(fs::read(destination.join("x64/dxgi.dll")).unwrap(), b"wide");
         assert!(destination.join(RECEIPT).is_file());
     }
@@ -1402,35 +1404,29 @@ mod tests {
         }
         let mut checked_active_stage = false;
         client
-            .install(
-                &paths,
-                &global,
-                &release,
-                &AtomicBool::new(false),
-                |phase| {
-                    if matches!(phase, Progress::Downloading { .. }) && !checked_active_stage {
-                        checked_active_stage = true;
-                        let active = fs::read_dir(parent)
-                            .unwrap()
-                            .map(|entry| entry.unwrap().path())
-                            .find(|path| {
-                                path.file_name()
-                                    .unwrap()
-                                    .to_string_lossy()
-                                    .starts_with(&stage_prefix(&destination))
-                            })
-                            .unwrap();
-                        assert!(
-                            racing_client
-                                .install(&paths, &global, &release, &AtomicBool::new(false), |_| {})
-                                .unwrap_err()
-                                .to_string()
-                                .contains("another install")
-                        );
-                        assert!(active.exists());
-                    }
-                },
-            )
+            .install(&paths, &global, &release, &Token::new(), |phase| {
+                if matches!(phase, Progress::Downloading { .. }) && !checked_active_stage {
+                    checked_active_stage = true;
+                    let active = fs::read_dir(parent)
+                        .unwrap()
+                        .map(|entry| entry.unwrap().path())
+                        .find(|path| {
+                            path.file_name()
+                                .unwrap()
+                                .to_string_lossy()
+                                .starts_with(&stage_prefix(&destination))
+                        })
+                        .unwrap();
+                    assert!(
+                        racing_client
+                            .install(&paths, &global, &release, &Token::new(), |_| {})
+                            .unwrap_err()
+                            .to_string()
+                            .contains("another install")
+                    );
+                    assert!(active.exists());
+                }
+            })
             .unwrap();
         assert!(checked_active_stage);
         assert!(!abandoned.exists());
@@ -1441,15 +1437,9 @@ mod tests {
         fs::create_dir(&abandoned).unwrap();
         fs::write(abandoned.join("marker"), b"orphan").unwrap();
         client
-            .install(
-                &paths,
-                &global,
-                &release,
-                &AtomicBool::new(false),
-                |phase| {
-                    assert!(matches!(phase, Progress::AlreadyInstalled(_)));
-                },
-            )
+            .install(&paths, &global, &release, &Token::new(), |phase| {
+                assert!(matches!(phase, Progress::AlreadyInstalled(_)));
+            })
             .unwrap();
         assert!(!abandoned.exists());
         assert!(unrelated.join("marker").is_file());
@@ -1463,16 +1453,18 @@ mod tests {
         let paths = fixture_paths(temp.path());
         let global = GlobalConfig::default();
         let destination = release.destination(&paths, &global).unwrap();
+        let cancelled = Token::new();
+        cancelled.cancel();
         assert!(
             client
-                .install(&paths, &global, &release, &AtomicBool::new(true), |_| {})
+                .install(&paths, &global, &release, &cancelled, |_| {})
                 .is_err()
         );
         assert!(!destination.exists());
         release.asset.digest = Some(format!("sha256:{}", "0".repeat(64)));
         assert!(
             client
-                .install(&paths, &global, &release, &AtomicBool::new(false), |_| {})
+                .install(&paths, &global, &release, &Token::new(), |_| {})
                 .is_err()
         );
         assert!(!destination.exists());
@@ -1480,7 +1472,7 @@ mod tests {
         fs::write(destination.join("mine"), "preserved").unwrap();
         assert!(
             client
-                .install(&paths, &global, &release, &AtomicBool::new(false), |_| {})
+                .install(&paths, &global, &release, &Token::new(), |_| {})
                 .is_err()
         );
         assert_eq!(
@@ -1546,13 +1538,13 @@ mod tests {
         let paths = fixture_paths(temp.path());
         let global = GlobalConfig::default();
         let destination = client
-            .install(&paths, &global, &release, &AtomicBool::new(false), |_| {})
+            .install(&paths, &global, &release, &Token::new(), |_| {})
             .unwrap();
         let elsewhere = temp.path().join("elsewhere");
         fs::rename(&destination, &elsewhere).unwrap();
         symlink(&elsewhere, &destination).unwrap();
         let error = client
-            .install(&paths, &global, &release, &AtomicBool::new(false), |_| {})
+            .install(&paths, &global, &release, &Token::new(), |_| {})
             .unwrap_err();
         assert!(error.to_string().contains("symlink"));
         assert!(elsewhere.join(RECEIPT).is_file());
@@ -1567,7 +1559,7 @@ mod tests {
         let global = GlobalConfig::default();
         assert!(
             client
-                .install(&paths, &global, &release, &AtomicBool::new(false), |_| {})
+                .install(&paths, &global, &release, &Token::new(), |_| {})
                 .is_err()
         );
         assert!(!release.destination(&paths, &global).unwrap().exists());
@@ -1588,16 +1580,16 @@ mod tests {
         release.size += 1;
         assert!(
             client
-                .install(&paths, &global, &release, &AtomicBool::new(false), |_| {})
+                .install(&paths, &global, &release, &Token::new(), |_| {})
                 .is_err()
         );
         release.size -= 1;
-        let cancelled = AtomicBool::new(false);
+        let cancelled = Token::new();
         assert!(
             client
                 .install(&paths, &global, &release, &cancelled, |p| {
                     if matches!(p, Progress::Downloading { .. }) {
-                        cancelled.store(true, Ordering::Relaxed);
+                        cancelled.cancel();
                     }
                 })
                 .is_err()

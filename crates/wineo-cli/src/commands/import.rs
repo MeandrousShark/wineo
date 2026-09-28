@@ -474,7 +474,7 @@ pub(crate) fn import_reviewed(
         request,
         Some(inspection),
         settings,
-        &cancellation.flag,
+        &cancellation.token,
         super::transfer::copy_progress(),
     );
     // A completed registration is retained even if cancellation arrives at the end.

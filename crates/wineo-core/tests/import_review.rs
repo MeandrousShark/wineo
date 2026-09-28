@@ -1,9 +1,9 @@
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
-use wineo_core::import::{ImportProgress, ImportRequest, copy_runner, execute};
+use wineo_core::import::{Cancelled, ImportProgress, ImportRequest, copy_runner, execute};
 use wineo_core::paths::Paths;
 
 fn executable(path: &Path) {
@@ -52,7 +52,7 @@ fn runner_receipt_symlink_does_not_overwrite_external_data() {
         &source,
         temp.path().join("installed"),
         "GE-Proton11-7",
-        &AtomicBool::new(false),
+        &Token::new(),
         |_| {},
     );
     assert_eq!(fs::read_to_string(&sentinel).unwrap(), "preserve me");
@@ -68,7 +68,7 @@ fn relative_external_links_keep_pointing_at_original_data() {
         &paths,
         &GlobalConfig::default(),
         request(&source),
-        &AtomicBool::new(false),
+        &Token::new(),
         |_| {},
     )
     .unwrap();
@@ -93,7 +93,7 @@ fn absolute_internal_registry_link_survives_staging_and_publication() {
         &paths,
         &GlobalConfig::default(),
         request(&source),
-        &AtomicBool::new(false),
+        &Token::new(),
         |_| {},
     )
     .unwrap();
@@ -129,7 +129,7 @@ fn registered_missing_destination_with_unresolved_operation_is_refused() {
             &paths,
             &GlobalConfig::default(),
             request(&source),
-            &AtomicBool::new(false),
+            &Token::new(),
             |_| {}
         )
         .is_err()
@@ -152,7 +152,7 @@ fn new_environment_name_with_unresolved_operation_is_refused() {
             &paths,
             &GlobalConfig::default(),
             request(&source),
-            &AtomicBool::new(false),
+            &Token::new(),
             |_| {}
         )
         .is_err()
@@ -170,7 +170,7 @@ fn explicitly_selected_wine_can_import_a_prefix_named_pfx() {
         &paths,
         &GlobalConfig::default(),
         request(&pfx),
-        &AtomicBool::new(false),
+        &Token::new(),
         |_| {},
     )
     .unwrap();
@@ -187,7 +187,7 @@ fn cancellation_during_copy_removes_only_staging() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, source) = setup(temp.path());
     fs::write(source.join("drive_c/save"), "saved game").unwrap();
-    let canceled = AtomicBool::new(false);
+    let canceled = Token::new();
     let result = execute(
         &paths,
         &GlobalConfig::default(),
@@ -195,11 +195,11 @@ fn cancellation_during_copy_removes_only_staging() {
         &canceled,
         |event| {
             if matches!(event, ImportProgress::Copied { .. }) {
-                canceled.store(true, Ordering::Relaxed);
+                canceled.cancel();
             }
         },
     );
-    assert!(result.is_err());
+    assert!(result.unwrap_err().is::<Cancelled>());
     assert!(!paths.environment_config("copied").exists());
     assert!(!paths.default_prefix_root().join("copied").exists());
     assert_eq!(
@@ -231,7 +231,7 @@ fn a_source_content_change_during_copy_prevents_publication() {
         &paths,
         &GlobalConfig::default(),
         request(&source),
-        &AtomicBool::new(false),
+        &Token::new(),
         |event| {
             if matches!(event, ImportProgress::Copied { .. }) {
                 fs::write(&save, "after!").unwrap();
@@ -254,7 +254,7 @@ fn a_registration_collision_retains_the_complete_published_prefix() {
         &paths,
         &GlobalConfig::default(),
         request(&source),
-        &AtomicBool::new(false),
+        &Token::new(),
         |event| {
             if matches!(event, ImportProgress::Finished { .. }) {
                 fs::create_dir_all(config.parent().unwrap()).unwrap();

@@ -2,12 +2,12 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context, Result, anyhow, bail};
 use toml_edit::{DocumentMut, TableLike, Value};
 
 use crate::art::StagedArt;
+use crate::cancel::Token;
 use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::download::{InstallLock, publish};
 use crate::edit;
@@ -151,7 +151,7 @@ pub fn execute_reviewed(
     paths: &Paths,
     global: &GlobalConfig,
     reviewed: &CloneInspection,
-    cancel: &AtomicBool,
+    cancel: &Token,
     mut progress: impl FnMut(ImportProgress),
 ) -> Result<Environment> {
     let current = inspect(
@@ -695,7 +695,7 @@ mod tests {
                 &paths,
                 &GlobalConfig::default(),
                 &review,
-                &AtomicBool::new(false),
+                &Token::new(),
                 |_| {},
             )
             .unwrap();
@@ -763,8 +763,7 @@ mod tests {
         let global = GlobalConfig::default();
         let destination = root.path().join("copy");
         let review = inspect(&paths, &global, "source", "copy", Some(&destination)).unwrap();
-        let clone =
-            execute_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+        let clone = execute_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
         assert_eq!(clone.config.schema_version, 1);
         let text = fs::read_to_string(paths.environment_config("copy")).unwrap();
         assert!(text.starts_with("# source comment\n"), "{text}");
@@ -816,14 +815,13 @@ mod tests {
         let global = GlobalConfig::default();
         let destination = root.path().join("copy");
         let review = inspect(&paths, &global, "source", "copy", Some(&destination)).unwrap();
-        let cancelled = AtomicBool::new(true);
+        let cancelled = Token::new();
+        cancelled.cancel();
         assert!(execute_reviewed(&paths, &global, &review, &cancelled, |_| {}).is_err());
         assert!(!destination.exists());
         assert!(!paths.environment_config("copy").exists());
         fs::write(source.join("extra"), b"changed").unwrap();
-        assert!(
-            execute_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).is_err()
-        );
+        assert!(execute_reviewed(&paths, &global, &review, &Token::new(), |_| {}).is_err());
         assert!(!destination.exists());
         fs::write(source.join("extra"), b"same").unwrap();
         fs::write(
@@ -831,9 +829,7 @@ mod tests {
             format!("{original}\n# changed\n"),
         )
         .unwrap();
-        assert!(
-            execute_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).is_err()
-        );
+        assert!(execute_reviewed(&paths, &global, &review, &Token::new(), |_| {}).is_err());
         assert!(!destination.exists());
         assert!(
             inspect(
@@ -882,7 +878,7 @@ mod tests {
                 &paths,
                 &GlobalConfig::default(),
                 &review,
-                &AtomicBool::new(false),
+                &Token::new(),
                 |_| {},
             )
             .unwrap();
@@ -941,7 +937,7 @@ mod tests {
             let review = inspect(&paths, &global, "source", "copy", Some(&destination)).unwrap();
             assert_eq!(review.layout == ImportLayout::Proton, proton);
             assert_eq!(review.source_root, source);
-            execute_reviewed(&paths, &global, &review, &AtomicBool::new(false), |_| {}).unwrap();
+            execute_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
             assert!(destination.join("system.reg").is_file());
             assert!(destination.join("pfx/system.reg").is_file());
         }
@@ -954,7 +950,7 @@ mod tests {
         let global = GlobalConfig::default();
         let destination = root.path().join("copy");
         let review = inspect(&paths, &global, "source", "copy", Some(&destination)).unwrap();
-        let result = execute_reviewed(&paths, &global, &review, &AtomicBool::new(false), |event| {
+        let result = execute_reviewed(&paths, &global, &review, &Token::new(), |event| {
             if matches!(event, ImportProgress::Started { .. }) {
                 fs::write(source.join("extra"), b"changed during copy").unwrap();
             }
@@ -966,7 +962,7 @@ mod tests {
         fs::write(source.join("extra"), b"same").unwrap();
         let review = inspect(&paths, &global, "source", "copy", Some(&destination)).unwrap();
         let config_path = paths.environment_config("copy");
-        let result = execute_reviewed(&paths, &global, &review, &AtomicBool::new(false), |event| {
+        let result = execute_reviewed(&paths, &global, &review, &Token::new(), |event| {
             if matches!(event, ImportProgress::Finished { .. }) {
                 fs::write(&config_path, "occupied").unwrap();
             }

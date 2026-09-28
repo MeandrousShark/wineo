@@ -58,7 +58,7 @@ fn copy(
         &folder,
         &global,
         &reviewed,
-        &cancellation.flag,
+        &cancellation.token,
         transfer::copy_progress(),
     );
     match result {
@@ -114,7 +114,7 @@ fn copy_native(paths: &Paths, folder: &Paths, name: &str) -> anyhow::Result<Exit
     println!("The source stays as it is. External game files stay where they are.");
 
     let cancellation = Cancellation::new()?;
-    match portable::execute_native(paths, folder, &reviewed, &cancellation.flag) {
+    match portable::execute_native(paths, folder, &reviewed, &cancellation.token) {
         Ok(environment) => {
             println!(
                 "Copied {} to {}",

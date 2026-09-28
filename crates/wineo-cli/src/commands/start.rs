@@ -4,6 +4,7 @@ use std::process::ExitCode;
 use anyhow::{Context, bail};
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
+use wineo_core::error::Error;
 use wineo_core::launch::{Launch, Overrides, Wayland};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
@@ -24,8 +25,17 @@ pub struct Args {
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
-    if start(paths, &args.name, args.launch.into_overrides())? {
-        println!("Started {}", args.name);
+    match start(paths, &args.name, args.launch.into_overrides()) {
+        Ok(true) => println!("Started {}", args.name),
+        Ok(false) => {}
+        Err(err)
+            if err
+                .downcast_ref::<Error>()
+                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
+        {
+            return Ok(ExitCode::from(130));
+        }
+        Err(err) => return Err(err),
     }
     Ok(ExitCode::SUCCESS)
 }

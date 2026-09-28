@@ -2334,7 +2334,7 @@ fn copy_heroic_runner<I: Input, W: Write>(
         reviewed,
         root,
         &name,
-        &cancellation.flag,
+        &cancellation.token,
         |_| {},
     ))?;
     eprintln!(
@@ -4052,7 +4052,7 @@ mod tests {
 
     #[test]
     fn import_progress_flushes_before_blocked_copy_and_completes_same_line() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Arc, Mutex, mpsc};
 
         struct VisibleWriter {
@@ -4087,7 +4087,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let mut writer = writer;
             import_progress(&mut writer, "hades", || {
-                let cancelled = AtomicBool::new(false);
+                let cancelled = wineo_core::cancel::Token::new();
                 let mut paused = false;
                 import::copy_runner_reviewed(
                     &reviewed,

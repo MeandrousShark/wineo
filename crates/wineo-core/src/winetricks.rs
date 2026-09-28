@@ -1,34 +1,41 @@
 //! Winetricks' installed record and process runner.
 
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::{BTreeMap, HashSet};
-use std::fs;
+use std::fs::{self, File};
 use std::io;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
-use signal_hook::consts::SIGINT;
-use signal_hook::iterator::Signals;
+use rustix::io::Errno;
+use rustix::process::{Pid, Signal, kill_process_group};
 
+use crate::cancel::Token;
 use crate::config::GlobalConfig;
 use crate::environment::Environment;
 use crate::error::Error;
+use crate::installer::Output;
 use crate::launch::merge_env;
 use crate::runner::{self, Runner, with_menu_builder_disabled};
 
 const MANAGED: [&str; 3] = ["WINEPREFIX", "WINE", "WINESERVER"];
 const MANAGED_PROTON: [&str; 1] = ["WINEPREFIX"];
 const POLL: Duration = Duration::from_millis(100);
-const SIGNAL_POLL: Duration = Duration::from_millis(10);
 
-enum SignalControl {
-    Sync(mpsc::Sender<()>),
-    Stop,
+#[derive(Debug)]
+pub enum WinetricksEvent {
+    Installing(Vec<String>),
+    OutputLine(String),
+    Stopping,
+    Killing,
+    Warning(String),
+    Done(ExitStatus),
 }
 
 /// Read winetricks' installed record from the actual Wine prefix. For Proton,
@@ -69,8 +76,22 @@ pub fn install_missing(
     env: &BTreeMap<String, String>,
     wanted: &[String],
     stop_timeout: u32,
+    token: &Token,
+    output: Output<'_>,
+    events: impl FnMut(WinetricksEvent),
 ) -> anyhow::Result<()> {
-    install_missing_with_output(name, runner, prefix, env, wanted, stop_timeout, false)
+    install_missing_with_output(
+        name,
+        runner,
+        prefix,
+        env,
+        wanted,
+        stop_timeout,
+        token,
+        output,
+        false,
+        events,
+    )
 }
 
 pub fn install_missing_to_stderr(
@@ -80,8 +101,21 @@ pub fn install_missing_to_stderr(
     env: &BTreeMap<String, String>,
     wanted: &[String],
     stop_timeout: u32,
+    token: &Token,
+    events: impl FnMut(WinetricksEvent),
 ) -> anyhow::Result<()> {
-    install_missing_with_output(name, runner, prefix, env, wanted, stop_timeout, true)
+    install_missing_with_output(
+        name,
+        runner,
+        prefix,
+        env,
+        wanted,
+        stop_timeout,
+        token,
+        Output::Inherit,
+        true,
+        events,
+    )
 }
 
 fn install_missing_with_output(
@@ -91,17 +125,35 @@ fn install_missing_with_output(
     env: &BTreeMap<String, String>,
     wanted: &[String],
     stop_timeout: u32,
+    token: &Token,
+    output: Output<'_>,
     to_stderr: bool,
+    mut events: impl FnMut(WinetricksEvent),
 ) -> anyhow::Result<()> {
     let missing = missing_for(runner, prefix, wanted)?;
     if missing.is_empty() {
         return Ok(());
     }
     check_available(runner)?;
-    eprintln!("Installing {} with winetricks", missing.join(", "));
-    if install_unattended_with_output(name, runner, prefix, env, &missing, stop_timeout, to_stderr)
-        .is_err()
-    {
+    events(WinetricksEvent::Installing(missing.clone()));
+    if let Err(err) = install_unattended_with_output(
+        name,
+        runner,
+        prefix,
+        env,
+        &missing,
+        stop_timeout,
+        token,
+        output,
+        to_stderr,
+        &mut events,
+    ) {
+        if err
+            .downcast_ref::<Error>()
+            .is_some_and(|err| matches!(err, Error::Canceled(_)))
+        {
+            return Err(err);
+        }
         let remaining = missing_for(runner, prefix, wanted)?;
         let named = match remaining.as_slice() {
             [] => missing.join(" and "),
@@ -160,8 +212,21 @@ pub fn run(
     env: &BTreeMap<String, String>,
     args: &[String],
     stop_timeout: u32,
+    token: &Token,
+    output: Output<'_>,
+    events: impl FnMut(WinetricksEvent),
 ) -> anyhow::Result<ExitStatus> {
-    run_with_output(runner, prefix, env, args, stop_timeout, false)
+    run_with_output(
+        runner,
+        prefix,
+        env,
+        args,
+        stop_timeout,
+        token,
+        output,
+        false,
+        events,
+    )
 }
 
 fn run_with_output(
@@ -170,7 +235,10 @@ fn run_with_output(
     env: &BTreeMap<String, String>,
     args: &[String],
     stop_timeout: u32,
+    token: &Token,
+    output: Output<'_>,
     to_stderr: bool,
+    mut events: impl FnMut(WinetricksEvent),
 ) -> anyhow::Result<ExitStatus> {
     // umu ships winetricks and runs it inside the container.
     let mut command = if runner.is_proton() {
@@ -195,53 +263,65 @@ fn run_with_output(
     };
     // The prefix is reapplied last: for Proton it is the compatdata directory
     // umu makes `pfx/` under, which is the same path the config names.
-    command.args(args).envs(env).env("WINEPREFIX", prefix);
-    if to_stderr {
-        command.stdout(Stdio::from(std::io::stderr()));
+    command
+        .args(args)
+        .envs(env)
+        .env("WINEPREFIX", prefix)
+        .stdin(Stdio::null())
+        .process_group(0);
+    match output {
+        Output::Inherit if to_stderr => {
+            command.stdout(Stdio::from(std::io::stderr()));
+        }
+        Output::Inherit => {}
+        Output::Log(path) => {
+            let log = File::create(path)
+                .with_context(|| format!("failed to create {}", path.display()))?;
+            command
+                .stdout(Stdio::from(log.try_clone()?))
+                .stderr(Stdio::from(log));
+        }
     }
 
-    // Counted rather than flagged, so a second Ctrl+C can force the cleanup.
-    let interrupts = Arc::new(AtomicUsize::new(0));
-    let mut signals = Signals::new([SIGINT]).context("failed to set up signal handling")?;
-    let counter = interrupts.clone();
-    let (control, requests) = mpsc::channel();
-    let listener = thread::spawn(move || {
-        loop {
-            for _ in signals.pending() {
-                counter.fetch_add(1, Ordering::Relaxed);
-            }
-            match requests.recv_timeout(SIGNAL_POLL) {
-                Ok(SignalControl::Sync(ack)) => {
-                    for _ in signals.pending() {
-                        counter.fetch_add(1, Ordering::Relaxed);
-                    }
-                    let _ = ack.send(());
-                }
-                Ok(SignalControl::Stop) | Err(RecvTimeoutError::Disconnected) => break,
-                Err(RecvTimeoutError::Timeout) => {}
-            }
+    let mut child = command.spawn().context("failed to run winetricks")?;
+    let group = child.id();
+    let mut stopping = None;
+    let mut killing = false;
+    let status = loop {
+        if token.is_canceled() && stopping.is_none() {
+            stopping = Some(Instant::now());
+            events(WinetricksEvent::Stopping);
+            signal_group(group, Signal::INT)?;
         }
-    });
-
-    // winetricks shares the process group and gets Ctrl+C itself.
-    let result = (|| {
-        let status = command.status().context("failed to run winetricks")?;
-        // A Ctrl+C that ended winetricks may not be counted yet, and missing
-        // it would skip the clean stop.
-        let (ack, synced) = mpsc::channel();
-        control.send(SignalControl::Sync(ack))?;
-        synced.recv()?;
-        let canceled = interrupts.load(Ordering::Relaxed) > 0;
-        settle(
-            runner,
-            prefix,
-            canceled.then_some((&interrupts, stop_timeout)),
-        )?;
-        Ok(status)
-    })();
-    let _ = control.send(SignalControl::Stop);
-    let _ = listener.join();
-    result
+        if stopping.is_some_and(|started| {
+            token.is_forced() || started.elapsed() >= Duration::from_secs(stop_timeout.into())
+        }) && !killing
+        {
+            killing = true;
+            events(WinetricksEvent::Killing);
+            signal_group(group, Signal::KILL)?;
+            runner.kill(prefix, None)?;
+        }
+        if let Some(status) = child.try_wait().context("failed to wait for winetricks")? {
+            break status;
+        }
+        token.wait_timeout(POLL);
+    };
+    settle(
+        runner,
+        prefix,
+        group,
+        token,
+        stop_timeout,
+        stopping,
+        killing,
+        &mut events,
+    )?;
+    events(WinetricksEvent::Done(status));
+    if token.is_canceled() {
+        return Err(Error::Canceled("winetricks").into());
+    }
+    Ok(status)
 }
 
 /// Install the supplied verbs in one unattended call. The caller owns the
@@ -254,7 +334,43 @@ pub fn install_unattended(
     verbs: &[String],
     stop_timeout: u32,
 ) -> anyhow::Result<()> {
-    install_unattended_with_output(name, runner, prefix, env, verbs, stop_timeout, false)
+    install_unattended_with(
+        name,
+        runner,
+        prefix,
+        env,
+        verbs,
+        stop_timeout,
+        &Token::new(),
+        Output::Inherit,
+        |_| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn install_unattended_with(
+    name: &str,
+    runner: &Runner,
+    prefix: &Path,
+    env: &BTreeMap<String, String>,
+    verbs: &[String],
+    stop_timeout: u32,
+    token: &Token,
+    output: Output<'_>,
+    events: impl FnMut(WinetricksEvent),
+) -> anyhow::Result<()> {
+    install_unattended_with_output(
+        name,
+        runner,
+        prefix,
+        env,
+        verbs,
+        stop_timeout,
+        token,
+        output,
+        false,
+        events,
+    )
 }
 
 fn install_unattended_with_output(
@@ -264,12 +380,27 @@ fn install_unattended_with_output(
     env: &BTreeMap<String, String>,
     verbs: &[String],
     stop_timeout: u32,
+    token: &Token,
+    output: Output<'_>,
     to_stderr: bool,
+    events: impl FnMut(WinetricksEvent),
 ) -> anyhow::Result<()> {
     let args: Vec<String> = std::iter::once("-q".to_owned())
         .chain(verbs.iter().cloned())
         .collect();
-    if !run_with_output(runner, prefix, env, &args, stop_timeout, to_stderr)?.success() {
+    if !run_with_output(
+        runner,
+        prefix,
+        env,
+        &args,
+        stop_timeout,
+        token,
+        output,
+        to_stderr,
+        events,
+    )?
+    .success()
+    {
         bail!("winetricks failed for {name}");
     }
     Ok(())
@@ -278,49 +409,88 @@ fn install_unattended_with_output(
 fn settle(
     runner: &Runner,
     prefix: &Path,
-    canceled: Option<(&Arc<AtomicUsize>, u32)>,
+    group: u32,
+    token: &Token,
+    stop_timeout: u32,
+    mut stopping: Option<Instant>,
+    mut killing: bool,
+    events: &mut impl FnMut(WinetricksEvent),
 ) -> anyhow::Result<()> {
-    // umu shares this process group, so a Ctrl+C already reached it, and once
-    // it returns its container is gone. There is nothing left to settle.
     if runner.is_proton() {
         return Ok(());
     }
-    let Some((interrupts, stop_timeout)) = canceled else {
-        return Ok(runner.wait_idle(prefix)?);
-    };
-
-    eprintln!("Canceling winetricks, press Ctrl+C again to force it");
-    // Wine only, so the prefix is what gets signalled and no group is needed.
-    if let Err(err) = runner.end_session(prefix, None) {
-        eprintln!("warning: {err}");
-    }
-
     let (sender, idle) = mpsc::channel();
     let (waiting_runner, waiting_prefix) = (runner.clone(), prefix.to_owned());
     thread::spawn(move || {
         let _ = sender.send(waiting_runner.wait_idle(&waiting_prefix));
     });
-
-    let forced = interrupts.load(Ordering::Relaxed) + 1;
-    let deadline = Instant::now() + Duration::from_secs(stop_timeout.into());
+    let mut ending = None;
+    let mut ending_started = false;
+    let mut idle_result = None;
     loop {
-        match idle.recv_timeout(POLL) {
-            Ok(result) => return Ok(result?),
-            Err(RecvTimeoutError::Disconnected) => break,
-            Err(RecvTimeoutError::Timeout) => {}
+        if idle_result.is_none() {
+            match idle.recv_timeout(POLL) {
+                Ok(result) => idle_result = Some(result),
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        } else {
+            token.wait_timeout(POLL);
         }
-        if interrupts.load(Ordering::Relaxed) >= forced || Instant::now() >= deadline {
-            break;
+        if token.is_canceled() && stopping.is_none() {
+            stopping = Some(Instant::now());
+            events(WinetricksEvent::Stopping);
+        }
+        if stopping.is_some() && !ending_started {
+            ending_started = true;
+            let (sender, receiver) = mpsc::channel();
+            let (ending_runner, ending_prefix) = (runner.clone(), prefix.to_owned());
+            thread::spawn(move || {
+                let _ = sender.send(ending_runner.end_session(&ending_prefix, None));
+            });
+            ending = Some(receiver);
+        }
+        if stopping.is_some_and(|started| {
+            token.is_forced() || started.elapsed() >= Duration::from_secs(stop_timeout.into())
+        }) && !killing
+        {
+            killing = true;
+            events(WinetricksEvent::Killing);
+            signal_group(group, Signal::KILL)?;
+            runner.kill(prefix, None)?;
+        }
+        if let Some(receiver) = ending.as_ref() {
+            match receiver.try_recv() {
+                Ok(Ok(())) | Err(mpsc::TryRecvError::Disconnected) => ending = None,
+                Ok(Err(err)) => {
+                    events(WinetricksEvent::Warning(err.to_string()));
+                    ending = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if ending.is_none()
+            && let Some(result) = idle_result
+        {
+            return Ok(result?);
         }
     }
+    Ok(())
+}
 
-    eprintln!("Killing everything left in the prefix");
-    runner.kill(prefix, None)?;
-    Ok(runner.wait_idle(prefix)?)
+fn signal_group(group: u32, signal: Signal) -> anyhow::Result<()> {
+    let pid = Pid::from_raw(i32::try_from(group)?).context("invalid winetricks process group")?;
+    match kill_process_group(pid, signal) {
+        Ok(()) | Err(Errno::SRCH) => Ok(()),
+        Err(err) => Err(io::Error::from(err))
+            .with_context(|| format!("failed to signal winetricks process group {group}")),
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     #[test]
@@ -369,5 +539,87 @@ mod tests {
         for verb in ["", "two words", "line\nbreak", "--force", "-q"] {
             assert!(validate_verb(verb).is_err(), "{verb:?}");
         }
+    }
+
+    #[test]
+    fn token_cancels_from_another_thread_and_cleans_partial_work() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let script = bin.join("winetricks");
+        fs::write(
+            &script,
+            "#!/bin/sh\ntouch \"$WINEPREFIX/partial\"\ntrap 'rm -f \"$WINEPREFIX/partial\"; exit 130' INT\nwhile :; do sleep 0.05; done\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )))
+        .unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "winetricks::tests::token_cancel_child",
+                "--nocapture",
+            ])
+            .env("WINEO_WINETRICKS_CANCEL_ROOT", root.path())
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn token_cancel_child() {
+        let Some(root) = std::env::var_os("WINEO_WINETRICKS_CANCEL_ROOT") else {
+            return;
+        };
+        let prefix = std::path::PathBuf::from(root).join("prefix");
+        fs::create_dir(&prefix).unwrap();
+        let token = Token::new();
+        let request = token.clone();
+        let marker = prefix.join("partial");
+        let waiter = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !marker.exists() {
+                assert!(Instant::now() < deadline, "winetricks never started");
+                thread::sleep(Duration::from_millis(10));
+            }
+            request.cancel();
+        });
+        let mut events = Vec::new();
+        let result = run(
+            &Runner::fake("test"),
+            &prefix,
+            &BTreeMap::new(),
+            &["-q".to_owned(), "corefonts".to_owned()],
+            1,
+            &token,
+            Output::Log(&prefix.join("output.log")),
+            |event| events.push(event),
+        );
+        waiter.join().unwrap();
+        assert!(
+            result
+                .unwrap_err()
+                .downcast_ref::<Error>()
+                .is_some_and(|err| matches!(err, Error::Canceled("winetricks")))
+        );
+        assert!(!prefix.join("partial").exists());
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, WinetricksEvent::Stopping))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, WinetricksEvent::Done(_)))
+        );
     }
 }

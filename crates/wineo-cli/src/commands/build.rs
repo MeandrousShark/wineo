@@ -6,6 +6,7 @@ use anyhow::anyhow;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
+use wineo_core::installer::Output;
 use wineo_core::launch::{Host, Launch, Overrides};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
@@ -87,6 +88,7 @@ pub fn install_winetricks(
         return Ok(());
     }
     let env = winetricks::merged_env(runner, global, environment, &overrides.env)?;
+    let cancellation = super::transfer::Cancellation::new()?;
     winetricks::install_missing(
         &environment.name,
         runner,
@@ -94,6 +96,9 @@ pub fn install_winetricks(
         &env,
         &environment.config.winetricks,
         global.stop_timeout,
+        &cancellation.token,
+        Output::Inherit,
+        super::winetricks::print_event,
     )
 }
 

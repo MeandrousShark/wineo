@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use jiff::Timestamp;
 
+use crate::cancel::Token;
 use crate::config::GlobalConfig;
 use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
@@ -165,21 +166,23 @@ impl Installer {
     }
 
     /// Runs the installer until it and everything it started have exited. The
-    /// first SIGINT, SIGTERM, or SIGHUP asks programs to close, and another one
-    /// or `stop_timeout` kills them. An error means nothing was started.
+    /// first cancel request asks programs to close, and a force request or
+    /// `stop_timeout` kills them. An error means nothing was started.
     pub fn run(
         self,
+        token: &Token,
         stop_timeout: Duration,
         output: Output,
         watched: impl FnMut(Watched),
     ) -> Result<Outcome> {
-        self.run_with_writer(stop_timeout, output, watched, |runtime, state| {
+        self.run_with_writer(token, stop_timeout, output, watched, |runtime, state| {
             runtime.write_operation(state)
         })
     }
 
     fn run_with_writer(
         self,
+        token: &Token,
         stop_timeout: Duration,
         output: Output,
         mut watched: impl FnMut(Watched),
@@ -205,9 +208,7 @@ impl Installer {
             leader_start: None,
             started_at: Timestamp::now(),
         };
-        // Listening starts first, so a Ctrl+C that comes early is still held
-        // for the loop below rather than killing wineo with a record written.
-        let supervisor = Supervisor::listen()?;
+        let supervisor = Supervisor::with_token(token);
         // Written before anything starts, so a crash can never leave something
         // running that nothing records.
         write_operation(&runtime, &record)?;
@@ -496,7 +497,12 @@ mod tests {
     fn an_installer_that_cannot_start_leaves_no_record() {
         let root = tempfile::tempdir().unwrap();
         let err = installer(root.path(), "/nonexistent/wine")
-            .run(Duration::from_secs(1), Output::Inherit, |_| {})
+            .run(
+                &Token::new(),
+                Duration::from_secs(1),
+                Output::Inherit,
+                |_| {},
+            )
             .unwrap_err();
         assert!(err.to_string().contains("failed to start wine"), "{err}");
         assert!(runtime(root.path()).read_operation().unwrap().is_none());
@@ -506,12 +512,51 @@ mod tests {
     fn a_finished_installer_clears_its_record() {
         let root = tempfile::tempdir().unwrap();
         let outcome = installer(root.path(), "/bin/true")
-            .run(Duration::from_secs(1), Output::Inherit, |_| {})
+            .run(
+                &Token::new(),
+                Duration::from_secs(1),
+                Output::Inherit,
+                |_| {},
+            )
             .unwrap();
         assert!(
             matches!(outcome, Outcome::Finished { exit_code: Some(0) }),
             "{outcome:?}"
         );
+        assert!(runtime(root.path()).read_operation().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_token_cancels_an_installer_without_a_signal() {
+        let root = tempfile::tempdir().unwrap();
+        let prefix = root.path().join("prefix");
+        fs::create_dir(&prefix).unwrap();
+        let wine = root.path().join("wine");
+        fs::write(
+            &wine,
+            "#!/bin/sh\nif [ \"$1\" = wineboot ]; then\n  touch \"$WINEPREFIX/stopped\"\n  exit 0\nfi\ntouch \"$WINEPREFIX/started\"\nwhile [ ! -e \"$WINEPREFIX/stopped\" ]; do sleep 0.02; done\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&wine, fs::Permissions::from_mode(0o755)).unwrap();
+        let installer = installer(root.path(), wine.to_str().unwrap());
+        let started = prefix.join("started");
+        let token = Token::new();
+        let request = token.clone();
+        let marker = started.clone();
+        let canceler = thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while !marker.exists() && std::time::Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            request.cancel();
+        });
+        let outcome = installer
+            .run(&token, Duration::from_millis(100), Output::Inherit, |_| {})
+            .unwrap();
+        canceler.join().unwrap();
+        assert!(started.exists());
+        assert!(matches!(outcome, Outcome::Canceled { .. }), "{outcome:?}");
         assert!(runtime(root.path()).read_operation().unwrap().is_none());
     }
 
@@ -524,6 +569,7 @@ mod tests {
         let mut identity = None;
         let error = installer
             .run_with_writer(
+                &Token::new(),
                 Duration::from_secs(1),
                 Output::Inherit,
                 |_| {},
@@ -566,6 +612,7 @@ mod tests {
         let mut group = None;
         let outcome = installer
             .run_with_writer(
+                &Token::new(),
                 Duration::from_secs(1),
                 Output::Inherit,
                 |_| {},
@@ -612,7 +659,12 @@ mod tests {
         fs::write(&log, "the previous run\n").unwrap();
         // `echo` stands in for wine, so what it prints is the arguments.
         installer(root.path(), "/bin/echo")
-            .run(Duration::from_secs(1), Output::Log(&log), |_| {})
+            .run(
+                &Token::new(),
+                Duration::from_secs(1),
+                Output::Log(&log),
+                |_| {},
+            )
             .unwrap();
         assert_eq!(fs::read_to_string(&log).unwrap(), "setup.exe\n");
     }

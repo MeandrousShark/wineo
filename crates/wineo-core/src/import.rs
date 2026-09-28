@@ -11,7 +11,6 @@ use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -20,6 +19,7 @@ use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 use toml_edit::{Array, DocumentMut, Item, Table, Value, value};
 
+use crate::cancel::Token;
 use crate::config::{Arch, EnvironmentConfig, GlobalConfig, Target, validate_env_var};
 use crate::download::{InstallLock, publish};
 use crate::environment::Environment;
@@ -216,7 +216,7 @@ pub fn execute(
     paths: &Paths,
     global: &GlobalConfig,
     request: ImportRequest,
-    cancel: &AtomicBool,
+    cancel: &Token,
     progress: impl FnMut(ImportProgress),
 ) -> Result<Environment> {
     execute_reviewed(paths, global, request, None, None, cancel, progress)
@@ -231,7 +231,7 @@ pub fn execute_reviewed(
     request: ImportRequest,
     reviewed: Option<&Inspection>,
     settings: Option<&ImportedSettings>,
-    cancel: &AtomicBool,
+    cancel: &Token,
     mut progress: impl FnMut(ImportProgress),
 ) -> Result<Environment> {
     if !name::is_valid(&request.name) {
@@ -721,7 +721,7 @@ pub(crate) fn copy_tree(
     source: &Path,
     destination: &Path,
     final_root: &Path,
-    cancel: &AtomicBool,
+    cancel: &Token,
     progress: &mut impl FnMut(ImportProgress),
 ) -> Result<()> {
     let links = Links::default();
@@ -762,7 +762,7 @@ pub(crate) fn copy_tree_with(
     destination: &Path,
     final_root: &Path,
     links: &Links,
-    cancel: &AtomicBool,
+    cancel: &Token,
     progress: &mut impl FnMut(ImportProgress),
 ) -> Result<()> {
     copy_tree_with_reflink_mode(
@@ -789,7 +789,7 @@ pub(crate) fn copy_tree_strict_reflink(
     source: &Path,
     destination: &Path,
     final_root: &Path,
-    cancel: &AtomicBool,
+    cancel: &Token,
     progress: &mut impl FnMut(ImportProgress),
 ) -> Result<()> {
     let links = Links::default();
@@ -810,7 +810,7 @@ pub(crate) fn copy_tree_strict_reflink_with(
     destination: &Path,
     final_root: &Path,
     links: &Links,
-    cancel: &AtomicBool,
+    cancel: &Token,
     progress: &mut impl FnMut(ImportProgress),
 ) -> Result<()> {
     copy_tree_with_reflink_mode(
@@ -829,7 +829,7 @@ fn copy_tree_with_reflink_mode(
     destination: &Path,
     final_root: &Path,
     links: &Links,
-    cancel: &AtomicBool,
+    cancel: &Token,
     progress: &mut impl FnMut(ImportProgress),
     strict_reflink: bool,
 ) -> Result<()> {
@@ -853,7 +853,7 @@ struct CopyOptions<'a> {
     source_root: &'a Path,
     final_root: &'a Path,
     links: &'a Links,
-    cancel: &'a AtomicBool,
+    cancel: &'a Token,
     strict_reflink: bool,
 }
 
@@ -1082,8 +1082,8 @@ fn lexical_normalize(path: &Path) -> PathBuf {
     result
 }
 
-pub(crate) fn check_cancelled(cancel: &AtomicBool) -> Result<()> {
-    if cancel.load(Ordering::SeqCst) {
+pub(crate) fn check_cancelled(cancel: &Token) -> Result<()> {
+    if cancel.is_canceled() {
         return Err(Cancelled.into());
     }
     Ok(())
@@ -1272,7 +1272,7 @@ pub fn copy_runner(
     source: impl AsRef<Path>,
     destination_root: impl AsRef<Path>,
     name: &str,
-    cancel: &AtomicBool,
+    cancel: &Token,
     progress: impl FnMut(ImportProgress),
 ) -> Result<RunnerCopyReceipt> {
     copy_runner_with_review(
@@ -1290,7 +1290,7 @@ pub fn copy_runner_reviewed(
     reviewed: &RunnerCopyInspection,
     destination_root: impl AsRef<Path>,
     name: &str,
-    cancel: &AtomicBool,
+    cancel: &Token,
     progress: impl FnMut(ImportProgress),
 ) -> Result<RunnerCopyReceipt> {
     copy_runner_with_review(
@@ -1308,7 +1308,7 @@ fn copy_runner_with_review(
     destination_root: &Path,
     name: &str,
     reviewed: Option<&RunnerCopyInspection>,
-    cancel: &AtomicBool,
+    cancel: &Token,
     mut progress: impl FnMut(ImportProgress),
 ) -> Result<RunnerCopyReceipt> {
     let inspection = inspect_runner_copy(source)?;
@@ -1842,7 +1842,7 @@ mod tests {
             },
             Some(&inspection),
             None,
-            &AtomicBool::new(false),
+            &Token::new(),
             |_| {},
         )
         .unwrap();
@@ -1873,7 +1873,7 @@ mod tests {
                 adopt: false,
                 arch: None,
             },
-            &AtomicBool::new(false),
+            &Token::new(),
             |_| {},
         )
         .unwrap();
@@ -1928,7 +1928,7 @@ mod tests {
             &source,
             &destination,
             &destination,
-            &AtomicBool::new(false),
+            &Token::new(),
             &mut |_| {},
         )
         .unwrap();
@@ -2035,7 +2035,7 @@ mod tests {
             },
             Some(&reviewed),
             Some(&settings),
-            &AtomicBool::new(false),
+            &Token::new(),
             |_| {},
         )
         .unwrap();
@@ -2096,7 +2096,7 @@ mod tests {
                 adopt: false,
                 arch: None,
             },
-            &AtomicBool::new(false),
+            &Token::new(),
             |_| {},
         );
         assert!(first.is_ok(), "idle shared prefix should import: {first:?}");
@@ -2133,7 +2133,7 @@ mod tests {
                 adopt: false,
                 arch: None,
             },
-            &AtomicBool::new(false),
+            &Token::new(),
             |_| {},
         );
         assert!(lost.is_err());
@@ -2145,28 +2145,15 @@ mod tests {
         proton_runner(root.path(), "GE-Proton9-20");
         let source = root.path().join("GE-Proton9-20");
         let runners = root.path().join("installed");
-        let receipt = copy_runner(
-            &source,
-            &runners,
-            "GE-Proton9-20",
-            &AtomicBool::new(false),
-            |_| {},
-        )
-        .unwrap();
+        let receipt =
+            copy_runner(&source, &runners, "GE-Proton9-20", &Token::new(), |_| {}).unwrap();
         assert_eq!(
             crate::runner_alias::version(&runners, "GE-Proton9-20", "GE-Proton-Latest"),
             Some(vec![9, 20])
         );
         assert!(receipt.receipt.is_file());
         assert!(
-            copy_runner(
-                &source,
-                &runners,
-                "GE-Proton-Latest",
-                &AtomicBool::new(false),
-                |_| {},
-            )
-            .is_err()
+            copy_runner(&source, &runners, "GE-Proton-Latest", &Token::new(), |_| {},).is_err()
         );
     }
 
@@ -2207,7 +2194,7 @@ mod tests {
             &source,
             root.path().join("installed"),
             "wine-build",
-            &AtomicBool::new(false),
+            &Token::new(),
             |_| {},
         )
         .unwrap();
@@ -2244,14 +2231,9 @@ mod tests {
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
         }
         let destination = root.path().join("installed");
-        let error = copy_runner_reviewed(
-            &reviewed,
-            &destination,
-            "wine-build",
-            &AtomicBool::new(false),
-            |_| {},
-        )
-        .unwrap_err();
+        let error =
+            copy_runner_reviewed(&reviewed, &destination, "wine-build", &Token::new(), |_| {})
+                .unwrap_err();
         assert!(error.to_string().contains("reviewed runner changed"));
         assert!(!destination.exists());
     }
@@ -2262,13 +2244,13 @@ mod tests {
         wine_runner(root.path(), "wine-build");
         let source = root.path().join("wine-build");
         let destination = root.path().join("installed");
-        let canceled = AtomicBool::new(false);
+        let canceled = Token::new();
         let result = copy_runner(&source, &destination, "canceled", &canceled, |event| {
             if matches!(event, ImportProgress::Copied { .. }) {
-                canceled.store(true, Ordering::Relaxed);
+                canceled.cancel();
             }
         });
-        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert!(result.unwrap_err().is::<Cancelled>());
         assert!(!destination.join("canceled").exists());
         assert!(fs::read_dir(&destination).unwrap().all(|entry| {
             !entry
@@ -2279,19 +2261,13 @@ mod tests {
         }));
 
         let changed = source.join("bin/wine");
-        let result = copy_runner(
-            &source,
-            &destination,
-            "changed",
-            &AtomicBool::new(false),
-            |event| {
-                if let ImportProgress::Copied { path } = event
-                    && path == changed
-                {
-                    fs::write(&changed, "#!/bin/sh\necho changed\n").unwrap();
-                }
-            },
-        );
+        let result = copy_runner(&source, &destination, "changed", &Token::new(), |event| {
+            if let ImportProgress::Copied { path } = event
+                && path == changed
+            {
+                fs::write(&changed, "#!/bin/sh\necho changed\n").unwrap();
+            }
+        });
         assert!(result.unwrap_err().to_string().contains("changed"));
         assert!(!destination.join("changed").exists());
         assert!(fs::read_dir(&destination).unwrap().all(|entry| {
@@ -2319,13 +2295,7 @@ mod tests {
                 let barrier = Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     barrier.wait();
-                    copy_runner(
-                        source,
-                        destination,
-                        "GE-Proton9-20",
-                        &AtomicBool::new(false),
-                        |_| {},
-                    )
+                    copy_runner(source, destination, "GE-Proton9-20", &Token::new(), |_| {})
                 })
             })
             .collect::<Vec<_>>();
@@ -2363,7 +2333,7 @@ mod tests {
             &reviewed,
             root.path().join("installed"),
             "GE-Proton9-20",
-            &AtomicBool::new(false),
+            &Token::new(),
             |_| {},
         )
         .unwrap();

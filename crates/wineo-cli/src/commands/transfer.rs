@@ -1,8 +1,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
-use signal_hook::SigId;
-use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
+use signal_hook::iterator::{Handle, Signals};
+use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::import::{ExternalDependency, ImportProgress};
@@ -51,25 +54,42 @@ pub fn print_external_links(links: &[ExternalDependency], verbose: bool, note: &
 }
 
 pub struct Cancellation {
-    pub flag: Arc<AtomicBool>,
-    handlers: Vec<SigId>,
+    pub token: Token,
+    signals: Handle,
+    thread: Option<JoinHandle<()>>,
+    stop: Arc<AtomicBool>,
 }
 
 impl Cancellation {
     pub fn new() -> anyhow::Result<Self> {
-        let mut this = Self {
-            flag: Arc::new(AtomicBool::new(false)),
-            handlers: Vec::new(),
-        };
-        for signal in [SIGINT, SIGTERM, SIGHUP] {
-            this.handlers
-                .push(signal_hook::flag::register(signal, this.flag.clone())?);
-        }
-        Ok(this)
+        let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP, SIGUSR1])?;
+        let handle = signals.handle();
+        let token = Token::new();
+        let listener = token.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let thread = thread::spawn(move || {
+            while !thread_stop.load(Ordering::Relaxed) {
+                for signal in signals.pending() {
+                    if signal == SIGUSR1 || listener.is_canceled() {
+                        listener.force();
+                    } else {
+                        listener.cancel();
+                    }
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+        Ok(Self {
+            token,
+            signals: handle,
+            thread: Some(thread),
+            stop,
+        })
     }
 
     pub fn result<T>(&self, result: anyhow::Result<T>) -> anyhow::Result<T> {
-        if self.flag.load(Ordering::Relaxed) {
+        if self.token.is_canceled() {
             Err(crate::prompt::Canceled.into())
         } else {
             result
@@ -86,8 +106,10 @@ impl Cancellation {
 
 impl Drop for Cancellation {
     fn drop(&mut self) {
-        for handler in self.handlers.drain(..) {
-            signal_hook::low_level::unregister(handler);
+        self.stop.store(true, Ordering::Relaxed);
+        self.signals.close();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
     }
 }
@@ -99,7 +121,7 @@ mod tests {
     #[test]
     fn late_cancel_does_not_override_published_success() {
         let cancellation = Cancellation::new().unwrap();
-        cancellation.flag.store(true, Ordering::Relaxed);
+        cancellation.token.cancel();
         assert_eq!(
             cancellation.published_result(Ok("installed")).unwrap(),
             "installed"

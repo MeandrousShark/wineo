@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
+use wineo_core::error::Error;
 use wineo_core::launch::{Launch, Overrides, Wayland, parse_launch_env_assignment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
@@ -15,6 +16,7 @@ use wineo_core::runtime::{RunMode, RunState, Runtime};
 use wineo_core::supervisor::{Notice, Supervisor};
 
 use crate::commands::build;
+use crate::commands::transfer::Cancellation;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -73,7 +75,17 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let Some(_lock) = runtime.try_lock()? else {
         bail!("{} is already running", environment.name);
     };
-    build::install_winetricks(&global, &environment, &launch, &overrides)?;
+    match build::install_winetricks(&global, &environment, &launch, &overrides) {
+        Err(err)
+            if err
+                .downcast_ref::<Error>()
+                .is_some_and(|err| matches!(err, Error::Canceled(_))) =>
+        {
+            return Ok(ExitCode::from(130));
+        }
+        Err(err) => return Err(err),
+        Ok(()) => {}
+    }
 
     if launch.wayland == Wayland::NoSession {
         note(&format!(
@@ -82,7 +94,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         ));
     }
 
-    let supervisor = Supervisor::listen()?;
+    let cancellation = Cancellation::new()?;
+    let supervisor = Supervisor::with_token(&cancellation.token);
     // A separate process group keeps the terminal's Ctrl+C away from wine, so
     // wineo can ask the app to close instead of it being cut off. It is also
     // what a Proton run is signalled through, so it is recorded with the pid.

@@ -1,12 +1,29 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Child, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
+use rustix::io::Errno;
+use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
+
+use crate::cancel::Token;
 use crate::config::Arch;
 use crate::error::{Error, IoContext, Result};
+use crate::installer::Output;
 use crate::paths::{self, Paths};
 use crate::runner::Runner;
+
+const CHILD_POLL: Duration = Duration::from_millis(25);
+const CANCEL_GRACE: Duration = Duration::from_secs(2);
+
+#[derive(Debug)]
+pub enum PrefixEvent {
+    Started { dir: PathBuf },
+    Finished,
+}
 
 pub fn is_prefix(dir: &Path) -> bool {
     dir.join("system.reg").is_file()
@@ -156,46 +173,164 @@ pub fn prepare_dir(dir: &Path) -> Result<bool> {
 
 /// Initializes a prefix in `dir`, sending wine's output to `log`.
 pub fn create(runner: &Runner, dir: &Path, arch: Arch, log: &Path) -> Result<()> {
-    let output = File::create(log).context(|| format!("failed to create {}", log.display()))?;
-    let stderr = output
-        .try_clone()
-        .context(|| format!("failed to open {}", log.display()))?;
-    // umu creates the prefix when it is handed an empty program, and waits for
-    // it. Proton prefixes are always win64, so WINEARCH means nothing there.
-    let mut command = runner.command(dir, &[])?;
-    if runner.is_proton() {
-        command.arg("");
-    } else {
-        command
-            .env("WINEARCH", arch.as_str())
-            .args(["wineboot", "--init"]);
+    create_with(
+        runner,
+        dir,
+        arch,
+        log,
+        &Token::new(),
+        Output::Log(log),
+        |_| {},
+    )
+}
+
+/// Initializes a prefix, allowing a caller to cancel and follow the child.
+pub fn create_with(
+    runner: &Runner,
+    dir: &Path,
+    arch: Arch,
+    log: &Path,
+    token: &Token,
+    output: Output<'_>,
+    mut events: impl FnMut(PrefixEvent),
+) -> Result<()> {
+    if token.is_canceled() {
+        return Err(Error::Canceled("prefix creation"));
     }
-    let status = command
-        .stdin(Stdio::null())
-        .stdout(output)
-        .stderr(stderr)
-        .status()
-        .context(|| "failed to run wineboot".to_owned())?;
+    let error_log = match output {
+        Output::Inherit => log,
+        Output::Log(path) => path,
+    };
+    let mut started = false;
+    let result = (|| {
+        if let Output::Inherit = output {
+            File::create(log).context(|| format!("failed to create {}", log.display()))?;
+        }
+        // umu creates the prefix when it is handed an empty program, and waits for
+        // it. Proton prefixes are always win64, so WINEARCH means nothing there.
+        let mut command = runner.command(dir, &[])?;
+        if runner.is_proton() {
+            command.arg("");
+        } else {
+            command
+                .env("WINEARCH", arch.as_str())
+                .args(["wineboot", "--init"]);
+        }
+        command.stdin(Stdio::null()).process_group(0);
+        if let Output::Log(path) = output {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .context(|| format!("failed to create {}", parent.display()))?;
+            }
+            let file =
+                File::create(path).context(|| format!("failed to create {}", path.display()))?;
+            let stderr = file
+                .try_clone()
+                .context(|| format!("failed to open {}", path.display()))?;
+            command.stdout(file).stderr(stderr);
+        }
+        events(PrefixEvent::Started {
+            dir: dir.to_owned(),
+        });
+        started = true;
+        let child = command
+            .spawn()
+            .context(|| "failed to run wineboot".to_owned())?;
+        let status = wait_for_child(child, token, || Ok(()))?;
+        if token.is_canceled() {
+            return Err(Error::Canceled("prefix creation"));
+        }
 
-    // A missing or failed prefix would make another wine command create a
-    // fresh one, so only write the override once wineboot has initialized it.
-    // Its own error is folded into the check below since wine is still
-    // running either way and must be allowed to shut down. umu makes the
-    // prefix and then fails to run the empty program, so its exit code says
-    // nothing and the prefix itself is checked instead.
-    let initialized = runner.is_proton() || status.success();
-    let menu_builder_disabled = initialized && disable_menu_builder(runner, dir, log).is_ok();
+        // A missing or failed prefix would make another wine command create a
+        // fresh one, so only write the override once wineboot has initialized it.
+        // Its own error is folded into the check below since wine is still
+        // running either way and must be allowed to shut down. umu makes the
+        // prefix and then fails to run the empty program, so its exit code says
+        // nothing and the prefix itself is checked instead.
+        let initialized = runner.is_proton() || status.success();
+        let menu_builder_disabled = if initialized {
+            match disable_menu_builder_with(runner, dir, log, token, output) {
+                Ok(()) => true,
+                Err(err @ Error::Canceled(_)) => return Err(err),
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
 
-    // Wine only writes the registry files once wineserver shuts down.
-    runner.wait_idle(dir)?;
+        // Wine only writes the registry files once wineserver shuts down.
+        runner.wait_idle_cancellable(dir, token)?;
+        if token.is_canceled() {
+            return Err(Error::Canceled("prefix creation"));
+        }
 
-    if menu_builder_disabled && is_prefix(&runner.wine_prefix(dir)) {
-        Ok(())
-    } else {
-        Err(Error::PrefixCreation {
-            reason: last_wine_message(log),
-            log: log.to_owned(),
-        })
+        if menu_builder_disabled && is_prefix(&runner.wine_prefix(dir)) {
+            Ok(())
+        } else {
+            Err(Error::PrefixCreation {
+                reason: last_wine_message(error_log),
+                log: error_log.to_owned(),
+            })
+        }
+    })();
+    if started {
+        events(PrefixEvent::Finished);
+    }
+    result
+}
+
+pub(crate) fn wait_for_child(
+    mut child: Child,
+    token: &Token,
+    mut on_cancel: impl FnMut() -> Result<()>,
+) -> Result<ExitStatus> {
+    let group = child.id();
+    let pid = i32::try_from(group)
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or_else(|| Error::Unsettled("invalid prefix process group".to_owned()))?;
+    let mut canceled_at = None;
+    let mut sent_term = false;
+    let mut sent_kill = false;
+    loop {
+        let status = child
+            .try_wait()
+            .context(|| "failed to wait for wineboot".to_owned())?;
+        if token.is_canceled() {
+            let started = *canceled_at.get_or_insert_with(Instant::now);
+            if !sent_term {
+                on_cancel()?;
+                signal_group(pid, Signal::TERM)?;
+                sent_term = true;
+            }
+            if (token.is_forced() || started.elapsed() >= CANCEL_GRACE) && !sent_kill {
+                signal_group(pid, Signal::KILL)?;
+                sent_kill = true;
+            }
+            if status.is_some() && !group_is_running(pid)? {
+                return Err(Error::Canceled("prefix creation"));
+            }
+        } else if let Some(status) = status {
+            return Ok(status);
+        }
+        thread::sleep(CHILD_POLL);
+    }
+}
+
+fn signal_group(group: Pid, signal: Signal) -> Result<()> {
+    match kill_process_group(group, signal) {
+        Ok(()) | Err(Errno::SRCH) => Ok(()),
+        Err(err) => Err(io::Error::from(err))
+            .context(|| format!("failed to signal prefix process group {group:?}")),
+    }
+}
+
+fn group_is_running(group: Pid) -> Result<bool> {
+    match test_kill_process_group(group) {
+        Ok(()) | Err(Errno::PERM) => Ok(true),
+        Err(Errno::SRCH) => Ok(false),
+        Err(err) => Err(io::Error::from(err))
+            .context(|| format!("failed to inspect prefix process group {group:?}")),
     }
 }
 
@@ -203,33 +338,56 @@ pub fn create(runner: &Runner, dir: &Path, arch: Arch, log: &Path) -> Result<()>
 /// run outside wineo doesn't build menu entries in this prefix either.
 /// Shared by a freshly created prefix and one `new` adopts as is.
 pub fn disable_menu_builder(runner: &Runner, dir: &Path, log: &Path) -> Result<()> {
-    let output = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log)
-        .context(|| format!("failed to open {}", log.display()))?;
-    let stderr = output
-        .try_clone()
-        .context(|| format!("failed to open {}", log.display()))?;
-    let status = runner
-        .command(dir, &[])?
-        .args([
-            "reg",
-            "add",
-            r"HKCU\Software\Wine\DllOverrides",
-            "/v",
-            "winemenubuilder.exe",
-            "/t",
-            "REG_SZ",
-            "/d",
-            "",
-            "/f",
-        ])
-        .stdin(Stdio::null())
-        .stdout(output)
-        .stderr(stderr)
-        .status()
+    disable_menu_builder_with(runner, dir, log, &Token::new(), Output::Log(log))
+}
+
+fn disable_menu_builder_with(
+    runner: &Runner,
+    dir: &Path,
+    log: &Path,
+    token: &Token,
+    output: Output<'_>,
+) -> Result<()> {
+    if let Output::Inherit = output {
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+            .context(|| format!("failed to open {}", log.display()))?;
+    }
+    let mut command = runner.command(dir, &[])?;
+    command.args([
+        "reg",
+        "add",
+        r"HKCU\Software\Wine\DllOverrides",
+        "/v",
+        "winemenubuilder.exe",
+        "/t",
+        "REG_SZ",
+        "/d",
+        "",
+        "/f",
+    ]);
+    command.stdin(Stdio::null()).process_group(0);
+    if let Output::Log(path) = output {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .context(|| format!("failed to open {}", path.display()))?;
+        let stderr = file
+            .try_clone()
+            .context(|| format!("failed to open {}", path.display()))?;
+        command.stdout(file).stderr(stderr);
+    }
+    let child = command
+        .spawn()
         .context(|| "failed to run wine reg add".to_owned())?;
+    let status = wait_for_child(child, token, || runner.kill(dir, None).map(|_| ()))?;
     if status.success() {
         Ok(())
     } else {

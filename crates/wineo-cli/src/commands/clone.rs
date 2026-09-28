@@ -56,7 +56,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         paths,
         &global,
         &reviewed,
-        &cancellation.flag,
+        &cancellation.token,
         transfer::copy_progress(),
     );
     match result {

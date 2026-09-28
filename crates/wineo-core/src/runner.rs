@@ -1,6 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -276,6 +277,27 @@ impl Runner {
         } else {
             Err(Error::Unsettled(format!("wineserver -w failed ({status})")))
         }
+    }
+
+    pub(crate) fn wait_idle_cancellable(
+        &self,
+        prefix: &Path,
+        token: &crate::cancel::Token,
+    ) -> Result<()> {
+        let Some(mut command) = self.wineserver(prefix) else {
+            return Ok(());
+        };
+        let command = quietly(command.arg("-w"));
+        command.stdin(Stdio::null()).process_group(0);
+        let child = command
+            .spawn()
+            .context(|| "failed to run wineserver -w".to_owned())?;
+        let status =
+            crate::prefix::wait_for_child(child, token, || self.kill(prefix, None).map(|_| ()))?;
+        if !status.success() {
+            return Err(Error::Unsettled(format!("wineserver -w failed ({status})")));
+        }
+        Ok(())
     }
 
     /// Like `wait_settled`, but requires the recorded process-group identity
