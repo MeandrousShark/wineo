@@ -3,6 +3,15 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.14.0 - 2026-09-28
+
+- `tags` groups environments, like `game` or `work`, on Wine and native
+  environments and in templates ([0033](docs/plans/0033-tags.md)). See
+  [Tags](docs/config-files.md#tags).
+- `wineo list --tag` filters by tag. Several `--tag` flags list only
+  environments with all of them.
+- `status NAME` and its JSON show tags, and `--tag` completes the tags in use.
+
 ## 0.13.0 - 2026-09-28
 
 - `winetricks` lists the verbs an environment needs, and `start`, `run`, and
