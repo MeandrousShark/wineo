@@ -9,9 +9,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use toml_edit::{DocumentMut, value};
+use toml_edit::{Array, DocumentMut, value};
 
-use crate::config::{Arch, GamescopeSetting};
+use crate::config::{self, Arch, GamescopeSetting};
 use crate::error::{Error, Result};
 use crate::name;
 use crate::paths::Paths;
@@ -35,6 +35,8 @@ pub const NEWEST_PROTON: &str = "proton";
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Template {
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub runner: Option<String>,
     pub arch: Option<Arch>,
     pub gamemode: Option<bool>,
@@ -80,6 +82,13 @@ impl Template {
     /// `runner` and `arch` are left out: the caller resolves those before the
     /// prefix is created, so they are already written.
     pub fn apply(&self, doc: &mut DocumentMut) {
+        if !self.tags.is_empty() {
+            let mut tags = Array::new();
+            for tag in &self.tags {
+                tags.push(tag.as_str());
+            }
+            doc["tags"] = value(tags);
+        }
         for (key, set) in [
             ("gamemode", self.gamemode),
             ("wayland", self.wayland),
@@ -227,10 +236,15 @@ fn parse(path: &Path, text: &str) -> Result<Template> {
         }
     }
     table.remove("schema_version");
-    table.try_into().map_err(|source| Error::ConfigSyntax {
+    let template: Template = table.try_into().map_err(|source| Error::ConfigSyntax {
         path: path.to_owned(),
         source: Box::new(source),
-    })
+    })?;
+    config::validate_tags(&template.tags).map_err(|message| Error::ConfigInvalid {
+        path: path.to_owned(),
+        message,
+    })?;
+    Ok(template)
 }
 
 #[cfg(test)]
@@ -308,6 +322,27 @@ mod tests {
         assert_eq!(full.arch, Some(Arch::Win32));
         assert_eq!(full.dxvk.as_deref(), Some("2.7"));
         assert_eq!(full.env["DXVK_HUD"], "fps");
+    }
+
+    #[test]
+    fn template_tags_are_validated_and_applied() {
+        let root = tempfile::tempdir().unwrap();
+        write(root.path(), "good", "tags = ['game', 'co-op']\n");
+        let template = templates(root.path()).resolve("good").unwrap();
+        assert_eq!(template.tags, ["game", "co-op"]);
+        let mut doc: DocumentMut = "kind = 'native'\n".parse().unwrap();
+        template.apply(&mut doc);
+        let config =
+            config::EnvironmentConfig::parse(Path::new("/native.toml"), &doc.to_string()).unwrap();
+        assert_eq!(config.tags, ["game", "co-op"]);
+
+        for tags in ["['co op']", "['game', 'game']"] {
+            write(root.path(), "bad", &format!("tags = {tags}\n"));
+            assert!(matches!(
+                templates(root.path()).resolve("bad"),
+                Err(Error::ConfigInvalid { .. })
+            ));
+        }
     }
 
     #[test]

@@ -59,7 +59,7 @@ fn running(paths: &Paths, json_output: bool) -> anyhow::Result<ExitCode> {
     let tz = TimeZone::system();
     // Something holding an environment is happening now too, and so may be
     // whatever an unresolved installer left, so both show up here.
-    let gathered = table::gather(paths, now, &tz, |status, held| {
+    let gathered = table::gather(paths, now, &tz, None, |status, held| {
         status.state == State::Running || held
     })?;
     if json_output {
@@ -112,6 +112,9 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
     }
     if let Some(prefix) = &report.prefix {
         lines.push(label_line("prefix", prefix));
+    }
+    if !report.tags.is_empty() {
+        lines.push(label_line("tags", &report.tags.join(", ")));
     }
     if report.gamemode {
         lines.push(label_line("gamemode", "on"));
@@ -311,6 +314,7 @@ mod tests {
     fn report(status: wineo_core::runtime::Status) -> EnvironmentReport {
         EnvironmentReport {
             name: "notepad".to_owned(),
+            tags: Vec::new(),
             status,
             native: false,
             runner: Some("wine".to_owned()),

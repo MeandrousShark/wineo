@@ -17,30 +17,10 @@ use crate::prompt::{Choice, Input, Picked, Prompt, Reply, numbered};
 
 /// Why `answer` can't be a name, or None when it can.
 pub fn name_problem(answer: &str) -> Option<String> {
-    if name::is_valid(answer) {
-        return None;
-    }
     if answer.is_empty() {
         return Some("Enter a name.".to_owned());
     }
-    let mut found: Vec<String> = Vec::new();
-    for char in answer.chars() {
-        if char.is_ascii_alphanumeric() || char == '-' || char == '_' {
-            continue;
-        }
-        let shown = if char == ' ' {
-            "spaces".to_owned()
-        } else {
-            format!("`{char}`")
-        };
-        if !found.contains(&shown) {
-            found.push(shown);
-        }
-    }
-    Some(format!(
-        "Invalid input: {} not allowed.",
-        found.join(" and ")
-    ))
+    name::problem(answer).map(|reason| format!("Invalid input: {reason}."))
 }
 
 /// A path as typed or pasted, which may come wrapped in quotes or with the

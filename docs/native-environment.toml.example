@@ -9,6 +9,9 @@ schema_version = 1
 # runner, arch, gameid, store, dxvk, vkd3d, and wayland are refused.
 kind = "native"
 
+# Tags for filtering with `wineo list --tag`. Default: none.
+# tags = ["game", "co-op"]
+
 # Run under gamemode. Default: the global setting.
 # gamemode = true
 

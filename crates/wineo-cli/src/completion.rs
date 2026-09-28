@@ -48,6 +48,22 @@ pub fn environments(current: &OsStr) -> Vec<CompletionCandidate> {
         .collect()
 }
 
+pub fn tags(current: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(prefix) = current.to_str() else {
+        return Vec::new();
+    };
+    let (portable, _) = split_portable(words_before_current());
+    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
+        return Vec::new();
+    };
+    environment::tags(&paths)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|tag| tag.starts_with(prefix))
+        .map(CompletionCandidate::new)
+        .collect()
+}
+
 pub fn targets(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(prefix) = current.to_str() else {
         return Vec::new();

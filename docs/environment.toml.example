@@ -18,6 +18,9 @@ runner = "GE-Proton-Latest"
 # Required. `win64` or `win32`. Proton is always win64.
 arch = "win64"
 
+# Tags for filtering with `wineo list --tag`. Default: none.
+# tags = ["game", "co-op"]
+
 # Run under gamemode. Default: the global setting.
 # gamemode = true
 

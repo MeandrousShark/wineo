@@ -68,6 +68,30 @@ fn fixture(root: &Path) {
 }
 
 #[test]
+fn list_tag_completion_is_sorted_deduplicated_and_skips_broken_configs() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(
+        root.path(),
+        "one",
+        "kind = 'native'\ntags = ['work', 'game']\n",
+    );
+    write_environment(
+        root.path(),
+        "two",
+        "kind = 'native'\ntags = ['game', 'co-op']\n",
+    );
+    write_environment(root.path(), "broken", "not valid toml");
+    assert_eq!(
+        complete(root.path(), "fish", &["wineo", "list", "--tag", ""]),
+        ["co-op", "game", "work"]
+    );
+    assert_eq!(
+        complete(root.path(), "fish", &["wineo", "list", "--tag", "ga"]),
+        ["game"]
+    );
+}
+
+#[test]
 fn trash_ids_complete_for_restore_and_prune() {
     let root = tempfile::tempdir().unwrap();
     write_environment(root.path(), "game", "kind = 'native'\n");

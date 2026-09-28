@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
@@ -384,6 +385,17 @@ pub fn names(paths: &Paths) -> Result<Vec<String>> {
     }
     names.sort();
     Ok(names)
+}
+
+/// Distinct tags from readable environments, sorted for completion.
+pub fn tags(paths: &Paths) -> Result<Vec<String>> {
+    let mut tags = BTreeSet::new();
+    for name in names(paths)? {
+        if let Ok(environment) = Environment::load(paths, &name) {
+            tags.extend(environment.config.tags);
+        }
+    }
+    Ok(tags.into_iter().collect())
 }
 
 /// What else refers to a prefix. An environment whose config can't be read

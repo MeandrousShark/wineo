@@ -33,6 +33,7 @@ impl<'a> From<&'a RunState> for RunOutput<'a> {
 #[derive(Serialize)]
 pub struct StatusOutput<'a> {
     name: &'a str,
+    tags: &'a [String],
     state: State,
     lost: bool,
     busy: Option<Operation>,
@@ -46,9 +47,11 @@ impl<'a> StatusOutput<'a> {
         status: &'a Status,
         busy: Option<Operation>,
         unresolved: bool,
+        tags: &'a [String],
     ) -> Self {
         Self {
             name,
+            tags,
             state: status.state,
             lost: status.lost,
             busy,
@@ -105,7 +108,13 @@ impl From<&Played> for PlayedOutput {
 impl<'a> NamedOutput<'a> {
     pub fn new(report: &'a EnvironmentReport, configured_runner: Option<&'a str>) -> Self {
         Self {
-            status: StatusOutput::new(&report.name, &report.status, report.busy, report.unresolved),
+            status: StatusOutput::new(
+                &report.name,
+                &report.status,
+                report.busy,
+                report.unresolved,
+                &report.tags,
+            ),
             kind: if report.native { "native" } else { "wine" },
             runner: configured_runner.map(|configured| RunnerOutput {
                 configured,

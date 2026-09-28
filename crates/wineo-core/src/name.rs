@@ -7,6 +7,31 @@ pub fn is_valid(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// Describes characters that cannot appear in an environment name or tag.
+pub fn problem(name: &str) -> Option<String> {
+    if is_valid(name) {
+        return None;
+    }
+    if name.is_empty() {
+        return Some("can't be empty".to_owned());
+    }
+    let mut found: Vec<String> = Vec::new();
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+            continue;
+        }
+        let shown = if character == ' ' {
+            "spaces".to_owned()
+        } else {
+            format!("`{character}`")
+        };
+        if !found.contains(&shown) {
+            found.push(shown);
+        }
+    }
+    Some(format!("{} not allowed", found.join(" and ")))
+}
+
 /// Runner names are directory names and config values, never dotted config
 /// keys, so unlike environment names they may contain dots. A leading dot is
 /// not allowed, which rules out `.`, `..`, and half-finished extractions.

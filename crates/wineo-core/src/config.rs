@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -123,6 +123,7 @@ pub struct EnvironmentConfig {
     /// The Heroic game id this environment was imported from. Only Heroic
     /// imports set this; older configs load fine without it.
     pub heroic_id: Option<String>,
+    pub tags: Vec<String>,
     pub env: BTreeMap<String, String>,
     pub targets: BTreeMap<String, Target>,
 }
@@ -177,6 +178,8 @@ struct RawEnvironmentConfig {
     vkd3d: Option<String>,
     heroic_id: Option<String>,
     #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
     env: BTreeMap<String, String>,
     #[serde(default)]
     targets: BTreeMap<String, Target>,
@@ -230,6 +233,7 @@ impl RawEnvironmentConfig {
             mangohud: self.mangohud,
             gamescope: self.gamescope,
             heroic_id: self.heroic_id,
+            tags: self.tags,
             env: self.env,
             targets: self.targets,
         })
@@ -386,6 +390,7 @@ impl EnvironmentConfig {
     }
 
     fn validate(&self) -> Result<(), String> {
+        validate_tags(&self.tags)?;
         // Only wine reads WINEPREFIX, so a native program may have its own.
         match self.kind {
             Kind::Wine(_) => validate_env(&self.env)?,
@@ -410,6 +415,19 @@ impl EnvironmentConfig {
         }
         Ok(())
     }
+}
+
+pub fn validate_tags(tags: &[String]) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for tag in tags {
+        if let Some(reason) = name::problem(tag) {
+            return Err(format!("Invalid tag {tag:?}: {reason}."));
+        }
+        if !seen.insert(tag) {
+            return Err(format!("Duplicate tag {tag:?}."));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -614,6 +632,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.heroic_id.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn tags_parse_for_wine_and_native_environments() {
+        let wine = environment(
+            "prefix = '/p'\nrunner = 'wine'\narch = 'win64'\ntags = ['game', 'co-op']\n",
+        )
+        .unwrap();
+        assert_eq!(wine.tags, ["game", "co-op"]);
+        assert!(
+            environment("prefix = '/p'\nrunner = 'wine'\narch = 'win64'\n")
+                .unwrap()
+                .tags
+                .is_empty()
+        );
+        let native = environment("kind = 'native'\ntags = ['work']\n").unwrap();
+        assert_eq!(native.tags, ["work"]);
+    }
+
+    #[test]
+    fn tags_reject_bad_characters_and_duplicates() {
+        for (tags, expected) in [
+            ("['co op']", "Invalid tag \"co op\": spaces not allowed."),
+            ("['game!']", "Invalid tag \"game!\": `!` not allowed."),
+            ("['']", "Invalid tag \"\": can't be empty."),
+            ("['game', 'game']", "Duplicate tag \"game\"."),
+        ] {
+            let err = environment(&format!("kind = 'native'\ntags = {tags}\n")).unwrap_err();
+            assert!(err.to_string().contains(expected), "{err}");
+        }
+        assert!(matches!(
+            environment("kind = 'native'\ntags = [1]\n"),
+            Err(Error::ConfigSyntax { .. })
+        ));
     }
 
     #[test]

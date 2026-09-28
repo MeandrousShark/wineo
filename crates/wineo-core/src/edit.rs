@@ -21,6 +21,8 @@ pub enum EditError {
     InvalidValue { key: String, reason: String },
     #[error("`{key}` can't be changed: {reason}")]
     ReadOnly { key: String, reason: String },
+    #[error("{0}")]
+    InvalidTag(String),
 }
 
 /// Splits `key=value` at the first `=`.
@@ -64,6 +66,18 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
             Ok(())
         }
         "gamescope" => set_gamescope(root, key, raw),
+        "tags" => {
+            let value = parse_args_value(key, raw)?;
+            let tags: Vec<String> = value
+                .as_array()
+                .expect("parse_args_value returns an array")
+                .iter()
+                .map(|item| item.as_str().expect("array of strings").to_owned())
+                .collect();
+            crate::config::validate_tags(&tags).map_err(EditError::InvalidTag)?;
+            store_value(root, key, value);
+            Ok(())
+        }
         "arch" => Err(read_only_arch()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
@@ -321,7 +335,7 @@ fn unset_gamescope_field(root: &mut Table, key: &str, field: &str) -> Result<boo
 fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
         "prefix" | "runner" | "gamemode" | "wayland" | "mangohud" | "gamescope" | "gameid"
-        | "store" | "dxvk" | "vkd3d" => Ok(root.remove(key).is_some()),
+        | "tags" | "store" | "dxvk" | "vkd3d" => Ok(root.remove(key).is_some()),
         "arch" => Err(read_only_arch()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
@@ -740,6 +754,36 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, EditError::InvalidValue { key, .. } if key == "targets.bridge.args"));
+    }
+
+    #[test]
+    fn tags_set_and_unset_preserve_other_comments() {
+        let mut doc = parse("# mine\nkind = 'native' # keep\n");
+        set(&mut doc, Scope::Environment, "tags", r#"["game", "co-op"]"#).unwrap();
+        assert_eq!(
+            doc.to_string(),
+            "# mine\nkind = 'native' # keep\ntags = [\"game\", \"co-op\"]\n"
+        );
+        assert!(unset(&mut doc, Scope::Environment, "tags").unwrap());
+        assert_eq!(doc.to_string(), "# mine\nkind = 'native' # keep\n");
+        assert!(!unset(&mut doc, Scope::Environment, "tags").unwrap());
+        set(&mut doc, Scope::Environment, "tags", "[]").unwrap();
+        assert!(doc.to_string().contains("tags = []\n"));
+    }
+
+    #[test]
+    fn tags_set_rejects_invalid_values_without_editing() {
+        let mut doc = parse("kind = 'native'\n");
+        for (value, expected) in [
+            ("5", "expected an array of strings"),
+            ("[5]", "array items must be strings"),
+            ("['co op']", "Invalid tag \"co op\": spaces not allowed."),
+            ("['game', 'game']", "Duplicate tag \"game\"."),
+        ] {
+            let err = set(&mut doc, Scope::Environment, "tags", value).unwrap_err();
+            assert!(err.to_string().contains(expected), "{err}");
+            assert_eq!(doc.to_string(), "kind = 'native'\n");
+        }
     }
 
     // -- set: bool parsing --

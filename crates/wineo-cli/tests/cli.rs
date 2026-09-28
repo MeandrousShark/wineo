@@ -648,6 +648,7 @@ fn json_collections_are_sorted_and_keep_broken_configs() {
     assert_eq!(value["environments"][1]["name"], "broken");
     assert_eq!(value["environments"][1]["state"], "inactive");
     assert_eq!(value["environments"][1]["run"], serde_json::Value::Null);
+    assert_eq!(value["environments"][1]["tags"], serde_json::json!([]));
     assert_eq!(value["environments"][2]["state"], "running");
     assert_eq!(value["environments"][2]["run"]["mode"], "attached");
     assert_eq!(value["environments"][2]["run"]["pid"], 1234);
@@ -664,6 +665,143 @@ fn json_collections_are_sorted_and_keep_broken_configs() {
     assert_eq!(value["environments"].as_array().unwrap().len(), 1);
     assert_eq!(value["environments"][0]["name"], "zulu");
     assert_eq!(value["errors"], serde_json::json!([]));
+}
+
+#[test]
+fn list_filters_tags_with_and_and_reports_no_match() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(
+        root.path(),
+        "game",
+        "kind = 'native'\ntags = ['game', 'co-op']\n",
+    );
+    write_environment(root.path(), "solo", "kind = 'native'\ntags = ['game']\n");
+    write_environment(root.path(), "work", "kind = 'native'\ntags = ['work']\n");
+
+    let one = output(wineo(root.path()).args(["list", "--tag", "game"]));
+    assert!(one.status.success(), "{}", stderr(&one));
+    assert_eq!(stdout(&one).lines().count(), 2);
+    assert!(stdout(&one).contains("game"));
+    assert!(stdout(&one).contains("solo"));
+    assert!(!stdout(&one).contains("work"));
+
+    let both =
+        output(wineo(root.path()).args(["list", "--tag", "game", "--tag", "co-op", "--json"]));
+    assert!(both.status.success(), "{}", stderr(&both));
+    let json = parsed_json(&both);
+    assert_eq!(json["environments"].as_array().unwrap().len(), 1);
+    assert_eq!(json["environments"][0]["name"], "game");
+    assert_eq!(
+        json["environments"][0]["tags"],
+        serde_json::json!(["game", "co-op"])
+    );
+
+    let missing = output(wineo(root.path()).args(["list", "--tag", "game", "--tag", "rpg"]));
+    assert!(missing.status.success(), "{}", stderr(&missing));
+    assert_eq!(
+        stdout(&missing),
+        "No environments are tagged game and rpg\n"
+    );
+    let case_sensitive = output(wineo(root.path()).args(["list", "--tag", "Game"]));
+    assert!(
+        case_sensitive.status.success(),
+        "{}",
+        stderr(&case_sensitive)
+    );
+    assert_eq!(stdout(&case_sensitive), "No environments are tagged Game\n");
+    let missing_json = output(wineo(root.path()).args(["list", "--tag", "rpg", "--json"]));
+    assert!(missing_json.status.success(), "{}", stderr(&missing_json));
+    let json = parsed_json(&missing_json);
+    assert_eq!(json["environments"], serde_json::json!([]));
+    assert_eq!(json["errors"], serde_json::json!([]));
+}
+
+#[test]
+fn tag_filter_reports_broken_configs_but_unfiltered_list_keeps_them() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "broken", "not valid toml");
+    write_environment(root.path(), "game", "kind = 'native'\ntags = ['game']\n");
+    let all = output(wineo(root.path()).args(["list", "--json"]));
+    assert!(all.status.success(), "{}", stderr(&all));
+    let json = parsed_json(&all);
+    assert_eq!(json["errors"], serde_json::json!([]));
+    assert_eq!(json["environments"].as_array().unwrap().len(), 2);
+    assert_eq!(json["environments"][0]["tags"], serde_json::json!([]));
+
+    let filtered = output(wineo(root.path()).args(["list", "--tag", "game", "--json"]));
+    assert!(!filtered.status.success());
+    assert!(stderr(&filtered).is_empty());
+    let json = parsed_json(&filtered);
+    assert_eq!(json["environments"].as_array().unwrap().len(), 1);
+    assert_eq!(json["environments"][0]["name"], "game");
+    assert_eq!(json["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(json["errors"][0]["name"], "broken");
+    assert!(
+        json["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("broken.toml")
+    );
+}
+
+#[test]
+fn unnamed_status_keeps_a_busy_environment_with_broken_config() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "broken", "not valid toml");
+    let runtime = runtime(root.path(), "broken");
+    let _lock = runtime.try_lock().unwrap().unwrap();
+    let status = output(wineo(root.path()).args(["status", "--json"]));
+    assert!(status.status.success(), "{}", stderr(&status));
+    let json = parsed_json(&status);
+    assert_eq!(json["errors"], serde_json::json!([]));
+    assert_eq!(json["environments"].as_array().unwrap().len(), 1);
+    assert_eq!(json["environments"][0]["name"], "broken");
+    assert_eq!(json["environments"][0]["tags"], serde_json::json!([]));
+}
+
+#[test]
+fn status_shows_tags_only_when_present_and_json_always_has_them() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(
+        root.path(),
+        "game",
+        "kind = 'native'\ntags = ['game', 'co-op']\n",
+    );
+    write_environment(root.path(), "plain", "kind = 'native'\n");
+    let tagged = output(wineo(root.path()).args(["status", "game"]));
+    assert!(tagged.status.success(), "{}", stderr(&tagged));
+    assert!(
+        stdout(&tagged).contains("  tags       game, co-op\n"),
+        "{}",
+        stdout(&tagged)
+    );
+    let plain = output(wineo(root.path()).args(["status", "plain"]));
+    assert!(plain.status.success(), "{}", stderr(&plain));
+    assert!(!stdout(&plain).contains("tags"));
+    for (name, tags) in [
+        ("game", serde_json::json!(["game", "co-op"])),
+        ("plain", serde_json::json!([])),
+    ] {
+        let out = output(wineo(root.path()).args(["status", name, "--json"]));
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(parsed_json(&out)["tags"], tags);
+    }
+}
+
+#[test]
+fn reading_and_setting_unchanged_tags_do_not_rewrite_a_config() {
+    let root = tempfile::tempdir().unwrap();
+    let text = "# mine\nkind = 'native'\ntags = ['game']\n";
+    let path = write_environment(root.path(), "game", text);
+    let before = fs::metadata(&path).unwrap().modified().unwrap();
+    let listed = output(wineo(root.path()).args(["list", "--json"]));
+    assert!(listed.status.success(), "{}", stderr(&listed));
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+    let set = output(wineo(root.path()).args(["set", "game", "tags=['game']"]));
+    assert!(set.status.success(), "{}", stderr(&set));
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
 }
 
 #[test]

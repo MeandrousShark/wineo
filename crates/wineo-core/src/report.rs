@@ -19,6 +19,7 @@ use crate::stats;
 #[derive(Debug, Clone, Serialize)]
 pub struct EnvironmentReport {
     pub name: String,
+    pub tags: Vec<String>,
     pub status: Status,
     /// A native environment, which has no runner or prefix.
     pub native: bool,
@@ -133,6 +134,7 @@ impl EnvironmentReport {
             mangohud: crate::launch::mangohud(global, environment, target),
             wayland: crate::launch::wayland(global, environment, target),
             name: environment.name.clone(),
+            tags: environment.config.tags.clone(),
             native: wine.is_none(),
             runner: runner_name,
             runner_resolved,

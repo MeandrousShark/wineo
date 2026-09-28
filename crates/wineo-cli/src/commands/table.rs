@@ -1,6 +1,6 @@
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
-use wineo_core::environment;
+use wineo_core::environment::{self, Environment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::report;
@@ -18,6 +18,7 @@ pub struct Row {
     status: Status,
     busy: Option<Operation>,
     unresolved: bool,
+    tags: Vec<String>,
 }
 
 impl Row {
@@ -26,6 +27,7 @@ impl Row {
         status: &Status,
         busy: Option<Operation>,
         unresolved: bool,
+        tags: &[String],
         now: Timestamp,
         tz: &TimeZone,
     ) -> Self {
@@ -46,6 +48,7 @@ impl Row {
             status: status.clone(),
             busy,
             unresolved,
+            tags: tags.to_vec(),
         }
     }
 }
@@ -71,7 +74,9 @@ impl Gathered {
             environments: self
                 .rows
                 .iter()
-                .map(|row| StatusOutput::new(&row.name, &row.status, row.busy, row.unresolved))
+                .map(|row| {
+                    StatusOutput::new(&row.name, &row.status, row.busy, row.unresolved, &row.tags)
+                })
                 .collect(),
             errors: &self.errors,
         }
@@ -98,13 +103,13 @@ fn time_column(status: &Status, now: Timestamp, tz: &TimeZone) -> String {
 }
 
 /// Gathers a row for every environment name, keeping only the ones `keep`
-/// accepts, which is also told whether an operation holds the environment or
-/// an installer left it unresolved. Errors reading one environment's status
-/// are skipped and reported back so the caller can show the available rows.
+/// accepts. A tag filter requires a readable config; otherwise unreadable
+/// configs still appear with empty tags, as they did before tags were added.
 pub fn gather(
     paths: &Paths,
     now: Timestamp,
     tz: &TimeZone,
+    tags: Option<&[String]>,
     mut keep: impl FnMut(&Status, bool) -> bool,
 ) -> anyhow::Result<Gathered> {
     let locks = Locks::new(paths);
@@ -115,7 +120,30 @@ pub fn gather(
         let unresolved = busy.is_none() && report::unresolved(paths, &name);
         match Runtime::new(paths, &name).status() {
             Ok(status) if keep(&status, busy.is_some() || unresolved) => {
-                rows.push(Row::new(&name, &status, busy, unresolved, now, tz));
+                let config = Environment::load(paths, &name);
+                match config {
+                    Ok(environment) => {
+                        let environment_tags = &environment.config.tags;
+                        if tags.is_none_or(|filter| {
+                            filter.iter().all(|tag| environment_tags.contains(tag))
+                        }) {
+                            rows.push(Row::new(
+                                &name,
+                                &status,
+                                busy,
+                                unresolved,
+                                environment_tags,
+                                now,
+                                tz,
+                            ));
+                        }
+                    }
+                    Err(err) if tags.is_some() => errors.push(CollectionError {
+                        name,
+                        message: format!("{:#}", anyhow::Error::from(err)),
+                    }),
+                    Err(_) => rows.push(Row::new(&name, &status, busy, unresolved, &[], now, tz)),
+                }
             }
             Ok(_) => {}
             Err(err) => {
@@ -260,6 +288,7 @@ mod tests {
                 },
                 busy: None,
                 unresolved: false,
+                tags: Vec::new(),
             },
             Row {
                 name: "photoshop".to_owned(),
@@ -273,6 +302,7 @@ mod tests {
                 },
                 busy: None,
                 unresolved: false,
+                tags: Vec::new(),
             },
             Row {
                 name: "winecfg".to_owned(),
@@ -286,6 +316,7 @@ mod tests {
                 },
                 busy: None,
                 unresolved: false,
+                tags: Vec::new(),
             },
         ];
         assert_eq!(
