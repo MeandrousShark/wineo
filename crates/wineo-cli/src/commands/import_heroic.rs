@@ -15,8 +15,8 @@ use wineo_core::heroic_import::{
     self, COVERED_BY_PROTON, DesktopEntry, Entry, Game, GamePlan, InputKind, LibraryOptions,
     LibraryPlan, MissingBuild, Options, Playtime, Policy, Registered, RunnerCopy, RunnerSuggestion,
     SkipReason, Warning, apply, blocker, inspect_copyable_runner, is_dropped_conflict, listing,
-    plan_library, redact_env_value, runner_dependency_lines, shared_prefix_lines, suggest_runner,
-    write_import_log,
+    plan_game, plan_library, redact_env_value, runner_dependency_lines, shared_prefix_lines,
+    suggest_runner, write_import_log,
 };
 use wineo_core::import::{self, ExternalDependency};
 use wineo_core::paths::Paths;
@@ -210,15 +210,13 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
     if !needs_guided {
         let source = source(paths, args.config_dir.as_deref())?;
         let game_id = args.game.as_deref().unwrap();
-        let imported = source.inspect(game_id)?;
-        let shared = source.shared_prefix_candidates(game_id)?;
         let name = args.name.clone().unwrap();
         let runner_name = args.runner.clone().unwrap();
-        let mut plan = GamePlan::new(
+        let mut plan = plan_game(
             paths,
             &global,
-            imported,
-            shared,
+            &source,
+            game_id,
             &runner_name,
             plan_options(paths, &args, Some(name))?,
         )?;
@@ -2197,31 +2195,6 @@ fn print_log_path(paths: &Paths, name: &str, body: &str) {
     match write_import_log(paths, name, body) {
         Ok(path) => println!("Import log: {}", style::path(paths, &path)),
         Err(error) => eprintln!("warning: could not write the import log: {error:#}"),
-    }
-}
-
-/// Carries `game_id`'s Heroic playtime into `name`'s new play log, if Heroic
-/// ever played it. Never fails the import: a game worth playing is worth
-/// importing even if its history can't be.
-pub(crate) fn import_playtime(paths: &Paths, source: &HeroicSource, game_id: &str, name: &str) {
-    match source.playtime(game_id) {
-        Ok(Some(playtime)) => {
-            let imported = wineo_core::stats::Imported {
-                seconds: playtime.seconds,
-                last_played: playtime.last_played,
-            };
-            if let Err(error) = wineo_core::stats::set_imported(paths, name, imported) {
-                eprintln!(
-                    "warning: could not import playtime from Heroic: {:#}",
-                    anyhow::Error::from(error)
-                );
-            }
-        }
-        Ok(None) => {}
-        Err(error) => eprintln!(
-            "warning: could not read Heroic's playtime: {:#}",
-            anyhow::Error::from(error)
-        ),
     }
 }
 

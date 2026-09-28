@@ -2,17 +2,12 @@
 //! is no prefix or runner, so this skips everything about them and ignores
 //! the Wine settings Heroic keeps for native games too.
 
-use std::collections::BTreeMap;
 use std::io::{self, Write};
-use std::path::Path;
 use std::process::ExitCode;
 
-use wineo_core::config::{GlobalConfig, Target};
-use wineo_core::error::Error;
+use wineo_core::config::GlobalConfig;
 use wineo_core::heroic::{HeroicCandidate, HeroicIssueKind, HeroicNativeImport, HeroicSource};
-use wineo_core::heroic_import::{DesktopEntry, NativePlan, default_name, redact_env_value};
-use wineo_core::import::{self, ImportedSettings};
-use wineo_core::launch;
+use wineo_core::heroic_import::{NativePlan, apply_native, plan_native, redact_env_value};
 use wineo_core::paths::Paths;
 
 use super::{
@@ -20,31 +15,10 @@ use super::{
     gamescope_display, on_off, print_issue, render_blocks, review_art,
 };
 use crate::commands::art::{Access, Pick};
-use crate::commands::desktop;
 use crate::commands::import::finish_guided;
 use crate::picker;
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
 use crate::style;
-
-/// The target a native import gets.
-const TARGET: &str = "game";
-
-/// Why a native game's exe can't be run, checked the way a launch resolves it.
-fn exe_problem(
-    paths: &Paths,
-    global: &GlobalConfig,
-    name: &str,
-    env: &BTreeMap<String, String>,
-    exe: &Path,
-) -> Option<String> {
-    match launch::check_native_exe(paths, global, name, env, &exe.to_string_lossy()) {
-        Ok(_) => None,
-        Err(Error::ExeNotFound(_) | Error::NotOnPath(_)) => {
-            Some(format!("executable not found: {}", exe.display()))
-        }
-        Err(err) => Some(err.to_string()),
-    }
-}
 
 /// Refuses the flags that only mean something for a Windows game.
 fn refuse_wine_flags(args: &Args, title: &str) -> anyhow::Result<()> {
@@ -60,51 +34,6 @@ fn refuse_wine_flags(args: &Args, title: &str) -> anyhow::Result<()> {
         return Ok(());
     };
     anyhow::bail!("{title} is a native game, so {flag} can't be used")
-}
-
-/// A launcher argument string that can't be parsed is refused rather than
-/// guessed at, and so is anything else Heroic stored wrong.
-fn reject_invalid(imported: &HeroicNativeImport) -> anyhow::Result<()> {
-    if let Some(issue) = imported
-        .issues
-        .iter()
-        .find(|issue| issue.kind == HeroicIssueKind::Invalid)
-    {
-        anyhow::bail!("{}", issue.message);
-    }
-    Ok(())
-}
-
-fn ensure_unchanged(source: &HeroicSource, imported: &HeroicNativeImport) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        source.unchanged(&imported.id, &imported.fingerprint)?,
-        "Heroic settings changed while they were being reviewed; inspect the game again"
-    );
-    Ok(())
-}
-
-fn settings(imported: &HeroicNativeImport, desktop: &DesktopEntry) -> ImportedSettings {
-    let target = Target {
-        exe: imported.exe.to_string_lossy().into_owned(),
-        args: imported.args.clone(),
-        cwd: None,
-        default: true,
-        gamemode: None,
-        wayland: None,
-        mangohud: None,
-        gamescope: None,
-        desktop: desktop.enabled,
-        name: desktop.enabled.then(|| desktop.name.clone()),
-    };
-    ImportedSettings {
-        targets: BTreeMap::from([(TARGET.to_owned(), target)]),
-        env: imported.env.clone(),
-        gamemode: imported.gamemode,
-        mangohud: imported.mangohud,
-        gamescope: imported.gamescope.clone(),
-        heroic_id: Some(imported.id.clone()),
-        ..ImportedSettings::default()
-    }
 }
 
 /// The game as it will be imported, with what Heroic had that isn't.
@@ -189,27 +118,22 @@ pub(super) fn direct(
 ) -> anyhow::Result<ExitCode> {
     let game = args.game.as_deref().expect("checked by the caller");
     let name = args.name.clone().expect("checked by the caller");
-    let imported = source.inspect_native(game)?;
-    refuse_wine_flags(args, &imported.title)?;
-    reject_invalid(&imported)?;
-    if let Some(problem) = exe_problem(paths, global, &name, &imported.env, &imported.exe) {
-        anyhow::bail!("{problem}");
-    }
-    let desktop_choice = DesktopEntry {
-        enabled: args.desktop,
-        name: imported.title.clone(),
-    };
+    let mut plan = plan_native(source, game, Some(name))?;
+    refuse_wine_flags(args, &plan.heroic().title)?;
+    plan.reject_invalid()?;
+    plan.check_exe(paths, global)?;
+    plan.set_desktop_enabled(args.desktop);
     let art = if args.art {
         let check = (access.check_key)();
         check.print_skip();
-        ArtChoice::checked(check, &imported.title)
+        ArtChoice::checked(check, &plan.heroic().title)
     } else {
         ArtChoice::off()
     };
-    println!("{}", summary(paths, &imported, &name));
-    ensure_unchanged(source, &imported)?;
-    let environment = import::register_native(paths, &name, &settings(&imported, &desktop_choice))?;
-    super::import_playtime(paths, source, &imported.id, &environment.name);
+    println!("{}", summary(paths, plan.resolved(), plan.name()));
+    let registered = apply_native(paths, source, &plan)?;
+    super::report_playtime(&registered.playtime);
+    let environment = &registered.environment;
     let mut prompt = (art.enabled && prompt::interactive())
         .then(|| Terminal::open().ok())
         .flatten()
@@ -229,7 +153,7 @@ pub(super) fn direct(
         &mut io::stderr(),
     );
     drop(prompt);
-    desktop::reconcile_native(paths, global, &environment)?;
+    super::finish_registered(paths, global, &registered)?;
     if fetched.is_err() {
         let name = &environment.name;
         eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
@@ -260,11 +184,11 @@ pub(super) fn guided<I: Input, W: Write>(
     args: &Args,
     prompt: &mut Prompt<I, W>,
 ) -> anyhow::Result<ExitCode> {
-    let mut imported = source.inspect_native(&candidate.id)?;
-    refuse_wine_flags(args, &imported.title)?;
-    reject_invalid(&imported)?;
-    let suggested = default_name(&imported.title, Some(&imported.exe));
-    let mut name = match prompt.text(
+    let mut plan = plan_native(source, &candidate.id, None)?;
+    refuse_wine_flags(args, &plan.heroic().title)?;
+    plan.reject_invalid()?;
+    let suggested = plan.name().to_owned();
+    let name = match prompt.text(
         "Environment name",
         Some(args.name.as_deref().unwrap_or(&suggested)),
         |value| picker::name_problem(value).map_or_else(|| Ok(value.to_owned()), Err),
@@ -272,23 +196,21 @@ pub(super) fn guided<I: Input, W: Write>(
         Reply::Value(value) => value,
         Reply::Back => return Ok(ExitCode::SUCCESS),
     };
-    let mut desktop_choice = DesktopEntry {
-        enabled: paths.portable_root().is_none(),
-        name: imported.title.clone(),
-    };
-    let mut art = review_art(access, prompt, &imported.title)?;
+    plan.set_name(&name)?;
+    plan.set_desktop_enabled(paths.portable_root().is_none());
+    let mut art = review_art(access, prompt, &plan.heroic().title)?;
     loop {
-        let heading = format!("{}\n", summary(paths, &imported, &name));
+        let heading = format!("{}\n", summary(paths, plan.resolved(), plan.name()));
         let mut items = vec![
-            ("name", name.clone(), Field::Name),
+            ("name", plan.name().to_owned(), Field::Name),
             (
                 "gamemode",
-                on_off(imported.gamemode.unwrap_or(false)).to_owned(),
+                on_off(plan.resolved().gamemode.unwrap_or(false)).to_owned(),
                 Field::GameMode,
             ),
             (
                 "desktop",
-                if desktop_choice.enabled { "yes" } else { "no" }.to_owned(),
+                if plan.desktop().enabled { "yes" } else { "no" }.to_owned(),
                 Field::Desktop,
             ),
         ];
@@ -309,34 +231,37 @@ pub(super) fn guided<I: Input, W: Write>(
         match prompt.review(&heading, None, "import", &choices, true)? {
             Reply::Value(None) => break,
             Reply::Value(Some(Field::Name)) => {
+                let current = plan.name().to_owned();
                 if let Reply::Value(value) =
-                    prompt.text("Environment name", Some(&name), |value| {
+                    prompt.text("Environment name", Some(&current), |value| {
                         picker::name_problem(value).map_or_else(|| Ok(value.to_owned()), Err)
                     })?
                 {
-                    name = value;
+                    plan.set_name(&value)?;
                 }
             }
             Reply::Value(Some(Field::GameMode)) => {
-                let current = imported.gamemode.unwrap_or(false);
+                let current = plan.resolved().gamemode.unwrap_or(false);
                 if let Reply::Value(value) = prompt.confirm("Enable GameMode?", current)? {
-                    imported.gamemode = Some(value);
+                    plan.set_gamemode(value);
                 }
             }
             Reply::Value(Some(Field::Desktop)) => {
-                desktop_choice =
-                    edit_desktop(paths, &imported.title, desktop_choice.clone(), prompt)?;
+                let title = plan.heroic().title.clone();
+                let edited = edit_desktop(paths, &title, plan.desktop().clone(), prompt)?;
+                plan.set_desktop_enabled(edited.enabled);
+                if edited.enabled {
+                    plan.set_desktop_name(&edited.name)?;
+                }
             }
             Reply::Value(Some(Field::Art)) => edit_art(&mut art, prompt)?,
             Reply::Back => return Err(Canceled.into()),
         }
     }
-    if let Some(problem) = exe_problem(paths, global, &name, &imported.env, &imported.exe) {
-        anyhow::bail!("{problem}");
-    }
-    ensure_unchanged(source, &imported)?;
-    let environment = import::register_native(paths, &name, &settings(&imported, &desktop_choice))?;
-    super::import_playtime(paths, source, &imported.id, &environment.name);
+    plan.check_exe(paths, global)?;
+    let registered = apply_native(paths, source, &plan)?;
+    super::report_playtime(&registered.playtime);
+    let environment = &registered.environment;
     let fetched = fetch_art(
         paths,
         global,
@@ -346,7 +271,7 @@ pub(super) fn guided<I: Input, W: Write>(
         Pick::Ask(prompt),
         &mut io::stderr(),
     );
-    desktop::reconcile_native(paths, global, &environment)?;
+    super::finish_registered(paths, global, &registered)?;
     if fetched.is_err() {
         prompt.say(format!(
             "Kept {}. Continue with `wineo setup {}`",
@@ -354,7 +279,7 @@ pub(super) fn guided<I: Input, W: Write>(
         ))?;
         return Err(Canceled.into());
     }
-    finish_guided(paths, global, &environment, prompt)
+    finish_guided(paths, global, environment, prompt)
 }
 
 /// Imports one native game of `--all`, like `import_one` does a Windows one.
@@ -365,37 +290,36 @@ pub(super) fn import_one(
     err: &mut Vec<u8>,
 ) -> anyhow::Result<()> {
     let (paths, global) = (bulk.paths, bulk.global);
-    let imported = game.heroic();
+    let mut plan = game.clone();
+    plan.set_desktop_enabled(bulk.desktop);
     if bulk.verbose {
         let mut summary_out = Vec::new();
-        writeln!(summary_out, "{}", summary(paths, imported, game.name()))?;
+        writeln!(
+            summary_out,
+            "{}",
+            summary(paths, plan.resolved(), plan.name())
+        )?;
         out.extend(summary_out);
     }
-    let desktop_choice = DesktopEntry {
-        enabled: bulk.desktop,
-        name: imported.title.clone(),
-    };
     let art = ArtChoice {
         key: bulk.art.clone(),
         enabled: bulk.art.is_some(),
-        term: imported.title.clone(),
+        term: plan.heroic().title.clone(),
     };
-    ensure_unchanged(bulk.source, imported)?;
-    let environment =
-        import::register_native(paths, game.name(), &settings(imported, &desktop_choice))?;
-    super::import_playtime(paths, bulk.source, &imported.id, &environment.name);
+    let registered = apply_native(paths, bulk.source, &plan)?;
+    super::report_playtime(&registered.playtime);
     let top = Pick::<OutputOnly, Vec<u8>>::Top(out);
     // A top match can't be canceled.
     let _ = fetch_art(
         paths,
         global,
         bulk.access,
-        &environment.name,
+        &registered.environment.name,
         &art,
         top,
         err,
     );
-    desktop::reconcile_native(paths, global, &environment)?;
+    super::finish_registered(paths, global, &registered)?;
     Ok(())
 }
 
@@ -414,6 +338,7 @@ mod tests {
     use std::cell::Cell;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
 
     use wineo_core::steamgriddb::{Key, KeySource};
 

@@ -201,6 +201,10 @@ pub enum PlanError {
     EnvironmentName(String),
     #[error("{0} is managed by wineo and cannot be imported")]
     ManagedEnvironment(String),
+    /// Something Heroic stored, or the game's exe, keeps it from being
+    /// imported. Holds why.
+    #[error("{0}")]
+    Blocked(String),
     #[error(transparent)]
     Config(#[from] Error),
 }
@@ -222,22 +226,22 @@ pub struct GamePlan {
     desktop: DesktopEntry,
 }
 
-impl GamePlan {
-    /// Inspects `id` and plans it against `runner`, an installed runner name
-    /// or alias.
-    pub fn from_source(
-        paths: &Paths,
-        global: &GlobalConfig,
-        source: &HeroicSource,
-        id: &str,
-        runner: &str,
-        options: Options,
-    ) -> anyhow::Result<Self> {
-        let imported = source.inspect(id)?;
-        let shared = source.shared_prefix_candidates(id)?;
-        Self::new(paths, global, imported, shared, runner, options)
-    }
+/// Inspects the Windows game `id` and plans it against `runner`, an installed
+/// runner name or alias.
+pub fn plan_game(
+    paths: &Paths,
+    global: &GlobalConfig,
+    source: &HeroicSource,
+    id: &str,
+    runner: &str,
+    options: Options,
+) -> anyhow::Result<GamePlan> {
+    let imported = source.inspect(id)?;
+    let shared = source.shared_prefix_candidates(id)?;
+    GamePlan::new(paths, global, imported, shared, runner, options)
+}
 
+impl GamePlan {
     /// Plans a game that was already inspected. This is the one place the
     /// runner pipeline runs: whatever the runner covers or carries over is
     /// settled here, and the rest is left as findings.

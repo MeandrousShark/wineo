@@ -12,16 +12,16 @@ mod native;
 mod plan;
 mod runner;
 
-pub use apply::{ApplyError, Playtime, Registered, apply, write_import_log};
+pub use apply::{ApplyError, Playtime, Registered, apply, apply_native, write_import_log};
 
 pub use library::{
     Backfill, BuildOffer, Entry, Game, LibraryOptions, LibraryPlan, PendingGame, Skipped, blocker,
     default_name, listing, plan_library, sources,
 };
-pub use native::NativePlan;
+pub use native::{NativePlan, plan_native};
 pub use plan::{
     COVERED_BY_PROTON, DesktopEntry, Finding, GamePlan, InputKind, MissingBuild, Options,
-    PlanError, Policy, Resolution, Warning, is_dropped_conflict, redact_env_value,
+    PlanError, Policy, Resolution, Warning, is_dropped_conflict, plan_game, redact_env_value,
     runner_dependency_lines, shared_prefix_lines,
 };
 pub use runner::{RunnerCopy, RunnerSuggestion, inspect_copyable_runner, suggest_runner};

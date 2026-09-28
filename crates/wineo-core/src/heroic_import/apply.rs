@@ -19,7 +19,7 @@ use crate::paths::Paths;
 use crate::runner::Runner;
 use crate::stats;
 
-use super::GamePlan;
+use super::{GamePlan, NativePlan};
 
 /// Why an apply was refused before it wrote anything.
 #[derive(Debug, thiserror::Error)]
@@ -104,6 +104,25 @@ pub fn apply(
     })
 }
 
+/// Registers `plan` as a native environment, which has no prefix, and carries
+/// over Heroic's playtime. Refuses when Heroic's settings changed since the game
+/// was inspected.
+pub fn apply_native(
+    paths: &Paths,
+    source: &HeroicSource,
+    plan: &NativePlan,
+) -> anyhow::Result<Registered> {
+    ensure_unchanged(source, &plan.heroic().id, &plan.heroic().fingerprint)?;
+    let environment = import::register_native(paths, plan.name(), &plan.settings())?;
+    let playtime = import_playtime(paths, source, &plan.heroic().id, &environment.name);
+    Ok(Registered {
+        environment,
+        playtime,
+        runner: None,
+        destination: None,
+    })
+}
+
 pub(super) fn ensure_unchanged(
     source: &HeroicSource,
     id: &str,
@@ -170,8 +189,8 @@ mod tests {
 
     use super::*;
     use crate::config::Defaults;
-    use crate::heroic_import::Options;
     use crate::heroic_import::plan::tests::{fake_wine_runner, paths};
+    use crate::heroic_import::{Options, plan_game};
 
     /// A Heroic config with one sideloaded game, Alpha, whose prefix is
     /// `root/heroic-prefix`, and a fake wine runner named `fake`.
@@ -221,7 +240,7 @@ mod tests {
     }
 
     fn plan(paths: &Paths, global: &GlobalConfig, source: &HeroicSource) -> GamePlan {
-        GamePlan::from_source(paths, global, source, "a", "fake", Options::default()).unwrap()
+        plan_game(paths, global, source, "a", "fake", Options::default()).unwrap()
     }
 
     #[test]
@@ -275,7 +294,7 @@ mod tests {
     fn apply_can_adopt_and_leaves_the_prefix_where_it_is() {
         let root = tempdir().unwrap();
         let (paths, global, source) = library(root.path());
-        let plan = GamePlan::from_source(
+        let plan = plan_game(
             &paths,
             &global,
             &source,
