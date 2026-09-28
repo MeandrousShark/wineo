@@ -6,8 +6,11 @@
 //! it through the plan's setters, and applies it. The plan never writes
 //! anything and never prints, so a GUI can build and rebuild one freely.
 
+mod apply;
 mod plan;
 mod runner;
+
+pub use apply::{ApplyError, Playtime, Registered, apply, write_import_log};
 
 pub use plan::{
     COVERED_BY_PROTON, DesktopEntry, Finding, GamePlan, InputKind, MissingBuild, Options,

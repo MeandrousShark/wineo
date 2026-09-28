@@ -1,4 +1,4 @@
-use anyhow::{Context, bail};
+use anyhow::bail;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -13,10 +13,10 @@ use wineo_core::heroic::{
     HeroicSharedPrefix, HeroicSource, SettingsReview,
 };
 use wineo_core::heroic_import::{
-    COVERED_BY_PROTON, DesktopEntry, GamePlan, InputKind, MissingBuild, Options, Policy,
-    RunnerCopy, RunnerSuggestion, SkipReason, Warning, inspect_copyable_runner,
+    COVERED_BY_PROTON, DesktopEntry, GamePlan, InputKind, MissingBuild, Options, Playtime, Policy,
+    Registered, RunnerCopy, RunnerSuggestion, SkipReason, Warning, apply, inspect_copyable_runner,
     is_dropped_conflict, redact_env_value, runner_dependency_lines, shared_prefix_lines,
-    suggest_runner,
+    suggest_runner, write_import_log,
 };
 use wineo_core::import::{self, ExternalDependency};
 use wineo_core::paths::Paths;
@@ -28,7 +28,7 @@ use super::art::{Access, AutoFetch, KeyCheck, Pick};
 use super::components;
 use super::desktop;
 use super::download;
-use super::import::{choose_runner, finish_guided, import_reviewed};
+use super::import::{choose_runner, finish_guided};
 use super::transfer::Cancellation;
 use crate::picker;
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
@@ -243,16 +243,10 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         output.say(final_facts_text(&ctx, &plan, verbose))?;
         plan.resolve(Policy::Strict);
         reject_unresolved(&plan)?;
-        ensure_source_unchanged(&source, plan.heroic())?;
         let log_body = verbose.then(|| plan.log_text(&global, &source) + &art.log_line());
-        let environment = import_reviewed(
-            paths,
-            &global,
-            plan.request().clone(),
-            plan.inspection(),
-            Some(&plan.settings()),
-        )?;
-        import_playtime(paths, &source, &plan.heroic().id, &environment.name);
+        let registered = apply_plan(paths, &global, &source, &plan)?;
+        report_playtime(&registered.playtime);
+        let environment = &registered.environment;
         let mut prompt = (art.enabled && prompt::interactive())
             .then(|| Terminal::open().ok())
             .flatten()
@@ -272,13 +266,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
             &mut io::stderr(),
         );
         drop(prompt);
-        desktop::reconcile(
-            paths,
-            &global,
-            &environment,
-            Some(plan.runner()),
-            plan.destination(),
-        )?;
+        finish_registered(paths, &global, &registered)?;
         if fetched.is_err() {
             let name = &environment.name;
             eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
@@ -513,15 +501,9 @@ fn guided<I: Input, W: Write>(
     };
     final_review(&ctx, &mut plan, &mut art, prompt)?;
     let log_body = verbose.then(|| plan.log_text(global, &source) + &art.log_line());
-    ensure_source_unchanged(&source, plan.heroic())?;
-    let environment = import_reviewed(
-        paths,
-        global,
-        plan.request().clone(),
-        plan.inspection(),
-        Some(&plan.settings()),
-    )?;
-    import_playtime(paths, &source, &plan.heroic().id, &environment.name);
+    let registered = apply_plan(paths, global, &source, &plan)?;
+    report_playtime(&registered.playtime);
+    let environment = &registered.environment;
     let fetched = fetch_art(
         paths,
         global,
@@ -531,13 +513,7 @@ fn guided<I: Input, W: Write>(
         Pick::Ask(prompt),
         &mut io::stderr(),
     );
-    desktop::reconcile(
-        paths,
-        global,
-        &environment,
-        Some(plan.runner()),
-        plan.destination(),
-    )?;
+    finish_registered(paths, global, &registered)?;
     if fetched.is_err() {
         prompt.say(format!(
             "Kept {} and its prefix. Continue with `wineo setup {}`",
@@ -548,7 +524,58 @@ fn guided<I: Input, W: Write>(
     if let Some(body) = log_body {
         print_log_path(paths, &environment.name, &body);
     }
-    finish_guided(paths, global, &environment, prompt)
+    finish_guided(paths, global, environment, prompt)
+}
+
+/// Applies `plan`, stopping cleanly when a signal asks it to.
+fn apply_plan(
+    paths: &Paths,
+    global: &GlobalConfig,
+    source: &HeroicSource,
+    plan: &GamePlan,
+) -> anyhow::Result<Registered> {
+    let cancellation = Cancellation::new()?;
+    let result = apply(
+        paths,
+        global,
+        source,
+        plan,
+        &cancellation.token,
+        super::transfer::copy_progress(),
+    );
+    // A completed registration is retained even if cancellation arrives at the end.
+    match result {
+        Ok(registered) => Ok(registered),
+        Err(error) => cancellation.result(Err(error)),
+    }
+}
+
+/// Says what went wrong with carrying over Heroic's playtime, if anything.
+fn report_playtime(playtime: &Playtime) {
+    match playtime {
+        Playtime::None | Playtime::Imported => {}
+        Playtime::Unreadable(reason) => {
+            eprintln!("warning: could not read Heroic's playtime: {reason}");
+        }
+        Playtime::NotRecorded(reason) => {
+            eprintln!("warning: could not import playtime from Heroic: {reason}");
+        }
+    }
+}
+
+/// Writes the desktop entries for a registered import, and says what changed.
+fn finish_registered(
+    paths: &Paths,
+    global: &GlobalConfig,
+    registered: &Registered,
+) -> anyhow::Result<()> {
+    for change in registered.finish(paths, global)? {
+        eprintln!(
+            "{}",
+            desktop::describe(&change, &registered.environment.name)
+        );
+    }
+    Ok(())
 }
 
 fn plan_options(paths: &Paths, args: &Args, name: Option<String>) -> anyhow::Result<Options> {
@@ -1440,19 +1467,12 @@ fn import_one(
         enabled: bulk.art.is_some(),
         term: plan.heroic().title.clone(),
     };
-    ensure_source_unchanged(bulk.source, plan.heroic())?;
-    let settings = plan.settings();
     let log_body = bulk
         .verbose
         .then(|| plan.log_text(global, bulk.source) + &art.log_line());
-    let environment = import_reviewed(
-        paths,
-        global,
-        plan.request().clone(),
-        plan.inspection(),
-        Some(&settings),
-    )?;
-    import_playtime(paths, bulk.source, &plan.heroic().id, &environment.name);
+    let registered = apply_plan(paths, global, bulk.source, &plan)?;
+    report_playtime(&registered.playtime);
+    let environment = &registered.environment;
     let top = Pick::<OutputOnly, Vec<u8>>::Top(out);
     // A top match can't be canceled.
     let _ = fetch_art(
@@ -1464,13 +1484,7 @@ fn import_one(
         top,
         err,
     );
-    desktop::reconcile(
-        paths,
-        global,
-        &environment,
-        Some(plan.runner()),
-        plan.destination(),
-    )?;
+    finish_registered(paths, global, &registered)?;
     Ok(log_body)
 }
 
@@ -1921,14 +1935,6 @@ fn copy_heroic_runner<I: Input, W: Write>(
         name: receipt.name,
         dependencies: receipt.external_dependencies,
     })
-}
-
-fn ensure_source_unchanged(source: &HeroicSource, imported: &HeroicImport) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        source.unchanged(&imported.id, &imported.fingerprint)?,
-        "Heroic settings changed while they were being reviewed; inspect the game again"
-    );
-    Ok(())
 }
 
 /// The issue that makes `candidate` unimportable, the same rule guided
@@ -2603,26 +2609,6 @@ fn print_issue(prefix: &str, issue: &HeroicIssue) {
     );
 }
 
-fn write_import_log(paths: &Paths, name: &str, body: &str) -> anyhow::Result<PathBuf> {
-    let path = paths.import_log(name);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    writeln!(file, "=== {} ===", jiff::Timestamp::now())?;
-    write!(file, "{body}")?;
-    if !body.ends_with('\n') {
-        writeln!(file)?;
-    }
-    writeln!(file)?;
-    Ok(path)
-}
-
 fn print_log_path(paths: &Paths, name: &str, body: &str) {
     match write_import_log(paths, name, body) {
         Ok(path) => println!("Import log: {}", style::path(paths, &path)),
@@ -3240,23 +3226,6 @@ mod tests {
             printed.contains("No matching DXVK build is installed. Download the latest release?"),
             "{printed}"
         );
-    }
-
-    #[test]
-    fn import_log_appends_a_timestamped_section_each_time() {
-        let root = tempdir().unwrap();
-        let body = "Heroic game: Game (game)\n  desktop entry: Game\n";
-        let paths = paths(root.path());
-        let log_path = write_import_log(&paths, "game", body).unwrap();
-        assert_eq!(log_path, paths.import_log("game"));
-        let contents = fs::read_to_string(&log_path).unwrap();
-        assert!(contents.contains("=== "), "{contents}");
-        assert!(contents.contains("Heroic game: Game (game)"), "{contents}");
-
-        // A second write appends another timestamped section.
-        write_import_log(&paths, "game", body).unwrap();
-        let contents = fs::read_to_string(&log_path).unwrap();
-        assert_eq!(contents.matches("=== ").count(), 2, "{contents}");
     }
 
     #[test]
