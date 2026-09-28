@@ -1,7 +1,6 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::environment::Environment;
@@ -469,7 +468,6 @@ pub(crate) fn import_reviewed(
     settings: Option<&ImportedSettings>,
 ) -> anyhow::Result<Environment> {
     let cancellation = Cancellation::new()?;
-    let count = AtomicU64::new(0);
     let result = import::execute_reviewed(
         paths,
         global,
@@ -477,14 +475,7 @@ pub(crate) fn import_reviewed(
         Some(inspection),
         settings,
         &cancellation.flag,
-        |progress| {
-            if let import::ImportProgress::Copied { .. } = progress {
-                let count = count.fetch_add(1, Ordering::Relaxed) + 1;
-                if count.is_multiple_of(500) {
-                    eprintln!("Copied {count} entries");
-                }
-            }
-        },
+        super::transfer::copy_progress(),
     );
     // A completed registration is retained even if cancellation arrives at the end.
     match result {

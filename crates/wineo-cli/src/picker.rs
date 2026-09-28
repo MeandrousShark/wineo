@@ -724,7 +724,7 @@ fn config_path(place: &Place, unix: &Path) -> String {
         .unwrap_or_else(|| unix.display().to_string())
 }
 
-fn file_stem(path: &str) -> String {
+pub(crate) fn file_stem(path: &str) -> String {
     let file = path.rsplit(['\\', '/']).next().unwrap_or(path);
     file.rsplit_once('.')
         .map_or(file, |(stem, _)| stem)

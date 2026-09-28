@@ -5,6 +5,7 @@ use signal_hook::SigId;
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
+use wineo_core::import::{ExternalDependency, ImportProgress};
 use wineo_core::paths::Paths;
 
 /// Waits for wine to exit in `name`'s prefix before it is copied, replaced,
@@ -17,6 +18,36 @@ pub fn wait_idle(paths: &Paths, global: &GlobalConfig, name: &str) -> anyhow::Re
         eprintln!("Waiting for wine to exit in {name}");
     })?;
     Ok(())
+}
+
+pub fn copy_progress() -> impl FnMut(ImportProgress) {
+    let mut copied = 0_u64;
+    move |event| {
+        if let ImportProgress::Copied { .. } = event {
+            copied += 1;
+            if copied.is_multiple_of(500) {
+                eprintln!("Copied {copied} entries");
+            }
+        }
+    }
+}
+
+pub fn print_external_links(links: &[ExternalDependency], verbose: bool, note: &str) {
+    let count = links.len();
+    if count > 0 {
+        if !verbose && count > 12 {
+            println!("  external links: {count} (showing first 12; use -v for all)");
+        } else {
+            println!("  external links: {count}");
+        }
+    }
+    for link in links.iter().take(if verbose { count } else { 12 }) {
+        println!(
+            "  external: {} -> {} ({note})",
+            link.source.display(),
+            link.target.display()
+        );
+    }
 }
 
 pub struct Cancellation {

@@ -1073,7 +1073,7 @@ fn create_native<I: Input, W: Write>(
     let mut batch = Batch::new(environment.config.targets.clone());
     let program = Program {
         source: Source::Executable,
-        name: file_stem(&exe),
+        name: picker::file_stem(&exe),
         exe,
         lnk: None,
     };
@@ -1181,7 +1181,7 @@ fn create<I: Input, W: Write>(
             drop(guard);
             let program = Program {
                 source: Source::Executable,
-                name: file_stem(&exe),
+                name: picker::file_stem(&exe),
                 exe,
                 lnk: None,
             };
@@ -1214,13 +1214,6 @@ fn fetch_art<I: Input, W: Write>(
     };
     access.fetch(paths, key, &request, Pick::Ask(prompt), &mut io::stderr())?;
     Ok(())
-}
-
-fn file_stem(path: &str) -> String {
-    let file = path.rsplit(['\\', '/']).next().unwrap_or(path);
-    file.rsplit_once('.')
-        .map_or(file, |(stem, _)| stem)
-        .to_owned()
 }
 
 #[cfg(test)]

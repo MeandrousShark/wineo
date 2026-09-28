@@ -5,7 +5,6 @@ use anyhow::bail;
 use clap::Subcommand;
 use clap_complete::ArgValueCompleter;
 use wineo_core::config::GlobalConfig;
-use wineo_core::import::ImportProgress;
 use wineo_core::paths::Paths;
 use wineo_core::snapshot::{self, CreateInspection, RestoreInspection};
 
@@ -89,16 +88,13 @@ fn create(paths: &Paths, env: &str, label: &str, verbose: bool) -> anyhow::Resul
     let reviewed = snapshot::inspect_create(paths, &global, env, label)?;
     print_create_review(&reviewed, verbose);
     let cancellation = Cancellation::new()?;
-    let mut copied = 0_u64;
-    let result =
-        snapshot::create_reviewed(paths, &global, &reviewed, &cancellation.flag, |event| {
-            if let ImportProgress::Copied { .. } = event {
-                copied += 1;
-                if copied.is_multiple_of(500) {
-                    eprintln!("Copied {copied} entries");
-                }
-            }
-        });
+    let result = snapshot::create_reviewed(
+        paths,
+        &global,
+        &reviewed,
+        &cancellation.flag,
+        transfer::copy_progress(),
+    );
     match result {
         Ok(item) => {
             println!("Created snapshot {} of {}", item.label, env);
@@ -131,16 +127,13 @@ fn restore(paths: &Paths, env: &str, label: &str, yes: bool) -> anyhow::Result<E
         }
     }
     let cancellation = Cancellation::new()?;
-    let mut copied = 0_u64;
-    let result =
-        snapshot::restore_reviewed(paths, &global, &reviewed, &cancellation.flag, |event| {
-            if let ImportProgress::Copied { .. } = event {
-                copied += 1;
-                if copied.is_multiple_of(500) {
-                    eprintln!("Copied {copied} entries");
-                }
-            }
-        });
+    let result = snapshot::restore_reviewed(
+        paths,
+        &global,
+        &reviewed,
+        &cancellation.flag,
+        transfer::copy_progress(),
+    );
     match result {
         Ok(outcome) => {
             println!("Restored {env} from snapshot {label}");
@@ -170,25 +163,7 @@ fn print_create_review(reviewed: &CreateInspection, verbose: bool) {
         reviewed.runner,
         reviewed.layout
     );
-    let count = reviewed.external_dependencies.len();
-    if count > 0 {
-        if !verbose && count > 12 {
-            println!("  external links: {count} (showing first 12; use -v for all)");
-        } else {
-            println!("  external links: {count}");
-        }
-    }
-    for link in reviewed
-        .external_dependencies
-        .iter()
-        .take(if verbose { count } else { 12 })
-    {
-        println!(
-            "  external: {} -> {} (not included)",
-            link.source.display(),
-            link.target.display()
-        );
-    }
+    transfer::print_external_links(&reviewed.external_dependencies, verbose, "not included");
     println!("The prefix and any external launcher must be idle.");
 }
 

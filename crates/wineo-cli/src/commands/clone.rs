@@ -6,7 +6,6 @@ use wineo_core::clone::{self, CloneInspection};
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
-use wineo_core::import::ImportProgress;
 use wineo_core::paths::Paths;
 
 use super::transfer::{self, Cancellation};
@@ -53,15 +52,13 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
     print_review(&reviewed, verbose);
 
     let cancellation = Cancellation::new()?;
-    let mut copied = 0_u64;
-    let result = clone::execute_reviewed(paths, &global, &reviewed, &cancellation.flag, |event| {
-        if let ImportProgress::Copied { .. } = event {
-            copied += 1;
-            if copied.is_multiple_of(500) {
-                eprintln!("Copied {copied} entries");
-            }
-        }
-    });
+    let result = clone::execute_reviewed(
+        paths,
+        &global,
+        &reviewed,
+        &cancellation.flag,
+        transfer::copy_progress(),
+    );
     match result {
         Ok(environment) => {
             println!("Cloned {} as {}", reviewed.source_name, environment.name);
@@ -127,25 +124,7 @@ fn print_review(reviewed: &CloneInspection, verbose: bool) {
     for path in &reviewed.external_target_paths {
         println!("  external target path: {path} (kept in place)");
     }
-    let count = reviewed.external_dependencies.len();
-    if count > 0 {
-        if !verbose && count > 12 {
-            println!("  external links: {count} (showing first 12; use -v for all)");
-        } else {
-            println!("  external links: {count}");
-        }
-    }
-    for link in reviewed
-        .external_dependencies
-        .iter()
-        .take(if verbose { count } else { 12 })
-    {
-        println!(
-            "  external: {} -> {} (kept in place)",
-            link.source.display(),
-            link.target.display()
-        );
-    }
+    transfer::print_external_links(&reviewed.external_dependencies, verbose, "kept in place");
     println!(
         "The source and any external launcher must be idle. External game files stay where they are."
     );

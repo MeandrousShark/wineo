@@ -5,7 +5,6 @@ use clap::{Subcommand, ValueHint};
 use clap_complete::ArgValueCompleter;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
-use wineo_core::import::ImportProgress;
 use wineo_core::paths::Paths;
 use wineo_core::portable::{self, CopyInspection, Storage};
 
@@ -54,21 +53,13 @@ fn copy(
     print_review(&reviewed, verbose);
 
     let cancellation = Cancellation::new()?;
-    let mut copied = 0_u64;
     let result = portable::execute_reviewed(
         paths,
         &folder,
         &global,
         &reviewed,
         &cancellation.flag,
-        |event| {
-            if let ImportProgress::Copied { .. } = event {
-                copied += 1;
-                if copied.is_multiple_of(500) {
-                    eprintln!("Copied {copied} entries");
-                }
-            }
-        },
+        transfer::copy_progress(),
     );
     match result {
         Ok(environment) => {
@@ -181,25 +172,7 @@ fn print_review(reviewed: &CopyInspection, verbose: bool) {
     for path in &reviewed.external_target_paths {
         println!("  external target path: {path} (kept in place)");
     }
-    let count = reviewed.external_dependencies.len();
-    if count > 0 {
-        if !verbose && count > 12 {
-            println!("  external links: {count} (showing first 12; use -v for all)");
-        } else {
-            println!("  external links: {count}");
-        }
-    }
-    for link in reviewed
-        .external_dependencies
-        .iter()
-        .take(if verbose { count } else { 12 })
-    {
-        println!(
-            "  external: {} -> {} (kept in place)",
-            link.source.display(),
-            link.target.display()
-        );
-    }
+    transfer::print_external_links(&reviewed.external_dependencies, verbose, "kept in place");
     for link in &reviewed.snapshot_links {
         println!(
             "  snapshot external: {} -> {} (kept in place)",
