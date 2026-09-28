@@ -85,6 +85,25 @@ pub struct ComponentReport {
 
 impl EnvironmentReport {
     pub fn load(paths: &Paths, global: &GlobalConfig, environment: &Environment) -> Result<Self> {
+        Self::load_with_warnings(paths, global, environment).0
+    }
+
+    pub fn load_with_warnings(
+        paths: &Paths,
+        global: &GlobalConfig,
+        environment: &Environment,
+    ) -> (Result<Self>, Vec<String>) {
+        let mut warnings = Vec::new();
+        let report = Self::load_inner(paths, global, environment, &mut warnings);
+        (report, warnings)
+    }
+
+    fn load_inner(
+        paths: &Paths,
+        global: &GlobalConfig,
+        environment: &Environment,
+        warnings: &mut Vec<String>,
+    ) -> Result<Self> {
         let status = Runtime::new(paths, &environment.name).status()?;
         let wine = environment.config.wine();
         // An unresolvable runner is worth showing the rest of the status for.
@@ -111,10 +130,10 @@ impl EnvironmentReport {
                     match winetricks::missing_for(runner, &prefix, &environment.config.winetricks) {
                         Ok(missing) => missing,
                         Err(err) => {
-                            eprintln!(
+                            warnings.push(format!(
                                 "warning: cannot read winetricks log for {}: {err}",
                                 environment.name
-                            );
+                            ));
                             environment.config.winetricks.clone()
                         }
                     }

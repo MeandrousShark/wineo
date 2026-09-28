@@ -41,7 +41,12 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 }
                 GlobalConfig::default()
             });
-            let report = EnvironmentReport::load(paths, &global, &environment)?;
+            let (report, warnings) =
+                EnvironmentReport::load_with_warnings(paths, &global, &environment);
+            for warning in warnings {
+                eprintln!("{warning}");
+            }
+            let report = report?;
             if args.json {
                 let configured = environment.config.wine().map(|wine| wine.runner.as_str());
                 json::print(&NamedOutput::new(&report, configured))?;
