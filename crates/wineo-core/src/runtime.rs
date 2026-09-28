@@ -443,7 +443,10 @@ impl Runtime {
     /// Only meaningful under an exclusive operation lock.
     pub fn check_quiet(&self, name: &str) -> Result<()> {
         if self.is_running()? {
-            return Err(Error::Running(name.to_owned()));
+            return Err(Error::Running {
+                name: name.to_owned(),
+                action: "first",
+            });
         }
         match self.status() {
             Ok(status) if status.lost => return Err(Error::LostRun(name.to_owned())),
@@ -976,7 +979,7 @@ mod tests {
         let lock = runtime.try_lock().unwrap().unwrap();
         assert!(matches!(
             runtime.check_quiet("notepad"),
-            Err(Error::Running(_))
+            Err(Error::Running { .. })
         ));
         runtime.write_state(&run_state(RunStatus::Running)).unwrap();
         drop(lock);

@@ -521,13 +521,7 @@ fn validate_label(label: &str) -> Result<()> {
 }
 
 fn check_sharing(paths: &Paths, name: &str, prefix: &Path) -> Result<()> {
-    let shared = environment::sharing_prefix(paths, name, prefix)?;
-    if !shared.unreadable.is_empty() {
-        bail!(
-            "could not inspect environments: {}",
-            shared.unreadable.join(", ")
-        );
-    }
+    let shared = environment::checked_sharing(paths, name, prefix)?;
     if !shared.names.is_empty() {
         bail!(
             "prefix is shared with environment(s): {}",

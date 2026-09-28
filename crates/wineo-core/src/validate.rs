@@ -403,6 +403,11 @@ impl fmt::Display for Fix {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Note {
+    Warning(String),
+}
+
 impl Serialize for Fix {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         serializer.collect_str(self)
@@ -1308,9 +1313,9 @@ pub fn apply(
     paths: &Paths,
     fix: &Fix,
     download: impl FnOnce(Component, Option<&str>) -> anyhow::Result<()>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<Note>> {
     match fix {
-        Fix::InstallWinetricks { environment } => install_winetricks(paths, environment),
+        Fix::InstallWinetricks { environment } => install_winetricks(paths, environment)?,
         Fix::Download { component, version } => {
             let global = GlobalConfig::load_or_default(paths)?;
             let asked = version.as_deref().unwrap_or(LATEST);
@@ -1319,33 +1324,34 @@ pub fn apply(
                 .resolve(asked)
                 .is_ok()
             {
-                return Ok(());
+                return Ok(Vec::new());
             }
-            download(*component, version.as_deref())
+            download(*component, version.as_deref())?;
         }
-        Fix::CleanUpLostRun { environment } => Ok(clean_up_lost_run(paths, environment)?),
-        Fix::CleanUpInstaller { environment } => Ok(clean_up_installer(paths, environment)?),
-        Fix::RemoveStateDir { environment } => Ok(remove_state_dir(paths, environment)?),
-        Fix::RemoveDesktopEntry(entry) => Ok(remove_desktop_entry(paths, entry)?),
-        Fix::RewriteDesktop { environment } => Ok(rewrite_desktop(paths, environment)?),
+        Fix::CleanUpLostRun { environment } => {
+            return clean_up_lost_run(paths, environment).map_err(Into::into);
+        }
+        Fix::CleanUpInstaller { environment } => clean_up_installer(paths, environment)?,
+        Fix::RemoveStateDir { environment } => remove_state_dir(paths, environment)?,
+        Fix::RemoveDesktopEntry(entry) => remove_desktop_entry(paths, entry)?,
+        Fix::RewriteDesktop { environment } => rewrite_desktop(paths, environment)?,
         Fix::DropArtRecord {
             environment,
             target,
             kind,
         } => {
             art::drop_missing_record(paths, environment, target.as_deref(), *kind)?;
-            Ok(())
         }
         Fix::DropArtTarget {
             environment,
             target,
         } => {
             art::drop_unknown_target(paths, environment, target)?;
-            Ok(())
         }
-        Fix::RemoveStatsLog { environment } => Ok(remove_stats_log(paths, environment)?),
-        Fix::RecoverTrash { id } => trash::recover(paths, id),
+        Fix::RemoveStatsLog { environment } => remove_stats_log(paths, environment)?,
+        Fix::RecoverTrash { id } => trash::recover(paths, id)?,
     }
+    Ok(Vec::new())
 }
 
 fn install_winetricks(paths: &Paths, name: &str) -> anyhow::Result<()> {
@@ -1355,7 +1361,11 @@ fn install_winetricks(paths: &Paths, name: &str) -> anyhow::Result<()> {
     let prefix = environment.prefix(paths)?;
     let runtime = Runtime::new(paths, name);
     if runtime.is_running()? {
-        anyhow::bail!("{name} is running, stop it before running winetricks");
+        return Err(Error::Running {
+            name: name.to_owned(),
+            action: "before running winetricks",
+        }
+        .into());
     }
     runtime.check_resolved(name)?;
     if !winetricks::missing_for(&runner, &prefix, &environment.config.winetricks)?.is_empty() {
@@ -1367,7 +1377,11 @@ fn install_winetricks(paths: &Paths, name: &str) -> anyhow::Result<()> {
         return Err(Error::MissingPrefix(prefix).into());
     }
     if runtime.is_running()? {
-        anyhow::bail!("{name} is running, stop it before running winetricks");
+        return Err(Error::Running {
+            name: name.to_owned(),
+            action: "before running winetricks",
+        }
+        .into());
     }
     if runtime.status().is_ok_and(|status| status.lost) {
         anyhow::bail!("{name}'s last run was lost, clean it up with `wineo stop {name}` first");
@@ -1388,12 +1402,13 @@ fn install_winetricks(paths: &Paths, name: &str) -> anyhow::Result<()> {
 }
 
 /// What `wineo stop` does for a lost run, which is all there is to stop.
-fn clean_up_lost_run(paths: &Paths, name: &str) -> Result<()> {
+fn clean_up_lost_run(paths: &Paths, name: &str) -> Result<Vec<Note>> {
     Environment::ensure_exists(paths, name)?;
     if let Some(operation) = Locks::new(paths).busy_with(name)? {
         return Err(Error::Busy {
             subject: format!("environment `{name}`"),
-            holder: operation.describe(),
+            holder: Some(operation),
+            holder_label: operation.describe(),
         });
     }
     let stop_timeout =
@@ -1408,8 +1423,9 @@ fn clean_up_lost_run(paths: &Paths, name: &str) -> Result<()> {
                 None => message,
             }))
         }
-        LostRunCleanup::NotLost | LostRunCleanup::Gone { .. } | LostRunCleanup::Killed { .. } => {
-            Ok(())
+        LostRunCleanup::NotLost => Ok(Vec::new()),
+        LostRunCleanup::Gone { warning } | LostRunCleanup::Killed { warning } => {
+            Ok(warning.into_iter().map(Note::Warning).collect())
         }
     }
 }
@@ -2114,6 +2130,26 @@ mod tests {
     }
 
     #[test]
+    fn a_lost_run_reports_when_its_session_cannot_be_logged() {
+        let f = Fixture::new();
+        f.native("tool", "");
+        f.lost_run("tool");
+        fs::create_dir_all(f.paths.stats_log("tool")).unwrap();
+        let problem = f.only(Code::LostRun);
+
+        let notes = apply(&f.paths, fix(&problem), no_download).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert!(
+            matches!(&notes[0], Note::Warning(message) if message.starts_with("failed to open "))
+        );
+        let run = Runtime::new(&f.paths, "tool")
+            .read_state()
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.status, RunStatus::Stopped);
+    }
+
+    #[test]
     fn an_unresolved_installer_is_cleaned_up_like_stop_does() {
         let f = Fixture::new();
         f.wine("game", HEALTHY);
@@ -2388,7 +2424,9 @@ mod tests {
         let results: Vec<(String, std::result::Result<(), String>)> = fixes
             .into_iter()
             .map(|fix| {
-                let result = apply(&f.paths, fix, no_download).map_err(|err| err.to_string());
+                let result = apply(&f.paths, fix, no_download)
+                    .map(|_| ())
+                    .map_err(|err| err.to_string());
                 (fix.label(), result)
             })
             .collect();

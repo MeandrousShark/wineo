@@ -436,6 +436,15 @@ pub fn sharing_prefix(paths: &Paths, name: &str, prefix: &Path) -> Result<Sharin
     Ok(sharing)
 }
 
+/// Refuses a copy when another environment's config cannot be inspected.
+pub fn checked_sharing(paths: &Paths, name: &str, prefix: &Path) -> Result<Sharing> {
+    let sharing = sharing_prefix(paths, name, prefix)?;
+    if !sharing.unreadable.is_empty() {
+        return Err(Error::UnreadableEnvironments(sharing.unreadable));
+    }
+    Ok(sharing)
+}
+
 fn check_name(name: &str) -> Result<()> {
     if name::is_valid(name) {
         Ok(())

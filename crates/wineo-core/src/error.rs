@@ -2,6 +2,7 @@ use std::io;
 use std::path::PathBuf;
 
 use crate::config::Arch;
+use crate::operation::Operation;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -65,11 +66,23 @@ pub enum Error {
         source: Box<toml::de::Error>,
     },
 
-    #[error("{subject} is busy: {holder}")]
+    #[error("{subject} is busy: {holder_label}")]
     Busy {
         subject: String,
-        holder: &'static str,
+        holder: Option<Operation>,
+        holder_label: &'static str,
     },
+
+    #[error("could not inspect environments: {}", .0.join(", "))]
+    UnreadableEnvironments(Vec<String>),
+
+    #[error("{0} canceled")]
+    Canceled(&'static str),
+
+    /// Keeps the underlying error's message and causes, so output matches
+    /// what the transport reported.
+    #[error(transparent)]
+    Network(Box<dyn std::error::Error + Send + Sync>),
 
     #[error("environment `{0}` does not exist")]
     UnknownEnvironment(String),
@@ -277,8 +290,8 @@ pub enum Error {
         requested: Arch,
     },
 
-    #[error("{0} is running, stop it first")]
-    Running(String),
+    #[error("{name} is running, stop it {action}")]
+    Running { name: String, action: &'static str },
 
     #[error(
         "{0}'s last run was lost, so wine may still be running in its prefix. Clean it up with `wineo stop {0}` first"

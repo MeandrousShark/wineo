@@ -581,14 +581,16 @@ fn check_shared_configs(paths: &Paths, name: &str, prefixes: [&Path; 2]) -> Resu
 fn shared_names(paths: &Paths, name: &str, prefixes: [&Path; 2]) -> Result<Vec<String>> {
     let mut names = Vec::new();
     for prefix in prefixes {
-        let sharing =
-            crate::environment::sharing_prefix(paths, name, prefix).map_err(|err| anyhow!(err))?;
-        if !sharing.unreadable.is_empty() {
-            bail!(
-                "could not inspect existing environments: {}",
-                sharing.unreadable.join(", ")
-            );
-        }
+        let sharing = crate::environment::checked_sharing(paths, name, prefix).map_err(|err| {
+            if let crate::error::Error::UnreadableEnvironments(names) = err {
+                anyhow!(
+                    "could not inspect existing environments: {}",
+                    names.join(", ")
+                )
+            } else {
+                anyhow!(err)
+            }
+        })?;
         for shared in sharing.names {
             if !names.contains(&shared) {
                 names.push(shared);

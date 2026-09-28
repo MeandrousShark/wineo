@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use serde::Serialize;
 use wineo_core::config::GlobalConfig;
 use wineo_core::paths::Paths;
-use wineo_core::validate::{self, Fix, Level, Problem, Report};
+use wineo_core::validate::{self, Fix, Level, Note, Problem, Report};
 
 use super::{components, json};
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
@@ -164,7 +164,14 @@ fn apply_all(paths: &Paths, fixes: &[Fix]) -> (Vec<Fix>, Vec<Failed>) {
             components::download_build(paths, global, component, version)
         });
         match result {
-            Ok(()) => applied.push(fix.clone()),
+            Ok(notes) => {
+                for note in notes {
+                    match note {
+                        Note::Warning(warning) => eprintln!("warning: {warning}"),
+                    }
+                }
+                applied.push(fix.clone());
+            }
             Err(err) => failed.push(Failed {
                 fix: fix.label(),
                 message: paths.contract_text(&format!("{err:#}")),

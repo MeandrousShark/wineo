@@ -236,7 +236,8 @@ impl Locks {
                 Ok(_) => {
                     return Err(Error::Busy {
                         subject: format!("environment `{name}`"),
-                        holder: "an interrupted snapshot restore needs recovery",
+                        holder: None,
+                        holder_label: "an interrupted snapshot restore needs recovery",
                     });
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -287,7 +288,8 @@ impl Locks {
         if !take(&file, &lock, false, attempts)? {
             return Err(Error::Busy {
                 subject: format!("config {}", path.display()),
-                holder: "another wineo command is changing it",
+                holder: None,
+                holder_label: "another wineo command is changing it",
             });
         }
         Ok(ConfigGuard { file })
@@ -309,7 +311,8 @@ impl Locks {
         let holder = self.holder(&target.path)?;
         Ok(Error::Busy {
             subject: target.subject.clone(),
-            holder: holder.map_or("another wineo command is using it", Operation::describe),
+            holder,
+            holder_label: holder.map_or("another wineo command is using it", Operation::describe),
         })
     }
 
@@ -448,7 +451,13 @@ mod tests {
         ] {
             let err = locks.acquire(operation, "notepad", &[&prefix]).unwrap_err();
             assert!(
-                matches!(&err, Error::Busy { holder, .. } if *holder == Operation::Winetricks.describe()),
+                matches!(
+                    &err,
+                    Error::Busy {
+                        holder: Some(Operation::Winetricks),
+                        ..
+                    }
+                ),
                 "{operation:?}: {err}"
             );
         }
@@ -472,7 +481,13 @@ mod tests {
             .acquire(Operation::Remove, "notepad", &[&prefix])
             .unwrap_err();
         assert!(
-            matches!(&err, Error::Busy { holder, .. } if *holder == Operation::Launch.describe()),
+            matches!(
+                &err,
+                Error::Busy {
+                    holder: Some(Operation::Launch),
+                    ..
+                }
+            ),
             "{err}"
         );
         drop(held);
@@ -589,7 +604,13 @@ mod tests {
             .acquire(Operation::Launch, "notepad", &[&prefix])
             .unwrap_err();
         assert!(
-            matches!(&err, Error::Busy { holder, .. } if *holder == Operation::Install.describe()),
+            matches!(
+                &err,
+                Error::Busy {
+                    holder: Some(Operation::Install),
+                    ..
+                }
+            ),
             "{err}"
         );
         drop(held);

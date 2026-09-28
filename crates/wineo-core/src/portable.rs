@@ -131,7 +131,7 @@ pub fn inspect(
             );
         }
     }
-    check_sharing(from, name, &source_root)?;
+    environment::checked_sharing(from, name, &source_root)?;
 
     let snapshots = snapshot::list(from, name)?;
     let resolved_snapshots = paths::resolve(&source_snapshots);
@@ -691,17 +691,6 @@ fn reject_overlap(source: &Path, folder: &Path) -> Result<()> {
             "{} overlaps the portable folder {}",
             source.display(),
             folder.display()
-        );
-    }
-    Ok(())
-}
-
-fn check_sharing(from: &Paths, name: &str, prefix: &Path) -> Result<()> {
-    let shared = environment::sharing_prefix(from, name, prefix).map_err(|err| anyhow!(err))?;
-    if !shared.unreadable.is_empty() {
-        bail!(
-            "could not inspect environments: {}",
-            shared.unreadable.join(", ")
         );
     }
     Ok(())

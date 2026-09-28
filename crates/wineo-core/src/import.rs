@@ -23,6 +23,7 @@ use toml_edit::{Array, DocumentMut, Item, Table, Value, value};
 use crate::config::{Arch, EnvironmentConfig, GlobalConfig, Target, validate_env_var};
 use crate::download::{InstallLock, publish};
 use crate::environment::Environment;
+use crate::error::Error;
 use crate::gamescope::GamescopeSetting;
 use crate::name;
 use crate::operation::{Locks, Operation};
@@ -271,7 +272,7 @@ pub fn execute_reviewed(
         );
     }
     if Environment::ensure_exists(paths, &request.name).is_ok() {
-        bail!("environment `{}` already exists", request.name);
+        return Err(Error::EnvironmentExists(request.name.clone()).into());
     }
     check_shared_configs(paths, &request.name, [&source_root, &destination])?;
 
@@ -404,7 +405,7 @@ pub fn execute_reviewed(
                 config_path.display(),
             );
         }
-        bail!("environment `{}` already exists", request.name);
+        return Err(Error::EnvironmentExists(request.name.clone()).into());
     }
     if let Err(err) = write_config_once(&config_path, &config_text) {
         bail!(
@@ -1210,7 +1211,7 @@ pub fn register_native(
     }
     let config_path = paths.environment_config(name);
     if config_path.exists() {
-        bail!("environment `{name}` already exists");
+        return Err(Error::EnvironmentExists(name.to_owned()).into());
     }
     let text = native_config_text(&stored_settings(paths, settings)?)?;
     let locks = Locks::new(paths);
