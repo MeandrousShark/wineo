@@ -3,6 +3,18 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.15.0 - 2026-09-28
+
+- Launch, stop, environment creation, winetricks, settings checks, status
+  views, stats, and log tailing now live in `wineo-core` as operations a GUI
+  can call, with progress events and a cancel token
+  ([0034](docs/plans/0034-core-api-review.md)). See
+  [Core API for frontends](docs/core-api.md).
+- Winetricks and wineboot run in their own process group. Ctrl+C goes to
+  wineo, which stops them, and a second Ctrl+C forces it.
+- Canceling prefix creation prints "Canceled. Nothing was created." and exits
+  with 130.
+
 ## 0.14.0 - 2026-09-28
 
 - `tags` groups environments, like `game` or `work`, on Wine and native
