@@ -2,7 +2,7 @@
 
 ## Code boundaries
 
-- The workspace has two crates: `crates/wineo-core` owns environment/config/process logic; `crates/wineo-cli` owns clap commands and interactive UI. Its binary is named `wineo`, not `wineo-cli`. The GUI is only planned.
+- `crates/wineo-core` owns environment/config/process logic; `crates/wineo-cli` owns clap commands and interactive UI, and its binary is `wineo`; `crates/wineo-gui` owns the iced desktop app, calls core directly, and its binary is `wineo-gui`.
 - `crates/wineo-cli/src/main.rs` handles the private supervisor entrypoint and dynamic completion before clap parsing. Background `start` re-enters the binary through `wineo-core::supervisor`.
 - Root `src/`, `pkg/`, and `wineo/` are ignored Arch packaging work directories, not workspace source.
 - Use core `Paths` for storage resolution: `--portable` overrides `WINEO_PORTABLE_DIR`; portable run state and cross-root locks still live in host XDG state.

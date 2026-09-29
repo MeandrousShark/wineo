@@ -45,7 +45,7 @@ prepare() {
 
 build() {
   cd "$srcdir/wineo" || return
-  cargo build --package wineo-cli --release --frozen
+  cargo build --package wineo-cli --package wineo-gui --release --frozen
 }
 
 check() {
@@ -57,6 +57,7 @@ package() {
   cd "$srcdir/wineo" || return
 
   install -Dm755 target/release/wineo "$pkgdir/usr/bin/wineo"
+  install -Dm755 target/release/wineo-gui "$pkgdir/usr/bin/wineo-gui"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 docs/environment.toml.example \
     "$pkgdir/usr/share/doc/wineo/environment.toml.example"
