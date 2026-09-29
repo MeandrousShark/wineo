@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0036: GUI library launcher
 
@@ -122,7 +122,7 @@ spike's library screen into a real app on top of `wineo-core`.
 
 ## Decisions for the maintainer
 
-Each has a recommendation.
+The maintainer accepted every recommendation (2026-09-28).
 
 ### 1. Logo placement
 
