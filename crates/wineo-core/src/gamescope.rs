@@ -176,6 +176,15 @@ pub enum Filter {
 }
 
 impl Filter {
+    pub const ALL: [Self; 6] = [
+        Filter::Linear,
+        Filter::Nearest,
+        Filter::Fsr,
+        Filter::Nis,
+        Filter::Pixel,
+        Filter::Sgsr,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Filter::Linear => "linear",
@@ -200,6 +209,14 @@ pub enum Scaler {
 }
 
 impl Scaler {
+    pub const ALL: [Self; 5] = [
+        Scaler::Auto,
+        Scaler::Integer,
+        Scaler::Fit,
+        Scaler::Fill,
+        Scaler::Stretch,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Scaler::Auto => "auto",
@@ -219,6 +236,8 @@ pub enum Window {
 }
 
 impl Window {
+    pub const ALL: [Self; 2] = [Window::Fullscreen, Window::Borderless];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Window::Fullscreen => "fullscreen",
