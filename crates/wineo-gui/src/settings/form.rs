@@ -1,12 +1,13 @@
 //! What the settings page edits, and how an edit becomes `settings::apply`'s
 //! `pairs` and `unset`. Kept free of iced so it can be tested on its own.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use wineo_core::components::{Component, LATEST};
-use wineo_core::config::{self, EnvironmentConfig};
+use wineo_core::config::{self, EnvironmentConfig, Target};
 use wineo_core::gamescope::{self, GamescopeSetting};
+use wineo_core::{name, targets, winpath};
 
 /// The on/off launch settings an environment can override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +18,7 @@ pub(crate) enum Switch {
 }
 
 impl Switch {
+    pub(crate) const ALL: [Switch; 3] = [Switch::Gamemode, Switch::Mangohud, Switch::Wayland];
     pub(crate) fn key(self) -> &'static str {
         match self {
             Switch::Gamemode => "gamemode",
@@ -37,6 +39,8 @@ impl Switch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Source {
     Global,
+    /// A target following its environment.
+    Environment,
     Here,
 }
 
@@ -44,6 +48,7 @@ impl Source {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Source::Global => "global",
+            Source::Environment => "environment",
             Source::Here => "set here",
         }
     }
@@ -348,6 +353,9 @@ pub(crate) struct Values {
     pub(crate) tags: Vec<String>,
     /// In the order the rows show, which renames keep.
     pub(crate) env: Vec<EnvRow>,
+    pub(crate) targets: BTreeMap<String, TargetValues>,
+    /// The target marked `default`. Core allows only one.
+    pub(crate) default_target: Option<String>,
 }
 
 impl Values {
@@ -380,6 +388,16 @@ impl Values {
                     value: value.clone(),
                 })
                 .collect(),
+            targets: config
+                .targets
+                .iter()
+                .map(|(name, target)| (name.clone(), TargetValues::from_config(target)))
+                .collect(),
+            default_target: config
+                .targets
+                .iter()
+                .find(|(_, target)| target.default)
+                .map(|(name, _)| name.clone()),
         }
     }
     /// A native environment has no runner.
@@ -477,6 +495,167 @@ pub(crate) fn switch_state(value: Option<bool>, inherited: bool) -> (bool, Sourc
     }
 }
 
+/// How a target sets gamescope. Its table replaces the environment's whole
+/// table, and `false` turns gamescope off for just this target.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum TargetGamescope {
+    #[default]
+    Inherit,
+    Off,
+    On,
+}
+
+/// One target's controls. An empty `cwd` or `name` is unset.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct TargetValues {
+    pub(crate) exe: String,
+    pub(crate) args: Vec<String>,
+    /// Empty runs it from the exe's own directory.
+    pub(crate) cwd: String,
+    /// The desktop entry's name. Empty uses the target's own name.
+    pub(crate) name: String,
+    pub(crate) desktop: bool,
+    pub(crate) gamemode: Option<bool>,
+    pub(crate) mangohud: Option<bool>,
+    pub(crate) wayland: Option<bool>,
+    pub(crate) gamescope: TargetGamescope,
+    /// Kept while gamescope isn't on here, like the environment's.
+    pub(crate) fields: GamescopeFields,
+}
+
+impl TargetValues {
+    fn from_config(target: &Target) -> Self {
+        let (gamescope, fields) = match &target.gamescope {
+            None => (TargetGamescope::Inherit, GamescopeFields::default()),
+            Some(GamescopeSetting::Off) => (TargetGamescope::Off, GamescopeFields::default()),
+            Some(GamescopeSetting::On(table)) => {
+                (TargetGamescope::On, GamescopeFields::from_config(table))
+            }
+        };
+        Self {
+            exe: target.exe.clone(),
+            args: target.args.clone(),
+            cwd: target.cwd.clone().unwrap_or_default(),
+            name: target.name.clone().unwrap_or_default(),
+            desktop: target.desktop,
+            gamemode: target.gamemode,
+            mangohud: target.mangohud,
+            wayland: target.wayland,
+            gamescope,
+            fields,
+        }
+    }
+    pub(crate) fn switch(&self, switch: Switch) -> Option<bool> {
+        match switch {
+            Switch::Gamemode => self.gamemode,
+            Switch::Mangohud => self.mangohud,
+            Switch::Wayland => self.wayland,
+        }
+    }
+    pub(crate) fn switch_mut(&mut self, switch: Switch) -> &mut Option<bool> {
+        match switch {
+            Switch::Gamemode => &mut self.gamemode,
+            Switch::Mangohud => &mut self.mangohud,
+            Switch::Wayland => &mut self.wayland,
+        }
+    }
+    /// The fields a gamescope table starts from when this saves.
+    fn gamescope_base(&self) -> GamescopeFields {
+        if self.gamescope == TargetGamescope::On {
+            self.fields.clone()
+        } else {
+            GamescopeFields::default()
+        }
+    }
+    /// How many controls differ from `before`.
+    fn changes(&self, before: &TargetValues) -> usize {
+        let mut count = [
+            before.exe != self.exe,
+            before.args != self.args,
+            before.cwd != self.cwd,
+            before.name != self.name,
+            before.desktop != self.desktop,
+            before.gamescope != self.gamescope,
+        ]
+        .into_iter()
+        .filter(|changed| *changed)
+        .count();
+        for switch in Switch::ALL {
+            count += usize::from(before.switch(switch) != self.switch(switch));
+        }
+        if self.gamescope == TargetGamescope::On {
+            let base = before.gamescope_base();
+            count += Field::ALL
+                .iter()
+                .filter(|field| base.raw(**field) != self.fields.raw(**field))
+                .count();
+        }
+        count
+    }
+    /// Writes what differs from `before` under `targets.<target>.`. The exe
+    /// goes first, so a new target's table starts with it.
+    fn edits(&self, target: &str, before: &TargetValues, edits: &mut Edits) {
+        let key = |field: &str| format!("targets.{target}.{field}");
+        if before.exe != self.exe {
+            edits.pairs.push((key("exe"), self.exe.clone()));
+        }
+        if before.args != self.args {
+            edits.write(
+                key("args"),
+                (!self.args.is_empty()).then(|| toml_array(&self.args)),
+            );
+        }
+        for (field, old, new) in [
+            ("cwd", &before.cwd, &self.cwd),
+            ("name", &before.name, &self.name),
+        ] {
+            if old != new {
+                edits.write(key(field), (!new.is_empty()).then(|| new.clone()));
+            }
+        }
+        if before.desktop != self.desktop {
+            edits.write(key("desktop"), self.desktop.then(|| "true".to_owned()));
+        }
+        for switch in Switch::ALL {
+            let value = self.switch(switch);
+            if before.switch(switch) != value {
+                edits.write(key(switch.key()), value.map(|on| on.to_string()));
+            }
+        }
+        if before.gamescope != self.gamescope {
+            match self.gamescope {
+                TargetGamescope::Inherit => edits.unset.push(key("gamescope")),
+                TargetGamescope::Off => edits.pairs.push((key("gamescope"), "false".to_owned())),
+                TargetGamescope::On => edits.pairs.push((key("gamescope"), "{}".to_owned())),
+            }
+        }
+        if self.gamescope == TargetGamescope::On {
+            let base = before.gamescope_base();
+            for field in Field::ALL {
+                let value = self.fields.raw(field);
+                if base.raw(field) != value {
+                    edits.write(key(&format!("gamescope.{}", field.key())), value);
+                }
+            }
+        }
+    }
+}
+
+/// Whether a typed exe or working dir would be resolved from wherever the
+/// GUI was started, the same reason a relative prefix is refused. An exe
+/// that's a bare name is looked up on PATH instead.
+fn relative_path(value: &str, exe: bool) -> bool {
+    !value.is_empty()
+        && (value.contains('/') || !exe)
+        && !winpath::is_windows_path(value)
+        && !std::path::Path::new(value).is_absolute()
+        && !value.starts_with("~/")
+}
+
+/// Why several targets can't be saved without a default: `wineo start`
+/// with no `--target` refuses to guess, so `setup` asks for one.
+pub(crate) const NEEDS_DEFAULT: &str = "Several targets need a default. Mark one as the default.";
+
 /// What a save writes. A reset or emptied control unsets its key.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Edits {
@@ -514,11 +693,13 @@ impl Form {
     /// off so they survive a save or reload until the page is left.
     pub(crate) fn reloaded(values: Values, previous: Option<&Form>) -> Self {
         let mut form = Self::new(values);
-        if !form.draft.gamescope
-            && let Some(previous) = previous
-        {
-            form.draft.fields = previous.draft.fields.clone();
-            form.loaded.fields = previous.draft.fields.clone();
+        if let Some(previous) = previous {
+            if !form.draft.gamescope {
+                form.draft.fields = previous.draft.fields.clone();
+                form.loaded.fields = previous.draft.fields.clone();
+            }
+            keep_target_fields(&mut form.draft, &previous.draft);
+            keep_target_fields(&mut form.loaded, &previous.draft);
         }
         form
     }
@@ -529,13 +710,15 @@ impl Form {
         if let Some(fields) = fields {
             self.loaded.fields = fields;
         }
+        keep_target_fields(&mut self.loaded, &self.draft);
     }
     pub(crate) fn revert(&mut self) {
-        let fields = self.draft.fields.clone();
+        let previous = self.draft.clone();
         self.draft = self.loaded.clone();
         if !self.loaded.gamescope {
-            self.draft.fields = fields;
+            self.draft.fields = previous.fields.clone();
         }
+        keep_target_fields(&mut self.draft, &previous);
     }
     pub(crate) fn is_dirty(&self) -> bool {
         self.changes() > 0
@@ -576,7 +759,32 @@ impl Form {
             .into_iter()
             .filter(|key| before.get(*key) != after.get(*key))
             .count();
+        count + self.target_changes()
+    }
+    /// How many target controls differ from the file. An added or removed
+    /// target is one change.
+    fn target_changes(&self) -> usize {
+        let (loaded, draft) = (&self.loaded, &self.draft);
+        let names: BTreeSet<&String> = loaded.targets.keys().chain(draft.targets.keys()).collect();
+        let mut count = usize::from(self.default_changed());
+        for name in names {
+            count += match (loaded.targets.get(name), draft.targets.get(name)) {
+                (Some(before), Some(after)) => after.changes(before),
+                _ => 1,
+            };
+        }
         count
+    }
+    /// Whether the default moved. Removing the default target takes its mark
+    /// with it, which isn't a second change.
+    fn default_changed(&self) -> bool {
+        let (loaded, draft) = (&self.loaded, &self.draft);
+        loaded.default_target != draft.default_target
+            && (draft.default_target.is_some()
+                || loaded
+                    .default_target
+                    .as_ref()
+                    .is_some_and(|old| draft.targets.contains_key(old)))
     }
     /// Why the draft can't be saved as it stands, so Save stays off rather
     /// than sending something core would refuse. `runner_known` is whether
@@ -612,6 +820,182 @@ impl Form {
             return Some("The prefix must be absolute or start with ~/.");
         }
         None
+    }
+    /// Why the targets can't be saved as they stand. Only edited paths are
+    /// checked, so a hand-written one can't block unrelated saves, and a
+    /// portable folder resolves relative ones from its root.
+    pub(crate) fn targets_problem(&self, portable: bool) -> Option<String> {
+        for (name, target) in &self.draft.targets {
+            let before = self.loaded.targets.get(name);
+            if target.exe.is_empty() {
+                return Some(format!("Target {name} needs an exe."));
+            }
+            if portable {
+                continue;
+            }
+            for (label, value, old) in [
+                ("exe", &target.exe, before.map(|before| &before.exe)),
+                ("working dir", &target.cwd, before.map(|before| &before.cwd)),
+            ] {
+                if Some(value) != old && relative_path(value, label == "exe") {
+                    return Some(format!(
+                        "Target {name}'s {label} must be absolute or start with ~/."
+                    ));
+                }
+            }
+        }
+        // A config that already has no default isn't blocked for other edits.
+        if self.target_changes() > 0
+            && self.draft.targets.len() > 1
+            && self.draft.default_target.is_none()
+        {
+            return Some(NEEDS_DEFAULT.to_owned());
+        }
+        None
+    }
+    /// A target's on/off setting in effect and where it comes from: its own
+    /// key, the environment's draft value, or the global one.
+    pub(crate) fn target_switch(
+        &self,
+        target: &str,
+        switch: Switch,
+        inherited: &Inherited,
+    ) -> (bool, Source) {
+        let own = self
+            .draft
+            .targets
+            .get(target)
+            .and_then(|values| values.switch(switch));
+        match (own, self.draft.switch(switch)) {
+            (Some(on), _) => (on, Source::Here),
+            (None, Some(on)) => (on, Source::Environment),
+            (None, None) => (inherited.get(switch), Source::Global),
+        }
+    }
+    /// Whether gamescope runs for a target and where that comes from. There's
+    /// no global gamescope, so an inheriting target follows the environment.
+    pub(crate) fn target_gamescope(&self, target: &str) -> (bool, Source) {
+        match self
+            .draft
+            .targets
+            .get(target)
+            .map(|values| values.gamescope)
+        {
+            Some(TargetGamescope::On) => (true, Source::Here),
+            Some(TargetGamescope::Off) => (false, Source::Here),
+            _ => (self.draft.gamescope, Source::Environment),
+        }
+    }
+    /// The gamescope fields a target runs with, its own or the environment's.
+    pub(crate) fn target_fields(&self, target: &str) -> Option<&GamescopeFields> {
+        let values = self.draft.targets.get(target)?;
+        match values.gamescope {
+            TargetGamescope::On => Some(&values.fields),
+            TargetGamescope::Inherit if self.draft.gamescope => Some(&self.draft.fields),
+            _ => None,
+        }
+    }
+    /// Turns gamescope on or off for a target. Turning it on with no fields
+    /// of its own starts from the environment's, since the target's table
+    /// replaces the environment's rather than adding to it.
+    pub(crate) fn set_target_gamescope(&mut self, target: &str, on: bool) -> bool {
+        let env_fields = self.draft.gamescope.then(|| self.draft.fields.clone());
+        let Some(values) = self.draft.targets.get_mut(target) else {
+            return false;
+        };
+        if !on {
+            values.gamescope = TargetGamescope::Off;
+            return true;
+        }
+        if values.gamescope != TargetGamescope::On
+            && values.fields == GamescopeFields::default()
+            && let Some(fields) = env_fields
+        {
+            values.fields = fields;
+        }
+        values.gamescope = TargetGamescope::On;
+        true
+    }
+    /// Gives an inheriting target its own copy of the environment's fields.
+    pub(crate) fn override_target_gamescope(&mut self, target: &str) -> bool {
+        self.edit_target_fields(target, |_| true)
+    }
+    /// Edits a target's gamescope fields. One that inherits from an
+    /// environment with gamescope on gets the environment's fields first, so
+    /// the rest of them aren't lost when its own table replaces them.
+    /// Nothing changes when `edit` refuses the value.
+    pub(crate) fn edit_target_fields(
+        &mut self,
+        target: &str,
+        edit: impl FnOnce(&mut GamescopeFields) -> bool,
+    ) -> bool {
+        let env_on = self.draft.gamescope;
+        let env_fields = &self.draft.fields;
+        let Some(values) = self.draft.targets.get(target) else {
+            return false;
+        };
+        let mut fields = match values.gamescope {
+            TargetGamescope::On => values.fields.clone(),
+            TargetGamescope::Inherit if env_on => env_fields.clone(),
+            _ => return false,
+        };
+        if !edit(&mut fields) {
+            return false;
+        }
+        let values = self.draft.targets.get_mut(target).expect("checked above");
+        values.fields = fields;
+        values.gamescope = TargetGamescope::On;
+        true
+    }
+    /// Marks or unmarks a target as the default. Marking one clears the
+    /// others, the same as core does when it's saved.
+    pub(crate) fn set_default(&mut self, target: &str, on: bool) {
+        if !self.draft.targets.contains_key(target) {
+            return;
+        }
+        if on {
+            self.draft.default_target = Some(target.to_owned());
+        } else if self.draft.default_target.as_deref() == Some(target) {
+            self.draft.default_target = None;
+        }
+    }
+    /// Why `name` can't be a new target, checked as it's typed. Nothing typed
+    /// yet is no problem, it just can't be added.
+    pub(crate) fn new_target_problem(&self, name: &str) -> Option<String> {
+        if name.is_empty() {
+            return None;
+        }
+        if let Some(reason) = name::problem(name) {
+            return Some(format!("Invalid input: {reason}."));
+        }
+        self.draft
+            .targets
+            .contains_key(name)
+            .then(|| format!("There is already a target called `{name}`."))
+    }
+    /// A free target name for a program, the way `setup` names one.
+    pub(crate) fn suggest_target(&self, label: &str, exe: &str) -> String {
+        let suggested = targets::suggest_name(label, exe);
+        targets::free_name(&suggested, |taken| self.draft.targets.contains_key(taken))
+    }
+    pub(crate) fn add_target(&mut self, name: &str, values: TargetValues) -> Result<(), String> {
+        if name.is_empty() {
+            return Err("Enter a name.".to_owned());
+        }
+        if let Some(problem) = self.new_target_problem(name) {
+            return Err(problem);
+        }
+        self.draft.targets.insert(name.to_owned(), values);
+        Ok(())
+    }
+    pub(crate) fn remove_target(&mut self, name: &str) -> bool {
+        if self.draft.targets.remove(name).is_none() {
+            return false;
+        }
+        if self.draft.default_target.as_deref() == Some(name) {
+            self.draft.default_target = None;
+        }
+        true
     }
     /// Picks a build, refusing to drop DXVK from under vkd3d-proton.
     pub(crate) fn pick_build(
@@ -731,7 +1115,44 @@ impl Form {
                     .push((format!("env.{key}"), (*value).to_owned()));
             }
         }
+        self.target_edits(&mut edits);
         edits
+    }
+    /// Removed targets go first, so their art is cleaned up by core, then
+    /// each target's changes, then the default, which core moves with one
+    /// `default = true`.
+    fn target_edits(&self, edits: &mut Edits) {
+        let (loaded, draft) = (&self.loaded, &self.draft);
+        for name in loaded.targets.keys() {
+            if !draft.targets.contains_key(name) {
+                edits.unset.push(format!("targets.{name}"));
+            }
+        }
+        let empty = TargetValues::default();
+        for (name, values) in &draft.targets {
+            values.edits(name, loaded.targets.get(name).unwrap_or(&empty), edits);
+        }
+        if self.default_changed() {
+            match (&draft.default_target, &loaded.default_target) {
+                (Some(target), _) => edits
+                    .pairs
+                    .push((format!("targets.{target}.default"), "true".to_owned())),
+                (None, Some(old)) => edits.unset.push(format!("targets.{old}.default")),
+                (None, None) => {}
+            }
+        }
+    }
+}
+
+/// Keeps gamescope fields typed for targets that don't have it on, so
+/// switching it back on restores them until the page is left.
+fn keep_target_fields(values: &mut Values, from: &Values) {
+    for (name, target) in &mut values.targets {
+        if target.gamescope != TargetGamescope::On
+            && let Some(previous) = from.targets.get(name)
+        {
+            target.fields = previous.fields.clone();
+        }
     }
 }
 
@@ -1142,5 +1563,298 @@ mod tests {
         assert_eq!(form.problem(true), None);
         form.draft.prefix = "prefixes/q".into();
         assert!(form.problem(true).is_some());
+    }
+
+    const TARGETS: &str = "prefix = \"~/p\"\nrunner = \"wine\"\narch = \"win64\"\n[targets.game]\nexe = 'C:\\g.exe'\ndefault = true\n[targets.tool]\nexe = '/usr/bin/tool'\nargs = ['-a']\ncwd = '/tmp'\nname = 'Tool'\ndesktop = true\n";
+
+    fn target<'a>(form: &'a mut Form, name: &str) -> &'a mut TargetValues {
+        form.draft.targets.get_mut(name).unwrap()
+    }
+
+    #[test]
+    fn target_fields_write_and_emptied_ones_unset() {
+        let mut form = Form::new(values(TARGETS));
+        assert_eq!(form.draft.default_target.as_deref(), Some("game"));
+        let game = target(&mut form, "game");
+        game.exe = r"C:\other.exe".into();
+        game.args = vec!["-x".into(), "a b".into()];
+        game.cwd = "~/games".into();
+        game.name = "Game".into();
+        game.desktop = true;
+        let tool = target(&mut form, "tool");
+        tool.args.clear();
+        tool.cwd.clear();
+        tool.name.clear();
+        tool.desktop = false;
+        let edits = form.edits();
+        assert_eq!(
+            pairs(&edits),
+            [
+                ("targets.game.exe", r"C:\other.exe"),
+                ("targets.game.args", "[\"-x\", \"a b\"]"),
+                ("targets.game.cwd", "~/games"),
+                ("targets.game.name", "Game"),
+                ("targets.game.desktop", "true"),
+            ]
+        );
+        assert_eq!(
+            edits.unset,
+            [
+                "targets.tool.args",
+                "targets.tool.cwd",
+                "targets.tool.name",
+                "targets.tool.desktop"
+            ]
+        );
+        assert_eq!(form.changes(), 9);
+        form.revert();
+        assert!(!form.is_dirty());
+    }
+
+    #[test]
+    fn marking_a_default_moves_it_with_one_pair() {
+        let mut form = Form::new(values(TARGETS));
+        form.set_default("tool", true);
+        assert_eq!(form.draft.default_target.as_deref(), Some("tool"));
+        assert_eq!(pairs(&form.edits()), [("targets.tool.default", "true")]);
+        assert!(form.edits().unset.is_empty());
+        assert_eq!(form.changes(), 1);
+        // Unmarking the one that isn't marked does nothing.
+        form.set_default("game", false);
+        assert_eq!(form.draft.default_target.as_deref(), Some("tool"));
+        form.set_default("tool", false);
+        let edits = form.edits();
+        assert_eq!(edits.unset, ["targets.game.default"]);
+        assert!(edits.pairs.is_empty());
+        // Several targets and no default can't be saved.
+        assert_eq!(form.targets_problem(false).as_deref(), Some(NEEDS_DEFAULT));
+        form.set_default("game", true);
+        assert!(!form.is_dirty());
+        assert_eq!(form.targets_problem(false), None);
+    }
+
+    #[test]
+    fn a_config_without_a_default_only_blocks_target_edits() {
+        let mut form = Form::new(values(&TARGETS.replace("default = true\n", "")));
+        form.draft.gamemode = Some(true);
+        assert_eq!(form.targets_problem(false), None);
+        target(&mut form, "tool").args.push("-b".into());
+        assert_eq!(form.targets_problem(false).as_deref(), Some(NEEDS_DEFAULT));
+        // A lone target is launched without one.
+        let mut form = Form::new(values(&TARGETS.replace("default = true\n", "")));
+        form.remove_target("tool");
+        assert_eq!(form.targets_problem(false), None);
+    }
+
+    #[test]
+    fn target_switches_override_and_reset() {
+        let mut form = Form::new(values(
+            &TARGETS.replace("desktop = true\n", "desktop = true\nmangohud = false\n"),
+        ));
+        *target(&mut form, "game").switch_mut(Switch::Gamemode) = Some(true);
+        *target(&mut form, "tool").switch_mut(Switch::Mangohud) = None;
+        let edits = form.edits();
+        assert_eq!(pairs(&edits), [("targets.game.gamemode", "true")]);
+        assert_eq!(edits.unset, ["targets.tool.mangohud"]);
+        assert_eq!(form.changes(), 2);
+    }
+
+    #[test]
+    fn target_labels_follow_the_environment_draft() {
+        let mut form = Form::new(values(TARGETS));
+        let global = Inherited {
+            gamemode: Some(true),
+            ..Inherited::default()
+        };
+        assert_eq!(
+            form.target_switch("game", Switch::Gamemode, &global),
+            (true, Source::Global)
+        );
+        form.draft.gamemode = Some(false);
+        assert_eq!(
+            form.target_switch("game", Switch::Gamemode, &global),
+            (false, Source::Environment)
+        );
+        *target(&mut form, "game").switch_mut(Switch::Gamemode) = Some(true);
+        assert_eq!(
+            form.target_switch("game", Switch::Gamemode, &global),
+            (true, Source::Here)
+        );
+        // Gamescope has no global, so an inheriting target follows the
+        // environment's draft switch.
+        assert_eq!(form.target_gamescope("tool"), (false, Source::Environment));
+        form.draft.gamescope = true;
+        assert_eq!(form.target_gamescope("tool"), (true, Source::Environment));
+        assert_eq!(form.target_fields("tool"), Some(&form.draft.fields));
+    }
+
+    #[test]
+    fn editing_an_inherited_gamescope_copies_the_environments_fields() {
+        let mut form = Form::new(values(&TARGETS.replace(
+            "[targets.game]",
+            "[gamescope]\nwidth = 1920\nfilter = \"fsr\"\n[targets.game]",
+        )));
+        // Refused text changes nothing, copy included.
+        assert!(
+            !form.edit_target_fields("game", |fields| fields.set_text(Field::Height, "x".into()))
+        );
+        assert!(!form.is_dirty());
+        assert!(form.edit_target_fields("game", |fields| {
+            fields.set_text(Field::Height, "1080".into())
+        }));
+        let game = &form.draft.targets["game"];
+        assert_eq!(game.gamescope, TargetGamescope::On);
+        assert_eq!(
+            (game.fields.width.as_str(), game.fields.filter),
+            ("1920", Some("fsr"))
+        );
+        assert_eq!(
+            pairs(&form.edits()),
+            [
+                ("targets.game.gamescope", "{}"),
+                ("targets.game.gamescope.width", "1920"),
+                ("targets.game.gamescope.height", "1080"),
+                ("targets.game.gamescope.filter", "fsr"),
+            ]
+        );
+        assert_eq!(form.changes(), 4);
+        // The environment's fields stay its own.
+        assert_eq!(form.draft.fields.height, "");
+        // With the environment's gamescope off there's nothing to edit.
+        let mut form = Form::new(values(TARGETS));
+        assert!(!form.edit_target_fields("game", |_| true));
+        assert!(!form.override_target_gamescope("game"));
+    }
+
+    #[test]
+    fn target_gamescope_moves_between_false_unset_and_a_table() {
+        let text = TARGETS.replace("[targets.tool]", "gamescope = false\n[targets.tool]");
+        let mut form = Form::new(values(&format!(
+            "{text}[targets.tool.gamescope]\nwidth = 800\n"
+        )));
+        assert_eq!(form.draft.targets["game"].gamescope, TargetGamescope::Off);
+        assert_eq!(form.draft.targets["tool"].gamescope, TargetGamescope::On);
+        // false to a table of its own, and a table to false.
+        assert!(form.set_target_gamescope("game", true));
+        assert!(form.set_target_gamescope("tool", false));
+        let edits = form.edits();
+        assert_eq!(
+            pairs(&edits),
+            [
+                ("targets.game.gamescope", "{}"),
+                ("targets.tool.gamescope", "false"),
+            ]
+        );
+        assert!(edits.unset.is_empty());
+        // Reset unsets either one.
+        target(&mut form, "game").gamescope = TargetGamescope::Inherit;
+        target(&mut form, "tool").gamescope = TargetGamescope::Inherit;
+        let edits = form.edits();
+        assert!(edits.pairs.is_empty());
+        assert_eq!(
+            edits.unset,
+            ["targets.game.gamescope", "targets.tool.gamescope"]
+        );
+        // Back on, a table keeps the fields it had.
+        assert!(form.set_target_gamescope("tool", true));
+        assert_eq!(form.draft.targets["tool"].fields.width, "800");
+        assert_eq!(form.edits().unset, ["targets.game.gamescope"]);
+    }
+
+    #[test]
+    fn turning_a_target_gamescope_on_starts_from_the_environments() {
+        let mut form = Form::new(values(&TARGETS.replace(
+            "[targets.game]",
+            "[gamescope]\nwidth = 1920\n[targets.game]",
+        )));
+        assert!(form.set_target_gamescope("game", false));
+        assert!(form.set_target_gamescope("game", true));
+        assert_eq!(form.draft.targets["game"].fields.width, "1920");
+    }
+
+    #[test]
+    fn target_gamescope_fields_typed_while_off_survive_a_reload() {
+        let mut form = Form::new(values(TARGETS));
+        target(&mut form, "game").fields.width = "640".into();
+        let form = Form::reloaded(values(TARGETS), Some(&form));
+        assert!(!form.is_dirty());
+        assert_eq!(form.draft.targets["game"].fields.width, "640");
+    }
+
+    #[test]
+    fn adding_and_removing_targets() {
+        let mut form = Form::new(values(TARGETS));
+        assert_eq!(
+            form.new_target_problem("my game").as_deref(),
+            Some("Invalid input: spaces not allowed.")
+        );
+        assert_eq!(
+            form.new_target_problem("game").as_deref(),
+            Some("There is already a target called `game`.")
+        );
+        assert_eq!(form.new_target_problem(""), None);
+        assert_eq!(form.suggest_target("Game", r"C:\x\Game.exe"), "game-2");
+        assert_eq!(form.suggest_target("", r"C:\x\Hades II.exe"), "hades-ii");
+        assert!(form.add_target("game", TargetValues::default()).is_err());
+        let new = TargetValues {
+            exe: r"C:\new.exe".into(),
+            desktop: true,
+            name: "New".into(),
+            mangohud: Some(true),
+            ..TargetValues::default()
+        };
+        form.add_target("new", new).unwrap();
+        form.set_default("new", true);
+        assert!(form.remove_target("tool"));
+        assert!(!form.remove_target("tool"));
+        let edits = form.edits();
+        assert_eq!(edits.unset, ["targets.tool"]);
+        assert_eq!(
+            pairs(&edits),
+            [
+                ("targets.new.exe", r"C:\new.exe"),
+                ("targets.new.name", "New"),
+                ("targets.new.desktop", "true"),
+                ("targets.new.mangohud", "true"),
+                ("targets.new.default", "true"),
+            ]
+        );
+        assert_eq!(form.changes(), 3);
+        // Removing the default takes its mark along, as one change.
+        let mut form = Form::new(values(TARGETS));
+        form.remove_target("game");
+        assert_eq!(form.draft.default_target, None);
+        assert_eq!(form.changes(), 1);
+        assert_eq!(form.edits().unset, ["targets.game"]);
+        assert_eq!(form.targets_problem(false), None);
+    }
+
+    #[test]
+    fn edited_target_paths_are_checked() {
+        let mut form = Form::new(values(TARGETS));
+        target(&mut form, "tool").exe.clear();
+        assert_eq!(
+            form.targets_problem(false).as_deref(),
+            Some("Target tool needs an exe.")
+        );
+        target(&mut form, "tool").exe = "bin/tool".into();
+        assert_eq!(
+            form.targets_problem(false).as_deref(),
+            Some("Target tool's exe must be absolute or start with ~/.")
+        );
+        assert_eq!(form.targets_problem(true), None);
+        for good in ["tool", "~/bin/tool", "/bin/tool", r"C:\tool.exe"] {
+            target(&mut form, "tool").exe = good.into();
+            assert_eq!(form.targets_problem(false), None, "{good}");
+        }
+        for bad in ["work", "./work"] {
+            target(&mut form, "tool").cwd = bad.into();
+            assert!(
+                form.targets_problem(false).unwrap().contains("working dir"),
+                "{bad}"
+            );
+        }
+        target(&mut form, "tool").cwd = "~/work".into();
+        assert_eq!(form.targets_problem(false), None);
     }
 }

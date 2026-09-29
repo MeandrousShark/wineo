@@ -1,10 +1,11 @@
 //! The blocking half of the settings page: reading an environment for the
 //! page, saving through `settings::apply`, and opening the config file.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use iced::Task;
 use wineo_core::components::{Builds, Component};
@@ -17,6 +18,7 @@ use wineo_core::runner::Runner;
 use wineo_core::runner_alias;
 use wineo_core::runners::Runners;
 use wineo_core::settings::{self, Applied, CheckError, ConfigFile};
+use wineo_core::{art, launch, prefix, programs, winpath};
 
 use super::Event;
 use super::form::{Edits, Inherited, Values};
@@ -58,6 +60,11 @@ pub(crate) struct Loaded {
     pub(crate) heroic_id: Option<String>,
     /// Set when the global config can't be read, so the page shows defaults.
     pub(crate) global_warning: Option<String>,
+    /// Core refuses desktop entries in a portable folder.
+    pub(crate) portable: bool,
+    /// Each target with an art dir, and where it is, which removing the
+    /// target deletes.
+    pub(crate) target_art: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -153,7 +160,151 @@ fn content(paths: &Paths, name: &str) -> anyhow::Result<Loaded> {
         vkd3d_builds: builds(Component::Vkd3d),
         heroic_id: environment.config.heroic_id.clone(),
         global_warning,
+        portable: paths.portable_root().is_some(),
+        target_art: target_art(paths, name, environment.config.targets.keys()),
     })
+}
+
+fn target_art<'a>(
+    paths: &Paths,
+    name: &str,
+    targets: impl Iterator<Item = &'a String>,
+) -> BTreeMap<String, String> {
+    let art_dir = paths.art_dir(name);
+    targets
+        .filter_map(|target| {
+            let dir = art::target_dir(&art_dir, target);
+            dir.is_dir().then(|| {
+                let shown = paths
+                    .contract(&dir)
+                    .unwrap_or_else(|_| dir.display().to_string());
+                (target.clone(), shown)
+            })
+        })
+        .collect()
+}
+
+/// A program the add target form offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProgramChoice {
+    pub(crate) name: String,
+    pub(crate) exe: String,
+}
+
+/// What the add target form can pick from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Scan {
+    Scanning,
+    Programs {
+        programs: Vec<ProgramChoice>,
+        /// Held back as noise, like uninstallers, the way `setup` does.
+        held_back: Vec<ProgramChoice>,
+    },
+    /// The prefix doesn't exist yet, so only a typed path works.
+    NoPrefix,
+    Failed(String),
+}
+
+/// The environment's wine prefix, which is `pfx/` inside a Proton one, once
+/// it has been made.
+fn wine_prefix(paths: &Paths, environment: &Environment) -> Option<PathBuf> {
+    environment
+        .prefix(paths)
+        .ok()
+        .and_then(|dir| prefix::wine_prefix_in(&dir))
+}
+
+/// Lists what's installed in the prefix, the way `wineo setup` does.
+pub(crate) fn scan(paths: &Paths, name: &str) -> Scan {
+    let environment = match Environment::load(paths, name) {
+        Ok(environment) => environment,
+        Err(error) => return Scan::Failed(PanelError::from_error(&error.into()).text),
+    };
+    let Some(wine_prefix) = wine_prefix(paths, &environment) else {
+        return Scan::NoPrefix;
+    };
+    let choices = |found: &[programs::Program]| {
+        found
+            .iter()
+            .map(|program| ProgramChoice {
+                name: program.name.clone(),
+                exe: program.exe.clone(),
+            })
+            .collect()
+    };
+    match programs::scan(&wine_prefix) {
+        Ok(listing) => Scan::Programs {
+            programs: choices(&listing.programs),
+            held_back: choices(&listing.filtered),
+        },
+        Err(error) => Scan::Failed(PanelError::from_error(&error.into()).text),
+    }
+}
+
+/// A path as typed or pasted, which may come wrapped in quotes or with the
+/// backslash a shell puts before a space. Matches `setup`.
+pub(crate) fn clean_path(typed: &str) -> String {
+    let typed = typed.trim();
+    let unquoted = ['"', '\'']
+        .iter()
+        .find_map(|quote| typed.strip_prefix(*quote)?.strip_suffix(*quote))
+        .unwrap_or(typed);
+    if winpath::is_windows_path(unquoted) {
+        unquoted.to_owned()
+    } else {
+        unquoted.replace("\\ ", " ")
+    }
+}
+
+/// A typed exe as a target's `exe` holds it, checked the way `setup` checks
+/// one: a Windows path as typed, a Unix path inside `drive_c` as its `C:`
+/// path, and any other Unix path with the home directory as `~`. A native
+/// environment takes a bare name on its PATH too. Unlike `setup`, a relative
+/// path is refused, since the GUI's working directory means nothing to the
+/// person typing it.
+pub(crate) fn resolve_exe(paths: &Paths, name: &str, typed: &str) -> Result<String, String> {
+    let typed = clean_path(typed);
+    if typed.is_empty() {
+        return Err("Enter the path to the program.".to_owned());
+    }
+    let environment = Environment::load(paths, name).map_err(|error| error.to_string())?;
+    let bare = !typed.contains('/') && !typed.starts_with('~');
+    let windows = winpath::is_windows_path(&typed);
+    if !bare && !windows && !Path::new(&typed).is_absolute() && !typed.starts_with("~/") {
+        return Err("The path must be absolute or start with ~/.".to_owned());
+    }
+    if environment.config.wine().is_none() {
+        let global = GlobalConfig::load_or_default(paths).map_err(|error| error.to_string())?;
+        let stored = if bare {
+            typed
+        } else {
+            let unix = paths.absolute(&typed).map_err(|error| error.to_string())?;
+            paths
+                .store(&unix)
+                .unwrap_or_else(|_| unix.display().to_string())
+        };
+        launch::check_native_exe(paths, &global, name, &environment.config.env, &stored)
+            .map_err(|error| error.to_string())?;
+        return Ok(stored);
+    }
+    let missing = || format!("`{typed}` does not exist.");
+    let wine_prefix = wine_prefix(paths, &environment);
+    if windows {
+        let wine_prefix = wine_prefix.as_deref().ok_or_else(missing)?;
+        return match winpath::to_unix(wine_prefix, &typed) {
+            Some(unix) if unix.is_file() => Ok(typed),
+            _ => Err(missing()),
+        };
+    }
+    let unix = paths.absolute(&typed).map_err(|error| error.to_string())?;
+    if !unix.is_file() {
+        return Err(missing());
+    }
+    Ok(wine_prefix
+        .as_deref()
+        .and_then(|wine_prefix| winpath::from_unix(wine_prefix, &unix))
+        .or_else(|| paths.store(&unix).ok())
+        .unwrap_or_else(|| unix.display().to_string()))
 }
 
 /// The system wine, installed runners, and aliases, in `wineo runners` order,
@@ -393,5 +544,36 @@ pub(crate) fn open_task(path: PathBuf) -> Task<Message> {
                 })
         },
         |result| Message::Settings(Event::Opened(result.and_then(|opened| opened))),
+    )
+}
+
+pub(crate) fn scan_task(paths: Paths, name: String, generation: u64) -> Task<Message> {
+    blocking(
+        move || scan(&paths, &name),
+        move |result| {
+            Message::Settings(Event::Scanned(
+                generation,
+                result.unwrap_or_else(Scan::Failed),
+            ))
+        },
+    )
+}
+
+pub(crate) fn resolve_task(
+    paths: Paths,
+    name: String,
+    typed: String,
+    generation: u64,
+    sequence: u64,
+) -> Task<Message> {
+    blocking(
+        move || resolve_exe(&paths, &name, &typed),
+        move |result| {
+            Message::Settings(Event::Resolved(
+                generation,
+                sequence,
+                result.and_then(|resolved| resolved),
+            ))
+        },
     )
 }

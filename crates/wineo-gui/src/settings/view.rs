@@ -6,8 +6,9 @@ use iced::{Center, Color, Element, Fill, Font, border, font};
 
 use wineo_core::components::Component;
 
-use super::form::{self, Build, Choice, Field, List, Source, Switch};
-use super::{Editor, Event, Page, View};
+use super::form::{self, Build, Choice, Field, GamescopeFields, List, Source, Switch};
+use super::load::Scan;
+use super::{Editor, Event, Page, TargetEdit, View};
 use crate::Message;
 use crate::chips::{Chips, input_style, secondary};
 use crate::panel::{action_button, error_box};
@@ -64,7 +65,9 @@ impl Page {
                 }
                 content.into()
             }
-            View::Form(editor) => editor_view(&self.name, editor, self.locked(), palette),
+            View::Form(editor) => {
+                editor_view(&self.name, editor, self.locked(), self.resolving(), palette)
+            }
         };
         let scroll = scrollable(
             container(container(body).max_width(PAGE_WIDTH).width(Fill))
@@ -156,6 +159,7 @@ fn editor_view<'a>(
     name: &'a str,
     editor: &'a Editor,
     locked: bool,
+    resolving: bool,
     palette: Palette,
 ) -> Element<'a, Message> {
     let info = &editor.info;
@@ -228,12 +232,22 @@ fn editor_view<'a>(
         palette,
     ));
     if draft.gamescope {
-        launch = launch.push(
-            container(gamescope_fields(editor, locked, palette)).padding(iced::Padding {
-                left: 24.0,
-                ..iced::Padding::ZERO
-            }),
-        );
+        let fields =
+            gamescope_fields(
+                &draft.fields,
+                &editor.args_input,
+                locked,
+                palette,
+                |edit| match edit {
+                    FieldEdit::Text(field, value) => Event::FieldText(field, value),
+                    FieldEdit::Choice(field, choice) => Event::FieldChoice(field, choice),
+                    FieldEdit::GrabCursor(on) => Event::GrabCursor(on),
+                    FieldEdit::ArgsInput(value) => Event::ArgsInput(value),
+                    FieldEdit::ArgsAdd => Event::ArgsAdd,
+                    FieldEdit::ArgsRemove(index) => Event::ArgsRemove(index),
+                },
+            );
+        launch = launch.push(indented(fields));
     }
     sections = sections.push(section("Launch", launch.into(), palette));
     if !info.native {
@@ -259,11 +273,537 @@ fn editor_view<'a>(
         palette,
     ));
     sections = sections.push(section(
+        "Targets",
+        targets(name, editor, locked, resolving, palette),
+        palette,
+    ));
+    sections = sections.push(section(
         "Advanced",
         advanced(editor, locked, palette),
         palette,
     ));
     sections.into()
+}
+
+fn indented(content: Element<'_, Message>) -> Element<'_, Message> {
+    container(content)
+        .padding(iced::Padding {
+            left: 24.0,
+            ..iced::Padding::ZERO
+        })
+        .into()
+}
+
+fn target_event(target: &str, edit: TargetEdit) -> Message {
+    send(Event::Target(target.to_owned(), edit))
+}
+
+fn targets<'a>(
+    name: &'a str,
+    editor: &'a Editor,
+    locked: bool,
+    resolving: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let mut rows = column![].spacing(12);
+    if editor.form.draft.targets.is_empty() {
+        rows = rows.push(text("No targets yet.").size(13).color(palette.muted));
+    }
+    for target in editor.form.draft.targets.keys() {
+        rows = rows.push(target_card(name, editor, target, locked, palette));
+    }
+    rows = rows.push(add_target(editor, locked, resolving, palette));
+    rows.into()
+}
+
+fn text_field<'a>(
+    placeholder: &str,
+    value: &str,
+    locked: bool,
+    on_input: impl Fn(String) -> Message + 'a,
+    palette: Palette,
+) -> Element<'a, Message> {
+    text_input(placeholder, value)
+        .on_input_maybe((!locked).then_some(on_input))
+        .width(Fill)
+        .padding([6, 10])
+        .style(move |_, status| input_style(palette, status))
+        .into()
+}
+
+fn target_card<'a>(
+    name: &'a str,
+    editor: &'a Editor,
+    target: &'a str,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let form = &editor.form;
+    let values = &form.draft.targets[target];
+    let open = editor.open_cards.contains(target);
+    let is_default = form.draft.default_target.as_deref() == Some(target);
+    let mut title = format!("{} {target}", if open { "v" } else { ">" });
+    if is_default {
+        title.push_str(" (default)");
+    }
+    let header = button(
+        row![
+            text(title).font(semibold()).color(palette.foreground),
+            text(values.exe.as_str()).size(13).color(palette.muted),
+        ]
+        .spacing(12)
+        .align_y(Center),
+    )
+    .on_press(send(Event::Card(target.to_owned(), !open)))
+    .padding([4, 0])
+    .style(|_, _| button::Style::default());
+    let mut card = column![header].spacing(12);
+    if open {
+        card = card.push(indented(target_body(
+            name, editor, target, is_default, locked, palette,
+        )));
+    }
+    container(card)
+        .padding(12)
+        .width(Fill)
+        .style(move |_| {
+            container::Style::default()
+                .background(palette.background)
+                .border(border::rounded(6).width(1).color(palette.border))
+        })
+        .into()
+}
+
+fn target_body<'a>(
+    name: &'a str,
+    editor: &'a Editor,
+    target: &'a str,
+    is_default: bool,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let form = &editor.form;
+    let info = &editor.info;
+    let values = &form.draft.targets[target];
+    let owned = || target.to_owned();
+    let mut rows = column![
+        setting_row(
+            "Exe",
+            text_field(
+                "path to the program",
+                &values.exe,
+                locked,
+                move |exe| target_event(target, TargetEdit::Exe(exe)),
+                palette
+            ),
+            None,
+            palette,
+        ),
+        setting_row(
+            "Args",
+            Chips {
+                items: &values.args,
+                input: editor.target_args_input(target),
+                placeholder: "one argument",
+                error: None,
+                on_input: Box::new(move |value| target_event(target, TargetEdit::ArgsInput(value))),
+                on_add: target_event(target, TargetEdit::ArgsAdd),
+                on_remove: Box::new(move |index| {
+                    target_event(target, TargetEdit::ArgsRemove(index))
+                }),
+                enabled: !locked,
+            }
+            .view(palette),
+            None,
+            palette,
+        ),
+        setting_row(
+            "Working dir",
+            text_field(
+                "the exe's own",
+                &values.cwd,
+                locked,
+                move |cwd| target_event(target, TargetEdit::Cwd(cwd)),
+                palette
+            ),
+            None,
+            palette,
+        ),
+    ]
+    .spacing(12);
+    rows = rows.push(switch_row(
+        "Default",
+        is_default,
+        None,
+        move |on| target_event(target, TargetEdit::Default(on)),
+        None,
+        locked,
+        palette,
+    ));
+    // A hand-written entry in a portable folder can still be turned off.
+    let refusal = editor.desktop_refusal().filter(|_| !values.desktop);
+    rows = rows.push(switch_row(
+        "Desktop entry",
+        values.desktop,
+        None,
+        move |on| target_event(target, TargetEdit::Desktop(on)),
+        None,
+        locked || refusal.is_some(),
+        palette,
+    ));
+    if let Some(refusal) = refusal {
+        rows = rows.push(text(refusal).size(13).color(palette.muted));
+    }
+    rows = rows.push(setting_row(
+        "Entry name",
+        text_field(
+            target,
+            &values.name,
+            locked,
+            move |value| target_event(target, TargetEdit::Name(value)),
+            palette,
+        ),
+        None,
+        palette,
+    ));
+    let switches: &[Switch] = if info.native {
+        &[Switch::Gamemode, Switch::Mangohud]
+    } else {
+        &Switch::ALL
+    };
+    for switch in switches {
+        let (on, source) = form.target_switch(target, *switch, &info.inherited);
+        rows = rows.push(switch_row(
+            switch.label(),
+            on,
+            Some(source),
+            move |on| target_event(target, TargetEdit::Switch(*switch, on)),
+            (source == Source::Here).then(|| target_event(target, TargetEdit::Reset(*switch))),
+            locked,
+            palette,
+        ));
+    }
+    let (on, source) = form.target_gamescope(target);
+    rows = rows.push(switch_row(
+        "Gamescope",
+        on,
+        Some(source),
+        move |on| target_event(target, TargetEdit::Gamescope(on)),
+        (source == Source::Here).then(|| target_event(target, TargetEdit::GamescopeReset)),
+        locked,
+        palette,
+    ));
+    if let Some(fields) = form.target_fields(target) {
+        if source == Source::Here {
+            rows = rows.push(indented(gamescope_fields(
+                fields,
+                editor.target_gamescope_args_input(target),
+                locked,
+                palette,
+                move |edit| {
+                    Event::Target(
+                        owned(),
+                        match edit {
+                            FieldEdit::Text(field, value) => TargetEdit::FieldText(field, value),
+                            FieldEdit::Choice(field, choice) => {
+                                TargetEdit::FieldChoice(field, choice)
+                            }
+                            FieldEdit::GrabCursor(on) => TargetEdit::GrabCursor(on),
+                            FieldEdit::ArgsInput(value) => TargetEdit::GamescopeArgsInput(value),
+                            FieldEdit::ArgsAdd => TargetEdit::GamescopeArgsAdd,
+                            FieldEdit::ArgsRemove(index) => TargetEdit::GamescopeArgsRemove(index),
+                        },
+                    )
+                },
+            )));
+        } else {
+            rows = rows.push(indented(inherited_fields(fields, target, locked, palette)));
+        }
+    }
+    rows = rows.push(remove_target(name, editor, target, locked, palette));
+    rows.into()
+}
+
+/// The environment's gamescope fields a target runs with, shown read-only.
+/// Its own table would replace them all, so editing starts from a copy.
+fn inherited_fields<'a>(
+    fields: &GamescopeFields,
+    target: &'a str,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let mut rows = column![].spacing(6);
+    let mut any = false;
+    for field in Field::ALL {
+        let value = match field {
+            Field::Filter | Field::Scaler | Field::Window => {
+                fields.choice(field).0.map(str::to_owned)
+            }
+            Field::GrabCursor => fields.grab_cursor.then(|| "on".to_owned()),
+            Field::Args => (!fields.args.is_empty()).then(|| fields.args.join(" ")),
+            _ => Some(fields.text(field).to_owned()).filter(|value| !value.is_empty()),
+        };
+        if let Some(value) = value {
+            any = true;
+            rows = rows.push(
+                row![
+                    text(field.label())
+                        .color(palette.muted)
+                        .width(LABEL_WIDTH - 24.0),
+                    text(value).color(palette.muted),
+                ]
+                .spacing(12),
+            );
+        }
+    }
+    if !any {
+        rows = rows.push(
+            text("The environment's gamescope has no options set.")
+                .size(13)
+                .color(palette.muted),
+        );
+    }
+    rows.push(
+        button(text("Edit here").size(13))
+            .on_press_maybe((!locked).then(|| target_event(target, TargetEdit::GamescopeHere)))
+            .padding([4, 10])
+            .style(move |_, status| secondary(palette, status)),
+    )
+    .into()
+}
+
+fn remove_target<'a>(
+    name: &'a str,
+    editor: &'a Editor,
+    target: &'a str,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let button_row = |content: Element<'a, Message>| -> Element<'a, Message> {
+        row![Space::new().width(Fill), content]
+            .spacing(8)
+            .align_y(Center)
+            .into()
+    };
+    if editor.removing.as_deref() != Some(target) {
+        return button_row(
+            button(text("Remove target").size(13))
+                .on_press_maybe((!locked).then(|| target_event(target, TargetEdit::AskRemove)))
+                .padding([4, 10])
+                .style(move |_, status| secondary(palette, status))
+                .into(),
+        );
+    }
+    // Only what's saved has art or an entry on disk.
+    let saved = editor.form.loaded.targets.get(target);
+    let mut lines =
+        column![text(format!("Remove {target} from {name}?")).color(palette.foreground)].spacing(4);
+    if let Some(saved) = saved.filter(|saved| saved.desktop) {
+        let entry = if saved.name.is_empty() {
+            target
+        } else {
+            saved.name.as_str()
+        };
+        lines = lines.push(
+            text(format!("Its desktop entry \"{entry}\" goes too."))
+                .size(13)
+                .color(palette.muted),
+        );
+    }
+    if let Some(art) = editor
+        .info
+        .target_art
+        .get(target)
+        .filter(|_| saved.is_some())
+    {
+        lines = lines.push(
+            text(format!("Its art in {art} goes too."))
+                .size(13)
+                .color(palette.muted),
+        );
+    }
+    lines = lines.push(
+        text("The program's files and the prefix are left alone.")
+            .size(13)
+            .color(palette.muted),
+    );
+    let actions = row![
+        Space::new().width(Fill),
+        button(text("Keep it").size(13))
+            .on_press(send(Event::KeepTarget))
+            .padding([4, 10])
+            .style(move |_, status| secondary(palette, status)),
+        action_button(
+            "Remove",
+            palette.danger,
+            !locked,
+            target_event(target, TargetEdit::Remove),
+        ),
+    ]
+    .spacing(8)
+    .align_y(Center);
+    container(lines.push(actions).spacing(8))
+        .padding(12)
+        .width(Fill)
+        .style(move |_| {
+            container::Style::default()
+                .background(palette.surface)
+                .border(border::rounded(6).width(1).color(palette.danger))
+        })
+        .into()
+}
+
+fn add_target(
+    editor: &Editor,
+    locked: bool,
+    resolving: bool,
+    palette: Palette,
+) -> Element<'_, Message> {
+    if !editor.add_open {
+        return button(text("+ Add target").size(14))
+            .on_press(send(Event::AddOpen(true)))
+            .padding([6, 12])
+            .style(move |_, status| secondary(palette, status))
+            .into();
+    }
+    let muted =
+        |line: String| -> Element<'_, Message> { text(line).size(13).color(palette.muted).into() };
+    let mut rows = column![
+        text("Add target")
+            .font(semibold())
+            .color(palette.foreground)
+    ]
+    .spacing(10);
+    match &editor.scan {
+        _ if editor.info.native => {
+            rows = rows.push(muted(
+                "A native environment has no prefix, so enter a path or a name on PATH.".to_owned(),
+            ));
+        }
+        None | Some(Scan::Scanning) => {
+            rows = rows.push(muted("Looking for installed programs...".to_owned()));
+        }
+        Some(Scan::NoPrefix) => {
+            rows = rows.push(muted(
+                "The prefix doesn't exist yet, so enter a path.".to_owned(),
+            ));
+        }
+        Some(Scan::Failed(error)) => {
+            rows = rows.push(text(error.as_str()).size(13).color(palette.danger));
+        }
+        Some(Scan::Programs {
+            programs,
+            held_back,
+        }) => {
+            let mut shown: Vec<_> = programs.iter().collect();
+            if editor.show_held_back {
+                shown.extend(held_back);
+            }
+            if shown.is_empty() {
+                rows = rows.push(muted(
+                    "Nothing installed was found, so enter a path.".to_owned(),
+                ));
+            }
+            for program in shown {
+                rows = rows.push(
+                    row![
+                        text(program.name.as_str())
+                            .color(palette.foreground)
+                            .width(LABEL_WIDTH),
+                        text(program.exe.as_str())
+                            .size(13)
+                            .color(palette.muted)
+                            .width(Fill),
+                        button(text("Pick").size(13))
+                            .on_press_maybe(
+                                (!locked).then(|| send(Event::ProgramPicked(program.clone())))
+                            )
+                            .padding([4, 10])
+                            .style(move |_, status| secondary(palette, status)),
+                    ]
+                    .spacing(12)
+                    .align_y(Center),
+                );
+            }
+            if !held_back.is_empty() {
+                let label = if editor.show_held_back {
+                    "Hide the ones held back".to_owned()
+                } else {
+                    format!(
+                        "Show {} held back as noise, like uninstallers",
+                        held_back.len()
+                    )
+                };
+                rows = rows.push(
+                    button(text(label).size(13))
+                        .on_press(send(Event::ShowHeldBack(!editor.show_held_back)))
+                        .padding([4, 10])
+                        .style(move |_, status| secondary(palette, status)),
+                );
+            }
+        }
+    }
+    let new = &editor.new_target;
+    let can_add = !locked && !resolving && editor.can_add_target();
+    let path_hint = if editor.info.native {
+        "a path, or a name on PATH"
+    } else {
+        "a Unix path or a Windows one"
+    };
+    rows = rows.push(setting_row(
+        "Name",
+        text_input("suggested from the exe", &new.name)
+            .on_input_maybe((!locked).then_some(|name| send(Event::NewTargetName(name))))
+            .on_submit_maybe(can_add.then(|| send(Event::TargetAdd)))
+            .width(Fill)
+            .padding([6, 10])
+            .style(move |_, status| input_style(palette, status))
+            .into(),
+        None,
+        palette,
+    ));
+    if let Some(problem) = editor.form.new_target_problem(&new.name) {
+        rows = rows.push(text(problem).size(12).color(palette.danger));
+    }
+    rows = rows.push(setting_row(
+        "Exe",
+        text_input(path_hint, &new.path)
+            .on_input_maybe((!locked).then_some(|path| send(Event::NewTargetPath(path))))
+            .on_submit_maybe(can_add.then(|| send(Event::TargetAdd)))
+            .width(Fill)
+            .padding([6, 10])
+            .style(move |_, status| input_style(palette, status))
+            .into(),
+        None,
+        palette,
+    ));
+    if let Some(error) = &editor.add_error {
+        rows = rows.push(text(error.as_str()).size(12).color(palette.danger));
+    }
+    let checking = if resolving { "Checking..." } else { "" };
+    rows = rows.push(
+        row![
+            text(checking).size(13).color(palette.muted),
+            Space::new().width(Fill),
+            button(text("Cancel").size(14))
+                .on_press(send(Event::AddOpen(false)))
+                .height(32)
+                .padding([6, 16])
+                .style(move |_, status| secondary(palette, status)),
+            action_button("Add", palette.primary, can_add, send(Event::TargetAdd)),
+        ]
+        .spacing(8)
+        .align_y(Center),
+    );
+    container(rows)
+        .padding(12)
+        .width(Fill)
+        .style(move |_| {
+            container::Style::default()
+                .background(palette.background)
+                .border(border::rounded(6).width(1).color(palette.border))
+        })
+        .into()
 }
 
 fn components<'a>(
@@ -444,10 +984,27 @@ fn advanced(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Mess
     rows.into()
 }
 
-fn gamescope_fields(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Message> {
-    let fields = &editor.form.draft.fields;
+/// A gamescope field edit, mapped to the page event for the environment or
+/// a target.
+enum FieldEdit {
+    Text(Field, String),
+    Choice(Field, Choice),
+    GrabCursor(bool),
+    ArgsInput(String),
+    ArgsAdd,
+    ArgsRemove(usize),
+}
+
+fn gamescope_fields<'a>(
+    fields: &'a GamescopeFields,
+    args_input: &'a str,
+    locked: bool,
+    palette: Palette,
+    on: impl Fn(FieldEdit) -> Event + Clone + 'a,
+) -> Element<'a, Message> {
     let mut rows = Column::new().spacing(10);
     for field in Field::ALL {
+        let on = on.clone();
         let control: Element<'_, Message> = match field {
             Field::Filter | Field::Scaler | Field::Window if locked => {
                 locked_choice(&fields.choice(field).to_string(), palette)
@@ -457,7 +1014,7 @@ fn gamescope_fields(editor: &Editor, locked: bool, palette: Palette) -> Element<
                     .chain(field.choices().into_iter().map(|value| Choice(Some(value))))
                     .collect();
                 pick_list(options, Some(fields.choice(field)), move |choice| {
-                    send(Event::FieldChoice(field, choice))
+                    send(on(FieldEdit::Choice(field, choice)))
                 })
                 .on_open(send(Event::MenuOpened))
                 .on_close(send(Event::MenuClosed))
@@ -465,22 +1022,28 @@ fn gamescope_fields(editor: &Editor, locked: bool, palette: Palette) -> Element<
                 .into()
             }
             Field::GrabCursor => toggler(fields.grab_cursor)
-                .on_toggle_maybe((!locked).then_some(|on| send(Event::GrabCursor(on))))
+                .on_toggle_maybe(
+                    (!locked).then_some(move |on_: bool| send(on(FieldEdit::GrabCursor(on_)))),
+                )
                 .into(),
-            Field::Args => Chips {
-                items: &fields.args,
-                input: &editor.args_input,
-                placeholder: "one flag or value",
-                error: None,
-                on_input: Box::new(|value| send(Event::ArgsInput(value))),
-                on_add: send(Event::ArgsAdd),
-                on_remove: Box::new(|index| send(Event::ArgsRemove(index))),
-                enabled: !locked,
+            Field::Args => {
+                let add = send(on(FieldEdit::ArgsAdd));
+                let input = on.clone();
+                Chips {
+                    items: &fields.args,
+                    input: args_input,
+                    placeholder: "one flag or value",
+                    error: None,
+                    on_input: Box::new(move |value| send(input(FieldEdit::ArgsInput(value)))),
+                    on_add: add,
+                    on_remove: Box::new(move |index| send(on(FieldEdit::ArgsRemove(index)))),
+                    enabled: !locked,
+                }
+                .view(palette)
             }
-            .view(palette),
             _ => text_input("unset", fields.text(field))
                 .on_input_maybe(
-                    (!locked).then_some(move |value| send(Event::FieldText(field, value))),
+                    (!locked).then_some(move |value| send(on(FieldEdit::Text(field, value)))),
                 )
                 .width(CONTROL_WIDTH)
                 .padding([6, 10])

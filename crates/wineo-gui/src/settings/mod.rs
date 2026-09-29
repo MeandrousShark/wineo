@@ -9,9 +9,11 @@ use iced::keyboard::{Key, Modifiers, key::Named};
 use wineo_core::components::Component;
 use wineo_core::paths::Paths;
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::{App, Message};
-use form::{Build, Choice, EnvRow, Field, Form, List, Switch, Values};
-use load::{Content, Current, Loaded, Report, RunnerChoice, Snapshot, Texts};
+use form::{Build, Choice, EnvRow, Field, Form, List, Switch, TargetValues, Values};
+use load::{Content, Current, Loaded, ProgramChoice, Report, RunnerChoice, Scan, Snapshot, Texts};
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
@@ -46,6 +48,24 @@ pub(crate) enum Event {
     Prefix(String),
     GameId(String),
     Store(String),
+    /// An edit on one target's card.
+    Target(String, TargetEdit),
+    /// Opens or closes a target's card, which only changes the view.
+    Card(String, bool),
+    /// Backs out of removing a target.
+    KeepTarget,
+    /// Opens or closes the add target form, scanning the prefix on opening.
+    AddOpen(bool),
+    /// Shows programs held back as noise, like uninstallers.
+    ShowHeldBack(bool),
+    Scanned(u64, Scan),
+    ProgramPicked(ProgramChoice),
+    NewTargetName(String),
+    NewTargetPath(String),
+    TargetAdd,
+    /// The page's generation, the check's sequence, and the typed exe as a
+    /// target holds it.
+    Resolved(u64, u64, Result<String, String>),
     MenuOpened,
     MenuClosed,
     OpenConfig,
@@ -55,6 +75,34 @@ pub(crate) enum Event {
     Checked(u64, u64, Texts),
     CheckFailed(u64, u64),
     Saved(u64, Result<Report, String>),
+}
+
+/// An edit to one target.
+#[derive(Debug, Clone)]
+pub(crate) enum TargetEdit {
+    Exe(String),
+    Cwd(String),
+    Name(String),
+    Desktop(bool),
+    Default(bool),
+    Switch(Switch, bool),
+    Reset(Switch),
+    Gamescope(bool),
+    GamescopeReset,
+    /// Copies the environment's gamescope fields in, to edit them here.
+    GamescopeHere,
+    FieldText(Field, String),
+    FieldChoice(Field, Choice),
+    GrabCursor(bool),
+    GamescopeArgsInput(String),
+    GamescopeArgsAdd,
+    GamescopeArgsRemove(usize),
+    ArgsInput(String),
+    ArgsAdd,
+    ArgsRemove(usize),
+    /// Shows what goes with the target before removing it.
+    AskRemove,
+    Remove,
 }
 
 impl Event {
@@ -86,6 +134,11 @@ impl Event {
                 | Event::Prefix(_)
                 | Event::GameId(_)
                 | Event::Store(_)
+                | Event::Target(..)
+                | Event::ProgramPicked(_)
+                | Event::NewTargetName(_)
+                | Event::NewTargetPath(_)
+                | Event::TargetAdd
         )
     }
     /// Edits to keys a native environment can't have.
@@ -102,8 +155,22 @@ impl Event {
                 | Event::Prefix(_)
                 | Event::GameId(_)
                 | Event::Store(_)
+                | Event::ProgramPicked(_)
+                | Event::Target(
+                    _,
+                    TargetEdit::Switch(Switch::Wayland, _) | TargetEdit::Reset(Switch::Wayland)
+                )
         )
     }
+}
+
+/// The add target form's fields, typed but not added yet.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct NewTarget {
+    pub(crate) name: String,
+    pub(crate) path: String,
+    /// The picked program's name, which titles its desktop entry.
+    pub(crate) label: Option<String>,
 }
 
 pub(crate) struct Editor {
@@ -119,6 +186,19 @@ pub(crate) struct Editor {
     pub(crate) winetricks_input: String,
     pub(crate) tags_input: String,
     pub(crate) new_env: EnvRow,
+    /// Per target: an arg and a gamescope arg typed but not added yet.
+    pub(crate) target_args_input: BTreeMap<String, String>,
+    pub(crate) target_gamescope_args_input: BTreeMap<String, String>,
+    pub(crate) new_target: NewTarget,
+    /// Why the last target add was refused.
+    pub(crate) add_error: Option<String>,
+    /// The target asking to be removed.
+    pub(crate) removing: Option<String>,
+    /// View state, kept across every reload.
+    pub(crate) open_cards: BTreeSet<String>,
+    pub(crate) add_open: bool,
+    pub(crate) scan: Option<Scan>,
+    pub(crate) show_held_back: bool,
 }
 
 impl Editor {
@@ -132,6 +212,15 @@ impl Editor {
             winetricks_input: String::new(),
             tags_input: String::new(),
             new_env: EnvRow::default(),
+            target_args_input: BTreeMap::new(),
+            target_gamescope_args_input: BTreeMap::new(),
+            new_target: NewTarget::default(),
+            add_error: None,
+            removing: None,
+            open_cards: BTreeSet::new(),
+            add_open: false,
+            scan: None,
+            show_held_back: false,
         }
     }
     /// Text typed into an add field but not added yet.
@@ -140,12 +229,52 @@ impl Editor {
         self.winetricks_input.clone_from(&from.winetricks_input);
         self.tags_input.clone_from(&from.tags_input);
         self.new_env.clone_from(&from.new_env);
+        self.target_args_input.clone_from(&from.target_args_input);
+        self.target_gamescope_args_input
+            .clone_from(&from.target_gamescope_args_input);
+        self.new_target.clone_from(&from.new_target);
     }
     fn clear_inputs(&mut self) {
         self.args_input.clear();
         self.winetricks_input.clear();
         self.tags_input.clear();
         self.new_env = EnvRow::default();
+        self.target_args_input.clear();
+        self.target_gamescope_args_input.clear();
+        self.new_target = NewTarget::default();
+        self.add_error = None;
+        self.removing = None;
+    }
+    /// What's open on the page, which no reload should close.
+    fn carry_view(&mut self, from: &Editor) {
+        self.open_cards.clone_from(&from.open_cards);
+        self.add_open = from.add_open;
+        self.scan.clone_from(&from.scan);
+        self.show_held_back = from.show_held_back;
+    }
+    pub(crate) fn target_args_input(&self, target: &str) -> &str {
+        self.target_args_input
+            .get(target)
+            .map_or("", String::as_str)
+    }
+    pub(crate) fn target_gamescope_args_input(&self, target: &str) -> &str {
+        self.target_gamescope_args_input
+            .get(target)
+            .map_or("", String::as_str)
+    }
+    /// Whether the typed name and path can be added as they stand.
+    pub(crate) fn can_add_target(&self) -> bool {
+        !self.new_target.path.trim().is_empty()
+            && self
+                .form
+                .new_target_problem(&self.new_target.name)
+                .is_none()
+    }
+    /// Why a target's desktop entry can't be turned on, if it can't.
+    pub(crate) fn desktop_refusal(&self) -> Option<String> {
+        self.info
+            .portable
+            .then(|| wineo_core::error::Error::PortableDesktop.to_string())
     }
     pub(crate) fn list_input(&self, list: List) -> &str {
         match list {
@@ -204,6 +333,8 @@ impl Editor {
             Event::BuildPicked(component, _) => self.build_enabled(name, *component),
             Event::BuildRemoved(component) => self.form.draft.build(*component).is_some(),
             Event::GameId(_) | Event::Store(_) => self.protonfixes_shown(),
+            // Turning one off stays possible, so a hand-written one can go.
+            Event::Target(_, TargetEdit::Desktop(true)) => self.desktop_refusal().is_none(),
             _ => true,
         }
     }
@@ -256,6 +387,10 @@ pub(crate) struct Page {
     /// What the last save did.
     pub(crate) notes: Vec<String>,
     pub(crate) error: Option<String>,
+    /// Bumped by every typed exe check, so only the latest one lands.
+    resolve_sequence: u64,
+    /// The add target form as it was sent to be checked.
+    resolving: Option<NewTarget>,
 }
 
 /// What the app does after the page handles an event.
@@ -303,7 +438,12 @@ impl Page {
             menu_open: false,
             notes: Vec::new(),
             error: None,
+            resolve_sequence: 0,
+            resolving: None,
         }
+    }
+    pub(crate) fn resolving(&self) -> bool {
+        self.resolving.is_some()
     }
     fn editor(&self) -> Option<&Editor> {
         match &self.view {
@@ -355,6 +495,7 @@ impl Page {
             .filter(|component| editor.form.draft.build(*component).is_some())
             .find_map(|component| editor.build_refusal(&self.name, component))
             .or_else(|| editor.form.problem(editor.draft_runner().is_some()))
+            .or_else(|| editor.form.targets_problem(editor.info.portable))
     }
     pub(crate) fn can_save(&self) -> bool {
         !self.saving
@@ -689,6 +830,128 @@ impl Page {
                 }
                 Step::none()
             }
+            Event::Target(target, edit) => {
+                if self.target_edit(&target, edit) {
+                    self.edited();
+                }
+                Step::none()
+            }
+            Event::Card(target, open) => {
+                if let Some(editor) = self.editor_mut() {
+                    if open {
+                        editor.open_cards.insert(target);
+                    } else {
+                        editor.open_cards.remove(&target);
+                    }
+                }
+                Step::none()
+            }
+            Event::KeepTarget => {
+                if let Some(editor) = self.editor_mut() {
+                    editor.removing = None;
+                }
+                Step::none()
+            }
+            Event::AddOpen(open) => {
+                let generation = self.generation;
+                let Some(editor) = self.editor_mut() else {
+                    return Step::none();
+                };
+                editor.add_open = open;
+                // A native environment has no prefix to scan.
+                if !open || editor.info.native {
+                    return Step::none();
+                }
+                editor.scan = Some(Scan::Scanning);
+                Step::task(load::scan_task(
+                    paths.clone(),
+                    self.name.clone(),
+                    generation,
+                ))
+            }
+            Event::ShowHeldBack(show) => {
+                if let Some(editor) = self.editor_mut() {
+                    editor.show_held_back = show;
+                }
+                Step::none()
+            }
+            Event::Scanned(generation, scan) => {
+                if generation == self.generation
+                    && let Some(editor) = self.editor_mut()
+                {
+                    editor.scan = Some(scan);
+                }
+                Step::none()
+            }
+            Event::ProgramPicked(program) => {
+                if let Some(editor) = self.editor_mut() {
+                    editor.new_target = NewTarget {
+                        name: editor.form.suggest_target(&program.name, &program.exe),
+                        path: program.exe,
+                        label: Some(program.name),
+                    };
+                    editor.add_error = None;
+                }
+                Step::none()
+            }
+            Event::NewTargetName(name) => {
+                if let Some(editor) = self.editor_mut() {
+                    editor.new_target.name = name;
+                    editor.add_error = None;
+                }
+                Step::none()
+            }
+            Event::NewTargetPath(path) => {
+                if let Some(editor) = self.editor_mut() {
+                    editor.new_target.path = path;
+                    // The picked program's name no longer fits a typed path.
+                    editor.new_target.label = None;
+                    editor.add_error = None;
+                }
+                Step::none()
+            }
+            Event::TargetAdd => {
+                let Some(editor) = self.editor() else {
+                    return Step::none();
+                };
+                if !editor.can_add_target() || self.resolving.is_some() {
+                    return Step::none();
+                }
+                let request = editor.new_target.clone();
+                self.resolve_sequence = self.resolve_sequence.wrapping_add(1);
+                self.resolving = Some(request.clone());
+                Step::task(load::resolve_task(
+                    paths.clone(),
+                    self.name.clone(),
+                    request.path,
+                    self.generation,
+                    self.resolve_sequence,
+                ))
+            }
+            Event::Resolved(generation, sequence, result) => {
+                if generation != self.generation || sequence != self.resolve_sequence {
+                    return Step::none();
+                }
+                let Some(request) = self.resolving.take() else {
+                    return Step::none();
+                };
+                // A save started since, or the form changed under the check,
+                // so this no longer answers what's on the page.
+                if self.locked() {
+                    return Step::none();
+                }
+                let Some(editor) = self.editor_mut() else {
+                    return Step::none();
+                };
+                if editor.new_target != request {
+                    return Step::none();
+                }
+                match result.and_then(|exe| editor.add_resolved(&request, exe)) {
+                    Ok(()) => self.edited(),
+                    Err(error) => editor.add_error = Some(error),
+                }
+                Step::none()
+            }
             Event::MenuOpened => {
                 self.menu_open = true;
                 Step::none()
@@ -774,6 +1037,105 @@ impl Page {
             }
         }
     }
+    /// Applies one target's edit. Returns whether the draft changed.
+    fn target_edit(&mut self, target: &str, edit: TargetEdit) -> bool {
+        let Some(editor) = self.editor_mut() else {
+            return false;
+        };
+        let form = &mut editor.form;
+        let Some(values) = form.draft.targets.get_mut(target) else {
+            return false;
+        };
+        match edit {
+            TargetEdit::Exe(exe) => values.exe = exe,
+            TargetEdit::Cwd(cwd) => values.cwd = cwd,
+            TargetEdit::Name(name) => values.name = name,
+            TargetEdit::Desktop(on) => values.desktop = on,
+            TargetEdit::Switch(switch, on) => *values.switch_mut(switch) = Some(on),
+            TargetEdit::Reset(switch) => *values.switch_mut(switch) = None,
+            TargetEdit::GamescopeReset => values.gamescope = form::TargetGamescope::Inherit,
+            TargetEdit::ArgsAdd => {
+                let Some(arg) = editor
+                    .target_args_input
+                    .remove(target)
+                    .filter(|arg| !arg.is_empty())
+                else {
+                    return false;
+                };
+                values.args.push(arg);
+            }
+            TargetEdit::ArgsRemove(index) => {
+                if index >= values.args.len() {
+                    return false;
+                }
+                values.args.remove(index);
+            }
+            TargetEdit::Default(on) => form.set_default(target, on),
+            TargetEdit::Gamescope(on) => return form.set_target_gamescope(target, on),
+            TargetEdit::GamescopeHere => return form.override_target_gamescope(target),
+            TargetEdit::FieldText(field, value) => {
+                return form.edit_target_fields(target, |fields| fields.set_text(field, value));
+            }
+            TargetEdit::FieldChoice(field, choice) => {
+                return form.edit_target_fields(target, |fields| {
+                    fields.set_choice(field, choice);
+                    true
+                });
+            }
+            TargetEdit::GrabCursor(on) => {
+                return form.edit_target_fields(target, |fields| {
+                    fields.grab_cursor = on;
+                    true
+                });
+            }
+            TargetEdit::GamescopeArgsAdd => {
+                let arg = editor.target_gamescope_args_input(target).to_owned();
+                if arg.is_empty()
+                    || !editor.form.edit_target_fields(target, |fields| {
+                        fields.args.push(arg);
+                        true
+                    })
+                {
+                    return false;
+                }
+                editor.target_gamescope_args_input.remove(target);
+            }
+            TargetEdit::GamescopeArgsRemove(index) => {
+                return form.edit_target_fields(target, |fields| {
+                    if index >= fields.args.len() {
+                        return false;
+                    }
+                    fields.args.remove(index);
+                    true
+                });
+            }
+            TargetEdit::ArgsInput(value) => {
+                editor.target_args_input.insert(target.to_owned(), value);
+                return false;
+            }
+            TargetEdit::GamescopeArgsInput(value) => {
+                editor
+                    .target_gamescope_args_input
+                    .insert(target.to_owned(), value);
+                return false;
+            }
+            TargetEdit::AskRemove => {
+                editor.removing = Some(target.to_owned());
+                return false;
+            }
+            TargetEdit::Remove => {
+                if editor.removing.as_deref() != Some(target) {
+                    return false;
+                }
+                editor.removing = None;
+                editor.target_args_input.remove(target);
+                editor.target_gamescope_args_input.remove(target);
+                editor.open_cards.remove(target);
+                return editor.form.remove_target(target);
+            }
+        }
+        true
+    }
     fn land(&mut self, pending: Pending, snapshot: Snapshot) {
         self.menu_open = false;
         let draft = self.editor().map(|editor| &editor.form.draft);
@@ -808,6 +1170,9 @@ impl Page {
                     Content::Form(info) => {
                         let form = Form::reloaded(info.values.clone(), previous);
                         let mut editor = Editor::new(*info, form);
+                        if let Some(previous) = self.editor() {
+                            editor.carry_view(previous);
+                        }
                         // A quiet reload shouldn't eat what's being typed. Reload
                         // and Revert clear it first, and a save reload drops it.
                         if pending.mode == Mode::Replace
@@ -822,6 +1187,41 @@ impl Page {
             }
         }
     }
+}
+
+impl Editor {
+    /// Adds the checked exe as a new target, set up the way `setup` sets one
+    /// up: a desktop entry titled after the program, unless portable.
+    fn add_resolved(&mut self, request: &NewTarget, exe: String) -> Result<(), String> {
+        let name = if request.name.is_empty() {
+            self.form
+                .suggest_target(request.label.as_deref().unwrap_or(""), &exe)
+        } else {
+            request.name.clone()
+        };
+        let desktop = !self.info.portable;
+        let label = request.label.clone().unwrap_or_else(|| file_stem(&exe));
+        let values = TargetValues {
+            exe,
+            desktop,
+            // A name only titles a desktop entry, so none is kept without one.
+            name: if desktop { label } else { String::new() },
+            ..TargetValues::default()
+        };
+        self.form.add_target(&name, values)?;
+        self.new_target = NewTarget::default();
+        self.add_error = None;
+        self.add_open = false;
+        self.open_cards.insert(name);
+        Ok(())
+    }
+}
+
+fn file_stem(path: &str) -> String {
+    let file = path.rsplit(['\\', '/']).next().unwrap_or(path);
+    file.rsplit_once('.')
+        .map_or(file, |(stem, _)| stem)
+        .to_owned()
 }
 
 /// Wine and Proton prefixes are laid out differently, so `settings::apply`
@@ -906,6 +1306,7 @@ mod tests {
     use wineo_core::settings::{self, ConfigFile};
 
     use super::*;
+    use form::Source;
 
     fn setup() -> (tempfile::TempDir, Paths) {
         let root = tempfile::tempdir().unwrap();
@@ -1131,9 +1532,12 @@ mod tests {
         let (_root, paths) = setup();
         write(
             &paths,
-            &GAME.replace(
-                "[gamescope]",
-                "winetricks = [\"corefonts\"]\n\n[env]\nA = \"1\"\n\n[gamescope]",
+            &format!(
+                "{}\n[targets.game]\nexe = \"/bin/game\"\n[targets.game.gamescope]\nwidth = 5\n",
+                GAME.replace(
+                    "[gamescope]",
+                    "winetricks = [\"corefonts\"]\n\n[env]\nA = \"1\"\n\n[gamescope]",
+                )
             ),
         );
         let mut page = page(&paths);
@@ -1167,8 +1571,42 @@ mod tests {
             Event::Prefix("~/elsewhere".into()),
             Event::GameId("umu-1".into()),
             Event::Store("gog".into()),
-            Event::Revert,
-        ];
+            Event::ProgramPicked(ProgramChoice {
+                name: "Tool".into(),
+                exe: "/bin/tool".into(),
+            }),
+            Event::NewTargetName("tool".into()),
+            Event::NewTargetPath("/bin/tool".into()),
+            Event::TargetAdd,
+        ]
+        .into_iter()
+        .chain(
+            [
+                TargetEdit::Exe("/bin/other".into()),
+                TargetEdit::Cwd("/tmp".into()),
+                TargetEdit::Name("Game".into()),
+                TargetEdit::Desktop(true),
+                TargetEdit::Default(true),
+                TargetEdit::Switch(Switch::Gamemode, true),
+                TargetEdit::Reset(Switch::Gamemode),
+                TargetEdit::FieldText(Field::Width, "6".into()),
+                TargetEdit::FieldChoice(Field::Filter, Choice(Some("fsr"))),
+                TargetEdit::GrabCursor(true),
+                TargetEdit::GamescopeArgsInput("-f".into()),
+                TargetEdit::GamescopeArgsAdd,
+                TargetEdit::GamescopeArgsRemove(0),
+                TargetEdit::ArgsInput("-x".into()),
+                TargetEdit::ArgsAdd,
+                TargetEdit::GamescopeHere,
+                TargetEdit::Gamescope(false),
+                TargetEdit::GamescopeReset,
+                TargetEdit::AskRemove,
+                TargetEdit::Remove,
+            ]
+            .map(|edit| Event::Target("game".into(), edit)),
+        )
+        .chain([Event::Revert])
+        .collect::<Vec<_>>();
         for event in edits.clone() {
             let _ = page.update(&paths, event);
         }
@@ -1197,9 +1635,19 @@ mod tests {
                 value: "1".into()
             }]
         );
+        let game = &draft.targets["game"];
+        assert_eq!(game.exe, "/bin/game");
+        assert_eq!(game.gamescope, form::TargetGamescope::On);
+        assert_eq!(game.fields.width, "5");
+        assert!(game.args.is_empty() && game.cwd.is_empty() && game.gamemode.is_none());
+        assert_eq!(draft.targets.len(), 1);
         let editor = editor(&page);
         assert!(editor.args_input.is_empty() && editor.tags_input.is_empty());
         assert_eq!(editor.new_env, EnvRow::default());
+        assert_eq!(editor.new_target, NewTarget::default());
+        assert!(editor.target_args_input.is_empty());
+        assert!(editor.target_gamescope_args_input.is_empty());
+        assert_eq!(editor.removing, None);
     }
 
     #[test]
@@ -1962,5 +2410,475 @@ mod tests {
         let _ = app.update(Message::Settings(Event::Back));
         assert!(app.settings.is_none());
         assert_eq!(app.selected.as_deref(), Some("game"));
+    }
+
+    fn target(page: &mut Page, paths: &Paths, name: &str, edit: TargetEdit) {
+        let _ = page.update(paths, Event::Target(name.into(), edit));
+    }
+
+    /// Sends Add and lands the check the way the worker would.
+    fn add(page: &mut Page, paths: &Paths) {
+        let path = editor(page).new_target.path.clone();
+        let _ = page.update(paths, Event::TargetAdd);
+        assert!(page.resolving());
+        let result = load::resolve_exe(paths, "game", &path);
+        let sequence = page.resolve_sequence;
+        let _ = page.update(paths, Event::Resolved(1, sequence, result));
+    }
+
+    const TARGETED: &str = r#"# my game
+schema_version = 1
+prefix = "~/prefixes/game"
+runner = "missing" # pinned
+arch = "win64"
+
+# the main one
+[targets.game]
+exe = 'C:\Games\game.exe' # launcher
+args = ["-a"] # flags
+default = true # starts first
+
+# a helper
+[targets.tool]
+exe = "/usr/bin/tool" # tool
+cwd = "/tmp" # scratch
+name = "Tool" # entry
+desktop = true # shown
+
+# going away
+[targets.old]
+exe = "/usr/bin/old"
+"#;
+
+    #[test]
+    fn saving_target_edits_changes_only_those_lines() {
+        let (root, paths) = setup();
+        write(&paths, TARGETED);
+        let extra = root.path().join("Apps/extra.exe");
+        fs::create_dir_all(extra.parent().unwrap()).unwrap();
+        fs::write(&extra, "").unwrap();
+        let mut page = page(&paths);
+        target(
+            &mut page,
+            &paths,
+            "game",
+            TargetEdit::ArgsInput("-b".into()),
+        );
+        target(&mut page, &paths, "game", TargetEdit::ArgsAdd);
+        target(
+            &mut page,
+            &paths,
+            "game",
+            TargetEdit::Cwd(r"C:\Games".into()),
+        );
+        target(&mut page, &paths, "game", TargetEdit::Name("Game".into()));
+        target(
+            &mut page,
+            &paths,
+            "game",
+            TargetEdit::Switch(Switch::Gamemode, false),
+        );
+        target(&mut page, &paths, "game", TargetEdit::Gamescope(false));
+        target(
+            &mut page,
+            &paths,
+            "tool",
+            TargetEdit::Exe("/usr/bin/tool2".into()),
+        );
+        target(&mut page, &paths, "tool", TargetEdit::Desktop(false));
+        target(&mut page, &paths, "tool", TargetEdit::Default(true));
+        target(&mut page, &paths, "old", TargetEdit::AskRemove);
+        target(&mut page, &paths, "old", TargetEdit::Remove);
+        let _ = page.update(&paths, Event::AddOpen(true));
+        let _ = page.update(
+            &paths,
+            Event::NewTargetPath(format!("\"{}\"", extra.display())),
+        );
+        add(&mut page, &paths);
+        let shown = editor(&page);
+        assert_eq!(shown.add_error, None);
+        assert!(!shown.add_open && shown.open_cards.contains("extra"));
+        assert_eq!(page.changes(), 10);
+        assert!(page.can_save(), "{:?}", page.problem());
+        let applied = apply(&page, &paths);
+        assert!(applied.failed.is_none(), "{:?}", applied.failed);
+        let text = fs::read_to_string(paths.environment_config("game")).unwrap();
+        assert_eq!(
+            text,
+            r#"# my game
+schema_version = 1
+prefix = "~/prefixes/game"
+runner = "missing" # pinned
+arch = "win64"
+
+# the main one
+[targets.game]
+exe = 'C:\Games\game.exe' # launcher
+args = ["-a", "-b"] # flags
+cwd = 'C:\Games'
+name = "Game"
+gamemode = false
+gamescope = false
+
+# a helper
+[targets.tool]
+exe = "/usr/bin/tool2" # tool
+cwd = "/tmp" # scratch
+name = "Tool" # entry
+default = true
+
+[targets.extra]
+exe = "~/Apps/extra.exe"
+name = "extra"
+desktop = true
+"#
+        );
+        saved(&mut page, &paths, &[], None);
+        land(&mut page, &paths);
+        assert!(!page.is_dirty(), "{:?}", editor(&page).form.edits());
+        assert!(editor(&page).open_cards.contains("extra"));
+    }
+
+    #[test]
+    fn removing_a_target_asks_first_and_shows_its_art_and_entry() {
+        let (_root, paths) = setup();
+        write(&paths, TARGETED);
+        let art = wineo_core::art::target_dir(&paths.art_dir("game"), "tool");
+        fs::create_dir_all(&art).unwrap();
+        fs::write(art.join("icon.png"), "").unwrap();
+        let mut page = page(&paths);
+        assert_eq!(
+            editor(&page).info.target_art["tool"],
+            "~/.local/share/wineo/art/game/tool"
+        );
+        assert!(!editor(&page).info.target_art.contains_key("game"));
+        // Remove without asking does nothing.
+        target(&mut page, &paths, "tool", TargetEdit::Remove);
+        assert!(!page.is_dirty());
+        target(&mut page, &paths, "tool", TargetEdit::AskRemove);
+        let _ = page.update(&paths, Event::KeepTarget);
+        target(&mut page, &paths, "tool", TargetEdit::Remove);
+        assert!(!page.is_dirty());
+        target(&mut page, &paths, "tool", TargetEdit::AskRemove);
+        assert_eq!(editor(&page).removing.as_deref(), Some("tool"));
+        target(&mut page, &paths, "tool", TargetEdit::Remove);
+        assert_eq!(editor(&page).form.edits().unset, ["targets.tool"]);
+        let applied = apply(&page, &paths);
+        assert!(applied.failed.is_none(), "{:?}", applied.failed);
+        // Core cleans up the art of a target a save removes.
+        assert!(!art.exists());
+    }
+
+    #[test]
+    fn a_target_follows_the_environment_draft_live() {
+        let (_root, paths) = setup();
+        write(&paths, TARGETED);
+        write_global(&paths, "mangohud = true\n");
+        let mut page = page(&paths);
+        let label = |page: &Page, switch| {
+            let shown = editor(page);
+            shown
+                .form
+                .target_switch("game", switch, &shown.info.inherited)
+        };
+        assert_eq!(label(&page, Switch::Mangohud), (true, Source::Global));
+        let _ = page.update(&paths, Event::Switch(Switch::Mangohud, false));
+        assert_eq!(label(&page, Switch::Mangohud), (false, Source::Environment));
+        target(
+            &mut page,
+            &paths,
+            "game",
+            TargetEdit::Switch(Switch::Mangohud, true),
+        );
+        assert_eq!(label(&page, Switch::Mangohud), (true, Source::Here));
+        target(
+            &mut page,
+            &paths,
+            "game",
+            TargetEdit::Reset(Switch::Mangohud),
+        );
+        assert_eq!(label(&page, Switch::Mangohud), (false, Source::Environment));
+        // Editing gamescope while inheriting copies the environment's draft.
+        let _ = page.update(&paths, Event::Gamescope(true));
+        let _ = page.update(&paths, Event::FieldText(Field::Width, "1280".into()));
+        target(
+            &mut page,
+            &paths,
+            "game",
+            TargetEdit::FieldText(Field::Height, "720".into()),
+        );
+        let fields = &editor(&page).form.draft.targets["game"].fields;
+        assert_eq!(
+            (fields.width.as_str(), fields.height.as_str()),
+            ("1280", "720")
+        );
+        assert_eq!(
+            editor(&page).form.target_gamescope("game"),
+            (true, Source::Here)
+        );
+        target(&mut page, &paths, "game", TargetEdit::GamescopeReset);
+        target(&mut page, &paths, "tool", TargetEdit::GamescopeHere);
+        let tool = &editor(&page).form.draft.targets["tool"];
+        assert_eq!(tool.gamescope, form::TargetGamescope::On);
+        assert_eq!(tool.fields.width, "1280");
+    }
+
+    #[test]
+    fn typed_target_text_survives_a_quiet_reload_and_revert_clears_it() {
+        let (_root, paths) = setup();
+        write(&paths, TARGETED);
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::AddOpen(true));
+        let _ = page.update(&paths, Event::NewTargetName("new".into()));
+        let _ = page.update(&paths, Event::NewTargetPath("/bin/new".into()));
+        target(
+            &mut page,
+            &paths,
+            "game",
+            TargetEdit::ArgsInput("-x".into()),
+        );
+        target(
+            &mut page,
+            &paths,
+            "game",
+            TargetEdit::GamescopeArgsInput("-f".into()),
+        );
+        let _ = page.update(&paths, Event::Card("game".into(), true));
+        write(&paths, &TARGETED.replace("[\"-a\"]", "[\"-z\"]"));
+        check(&mut page, &paths);
+        land(&mut page, &paths);
+        let shown = editor(&page);
+        assert_eq!(shown.form.draft.targets["game"].args, ["-z"]);
+        assert_eq!(
+            (
+                shown.new_target.name.as_str(),
+                shown.new_target.path.as_str()
+            ),
+            ("new", "/bin/new")
+        );
+        assert_eq!(shown.target_args_input("game"), "-x");
+        assert_eq!(shown.target_gamescope_args_input("game"), "-f");
+        assert!(shown.add_open && shown.open_cards.contains("game"));
+        target(&mut page, &paths, "game", TargetEdit::ArgsAdd);
+        assert_eq!(editor(&page).form.draft.targets["game"].args, ["-z", "-x"]);
+        let _ = page.update(&paths, Event::Revert);
+        let shown = editor(&page);
+        assert_eq!(shown.new_target, NewTarget::default());
+        assert_eq!(shown.target_gamescope_args_input("game"), "");
+        assert!(!page.is_dirty());
+    }
+
+    #[test]
+    fn adding_a_target_checks_the_path_and_the_name() {
+        let (root, paths) = setup();
+        write(&paths, TARGETED);
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::NewTargetName("tool".into()));
+        let _ = page.update(&paths, Event::NewTargetPath("/bin/sh".into()));
+        assert!(!editor(&page).can_add_target());
+        let _ = page.update(&paths, Event::TargetAdd);
+        assert!(!page.resolving());
+        let _ = page.update(&paths, Event::NewTargetName("sh".into()));
+        for (typed, error) in [
+            ("bin/sh", "The path must be absolute or start with ~/."),
+            ("/nowhere/x.exe", "`/nowhere/x.exe` does not exist."),
+            (r"C:\x.exe", r"`C:\x.exe` does not exist."),
+        ] {
+            let _ = page.update(&paths, Event::NewTargetPath(typed.into()));
+            add(&mut page, &paths);
+            assert_eq!(editor(&page).add_error.as_deref(), Some(error), "{typed}");
+        }
+        assert!(!page.is_dirty());
+        // A check that lands after the form changed is dropped, and so is
+        // one that isn't the latest.
+        let _ = page.update(&paths, Event::NewTargetPath("/bin/sh".into()));
+        let _ = page.update(&paths, Event::TargetAdd);
+        let _ = page.update(&paths, Event::NewTargetName("shell".into()));
+        let sequence = page.resolve_sequence;
+        let _ = page.update(&paths, Event::Resolved(1, sequence, Ok("/bin/sh".into())));
+        assert!(!page.is_dirty() && !page.resolving());
+        let _ = page.update(&paths, Event::TargetAdd);
+        let _ = page.update(&paths, Event::Resolved(1, sequence, Ok("/bin/sh".into())));
+        assert!(!page.is_dirty() && page.resolving());
+        // One that lands while a save is locking the page is dropped too.
+        let sequence = page.resolve_sequence;
+        page.saving = true;
+        let _ = page.update(&paths, Event::Resolved(1, sequence, Ok("/bin/sh".into())));
+        page.saving = false;
+        assert!(!page.is_dirty() && !page.resolving());
+        // An empty name takes one suggested from the exe.
+        let exe = root.path().join("Apps/My Tool.exe");
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        fs::write(&exe, "").unwrap();
+        let _ = page.update(&paths, Event::NewTargetName(String::new()));
+        let _ = page.update(
+            &paths,
+            Event::NewTargetPath(exe.display().to_string().replace(' ', "\\ ")),
+        );
+        add(&mut page, &paths);
+        let added = &editor(&page).form.draft.targets["my-tool"];
+        assert_eq!(added.exe, "~/Apps/My Tool.exe");
+        assert!(added.desktop);
+        assert_eq!(added.name, "My Tool");
+    }
+
+    fn fake_prefix(paths: &Paths) -> std::path::PathBuf {
+        let prefix = paths.expand("~/prefixes/game");
+        fs::create_dir_all(prefix.join("dosdevices")).unwrap();
+        fs::write(prefix.join("system.reg"), "").unwrap();
+        std::os::unix::fs::symlink("../drive_c", prefix.join("dosdevices/c:")).unwrap();
+        for exe in [
+            "drive_c/Games/Hades/Hades.exe",
+            "drive_c/Games/Hades/unins000.exe",
+        ] {
+            let path = prefix.join(exe);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "").unwrap();
+        }
+        prefix
+    }
+
+    #[test]
+    fn installed_programs_are_offered_once_the_prefix_exists() {
+        let (_root, paths) = setup();
+        write(&paths, TARGETED);
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::AddOpen(true));
+        assert_eq!(editor(&page).scan, Some(Scan::Scanning));
+        let _ = page.update(&paths, Event::Scanned(1, load::scan(&paths, "game")));
+        assert_eq!(editor(&page).scan, Some(Scan::NoPrefix));
+        let prefix = fake_prefix(&paths);
+        let _ = page.update(&paths, Event::Scanned(7, Scan::NoPrefix));
+        let _ = page.update(&paths, Event::Scanned(1, load::scan(&paths, "game")));
+        let Some(Scan::Programs {
+            programs,
+            held_back,
+        }) = editor(&page).scan.clone()
+        else {
+            panic!("{:?}", editor(&page).scan);
+        };
+        assert_eq!(
+            programs,
+            [ProgramChoice {
+                name: "Hades".into(),
+                exe: r"C:\Games\Hades\Hades.exe".into(),
+            }]
+        );
+        assert_eq!(held_back.len(), 1);
+        let _ = page.update(&paths, Event::ProgramPicked(programs[0].clone()));
+        assert_eq!(
+            editor(&page).new_target,
+            NewTarget {
+                name: "hades".into(),
+                path: r"C:\Games\Hades\Hades.exe".into(),
+                label: Some("Hades".into()),
+            }
+        );
+        add(&mut page, &paths);
+        assert_eq!(
+            editor(&page).form.draft.targets["hades"].exe,
+            r"C:\Games\Hades\Hades.exe"
+        );
+        // A Unix path inside drive_c is stored as its C: path.
+        let _ = page.update(&paths, Event::NewTargetName("uninstall".into()));
+        let unins = prefix.join("drive_c/Games/Hades/unins000.exe");
+        let _ = page.update(&paths, Event::NewTargetPath(unins.display().to_string()));
+        add(&mut page, &paths);
+        let added = &editor(&page).form.draft.targets["uninstall"];
+        assert_eq!(added.exe, r"C:\Games\Hades\unins000.exe");
+        assert_eq!(added.name, "unins000");
+    }
+
+    #[test]
+    fn a_native_page_adds_targets_by_path_only() {
+        let (root, paths) = setup();
+        let bin = root.path().join("bin");
+        executable(&bin.join("dusk"));
+        write(
+            &paths,
+            &format!(
+                "schema_version = 1\nkind = \"native\"\n[env]\nPATH = \"{}\"\n[targets.game]\nexe = \"dusk\"\n",
+                bin.display()
+            ),
+        );
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::AddOpen(true));
+        assert_eq!(editor(&page).scan, None);
+        let _ = page.update(
+            &paths,
+            Event::ProgramPicked(ProgramChoice {
+                name: "X".into(),
+                exe: r"C:\x.exe".into(),
+            }),
+        );
+        target(
+            &mut page,
+            &paths,
+            "game",
+            TargetEdit::Switch(Switch::Wayland, true),
+        );
+        target(
+            &mut page,
+            &paths,
+            "game",
+            TargetEdit::Reset(Switch::Wayland),
+        );
+        assert!(!page.is_dirty());
+        assert_eq!(editor(&page).new_target, NewTarget::default());
+        let _ = page.update(&paths, Event::NewTargetName("win".into()));
+        let _ = page.update(&paths, Event::NewTargetPath(r"C:\x.exe".into()));
+        add(&mut page, &paths);
+        assert!(
+            editor(&page)
+                .add_error
+                .as_deref()
+                .is_some_and(|error| error.contains("native")),
+            "{:?}",
+            editor(&page).add_error
+        );
+        // A bare name is looked up on the environment's PATH.
+        let _ = page.update(&paths, Event::NewTargetName("dusk".into()));
+        let _ = page.update(&paths, Event::NewTargetPath("dusk".into()));
+        add(&mut page, &paths);
+        assert_eq!(editor(&page).form.draft.targets["dusk"].exe, "dusk");
+        target(&mut page, &paths, "game", TargetEdit::Default(true));
+        let applied = apply(&page, &paths);
+        assert!(applied.failed.is_none(), "{:?}", applied.failed);
+        let text = fs::read_to_string(paths.environment_config("game")).unwrap();
+        assert!(text.contains("[targets.dusk]\nexe = \"dusk\""), "{text}");
+    }
+
+    #[test]
+    fn a_portable_page_refuses_desktop_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_owned();
+        let portable = root.path().join("portable");
+        fs::create_dir_all(&portable).unwrap();
+        let paths = Paths::select(
+            move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+            Some(&portable),
+        )
+        .unwrap();
+        write(
+            &paths,
+            "schema_version = 1\nprefix = \"prefixes/game\"\nrunner = \"missing\"\narch = \"win64\"\n[targets.game]\nexe = \"/bin/sh\"\ndesktop = true\n[targets.tool]\nexe = \"/bin/true\"\ndefault = true\n",
+        );
+        let mut page = page(&paths);
+        let shown = editor(&page);
+        assert_eq!(
+            shown.desktop_refusal().as_deref(),
+            Some("desktop entries aren't supported for portable environments")
+        );
+        target(&mut page, &paths, "tool", TargetEdit::Desktop(true));
+        assert!(!page.is_dirty());
+        // A hand-written one can still be turned off.
+        target(&mut page, &paths, "game", TargetEdit::Desktop(false));
+        assert_eq!(editor(&page).form.edits().unset, ["targets.game.desktop"]);
+        // New targets get no entry, and no name to title one.
+        let _ = page.update(&paths, Event::NewTargetName("sh".into()));
+        let _ = page.update(&paths, Event::NewTargetPath("/bin/sh".into()));
+        add(&mut page, &paths);
+        let added = &editor(&page).form.draft.targets["sh"];
+        assert!(!added.desktop && added.name.is_empty());
     }
 }
