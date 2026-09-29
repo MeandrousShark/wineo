@@ -47,6 +47,8 @@ Completed: [0034: GUI-facing core API review](plans/0034-core-api-review.md).
 See [Core API for frontends](core-api.md) for the operations a GUI calls.
 Completed: [0035: Heroic import in core](plans/0035-heroic-import-in-core.md).
 See [Heroic import](core-api.md#heroic-import) for the plan-then-apply API.
+Completed: [0036: GUI library launcher](plans/0036-gui-library-launcher.md).
+See [Desktop app](gui.md) for using it.
 
 **Category**
 
@@ -76,7 +78,7 @@ See [Heroic import](core-api.md#heroic-import) for the plan-then-apply API.
 | Integrity checking | Portability/Data | **4** | | Detect damaged or tampered files | Scope still open: prefix or game files, snapshots, or re-verifying downloads (already sha256-checked on install). |
 | Import from Lutris/Bottles and Heroic store metadata | Compatibility | **3** | 0008 | Extends generic import and Heroic sideloaded-game import | 0008 covers manually added Heroic games only. Store integration and other launchers remain separate work. |
 | Managed copying of portable application folders | Portability/Data | **3** | 0007, 0008 | Optional organization for applications used in place today | 0008 copies prefixes but leaves external game folders where they are. Storage layout and removal semantics need a later plan. |
-| wineo-gui | UX | **1** | [GUI entry criteria](#gui-entry-criteria) | Build on a mature CLI and shared core operations | iced. [Plan 0036](plans/0036-gui-library-launcher.md) (library launcher) is implemented and awaiting acceptance, see [Desktop app](gui.md); create and Heroic import, then settings, validate, and trash follow in later plans. |
+| wineo-gui | UX | **1** | [GUI entry criteria](#gui-entry-criteria) | Build on a mature CLI and shared core operations | iced. [Plan 0036](plans/0036-gui-library-launcher.md) (library launcher) is done, see [Desktop app](gui.md); create and Heroic import, then settings, validate, and trash follow in later plans. |
 | GUI visual polish | UX | **2** | 0036 | Make the desktop app feel finished rather than spike-grade | From the maintainer's 0036 testing (2026-09-28): redesign the Play, Stop, and Log buttons, which look like spike or built-in styles, and give them one consistent shape (Log differs from Play and Stop today). Give the detail panel some depth, like a shadow or elevation, and animate it opening and closing. |
 | GUI context menu and actions | UX | **2** | 0036 | Reach per-environment actions without the CLI | A right-click menu on a card, with the same actions in a dropdown in the detail panel: remove, run an exe in the prefix, configure, browse art, and more. Bundle it with the plans that bring more CLI commands into the GUI (create and import, then settings, validate, and trash). |
 | GUI themes and customization | UX | **3** | 0036 | Let people make the app their own | From the maintainer's 0036 testing (2026-09-28): custom themes with a few presets, added with a GUI settings page. Longer term, a deeply customizable GUI. The palette tokens from 0036 are the starting point. |
