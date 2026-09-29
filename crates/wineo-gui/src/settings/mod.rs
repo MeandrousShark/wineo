@@ -36,9 +36,29 @@ pub(crate) enum Event {
     OpenConfig,
     Opened(Result<(), String>),
     Loaded(u64, Snapshot),
-    Checked(u64, Texts),
-    CheckFailed(u64),
+    /// The page's generation and the check's sequence number.
+    Checked(u64, u64, Texts),
+    CheckFailed(u64, u64),
     Saved(u64, Result<Report, String>),
+}
+
+impl Event {
+    /// Whether this changes the draft, as opposed to moving the page along.
+    fn edits(&self) -> bool {
+        matches!(
+            self,
+            Event::RunnerPicked(_)
+                | Event::Switch(..)
+                | Event::Reset(_)
+                | Event::Gamescope(_)
+                | Event::FieldText(..)
+                | Event::FieldChoice(..)
+                | Event::GrabCursor(_)
+                | Event::ArgsInput(_)
+                | Event::ArgsAdd
+                | Event::ArgsRemove(_)
+        )
+    }
 }
 
 pub(crate) struct Editor {
@@ -61,6 +81,9 @@ pub(crate) enum View {
 enum Mode {
     /// The file becomes the page, unless it was edited while loading.
     Replace,
+    /// What a successful save wrote becomes the page. The controls are
+    /// locked until then, so there are no edits to keep.
+    AfterSave,
     /// The file becomes the base the edits are compared with, and the edits
     /// stay. For a save that failed partway and for global config changes.
     Rebase,
@@ -70,6 +93,8 @@ struct Pending {
     mode: Mode,
     /// The draft when the load started, to tell edits made since.
     draft: Option<Values>,
+    /// Follows a save, so the controls stay locked until it lands.
+    after_save: bool,
 }
 
 pub(crate) struct Page {
@@ -81,6 +106,9 @@ pub(crate) struct Page {
     disk: Option<Texts>,
     pending: Option<Pending>,
     checking: bool,
+    /// Bumped by every check, load, and save, so a check that was reading
+    /// while one of those ran can't land on top of it with stale text.
+    check_sequence: u64,
     pub(crate) saving: bool,
     pub(crate) changed_on_disk: bool,
     pub(crate) leave_prompt: bool,
@@ -129,6 +157,7 @@ impl Page {
             disk: None,
             pending: None,
             checking: false,
+            check_sequence: 0,
             saving: false,
             changed_on_disk: false,
             leave_prompt: false,
@@ -152,6 +181,20 @@ impl Page {
     pub(crate) fn loading(&self) -> bool {
         self.pending.is_some()
     }
+    /// A save and the reload after it are in flight, so the controls take no
+    /// edits: the reload would otherwise count them as already saved.
+    pub(crate) fn locked(&self) -> bool {
+        self.saving
+            || self
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.after_save)
+    }
+    /// Any check reading now is stale by the time it lands.
+    fn drop_checks(&mut self) {
+        self.check_sequence = self.check_sequence.wrapping_add(1);
+        self.checking = false;
+    }
     pub(crate) fn is_dirty(&self) -> bool {
         self.editor().is_some_and(|editor| editor.form.is_dirty())
     }
@@ -174,12 +217,18 @@ impl Page {
             .and_then(|editor| editor.info.global_warning.as_deref())
     }
     fn reload(&mut self, paths: &Paths, mode: Mode) -> Task<Message> {
+        self.reload_after(paths, mode, false)
+    }
+    fn reload_after(&mut self, paths: &Paths, mode: Mode, after_save: bool) -> Task<Message> {
         if self.loading() {
             return Task::none();
         }
+        self.drop_checks();
+        self.menu_open = false;
         self.pending = Some(Pending {
             mode,
             draft: self.editor().map(|editor| editor.form.draft.clone()),
+            after_save,
         });
         load::load_task(paths.clone(), self.name.clone(), self.generation)
     }
@@ -195,8 +244,14 @@ impl Page {
         if self.loading() || self.saving || self.checking || self.disk.is_none() {
             return Task::none();
         }
+        self.check_sequence = self.check_sequence.wrapping_add(1);
         self.checking = true;
-        load::check_task(paths.clone(), self.name.clone(), self.generation)
+        load::check_task(
+            paths.clone(),
+            self.name.clone(),
+            self.generation,
+            self.check_sequence,
+        )
     }
     fn update(&mut self, paths: &Paths, event: Event) -> Step {
         let step = self.handle(paths, event);
@@ -206,6 +261,9 @@ impl Page {
         step
     }
     fn handle(&mut self, paths: &Paths, event: Event) -> Step {
+        if self.locked() && event.edits() {
+            return Step::none();
+        }
         match event {
             Event::Back => {
                 if self.saving {
@@ -236,6 +294,7 @@ impl Page {
                     return Step::none();
                 }
                 self.saving = true;
+                self.drop_checks();
                 self.leave_prompt = false;
                 self.edited();
                 Step::task(load::save_task(
@@ -253,7 +312,7 @@ impl Page {
                 Step::task(self.reload(paths, Mode::Replace))
             }
             Event::Revert => {
-                if self.saving {
+                if self.locked() {
                     return Step::none();
                 }
                 self.edited();
@@ -368,15 +427,21 @@ impl Page {
                 }
                 Step::none()
             }
-            Event::Checked(generation, texts) => {
-                if generation != self.generation {
+            Event::Checked(generation, sequence, texts) => {
+                if generation != self.generation || sequence != self.check_sequence {
                     return Step::none();
                 }
                 self.checking = false;
                 let Some(disk) = &self.disk else {
                     return Step::none();
                 };
-                if self.loading() || self.saving || *disk == texts {
+                if self.loading() || self.saving {
+                    return Step::none();
+                }
+                if *disk == texts {
+                    // Changed back to what the page holds, so its edits are
+                    // against the file again.
+                    self.changed_on_disk = false;
                     return Step::none();
                 }
                 if disk.environment != texts.environment {
@@ -392,8 +457,8 @@ impl Page {
                     Step::task(self.reload(paths, Mode::Rebase))
                 }
             }
-            Event::CheckFailed(generation) => {
-                if generation == self.generation {
+            Event::CheckFailed(generation, sequence) => {
+                if generation == self.generation && sequence == self.check_sequence {
                     self.checking = false;
                 }
                 Step::none()
@@ -412,9 +477,9 @@ impl Page {
                             // keep the edits, which drops whatever did land.
                             Some(error) => {
                                 self.error = Some(error);
-                                Step::task(self.reload(paths, Mode::Rebase))
+                                Step::task(self.reload_after(paths, Mode::Rebase, true))
                             }
-                            None => Step::task(self.reload(paths, Mode::Replace)),
+                            None => Step::task(self.reload_after(paths, Mode::AfterSave, true)),
                         }
                     }
                     Err(error) => {
@@ -426,8 +491,9 @@ impl Page {
         }
     }
     fn land(&mut self, pending: Pending, snapshot: Snapshot) {
+        self.menu_open = false;
         let draft = self.editor().map(|editor| &editor.form.draft);
-        let edited_since = draft != pending.draft.as_ref();
+        let edited_since = pending.mode == Mode::Replace && draft != pending.draft.as_ref();
         match (pending.mode, snapshot.content) {
             (Mode::Rebase, Content::Form(info)) if self.editor().is_some() => {
                 let keep_base = self.changed_on_disk;
@@ -592,9 +658,19 @@ mod tests {
         page.editor().expect("form")
     }
 
-    fn check(page: &mut Page, paths: &Paths) {
+    /// Starts a check the way the tick does and hands back its sequence.
+    fn start_check(page: &mut Page) -> u64 {
+        page.check_sequence += 1;
         page.checking = true;
-        let _ = page.update(paths, Event::Checked(1, Texts::read(paths, "game")));
+        page.check_sequence
+    }
+
+    fn check(page: &mut Page, paths: &Paths) {
+        let sequence = start_check(page);
+        let _ = page.update(
+            paths,
+            Event::Checked(1, sequence, Texts::read(paths, "game")),
+        );
     }
 
     /// Writes what the page would save, the way the worker does.
@@ -761,17 +837,98 @@ mod tests {
     }
 
     #[test]
-    fn edits_made_while_a_save_reloads_are_kept() {
+    fn controls_are_locked_until_a_save_has_reloaded() {
         let (_root, paths) = setup();
         write(&paths, GAME);
         let mut page = page(&paths);
         let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
+        let _ = page.update(&paths, Event::Save);
+        assert!(page.saving && page.locked());
+        let edits = [
+            Event::Switch(Switch::Gamemode, true),
+            Event::Reset(Switch::Mangohud),
+            Event::Gamescope(false),
+            Event::FieldText(Field::Width, "1".into()),
+            Event::FieldChoice(Field::Filter, Choice(Some("fsr"))),
+            Event::GrabCursor(true),
+            Event::ArgsInput("-x".into()),
+            Event::ArgsAdd,
+            Event::RunnerPicked(RunnerChoice {
+                name: "other".into(),
+                proton: None,
+            }),
+            Event::Revert,
+        ];
+        for event in edits.clone() {
+            let _ = page.update(&paths, event);
+        }
         apply(&page, &paths);
         saved(&mut page, &paths, &[], None);
-        let _ = page.update(&paths, Event::Switch(Switch::Gamemode, true));
+        assert!(page.loading() && page.locked());
+        for event in edits {
+            let _ = page.update(&paths, event);
+        }
         land(&mut page, &paths);
-        assert!(page.changed_on_disk);
+        assert!(!page.locked());
+        assert!(!page.is_dirty() && !page.changed_on_disk);
+        let draft = &editor(&page).form.draft;
+        assert_eq!((draft.mangohud, draft.gamemode), (Some(true), Some(false)));
+        assert!(draft.gamescope && draft.fields.args.is_empty());
+        assert!(editor(&page).args_input.is_empty());
+    }
+
+    #[test]
+    fn changing_the_file_back_clears_the_reload_state() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
+        write(&paths, &GAME.replace("gamemode = false", "gamemode = true"));
+        check(&mut page, &paths);
+        assert!(page.changed_on_disk && !page.can_save());
+        write(&paths, GAME);
+        check(&mut page, &paths);
+        assert!(!page.changed_on_disk && page.can_save() && !page.can_reload());
+        assert!(page.is_dirty());
+    }
+
+    #[test]
+    fn a_check_that_started_before_a_load_is_dropped() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        let sequence = start_check(&mut page);
+        let stale = Texts::read(&paths, "game");
+        write(&paths, &GAME.replace("gamemode = false", "gamemode = true"));
+        check(&mut page, &paths);
+        land(&mut page, &paths);
         assert_eq!(editor(&page).form.draft.gamemode, Some(true));
+        // The old file text, read before the reload, would look like a change.
+        let _ = page.update(&paths, Event::Checked(1, sequence, stale));
+        assert!(!page.loading() && !page.changed_on_disk);
+        // A save drops checks in flight too.
+        let sequence = start_check(&mut page);
+        let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
+        let _ = page.update(&paths, Event::Save);
+        let _ = page.update(&paths, Event::CheckFailed(1, sequence));
+        assert!(!page.checking);
+        let _ = page.update(&paths, Event::Saved(1, Err("busy".into())));
+        let _ = page.update(&paths, Event::Checked(1, sequence, Texts::default()));
+        assert!(!page.loading() && !page.changed_on_disk);
+    }
+
+    #[test]
+    fn a_reload_closes_the_menu_state() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::MenuOpened);
+        write(&paths, &GAME.replace("gamemode = false", "gamemode = true"));
+        check(&mut page, &paths);
+        assert!(!page.menu_open);
+        let _ = page.update(&paths, Event::MenuOpened);
+        land(&mut page, &paths);
+        assert!(!page.menu_open);
     }
 
     #[test]

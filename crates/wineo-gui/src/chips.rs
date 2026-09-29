@@ -14,6 +14,7 @@ pub(crate) struct Chips<'a, Message> {
     pub(crate) on_input: Box<dyn Fn(String) -> Message + 'a>,
     pub(crate) on_add: Message,
     pub(crate) on_remove: Box<dyn Fn(usize) -> Message + 'a>,
+    pub(crate) enabled: bool,
 }
 
 impl<'a, Message: Clone + 'a> Chips<'a, Message> {
@@ -24,7 +25,7 @@ impl<'a, Message: Clone + 'a> Chips<'a, Message> {
                 row![
                     text(item.as_str()).size(13).color(palette.foreground),
                     button(text("x").size(12).color(palette.muted))
-                        .on_press((self.on_remove)(index))
+                        .on_press_maybe(self.enabled.then(|| (self.on_remove)(index)))
                         .padding([0, 4])
                         .style(|_, _| button::Style::default()),
                 ]
@@ -39,10 +40,10 @@ impl<'a, Message: Clone + 'a> Chips<'a, Message> {
             });
             chips = chips.push(chip);
         }
-        let can_add = self.error.is_none() && !self.input.is_empty();
+        let can_add = self.enabled && self.error.is_none() && !self.input.is_empty();
         let add = self.on_add.clone();
         let input = text_input(self.placeholder, self.input)
-            .on_input(self.on_input)
+            .on_input_maybe(self.enabled.then_some(self.on_input))
             .on_submit_maybe(can_add.then_some(add))
             .width(180)
             .padding([4, 8])

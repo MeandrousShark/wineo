@@ -62,7 +62,7 @@ impl Page {
                 }
                 content.into()
             }
-            View::Form(editor) => editor_view(editor, palette),
+            View::Form(editor) => editor_view(editor, self.locked(), palette),
         };
         let scroll = scrollable(
             container(container(body).max_width(PAGE_WIDTH).width(Fill))
@@ -147,7 +147,7 @@ impl Page {
     }
 }
 
-fn editor_view(editor: &Editor, palette: Palette) -> Element<'_, Message> {
+fn editor_view(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Message> {
     let info = &editor.info;
     let draft = &editor.form.draft;
     let mut sections = column![].spacing(24).width(Fill);
@@ -156,16 +156,21 @@ fn editor_view(editor: &Editor, palette: Palette) -> Element<'_, Message> {
             .runners
             .iter()
             .find(|choice| Some(&choice.name) == draft.runner.as_ref());
-        let runner = pick_list(info.runners.as_slice(), selected, |choice| {
-            send(Event::RunnerPicked(choice))
-        })
-        .on_open(send(Event::MenuOpened))
-        .on_close(send(Event::MenuClosed))
-        .width(CONTROL_WIDTH);
+        let runner: Element<'_, Message> = if locked {
+            locked_choice(draft.runner.as_deref().unwrap_or_default(), palette)
+        } else {
+            pick_list(info.runners.as_slice(), selected, |choice| {
+                send(Event::RunnerPicked(choice))
+            })
+            .on_open(send(Event::MenuOpened))
+            .on_close(send(Event::MenuClosed))
+            .width(CONTROL_WIDTH)
+            .into()
+        };
         let proton = info.current.as_ref().is_some_and(|current| current.proton);
         let arch = if proton { "win64" } else { info.arch.as_str() };
         let mut rows = column![
-            setting_row("Runner", runner.into(), None, palette),
+            setting_row("Runner", runner, None, palette),
             setting_row(
                 "Arch",
                 text(arch).color(palette.foreground).into(),
@@ -198,6 +203,7 @@ fn editor_view(editor: &Editor, palette: Palette) -> Element<'_, Message> {
             Some(source),
             move |on| send(Event::Switch(*switch, on)),
             (source == Source::Here).then(|| send(Event::Reset(*switch))),
+            locked,
             palette,
         ));
     }
@@ -208,11 +214,12 @@ fn editor_view(editor: &Editor, palette: Palette) -> Element<'_, Message> {
         None,
         |on| send(Event::Gamescope(on)),
         None,
+        locked,
         palette,
     ));
     if draft.gamescope {
         launch = launch.push(
-            container(gamescope_fields(editor, palette)).padding(iced::Padding {
+            container(gamescope_fields(editor, locked, palette)).padding(iced::Padding {
                 left: 24.0,
                 ..iced::Padding::ZERO
             }),
@@ -222,11 +229,14 @@ fn editor_view(editor: &Editor, palette: Palette) -> Element<'_, Message> {
     sections.into()
 }
 
-fn gamescope_fields(editor: &Editor, palette: Palette) -> Element<'_, Message> {
+fn gamescope_fields(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Message> {
     let fields = &editor.form.draft.fields;
     let mut rows = Column::new().spacing(10);
     for field in Field::ALL {
         let control: Element<'_, Message> = match field {
+            Field::Filter | Field::Scaler | Field::Window if locked => {
+                locked_choice(&fields.choice(field).to_string(), palette)
+            }
             Field::Filter | Field::Scaler | Field::Window => {
                 let options: Vec<Choice> = std::iter::once(Choice(None))
                     .chain(field.choices().into_iter().map(|value| Choice(Some(value))))
@@ -240,7 +250,7 @@ fn gamescope_fields(editor: &Editor, palette: Palette) -> Element<'_, Message> {
                 .into()
             }
             Field::GrabCursor => toggler(fields.grab_cursor)
-                .on_toggle(|on| send(Event::GrabCursor(on)))
+                .on_toggle_maybe((!locked).then_some(|on| send(Event::GrabCursor(on))))
                 .into(),
             Field::Args => Chips {
                 items: &fields.args,
@@ -250,10 +260,13 @@ fn gamescope_fields(editor: &Editor, palette: Palette) -> Element<'_, Message> {
                 on_input: Box::new(|value| send(Event::ArgsInput(value))),
                 on_add: send(Event::ArgsAdd),
                 on_remove: Box::new(|index| send(Event::ArgsRemove(index))),
+                enabled: !locked,
             }
             .view(palette),
             _ => text_input("unset", fields.text(field))
-                .on_input(move |value| send(Event::FieldText(field, value)))
+                .on_input_maybe(
+                    (!locked).then_some(move |value| send(Event::FieldText(field, value))),
+                )
                 .width(CONTROL_WIDTH)
                 .padding([6, 10])
                 .style(move |_, status| input_style(palette, status))
@@ -317,11 +330,12 @@ fn switch_row<'a>(
     source: Option<Source>,
     toggle: impl Fn(bool) -> Message + 'a,
     reset: Option<Message>,
+    locked: bool,
     palette: Palette,
 ) -> Element<'a, Message> {
     let mut line = row![
         text(label).color(palette.foreground).width(LABEL_WIDTH),
-        container(toggler(on).on_toggle(toggle)).width(64),
+        container(toggler(on).on_toggle_maybe((!locked).then_some(toggle))).width(64),
         text(source.map_or("", Source::label))
             .size(13)
             .color(palette.muted)
@@ -333,7 +347,7 @@ fn switch_row<'a>(
     if let Some(reset) = reset {
         line = line.push(
             button(text("Reset").size(13))
-                .on_press(reset)
+                .on_press_maybe((!locked).then_some(reset))
                 .padding([4, 10])
                 .style(move |_, status| secondary(palette, status)),
         );
@@ -381,5 +395,19 @@ fn divider(palette: Palette) -> Element<'static, Message> {
         .width(Fill)
         .height(1)
         .style(move |_| container::Style::default().background(palette.border))
+        .into()
+}
+
+/// A pick list's value while the page is locked, since iced's pick list has
+/// no disabled state.
+fn locked_choice(value: &str, palette: Palette) -> Element<'static, Message> {
+    container(text(value.to_owned()).color(palette.muted))
+        .width(CONTROL_WIDTH)
+        .padding([5, 10])
+        .style(move |_| {
+            container::Style::default()
+                .background(palette.surface)
+                .border(border::rounded(4).width(1).color(palette.border))
+        })
         .into()
 }

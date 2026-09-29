@@ -295,14 +295,19 @@ pub(crate) fn load_task(paths: Paths, name: String, generation: u64) -> Task<Mes
     )
 }
 
-pub(crate) fn check_task(paths: Paths, name: String, generation: u64) -> Task<Message> {
+pub(crate) fn check_task(
+    paths: Paths,
+    name: String,
+    generation: u64,
+    sequence: u64,
+) -> Task<Message> {
     blocking(
         move || Texts::read(&paths, &name),
         move |result| {
             // A failed read is left for the next tick.
             match result {
-                Ok(texts) => Message::Settings(Event::Checked(generation, texts)),
-                Err(_) => Message::Settings(Event::CheckFailed(generation)),
+                Ok(texts) => Message::Settings(Event::Checked(generation, sequence, texts)),
+                Err(_) => Message::Settings(Event::CheckFailed(generation, sequence)),
             }
         },
     )
