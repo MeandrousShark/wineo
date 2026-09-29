@@ -3,7 +3,8 @@
 `wineo-core` is what the CLI is built on, and what a GUI will call directly.
 This page covers the conventions every long operation follows and the entry
 points a frontend needs. It was written for
-[plan 0034](plans/0034-core-api-review.md).
+[plan 0034](plans/0034-core-api-review.md), and
+[plan 0035](plans/0035-heroic-import-in-core.md) added Heroic import.
 
 ## Conventions
 
@@ -21,7 +22,7 @@ event enum. Events arrive on the worker thread, in order.
 
 | Operation | Events |
 |---|---|
-| import, clone, portable copy, snapshots | `import::ImportProgress` |
+| import, Heroic import, clone, portable copy, snapshots | `import::ImportProgress` |
 | component downloads | `download::Progress` |
 | prefix creation | `prefix::PrefixEvent` |
 | environment creation | `create::CreateEvent` |
@@ -132,9 +133,55 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   `snapshot::restore_reviewed`. Each takes an inspected review, `&token`, and
   a progress callback.
 
+### Heroic import
+
+`heroic_import` holds every decision `wineo import heroic` makes. Plans only
+read, so a frontend can build, edit, and rebuild them freely. Nothing is
+written until `apply`.
+
+One game:
+
+1. `plan_game(paths, global, &source, id, runner, options) -> GamePlan`
+   inspects a Windows game and plans it against a runner. `suggest_runner`
+   picks one: use an installed runner, copy Heroic's build into wineo, or
+   let the person choose.
+2. `plan.resolve(Policy::Strict)` for a direct import with flags, or
+   `Policy::Defaults` for a guided one. It labels each `Finding` with a
+   `Resolution` rather than failing. Then `blocking()` lists what stops the
+   import, `needs_input()` says what a person has to supply (today only
+   launcher arguments Heroic stored unparsed), and `warnings()` returns
+   typed `Warning`s.
+3. The setters (`set_name`, `set_executable`, `set_launcher_args`,
+   `set_copy`, `set_desktop_enabled`, and the rest) apply a person's edits
+   and return a typed `PlanError` when a value is wrong.
+4. `missing_build` reports a DXVK or vkd3d-proton build the game needs that
+   isn't installed, so the frontend can offer the download.
+5. `apply(paths, global, &source, &plan, &token, progress) -> Registered`
+   copies or adopts the prefix, writes the config, and carries over Heroic's
+   playtime. It refuses if Heroic's settings changed since the plan was made.
+   Then `registered.finish(paths, global)` writes desktop entries.
+
+Native games follow the same steps with `plan_native` and `apply_native`,
+which takes no token since nothing is copied.
+
+A whole library, for `--all`:
+
+- `sources` and `listing` find Heroic's configs and list every game.
+- `plan_library(paths, global, &listing, runner, &options) -> LibraryPlan`
+  sorts each game into ready, pending a build download, skipped with a
+  `SkipReason`, or already imported.
+- `record_backfills(paths)` writes `heroic_id` into environments that were
+  imported before wineo recorded it. It's separate so a frontend decides when
+  that happens. The CLI calls it right after planning, even if the user then
+  cancels, since it only helps matching next time.
+- `pending_builds()` lists the downloads to offer, `settle` moves games whose
+  builds arrived to ready and skips the rest, and `into_ready()` returns the
+  games to apply.
+
+`SkipReason` and `Warning` carry no wording. The CLI keeps its own text, such
+as "Proton runner, needs --runner", and a GUI shows its own.
+
 ## Not in core yet
 
-- Heroic import still lives in the CLI's `import_heroic` command. Plan 0035
-  moves it.
 - `StopOutcome` carries ready-made message strings rather than typed
   warnings.
