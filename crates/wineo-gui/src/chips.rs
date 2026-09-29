@@ -10,7 +10,7 @@ pub(crate) struct Chips<'a, Message> {
     pub(crate) input: &'a str,
     pub(crate) placeholder: &'a str,
     /// Why the typed value can't be added, shown under the field.
-    pub(crate) error: Option<&'a str>,
+    pub(crate) error: Option<String>,
     pub(crate) on_input: Box<dyn Fn(String) -> Message + 'a>,
     pub(crate) on_add: Message,
     pub(crate) on_remove: Box<dyn Fn(usize) -> Message + 'a>,

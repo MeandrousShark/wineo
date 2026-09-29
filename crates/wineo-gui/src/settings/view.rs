@@ -4,7 +4,9 @@ use iced::widget::{
 };
 use iced::{Center, Color, Element, Fill, Font, border, font};
 
-use super::form::{self, Choice, Field, Source, Switch};
+use wineo_core::components::Component;
+
+use super::form::{self, Build, Choice, Field, List, Source, Switch};
 use super::{Editor, Event, Page, View};
 use crate::Message;
 use crate::chips::{Chips, input_style, secondary};
@@ -62,7 +64,7 @@ impl Page {
                 }
                 content.into()
             }
-            View::Form(editor) => editor_view(editor, self.locked(), palette),
+            View::Form(editor) => editor_view(&self.name, editor, self.locked(), palette),
         };
         let scroll = scrollable(
             container(container(body).max_width(PAGE_WIDTH).width(Fill))
@@ -97,6 +99,9 @@ impl Page {
         }
         if let Some(error) = &self.error {
             bar = bar.push(text(error).size(13).color(palette.danger));
+        }
+        if let Some(problem) = self.problem().filter(|_| self.is_dirty()) {
+            bar = bar.push(text(problem).size(13).color(palette.danger));
         }
         let changes = self.changes();
         let status = if self.changed_on_disk {
@@ -147,7 +152,12 @@ impl Page {
     }
 }
 
-fn editor_view(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Message> {
+fn editor_view<'a>(
+    name: &'a str,
+    editor: &'a Editor,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
     let info = &editor.info;
     let draft = &editor.form.draft;
     let mut sections = column![].spacing(24).width(Fill);
@@ -226,7 +236,195 @@ fn editor_view(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, M
         );
     }
     sections = sections.push(section("Launch", launch.into(), palette));
+    if !info.native {
+        sections = sections.push(section(
+            "Components",
+            components(name, editor, locked, palette),
+            palette,
+        ));
+        sections = sections.push(section(
+            "Winetricks",
+            list_chips(editor, List::Winetricks, locked, palette),
+            palette,
+        ));
+    }
+    sections = sections.push(section(
+        "Tags",
+        list_chips(editor, List::Tags, locked, palette),
+        palette,
+    ));
+    sections = sections.push(section(
+        "Environment variables",
+        env_rows(editor, locked, palette),
+        palette,
+    ));
+    sections = sections.push(section(
+        "Advanced",
+        advanced(editor, locked, palette),
+        palette,
+    ));
     sections.into()
+}
+
+fn components<'a>(
+    name: &'a str,
+    editor: &'a Editor,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let mut rows = column![].spacing(12);
+    let mut notes = Vec::new();
+    for component in Component::ALL {
+        let selected = Build(editor.form.draft.build(component).map(str::to_owned));
+        let control: Element<'_, Message> = if locked || !editor.build_enabled(name, component) {
+            locked_choice(&selected.to_string(), palette)
+        } else {
+            let installed = match component {
+                Component::Dxvk => &editor.info.dxvk_builds,
+                Component::Vkd3d => &editor.info.vkd3d_builds,
+            };
+            let choices = form::build_choices(installed, selected.0.as_deref());
+            pick_list(choices, Some(selected), move |build| {
+                send(Event::BuildPicked(component, build))
+            })
+            .on_open(send(Event::MenuOpened))
+            .on_close(send(Event::MenuClosed))
+            .width(CONTROL_WIDTH)
+            .into()
+        };
+        let note = (component == Component::Vkd3d && !editor.form.vkd3d_enabled())
+            .then(|| text("needs DXVK").size(13).color(palette.muted).into());
+        rows = rows.push(setting_row(component.label(), control, note, palette));
+        notes.extend(editor.build_refusal(name, component));
+    }
+    for note in notes {
+        rows = rows.push(text(note).size(13).color(palette.muted));
+    }
+    if let Some(refusal) = &editor.build_refusal {
+        rows = rows.push(text(refusal).size(13).color(palette.danger));
+    }
+    rows.into()
+}
+
+fn list_chips(editor: &Editor, list: List, locked: bool, palette: Palette) -> Element<'_, Message> {
+    let items = editor.form.draft.list(list);
+    let input = editor.list_input(list);
+    Chips {
+        items,
+        input,
+        placeholder: match list {
+            List::Winetricks => "a verb, like corefonts",
+            List::Tags => "a tag",
+        },
+        error: list.problem(items, input),
+        on_input: Box::new(move |value| send(Event::ListInput(list, value))),
+        on_add: send(Event::ListAdd(list)),
+        on_remove: Box::new(move |index| send(Event::ListRemove(list, index))),
+        enabled: !locked,
+    }
+    .view(palette)
+}
+
+const ENV_KEY_WIDTH: f32 = 220.0;
+
+fn env_rows(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Message> {
+    let draft = &editor.form.draft;
+    let mut rows = column![].spacing(8);
+    let field = |placeholder: &str, value: &str, width: iced::Length| {
+        text_input(placeholder, value)
+            .width(width)
+            .padding([6, 10])
+            .style(move |_, status| input_style(palette, status))
+    };
+    for (index, (row, problem)) in draft.env.iter().zip(draft.env_problems()).enumerate() {
+        let line = row![
+            field("NAME", &row.key, ENV_KEY_WIDTH.into())
+                .on_input_maybe((!locked).then_some(move |key| send(Event::EnvKey(index, key)))),
+            field("value", &row.value, Fill).on_input_maybe(
+                (!locked).then_some(move |value| send(Event::EnvValue(index, value)))
+            ),
+            button(text("x").size(13))
+                .on_press_maybe((!locked).then(|| send(Event::EnvRemove(index))))
+                .padding([6, 10])
+                .style(move |_, status| secondary(palette, status)),
+        ]
+        .spacing(8)
+        .align_y(Center);
+        rows = rows.push(line);
+        if let Some(problem) = problem {
+            rows = rows.push(text(problem).size(12).color(palette.danger));
+        }
+    }
+    let new = &editor.new_env;
+    let problem = (!new.key.is_empty() || !new.value.is_empty())
+        .then(|| draft.new_env_problem(&new.key, &new.value))
+        .flatten();
+    let can_add = !locked && problem.is_none() && !new.key.is_empty();
+    rows = rows.push(
+        row![
+            field("NAME", &new.key, ENV_KEY_WIDTH.into())
+                .on_input_maybe((!locked).then_some(|key| send(Event::NewEnvKey(key))))
+                .on_submit_maybe(can_add.then(|| send(Event::EnvAdd))),
+            field("value", &new.value, Fill)
+                .on_input_maybe((!locked).then_some(|value| send(Event::NewEnvValue(value))))
+                .on_submit_maybe(can_add.then(|| send(Event::EnvAdd))),
+            button(text("+").size(14))
+                .on_press_maybe(can_add.then(|| send(Event::EnvAdd)))
+                .padding([6, 10])
+                .style(move |_, status| secondary(palette, status)),
+        ]
+        .spacing(8)
+        .align_y(Center),
+    );
+    // A value typed before its name isn't an error yet.
+    if let Some(problem) = problem.filter(|_| !new.key.is_empty()) {
+        rows = rows.push(text(problem).size(12).color(palette.danger));
+    }
+    rows.into()
+}
+
+fn advanced(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Message> {
+    let draft = &editor.form.draft;
+    let info = &editor.info;
+    let muted = |value: &str| -> Element<'_, Message> {
+        text(value.to_owned()).color(palette.muted).into()
+    };
+    let field = |value: &str, on_input: fn(String) -> Event| -> Element<'_, Message> {
+        text_input("unset", value)
+            .on_input_maybe((!locked).then_some(move |value| send(on_input(value))))
+            .width(Fill)
+            .padding([6, 10])
+            .style(move |_, status| input_style(palette, status))
+            .into()
+    };
+    let kind = if info.native { "native" } else { "wine" };
+    let mut rows = column![setting_row("Kind", muted(kind), None, palette)].spacing(12);
+    if !info.native {
+        rows = rows.push(setting_row(
+            "Prefix",
+            field(&draft.prefix, Event::Prefix),
+            None,
+            palette,
+        ));
+    }
+    if editor.protonfixes_shown() {
+        rows = rows.push(setting_row(
+            "Game id",
+            field(&draft.gameid, Event::GameId),
+            None,
+            palette,
+        ));
+        rows = rows.push(setting_row(
+            "Store",
+            field(&draft.store, Event::Store),
+            None,
+            palette,
+        ));
+    }
+    if let Some(heroic_id) = &info.heroic_id {
+        rows = rows.push(setting_row("Heroic id", muted(heroic_id), None, palette));
+    }
+    rows.into()
 }
 
 fn gamescope_fields(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Message> {

@@ -7,8 +7,10 @@ use std::io;
 use std::path::PathBuf;
 
 use iced::Task;
+use wineo_core::components::{Builds, Component};
 use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::environment::Environment;
+use wineo_core::error::Error;
 use wineo_core::install::Change;
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
@@ -50,6 +52,10 @@ pub(crate) struct Loaded {
     pub(crate) inherited: Inherited,
     pub(crate) runners: Vec<RunnerChoice>,
     pub(crate) current: Option<Current>,
+    /// Installed builds by name, empty on a native environment.
+    pub(crate) dxvk_builds: Vec<String>,
+    pub(crate) vkd3d_builds: Vec<String>,
+    pub(crate) heroic_id: Option<String>,
     /// Set when the global config can't be read, so the page shows defaults.
     pub(crate) global_warning: Option<String>,
 }
@@ -121,11 +127,20 @@ fn content(paths: &Paths, name: &str) -> anyhow::Result<Loaded> {
         mangohud: global.mangohud,
         wayland: global.wayland,
     };
-    let values = Values::from_config(&environment.config);
+    let mut values = Values::from_config(&environment.config);
     let wine = environment.config.wine();
     let (runners, current) = match wine {
         Some(wine) => runner_choices(paths, &global, &wine.runner),
         None => (Vec::new(), None),
+    };
+    // A portable prefix is stored relative to a root the field can't show,
+    // and a typed path is resolved from the working directory on save.
+    if wine.is_some() {
+        values.prefix = paths.shown(&values.prefix);
+    }
+    let builds = |component| match wine {
+        Some(_) => installed_builds(paths, &global, component),
+        None => Vec::new(),
     };
     Ok(Loaded {
         native: wine.is_none(),
@@ -134,6 +149,9 @@ fn content(paths: &Paths, name: &str) -> anyhow::Result<Loaded> {
         inherited,
         runners,
         current,
+        dxvk_builds: builds(Component::Dxvk),
+        vkd3d_builds: builds(Component::Vkd3d),
+        heroic_id: environment.config.heroic_id.clone(),
         global_warning,
     })
 }
@@ -184,6 +202,39 @@ fn runner_choices(
         proton: runner.is_proton(),
     });
     (choices, current)
+}
+
+/// The builds `wineo dxvk` or `wineo vkd3d` lists. An unreadable root offers
+/// none, and save reports the problem if one is picked anyway.
+fn installed_builds(paths: &Paths, global: &GlobalConfig, component: Component) -> Vec<String> {
+    Builds::new(paths, global, component)
+        .and_then(|builds| builds.list())
+        .map(|listing| {
+            listing
+                .builds
+                .iter()
+                .map(|build| build.name().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Why a component can't be set on this environment's runner, in the words
+/// core refuses it with.
+pub(crate) fn component_refusal(
+    name: &str,
+    current: Option<&Current>,
+    component: Component,
+) -> Option<String> {
+    let current = current.filter(|current| current.proton)?;
+    Some(
+        Error::ComponentOnProton {
+            component: component.as_str(),
+            environment: name.to_owned(),
+            runner: current.name.clone(),
+        }
+        .to_string(),
+    )
 }
 
 pub(crate) const KIND_MISMATCH: &str =

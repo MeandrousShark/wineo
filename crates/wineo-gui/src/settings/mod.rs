@@ -6,10 +6,11 @@ mod view;
 
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
+use wineo_core::components::Component;
 use wineo_core::paths::Paths;
 
 use crate::{App, Message};
-use form::{Choice, Field, Form, Switch, Values};
+use form::{Build, Choice, EnvRow, Field, Form, List, Switch, Values};
 use load::{Content, Current, Loaded, Report, RunnerChoice, Snapshot, Texts};
 
 #[derive(Debug, Clone)]
@@ -31,6 +32,19 @@ pub(crate) enum Event {
     ArgsInput(String),
     ArgsAdd,
     ArgsRemove(usize),
+    BuildPicked(Component, Build),
+    ListInput(List, String),
+    ListAdd(List),
+    ListRemove(List, usize),
+    EnvKey(usize, String),
+    EnvValue(usize, String),
+    EnvRemove(usize),
+    NewEnvKey(String),
+    NewEnvValue(String),
+    EnvAdd,
+    Prefix(String),
+    GameId(String),
+    Store(String),
     MenuOpened,
     MenuClosed,
     OpenConfig,
@@ -57,6 +71,32 @@ impl Event {
                 | Event::ArgsInput(_)
                 | Event::ArgsAdd
                 | Event::ArgsRemove(_)
+                | Event::BuildPicked(..)
+                | Event::ListInput(..)
+                | Event::ListAdd(_)
+                | Event::ListRemove(..)
+                | Event::EnvKey(..)
+                | Event::EnvValue(..)
+                | Event::EnvRemove(_)
+                | Event::NewEnvKey(_)
+                | Event::NewEnvValue(_)
+                | Event::EnvAdd
+                | Event::Prefix(_)
+                | Event::GameId(_)
+                | Event::Store(_)
+        )
+    }
+    /// Edits to keys a native environment can't have.
+    fn wine_only(&self) -> bool {
+        matches!(
+            self,
+            Event::BuildPicked(..)
+                | Event::ListInput(List::Winetricks, _)
+                | Event::ListAdd(List::Winetricks)
+                | Event::ListRemove(List::Winetricks, _)
+                | Event::Prefix(_)
+                | Event::GameId(_)
+                | Event::Store(_)
         )
     }
 }
@@ -68,6 +108,72 @@ pub(crate) struct Editor {
     pub(crate) refusal: Option<String>,
     /// An extra gamescope arg typed but not added yet.
     pub(crate) args_input: String,
+    /// Why the last build picked was refused.
+    pub(crate) build_refusal: Option<String>,
+    /// Chips and a variable typed but not added yet, which a save leaves out.
+    pub(crate) winetricks_input: String,
+    pub(crate) tags_input: String,
+    pub(crate) new_env: EnvRow,
+}
+
+impl Editor {
+    fn new(info: Loaded, form: Form) -> Self {
+        Self {
+            info,
+            form,
+            refusal: None,
+            args_input: String::new(),
+            build_refusal: None,
+            winetricks_input: String::new(),
+            tags_input: String::new(),
+            new_env: EnvRow::default(),
+        }
+    }
+    pub(crate) fn list_input(&self, list: List) -> &str {
+        match list {
+            List::Winetricks => &self.winetricks_input,
+            List::Tags => &self.tags_input,
+        }
+    }
+    fn list_input_mut(&mut self, list: List) -> &mut String {
+        match list {
+            List::Winetricks => &mut self.winetricks_input,
+            List::Tags => &mut self.tags_input,
+        }
+    }
+    pub(crate) fn proton(&self) -> bool {
+        self.info
+            .current
+            .as_ref()
+            .is_some_and(|current| current.proton)
+    }
+    /// gameid and store are Proton's, but a value already there stays
+    /// editable so it can be cleared.
+    pub(crate) fn protonfixes_shown(&self) -> bool {
+        let loaded = &self.form.loaded;
+        !self.info.native
+            && (self.proton() || !loaded.gameid.is_empty() || !loaded.store.is_empty())
+    }
+    pub(crate) fn build_refusal(&self, name: &str, component: Component) -> Option<String> {
+        load::component_refusal(name, self.info.current.as_ref(), component)
+    }
+    /// Whether a component's pick list takes a pick.
+    pub(crate) fn build_enabled(&self, name: &str, component: Component) -> bool {
+        !self.info.native
+            && self.build_refusal(name, component).is_none()
+            && (component == Component::Dxvk || self.form.vkd3d_enabled())
+    }
+    /// Whether this edit reaches a control the page shows.
+    fn accepts(&self, name: &str, event: &Event) -> bool {
+        if self.info.native && event.wine_only() {
+            return false;
+        }
+        match event {
+            Event::BuildPicked(component, _) => self.build_enabled(name, *component),
+            Event::GameId(_) | Event::Store(_) => self.protonfixes_shown(),
+            _ => true,
+        }
+    }
 }
 
 pub(crate) enum View {
@@ -206,8 +312,16 @@ impl Page {
             .as_ref()
             .is_some_and(|texts| texts.environment.is_some())
     }
+    /// Why Save is off even though there are changes.
+    pub(crate) fn problem(&self) -> Option<String> {
+        self.editor().and_then(|editor| editor.form.problem())
+    }
     pub(crate) fn can_save(&self) -> bool {
-        !self.saving && !self.loading() && !self.changed_on_disk && self.is_dirty()
+        !self.saving
+            && !self.loading()
+            && !self.changed_on_disk
+            && self.is_dirty()
+            && self.problem().is_none()
     }
     pub(crate) fn can_reload(&self) -> bool {
         !self.saving && !self.loading() && self.changed_on_disk
@@ -262,6 +376,11 @@ impl Page {
     }
     fn handle(&mut self, paths: &Paths, event: Event) -> Step {
         if self.locked() && event.edits() {
+            return Step::none();
+        }
+        if let Some(editor) = self.editor()
+            && !editor.accepts(&self.name, &event)
+        {
             return Step::none();
         }
         match event {
@@ -319,6 +438,7 @@ impl Page {
                 if let Some(editor) = self.editor_mut() {
                     editor.form.revert();
                     editor.refusal = None;
+                    editor.build_refusal = None;
                 }
                 if self.changed_on_disk {
                     return Step::task(self.reload(paths, Mode::Replace));
@@ -402,6 +522,118 @@ impl Page {
                 {
                     draft.fields.args.remove(index);
                     self.edited();
+                }
+                Step::none()
+            }
+            Event::BuildPicked(component, build) => {
+                self.edited();
+                if let Some(editor) = self.editor_mut() {
+                    editor.build_refusal = editor
+                        .form
+                        .pick_build(component, build.0)
+                        .err()
+                        .map(str::to_owned);
+                }
+                Step::none()
+            }
+            Event::ListInput(list, value) => {
+                if let Some(editor) = self.editor_mut() {
+                    *editor.list_input_mut(list) = value;
+                }
+                Step::none()
+            }
+            Event::ListAdd(list) => {
+                if let Some(editor) = self.editor_mut() {
+                    let input = editor.list_input(list);
+                    let items = editor.form.draft.list(list);
+                    if input.is_empty() || list.problem(items, input).is_some() {
+                        return Step::none();
+                    }
+                    let item = std::mem::take(editor.list_input_mut(list));
+                    editor.form.draft.list_mut(list).push(item);
+                    self.edited();
+                }
+                Step::none()
+            }
+            Event::ListRemove(list, index) => {
+                if let Some(draft) = self.draft()
+                    && index < draft.list(list).len()
+                {
+                    draft.list_mut(list).remove(index);
+                    self.edited();
+                }
+                Step::none()
+            }
+            Event::EnvKey(index, key) => {
+                if let Some(row) = self.draft().and_then(|draft| draft.env.get_mut(index)) {
+                    row.key = key;
+                    self.edited();
+                }
+                Step::none()
+            }
+            Event::EnvValue(index, value) => {
+                if let Some(row) = self.draft().and_then(|draft| draft.env.get_mut(index)) {
+                    row.value = value;
+                    self.edited();
+                }
+                Step::none()
+            }
+            Event::EnvRemove(index) => {
+                if let Some(draft) = self.draft()
+                    && index < draft.env.len()
+                {
+                    draft.env.remove(index);
+                    self.edited();
+                }
+                Step::none()
+            }
+            Event::NewEnvKey(key) => {
+                if let Some(editor) = self.editor_mut() {
+                    editor.new_env.key = key;
+                }
+                Step::none()
+            }
+            Event::NewEnvValue(value) => {
+                if let Some(editor) = self.editor_mut() {
+                    editor.new_env.value = value;
+                }
+                Step::none()
+            }
+            Event::EnvAdd => {
+                if let Some(editor) = self.editor_mut() {
+                    let row = &editor.new_env;
+                    if editor
+                        .form
+                        .draft
+                        .new_env_problem(&row.key, &row.value)
+                        .is_some()
+                    {
+                        return Step::none();
+                    }
+                    let row = std::mem::take(&mut editor.new_env);
+                    editor.form.draft.env.push(row);
+                    self.edited();
+                }
+                Step::none()
+            }
+            Event::Prefix(value) => {
+                self.edited();
+                if let Some(draft) = self.draft() {
+                    draft.prefix = value;
+                }
+                Step::none()
+            }
+            Event::GameId(value) => {
+                self.edited();
+                if let Some(draft) = self.draft() {
+                    draft.gameid = value;
+                }
+                Step::none()
+            }
+            Event::Store(value) => {
+                self.edited();
+                if let Some(draft) = self.draft() {
+                    draft.store = value;
                 }
                 Step::none()
             }
@@ -521,12 +753,10 @@ impl Page {
                 self.changed_on_disk = false;
                 let previous = self.editor().map(|editor| &editor.form);
                 self.view = match content {
-                    Content::Form(info) => View::Form(Box::new(Editor {
-                        form: Form::reloaded(info.values.clone(), previous),
-                        info: *info,
-                        refusal: None,
-                        args_input: String::new(),
-                    })),
+                    Content::Form(info) => {
+                        let form = Form::reloaded(info.values.clone(), previous);
+                        View::Form(Box::new(Editor::new(*info, form)))
+                    }
                     Content::Error(error) => View::Error(error),
                 };
             }
@@ -839,7 +1069,13 @@ mod tests {
     #[test]
     fn controls_are_locked_until_a_save_has_reloaded() {
         let (_root, paths) = setup();
-        write(&paths, GAME);
+        write(
+            &paths,
+            &GAME.replace(
+                "[gamescope]",
+                "winetricks = [\"corefonts\"]\n\n[env]\nA = \"1\"\n\n[gamescope]",
+            ),
+        );
         let mut page = page(&paths);
         let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
         let _ = page.update(&paths, Event::Save);
@@ -857,6 +1093,19 @@ mod tests {
                 name: "other".into(),
                 proton: None,
             }),
+            Event::BuildPicked(Component::Dxvk, Build(Some("latest".into()))),
+            Event::ListInput(List::Tags, "rpg".into()),
+            Event::ListAdd(List::Tags),
+            Event::ListRemove(List::Winetricks, 0),
+            Event::EnvKey(0, "B".into()),
+            Event::EnvValue(0, "2".into()),
+            Event::EnvRemove(0),
+            Event::NewEnvKey("C".into()),
+            Event::NewEnvValue("3".into()),
+            Event::EnvAdd,
+            Event::Prefix("~/elsewhere".into()),
+            Event::GameId("umu-1".into()),
+            Event::Store("gog".into()),
             Event::Revert,
         ];
         for event in edits.clone() {
@@ -874,7 +1123,22 @@ mod tests {
         let draft = &editor(&page).form.draft;
         assert_eq!((draft.mangohud, draft.gamemode), (Some(true), Some(false)));
         assert!(draft.gamescope && draft.fields.args.is_empty());
-        assert!(editor(&page).args_input.is_empty());
+        assert_eq!(
+            (&draft.dxvk, &draft.prefix),
+            (&None, &"~/prefixes/game".to_owned())
+        );
+        assert!(draft.tags.is_empty() && draft.gameid.is_empty() && draft.store.is_empty());
+        assert_eq!(draft.winetricks, ["corefonts"]);
+        assert_eq!(
+            draft.env,
+            [EnvRow {
+                key: "A".into(),
+                value: "1".into()
+            }]
+        );
+        let editor = editor(&page);
+        assert!(editor.args_input.is_empty() && editor.tags_input.is_empty());
+        assert_eq!(editor.new_env, EnvRow::default());
     }
 
     #[test]
@@ -1159,6 +1423,170 @@ mod tests {
             text.contains("args = [\"--backend\", \"two words\"]"),
             "{text}"
         );
+    }
+
+    const FULL: &str = "# my game\nschema_version = 1\nprefix = \"~/prefixes/game\" # where it lives\nrunner = \"missing\" # pinned\narch = \"win64\"\ndxvk = \"2.3\" # pinned build\ntags = [\"rpg\"] # shelf\nwinetricks = [\"corefonts\"] # fonts\n\n[env]\n# chatty otherwise\nWINEDEBUG = \"-all\" # quiet\nDXVK_HUD = \"fps\"\n";
+
+    #[test]
+    fn saving_one_control_per_section_changes_only_those_lines() {
+        let (root, paths) = setup();
+        write(&paths, FULL);
+        let mut page = page(&paths);
+        let events = [
+            Event::BuildPicked(Component::Dxvk, Build(Some("latest".into()))),
+            Event::ListInput(List::Winetricks, "vcrun2019".into()),
+            Event::ListAdd(List::Winetricks),
+            Event::ListRemove(List::Tags, 0),
+            Event::ListInput(List::Tags, "co-op".into()),
+            Event::ListAdd(List::Tags),
+            // Rows are in name order, so WINEDEBUG is second.
+            Event::EnvValue(1, r#"a "b" \c = d"#.into()),
+            Event::Prefix(root.path().join("Games/game").display().to_string()),
+        ];
+        for event in events {
+            let _ = page.update(&paths, event);
+        }
+        assert_eq!(page.changes(), 5);
+        assert!(page.can_save());
+        let applied = apply(&page, &paths);
+        assert!(applied.failed.is_none(), "{:?}", applied.failed);
+        let text = fs::read_to_string(paths.environment_config("game")).unwrap();
+        let before: Vec<&str> = FULL.lines().collect();
+        let after: Vec<&str> = text.lines().collect();
+        assert_eq!(before.len(), after.len(), "{text}");
+        let changed: Vec<&str> = before
+            .iter()
+            .zip(&after)
+            .filter(|(old, new)| old != new)
+            .map(|(_, new)| *new)
+            .collect();
+        assert_eq!(
+            changed[..4],
+            [
+                "prefix = \"~/Games/game\" # where it lives",
+                "dxvk = \"latest\" # pinned build",
+                "tags = [\"co-op\"] # shelf",
+                "winetricks = [\"corefonts\", \"vcrun2019\"] # fonts",
+            ]
+        );
+        assert!(changed[4].starts_with("WINEDEBUG = ") && changed[4].ends_with(" # quiet"));
+        assert_eq!(changed.len(), 5);
+        let config = wineo_core::environment::Environment::load(&paths, "game").unwrap();
+        assert_eq!(config.config.env["WINEDEBUG"], r#"a "b" \c = d"#);
+    }
+
+    #[test]
+    fn a_native_page_takes_no_wine_only_edits() {
+        let (_root, paths) = setup();
+        write(&paths, "schema_version = 1\nkind = \"native\"\n");
+        let mut page = page(&paths);
+        for event in [
+            Event::BuildPicked(Component::Dxvk, Build(Some("latest".into()))),
+            Event::ListInput(List::Winetricks, "corefonts".into()),
+            Event::ListAdd(List::Winetricks),
+            Event::Prefix("~/p".into()),
+            Event::GameId("umu-1".into()),
+            Event::Store("gog".into()),
+        ] {
+            let _ = page.update(&paths, event);
+        }
+        assert!(!page.is_dirty());
+        assert!(editor(&page).winetricks_input.is_empty());
+        // Native programs may have their own WINEPREFIX.
+        let _ = page.update(&paths, Event::NewEnvKey("WINEPREFIX".into()));
+        let _ = page.update(&paths, Event::NewEnvValue("/x".into()));
+        let _ = page.update(&paths, Event::EnvAdd);
+        let _ = page.update(&paths, Event::ListInput(List::Tags, "linux".into()));
+        let _ = page.update(&paths, Event::ListAdd(List::Tags));
+        assert_eq!(page.changes(), 2);
+        apply(&page, &paths);
+        let text = fs::read_to_string(paths.environment_config("game")).unwrap();
+        assert!(text.contains("WINEPREFIX = \"/x\""), "{text}");
+    }
+
+    #[test]
+    fn proton_disables_components_and_shows_protonfixes() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::GameId("umu-1".into()));
+        assert!(!page.is_dirty());
+        if let Some(editor) = page.editor_mut() {
+            editor.info.current = Some(Current {
+                name: "GE-Proton9-20".into(),
+                proton: true,
+            });
+        }
+        let _ = page.update(
+            &paths,
+            Event::BuildPicked(Component::Dxvk, Build(Some("latest".into()))),
+        );
+        assert!(!page.is_dirty());
+        let shown = editor(&page);
+        assert!(!shown.build_enabled("game", Component::Vkd3d));
+        assert_eq!(
+            shown.build_refusal("game", Component::Dxvk).as_deref(),
+            Some(
+                "`dxvk` only means something to wine, and `game` runs on GE-Proton9-20, which bundles its own"
+            )
+        );
+        let _ = page.update(&paths, Event::GameId("umu-1".into()));
+        assert_eq!(
+            editor(&page).form.edits().pairs,
+            [("gameid".to_owned(), "umu-1".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dropping_dxvk_under_vkd3d_is_refused_with_the_reason() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        let vkd3d = Event::BuildPicked(Component::Vkd3d, Build(Some("latest".into())));
+        let _ = page.update(&paths, vkd3d.clone());
+        assert!(!page.is_dirty());
+        let _ = page.update(
+            &paths,
+            Event::BuildPicked(Component::Dxvk, Build(Some("latest".into()))),
+        );
+        let _ = page.update(&paths, vkd3d);
+        let _ = page.update(&paths, Event::BuildPicked(Component::Dxvk, Build(None)));
+        let editor = editor(&page);
+        assert_eq!(
+            editor.build_refusal.as_deref(),
+            Some(form::VKD3D_NEEDS_DXVK)
+        );
+        assert_eq!(editor.form.draft.dxvk.as_deref(), Some("latest"));
+        assert!(page.can_save());
+    }
+
+    #[test]
+    fn chips_and_env_rows_refuse_bad_input() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        for (list, bad) in [(List::Winetricks, "-q"), (List::Tags, "a b")] {
+            let _ = page.update(&paths, Event::ListInput(list, bad.into()));
+            let _ = page.update(&paths, Event::ListAdd(list));
+        }
+        let _ = page.update(&paths, Event::NewEnvKey("WINEPREFIX".into()));
+        let _ = page.update(&paths, Event::EnvAdd);
+        assert!(!page.is_dirty());
+        let _ = page.update(&paths, Event::NewEnvKey("A".into()));
+        let _ = page.update(&paths, Event::EnvAdd);
+        let _ = page.update(&paths, Event::NewEnvKey("A".into()));
+        let _ = page.update(&paths, Event::EnvAdd);
+        assert_eq!(editor(&page).form.draft.env.len(), 1);
+        assert_eq!(editor(&page).new_env.key, "A");
+        // Renaming a row onto another's name blocks Save until it's fixed.
+        let _ = page.update(&paths, Event::NewEnvKey("B".into()));
+        let _ = page.update(&paths, Event::EnvAdd);
+        let _ = page.update(&paths, Event::EnvKey(1, "A".into()));
+        assert!(page.is_dirty() && !page.can_save());
+        let _ = page.update(&paths, Event::Save);
+        assert!(!page.saving);
+        let _ = page.update(&paths, Event::EnvKey(1, "B".into()));
+        assert!(page.can_save());
     }
 
     fn open_app(paths: &Paths) -> App {

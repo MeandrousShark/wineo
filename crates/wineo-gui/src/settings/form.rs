@@ -1,9 +1,11 @@
 //! What the settings page edits, and how an edit becomes `settings::apply`'s
 //! `pairs` and `unset`. Kept free of iced so it can be tested on its own.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
-use wineo_core::config::EnvironmentConfig;
+use wineo_core::components::{Component, LATEST};
+use wineo_core::config::{self, EnvironmentConfig};
 use wineo_core::gamescope::{self, GamescopeSetting};
 
 /// The on/off launch settings an environment can override.
@@ -233,6 +235,92 @@ impl GamescopeFields {
     }
 }
 
+/// A chip list the environment has, other than gamescope's args.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum List {
+    Winetricks,
+    Tags,
+}
+
+impl List {
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            List::Winetricks => "winetricks",
+            List::Tags => "tags",
+        }
+    }
+    /// Why `input` can't join `items`, by the rules the saved list is checked
+    /// with. Nothing typed yet is no problem, it just can't be added.
+    pub(crate) fn problem(self, items: &[String], input: &str) -> Option<String> {
+        if input.is_empty() {
+            return None;
+        }
+        let mut all = items.to_vec();
+        all.push(input.to_owned());
+        match self {
+            List::Winetricks => config::validate_winetricks(&all),
+            List::Tags => config::validate_tags(&all),
+        }
+        .err()
+    }
+}
+
+/// One `[env]` variable as a row on the page.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct EnvRow {
+    pub(crate) key: String,
+    pub(crate) value: String,
+}
+
+/// Why a variable can't be saved as `key`. `others` are the names above it,
+/// so only the later of two duplicates is marked.
+pub(crate) fn env_problem(key: &str, value: &str, wine: bool, others: &[&str]) -> Option<String> {
+    if key.is_empty() {
+        return Some("Name can't be empty.".to_owned());
+    }
+    if let Err(error) =
+        config::validate_env_key(key, wine).and_then(|()| config::validate_env_var(key, value))
+    {
+        return Some(error);
+    }
+    others
+        .contains(&key)
+        .then(|| format!("Duplicate variable {key:?}."))
+}
+
+/// A DXVK or vkd3d-proton build in a pick list. `None` leaves it unset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Build(pub(crate) Option<String>);
+
+impl fmt::Display for Build {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0.as_deref() {
+            None => "None",
+            Some(LATEST) => "Latest",
+            Some(name) => name,
+        })
+    }
+}
+
+/// None, Latest, and the installed builds, plus the configured one when it
+/// isn't installed, so the list can still show it.
+pub(crate) fn build_choices(installed: &[String], current: Option<&str>) -> Vec<Build> {
+    let mut choices = vec![Build(None), Build(Some(LATEST.to_owned()))];
+    choices.extend(installed.iter().map(|name| Build(Some(name.clone()))));
+    if let Some(current) = current
+        && !choices
+            .iter()
+            .any(|choice| choice.0.as_deref() == Some(current))
+    {
+        choices.push(Build(Some(current.to_owned())));
+    }
+    choices
+}
+
+/// Why DXVK can't be dropped while vkd3d-proton is set.
+pub(crate) const VKD3D_NEEDS_DXVK: &str =
+    "vkd3d-proton needs DXVK. Set vkd3d-proton to None first.";
+
 /// Every control's value, read from a config or edited on the page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Values {
@@ -246,6 +334,16 @@ pub(crate) struct Values {
     pub(crate) gamescope: bool,
     /// Kept while gamescope is off, so switching it back on restores them.
     pub(crate) fields: GamescopeFields,
+    /// Empty on a native environment. An empty `gameid` or `store` is unset.
+    pub(crate) prefix: String,
+    pub(crate) gameid: String,
+    pub(crate) store: String,
+    pub(crate) dxvk: Option<String>,
+    pub(crate) vkd3d: Option<String>,
+    pub(crate) winetricks: Vec<String>,
+    pub(crate) tags: Vec<String>,
+    /// In the order the rows show, which renames keep.
+    pub(crate) env: Vec<EnvRow>,
 }
 
 impl Values {
@@ -254,14 +352,81 @@ impl Values {
             Some(GamescopeSetting::On(table)) => (true, GamescopeFields::from_config(table)),
             None | Some(GamescopeSetting::Off) => (false, GamescopeFields::default()),
         };
+        let wine = config.wine();
+        let text = |value: Option<&String>| value.cloned().unwrap_or_default();
         Self {
-            runner: config.wine().map(|wine| wine.runner.clone()),
+            runner: wine.map(|wine| wine.runner.clone()),
             gamemode: config.gamemode,
             mangohud: config.mangohud,
             wayland: config.wayland,
             gamescope,
             fields,
+            prefix: text(wine.map(|wine| &wine.prefix)),
+            gameid: text(wine.and_then(|wine| wine.gameid.as_ref())),
+            store: text(wine.and_then(|wine| wine.store.as_ref())),
+            dxvk: wine.and_then(|wine| wine.dxvk.clone()),
+            vkd3d: wine.and_then(|wine| wine.vkd3d.clone()),
+            winetricks: config.winetricks.clone(),
+            tags: config.tags.clone(),
+            env: config
+                .env
+                .iter()
+                .map(|(key, value)| EnvRow {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
         }
+    }
+    /// A native environment has no runner.
+    pub(crate) fn wine(&self) -> bool {
+        self.runner.is_some()
+    }
+    pub(crate) fn list(&self, list: List) -> &[String] {
+        match list {
+            List::Winetricks => &self.winetricks,
+            List::Tags => &self.tags,
+        }
+    }
+    pub(crate) fn list_mut(&mut self, list: List) -> &mut Vec<String> {
+        match list {
+            List::Winetricks => &mut self.winetricks,
+            List::Tags => &mut self.tags,
+        }
+    }
+    pub(crate) fn build(&self, component: Component) -> Option<&str> {
+        match component {
+            Component::Dxvk => self.dxvk.as_deref(),
+            Component::Vkd3d => self.vkd3d.as_deref(),
+        }
+    }
+    /// The variables as they'd be saved. A later duplicate wins, but a draft
+    /// with one can't be saved anyway.
+    fn env_map(&self) -> BTreeMap<&str, &str> {
+        self.env
+            .iter()
+            .map(|row| (row.key.as_str(), row.value.as_str()))
+            .collect()
+    }
+    /// Each row's problem, in row order.
+    pub(crate) fn env_problems(&self) -> Vec<Option<String>> {
+        let wine = self.wine();
+        self.env
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let above: Vec<&str> = self.env[..index]
+                    .iter()
+                    .map(|row| row.key.as_str())
+                    .collect();
+                env_problem(&row.key, &row.value, wine, &above)
+            })
+            .collect()
+    }
+    /// Why a new row can't be added with this name and value.
+    pub(crate) fn new_env_problem(&self, key: &str, value: &str) -> Option<String> {
+        let keys: Vec<&str> = self.env.iter().map(|row| row.key.as_str()).collect();
+        env_problem(key, value, self.wine(), &keys)
     }
     pub(crate) fn switch(&self, switch: Switch) -> Option<bool> {
         match switch {
@@ -387,7 +552,65 @@ impl Form {
                 .filter(|field| base.raw(**field) != draft.fields.raw(**field))
                 .count();
         }
+        count += [
+            loaded.prefix != draft.prefix,
+            loaded.gameid != draft.gameid,
+            loaded.store != draft.store,
+            loaded.dxvk != draft.dxvk,
+            loaded.vkd3d != draft.vkd3d,
+            loaded.winetricks != draft.winetricks,
+            loaded.tags != draft.tags,
+        ]
+        .into_iter()
+        .filter(|changed| *changed)
+        .count();
+        let (before, after) = (loaded.env_map(), draft.env_map());
+        count += before
+            .keys()
+            .chain(after.keys())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .filter(|key| before.get(*key) != after.get(*key))
+            .count();
         count
+    }
+    /// Why the draft can't be saved as it stands, so Save stays off rather
+    /// than sending something core would refuse.
+    pub(crate) fn problem(&self) -> Option<String> {
+        let draft = &self.draft;
+        if let Some(problem) = draft.env_problems().into_iter().flatten().next() {
+            return Some(problem);
+        }
+        if draft.wine() && draft.prefix.is_empty() {
+            return Some("The prefix can't be empty.".to_owned());
+        }
+        // Only reachable from a hand-written config, since picking DXVK's
+        // None is refused while vkd3d-proton is set.
+        if draft.vkd3d.is_some() && draft.dxvk.is_none() {
+            return Some(VKD3D_NEEDS_DXVK.to_owned());
+        }
+        None
+    }
+    /// Picks a build, refusing to drop DXVK from under vkd3d-proton.
+    pub(crate) fn pick_build(
+        &mut self,
+        component: Component,
+        build: Option<String>,
+    ) -> Result<(), &'static str> {
+        let draft = &mut self.draft;
+        match component {
+            Component::Dxvk if build.is_none() && draft.vkd3d.is_some() => {
+                return Err(VKD3D_NEEDS_DXVK);
+            }
+            Component::Dxvk => draft.dxvk = build,
+            Component::Vkd3d => draft.vkd3d = build,
+        }
+        Ok(())
+    }
+    /// vkd3d-proton is off until DXVK is set, unless it holds a value that
+    /// has to stay clearable.
+    pub(crate) fn vkd3d_enabled(&self) -> bool {
+        self.draft.dxvk.is_some() || self.draft.vkd3d.is_some()
     }
     /// The fields a gamescope table starts from when this saves: the file's
     /// own table, or an empty one when it had none.
@@ -428,6 +651,48 @@ impl Form {
                 if base.raw(field) != value {
                     edits.write(format!("gamescope.{}", field.key()), value);
                 }
+            }
+        }
+        // Stored through core the way `wineo new` stores it.
+        if draft.wine() && loaded.prefix != draft.prefix {
+            edits
+                .pairs
+                .push(("prefix".to_owned(), draft.prefix.clone()));
+        }
+        for (key, before, after) in [
+            ("gameid", &loaded.gameid, &draft.gameid),
+            ("store", &loaded.store, &draft.store),
+        ] {
+            if before != after {
+                edits.write(key.to_owned(), (!after.is_empty()).then(|| after.clone()));
+            }
+        }
+        for component in Component::ALL {
+            let value = draft.build(component);
+            if loaded.build(component) != value {
+                edits.write(component.as_str().to_owned(), value.map(str::to_owned));
+            }
+        }
+        for list in [List::Winetricks, List::Tags] {
+            let items = draft.list(list);
+            if loaded.list(list) != items {
+                edits.write(
+                    list.key().to_owned(),
+                    (!items.is_empty()).then(|| toml_array(items)),
+                );
+            }
+        }
+        // Values are taken as written, so nothing here needs quoting. A
+        // rename is the old name unset and the new one set.
+        let (before, after) = (loaded.env_map(), draft.env_map());
+        for key in before.keys().filter(|key| !after.contains_key(*key)) {
+            edits.unset.push(format!("env.{key}"));
+        }
+        for (key, value) in &after {
+            if before.get(key) != Some(value) {
+                edits
+                    .pairs
+                    .push((format!("env.{key}"), (*value).to_owned()));
             }
         }
         edits
@@ -644,5 +909,180 @@ mod tests {
     fn native_has_no_runner() {
         let form = Form::new(values("kind = \"native\"\n"));
         assert_eq!(form.draft.runner, None);
+    }
+
+    fn row(key: &str, value: &str) -> EnvRow {
+        EnvRow {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+
+    #[test]
+    fn builds_write_their_name_and_none_unsets() {
+        let mut form = Form::new(values(&format!("{WINE}dxvk = \"2.3\"\n")));
+        form.pick_build(Component::Dxvk, Some("latest".into()))
+            .unwrap();
+        form.pick_build(Component::Vkd3d, Some("2.12".into()))
+            .unwrap();
+        assert_eq!(
+            pairs(&form.edits()),
+            [("dxvk", "latest"), ("vkd3d", "2.12")]
+        );
+        assert_eq!(form.changes(), 2);
+        form.pick_build(Component::Vkd3d, None).unwrap();
+        form.pick_build(Component::Dxvk, None).unwrap();
+        let edits = form.edits();
+        assert!(edits.pairs.is_empty());
+        assert_eq!(edits.unset, ["dxvk"]);
+    }
+
+    #[test]
+    fn vkd3d_needs_dxvk() {
+        let mut form = Form::new(values(WINE));
+        assert!(!form.vkd3d_enabled());
+        form.pick_build(Component::Dxvk, Some("latest".into()))
+            .unwrap();
+        assert!(form.vkd3d_enabled());
+        form.pick_build(Component::Vkd3d, Some("latest".into()))
+            .unwrap();
+        assert_eq!(
+            form.pick_build(Component::Dxvk, None),
+            Err(VKD3D_NEEDS_DXVK)
+        );
+        assert_eq!(form.draft.dxvk.as_deref(), Some("latest"));
+        assert_eq!(form.problem(), None);
+        // A hand-written vkd3d without DXVK can still be cleared, but not saved.
+        let mut form = Form::new(values(&format!("{WINE}vkd3d = \"latest\"\n")));
+        assert!(form.vkd3d_enabled());
+        assert_eq!(form.problem().as_deref(), Some(VKD3D_NEEDS_DXVK));
+        form.pick_build(Component::Vkd3d, None).unwrap();
+        assert_eq!(form.problem(), None);
+        assert_eq!(form.edits().unset, ["vkd3d"]);
+    }
+
+    #[test]
+    fn build_choices_keep_an_uninstalled_value() {
+        let installed = vec!["2.3".to_owned(), "2.4".to_owned()];
+        let shown: Vec<String> = build_choices(&installed, Some("1.0"))
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(shown, ["None", "Latest", "2.3", "2.4", "1.0"]);
+        assert_eq!(build_choices(&installed, Some("latest")).len(), 4);
+        assert_eq!(build_choices(&installed, Some("2.4")).len(), 4);
+    }
+
+    #[test]
+    fn lists_write_arrays_and_emptied_ones_unset() {
+        let mut form = Form::new(values(&format!(
+            "{WINE}tags = [\"rpg\"]\nwinetricks = [\"corefonts\"]\n"
+        )));
+        form.draft.winetricks.push("vcrun2019".into());
+        form.draft.tags.clear();
+        let edits = form.edits();
+        assert_eq!(
+            pairs(&edits),
+            [("winetricks", "[\"corefonts\", \"vcrun2019\"]")]
+        );
+        assert_eq!(edits.unset, ["tags"]);
+        assert_eq!(form.changes(), 2);
+    }
+
+    #[test]
+    fn list_input_is_checked_by_core_rules() {
+        let verbs = vec!["corefonts".to_owned()];
+        assert_eq!(List::Winetricks.problem(&verbs, ""), None);
+        assert_eq!(List::Winetricks.problem(&verbs, "d3dx9"), None);
+        for bad in ["a b", "-q", "corefonts"] {
+            assert!(List::Winetricks.problem(&verbs, bad).is_some(), "{bad}");
+        }
+        let tags = vec!["rpg".to_owned()];
+        assert_eq!(List::Tags.problem(&tags, "co-op_2"), None);
+        for bad in ["a b", "a.b", "rpg", "é"] {
+            assert!(List::Tags.problem(&tags, bad).is_some(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn env_values_are_written_as_typed() {
+        let mut form = Form::new(values(WINE));
+        let value = r#"a "b" \c = d"#;
+        form.draft.env.push(row("OPTS", value));
+        assert_eq!(pairs(&form.edits()), [("env.OPTS", value)]);
+        assert_eq!(form.changes(), 1);
+    }
+
+    #[test]
+    fn env_rows_rename_remove_and_change() {
+        let mut form = Form::new(values(&format!(
+            "{WINE}[env]\nA = \"1\"\nB = \"2\"\nC = \"3\"\n"
+        )));
+        form.draft.env[0].key = "AA".into();
+        form.draft.env.remove(1);
+        form.draft.env[1].value = "4".into();
+        let edits = form.edits();
+        assert_eq!(edits.unset, ["env.A", "env.B"]);
+        assert_eq!(pairs(&edits), [("env.AA", "1"), ("env.C", "4")]);
+        assert_eq!(form.changes(), 4);
+        // Renaming back is no change.
+        form.revert();
+        form.draft.env[0].key = "X".into();
+        form.draft.env[0].key = "A".into();
+        assert!(!form.is_dirty());
+    }
+
+    #[test]
+    fn bad_env_rows_block_saving() {
+        let mut form = Form::new(values(&format!("{WINE}[env]\nA = \"1\"\n")));
+        form.draft.env.push(row("A", "2"));
+        assert_eq!(form.draft.env_problems()[0], None);
+        assert_eq!(
+            form.draft.env_problems()[1].as_deref(),
+            Some("Duplicate variable \"A\".")
+        );
+        assert!(form.problem().is_some());
+        form.draft.env[1].key = "WINEPREFIX".into();
+        assert!(form.problem().unwrap().contains("WINEPREFIX"));
+        form.draft.env[1].key = String::new();
+        assert_eq!(form.problem().as_deref(), Some("Name can't be empty."));
+        form.draft.env[1].key = "A=B".into();
+        assert!(form.problem().is_some());
+        form.draft.env[1].key = "B".into();
+        assert_eq!(form.problem(), None);
+        assert_eq!(
+            form.draft.new_env_problem("B", "x").as_deref(),
+            Some("Duplicate variable \"B\".")
+        );
+        assert!(form.draft.new_env_problem("WINEPREFIX", "x").is_some());
+        assert_eq!(form.draft.new_env_problem("C", "x"), None);
+    }
+
+    #[test]
+    fn native_may_set_wineprefix_and_writes_no_prefix() {
+        let mut form = Form::new(values("kind = \"native\"\n"));
+        assert!(!form.draft.wine());
+        assert_eq!(form.draft.new_env_problem("WINEPREFIX", "/x"), None);
+        form.draft.env.push(row("WINEPREFIX", "/x"));
+        assert_eq!(form.problem(), None);
+        assert_eq!(pairs(&form.edits()), [("env.WINEPREFIX", "/x")]);
+    }
+
+    #[test]
+    fn advanced_fields_set_and_emptied_ones_unset() {
+        let mut form = Form::new(values(&format!("{WINE}gameid = \"umu-1\"\n")));
+        assert_eq!(form.draft.prefix, "~/p");
+        form.draft.prefix = "~/elsewhere".into();
+        form.draft.gameid.clear();
+        form.draft.store = "gog".into();
+        let edits = form.edits();
+        assert_eq!(pairs(&edits), [("prefix", "~/elsewhere"), ("store", "gog")]);
+        assert_eq!(edits.unset, ["gameid"]);
+        assert_eq!(form.changes(), 3);
+        form.draft.prefix.clear();
+        assert_eq!(
+            form.problem().as_deref(),
+            Some("The prefix can't be empty.")
+        );
     }
 }
