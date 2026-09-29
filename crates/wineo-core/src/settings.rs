@@ -54,8 +54,11 @@ pub struct Applied {
     pub changed_runner: Option<String>,
     /// The environment is running, so the changes apply the next time it starts.
     pub running: bool,
-    /// What stopped `apply` after components had already changed, so what
-    /// happened up to then can still be reported. Later fields stay empty.
+    /// What stopped `apply` once its checks had passed, so what happened up
+    /// to then can still be reported. The other fields hold whatever
+    /// completed before the failure: components may be empty, and the config
+    /// may already be written when a later step, such as desktop entries,
+    /// failed.
     pub failed: Option<anyhow::Error>,
 }
 

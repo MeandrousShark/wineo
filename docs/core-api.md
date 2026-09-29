@@ -117,7 +117,9 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   checks, writes, and reconciles desktop entries. `Applied` holds the
   component changes, unset keys that weren't set, desktop changes, the new
   runner, and whether the environment is running. An error means nothing
-  changed. A failure after components changed comes back in `failed`.
+  changed. A failure after the checks passed comes back in `failed`, with
+  the other fields holding whatever completed first. That can be no
+  component changes at all, or a config that was already written.
 - `launch::start(paths, name, overrides, exe, &token, winetricks_output,
   events) -> StartOutcome`: builds a missing prefix, reconciles, installs
   missing winetricks verbs, and starts the target detached.
