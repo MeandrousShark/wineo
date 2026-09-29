@@ -55,6 +55,7 @@ pub(crate) enum Event {
     GlobalArch(Arch),
     GlobalField(global::Field, String),
     GlobalArt(ArtFetch),
+    GlobalArtKind(wineo_core::art::Kind, bool),
     /// An edit on one target's card.
     Target(String, TargetEdit),
     /// Opens or closes a target's card, which only changes the view.
@@ -146,6 +147,7 @@ impl Event {
                 | Event::GlobalArch(_)
                 | Event::GlobalField(..)
                 | Event::GlobalArt(_)
+                | Event::GlobalArtKind(_, _)
                 | Event::Target(..)
                 | Event::ProgramPicked(_)
                 | Event::NewTargetName(_)
@@ -637,6 +639,7 @@ impl Page {
                     | Event::GlobalArch(_)
                     | Event::GlobalField(..)
                     | Event::GlobalArt(_)
+                    | Event::GlobalArtKind(_, _)
                     | Event::EnvKey(..)
                     | Event::EnvValue(..)
                     | Event::EnvRemove(_)
@@ -655,6 +658,7 @@ impl Page {
                     | Event::GlobalArch(_)
                     | Event::GlobalField(..)
                     | Event::GlobalArt(_)
+                    | Event::GlobalArtKind(_, _)
             )
         {
             return Step::none();
@@ -977,6 +981,13 @@ impl Page {
                     && editor.form.draft.set_field(field, value)
                 {
                     self.edited();
+                }
+                Step::none()
+            }
+            Event::GlobalArtKind(kind, on) => {
+                if let View::Global(editor) = &self.view {
+                    let fetch = editor.form.draft.art_fetch.with(kind, on);
+                    return self.update(paths, Event::GlobalArt(fetch));
                 }
                 Step::none()
             }
@@ -1559,6 +1570,30 @@ mod tests {
         match &page.view {
             View::Global(editor) => editor,
             _ => panic!("global form expected"),
+        }
+    }
+
+    #[test]
+    fn global_art_switches_save_every_combination() {
+        use wineo_core::art::Kind;
+        for mask in 0..16 {
+            let (_root, paths) = setup();
+            let mut page = global_page(&paths);
+            for (index, kind) in Kind::ALL.into_iter().enumerate() {
+                let _ = page.update(&paths, Event::GlobalArtKind(kind, mask & (1 << index) != 0));
+            }
+            let expected: Vec<_> = Kind::ALL
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, kind)| (mask & (1 << index) != 0).then_some(kind))
+                .collect();
+            let edits = global_editor(&page).form.edits();
+            load::save_global(&paths, &edits).unwrap();
+            assert_eq!(
+                GlobalConfig::load(&paths).unwrap().art.fetch.kinds(),
+                expected
+            );
+            assert_eq!(global_editor(&page).form.draft.art_fetch.kinds(), expected);
         }
     }
 

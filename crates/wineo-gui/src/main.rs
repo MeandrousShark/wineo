@@ -34,7 +34,7 @@ const SCROLL_ID: &str = "library";
 const LOG_ID: &str = "panel-log";
 const SEARCH_ID: &str = "library-search";
 // iced moves 60px per wheel line, which felt too fast beside native apps.
-const WHEEL_STEP_SCALE: f32 = 0.45;
+const WHEEL_STEP_SCALE: f32 = 0.7;
 type ArtKey = (ArtFile, artwork::Kind);
 
 pub(crate) struct App {

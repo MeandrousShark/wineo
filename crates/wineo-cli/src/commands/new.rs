@@ -381,6 +381,9 @@ fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 /// Fetches art searching the environment's name, with the pick list when
 /// there is a terminal and the top match otherwise.
 fn fetch_art(paths: &Paths, global: &GlobalConfig, name: &str) -> Result<(), Canceled> {
+    if global.art.fetch.kinds().is_empty() {
+        return Ok(());
+    }
     let access = Access::steamgriddb(paths);
     let key = match (access.check_key)() {
         KeyCheck::Found(key) => key,

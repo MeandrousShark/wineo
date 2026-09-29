@@ -121,11 +121,12 @@ have to be absolute or start with `~/`, except inside a portable folder.
 - **Launch defaults:** gamemode, MangoHud, and Wayland for every
   environment that doesn't set its own.
 - **New environments:** the runner and arch `wineo new` uses, and where
-  prefixes, runners, DXVK, and vkd3d-proton builds go.
+  prefixes, runners, DXVK, and vkd3d-proton builds go. Empty root fields show
+  the default locations for the current XDG or portable setup.
 - **Runs:** how long `stop` waits before killing a game, and how big a log
   gets.
-- **Art:** whether `new` and `import` fetch every kind of art or only the
-  icon.
+- **Art to fetch:** independent Icon, Grid, Hero, and Logo switches for
+  `new` and `import`. Turn all four off to disable automatic fetching.
 - **Environment variables** for every launch.
 
 ## Keyboard

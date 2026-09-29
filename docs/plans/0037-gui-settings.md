@@ -111,7 +111,8 @@ winetricks).
 - **New environments:** default runner and arch, and the prefix, runner,
   DXVK, and vkd3d roots as path fields.
 - **Runs:** stop timeout (seconds) and log limit (MB) as number fields.
-- **Art:** what `new` and `import` fetch (all kinds, or the icon only).
+- **Art:** independent Icon, Grid, Hero, and Logo switches for what `new`
+  and `import` fetch. All off disables automatic fetching.
 - **Environment variables:** same rows as the environment page.
 
 ### Saving
@@ -286,3 +287,17 @@ pending, so the plan remains approved.
 - Settings shortcuts now bypass the absent library search widget. Regression
   tests cover both settings pages; GUI checks confirm Ctrl+S with and without
   a focused field, Tab navigation, and Escape to blur then return to the library.
+
+## Maintainer feedback (2026-09-29)
+
+Approved during acceptance testing: use the same middle scroll speed on library
+and settings pages, show resolved default root paths when unset, and use four
+independent art-fetch switches with all off allowed. Existing all/icon configs
+remain compatible; custom selections are stored as an array of art kinds.
+Arrow-key trouble was caused by stuck Right Shift in Moonlight.
+
+Feedback verification: formatting, Clippy, and both release builds pass.
+The frozen workspace gate passes with 1,486 tests passed and 16 ignored.
+GUI testing confirms default roots are visible without creating overrides,
+custom art combinations save with comments preserved, and all-off saves as [].
+All 16 art selections are covered by a settings-to-config round-trip test.

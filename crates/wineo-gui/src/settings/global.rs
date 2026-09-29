@@ -1,11 +1,11 @@
 //! The global settings controls and their changes to the config file.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::path::Path;
 
 use wineo_core::config::{Arch, ArtFetch, GlobalConfig};
 use wineo_core::edit;
+use wineo_core::paths::Paths;
 
 use super::form::{Edits, EnvRow, Switch, env_problem};
 use super::load::RunnerChoice;
@@ -47,6 +47,15 @@ impl Field {
             Self::Vkd3dRoot => "vkd3d root",
             Self::StopTimeout => "Stop timeout (seconds)",
             Self::LogLimitMb => "Log limit (MB)",
+        }
+    }
+    pub(crate) fn default_root(self, paths: &Paths) -> std::path::PathBuf {
+        match self {
+            Self::PrefixRoot => paths.default_prefix_root(),
+            Self::RunnerRoot => paths.default_runner_root(),
+            Self::DxvkRoot => paths.default_dxvk_root(),
+            Self::Vkd3dRoot => paths.default_vkd3d_root(),
+            _ => unreachable!("root fields"),
         }
     }
     pub(crate) fn number(self) -> bool {
@@ -264,11 +273,9 @@ impl Form {
             }
         }
         if before.art_fetch != after.art_fetch {
-            let value = match after.art_fetch {
-                ArtFetch::All => "all",
-                ArtFetch::Icon => "icon",
-            };
-            edits.pairs.push(("art.fetch".to_owned(), value.to_owned()));
+            edits
+                .pairs
+                .push(("art.fetch".to_owned(), after.art_fetch.to_string()));
         }
         let (old, new) = (before.env_map(), after.env_map());
         let keys: BTreeSet<&&str> = old.keys().chain(new.keys()).collect();
@@ -300,18 +307,6 @@ impl Editor {
             runners,
             new_env: EnvRow::default(),
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ArtChoice(pub(crate) ArtFetch);
-
-impl fmt::Display for ArtChoice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self.0 {
-            ArtFetch::All => "All kinds",
-            ArtFetch::Icon => "Icon only",
-        })
     }
 }
 

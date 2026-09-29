@@ -4,17 +4,19 @@ use iced::widget::{
 };
 use iced::{Center, Color, Element, Fill, Font, border, font};
 
+use wineo_core::art::Kind;
 use wineo_core::components::Component;
-use wineo_core::config::{self, Arch, ArtFetch};
+use wineo_core::config::{self, Arch};
 
 use super::form::{self, Build, Choice, Field, GamescopeFields, List, Source, Switch};
-use super::global::{self, ArtChoice};
+use super::global;
 use super::load::Scan;
 use super::{Editor, Event, Page, TargetEdit, View};
-use crate::Message;
 use crate::chips::{Chips, input_style, secondary};
 use crate::panel::{action_button, error_box};
 use crate::theme::Palette;
+use crate::{Message, WHEEL_STEP_SCALE, wheel};
+use wineo_core::paths::Paths;
 
 const LABEL_WIDTH: f32 = 180.0;
 const CONTROL_WIDTH: f32 = 260.0;
@@ -32,7 +34,12 @@ fn semibold() -> Font {
 }
 
 impl Page {
-    pub(crate) fn view(&self, palette: Palette, spinner: usize) -> Element<'_, Message> {
+    pub(crate) fn view(
+        &self,
+        paths: &Paths,
+        palette: Palette,
+        spinner: usize,
+    ) -> Element<'_, Message> {
         let back = button(text("< Back").size(14))
             .on_press_maybe((!self.saving).then(|| send(Event::Back)))
             .padding([6, 12])
@@ -70,7 +77,7 @@ impl Page {
             View::Form(editor) => {
                 editor_view(&self.name, editor, self.locked(), self.resolving(), palette)
             }
-            View::Global(editor) => global_view(editor, self.locked(), palette),
+            View::Global(editor) => global_view(editor, paths, self.locked(), palette),
         };
         let scroll = scrollable(
             container(container(body).max_width(PAGE_WIDTH).width(Fill))
@@ -79,7 +86,11 @@ impl Page {
         )
         .width(Fill)
         .height(Fill);
-        let mut page = column![header, divider(palette), scroll];
+        let mut page = column![
+            header,
+            divider(palette),
+            wheel::scale(scroll, WHEEL_STEP_SCALE)
+        ];
         if matches!(self.view, View::Form(_) | View::Global(_)) {
             page = page
                 .push(divider(palette))
@@ -295,7 +306,12 @@ fn editor_view<'a>(
     sections.into()
 }
 
-fn global_view(editor: &global::Editor, locked: bool, palette: Palette) -> Element<'_, Message> {
+fn global_view<'a>(
+    editor: &'a global::Editor,
+    paths: &Paths,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
     let draft = &editor.form.draft;
     let mut launch = column![].spacing(12);
     for key in Switch::ALL {
@@ -313,7 +329,7 @@ fn global_view(editor: &global::Editor, locked: bool, palette: Palette) -> Eleme
         .runners
         .iter()
         .find(|choice| choice.name == draft.runner);
-    let runner: Element<'_, Message> = if locked {
+    let runner: Element<'a, Message> = if locked {
         locked_choice(&draft.runner, palette)
     } else {
         pick_list(editor.runners.as_slice(), selected_runner, |choice| {
@@ -324,7 +340,7 @@ fn global_view(editor: &global::Editor, locked: bool, palette: Palette) -> Eleme
         .width(CONTROL_WIDTH)
         .into()
     };
-    let arch: Element<'_, Message> = if locked {
+    let arch: Element<'a, Message> = if locked {
         locked_choice(draft.arch.as_str(), palette)
     } else {
         pick_list([Arch::Win64, Arch::Win32], Some(draft.arch), |arch| {
@@ -341,10 +357,11 @@ fn global_view(editor: &global::Editor, locked: bool, palette: Palette) -> Eleme
     ]
     .spacing(12);
     for field in global::Field::ROOTS {
+        let placeholder = field.default_root(paths).display().to_string();
         new_env = new_env.push(setting_row(
             field.label(),
             text_field(
-                "unset",
+                &placeholder,
                 draft.field(field),
                 locked,
                 move |value| send(Event::GlobalField(field, value)),
@@ -360,7 +377,7 @@ fn global_view(editor: &global::Editor, locked: bool, palette: Palette) -> Eleme
             && !value.starts_with("~/")
         {
             new_env = new_env.push(
-                text("The prefix must be absolute or start with ~/.")
+                text("The path must be absolute or start with ~/.")
                     .size(12)
                     .color(palette.danger),
             );
@@ -386,23 +403,29 @@ fn global_view(editor: &global::Editor, locked: bool, palette: Palette) -> Eleme
             palette,
         ));
     }
-    let art_choices = [ArtChoice(ArtFetch::All), ArtChoice(ArtFetch::Icon)];
-    let art: Element<'_, Message> = if locked {
-        locked_choice(&ArtChoice(draft.art_fetch).to_string(), palette)
-    } else {
-        pick_list(art_choices, Some(ArtChoice(draft.art_fetch)), |choice| {
-            send(Event::GlobalArt(choice.0))
-        })
-        .on_open(send(Event::MenuOpened))
-        .on_close(send(Event::MenuClosed))
-        .width(CONTROL_WIDTH)
-        .into()
-    };
+    let mut art = column![].spacing(12);
+    for kind in Kind::ALL {
+        let label = match kind {
+            Kind::Icon => "Icon",
+            Kind::Grid => "Grid",
+            Kind::Hero => "Hero",
+            Kind::Logo => "Logo",
+        };
+        art = art.push(switch_row(
+            label,
+            draft.art_fetch.kinds().contains(&kind),
+            None,
+            move |on| send(Event::GlobalArtKind(kind, on)),
+            None,
+            locked,
+            palette,
+        ));
+    }
     column![
         section("Launch defaults", launch.into(), palette),
         section("New environments", new_env.into(), palette),
         section("Runs", runs.into(), palette),
-        section("Art", setting_row("Fetch", art, None, palette), palette),
+        section("Art to fetch", art.into(), palette),
         section(
             "Environment variables",
             env_rows(

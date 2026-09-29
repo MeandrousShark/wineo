@@ -123,7 +123,7 @@ pub(super) fn direct(
     plan.reject_invalid()?;
     plan.check_exe(paths, global)?;
     plan.set_desktop_enabled(args.desktop);
-    let art = if args.art {
+    let art = if args.art && !global.art.fetch.kinds().is_empty() {
         let check = (access.check_key)();
         check.print_skip();
         ArtChoice::checked(check, &plan.heroic().title)
@@ -198,7 +198,7 @@ pub(super) fn guided<I: Input, W: Write>(
     };
     plan.set_name(&name)?;
     plan.set_desktop_enabled(paths.portable_root().is_none());
-    let mut art = review_art(access, prompt, &plan.heroic().title)?;
+    let mut art = review_art(global, access, prompt, &plan.heroic().title)?;
     loop {
         let heading = format!("{}\n", summary(paths, plan.resolved(), plan.name()));
         let mut items = vec![

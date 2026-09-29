@@ -127,6 +127,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 search: search.as_deref(),
                 game,
                 only,
+                kinds: ArtFetch::All,
                 mode,
             };
             return match fetch(paths, &request) {
@@ -203,6 +204,7 @@ struct FetchRequest<'a> {
     search: Option<&'a str>,
     game: Option<u64>,
     only: Option<Kind>,
+    kinds: ArtFetch,
     mode: Mode,
 }
 
@@ -265,7 +267,7 @@ fn fetch_kinds(
 ) -> anyhow::Result<bool> {
     let kinds = match request.only {
         Some(kind) => vec![kind],
-        None => Kind::ALL.to_vec(),
+        None => request.kinds.kinds(),
     };
     let mut found = true;
     for kind in kinds {
@@ -401,6 +403,9 @@ impl<'a> Access<'a> {
         pick: Pick<I, W>,
         err: &mut dyn Write,
     ) -> Result<(), Canceled> {
+        if request.kinds.kinds().is_empty() {
+            return Ok(());
+        }
         match (self.transport)() {
             Ok(transport) => fetch_new(paths, &*transport, key, request, pick, err),
             Err(error) => {
@@ -428,6 +433,9 @@ pub fn fetch_new<I: Input, W: Write>(
     pick: Pick<I, W>,
     err: &mut dyn Write,
 ) -> Result<(), Canceled> {
+    if request.kinds.kinds().is_empty() {
+        return Ok(());
+    }
     match try_fetch_new(paths, transport, key, request, pick) {
         Ok(()) => Ok(()),
         Err(error) if error.is::<Canceled>() => Err(Canceled),
@@ -479,10 +487,8 @@ fn try_fetch_new<I: Input, W: Write>(
         spot: env,
         search: Some(&term),
         game: Some(game),
-        only: match request.kinds {
-            ArtFetch::All => None,
-            ArtFetch::Icon => Some(Kind::Icon),
-        },
+        only: (request.kinds == ArtFetch::Icon).then_some(Kind::Icon),
+        kinds: request.kinds,
         mode: Mode::Fill,
     };
     let spot = Spot {
@@ -816,6 +822,7 @@ mod tests {
             search: None,
             game: None,
             only,
+            kinds: ArtFetch::All,
             mode: Mode::Fill,
         };
         let spot = Spot {
@@ -1107,6 +1114,28 @@ mod tests {
         let outcome = fetch_new_with(&paths, &fake, ArtFetch::All, Some(&["q"]));
         assert!(outcome.result.is_err());
         assert_eq!(outcome.err, "");
+    }
+
+    #[test]
+    fn automatic_fetch_respects_custom_kinds_and_all_off() {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        fake.page(Kind::Grid, &[1]);
+        fake.0
+            .insert("https://cdn.example/1".into(), (200, PNG.to_vec()));
+        let outcome = fetch_new_with(&paths, &fake, "grid".parse().unwrap(), None);
+        assert!(outcome.result.is_ok());
+        assert!(outcome.out.contains("grid: fetched"));
+        assert!(!outcome.out.contains("icon:"));
+        assert_eq!(outcome.err, "");
+        assert!(paths.art_dir("hades").join("grid.png").exists());
+        assert!(!paths.art_dir("hades").join("icon.png").exists());
+
+        let empty = fetch_new_with(&paths, &Fake::default(), "none".parse().unwrap(), None);
+        assert!(empty.result.is_ok());
+        assert_eq!(empty.out, "");
+        assert_eq!(empty.err, "");
     }
 
     #[test]

@@ -264,17 +264,19 @@ and keeps the environment.
 
 ### Which kinds
 
-By default these flows fetch all four kinds. The global config can limit
-them to the icon:
+By default these flows fetch all four kinds. The global config can select
+which kinds to fetch:
 
 ```toml
 # ~/.config/wineo/config.toml
 [art]
-fetch = "icon"   # or "all", the default
+fetch = ["icon", "grid"] # or "all" (default), "icon", or [] to disable
 ```
 
-`wineo set --global art.fetch=icon` sets it from the command line, and the
-desktop app's global settings page has it too.
+`wineo set --global art.fetch=icon,grid` selects kinds from the command line;
+`art.fetch=none` disables automatic fetching. The desktop app has independent
+Icon, Grid, Hero, and Logo switches. Existing `"all"` and `"icon"` configs work
+as before.
 
 This only applies to `new` and `import`. `wineo art fetch` always fetches
 every kind unless `--only` says otherwise.

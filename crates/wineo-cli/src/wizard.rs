@@ -231,6 +231,10 @@ pub fn run<I: Input, W: Write>(
                 Reply::Back => step = Step::Settings,
             },
             Step::Art => {
+                if global.art.fetch.kinds().is_empty() {
+                    step = Step::Review;
+                    continue;
+                }
                 let found = match &key {
                     Some(found) => found,
                     None => {

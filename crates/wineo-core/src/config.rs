@@ -89,12 +89,127 @@ pub struct ArtConfig {
 }
 
 /// Which kinds `new` and `import` fetch. `art fetch` ignores this.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ArtFetch {
     #[default]
     All,
     Icon,
+    /// Enabled kinds in the order of `art::Kind::ALL`.
+    Selected([bool; 4]),
+}
+
+impl ArtFetch {
+    pub fn kinds(self) -> Vec<crate::art::Kind> {
+        use crate::art::Kind;
+        match self {
+            Self::All => Kind::ALL.to_vec(),
+            Self::Icon => vec![Kind::Icon],
+            Self::Selected(selected) => Kind::ALL
+                .into_iter()
+                .zip(selected)
+                .filter_map(|(kind, on)| on.then_some(kind))
+                .collect(),
+        }
+    }
+
+    pub fn with(self, kind: crate::art::Kind, on: bool) -> Self {
+        let kinds = self.kinds();
+        let selected = crate::art::Kind::ALL.map(|candidate| {
+            if candidate == kind {
+                on
+            } else {
+                kinds.contains(&candidate)
+            }
+        });
+        Self::selected(selected)
+    }
+
+    fn selected(selected: [bool; 4]) -> Self {
+        match selected {
+            [true, true, true, true] => Self::All,
+            [true, false, false, false] => Self::Icon,
+            _ => Self::Selected(selected),
+        }
+    }
+}
+
+impl FromStr for ArtFetch {
+    type Err = String;
+
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        match raw {
+            "all" => return Ok(Self::All),
+            "icon" => return Ok(Self::Icon),
+            "none" => return Ok(Self::Selected([false; 4])),
+            _ => {}
+        }
+        let mut selected = [false; 4];
+        for name in raw.split(',') {
+            let kind = name.trim().parse::<crate::art::Kind>()?;
+            let index = crate::art::Kind::ALL
+                .iter()
+                .position(|candidate| *candidate == kind)
+                .unwrap();
+            if selected[index] {
+                return Err(format!("duplicate art kind: {name}"));
+            }
+            selected[index] = true;
+        }
+        Ok(Self::selected(selected))
+    }
+}
+
+impl fmt::Display for ArtFetch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::All => f.write_str("all"),
+            Self::Icon => f.write_str("icon"),
+            Self::Selected(_) => {
+                let kinds = self.kinds();
+                if kinds.is_empty() {
+                    return f.write_str("none");
+                }
+                f.write_str(
+                    &kinds
+                        .iter()
+                        .map(|kind| kind.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                )
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ArtFetch {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Input {
+            Legacy(String),
+            Kinds(Vec<String>),
+        }
+        let input = Input::deserialize(deserializer)?;
+        let raw = match input {
+            Input::Legacy(raw) if matches!(raw.as_str(), "all" | "icon" | "none") => raw,
+            Input::Legacy(raw) => {
+                return Err(serde::de::Error::custom(format!(
+                    "expected all, icon, none, or an array of art kinds, got {raw}"
+                )));
+            }
+            Input::Kinds(kinds) if kinds.is_empty() => "none".to_owned(),
+            Input::Kinds(kinds) => {
+                for kind in &kinds {
+                    kind.parse::<crate::art::Kind>()
+                        .map_err(serde::de::Error::custom)?;
+                }
+                kinds.join(",")
+            }
+        };
+        raw.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 /// Values `wineo new` falls back to.
@@ -599,6 +714,29 @@ mod tests {
             global("[art]\nfetch = \"all\"").unwrap().art.fetch,
             ArtFetch::All
         );
+    }
+
+    #[test]
+    fn art_fetch_accepts_custom_and_empty_selections() {
+        use crate::art::Kind;
+        let fetch = global("[art]\nfetch = [\"grid\", \"logo\"]")
+            .unwrap()
+            .art
+            .fetch;
+        assert_eq!(fetch.kinds(), vec![Kind::Grid, Kind::Logo]);
+        assert_eq!(fetch.to_string(), "grid,logo");
+        assert_eq!(fetch.with(Kind::Grid, false).kinds(), vec![Kind::Logo]);
+        assert!(
+            global("[art]\nfetch = []")
+                .unwrap()
+                .art
+                .fetch
+                .kinds()
+                .is_empty()
+        );
+        for raw in ["[\"grid\", \"grid\"]", "[\"wrong\"]", "[\"all\"]"] {
+            assert!(global(&format!("[art]\nfetch = {raw}")).is_err());
+        }
     }
 
     #[test]

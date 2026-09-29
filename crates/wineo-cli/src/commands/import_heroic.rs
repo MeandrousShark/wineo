@@ -132,10 +132,14 @@ impl ArtChoice {
 
 /// Checks for a key once, before the review, saying why art is off without one.
 fn review_art<I: Input, W: Write>(
+    global: &GlobalConfig,
     access: &Access,
     prompt: &mut Prompt<I, W>,
     title: &str,
 ) -> io::Result<ArtChoice> {
+    if global.art.fetch.kinds().is_empty() {
+        return Ok(ArtChoice::off());
+    }
     let check = (access.check_key)();
     if let Some(line) = check.skip_line() {
         prompt.say(line)?;
@@ -222,7 +226,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         )?;
         plan.check_builds(paths, &global)?;
         plan.set_desktop_enabled(args.desktop);
-        let art = if args.art {
+        let art = if args.art && !global.art.fetch.kinds().is_empty() {
             let check = (access.check_key)();
             check.print_skip();
             ArtChoice::checked(check, &plan.resolved().title)
@@ -486,7 +490,7 @@ fn guided<I: Input, W: Write>(
         }
     }
     plan.set_desktop_enabled(paths.portable_root().is_none());
-    let mut art = review_art(access, prompt, &plan.resolved().title)?;
+    let mut art = review_art(global, access, prompt, &plan.resolved().title)?;
     let ctx = ReviewContext {
         paths,
         global,
@@ -697,7 +701,11 @@ fn run_all(
         }
     };
 
-    let art = bulk_art(access, args.art, args.yes, prompt.as_mut())?;
+    let art = if global.art.fetch.kinds().is_empty() {
+        None
+    } else {
+        bulk_art(access, args.art, args.yes, prompt.as_mut())?
+    };
 
     if !args.yes {
         let prompt = prompt.as_mut().expect("interactive was checked above");
@@ -3460,7 +3468,7 @@ mod tests {
         let lookups = std::cell::Cell::new(0);
         let access = access(false, &lookups, Fake::default());
         let mut prompt = Prompt::new(Script::new(&[]), Vec::new());
-        let mut art = review_art(&access, &mut prompt, "Game").unwrap();
+        let mut art = review_art(&GlobalConfig::default(), &access, &mut prompt, "Game").unwrap();
         assert_eq!(
             String::from_utf8_lossy(prompt.output()),
             "note: run `wineo art key` to fetch art from SteamGridDB\n"
@@ -3487,7 +3495,7 @@ mod tests {
         let lookups = std::cell::Cell::new(0);
         let access = access(true, &lookups, Fake::default());
         let mut prompt = Prompt::new(Script::new(&[]), Vec::new());
-        let mut art = review_art(&access, &mut prompt, "Game").unwrap();
+        let mut art = review_art(&GlobalConfig::default(), &access, &mut prompt, "Game").unwrap();
         assert_eq!(prompt.output().len(), 0);
         assert!(art.enabled);
 

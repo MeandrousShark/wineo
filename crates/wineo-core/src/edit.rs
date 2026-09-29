@@ -129,14 +129,25 @@ fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
             Ok(())
         }
         "art.fetch" => {
-            if !matches!(raw, "all" | "icon") {
-                return Err(EditError::InvalidValue {
+            let fetch = raw.parse::<crate::config::ArtFetch>().map_err(|reason| {
+                EditError::InvalidValue {
                     key: key.to_owned(),
-                    reason: format!("expected `all` or `icon`, got `{raw}`"),
-                });
-            }
+                    reason,
+                }
+            })?;
+            let value = match fetch {
+                crate::config::ArtFetch::All => Value::from("all"),
+                crate::config::ArtFetch::Icon => Value::from("icon"),
+                crate::config::ArtFetch::Selected(_) => {
+                    let mut array = toml_edit::Array::new();
+                    for kind in fetch.kinds() {
+                        array.push(kind.as_str());
+                    }
+                    Value::Array(array)
+                }
+            };
             let table = ensure_table(root, "art", "art", false)?;
-            store_value(table, "fetch", Value::from(raw.to_owned()));
+            store_value(table, "fetch", value);
             Ok(())
         }
         "gamemode" | "wayland" | "mangohud" => {
@@ -647,6 +658,24 @@ mod tests {
 
     fn parse(s: &str) -> DocumentMut {
         s.parse().expect("valid toml")
+    }
+
+    #[test]
+    fn global_art_fetch_writes_custom_and_empty_arrays() {
+        let mut doc = "[art]\nfetch = \"all\" # keep\n"
+            .parse::<DocumentMut>()
+            .unwrap();
+        set(&mut doc, Scope::Global, "art.fetch", "grid,logo").unwrap();
+        let config: crate::config::GlobalConfig = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(
+            config.art.fetch.kinds(),
+            vec![crate::art::Kind::Grid, crate::art::Kind::Logo]
+        );
+        assert!(doc.to_string().contains("# keep"));
+        set(&mut doc, Scope::Global, "art.fetch", "none").unwrap();
+        let config: crate::config::GlobalConfig = toml::from_str(&doc.to_string()).unwrap();
+        assert!(config.art.fetch.kinds().is_empty());
+        assert!(set(&mut doc, Scope::Global, "art.fetch", "grid,grid").is_err());
     }
 
     #[test]
