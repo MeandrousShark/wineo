@@ -131,6 +131,13 @@ impl Editor {
             new_env: EnvRow::default(),
         }
     }
+    /// Text typed into an add field but not added yet.
+    fn clear_inputs(&mut self) {
+        self.args_input.clear();
+        self.winetricks_input.clear();
+        self.tags_input.clear();
+        self.new_env = EnvRow::default();
+    }
     pub(crate) fn list_input(&self, list: List) -> &str {
         match list {
             List::Winetricks => &self.winetricks_input,
@@ -439,6 +446,7 @@ impl Page {
                 self.edited();
                 if let Some(editor) = self.editor_mut() {
                     editor.form.revert();
+                    editor.clear_inputs();
                     editor.refusal = None;
                     editor.build_refusal = None;
                 }
@@ -1561,6 +1569,28 @@ mod tests {
         );
         assert_eq!(editor.form.draft.dxvk.as_deref(), Some("latest"));
         assert!(page.can_save());
+    }
+
+    #[test]
+    fn revert_clears_text_typed_but_not_added() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        for event in [
+            Event::ArgsInput("-e".into()),
+            Event::ListInput(List::Winetricks, "corefonts".into()),
+            Event::ListInput(List::Tags, "rpg".into()),
+            Event::NewEnvKey("A".into()),
+            Event::NewEnvValue("1".into()),
+            Event::Switch(Switch::Mangohud, true),
+            Event::Revert,
+        ] {
+            let _ = page.update(&paths, event);
+        }
+        let editor = editor(&page);
+        assert!(editor.args_input.is_empty() && editor.winetricks_input.is_empty());
+        assert!(editor.tags_input.is_empty());
+        assert_eq!(editor.new_env, EnvRow::default());
     }
 
     #[test]
