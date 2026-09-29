@@ -2243,7 +2243,7 @@ mod tests {
 
     use tempfile::tempdir;
     use wineo_core::heroic::{HeroicRunner, InputFingerprint};
-    use wineo_core::heroic_import::PendingGame;
+    use wineo_core::heroic_import::{PendingGame, Resolution};
     use wineo_core::import;
     use wineo_core::runner::Runner;
 
@@ -2743,6 +2743,20 @@ mod tests {
         review_settings(&mut prompt, &mut plan).unwrap();
         assert_eq!(plan.blocking().count(), 0);
         assert_eq!(plan.needs_input(), None);
+        let settled: Vec<_> = plan
+            .findings()
+            .iter()
+            .map(|finding| finding.resolution.clone())
+            .collect();
+        assert_eq!(
+            settled,
+            [
+                Resolution::Kept,
+                Resolution::Kept,
+                Resolution::Dropped,
+                Resolution::Omitted
+            ]
+        );
     }
 
     #[test]
