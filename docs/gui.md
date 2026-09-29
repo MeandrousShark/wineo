@@ -7,9 +7,9 @@ and it starts and stops games. It was added in
 
 [Plan 0037](plans/0037-gui-settings.md) added settings pages for each
 environment and for the global config, covering what `wineo set` and the
-target half of `wineo setup` do. Creating, importing, and removing
-environments still happen in the `wineo` CLI, and the app picks up the
-changes on its own.
+target half of `wineo setup` do. The GUI also has guided flows for creating,
+importing, and cloning environments. Removal, trash, and validation remain
+CLI tasks for now.
 
 ## Starting it
 
@@ -61,6 +61,52 @@ If wineo lost track of a run, for example after a crash, the error has a
 
 **Settings** opens the environment's settings page.
 
+The detail actions menu and each card's right-click menu also offer
+**Settings** and **Clone**. Cloning has a review page; Wine clones copy the
+prefix and art, while native clones share the game files. Both keep external
+game paths, disable desktop entries, clear the Heroic id, and reset playtime.
+
+## Add, import, and clone
+
+**Add** opens full-page flows for **New environment**, **Import prefix**, or
+**Import from Heroic**. The same choices are available when the library is
+empty. Back preserves entries, and leaving a filled draft asks before
+discarding it.
+
+New environments can be Windows or Native Linux. Windows supports an empty
+environment, an existing executable, or an installer; Native Linux supports
+an empty registration or executable. Installer setup scans installed
+programs after completion so you can choose the game's target, rather than
+registering the installer. Prefix imports can copy a Wine prefix or Proton
+compatdata, or register it in place. **Set up targets** opens Settings' Add
+target editor after import. Target setup can be skipped and done later.
+
+Heroic import discovers native and Flatpak configs, and supports manually
+added Windows and Native Linux games. Import one game with an editable review,
+or import all eligible games with a batch review and per-game results.
+Unsupported games explain why they cannot be imported. Imports and clones do
+not launch automatically.
+
+New and import reviews offer **Browse...** for Icon, Grid, Hero, and Logo,
+with a preview and **Clear selection** for each kind. Manual files work
+without a SteamGridDB key or network access. Local files can be mixed with
+fetched art, and the local choice wins for that kind. Fetching uses the
+global **Art to fetch** switches. If artwork fails after registration, retry
+or skip it. General artwork, key, and download management remain CLI tasks;
+GUI managers are planned separately.
+
+The new environment finish page has an unchecked **Launch game when this
+page closes** option when a playable target is ready. If checked, leaving for
+the library or Settings launches that target once. Closing the application
+does not launch it.
+
+The GUI offers contextual runner and component downloads when a flow needs
+them. It asks before downloading and shows progress; completed downloads
+stay installed if the flow is later canceled. While a create, import, clone,
+download, or installer operation is active, closing the window offers
+**Keep working** or **Cancel and close**. Cancellation waits for cleanup and
+offers **Force stop** while waiting.
+
 ## Settings
 
 The panel's **Settings** button opens an environment's page, and the gear
@@ -107,7 +153,8 @@ button, and the page reloads once the file is fixed.
   you flip them, like above. **Edit here** copies the environment's
   gamescope settings into the target, since a target's gamescope replaces
   the environment's whole table. **Add target** offers the programs
-  installed in the prefix, like `wineo setup`, or a typed path. **Remove**
+  installed in the prefix, like `wineo setup`, or a typed path. **Browse...**
+  opens a file picker for the executable and working directory. **Remove**
   says which desktop entry and art go with the target first. Targets can't
   be renamed, and a removed name can be used again after saving.
 - **Advanced:** the prefix path, and the game id and store protonfixes use
@@ -140,6 +187,7 @@ Hover the selected runner to see its full name.
 | Enter | Open the panel, or play when it's open |
 | Esc | Close the log, then the panel, then clear the search |
 | `/` or Ctrl+F | Search |
+| Ctrl+N | Open Add |
 | Down (in the search) | Back to the cards |
 
 On a settings page:
@@ -150,6 +198,15 @@ On a settings page:
 | Tab, Shift+Tab | Move between text fields |
 | Esc | Leave the field, then the page, asking first if there are edits |
 
+In an Add, import, or clone flow:
+
+| Key | Does |
+|---|---|
+| Ctrl+Enter | Activate the page's primary action |
+| 1, 2, 3 (Add choices) | Choose New, prefix import, or Heroic import |
+| Tab, Shift+Tab | Move between controls |
+| Esc | Go back, asking before discarding a filled draft |
+
 ## Look
 
 The app follows your desktop's light or dark preference and switches when
@@ -157,8 +214,6 @@ it changes.
 
 ## Not yet
 
-- Creating, importing, and cloning environments come in plan 0038.
-  Removing, the trash, and validating come after, then snapshots, portable
-  copies, art, downloads, and running programs.
+- Removing, the trash, and validating come next, then snapshots, portable
+  copies, general art and download management, and running programs.
 - Gamepad navigation.
-- Fetching art from the app. Use `wineo art fetch`.

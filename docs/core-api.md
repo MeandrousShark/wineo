@@ -109,6 +109,8 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   environment, building or adopting its prefix, adding a default target, and
   reconciling components and desktop entries. `Created` holds the create
   lock, so keep it alive through an installer that runs right after.
+  An optional `expected_adopted` checks the reviewed build/adopt decision
+  under that lock and refuses a changed destination before writing.
 - `settings::check(paths, global, name, pairs, unset)`: the rules `wineo set`
   enforces, run before `settings::update` writes. It returns the component
   changes it applied.
@@ -140,6 +142,9 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   `portable::execute_reviewed`, `snapshot::create_reviewed`, and
   `snapshot::restore_reviewed`. Each takes an inspected review, `&token`, and
   a progress callback.
+- `Runner::wait_idle_for_copy(prefix, &token)`: waits for wineo-tracked Wine
+  processes to exit before a GUI starts a prefix copy. Canceling this wait
+  cancels only the waiter; it does not stop those processes.
 
 ### Heroic import
 
@@ -170,7 +175,10 @@ One game:
    Then `registered.finish(paths, global)` writes desktop entries.
 
 Native games follow the same steps with `plan_native` and `apply_native`,
-which takes no token since nothing is copied.
+which takes no token since nothing is copied. `NativePlan` has setters for
+the name, executable, working directory, launcher arguments, environment
+variables, gamemode, MangoHud, Gamescope, and
+desktop entry to support an editable GUI review.
 
 A whole library, for `--all`:
 

@@ -32,6 +32,8 @@ wineo stop hades
   everything in a folder you can move to another drive.
 - **Artwork.** Store icons, posters, heroes, and logos per environment, from
   your own files or SteamGridDB.
+- **Desktop app.** Browse, launch, create, import, and clone environments
+  with guided reviews, file pickers, and optional artwork selection.
 - **Scripting friendly.** `--json` output for `status` and `list`, and live
   shell completion for environment and target names.
 
@@ -135,7 +137,8 @@ you pass `--portable DIR` or set it up for a portable folder.
 ## Development
 
 wineo is a Cargo workspace: `wineo-core` holds the environment, config, and
-process logic, `wineo-cli` is the `wineo` command, and `wineo-gui` is planned.
+process logic, `wineo-cli` is the `wineo` command, and `wineo-gui` is the
+desktop app.
 Work is planned in [`docs/plans/`](docs/plans/), and contributor rules are in
 [`AGENTS.md`](AGENTS.md).
 

@@ -60,8 +60,7 @@ and winetricks tools follow in 0040.
 
 ## Proposed design
 
-Except for the settled manual-art requirement above, choices below remain
-proposals until the maintainer approves the plan.
+The design below was approved by the maintainer on 2026-09-29.
 
 ### Entry points and page shape
 
@@ -311,6 +310,24 @@ storage behavior requires an amendment approved by the maintainer.
   register a native game, import a prefix, import single and batch Heroic
   games, clone Wine and native environments, and try cancellation during
   copying and installation. Verify the results in both GUI and CLI.
+
+## Implementation verification
+
+Implemented on 2026-09-29. The plan stays approved pending the maintainer's
+real-game and installer acceptance above.
+
+- Formatting and workspace clippy with warnings denied passed.
+- The full suite and frozen serial workspace gate passed. The latter ran
+  1,518 tests, with 16 prerequisite-dependent tests ignored.
+- Both CLI and GUI release builds passed. Follow-up GUI checks passed all
+  160 GUI tests after the final artwork and review-display adjustments.
+- Independent code review found no remaining actionable defects after the
+  reviewed-adoption, desktop-lock, draft-discard, and stale-reply fixes.
+- Isolated GUI smoke checks used temporary storage and fake programs:
+  Windows creation, manual artwork previews/storage, Wine clone, native
+  Heroic import, keyboard creation, light/dark rendering, unavailable and
+  canceled file choosers, opt-in launch once, and installer cancel-and-close.
+  No real games, installers, or network downloads were used.
 
 ## Scope limits
 
