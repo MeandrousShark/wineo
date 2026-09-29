@@ -59,6 +59,12 @@ package() {
   install -Dm755 target/release/wineo "$pkgdir/usr/bin/wineo"
   install -Dm755 target/release/wineo-gui "$pkgdir/usr/bin/wineo-gui"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 crates/wineo-gui/assets/wineo-gui.desktop \
+    "$pkgdir/usr/share/applications/wineo-gui.desktop"
+  install -Dm644 crates/wineo-gui/assets/wineo-gui.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/wineo-gui.svg"
+  install -Dm644 crates/wineo-gui/THIRD_PARTY.md \
+    "$pkgdir/usr/share/licenses/$pkgname/THIRD_PARTY.md"
   install -Dm644 docs/environment.toml.example \
     "$pkgdir/usr/share/doc/wineo/environment.toml.example"
   install -Dm644 docs/native-environment.toml.example \

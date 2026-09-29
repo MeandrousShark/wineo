@@ -499,10 +499,58 @@ fn run() -> anyhow::Result<()> {
             default_text_size: 14.into(),
             ..Settings::default()
         })
+        .window(window_settings())
         .window_size((1200.0, 800.0))
         .subscription(App::subscription)
         .run()?;
     Ok(())
+}
+
+fn app_icon() -> Option<window::Icon> {
+    let svg = include_bytes!("../assets/wineo-gui.svg");
+    let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default()).ok()?;
+    let size = tree.size().to_int_size();
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::default(),
+        &mut pixmap.as_mut(),
+    );
+
+    let rgba = pixmap
+        .data()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|pixel| {
+            let alpha = u16::from(pixel[3]);
+            if alpha == 0 {
+                [0, 0, 0, 0]
+            } else {
+                let straight =
+                    |channel: u8| ((u16::from(channel) * 255 + alpha / 2) / alpha).min(255) as u8;
+                [
+                    straight(pixel[0]),
+                    straight(pixel[1]),
+                    straight(pixel[2]),
+                    pixel[3],
+                ]
+            }
+        })
+        .collect();
+
+    window::icon::from_rgba(rgba, size.width(), size.height()).ok()
+}
+
+fn window_settings() -> window::Settings {
+    window::Settings {
+        icon: app_icon(),
+        platform_specific: window::settings::PlatformSpecific {
+            application_id: "wineo-gui".to_owned(),
+            ..window::settings::PlatformSpecific::default()
+        },
+        ..window::Settings::default()
+    }
 }
 
 fn main() -> ExitCode {
@@ -548,6 +596,10 @@ mod tests {
             Paths::from_lookup(|key| (key == "HOME").then(|| "/tmp/wineo-gui-tests".into()))
                 .unwrap();
         App::boot(paths).0
+    }
+    #[test]
+    fn app_icon_renders_from_embedded_svg() {
+        assert!(app_icon().is_some());
     }
     #[test]
     fn search_is_case_insensitive() {

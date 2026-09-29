@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=wineo
+GenericName=Game and Wine launcher
+Comment=Launch your Wine, Proton, and native games
+Exec=wineo-gui
+Icon=wineo-gui
+Terminal=false
+Categories=Game;
+StartupWMClass=wineo-gui
