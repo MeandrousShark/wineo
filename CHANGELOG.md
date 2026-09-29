@@ -3,6 +3,15 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.15.1 - 2026-09-28
+
+- Canceling `new` into an existing empty `--dir` now leaves the directory
+  empty instead of keeping wineboot's partial files.
+- A canceled prefix build stops the new prefix's wineserver before cleaning
+  up, so Wine can no longer refill or recreate the directory afterwards.
+- Ctrl+C at guided `wineo download`'s release prompts cancels like any other
+  prompt.
+
 ## 0.15.0 - 2026-09-28
 
 - Launch, stop, environment creation, winetricks, settings checks, status
