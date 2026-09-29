@@ -16,11 +16,12 @@ use crate::files::write_atomic;
 use crate::install::{self, Change, Wanted};
 use crate::launch;
 use crate::name;
-use crate::operation::Locks;
+use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::prefix;
 use crate::runner::Runner;
 use crate::runners::Runners;
+use crate::runtime::Runtime;
 
 /// Which config file `update` edits.
 #[derive(Debug, Clone, Copy)]
@@ -38,6 +39,100 @@ pub enum CheckError {
         changed: String,
         kind: String,
     },
+}
+
+/// What `apply` did, in the order it happened.
+#[derive(Debug, Default)]
+pub struct Applied {
+    /// Components installed or removed before the config was written.
+    pub components: Vec<Change>,
+    /// Keys asked to be removed that weren't set.
+    pub not_set: Vec<String>,
+    pub desktop: Vec<desktop::Change>,
+    /// The runner this set switched to. The prefix is not migrated, and one
+    /// set up by a newer wine may not work with it.
+    pub changed_runner: Option<String>,
+    /// The environment is running, so the changes apply the next time it starts.
+    pub running: bool,
+    /// What stopped `apply` after components had already changed, so what
+    /// happened up to then can still be reported. Later fields stay empty.
+    pub failed: Option<anyhow::Error>,
+}
+
+/// Locks, checks, writes, and reconciles desktop entries for one settings
+/// change, the whole of what `wineo set` does once its arguments are parsed.
+/// An error means nothing was changed.
+pub fn apply(
+    paths: &Paths,
+    file: ConfigFile,
+    pairs: &[(&str, &str)],
+    unset: &[&str],
+) -> anyhow::Result<Applied> {
+    if let ConfigFile::Environment(name) = file
+        && (pairs.iter().any(|(key, _)| *key == "kind") || unset.contains(&"kind"))
+    {
+        bail!("{name}'s kind can't be changed, make a new environment instead");
+    }
+
+    // Pointing an environment somewhere else has to exclude whatever is using
+    // either prefix, so a removal can't delete one this is about to adopt. A
+    // running environment holds the same lock, so this refuses that too.
+    let guard = match file {
+        ConfigFile::Environment(name) if changes_the_launch(pairs, unset) => {
+            let mut prefixes = Vec::new();
+            if let Ok(environment) = Environment::load(paths, name)
+                && let Ok(prefix) = environment.prefix(paths)
+            {
+                prefixes.push(prefix);
+            }
+            prefixes.extend(pairs.iter().filter_map(|(key, raw)| {
+                (*key == "prefix").then(|| new_prefix(paths, raw)).flatten()
+            }));
+            let borrowed: Vec<&std::path::Path> = prefixes.iter().map(PathBuf::as_path).collect();
+            let guard = Locks::new(paths).acquire(Operation::Configure, name, &borrowed)?;
+            // An installer that never confirmed it was done may still have
+            // programs running in the prefix these settings reach into.
+            Runtime::new(paths, name).check_resolved(name)?;
+            Some(guard)
+        }
+        _ => None,
+    };
+
+    let mut applied = Applied::default();
+    // Checked under the lock, so a typo never gets written and the runner
+    // cannot be removed between the check and the write.
+    if let ConfigFile::Environment(name) = file {
+        let global = GlobalConfig::load_or_default(paths)?;
+        applied.components = check(paths, &global, name, pairs, unset)?;
+    }
+    if let Err(err) = write_and_follow(paths, file, pairs, unset, guard.is_some(), &mut applied) {
+        applied.failed = Some(err);
+    }
+    // Held through the desktop step, so its icon extraction runs under it.
+    drop(guard);
+    Ok(applied)
+}
+
+/// The part of `apply` that runs once components may have changed.
+fn write_and_follow(
+    paths: &Paths,
+    file: ConfigFile,
+    pairs: &[(&str, &str)],
+    unset: &[&str],
+    held: bool,
+    applied: &mut Applied,
+) -> anyhow::Result<()> {
+    applied.not_set = update(paths, file, pairs, unset)?;
+    if let ConfigFile::Environment(name) = file {
+        applied.desktop = desktop::apply(paths, name, held)?;
+    }
+    // Wine writes its version into a prefix, so an older build can choke on a
+    // prefix a newer one set up. Wineo does not try to detect that.
+    applied.changed_runner = changed_runner(pairs).map(str::to_owned);
+    if let ConfigFile::Environment(name) = file {
+        applied.running = Runtime::new(paths, name).is_running()?;
+    }
+    Ok(())
 }
 
 /// Validates environment settings and reconciles installed components before
@@ -905,5 +1000,188 @@ mod tests {
             &[],
         )
         .unwrap();
+    }
+
+    fn executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn fake_wine(paths: &Paths, name: &str) {
+        let root = GlobalConfig::default().runner_root(paths).unwrap();
+        for program in ["wine", "wineserver"] {
+            executable(&root.join(name).join("bin").join(program));
+        }
+    }
+
+    fn fake_proton(paths: &Paths, name: &str) {
+        let dir = GlobalConfig::default()
+            .runner_root(paths)
+            .unwrap()
+            .join(name);
+        executable(&dir.join("proton"));
+        for program in ["wine", "wineserver"] {
+            executable(&dir.join("files/bin").join(program));
+        }
+        fs::write(dir.join("version"), format!("1 {name}\n")).unwrap();
+    }
+
+    #[test]
+    fn apply_refuses_to_change_the_kind() {
+        let (_root, paths) = setup();
+        write_env(&paths, NOTEPAD);
+        let err = apply(&paths, ConfigFile::Environment("notepad"), &[], &["kind"]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "notepad's kind can't be changed, make a new environment instead"
+        );
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("notepad")).unwrap(),
+            NOTEPAD
+        );
+    }
+
+    #[test]
+    fn apply_refuses_while_the_environment_is_in_use() {
+        let (_root, paths) = setup();
+        write_env(&paths, NOTEPAD);
+        let prefix = Environment::load(&paths, "notepad")
+            .unwrap()
+            .prefix(&paths)
+            .unwrap();
+        let _running = Locks::new(&paths)
+            .acquire(Operation::Launch, "notepad", &[&prefix])
+            .unwrap();
+        let err = apply(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[("runner", "other")],
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err.downcast_ref::<Error>(), Some(Error::Busy { .. })),
+            "{err}"
+        );
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("notepad")).unwrap(),
+            NOTEPAD
+        );
+    }
+
+    #[test]
+    fn apply_leaves_a_runner_kind_mismatch_to_the_caller_to_word() {
+        let (_root, paths) = setup();
+        fake_wine(&paths, "wine-tkg");
+        fake_proton(&paths, "GE-Proton9-20");
+        let text = NOTEPAD.replace("runner = \"wine\"", "runner = \"wine-tkg\"");
+        write_env(&paths, &text);
+        let err = apply(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[("runner", "GE-Proton9-20")],
+            &[],
+        )
+        .unwrap_err();
+        match err.downcast_ref::<CheckError>() {
+            Some(CheckError::RunnerKindMismatch {
+                current,
+                changed,
+                kind,
+            }) => {
+                assert_eq!(current, "wine-tkg");
+                assert_eq!(changed, "GE-Proton9-20");
+                assert_eq!(kind, "proton");
+            }
+            None => panic!("{err:#}"),
+        }
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("notepad")).unwrap(),
+            text
+        );
+    }
+
+    #[test]
+    fn apply_reports_what_it_did() {
+        let (_root, paths) = setup();
+        write_env(&paths, NOTEPAD);
+        let applied = apply(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[("env.WINEDEBUG", "-all")],
+            &["env.NOPE"],
+        )
+        .unwrap();
+        assert!(applied.failed.is_none(), "{:?}", applied.failed);
+        assert!(applied.components.is_empty());
+        assert_eq!(applied.not_set, ["env.NOPE"]);
+        assert!(applied.desktop.is_empty());
+        assert_eq!(applied.changed_runner, None);
+        assert!(!applied.running);
+        let config = Environment::load(&paths, "notepad").unwrap().config;
+        assert_eq!(config.env["WINEDEBUG"], "-all");
+    }
+
+    #[test]
+    fn apply_returns_desktop_changes() {
+        let (root, paths) = setup();
+        let prefix = root.path().join("prefix");
+        fs::create_dir_all(prefix.join("dosdevices")).unwrap();
+        fs::create_dir_all(prefix.join("drive_c/Hades")).unwrap();
+        fs::write(prefix.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+        std::os::unix::fs::symlink("../drive_c", prefix.join("dosdevices/c:")).unwrap();
+        fs::write(prefix.join("drive_c/Hades/Hades.exe"), b"").unwrap();
+        // A runner that doesn't resolve, so nothing starts wine for an icon.
+        write_env(
+            &paths,
+            &format!(
+                "prefix = \"{}\"\nrunner = \"missing\"\narch = \"win64\"\n\n[targets.hades]\nexe = 'C:\\Hades\\Hades.exe'\n",
+                prefix.display()
+            ),
+        );
+        let applied = apply(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[("targets.hades.desktop", "true")],
+            &[],
+        )
+        .unwrap();
+        assert!(applied.failed.is_none(), "{:?}", applied.failed);
+        assert_eq!(
+            applied.desktop,
+            [desktop::Change::Wrote {
+                target: "hades".to_owned(),
+                icon: false,
+            }]
+        );
+        assert_eq!(desktop::list(&paths).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn apply_keeps_a_failed_write_in_failed() {
+        let (_root, paths) = setup();
+        write_env(&paths, NOTEPAD);
+        let applied = apply(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[("targets.a.default", "true")],
+            &["env.NOPE"],
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                applied
+                    .failed
+                    .as_ref()
+                    .and_then(|err| err.downcast_ref::<Error>()),
+                Some(Error::ConfigSyntax { .. })
+            ),
+            "{:?}",
+            applied.failed
+        );
+        assert!(applied.not_set.is_empty());
+        assert_eq!(applied.changed_runner, None);
     }
 }

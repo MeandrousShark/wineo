@@ -24,9 +24,12 @@ use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
 use crate::launch;
+use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::programs;
 use crate::runner::Runner;
+use crate::runners::Runners;
+use crate::runtime::Runtime;
 use crate::winpath;
 
 const ENVIRONMENT_KEY: &str = "X-Wineo-Environment";
@@ -63,6 +66,41 @@ pub enum Change {
         target: String,
         reason: String,
     },
+}
+
+/// Writes the entries a config now asks for. Run after the write, so an entry
+/// is built from the config as it ends up rather than as it was. `held` says
+/// the caller already has the environment to itself.
+pub fn apply(paths: &Paths, name: &str, held: bool) -> Result<Vec<Change>> {
+    let Ok(environment) = Environment::load(paths, name) else {
+        return Ok(Vec::new());
+    };
+    if environment.config.wine().is_none() {
+        let global = GlobalConfig::load_or_default(paths)?;
+        return reconcile_native(paths, &global, &environment);
+    }
+    let Ok(prefix) = environment.prefix(paths) else {
+        return Ok(Vec::new());
+    };
+    // Pulling out an icon runs wine in the prefix, which has to wait for
+    // whatever holds it exclusively, like an installer, and for what an
+    // unresolved one may have left running. The entry is still written, and
+    // gets its icon on a later launch.
+    let launch = (!held)
+        .then(|| {
+            Locks::new(paths)
+                .acquire(Operation::Launch, name, &[&prefix])
+                .ok()
+        })
+        .flatten();
+    let may_run_wine =
+        held || (launch.is_some() && Runtime::new(paths, name).check_resolved(name).is_ok());
+    let global = GlobalConfig::load_or_default(paths)?;
+    let runner = may_run_wine
+        .then(|| Runners::new(paths, &global).ok())
+        .flatten()
+        .and_then(|runners| runners.resolve(&environment.wine().ok()?.runner).ok());
+    reconcile(paths, &global, &environment, runner.as_ref(), &prefix)
 }
 
 /// An entry on disk that wineo wrote.
