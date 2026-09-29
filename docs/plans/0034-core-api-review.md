@@ -267,7 +267,9 @@ Three findings predate this plan and are left for the maintainer:
   winetricks runs in its own process group, wineo could wait for the group
   to empty, but that needs testing against real umu containers first.
 
-The maintainer approved fixing the first two as patch fixes after this plan.
+The maintainer approved fixing the first two as patch fixes after this plan,
+which landed as f9dc28b and c425db2. QA then found real Wine's wineserver
+refilling the directory after a cancel, fixed in 7ae879e.
 The Proton winetricks one waits until it shows up in real use.
 
 ## Verification and acceptance
