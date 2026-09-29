@@ -379,9 +379,16 @@ impl App {
         }
         if !self.log_view {
             inner = inner.push(actions);
+            let mut extra = row![].spacing(8);
             if card.state != State::Inactive {
-                inner = inner.push(button("Log").on_press(Message::OpenLog).padding([6, 12]));
+                extra = extra.push(button("Log").on_press(Message::OpenLog).padding([6, 12]));
             }
+            extra = extra.push(
+                button("Settings")
+                    .on_press(Message::OpenSettings)
+                    .padding([6, 12]),
+            );
+            inner = inner.push(extra);
         }
         if let Some(operation) = self.operation.as_ref().filter(|op| op.name == card.name) {
             let spin = ["◐", "◓", "◑", "◒"][self.spinner_frame % 4];
@@ -471,7 +478,7 @@ fn detail_row(label: &str, value: &str, palette: Palette) -> Element<'static, Me
     .into()
 }
 
-fn error_box<'a>(error: &'a str, palette: Palette) -> Element<'a, Message> {
+pub(crate) fn error_box<'a>(error: &'a str, palette: Palette) -> Element<'a, Message> {
     container(text(error).size(14).color(palette.danger))
         .width(Fill)
         .padding(8)
@@ -483,7 +490,7 @@ fn error_box<'a>(error: &'a str, palette: Palette) -> Element<'a, Message> {
         .into()
 }
 
-fn action_button(
+pub(crate) fn action_button(
     label: &'static str,
     color: Color,
     enabled: bool,

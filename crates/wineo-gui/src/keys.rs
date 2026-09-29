@@ -57,6 +57,9 @@ impl App {
         search_focused: bool,
         captured: bool,
     ) -> Task<Message> {
+        if self.settings.is_some() {
+            return self.settings_key(&key, modifiers, captured);
+        }
         self.search_focused = search_focused;
         if captured
             && !search_focused

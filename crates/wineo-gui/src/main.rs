@@ -3,6 +3,7 @@ mod grid;
 mod keys;
 mod library;
 mod panel;
+mod settings;
 mod theme;
 mod wheel;
 mod worker;
@@ -65,6 +66,8 @@ pub(crate) struct App {
     log_token: Option<Token>,
     log_generation: u64,
     pub(crate) spinner_frame: usize,
+    settings: Option<settings::Page>,
+    settings_generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +121,8 @@ pub(crate) enum Message {
         bool,
     ),
     SearchFocusChanged(bool),
+    OpenSettings,
+    Settings(settings::Event),
 }
 
 impl App {
@@ -152,6 +157,8 @@ impl App {
             log_token: None,
             log_generation: 0,
             spinner_frame: 0,
+            settings: None,
+            settings_generation: 0,
         };
         let load = Self::load(app.paths.clone());
         (
@@ -353,11 +360,15 @@ impl App {
                 self.hovered = name;
                 Task::none()
             }
-            Message::Refresh if !self.refreshing => {
-                self.refreshing = true;
-                Self::load(self.paths.clone())
+            Message::Refresh => {
+                let library = if self.refreshing {
+                    Task::none()
+                } else {
+                    self.refreshing = true;
+                    Self::load(self.paths.clone())
+                };
+                Task::batch([library, self.settings_tick()])
             }
-            Message::Refresh => Task::none(),
             Message::Loaded(Ok(cards)) => {
                 self.refreshing = false;
                 self.merge(cards);
@@ -416,7 +427,9 @@ impl App {
                 Task::none()
             }
             Message::SpinnerTick => {
-                if self.operation.is_some() {
+                if self.operation.is_some()
+                    || self.settings.as_ref().is_some_and(|page| page.saving)
+                {
                     self.spinner_frame = (self.spinner_frame + 1) % 4;
                 }
                 Task::none()
@@ -435,6 +448,8 @@ impl App {
                 self.search_focused = focused;
                 Task::none()
             }
+            Message::OpenSettings => self.open_settings(),
+            Message::Settings(event) => self.settings_update(event),
         }
     }
     fn merge(&mut self, cards: Vec<Card>) {

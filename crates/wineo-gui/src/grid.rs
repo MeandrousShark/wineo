@@ -102,6 +102,9 @@ impl App {
     }
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let palette = self.palette;
+        if let Some(page) = &self.settings {
+            return page.view(palette, self.spinner_frame);
+        }
         let mut page = column![
             self.top_bar(),
             container(Space::new())
