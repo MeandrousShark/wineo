@@ -8,6 +8,7 @@ use anyhow::Context;
 use crate::components::Component;
 use crate::config::{Arch, GlobalConfig, Target};
 use crate::error::Error;
+use crate::gamescope::GamescopeSetting;
 use crate::heroic::{
     HeroicImport, HeroicIssue, HeroicIssueKind, HeroicSharedPrefix, HeroicSource, ReviewItem,
     parse_launcher_args,
@@ -621,11 +622,77 @@ impl GamePlan {
             env.insert(key.to_owned(), value.to_owned());
         }
         self.import.env = env;
+        for finding in &mut self.findings {
+            if finding.issue.field.as_deref().is_some_and(|field| {
+                field.starts_with("enviromentOptions")
+                    || crate::heroic::MANAGED_ENV.contains(&field)
+            }) {
+                finding.resolution = Resolution::Fixed;
+            }
+        }
         Ok(())
     }
 
     pub fn set_gamemode(&mut self, enabled: bool) {
         self.import.gamemode = Some(enabled);
+    }
+
+    pub fn set_wayland(&mut self, enabled: bool) -> Result<(), PlanError> {
+        if enabled && !self.runner.supports_wayland() {
+            return Err(PlanError::Blocked(format!(
+                "{} does not support Wine Wayland",
+                self.runner.name()
+            )));
+        }
+        self.import.wayland = Some(enabled);
+        if !enabled && self.import.enable_hdr {
+            self.import.enable_hdr = false;
+            self.import.env.remove(if self.runner.is_proton() {
+                "PROTON_ENABLE_HDR"
+            } else {
+                "DXVK_HDR"
+            });
+        }
+        self.fix_findings(|field| field == "enableWineWayland");
+        Ok(())
+    }
+
+    pub fn set_mangohud(&mut self, enabled: bool) {
+        self.import.mangohud = Some(enabled);
+    }
+
+    pub fn set_gamescope(&mut self, setting: Option<GamescopeSetting>) {
+        self.import.gamescope = setting;
+        self.fix_findings(|field| field.starts_with("gamescope."));
+    }
+
+    pub fn set_hdr(&mut self, enabled: bool) -> Result<(), PlanError> {
+        if enabled && self.import.wayland != Some(true) {
+            return Err(PlanError::Blocked(
+                "Enable Wine Wayland before HDR".to_owned(),
+            ));
+        }
+        let key = if self.runner.is_proton() {
+            "PROTON_ENABLE_HDR"
+        } else {
+            "DXVK_HDR"
+        };
+        if enabled {
+            self.import.env.insert(key.to_owned(), "1".to_owned());
+        } else {
+            self.import.env.remove(key);
+        }
+        self.import.enable_hdr = enabled;
+        self.fix_findings(|field| field == "enableHDR");
+        Ok(())
+    }
+
+    fn fix_findings(&mut self, applies: impl Fn(&str) -> bool) {
+        for finding in &mut self.findings {
+            if finding.issue.field.as_deref().is_some_and(&applies) {
+                finding.resolution = Resolution::Fixed;
+            }
+        }
     }
 
     /// Keeps the prefix where it is. Later launches modify it.
@@ -1984,5 +2051,68 @@ pub(super) mod tests {
         assert_eq!(plan.resolved().gamemode, Some(false));
         assert!(plan.resolved().issues.is_empty());
         assert_eq!(resolution_of(&plan, "wineVersion"), &Resolution::Covered);
+    }
+
+    #[test]
+    fn launch_setting_edits_fix_only_their_own_findings() {
+        let root = tempdir().unwrap();
+        let runner = fake_wine_runner(&root.path().join("runners"), "wine-tkg");
+        let mut imported = reviewed_import(root.path());
+        imported.env.insert("OLD".to_owned(), "value".to_owned());
+        imported.issues = vec![
+            issue(
+                HeroicIssueKind::NeedsAttention,
+                "enviromentOptions[0]",
+                "review env",
+            ),
+            issue(
+                HeroicIssueKind::NeedsAttention,
+                "gamescope.width",
+                "review width",
+            ),
+            issue(HeroicIssueKind::NeedsAttention, "enableHDR", "review HDR"),
+        ];
+        let mut plan = planned(root.path(), imported.clone(), &runner);
+        plan.resolve(Policy::Defaults);
+        plan.set_environment(["NEW=other"]).unwrap();
+        plan.set_gamescope(Some(GamescopeSetting::On(Default::default())));
+        plan.set_mangohud(true);
+        assert_eq!(plan.heroic().env, imported.env);
+        assert_eq!(plan.heroic().issues, imported.issues);
+        assert_eq!(plan.resolved().env["NEW"], "other");
+        assert_eq!(plan.resolved().mangohud, Some(true));
+        assert_eq!(
+            resolution_of(&plan, "enviromentOptions[0]"),
+            &Resolution::Fixed
+        );
+        assert_eq!(resolution_of(&plan, "gamescope.width"), &Resolution::Fixed);
+        assert_ne!(resolution_of(&plan, "enableHDR"), &Resolution::Fixed);
+        assert!(plan.set_environment(["BROKEN"]).is_err());
+        assert_eq!(plan.resolved().env["NEW"], "other");
+    }
+
+    #[test]
+    fn explicit_wayland_and_hdr_edits_follow_the_selected_runner() {
+        let root = tempdir().unwrap();
+        let runners = root.path().join("runners");
+        fake_proton_runner(&runners, "proton-test");
+        fs::write(
+            runners.join("proton-test/proton"),
+            "#!/bin/sh\n# PROTON_ENABLE_WAYLAND\n",
+        )
+        .unwrap();
+        let proton = Runners::at(runners).resolve("proton-test").unwrap();
+        let imported = reviewed_import(root.path());
+        let mut plan = planned(root.path(), imported, &proton);
+        plan.set_wayland(true).unwrap();
+        plan.set_hdr(true).unwrap();
+        assert_eq!(plan.settings().wayland, Some(true));
+        assert_eq!(plan.settings().env["PROTON_ENABLE_HDR"], "1");
+        assert!(!plan.heroic().enable_wine_wayland);
+        assert!(!plan.heroic().enable_hdr);
+        plan.set_wayland(false).unwrap();
+        assert_eq!(plan.settings().wayland, Some(false));
+        assert!(!plan.settings().env.contains_key("PROTON_ENABLE_HDR"));
+        assert!(!plan.resolved().enable_hdr);
     }
 }

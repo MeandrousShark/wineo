@@ -31,6 +31,8 @@ pub struct CreateRequest {
     pub template_name: Option<String>,
     pub exe: Option<String>,
     pub desktop: bool,
+    /// Refuse a changed create/adopt decision after a caller's review.
+    pub expected_adopted: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -141,6 +143,11 @@ pub fn run(
     };
     let prefix = new.prefix_dir(paths, &global)?;
     let guard = Locks::new(paths).acquire(Operation::Create, &new.name, &[&prefix])?;
+    if let Some(expected) = request.expected_adopted
+        && crate::prefix::is_prefix(&runner.wine_prefix(&prefix)) != expected
+    {
+        bail!("prefix changed since review; review the creation choices again");
+    }
     let log = paths.runtime_dir(&new.name).join("create.log");
     let mut created_prefix = false;
     let environment = Environment::create(
@@ -295,6 +302,34 @@ mod tests {
             CreateEvent::Components(_) => events.push("components"),
             CreateEvent::Desktop(_) => events.push("desktop"),
             CreateEvent::TemplateComponentsOmitted { .. } => events.push("omitted"),
+        }
+    }
+
+    #[test]
+    fn reviewed_creation_refuses_changed_adoption_before_writing() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        fake_runner(&paths, "fake");
+        for present in [false, true] {
+            let prefix = root.path().join(format!("prefix-{present}"));
+            if present {
+                fs::create_dir_all(prefix.join("drive_c")).unwrap();
+                fs::write(prefix.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+            }
+            let mut request = request("reviewed");
+            request.dir = Some(prefix.display().to_string());
+            request.expected_adopted = Some(!present);
+            let result = run(&paths, request, &Token::new(), |_| {
+                panic!("no mutation expected")
+            });
+            assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("prefix changed since review")
+            );
+            assert!(!paths.environment_config("reviewed").exists());
         }
     }
 

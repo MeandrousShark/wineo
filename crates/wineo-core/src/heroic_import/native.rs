@@ -3,10 +3,11 @@
 //! Wine settings Heroic keeps for native games too.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::{GlobalConfig, Target};
 use crate::error::Error;
+use crate::gamescope::GamescopeSetting;
 use crate::heroic::{HeroicIssueKind, HeroicNativeImport, HeroicSource};
 use crate::import::ImportedSettings;
 use crate::launch;
@@ -25,6 +26,7 @@ pub struct NativePlan {
     imported: HeroicNativeImport,
     name: String,
     desktop: DesktopEntry,
+    cwd: Option<PathBuf>,
 }
 
 /// Inspects the native game `id` and plans it, named `name` or else a name
@@ -50,6 +52,7 @@ impl NativePlan {
             imported,
             name,
             desktop,
+            cwd: None,
         }
     }
 
@@ -111,6 +114,74 @@ impl NativePlan {
         self.imported.gamemode = Some(enabled);
     }
 
+    pub fn set_mangohud(&mut self, enabled: bool) {
+        self.imported.mangohud = Some(enabled);
+    }
+
+    pub fn set_gamescope(&mut self, setting: Option<GamescopeSetting>) {
+        self.imported.gamescope = setting;
+        self.imported.issues.retain(|issue| {
+            !issue
+                .field
+                .as_deref()
+                .is_some_and(|field| field.starts_with("gamescope."))
+        });
+    }
+
+    pub fn set_environment<S: AsRef<str>>(
+        &mut self,
+        entries: impl IntoIterator<Item = S>,
+    ) -> Result<(), PlanError> {
+        let mut env = BTreeMap::new();
+        for entry in entries {
+            let Some((key, value)) = entry.as_ref().split_once('=') else {
+                return Err(PlanError::EnvironmentFormat);
+            };
+            if key.is_empty() || key.contains(['=', '\0']) {
+                return Err(PlanError::EnvironmentName(key.to_owned()));
+            }
+            if crate::heroic::MANAGED_ENV.contains(&key) {
+                return Err(PlanError::ManagedEnvironment(key.to_owned()));
+            }
+            env.insert(key.to_owned(), value.to_owned());
+        }
+        self.imported.env = env;
+        self.imported.issues.retain(|issue| {
+            !issue.field.as_deref().is_some_and(|field| {
+                field.starts_with("enviromentOptions")
+                    || crate::heroic::MANAGED_ENV.contains(&field)
+            })
+        });
+        Ok(())
+    }
+
+    pub fn set_executable(&mut self, exe: PathBuf) -> Result<(), PlanError> {
+        if exe.as_os_str().is_empty() {
+            return Err(PlanError::EmptyExecutable);
+        }
+        self.imported.exe = exe;
+        Ok(())
+    }
+
+    pub fn set_working_directory(&mut self, cwd: Option<PathBuf>) {
+        self.cwd = cwd;
+    }
+
+    pub fn working_directory(&self) -> Option<&Path> {
+        self.cwd.as_deref()
+    }
+
+    pub fn set_launcher_args(&mut self, value: &str) -> Result<(), PlanError> {
+        let args =
+            crate::heroic::parse_launcher_args(value).map_err(PlanError::InvalidArguments)?;
+        self.imported.args = args;
+        self.imported.issues.retain(|issue| {
+            !(issue.kind == HeroicIssueKind::Invalid
+                && issue.field.as_deref() == Some("launcherArgs"))
+        });
+        Ok(())
+    }
+
     pub fn set_desktop_enabled(&mut self, enabled: bool) {
         self.desktop.enabled = enabled;
     }
@@ -129,7 +200,10 @@ impl NativePlan {
         let target = Target {
             exe: imported.exe.to_string_lossy().into_owned(),
             args: imported.args.clone(),
-            cwd: None,
+            cwd: self
+                .cwd
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
             default: true,
             gamemode: None,
             wayland: None,
@@ -234,6 +308,58 @@ mod tests {
         )
         .unwrap();
         HeroicSource::from_config_dir_with_home(heroic, root.to_owned())
+    }
+
+    #[test]
+    fn native_launch_edits_preserve_the_heroic_source_and_resolve_arguments() {
+        let root = tempdir().unwrap();
+        let source = dusklight(root.path(), r#"{"launcherArgs":"\"unclosed"}"#);
+        let mut plan = plan_native(&source, "dusk", None).unwrap();
+        assert!(plan.reject_invalid().is_err());
+        let original = plan.heroic().clone();
+        let exe = root.path().join("another-game");
+        let cwd = root.path().join("working");
+        assert!(plan.set_executable(PathBuf::new()).is_err());
+        plan.set_executable(exe.clone()).unwrap();
+        plan.set_working_directory(Some(cwd.clone()));
+        plan.set_launcher_args("--name 'two words'").unwrap();
+        assert!(plan.reject_invalid().is_ok());
+        let settings = plan.settings();
+        assert_eq!(settings.targets["game"].exe, exe.to_string_lossy());
+        assert_eq!(settings.targets["game"].cwd.as_deref(), cwd.to_str());
+        assert_eq!(settings.targets["game"].args, ["--name", "two words"]);
+        assert_eq!(plan.heroic().exe, original.exe);
+        assert_eq!(plan.heroic().args, original.args);
+        assert_eq!(plan.heroic().issues, original.issues);
+        assert!(plan.set_launcher_args("'unclosed").is_err());
+        assert_eq!(
+            plan.settings().targets["game"].args,
+            ["--name", "two words"]
+        );
+    }
+
+    #[test]
+    fn native_setting_edits_keep_the_source_and_unrelated_issues() {
+        let root = tempdir().unwrap();
+        let source = dusklight(
+            root.path(),
+            r#"{"useGameMode":true,"enviromentOptions":[{"key":"OLD","value":"old"}]}"#,
+        );
+        let mut plan = plan_native(&source, "dusk", None).unwrap();
+        let original = plan.heroic().clone();
+        plan.set_environment(["NEW=value"]).unwrap();
+        plan.set_gamemode(false);
+        plan.set_mangohud(true);
+        plan.set_gamescope(Some(GamescopeSetting::On(Default::default())));
+        let settings = plan.settings();
+        assert_eq!(settings.env["NEW"], "value");
+        assert_eq!(settings.gamemode, Some(false));
+        assert_eq!(settings.mangohud, Some(true));
+        assert!(matches!(settings.gamescope, Some(GamescopeSetting::On(_))));
+        assert_eq!(plan.heroic().env, original.env);
+        assert_eq!(plan.heroic().issues, original.issues);
+        assert!(plan.set_environment(["INVALID"]).is_err());
+        assert_eq!(plan.settings().env["NEW"], "value");
     }
 
     #[test]

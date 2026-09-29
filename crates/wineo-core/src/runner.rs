@@ -282,6 +282,33 @@ impl Runner {
         }
     }
 
+    /// Waits for a copy source to become idle. Cancellation stops only the
+    /// waiter, leaving applications using the source prefix alone.
+    pub fn wait_idle_for_copy(&self, prefix: &Path, token: &crate::cancel::Token) -> Result<()> {
+        if token.is_canceled() {
+            return Err(Error::Canceled("waiting for source prefix"));
+        }
+        let Some(mut command) = self.wineserver(prefix) else {
+            return Ok(());
+        };
+        let command = quietly(command.arg("-w"));
+        command.stdin(Stdio::null()).process_group(0);
+        let child = command
+            .spawn()
+            .context(|| "failed to run wineserver -w".to_owned())?;
+        let status =
+            crate::prefix::wait_for_child(child, token, || Ok(())).map_err(
+                |error| match error {
+                    Error::Canceled(_) => Error::Canceled("waiting for source prefix"),
+                    other => other,
+                },
+            )?;
+        if !status.success() {
+            return Err(Error::Unsettled(format!("wineserver -w failed ({status})")));
+        }
+        Ok(())
+    }
+
     pub(crate) fn wait_idle_cancellable(
         &self,
         prefix: &Path,
@@ -767,6 +794,39 @@ mod tests {
     fn touch(path: &Path, text: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn canceling_a_copy_idle_wait_does_not_kill_the_source_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let server = root.path().join("wineserver");
+        let started = root.path().join("started");
+        let killed = root.path().join("killed");
+        fs::write(&server, format!(
+            "#!/bin/sh\nif [ \"$1\" = -k ]; then\n  touch '{}'\nelse\n  touch '{}'\n  exec sleep 30\nfi\n",
+            killed.display(), started.display()
+        )).unwrap();
+        fs::set_permissions(&server, fs::Permissions::from_mode(0o755)).unwrap();
+        let runner = Runner::wine_build("fake".to_owned(), server.clone(), server);
+        let token = crate::cancel::Token::new();
+        let cancel = token.clone();
+        let thread = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !started.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            cancel.force();
+        });
+        let result = runner.wait_idle_for_copy(root.path(), &token);
+        thread.join().unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::Canceled("waiting for source prefix"))
+        ));
+        assert!(
+            !killed.exists(),
+            "copy cancellation must not run wineserver -k"
+        );
     }
 
     #[test]
