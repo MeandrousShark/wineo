@@ -300,12 +300,13 @@ fn parse_gamescope_field(key: &str, field: &str, raw: &str) -> Result<Value, Edi
         | "fps_limit"
         | "fps_limit_unfocused" => parse_count_value(key, raw),
         "filter" | "scaler" | "window" => {
-            let allowed: &[&str] = match field {
-                "filter" => &["linear", "nearest", "fsr", "nis", "pixel", "sgsr"],
-                "scaler" => &["auto", "integer", "fit", "fill", "stretch"],
-                _ => &["fullscreen", "borderless"],
+            use crate::gamescope::{Filter, Scaler, Window};
+            let allowed = match field {
+                "filter" => Filter::ALL.iter().any(|value| value.as_str() == raw),
+                "scaler" => Scaler::ALL.iter().any(|value| value.as_str() == raw),
+                _ => Window::ALL.iter().any(|value| value.as_str() == raw),
             };
-            if !allowed.contains(&raw) {
+            if !allowed {
                 return Err(EditError::InvalidValue {
                     key: key.to_owned(),
                     reason: format!("unknown {field} `{raw}`"),
@@ -1113,6 +1114,44 @@ mod tests {
         let mut doc = parse("");
         assert!(set(&mut doc, Scope::Environment, "gamescope", "{width = 1}").is_err());
         assert_eq!(doc.to_string(), "");
+    }
+
+    #[test]
+    fn every_gamescope_choice_is_accepted() {
+        use crate::gamescope::{Filter, Scaler, Window};
+        let lists: [(&str, Vec<&str>); 3] = [
+            ("filter", Filter::ALL.map(Filter::as_str).to_vec()),
+            ("scaler", Scaler::ALL.map(Scaler::as_str).to_vec()),
+            ("window", Window::ALL.map(Window::as_str).to_vec()),
+        ];
+        for (field, values) in lists {
+            let key = format!("gamescope.{field}");
+            for value in &values {
+                let mut doc = parse("");
+                set(&mut doc, Scope::Environment, &key, value).unwrap();
+                let config = crate::config::EnvironmentConfig::parse(
+                    std::path::Path::new("/x/game.toml"),
+                    &format!("prefix = '~/p'\nrunner = 'wine'\narch = 'win64'\n{doc}"),
+                )
+                .unwrap();
+                let gamescope = config.gamescope.unwrap();
+                let read = match field {
+                    "filter" => gamescope.on().unwrap().filter.map(Filter::as_str),
+                    "scaler" => gamescope.on().unwrap().scaler.map(Scaler::as_str),
+                    _ => gamescope.on().unwrap().window.map(Window::as_str),
+                };
+                assert_eq!(read, Some(*value));
+            }
+            // Pinned, so a value dropped from a list shows up here.
+            let accepted: &[&str] = match field {
+                "filter" => &["linear", "nearest", "fsr", "nis", "pixel", "sgsr"],
+                "scaler" => &["auto", "integer", "fit", "fill", "stretch"],
+                _ => &["fullscreen", "borderless"],
+            };
+            assert_eq!(values, accepted);
+            let mut doc = parse("");
+            assert!(set(&mut doc, Scope::Environment, &key, "bilinear").is_err());
+        }
     }
 
     #[test]
