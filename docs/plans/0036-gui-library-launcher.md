@@ -104,7 +104,9 @@ spike's library screen into a real app on top of `wineo-core`.
 ### Keyboard
 
 - Arrow keys move the selection through the grid, following its current
-  column count. Enter opens the panel, or plays when it's already open.
+  column count. Up and Down always go to the card visually above or below.
+  They don't remember the column you came from, so Up from a lone card in
+  a short last row goes straight up (maintainer's pick during acceptance). Enter opens the panel, or plays when it's already open.
   Esc closes the panel, or clears the search when the panel is closed.
   `/` and Ctrl+F focus the search, and Down leaves it for the grid.
 
@@ -126,7 +128,11 @@ The maintainer accepted every recommendation (2026-09-28).
 
 ### 1. Logo placement
 
-**Settled:** under the banner (option 1 below).
+**Settled:** option 2, the logo at the banner's bottom-left over a gradient
+scrim. The maintainer compared both on real art during acceptance: under
+the banner, the logo felt tacked on rather than part of the art. Option 1
+and the `WINEO_GUI_LOGO` switch are removed, and option 2 becomes the only
+layout.
 
 **Recommended:** for acceptance, also build the Steam-style variant behind
 a hidden environment variable (`WINEO_GUI_LOGO=scrim`) so both can be
