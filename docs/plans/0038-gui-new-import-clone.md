@@ -14,6 +14,11 @@ This is the next GUI parity plan after
 follow in 0039. General artwork, download, snapshot, portable-copy, exec,
 and winetricks tools follow in 0040.
 
+## Settled by the maintainer
+
+- Manual artwork selection is a first-class option alongside SteamGridDB.
+  Each art kind has **Browse...**, available without a key or network access.
+
 ## Existing foundation
 
 - `create::run` accepts a name, prefix location, runner, architecture,
@@ -50,7 +55,8 @@ and winetricks tools follow in 0040.
 
 ## Proposed design
 
-All choices below are proposals until the maintainer approves the plan.
+Except for the settled manual-art requirement above, choices below remain
+proposals until the maintainer approves the plan.
 
 ### Entry points and page shape
 
@@ -186,14 +192,31 @@ progress. Successfully installed builds remain after a canceled flow.
 Rebuild the review after installing them. General download management stays
 in 0040.
 
+Offer manual artwork in New and import flows, including each game's Heroic
+review. Icon, Grid, Hero, and Logo each have **Browse...**, a preview, and
+**Clear selection** before registration. Typed file paths remain available
+when the portal is unavailable. Local selection does not require a
+SteamGridDB key and remains visible when all automatic-fetch switches are
+off. Users can mix local files and fetched kinds; a local selection wins
+for its kind.
+
+Validate selected files by contents using core's supported formats. Keep
+selection and preview read-only until registration, then copy files into
+the environment's art store with `art::set_manual`, preserving the source
+files. Manual art failure keeps the registered environment and offers retry
+or skip. Reconcile desktop entries after art is stored so local icons apply.
+Clone continues copying the source's art rather than asking for replacement
+art in this flow.
+
 Include optional SteamGridDB fetching for New and Heroic import, honoring
 the four global art-kind switches. With a configured key, single games
 offer title search and match selection; batch import uses the same top-match
-policy as the CLI. All-off hides fetching. A missing key explains why fetch
-is unavailable; key management and an artwork browser stay in 0040.
+policy as the CLI. All-off hides automatic fetching. A missing key explains
+why fetch is unavailable; key management and an artwork browser stay in 0040.
 Art failure leaves registration successful, with a retry or skip choice.
-For Heroic, retain `Registered` through art fetching and call `finish` even
-when art is skipped or fails, so desktop entries are reconciled afterwards.
+For Heroic, retain `Registered` through manual art and fetching and call
+`finish` even when art is skipped or fails, so desktop entries are reconciled
+afterwards.
 Do not claim immediate cancellation for requests that lack token support.
 
 ### Failure, cancellation, and closing
@@ -219,7 +242,8 @@ copy operation when the GUI exits.
 2. **Heroic scope:** include single-game and batch import in 0038 as
    proposed, or split batch import into a follow-up plan?
 3. **Downloads and art:** include contextual prerequisite installation and
-   post-registration art fetching now, while keeping their general managers
+   post-registration art fetching now, alongside the confirmed manual file
+   selection, while keeping their general managers
    in 0040?
 4. **After registration:** open target setup when needed, otherwise offer
    Settings or return to the selected new card, without launching a game?
@@ -236,8 +260,8 @@ copy operation when the GUI exits.
    post-registration target setup.
 4. Prefix import and Wine/native clone using reviewed core operations.
 5. Heroic sources, editable single-game plans, batch review, and queue.
-6. Contextual prerequisites and art fetching; extract shared orchestration
-   into core if it would otherwise duplicate CLI policy. Keep CLI wording
+6. Contextual prerequisites, manual art selection, and art fetching; extract
+   shared orchestration into core if it would otherwise duplicate CLI policy. Keep CLI wording
    and behavior unchanged.
 7. Closing/cancellation verification and docs: `docs/gui.md`, features,
    README, and core API docs for any extracted operations.
@@ -260,6 +284,10 @@ storage behavior requires an amendment approved by the maintainer.
 - Test download/art orchestration with fake transports, including declined
   downloads, retained completed builds, missing keys, all-off art, and art
   failure after successful registration. No real network is needed.
+- Cover manual art without a key/network, all automatic-fetch kinds off,
+  mixed local/fetched kinds, chooser cancellation, invalid file contents,
+  preserved source files, stored manual provenance, previews, and desktop
+  icon reconciliation.
 - Verify comment preservation and portable path handling when reusing
   existing configs and target settings. CLI integration tests stay green.
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`,
