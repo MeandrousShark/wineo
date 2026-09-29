@@ -382,6 +382,9 @@ pub struct LibraryPlan {
 
 impl LibraryPlan {
     /// A plan assembled from entries a frontend sorted itself.
+    // Only the CLI's prompt tests need to build plans by hand, so it's kept
+    // out of the documented API that frontends use.
+    #[doc(hidden)]
     pub fn from_entries(runner: Option<String>, already: Vec<String>, entries: Vec<Entry>) -> Self {
         Self {
             runner,
