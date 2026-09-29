@@ -280,16 +280,12 @@ impl App {
                 ..button::Style::default()
             });
         let mut banner_layers = stack![banner];
-        if self.logo_scrim {
-            let logo_layer: Element<'_, Message> = match logo_image {
-                Some(handle) => image(handle.clone())
-                    .height(72)
-                    .content_fit(ContentFit::Contain)
-                    .expand(true)
-                    .into(),
-                None => Space::new().into(),
-            };
-            let scrim = container(logo_layer)
+        if let Some(handle) = logo_image {
+            let logo_layer = image(handle.clone())
+                .height(72)
+                .content_fit(ContentFit::Contain)
+                .expand(true);
+            let logo_overlay = container(logo_layer)
                 .width(Fill)
                 .height(112)
                 .padding(iced::Padding {
@@ -300,14 +296,23 @@ impl App {
                 })
                 .align_left(Fill)
                 .align_bottom(Fill)
-                .style(|_| {
-                    let gradient = iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
-                        .add_stop(0.0, Color::BLACK.scale_alpha(0.0))
-                        .add_stop(1.0, Color::BLACK.scale_alpha(0.78));
-                    container::Style::default().background(gradient)
+                .style(move |_| {
+                    if hero_image.is_some() {
+                        let gradient =
+                            iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
+                                .add_stop(0.0, Color::BLACK.scale_alpha(0.0))
+                                .add_stop(1.0, Color::BLACK.scale_alpha(0.78));
+                        container::Style::default().background(gradient)
+                    } else {
+                        container::Style::default()
+                    }
                 });
-            banner_layers =
-                banner_layers.push(container(scrim).width(Fill).height(220).align_bottom(Fill));
+            banner_layers = banner_layers.push(
+                container(logo_overlay)
+                    .width(Fill)
+                    .height(220)
+                    .align_bottom(Fill),
+            );
         }
         banner_layers = banner_layers.push(
             container(close)
@@ -318,23 +323,7 @@ impl App {
                 .padding(12),
         );
         let mut body = column![banner_layers].spacing(0).width(Fill);
-        if !self.logo_scrim {
-            if let Some(handle) = logo_image {
-                body = body.push(
-                    container(
-                        image(handle.clone())
-                            .height(64)
-                            .content_fit(ContentFit::Contain)
-                            .expand(true),
-                    )
-                    .width(360)
-                    .padding([12, 16])
-                    .align_left(Fill),
-                );
-            } else {
-                body = body.push(heading(&card.name, palette));
-            }
-        } else {
+        if logo_image.is_none() {
             body = body.push(heading(&card.name, palette));
         }
         let operation_busy = self.operation.is_some();

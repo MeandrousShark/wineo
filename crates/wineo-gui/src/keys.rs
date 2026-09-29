@@ -99,7 +99,6 @@ impl App {
             Action::GridFromSearch => {
                 let old = self.selected.clone();
                 self.selected = self.filtered().first().map(|card| card.name.clone());
-                self.preferred_column = self.selected.as_ref().map(|_| 0);
                 if self.selected != old {
                     self.selection_changed();
                 }
@@ -125,20 +124,8 @@ impl App {
                     .as_ref()
                     .and_then(|name| filtered.iter().position(|card| &card.name == name));
                 let columns = self.columns();
-                let column = current.map_or(0, |index| {
-                    self.preferred_column
-                        .unwrap_or(index % columns)
-                        .min(columns - 1)
-                });
-                let next = move_index(current, filtered.len(), columns, direction, Some(column));
+                let next = move_index(current, filtered.len(), columns, direction);
                 let next_name = next.map(|index| filtered[index].name.clone());
-                self.preferred_column = next.map(|index| {
-                    if matches!(direction, Direction::Up | Direction::Down) {
-                        column
-                    } else {
-                        index % columns
-                    }
-                });
                 self.selected = next_name;
                 if self.selected != old {
                     self.selection_changed();
@@ -206,7 +193,6 @@ pub(crate) fn move_index(
     count: usize,
     columns: usize,
     direction: Direction,
-    preferred_column: Option<usize>,
 ) -> Option<usize> {
     if count == 0 {
         return None;
@@ -215,7 +201,7 @@ pub(crate) fn move_index(
         return Some(0);
     };
     let columns = columns.max(1);
-    let column = preferred_column.unwrap_or(index % columns).min(columns - 1);
+    let column = index % columns;
     let row = index / columns;
     let last_row = (count - 1) / columns;
     Some(match direction {
@@ -233,19 +219,21 @@ mod tests {
     use super::*;
     #[test]
     fn movement_wraps_and_clamps_partial_rows() {
-        assert_eq!(move_index(None, 5, 3, Direction::Down, None), Some(0));
-        assert_eq!(move_index(Some(2), 5, 3, Direction::Down, None), Some(4));
-        assert_eq!(move_index(Some(3), 5, 3, Direction::Down, None), Some(3));
-        assert_eq!(move_index(Some(3), 5, 3, Direction::Up, None), Some(0));
-        assert_eq!(move_index(Some(2), 5, 3, Direction::Up, None), Some(2));
-        assert_eq!(move_index(Some(2), 5, 3, Direction::Right, None), Some(3));
-        assert_eq!(move_index(Some(0), 5, 3, Direction::Left, None), Some(4));
-        assert_eq!(move_index(Some(4), 5, 3, Direction::Right, None), Some(0));
-        assert_eq!(move_index(Some(0), 0, 3, Direction::Right, None), None);
-        assert_eq!(move_index(Some(1), 3, 1, Direction::Down, None), Some(2));
-        assert_eq!(move_index(Some(3), 7, 4, Direction::Down, None), Some(6));
-        assert_eq!(move_index(Some(4), 7, 4, Direction::Down, None), Some(4));
-        assert_eq!(move_index(Some(4), 5, 3, Direction::Up, Some(2)), Some(2));
+        assert_eq!(move_index(None, 5, 3, Direction::Down), Some(0));
+        assert_eq!(move_index(Some(2), 5, 3, Direction::Down), Some(4));
+        assert_eq!(move_index(Some(3), 5, 3, Direction::Down), Some(3));
+        assert_eq!(move_index(Some(3), 5, 3, Direction::Up), Some(0));
+        assert_eq!(move_index(Some(2), 5, 3, Direction::Up), Some(2));
+        assert_eq!(move_index(Some(2), 5, 3, Direction::Right), Some(3));
+        assert_eq!(move_index(Some(0), 5, 3, Direction::Left), Some(4));
+        assert_eq!(move_index(Some(4), 5, 3, Direction::Right), Some(0));
+        assert_eq!(move_index(Some(0), 0, 3, Direction::Right), None);
+        assert_eq!(move_index(Some(1), 3, 1, Direction::Down), Some(2));
+        assert_eq!(move_index(Some(3), 7, 4, Direction::Down), Some(6));
+        assert_eq!(move_index(Some(4), 7, 4, Direction::Down), Some(4));
+        let down = move_index(Some(3), 6, 5, Direction::Down);
+        assert_eq!(down, Some(5));
+        assert_eq!(move_index(down, 6, 5, Direction::Up), Some(0));
     }
     #[test]
     fn escape_order_and_search_focus() {

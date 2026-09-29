@@ -42,10 +42,9 @@ pub(crate) struct App {
     search_focused: bool,
     cards: Vec<Card>,
     pub(crate) selected: Option<String>,
-    preferred_column: Option<usize>,
     panel_open: bool,
     pub(crate) target: Option<String>,
-    pub(crate) logo_scrim: bool,
+    card_click_target: Option<(String, Option<String>)>,
     pub(crate) hovered: Option<String>,
     pub(crate) images: HashMap<ArtKey, image::Handle>,
     loading: HashSet<ArtKey>,
@@ -86,6 +85,7 @@ pub(crate) struct Operation {
 pub(crate) enum Message {
     SearchChanged(String),
     Select(String),
+    DoubleClick(String),
     ClosePanel,
     TargetPicked(String),
     Play,
@@ -129,10 +129,9 @@ impl App {
             search_focused: false,
             cards: Vec::new(),
             selected: None,
-            preferred_column: None,
             panel_open: false,
             target: None,
-            logo_scrim: std::env::var("WINEO_GUI_LOGO").is_ok_and(|value| value == "scrim"),
+            card_click_target: None,
             hovered: None,
             images: HashMap::new(),
             loading: HashSet::new(),
@@ -197,7 +196,6 @@ impl App {
         match message {
             Message::SearchChanged(search) => {
                 self.search = search;
-                self.preferred_column = None;
                 self.scroll_offset = 0.0;
                 Task::batch([
                     iced::widget::operation::scroll_to(
@@ -209,16 +207,12 @@ impl App {
             }
             Message::Select(name) => {
                 if self.selected.as_deref() == Some(&name) && self.panel_open {
+                    self.card_click_target = Some((name, self.target.clone()));
                     self.close_panel();
                     Task::none()
                 } else {
                     self.close_log();
                     self.selected = Some(name.clone());
-                    self.preferred_column = self
-                        .filtered()
-                        .iter()
-                        .position(|card| card.name == name)
-                        .map(|index| index % self.columns());
                     self.panel_open = true;
                     self.target = self
                         .cards
@@ -229,6 +223,21 @@ impl App {
                     self.panel_note = None;
                     self.load_panel_art()
                 }
+            }
+            Message::DoubleClick(name) => {
+                let prior_target = self
+                    .card_click_target
+                    .take()
+                    .and_then(|(clicked, target)| (clicked == name).then_some(target));
+                let panel_art = if self.selected.as_deref() != Some(&name) || !self.panel_open {
+                    self.update(Message::Select(name))
+                } else {
+                    Task::none()
+                };
+                if let Some(target) = prior_target {
+                    self.target = target;
+                }
+                Task::batch([panel_art, self.load_panel_art(), self.start_selected()])
             }
             Message::ClosePanel => {
                 self.close_panel();
@@ -435,7 +444,6 @@ impl App {
             .is_some_and(|name| !cards.iter().any(|card| &card.name == name))
         {
             self.selected = None;
-            self.preferred_column = None;
             self.close_panel();
         }
         if let Some(card) = self
@@ -776,6 +784,54 @@ mod tests {
         assert_eq!(app.chosen_target(&several), Some("b"));
         app.target = Some("a".into());
         assert_eq!(app.chosen_target(&several), Some("a"));
+    }
+
+    #[test]
+    fn double_click_opens_panel_and_requests_start() {
+        let mut app = app();
+        app.cards = vec![card("game", State::Inactive, 0)];
+        let _ = app.update(Message::Select("game".into()));
+        assert!(app.panel_open);
+        let _ = app.update(Message::Select("game".into()));
+        assert!(!app.panel_open);
+        let _ = app.update(Message::DoubleClick("game".into()));
+        assert_eq!(app.selected.as_deref(), Some("game"));
+        assert!(app.panel_open);
+        assert_eq!(app.target.as_deref(), Some("game"));
+        assert!(app.operation.as_ref().is_some_and(|operation| {
+            operation.name == "game" && operation.kind == OperationKind::Start
+        }));
+    }
+
+    #[test]
+    fn double_click_keeps_open_panels_picker_choice() {
+        let mut app = app();
+        let mut game = card("game", State::Inactive, 0);
+        game.targets = vec!["game".into(), "alternate".into()];
+        app.cards = vec![game];
+        let _ = app.update(Message::Select("game".into()));
+        let _ = app.update(Message::TargetPicked("alternate".into()));
+        let _ = app.update(Message::Select("game".into()));
+        let _ = app.update(Message::Select("game".into()));
+        let _ = app.update(Message::DoubleClick("game".into()));
+        assert_eq!(app.selected.as_deref(), Some("game"));
+        assert!(app.panel_open);
+        assert_eq!(app.target.as_deref(), Some("alternate"));
+        assert!(app.operation.as_ref().is_some_and(|operation| {
+            operation.name == "game" && operation.kind == OperationKind::Start
+        }));
+    }
+
+    #[test]
+    fn double_click_cannot_start_disabled_card() {
+        let mut app = app();
+        app.cards = vec![card("game", State::Running, 0)];
+        let _ = app.update(Message::Select("game".into()));
+        let _ = app.update(Message::Select("game".into()));
+        let _ = app.update(Message::DoubleClick("game".into()));
+        assert_eq!(app.selected.as_deref(), Some("game"));
+        assert!(app.panel_open);
+        assert!(app.operation.is_none());
     }
 
     #[test]

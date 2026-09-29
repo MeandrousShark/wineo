@@ -94,6 +94,7 @@ impl App {
         .width(CARD_WIDTH);
         mouse_area(content)
             .on_press(Message::Select(card.name.clone()))
+            .on_double_click(Message::DoubleClick(card.name.clone()))
             .on_enter(Message::Hover(Some(card.name.clone())))
             .on_exit(Message::Hover(None))
             .interaction(mouse::Interaction::Pointer)
