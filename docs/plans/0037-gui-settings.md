@@ -80,13 +80,18 @@ config refuses (prefix, runner, arch, gameid, store, dxvk, vkd3d, wayland,
 winetricks).
 
 - **Runner:** runner (installed runners plus aliases like
-  `GE-Proton-Latest`), arch (`win64`, `win32`; fixed to win64 on Proton).
-  Choosing a runner of the other kind is refused before Save, with the same
-  "make a new environment" reason the CLI gives.
-- **Launch:** gamemode, mangohud, wayland, and gamescope as switches with
-  a reset button once overridden (decision 1). Gamescope on shows width,
-  height, output width and height, filter, scaler, window, FPS limits, grab
-  cursor, and extra args. Empty fields stay unset.
+  `GE-Proton-Latest`). Arch is shown read-only, since core refuses changing
+  it once the prefix exists. Choosing a runner of the other kind is refused
+  when picked, with "Can't switch between Wine and Proton runners. Make a
+  new environment instead." (maintainer's pick, no CLI command in the GUI).
+- **Launch:** gamemode, mangohud, and wayland as switches with a reset
+  button once overridden (decision 1). Gamescope has no global setting, so
+  here it's a plain switch with no reset (maintainer's pick): on writes the
+  table (an empty one runs plain `gamescope --`), off removes it. The page
+  remembers the fields until it's left, so flipping back on restores them.
+  Gamescope on shows width, height, output width and height, filter,
+  scaler, window, FPS limits, grab cursor, and extra args as chips. Empty
+  fields stay unset.
 - **Components (Wine only):** DXVK and vkd3d-proton, each None, Latest, or
   an installed build. vkd3d is disabled until DXVK is set. Both are
   disabled on Proton with the reason.
@@ -171,7 +176,8 @@ whether a hand-written `gamemode = true` equal to global means unset.
 
 - On a target, the label says `environment` or `global`, whichever the
   value falls back to, and reset unsets the target's key.
-- Gamescope follows the same rule. A target's gamescope table replaces the
+- On a target, gamescope follows the same rule (the environment's plain
+  switch is the one exception, see Launch above). A target's table replaces the
   environment's whole table, so editing a field on a target that inherits
   copies the environment's fields into the target first. Switching it off on
   a target writes `gamescope = false`.
