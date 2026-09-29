@@ -3,6 +3,17 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.16.0 - 2026-09-28
+
+- Heroic import's decisions now live in `wineo-core`: planning a game,
+  resolving its settings, planning a whole library for `--all`, and applying
+  a plan ([0035](docs/plans/0035-heroic-import-in-core.md)). See
+  [Heroic import](docs/core-api.md#heroic-import). CLI output is unchanged.
+- Fixed: choosing "copy" in a guided Heroic import's final review and then
+  going back left the new config's exe and working directory pointing into
+  Heroic's original prefix instead of the copy.
+- All GUI entry criteria are met, so wineo-gui (iced) is next.
+
 ## 0.15.1 - 2026-09-28
 
 - Canceling `new` into an existing empty `--dir` now leaves the directory
