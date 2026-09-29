@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/wineo-core", "crates/wineo-cli"]
+members = ["crates/wineo-core", "crates/wineo-cli", "crates/wineo-gui"]
 
 [workspace.package]
 version = "0.16.0"
