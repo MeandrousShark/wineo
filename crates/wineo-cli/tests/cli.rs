@@ -242,6 +242,27 @@ fn set_edits_an_environment_and_reports_unset_keys_that_were_missing() {
 }
 
 #[test]
+fn set_writes_an_empty_gamescope_table_at_both_levels() {
+    let root = tempfile::tempdir().unwrap();
+    let path = write_environment(
+        root.path(),
+        "notepad",
+        "schema_version = 1\nprefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\ngamescope = false # mine\n\n[targets.notepad]\nexe = \"notepad\"\n\n[targets.notepad.gamescope]\nwidth = 1920\n",
+    );
+    let result = output(wineo(root.path()).args([
+        "set",
+        "notepad",
+        "gamescope={}",
+        "targets.notepad.gamescope={}",
+    ]));
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "schema_version = 1\nprefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n\n[targets.notepad]\nexe = \"notepad\"\n\n[targets.notepad.gamescope]\n\n[gamescope] # mine\n"
+    );
+}
+
+#[test]
 fn config_prints_stored_files_even_when_invalid() {
     let root = tempfile::tempdir().unwrap();
     let result = output(wineo(root.path()).arg("config"));
