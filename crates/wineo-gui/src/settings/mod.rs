@@ -1530,6 +1530,61 @@ mod tests {
         assert_eq!(config.config.env["WINEDEBUG"], r#"a "b" \c = d"#);
     }
 
+    fn env(paths: &Paths) -> std::collections::BTreeMap<String, String> {
+        wineo_core::environment::Environment::load(paths, "game")
+            .unwrap()
+            .config
+            .env
+    }
+
+    #[test]
+    fn an_env_name_with_a_dot_and_a_quote_round_trips() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        let key = r#"MY.VAR"X"#;
+        let _ = page.update(&paths, Event::NewEnvKey(key.into()));
+        let _ = page.update(&paths, Event::NewEnvValue("1".into()));
+        let _ = page.update(&paths, Event::EnvAdd);
+        assert_eq!(
+            editor(&page).form.edits().pairs,
+            [(format!("env.{key}"), "1".to_owned())]
+        );
+        let applied = apply(&page, &paths);
+        assert!(applied.failed.is_none(), "{:?}", applied.failed);
+        assert_eq!(env(&paths)[key], "1");
+        saved(&mut page, &paths, &[], None);
+        land(&mut page, &paths);
+        assert!(!page.is_dirty());
+        assert_eq!(editor(&page).form.draft.env[0].key, key);
+    }
+
+    #[test]
+    fn swapping_two_env_names_sets_both_and_unsets_neither() {
+        let (_root, paths) = setup();
+        write(&paths, &format!("{GAME}\n[env]\nA = \"1\"\nB = \"2\"\n"));
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::EnvKey(0, "B".into()));
+        // A duplicate for a moment, until the other row is renamed too.
+        assert!(!page.can_save());
+        let _ = page.update(&paths, Event::EnvKey(1, "A".into()));
+        assert!(page.can_save());
+        let edits = editor(&page).form.edits();
+        assert!(edits.unset.is_empty());
+        assert_eq!(
+            edits.pairs,
+            [
+                ("env.A".to_owned(), "2".to_owned()),
+                ("env.B".to_owned(), "1".to_owned())
+            ]
+        );
+        let applied = apply(&page, &paths);
+        assert!(applied.failed.is_none(), "{:?}", applied.failed);
+        let written = env(&paths);
+        assert_eq!((written["A"].as_str(), written["B"].as_str()), ("2", "1"));
+        assert_eq!(written.len(), 2);
+    }
+
     #[test]
     fn a_native_page_takes_no_wine_only_edits() {
         let (_root, paths) = setup();
