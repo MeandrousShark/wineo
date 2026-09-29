@@ -40,6 +40,7 @@ pub mod snapshot;
 pub mod stats;
 pub mod steamgriddb;
 pub mod supervisor;
+pub mod target_path;
 pub mod targets;
 pub mod templates;
 pub mod time;

@@ -6,10 +6,10 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use wineo_core::launch;
 use wineo_core::name;
 use wineo_core::paths::Paths;
 use wineo_core::programs::{self, Program, Source};
+use wineo_core::target_path;
 use wineo_core::targets::{self, Batch, Change, Spec};
 use wineo_core::winpath;
 
@@ -23,21 +23,7 @@ pub fn name_problem(answer: &str) -> Option<String> {
     name::problem(answer).map(|reason| format!("Invalid input: {reason}."))
 }
 
-/// A path as typed or pasted, which may come wrapped in quotes or with the
-/// backslash a shell puts before a space. A Windows path keeps its
-/// backslashes, since those are its separators.
-pub fn clean_path(answer: &str) -> String {
-    let answer = answer.trim();
-    let unquoted = ['"', '\'']
-        .iter()
-        .find_map(|quote| answer.strip_prefix(*quote)?.strip_suffix(*quote))
-        .unwrap_or(answer);
-    if winpath::is_windows_path(unquoted) {
-        unquoted.to_owned()
-    } else {
-        unquoted.replace("\\ ", " ")
-    }
-}
+pub use target_path::{clean_path, native_exe};
 
 /// Where targets are picked from.
 pub struct Place<'a> {
@@ -642,54 +628,7 @@ fn resolve_exe(place: &Place, answer: &str) -> Result<String, String> {
     if let Some(env) = &place.native_env {
         return native_exe(place.paths, place.name, env, answer);
     }
-    let answer = &clean_path(answer);
-    if answer.is_empty() {
-        return Err("Enter the path to the program".to_owned());
-    }
-    let missing = || format!("`{answer}` does not exist");
-    if winpath::is_windows_path(answer) {
-        let wine_prefix = place.wine_prefix.as_deref().ok_or_else(missing)?;
-        return match winpath::to_unix(wine_prefix, answer) {
-            Some(unix) if unix.is_file() => Ok(answer.to_owned()),
-            _ => Err(missing()),
-        };
-    }
-    let unix = place
-        .paths
-        .absolute(answer)
-        .map_err(|err| err.to_string())?;
-    if !unix.is_file() {
-        return Err(missing());
-    }
-    Ok(config_path(place, &unix))
-}
-
-/// A native target's exe as its config holds it, checked the way a launch
-/// resolves it. A path typed here may be relative to where wineo runs, and is
-/// stored made absolute, with the home directory as `~`. A bare name stays as
-/// typed, to be looked up on PATH.
-pub fn native_exe(
-    paths: &Paths,
-    name: &str,
-    env: &BTreeMap<String, String>,
-    answer: &str,
-) -> Result<String, String> {
-    let answer = clean_path(answer);
-    if answer.is_empty() {
-        return Err("Enter the path to the program".to_owned());
-    }
-    let path_var = launch::native_path_var(env);
-    if !answer.contains('/') && !answer.starts_with('~') {
-        launch::resolve_native_exe(paths, name, &answer, &path_var)
-            .map_err(|err| err.to_string())?;
-        return Ok(answer);
-    }
-    let unix = paths.absolute(&answer).map_err(|err| err.to_string())?;
-    let stored = paths
-        .store(&unix)
-        .unwrap_or_else(|_| unix.display().to_string());
-    launch::resolve_native_exe(paths, name, &stored, &path_var).map_err(|err| err.to_string())?;
-    Ok(stored)
+    target_path::resolve_exe(place.paths, place.wine_prefix.as_deref(), answer)
 }
 
 fn resolve_cwd(place: &Place, answer: &str) -> Result<Option<String>, String> {
