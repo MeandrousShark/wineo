@@ -504,10 +504,20 @@ pub(crate) fn invalid(path: &Path, message: String) -> Error {
 }
 
 fn validate_env(env: &BTreeMap<String, String>) -> Result<(), String> {
-    if env.contains_key("WINEPREFIX") {
-        return Err("WINEPREFIX is managed by wineo and can't be set in [env]".to_owned());
+    for key in env.keys() {
+        validate_env_key(key, true)?;
     }
     validate_env_vars(env)
+}
+
+/// Checks a name for an environment's `[env]` table, so an editor can refuse
+/// it before a save would. Only wine reads `WINEPREFIX`, so a native
+/// environment may set it.
+pub fn validate_env_key(key: &str, wine: bool) -> Result<(), String> {
+    if wine && key == "WINEPREFIX" {
+        return Err("WINEPREFIX is managed by wineo and can't be set in [env]".to_owned());
+    }
+    validate_env_var(key, "")
 }
 
 fn validate_env_vars(env: &BTreeMap<String, String>) -> Result<(), String> {
@@ -923,6 +933,15 @@ mod tests {
         let config = environment("kind = \"native\"\n[env]\nWINEPREFIX = \"/x\"").unwrap();
         assert_eq!(config.env["WINEPREFIX"], "/x");
         assert!(environment("kind = \"native\"\n[env]\n\"A=B\" = \"1\"").is_err());
+    }
+
+    #[test]
+    fn env_keys_are_checked_like_the_config_checks_them() {
+        assert!(validate_env_key("WINEPREFIX", true).is_err());
+        assert!(validate_env_key("WINEPREFIX", false).is_ok());
+        assert!(validate_env_key("A=B", false).is_err());
+        assert!(validate_env_key("", true).is_err());
+        assert!(validate_env_key("DXVK_HUD", true).is_ok());
     }
 
     #[test]
