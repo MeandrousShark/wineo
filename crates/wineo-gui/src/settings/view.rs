@@ -276,6 +276,7 @@ fn components<'a>(
     let mut notes = Vec::new();
     for component in Component::ALL {
         let selected = Build(editor.form.draft.build(component).map(str::to_owned));
+        let is_set = selected.0.is_some();
         let control: Element<'_, Message> = if locked || !editor.build_enabled(name, component) {
             locked_choice(&selected.to_string(), palette)
         } else {
@@ -292,8 +293,21 @@ fn components<'a>(
             .width(CONTROL_WIDTH)
             .into()
         };
-        let note = (component == Component::Vkd3d && !editor.form.vkd3d_enabled())
-            .then(|| text("needs DXVK").size(13).color(palette.muted).into());
+        let refused = editor.build_refusal(name, component).is_some();
+        let note: Option<Element<'_, Message>> = if refused && is_set {
+            // Core refuses every save while this is set, so removing it is
+            // the one thing left to do with it.
+            Some(
+                button(text("Remove").size(13))
+                    .on_press_maybe((!locked).then(|| send(Event::BuildRemoved(component))))
+                    .padding([4, 10])
+                    .style(move |_, status| secondary(palette, status))
+                    .into(),
+            )
+        } else {
+            (component == Component::Vkd3d && !editor.form.vkd3d_enabled())
+                .then(|| text("needs DXVK").size(13).color(palette.muted).into())
+        };
         rows = rows.push(setting_row(component.label(), control, note, palette));
         notes.extend(editor.build_refusal(name, component));
     }

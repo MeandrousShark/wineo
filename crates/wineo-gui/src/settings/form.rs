@@ -321,6 +321,10 @@ pub(crate) fn build_choices(installed: &[String], current: Option<&str>) -> Vec<
 pub(crate) const VKD3D_NEEDS_DXVK: &str =
     "vkd3d-proton needs DXVK. Set vkd3d-proton to None first.";
 
+/// Why DXVK can't be removed while vkd3d-proton is set, where there's no
+/// picker to set it with.
+pub(crate) const REMOVE_VKD3D_FIRST: &str = "vkd3d-proton needs DXVK. Remove vkd3d-proton first.";
+
 /// Every control's value, read from a config or edited on the page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Values {
@@ -607,6 +611,20 @@ impl Form {
             Component::Vkd3d => draft.vkd3d = build,
         }
         Ok(())
+    }
+    /// Unsets a build, which is all a Proton environment can do with one.
+    pub(crate) fn remove_build(&mut self, component: Component) -> Result<(), &'static str> {
+        match component {
+            Component::Dxvk if self.draft.vkd3d.is_some() => Err(REMOVE_VKD3D_FIRST),
+            Component::Dxvk => {
+                self.draft.dxvk = None;
+                Ok(())
+            }
+            Component::Vkd3d => {
+                self.draft.vkd3d = None;
+                Ok(())
+            }
+        }
     }
     /// vkd3d-proton is off until DXVK is set, unless it holds a value that
     /// has to stay clearable.

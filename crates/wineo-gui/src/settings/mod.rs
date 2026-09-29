@@ -33,6 +33,7 @@ pub(crate) enum Event {
     ArgsAdd,
     ArgsRemove(usize),
     BuildPicked(Component, Build),
+    BuildRemoved(Component),
     ListInput(List, String),
     ListAdd(List),
     ListRemove(List, usize),
@@ -72,6 +73,7 @@ impl Event {
                 | Event::ArgsAdd
                 | Event::ArgsRemove(_)
                 | Event::BuildPicked(..)
+                | Event::BuildRemoved(_)
                 | Event::ListInput(..)
                 | Event::ListAdd(_)
                 | Event::ListRemove(..)
@@ -91,6 +93,7 @@ impl Event {
         matches!(
             self,
             Event::BuildPicked(..)
+                | Event::BuildRemoved(_)
                 | Event::Switch(Switch::Wayland, _)
                 | Event::Reset(Switch::Wayland)
                 | Event::ListInput(List::Winetricks, _)
@@ -199,6 +202,7 @@ impl Editor {
         }
         match event {
             Event::BuildPicked(component, _) => self.build_enabled(name, *component),
+            Event::BuildRemoved(component) => self.form.draft.build(*component).is_some(),
             Event::GameId(_) | Event::Store(_) => self.protonfixes_shown(),
             _ => true,
         }
@@ -343,8 +347,14 @@ impl Page {
     }
     /// Why Save is off even though there are changes.
     pub(crate) fn problem(&self) -> Option<String> {
-        self.editor()
-            .and_then(|editor| editor.form.problem(editor.draft_runner().is_some()))
+        let editor = self.editor()?;
+        // On Proton the builds can only be removed, so that reason comes
+        // before one that points at a disabled picker.
+        Component::ALL
+            .into_iter()
+            .filter(|component| editor.form.draft.build(*component).is_some())
+            .find_map(|component| editor.build_refusal(&self.name, component))
+            .or_else(|| editor.form.problem(editor.draft_runner().is_some()))
     }
     pub(crate) fn can_save(&self) -> bool {
         !self.saving
@@ -567,6 +577,14 @@ impl Page {
                         .pick_build(component, build.0)
                         .err()
                         .map(str::to_owned);
+                }
+                Step::none()
+            }
+            Event::BuildRemoved(component) => {
+                self.edited();
+                if let Some(editor) = self.editor_mut() {
+                    editor.build_refusal =
+                        editor.form.remove_build(component).err().map(str::to_owned);
                 }
                 Step::none()
             }
@@ -1136,6 +1154,7 @@ mod tests {
                 proton: None,
             }),
             Event::BuildPicked(Component::Dxvk, Build(Some("latest".into()))),
+            Event::BuildRemoved(Component::Dxvk),
             Event::ListInput(List::Tags, "rpg".into()),
             Event::ListAdd(List::Tags),
             Event::ListRemove(List::Winetricks, 0),
@@ -1582,6 +1601,70 @@ mod tests {
         assert!(applied.failed.is_none(), "{:?}", applied.failed);
         let text = fs::read_to_string(paths.environment_config("game")).unwrap();
         assert!(text.contains("gameid = \"umu-1\""), "{text}");
+    }
+
+    #[test]
+    fn stale_builds_on_proton_can_only_be_removed() {
+        let (_root, paths) = setup();
+        fake_runners(&paths);
+        write(
+            &paths,
+            &GAME
+                .replace("\"missing\"", "\"GE-Proton9-20\"")
+                .replace("arch = ", "dxvk = \"latest\"\nvkd3d = \"latest\"\narch = "),
+        );
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
+        // Core would refuse the save, so it doesn't get that far.
+        let reason = page.problem().expect("problem");
+        assert!(
+            reason.starts_with("`dxvk` only means something to wine"),
+            "{reason}"
+        );
+        assert!(!page.can_save());
+        let _ = page.update(&paths, Event::BuildPicked(Component::Vkd3d, Build(None)));
+        assert_eq!(editor(&page).form.draft.vkd3d.as_deref(), Some("latest"));
+        let _ = page.update(&paths, Event::BuildRemoved(Component::Dxvk));
+        let shown = editor(&page);
+        assert_eq!(
+            shown.build_refusal.as_deref(),
+            Some(form::REMOVE_VKD3D_FIRST)
+        );
+        assert_eq!(shown.form.draft.dxvk.as_deref(), Some("latest"));
+        let _ = page.update(&paths, Event::BuildRemoved(Component::Vkd3d));
+        let _ = page.update(&paths, Event::BuildRemoved(Component::Dxvk));
+        assert_eq!(editor(&page).build_refusal, None);
+        assert_eq!(page.problem(), None);
+        let edits = editor(&page).form.edits();
+        assert_eq!(edits.unset, ["dxvk", "vkd3d"]);
+        let applied = apply(&page, &paths);
+        assert!(applied.failed.is_none(), "{:?}", applied.failed);
+        let text = fs::read_to_string(paths.environment_config("game")).unwrap();
+        assert!(!text.contains("dxvk") && !text.contains("vkd3d"), "{text}");
+        // Nothing left to remove.
+        let _ = page.update(&paths, Event::BuildRemoved(Component::Dxvk));
+        assert_eq!(page.changes(), 3);
+    }
+
+    #[test]
+    fn proton_with_only_vkd3d_says_to_remove_it() {
+        let (_root, paths) = setup();
+        fake_runners(&paths);
+        write(
+            &paths,
+            &GAME
+                .replace("\"missing\"", "\"GE-Proton9-20\"")
+                .replace("arch = ", "vkd3d = \"latest\"\narch = "),
+        );
+        let mut page = page(&paths);
+        let reason = page.problem().expect("problem");
+        assert!(
+            reason.starts_with("`vkd3d` only means something to wine"),
+            "{reason}"
+        );
+        let _ = page.update(&paths, Event::BuildRemoved(Component::Vkd3d));
+        assert_eq!(page.problem(), None);
+        assert!(page.can_save());
     }
 
     #[test]
