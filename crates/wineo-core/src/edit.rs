@@ -273,8 +273,10 @@ fn ensure_gamescope<'a>(root: &'a mut Table, key: &str) -> Result<&'a mut Table,
         root.remove("gamescope");
     }
     let table = ensure_table(root, "gamescope", key, false)?;
-    if let Some(decor) = old_decor {
-        *table.decor_mut() = decor;
+    // Only the comment carries over. The value's prefix is the space after
+    // `=`, which would indent the table header.
+    if let Some(suffix) = old_decor.and_then(|decor| decor.suffix().cloned()) {
+        table.decor_mut().set_suffix(suffix);
     }
     Ok(table)
 }
