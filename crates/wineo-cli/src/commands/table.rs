@@ -5,7 +5,7 @@ use wineo_core::report::Overview;
 use wineo_core::runtime::{State, Status};
 use wineo_core::view::{CollectionError, CollectionOutput, StatusOutput};
 
-use super::time::{clock, relative};
+use wineo_core::time::{clock, relative};
 
 /// One line of `wineo status` or `wineo list`: name, state, target, and time.
 pub struct Row {

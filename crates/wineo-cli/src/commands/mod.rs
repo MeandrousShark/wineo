@@ -31,7 +31,6 @@ pub mod status;
 pub mod stop;
 mod table;
 pub mod templates;
-mod time;
 pub mod transfer;
 pub mod trash;
 pub mod validate;

@@ -9,7 +9,7 @@ use wineo_core::stats::{self, HeroicImportResult, Log, Overview, Summary};
 use wineo_core::view::{CollectionError, StatsCollectionOutput, StatsOutput};
 
 use super::json;
-use super::time::{day_label, duration_hm};
+use wineo_core::time::{day_label, duration_hm};
 
 /// Width of the label column in `stats <name>`'s detail lines, wide enough
 /// for `this month`, the longest one there is.

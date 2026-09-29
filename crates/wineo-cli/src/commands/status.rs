@@ -12,7 +12,7 @@ use wineo_core::view::NamedOutput;
 
 use super::json;
 use super::table;
-use super::time::{absolute, day_label, duration_hm, relative};
+use wineo_core::time::{absolute, day_label, duration_hm, relative};
 
 /// Width of the label column in `status <name>`'s detail lines. Wide enough
 /// for the longest label there is, so no line pushes its value out of line.

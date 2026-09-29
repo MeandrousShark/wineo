@@ -42,6 +42,7 @@ pub mod steamgriddb;
 pub mod supervisor;
 pub mod targets;
 pub mod templates;
+pub mod time;
 pub mod trash;
 pub mod validate;
 pub mod view;

@@ -25,7 +25,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 .map(|entry| {
                     // A damaged manifest should still list, so show its raw time
                     let removed = match entry.removed_at.parse::<jiff::Timestamp>() {
-                        Ok(at) => crate::commands::time::relative(now, at),
+                        Ok(at) => wineo_core::time::relative(now, at),
                         Err(_) => entry.removed_at.clone(),
                     };
                     let state = match entry.phase {

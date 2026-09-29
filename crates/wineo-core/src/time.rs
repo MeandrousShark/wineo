@@ -1,3 +1,5 @@
+//! Formatting times and durations the same way in every frontend.
+
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
