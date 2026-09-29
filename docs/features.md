@@ -45,6 +45,8 @@ Completed: [0033: Tags and `wineo list --tag`](plans/0033-tags.md).
 See [Tags](config-files.md#tags) for the key and filtering.
 Completed: [0034: GUI-facing core API review](plans/0034-core-api-review.md).
 See [Core API for frontends](core-api.md) for the operations a GUI calls.
+Completed: [0035: Heroic import in core](plans/0035-heroic-import-in-core.md).
+See [Heroic import](core-api.md#heroic-import) for the plan-then-apply API.
 
 **Category**
 
@@ -68,14 +70,13 @@ See [Core API for frontends](core-api.md) for the operations a GUI calls.
 | `--dry-run` for `import` and non-guided `new` | Automation | **2** | | Preview what would be created, copied, or registered without touching disk | Import already builds a review before writing, which a dry run could print and stop at. |
 | Pre-launch and post-exit hooks | Core | **2** | | Run a user command before a target starts or after it exits, e.g. mounting a drive or syncing saves | The supervisor already owns the process lifetime, so post-exit fits there. Needs decisions on failure handling, env vars passed in, and per-environment versus per-target hooks. |
 | ProtonDB lookup in the CLI | UX | **3** | | Check a game's compatibility information before launching or changing runners | Resolve a wineo environment to the right ProtonDB game, handle missing matches, and make the result reusable by the future GUI. The command shape and online behavior need a plan. |
-| GUI-facing core API review | Core | **2** | GUI entry criteria 1-7 | Keep GUI actions on shared core operations | Review setup, import, launch, stop, and validation entry points for useful progress, cancellation, and errors. Also look for simplifications: logic in the CLI that belongs in core (`import_heroic.rs` holds about 3,300 lines of non-test code) and duplication across the interactive flows and the copy operations (clone, portable copy, snapshots). Resolve blockers found in the review before GUI work starts. [Plan 0034](plans/0034-core-api-review.md) is done; see [Core API for frontends](core-api.md). Moving Heroic import into core, [plan 0035](plans/0035-heroic-import-in-core.md), is implemented and awaiting acceptance. |
 | Tag breakdown in `wineo stats` | UX | **3** | 0029, 0033 | See playtime and membership by tag, like how much time went into every `game` | Suggested by the maintainer (2026-09-27). Shape is open: `wineo stats --tag game` for one tag or a flag for all of them, or a `stats tags` form. `stats [NAME]` already takes an environment name, so a bare `tags` word would clash with an environment called `tags`. Needs a plan. |
 | Manpages | UX | **3** | 0015 | `man wineo` is the first thing many Linux users try | Generate them from the clap definitions with `clap_mangen`, like completions, so they never drift from `--help`. The PKGBUILD installs them to `/usr/share/man/man1`. |
 | Steam shortcuts | UX | **3** | | Add wineo targets to Steam as non-Steam games, for Big Picture and Steam Deck | Steam's `shortcuts.vdf` is binary and Steam must be closed while it's edited. |
 | Integrity checking | Portability/Data | **4** | | Detect damaged or tampered files | Scope still open: prefix or game files, snapshots, or re-verifying downloads (already sha256-checked on install). |
 | Import from Lutris/Bottles and Heroic store metadata | Compatibility | **3** | 0008 | Extends generic import and Heroic sideloaded-game import | 0008 covers manually added Heroic games only. Store integration and other launchers remain separate work. |
 | Managed copying of portable application folders | Portability/Data | **3** | 0007, 0008 | Optional organization for applications used in place today | 0008 copies prefixes but leaves external game folders where they are. Storage layout and removal semantics need a later plan. |
-| wineo-gui | UX | **3** | [GUI entry criteria](#gui-entry-criteria) | Build on a mature CLI and shared core operations | |
+| wineo-gui | UX | **1** | [GUI entry criteria](#gui-entry-criteria) | Build on a mature CLI and shared core operations | |
 | Artwork from SteamGridDB | UX | **4** | wineo-gui | Posters, backgrounds, and icons for games, which a GUI can show | 0021 landed the art store, the `wineo art` commands, and SteamGridDB fetching, and 0024 landed desktop entry icons; see [Artwork](art.md). Remaining: showing posters and heroes in wineo-gui. |
 | Full backup and restore | Portability/Data | **4** | 0018 | Great eventually, but this could become a whole subsystem | Covers filesystems without snapshot support. |
 | Event-driven supervisor exit watch | Core | **4** | | Only if there's literally nothing else to do | The supervisor polls `waitid` every 20 ms while a game runs. A pidfd plus a wakeup fd would make it sleep until the exit or a release request. Overhead today is already negligible. |
@@ -87,6 +88,8 @@ they land first.
 
 The GUI toolkit is iced, picked on 2026-09-28 after hands-on spikes of iced,
 gpui, Slint, Godot, and Flutter.
+
+All eight criteria were met on 2026-09-28.
 
 1. Add native Linux games, so the features after it know some environments have no prefix.
 2. Add `wineo validate`.
