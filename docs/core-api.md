@@ -112,6 +112,12 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
 - `settings::check(paths, global, name, pairs, unset)`: the rules `wineo set`
   enforces, run before `settings::update` writes. It returns the component
   changes it applied.
+- `settings::apply(paths, file, pairs, unset) -> Applied`: one whole
+  settings change, as `wineo set` makes it. It locks when the launch changes,
+  checks, writes, and reconciles desktop entries. `Applied` holds the
+  component changes, unset keys that weren't set, desktop changes, the new
+  runner, and whether the environment is running. An error means nothing
+  changed. A failure after components changed comes back in `failed`.
 - `launch::start(paths, name, overrides, exe, &token, winetricks_output,
   events) -> StartOutcome`: builds a missing prefix, reconciles, installs
   missing winetricks verbs, and starts the target detached.
