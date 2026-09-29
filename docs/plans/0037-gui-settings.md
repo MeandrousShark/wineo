@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0037: GUI settings
 
@@ -277,8 +277,8 @@ Targets                                         [+ Add target]
 
 ## Verification progress (2026-09-29)
 
-All six implementation steps are present. Maintainer acceptance testing is
-pending, so the plan remains approved.
+All six implementation steps are present. Maintainer acceptance testing
+passed on 2026-09-29, including the feedback fixes below.
 
 - Formatting, Clippy with warnings denied, and the CLI and GUI release builds pass.
 - The frozen workspace test gate passes: 1,482 passed, 16 ignored.
@@ -307,3 +307,5 @@ text width, preserving the beginning and suffix, and show full names on hover.
 The saved runner identity is unchanged. All 135 GUI tests, formatting, Clippy,
 and the release build pass. Isolated GUI checks cover both pages, the open menu,
 and the tooltip.
+
+Released as v0.18.0 after maintainer acceptance passed.

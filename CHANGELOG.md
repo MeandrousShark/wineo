@@ -3,6 +3,19 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.18.0 - 2026-09-29
+
+- Environment and global settings pages in `wineo-gui`, including targets,
+  launch options, components, winetricks, tags, and environment variables
+  ([0037](docs/plans/0037-gui-settings.md)).
+- Save and Revert, unsaved-change prompts, config reloads, and keyboard
+  shortcuts. Settings writes share the CLI's core validation and preserve
+  TOML comments.
+- Independent Icon, Grid, Hero, and Logo switches for automatic art fetching.
+  All off disables fetching; existing all/icon configurations still work.
+- Consistent scrolling, default storage paths shown when unset, and long
+  runner labels shortened with full names on hover.
+
 ## 0.17.0 - 2026-09-28
 
 - `wineo-gui`, wineo's first desktop app, built with iced
