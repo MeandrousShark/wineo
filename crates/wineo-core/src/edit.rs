@@ -171,7 +171,7 @@ fn set_target(root: &mut Table, key: &str, rest: &str, raw: &str) -> Result<(), 
     // Parse and validate before creating any table, so a rejected value
     // never leaves an empty `[targets]` or `[targets.<name>]` behind.
     if field == "gamescope" {
-        parse_gamescope_off(key, raw)?;
+        parse_gamescope_whole(key, raw)?;
         let targets = ensure_table(root, "targets", "targets", true)?;
         let target = ensure_table(targets, name, &format!("targets.{name}"), false)?;
         return set_gamescope(target, key, raw);
@@ -230,9 +230,19 @@ fn set_target_default(root: &mut Table, name: &str, key: &str, raw: &str) -> Res
     Ok(())
 }
 
-fn parse_gamescope_off(key: &str, raw: &str) -> Result<(), EditError> {
+/// What a whole `gamescope` value can be set to. There's no other way to
+/// write a table with no fields, which runs plain `gamescope --`.
+#[derive(Clone, Copy)]
+enum Whole {
+    Off,
+    Empty,
+}
+
+fn parse_gamescope_whole(key: &str, raw: &str) -> Result<Whole, EditError> {
     if raw == "false" {
-        Ok(())
+        Ok(Whole::Off)
+    } else if raw.trim() == "{}" {
+        Ok(Whole::Empty)
     } else {
         Err(EditError::InvalidValue {
             key: key.to_owned(),
@@ -246,8 +256,10 @@ fn parse_gamescope_off(key: &str, raw: &str) -> Result<(), EditError> {
 }
 
 fn set_gamescope(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
-    parse_gamescope_off(key, raw)?;
-    store_value(root, "gamescope", Value::from(false));
+    match parse_gamescope_whole(key, raw)? {
+        Whole::Off => store_value(root, "gamescope", Value::from(false)),
+        Whole::Empty => ensure_gamescope(root, key)?.clear(),
+    }
     Ok(())
 }
 
@@ -1057,6 +1069,50 @@ mod tests {
             );
             assert!(doc.to_string().contains("gamescope = false"), "{doc}");
         }
+    }
+
+    #[test]
+    fn an_empty_table_turns_gamescope_on_with_no_fields() {
+        for prefix in ["gamescope", "targets.game.gamescope"] {
+            let start = if prefix.starts_with("targets") {
+                "[targets.game]\nexe = 'game'\ngamescope = false # old\n"
+            } else {
+                "gamescope = false # old\n"
+            };
+            let mut doc = parse(start);
+            set(&mut doc, Scope::Environment, prefix, "{}").unwrap();
+            assert!(doc.to_string().contains(&format!("[{prefix}]")), "{doc}");
+            assert!(doc.to_string().contains("# old"), "{doc}");
+            assert!(!doc.to_string().contains("gamescope = false"), "{doc}");
+            // An existing table is emptied rather than merged into.
+            set(
+                &mut doc,
+                Scope::Environment,
+                &format!("{prefix}.width"),
+                "1920",
+            )
+            .unwrap();
+            set(&mut doc, Scope::Environment, prefix, "{}").unwrap();
+            assert!(!doc.to_string().contains("width"), "{doc}");
+            assert!(doc.to_string().contains(&format!("[{prefix}]")), "{doc}");
+            let config = crate::config::EnvironmentConfig::parse(
+                std::path::Path::new("/x/game.toml"),
+                &format!("prefix = '~/p'\nrunner = 'wine'\narch = 'win64'\n{doc}"),
+            )
+            .unwrap();
+            let setting = if prefix.starts_with("targets") {
+                config.targets["game"].gamescope.clone()
+            } else {
+                config.gamescope.clone()
+            };
+            assert_eq!(
+                setting,
+                Some(crate::gamescope::GamescopeSetting::On(Default::default()))
+            );
+        }
+        let mut doc = parse("");
+        assert!(set(&mut doc, Scope::Environment, "gamescope", "{width = 1}").is_err());
+        assert_eq!(doc.to_string(), "");
     }
 
     #[test]

@@ -46,11 +46,13 @@ From the command line:
 wineo set palworld mangohud=true wayland=true
 wineo set palworld gamescope.width=1920 gamescope.height=1080 gamescope.window=fullscreen
 wineo set palworld targets.launcher.gamescope=false
+wineo set palworld 'gamescope={}'
 wineo set palworld --unset gamescope
 ```
 
 Unsetting a single field like `gamescope.width` keeps the table, so
-gamescope stays on. `--unset gamescope` turns it off.
+gamescope stays on. `--unset gamescope` turns it off. `gamescope={}` writes
+an empty table, replacing any fields, so gamescope runs with no flags.
 
 ## Gamescope
 
