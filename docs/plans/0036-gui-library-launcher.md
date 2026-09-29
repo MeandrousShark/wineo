@@ -106,7 +106,9 @@ spike's library screen into a real app on top of `wineo-core`.
 - Arrow keys move the selection through the grid, following its current
   column count. Up and Down always go to the card visually above or below.
   They don't remember the column you came from, so Up from a lone card in
-  a short last row goes straight up (maintainer's pick during acceptance). Enter opens the panel, or plays when it's already open.
+  a short last row goes straight up (maintainer's pick during acceptance).
+- Double-clicking a card opens its panel and plays it, when Play is enabled
+  (added by the maintainer during acceptance). Enter opens the panel, or plays when it's already open.
   Esc closes the panel, or clears the search when the panel is closed.
   `/` and Ctrl+F focus the search, and Down leaves it for the grid.
 
