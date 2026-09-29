@@ -504,8 +504,9 @@ pub(crate) fn invalid(path: &Path, message: String) -> Error {
 }
 
 fn validate_env(env: &BTreeMap<String, String>) -> Result<(), String> {
-    for key in env.keys() {
-        validate_env_key(key, true)?;
+    // Reported ahead of any other bad name, whatever order the keys sort in.
+    if env.contains_key("WINEPREFIX") {
+        validate_env_key("WINEPREFIX", true)?;
     }
     validate_env_vars(env)
 }
@@ -942,6 +943,15 @@ mod tests {
         assert!(validate_env_key("A=B", false).is_err());
         assert!(validate_env_key("", true).is_err());
         assert!(validate_env_key("DXVK_HUD", true).is_ok());
+    }
+
+    #[test]
+    fn wineprefix_is_reported_before_other_bad_names() {
+        let err = environment(
+            "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n[env]\n\"A=B\" = \"1\"\nWINEPREFIX = \"/x\"",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("WINEPREFIX is managed"), "{err}");
     }
 
     #[test]
