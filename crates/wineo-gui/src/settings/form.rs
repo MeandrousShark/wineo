@@ -586,13 +586,30 @@ impl Form {
         if let Some(problem) = draft.env_problems().into_iter().flatten().next() {
             return Some(problem);
         }
-        if draft.wine() && draft.prefix.is_empty() {
-            return Some("The prefix can't be empty.".to_owned());
+        if let Some(problem) = self.prefix_problem() {
+            return Some(problem.to_owned());
         }
         // Only reachable from a hand-written config, since picking DXVK's
         // None is refused while vkd3d-proton is set.
         if runner_known && draft.vkd3d.is_some() && draft.dxvk.is_none() {
             return Some(VKD3D_NEEDS_DXVK.to_owned());
+        }
+        None
+    }
+    /// Why an edited prefix can't be saved. A typed relative path would be
+    /// resolved from wherever the GUI was started, so it's refused the way
+    /// the example config asks. A hand-written one that isn't edited is left
+    /// alone, so it can't block unrelated saves.
+    pub(crate) fn prefix_problem(&self) -> Option<&'static str> {
+        let prefix = &self.draft.prefix;
+        if !self.draft.wine() || *prefix == self.loaded.prefix {
+            return None;
+        }
+        if prefix.is_empty() {
+            return Some("The prefix can't be empty.");
+        }
+        if !std::path::Path::new(prefix).is_absolute() && !prefix.starts_with("~/") {
+            return Some("The prefix must be absolute or start with ~/.");
         }
         None
     }
@@ -1104,5 +1121,26 @@ mod tests {
             form.problem(true).as_deref(),
             Some("The prefix can't be empty.")
         );
+        for bad in ["prefixes/game", "~", "~other/p", "./p"] {
+            form.draft.prefix = bad.into();
+            assert_eq!(
+                form.prefix_problem(),
+                Some("The prefix must be absolute or start with ~/."),
+                "{bad}"
+            );
+        }
+        for good in ["/games/p", "~/games/p"] {
+            form.draft.prefix = good.into();
+            assert_eq!(form.problem(true), None, "{good}");
+        }
+    }
+
+    #[test]
+    fn an_unedited_relative_prefix_does_not_block_saving() {
+        let mut form = Form::new(values(&WINE.replace("~/p", "prefixes/p")));
+        form.draft.gamemode = Some(true);
+        assert_eq!(form.problem(true), None);
+        form.draft.prefix = "prefixes/q".into();
+        assert!(form.problem(true).is_some());
     }
 }

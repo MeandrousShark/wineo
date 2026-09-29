@@ -1789,6 +1789,21 @@ mod tests {
     }
 
     #[test]
+    fn a_relative_prefix_turns_save_off() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::Prefix("prefixes/game2".into()));
+        assert!(page.is_dirty() && !page.can_save());
+        assert_eq!(
+            page.problem().as_deref(),
+            Some("The prefix must be absolute or start with ~/.")
+        );
+        let _ = page.update(&paths, Event::Prefix("~/prefixes/game2".into()));
+        assert!(page.can_save());
+    }
+
+    #[test]
     fn revert_clears_text_typed_but_not_added() {
         let (_root, paths) = setup();
         write(&paths, GAME);

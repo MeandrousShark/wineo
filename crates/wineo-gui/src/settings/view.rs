@@ -420,6 +420,9 @@ fn advanced(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Mess
             None,
             palette,
         ));
+        if let Some(problem) = editor.form.prefix_problem() {
+            rows = rows.push(text(problem).size(12).color(palette.danger));
+        }
     }
     if editor.protonfixes_shown() {
         rows = rows.push(setting_row(
