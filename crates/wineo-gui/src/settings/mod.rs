@@ -156,11 +156,25 @@ impl Editor {
             List::Tags => &mut self.tags_input,
         }
     }
+    /// The runner the draft names and its kind, from what the page already
+    /// resolved. `None` when it doesn't resolve, which core doesn't check.
+    pub(crate) fn draft_runner(&self) -> Option<Current> {
+        let runner = self.form.draft.runner.as_ref()?;
+        if Some(runner) == self.form.loaded.runner.as_ref() {
+            return self.info.current.clone();
+        }
+        let choice = self
+            .info
+            .runners
+            .iter()
+            .find(|choice| &choice.name == runner)?;
+        Some(Current {
+            name: choice.name.clone(),
+            proton: choice.proton?,
+        })
+    }
     pub(crate) fn proton(&self) -> bool {
-        self.info
-            .current
-            .as_ref()
-            .is_some_and(|current| current.proton)
+        self.draft_runner().is_some_and(|runner| runner.proton)
     }
     /// gameid and store are Proton's, but a value already there stays
     /// editable so it can be cleared.
@@ -170,7 +184,7 @@ impl Editor {
             && (self.proton() || !loaded.gameid.is_empty() || !loaded.store.is_empty())
     }
     pub(crate) fn build_refusal(&self, name: &str, component: Component) -> Option<String> {
-        load::component_refusal(name, self.info.current.as_ref(), component)
+        load::component_refusal(name, self.draft_runner().as_ref(), component)
     }
     /// Whether a component's pick list takes a pick.
     pub(crate) fn build_enabled(&self, name: &str, component: Component) -> bool {
@@ -329,7 +343,8 @@ impl Page {
     }
     /// Why Save is off even though there are changes.
     pub(crate) fn problem(&self) -> Option<String> {
-        self.editor().and_then(|editor| editor.form.problem())
+        self.editor()
+            .and_then(|editor| editor.form.problem(editor.draft_runner().is_some()))
     }
     pub(crate) fn can_save(&self) -> bool {
         !self.saving
@@ -1310,13 +1325,7 @@ mod tests {
     #[test]
     fn a_kind_mismatch_at_save_gets_the_gui_wording() {
         let (_root, paths) = setup();
-        let root = GlobalConfig::default().runner_root(&paths).unwrap();
-        for program in ["wine", "wineserver"] {
-            executable(&root.join("wine-tkg/bin").join(program));
-            executable(&root.join("GE-Proton9-20/files/bin").join(program));
-        }
-        executable(&root.join("GE-Proton9-20/proton"));
-        fs::write(root.join("GE-Proton9-20/version"), "1 GE-Proton9-20\n").unwrap();
+        fake_runners(&paths);
         write(&paths, &GAME.replace("\"missing\"", "\"wine-tkg\""));
         let edits = form::Edits {
             pairs: vec![("runner".into(), "GE-Proton9-20".into())],
@@ -1532,19 +1541,25 @@ mod tests {
         assert!(text.contains("WINEPREFIX = \"/x\""), "{text}");
     }
 
+    /// A wine build and a Proton build in the runner root, as `wineo runners`
+    /// would find them.
+    fn fake_runners(paths: &Paths) {
+        let root = GlobalConfig::default().runner_root(paths).unwrap();
+        for program in ["wine", "wineserver"] {
+            executable(&root.join("wine-tkg/bin").join(program));
+            executable(&root.join("GE-Proton9-20/files/bin").join(program));
+        }
+        executable(&root.join("GE-Proton9-20/proton"));
+        fs::write(root.join("GE-Proton9-20/version"), "1 GE-Proton9-20\n").unwrap();
+    }
+
     #[test]
     fn proton_disables_components_and_shows_protonfixes() {
         let (_root, paths) = setup();
-        write(&paths, GAME);
+        fake_runners(&paths);
+        write(&paths, &GAME.replace("\"missing\"", "\"GE-Proton9-20\""));
         let mut page = page(&paths);
-        let _ = page.update(&paths, Event::GameId("umu-1".into()));
-        assert!(!page.is_dirty());
-        if let Some(editor) = page.editor_mut() {
-            editor.info.current = Some(Current {
-                name: "GE-Proton9-20".into(),
-                proton: true,
-            });
-        }
+        assert!(editor(&page).proton());
         let _ = page.update(
             &paths,
             Event::BuildPicked(Component::Dxvk, Build(Some("latest".into()))),
@@ -1563,6 +1578,60 @@ mod tests {
             editor(&page).form.edits().pairs,
             [("gameid".to_owned(), "umu-1".to_owned())]
         );
+        let applied = apply(&page, &paths);
+        assert!(applied.failed.is_none(), "{:?}", applied.failed);
+        let text = fs::read_to_string(paths.environment_config("game")).unwrap();
+        assert!(text.contains("gameid = \"umu-1\""), "{text}");
+    }
+
+    #[test]
+    fn gating_follows_the_runner_picked_in_the_draft() {
+        let (_root, paths) = setup();
+        fake_runners(&paths);
+        // An unresolvable runner can go either way, so nothing is gated yet.
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        assert!(!editor(&page).proton());
+        assert!(!editor(&page).protonfixes_shown());
+        let proton = RunnerChoice {
+            name: "GE-Proton9-20".into(),
+            proton: Some(true),
+        };
+        let _ = page.update(&paths, Event::RunnerPicked(proton));
+        let shown = editor(&page);
+        assert!(shown.proton() && shown.protonfixes_shown());
+        assert!(!shown.build_enabled("game", Component::Dxvk));
+        let _ = page.update(&paths, Event::GameId("umu-1".into()));
+        assert_eq!(editor(&page).form.draft.gameid, "umu-1");
+        let wine = RunnerChoice {
+            name: "wine-tkg".into(),
+            proton: Some(false),
+        };
+        let _ = page.update(&paths, Event::RunnerPicked(wine));
+        let shown = editor(&page);
+        assert!(!shown.proton() && !shown.protonfixes_shown());
+        assert!(shown.build_enabled("game", Component::Dxvk));
+    }
+
+    #[test]
+    fn vkd3d_without_dxvk_blocks_saving_only_when_core_checks_it() {
+        let (_root, paths) = setup();
+        fake_runners(&paths);
+        write(
+            &paths,
+            &GAME.replace("arch = ", "vkd3d = \"latest\"\narch = "),
+        );
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
+        assert_eq!(page.problem(), None);
+        assert!(page.can_save());
+        let wine = RunnerChoice {
+            name: "wine-tkg".into(),
+            proton: Some(false),
+        };
+        let _ = page.update(&paths, Event::RunnerPicked(wine));
+        assert_eq!(page.problem().as_deref(), Some(form::VKD3D_NEEDS_DXVK));
+        assert!(!page.can_save());
     }
 
     #[test]

@@ -575,8 +575,9 @@ impl Form {
         count
     }
     /// Why the draft can't be saved as it stands, so Save stays off rather
-    /// than sending something core would refuse.
-    pub(crate) fn problem(&self) -> Option<String> {
+    /// than sending something core would refuse. `runner_known` is whether
+    /// the runner resolves, since core only checks components when it does.
+    pub(crate) fn problem(&self, runner_known: bool) -> Option<String> {
         let draft = &self.draft;
         if let Some(problem) = draft.env_problems().into_iter().flatten().next() {
             return Some(problem);
@@ -586,7 +587,7 @@ impl Form {
         }
         // Only reachable from a hand-written config, since picking DXVK's
         // None is refused while vkd3d-proton is set.
-        if draft.vkd3d.is_some() && draft.dxvk.is_none() {
+        if runner_known && draft.vkd3d.is_some() && draft.dxvk.is_none() {
             return Some(VKD3D_NEEDS_DXVK.to_owned());
         }
         None
@@ -951,13 +952,14 @@ mod tests {
             Err(VKD3D_NEEDS_DXVK)
         );
         assert_eq!(form.draft.dxvk.as_deref(), Some("latest"));
-        assert_eq!(form.problem(), None);
+        assert_eq!(form.problem(true), None);
         // A hand-written vkd3d without DXVK can still be cleared, but not saved.
         let mut form = Form::new(values(&format!("{WINE}vkd3d = \"latest\"\n")));
         assert!(form.vkd3d_enabled());
-        assert_eq!(form.problem().as_deref(), Some(VKD3D_NEEDS_DXVK));
+        assert_eq!(form.problem(true).as_deref(), Some(VKD3D_NEEDS_DXVK));
+        assert_eq!(form.problem(false), None);
         form.pick_build(Component::Vkd3d, None).unwrap();
-        assert_eq!(form.problem(), None);
+        assert_eq!(form.problem(true), None);
         assert_eq!(form.edits().unset, ["vkd3d"]);
     }
 
@@ -1041,15 +1043,15 @@ mod tests {
             form.draft.env_problems()[1].as_deref(),
             Some("Duplicate variable \"A\".")
         );
-        assert!(form.problem().is_some());
+        assert!(form.problem(true).is_some());
         form.draft.env[1].key = "WINEPREFIX".into();
-        assert!(form.problem().unwrap().contains("WINEPREFIX"));
+        assert!(form.problem(true).unwrap().contains("WINEPREFIX"));
         form.draft.env[1].key = String::new();
-        assert_eq!(form.problem().as_deref(), Some("Name can't be empty."));
+        assert_eq!(form.problem(true).as_deref(), Some("Name can't be empty."));
         form.draft.env[1].key = "A=B".into();
-        assert!(form.problem().is_some());
+        assert!(form.problem(true).is_some());
         form.draft.env[1].key = "B".into();
-        assert_eq!(form.problem(), None);
+        assert_eq!(form.problem(true), None);
         assert_eq!(
             form.draft.new_env_problem("B", "x").as_deref(),
             Some("Duplicate variable \"B\".")
@@ -1064,7 +1066,7 @@ mod tests {
         assert!(!form.draft.wine());
         assert_eq!(form.draft.new_env_problem("WINEPREFIX", "/x"), None);
         form.draft.env.push(row("WINEPREFIX", "/x"));
-        assert_eq!(form.problem(), None);
+        assert_eq!(form.problem(true), None);
         assert_eq!(pairs(&form.edits()), [("env.WINEPREFIX", "/x")]);
     }
 
@@ -1081,7 +1083,7 @@ mod tests {
         assert_eq!(form.changes(), 3);
         form.draft.prefix.clear();
         assert_eq!(
-            form.problem().as_deref(),
+            form.problem(true).as_deref(),
             Some("The prefix can't be empty.")
         );
     }
