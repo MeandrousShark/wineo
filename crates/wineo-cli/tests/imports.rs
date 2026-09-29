@@ -20,6 +20,24 @@ fn bulk_heroic(f: &Fixture, config: &Path) -> std::process::Output {
 }
 
 #[test]
+fn heroic_bulk_fails_on_a_broken_prefix_root_and_imports_nothing() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    f.global_config("[defaults]\nprefix_root = \"\"\n");
+
+    let output = bulk_heroic(&f, &heroic);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("cannot make an empty path absolute"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!stdout(&output).contains("Imported"), "{}", stdout(&output));
+    assert!(!f.config_dir().join("environments").exists());
+}
+
+#[test]
 fn heroic_bulk_preserves_recorded_ids_and_imports_another_game_with_the_same_paths() {
     let f = Fixture::new();
     let prefix = source(f.root.path());

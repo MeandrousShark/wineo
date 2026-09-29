@@ -592,6 +592,7 @@ pub fn plan_library(
         let mut claimed = claimed;
         let shared_by_prefix = shared_prefixes(&windows);
         let mut used_names: BTreeSet<String> = BTreeSet::new();
+        let mut root_checked = false;
         for candidate in &windows {
             let default = default_name(&candidate.title, candidate.executable.as_deref());
             if let Some(matched) = match_existing(
@@ -606,6 +607,14 @@ pub fn plan_library(
                 }
                 already.push(matched.name);
                 continue;
+            }
+            // A broken prefix root fails the whole import, not one game at a
+            // time, so it can't be left to plan_windows, which turns errors
+            // into skips. Adopting needs no root, and a library that's all
+            // imported already never gets here.
+            if !options.adopt && !root_checked {
+                global.prefix_root(paths)?;
+                root_checked = true;
             }
             entries.push(plan_windows(
                 paths,
@@ -1497,6 +1506,43 @@ mod tests {
                 games: 4
             }]
         );
+    }
+
+    #[test]
+    fn a_broken_prefix_root_fails_the_plan_instead_of_skipping_each_game() {
+        let root = tempdir().unwrap();
+        let mut library = Library::new(root.path());
+        library.windows("a", "Alpha", "p1", "");
+        library.native("e", "Echo");
+        let (paths, mut global, listing) = library.write();
+        global.defaults.prefix_root = Some(String::new());
+
+        let error = plan_library(
+            &paths,
+            &global,
+            &listing,
+            Some("fake"),
+            &LibraryOptions::default(),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("empty path"),
+            "unexpected error: {error:#}"
+        );
+
+        // Adopting never reads it.
+        let plan = plan_library(
+            &paths,
+            &global,
+            &listing,
+            Some("fake"),
+            &LibraryOptions {
+                adopt: true,
+                ..LibraryOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.ready_count(), 2);
     }
 
     #[test]
