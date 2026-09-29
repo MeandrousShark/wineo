@@ -201,6 +201,7 @@ pub(crate) enum Scan {
         programs: Vec<ProgramChoice>,
         /// Held back as noise, like uninstallers, the way `setup` does.
         held_back: Vec<ProgramChoice>,
+        unreadable: Vec<String>,
     },
     /// The prefix doesn't exist yet, so only a typed path works.
     NoPrefix,
@@ -238,6 +239,11 @@ pub(crate) fn scan(paths: &Paths, name: &str) -> Scan {
         Ok(listing) => Scan::Programs {
             programs: choices(&listing.programs),
             held_back: choices(&listing.filtered),
+            unreadable: listing
+                .unreadable
+                .iter()
+                .map(|(shortcut, reason)| format!("Skipped the shortcut {shortcut}: {reason}"))
+                .collect(),
         },
         Err(error) => Scan::Failed(PanelError::from_error(&error.into()).text),
     }
@@ -251,9 +257,20 @@ pub(crate) fn resolve_exe(paths: &Paths, name: &str, typed: &str) -> Result<Stri
     }
     let bare = !typed.contains('/') && !typed.starts_with('~');
     let windows = winpath::is_windows_path(&typed);
-    if !bare && !windows && !Path::new(&typed).is_absolute() && !typed.starts_with("~/") {
+    let relative =
+        !bare && !windows && !Path::new(&typed).is_absolute() && !typed.starts_with("~/");
+    if relative && paths.portable_root().is_none() {
         return Err("The path must be absolute or start with ~/.".to_owned());
     }
+    let typed = if relative {
+        paths
+            .config_path(&typed)
+            .map_err(|error| error.to_string())?
+            .display()
+            .to_string()
+    } else {
+        typed
+    };
     let environment = Environment::load(paths, name).map_err(|error| error.to_string())?;
     if environment.config.wine().is_none() {
         let global = GlobalConfig::load_or_default(paths).map_err(|error| error.to_string())?;
@@ -518,12 +535,18 @@ pub(crate) fn open_task(path: PathBuf) -> Task<Message> {
     )
 }
 
-pub(crate) fn scan_task(paths: Paths, name: String, generation: u64) -> Task<Message> {
+pub(crate) fn scan_task(
+    paths: Paths,
+    name: String,
+    generation: u64,
+    sequence: u64,
+) -> Task<Message> {
     blocking(
         move || scan(&paths, &name),
         move |result| {
             Message::Settings(Event::Scanned(
                 generation,
+                sequence,
                 result.unwrap_or_else(Scan::Failed),
             ))
         },

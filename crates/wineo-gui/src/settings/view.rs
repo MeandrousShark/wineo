@@ -696,7 +696,11 @@ fn add_target(
         Some(Scan::Programs {
             programs,
             held_back,
+            unreadable,
         }) => {
+            for notice in unreadable {
+                rows = rows.push(muted(notice.clone()));
+            }
             let mut shown: Vec<_> = programs.iter().collect();
             if editor.show_held_back {
                 shown.extend(held_back);

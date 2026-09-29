@@ -19,6 +19,7 @@ pub(crate) enum Switch {
 
 impl Switch {
     pub(crate) const ALL: [Switch; 3] = [Switch::Gamemode, Switch::Mangohud, Switch::Wayland];
+
     pub(crate) fn key(self) -> &'static str {
         match self {
             Switch::Gamemode => "gamemode",
@@ -976,10 +977,11 @@ impl Form {
         if let Some(reason) = name::problem(name) {
             return Some(format!("Invalid input: {reason}."));
         }
-        self.draft
-            .targets
-            .contains_key(name)
-            .then(|| format!("There is already a target called `{name}`."))
+        if self.draft.targets.contains_key(name) {
+            return Some(format!("There is already a target called `{name}`."));
+        }
+        (self.loaded.targets.contains_key(name))
+            .then(|| format!("`{name}` was removed. Save first to reuse its name."))
     }
     pub(crate) fn using_exe(&self, exe: &str) -> Option<&str> {
         self.draft
@@ -991,7 +993,9 @@ impl Form {
     /// A free target name for a program, the way `setup` names one.
     pub(crate) fn suggest_target(&self, label: &str, exe: &str) -> String {
         let suggested = targets::suggest_name(label, exe);
-        targets::free_name(&suggested, |taken| self.draft.targets.contains_key(taken))
+        targets::free_name(&suggested, |taken| {
+            self.draft.targets.contains_key(taken) || self.loaded.targets.contains_key(taken)
+        })
     }
     pub(crate) fn add_target(&mut self, name: &str, values: TargetValues) -> Result<(), String> {
         if name.is_empty() {
@@ -1860,6 +1864,39 @@ mod tests {
         assert_eq!(form.changes(), 1);
         assert_eq!(form.edits().unset, ["targets.game"]);
         assert_eq!(form.targets_problem(false), None);
+    }
+
+    #[test]
+    fn a_removed_target_name_stays_taken_until_save() {
+        let mut form = Form::new(values(TARGETS));
+        assert!(form.remove_target("tool"));
+        assert_eq!(
+            form.new_target_problem("tool").as_deref(),
+            Some("`tool` was removed. Save first to reuse its name.")
+        );
+        assert_eq!(form.suggest_target("Tool", r"C:\x\Tool.exe"), "tool-2");
+        assert_eq!(
+            form.add_target("tool", TargetValues::default())
+                .unwrap_err(),
+            "`tool` was removed. Save first to reuse its name."
+        );
+        assert_eq!(form.edits().unset, ["targets.tool"]);
+    }
+
+    #[test]
+    fn adding_then_removing_a_target_leaves_no_edits() {
+        let mut form = Form::new(values(TARGETS));
+        form.add_target(
+            "new",
+            TargetValues {
+                exe: "/bin/sh".into(),
+                ..TargetValues::default()
+            },
+        )
+        .unwrap();
+        assert!(form.remove_target("new"));
+        assert_eq!(form.changes(), 0);
+        assert!(form.edits().is_empty());
     }
 
     #[test]

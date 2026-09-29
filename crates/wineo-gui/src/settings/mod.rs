@@ -58,7 +58,7 @@ pub(crate) enum Event {
     AddOpen(bool),
     /// Shows programs held back as noise, like uninstallers.
     ShowHeldBack(bool),
-    Scanned(u64, Scan),
+    Scanned(u64, u64, Scan),
     ProgramPicked(ProgramChoice),
     NewTargetName(String),
     NewTargetPath(String),
@@ -403,6 +403,8 @@ pub(crate) struct Page {
     pub(crate) error: Option<String>,
     /// Bumped by every typed exe check, so only the latest one lands.
     resolve_sequence: u64,
+    /// Bumped by every scan, so an earlier prefix's result cannot replace it.
+    scan_sequence: u64,
     /// The add target form as it was sent to be checked.
     resolving: Option<NewTarget>,
 }
@@ -453,6 +455,7 @@ impl Page {
             notes: Vec::new(),
             error: None,
             resolve_sequence: 0,
+            scan_sequence: 0,
             resolving: None,
         }
     }
@@ -874,6 +877,8 @@ impl Page {
             }
             Event::AddOpen(open) => {
                 let generation = self.generation;
+                self.scan_sequence = self.scan_sequence.wrapping_add(1);
+                let sequence = self.scan_sequence;
                 let Some(editor) = self.editor_mut() else {
                     return Step::none();
                 };
@@ -887,6 +892,7 @@ impl Page {
                     paths.clone(),
                     self.name.clone(),
                     generation,
+                    sequence,
                 ))
             }
             Event::ShowHeldBack(show) => {
@@ -895,8 +901,10 @@ impl Page {
                 }
                 Step::none()
             }
-            Event::Scanned(generation, scan) => {
+            Event::Scanned(generation, sequence, scan) => {
                 if generation == self.generation
+                    && sequence == self.scan_sequence
+                    && !self.locked()
                     && let Some(editor) = self.editor_mut()
                 {
                     editor.scan = Some(scan);
@@ -996,7 +1004,24 @@ impl Page {
                     return Step::none();
                 }
                 if let Some(pending) = self.pending.take() {
+                    let after_save = pending.after_save;
                     self.land(pending, snapshot);
+                    if after_save {
+                        self.scan_sequence = self.scan_sequence.wrapping_add(1);
+                        let sequence = self.scan_sequence;
+                        if let Some(editor) = self.editor_mut() {
+                            editor.scan = None;
+                            if editor.add_open && !editor.info.native {
+                                editor.scan = Some(Scan::Scanning);
+                                return Step::task(load::scan_task(
+                                    paths.clone(),
+                                    self.name.clone(),
+                                    self.generation,
+                                    sequence,
+                                ));
+                            }
+                        }
+                    }
                 }
                 Step::none()
             }
@@ -1073,8 +1098,8 @@ impl Page {
             return false;
         };
         match edit {
-            TargetEdit::Exe(exe) => values.exe = exe,
-            TargetEdit::Cwd(cwd) => values.cwd = cwd,
+            TargetEdit::Exe(exe) => values.exe = wineo_core::target_path::clean_path(&exe),
+            TargetEdit::Cwd(cwd) => values.cwd = wineo_core::target_path::clean_path(&cwd),
             TargetEdit::Name(name) => values.name = name,
             TargetEdit::Desktop(on) => values.desktop = on,
             TargetEdit::Switch(switch, on) => *values.switch_mut(switch) = Some(on),
@@ -1552,6 +1577,44 @@ mod tests {
         assert_eq!(page.notes, ["done"]);
         check(&mut page, &paths);
         assert!(!page.loading() && !page.changed_on_disk);
+    }
+
+    #[test]
+    fn a_save_restarts_an_open_add_form_scan() {
+        let (_root, paths) = setup();
+        write(&paths, TARGETED);
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::AddOpen(true));
+        let old_sequence = page.scan_sequence;
+        let _ = page.update(&paths, Event::Scanned(1, old_sequence, Scan::NoPrefix));
+        assert_eq!(editor(&page).scan, Some(Scan::NoPrefix));
+        let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
+        write(
+            &paths,
+            &TARGETED.replace("~/prefixes/game", "~/prefixes/other"),
+        );
+        saved(&mut page, &paths, &[], None);
+        land(&mut page, &paths);
+        assert!(editor(&page).add_open);
+        assert_eq!(editor(&page).scan, Some(Scan::Scanning));
+        let new_sequence = page.scan_sequence;
+        assert_ne!(new_sequence, old_sequence);
+        let _ = page.update(
+            &paths,
+            Event::Scanned(1, old_sequence, Scan::Failed("old prefix".into())),
+        );
+        assert_eq!(editor(&page).scan, Some(Scan::Scanning));
+        let _ = page.update(
+            &paths,
+            Event::Scanned(1, new_sequence, load::scan(&paths, "game")),
+        );
+        assert_eq!(editor(&page).scan, Some(Scan::NoPrefix));
+        let _ = page.update(&paths, Event::AddOpen(false));
+        let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
+        saved(&mut page, &paths, &[], None);
+        land(&mut page, &paths);
+        assert!(!editor(&page).add_open);
+        assert_eq!(editor(&page).scan, None);
     }
 
     #[test]
@@ -2508,6 +2571,42 @@ exe = "/usr/bin/old"
 "#;
 
     #[test]
+    fn existing_target_paths_are_cleaned_when_edited() {
+        let (_root, paths) = setup();
+        write(&paths, TARGETED);
+        let mut page = page(&paths);
+        target(
+            &mut page,
+            &paths,
+            "tool",
+            TargetEdit::Exe(" '/opt/My App/app.exe' ".into()),
+        );
+        target(
+            &mut page,
+            &paths,
+            "tool",
+            TargetEdit::Cwd(r"/opt/My\ App".into()),
+        );
+        let values = &editor(&page).form.draft.targets["tool"];
+        assert_eq!(values.exe, "/opt/My App/app.exe");
+        assert_eq!(values.cwd, "/opt/My App");
+        let edits = editor(&page).form.edits();
+        assert_eq!(
+            edits.pairs,
+            [
+                ("targets.tool.exe".into(), "/opt/My App/app.exe".into()),
+                ("targets.tool.cwd".into(), "/opt/My App".into()),
+            ]
+        );
+        let _ = page.update(&paths, Event::Revert);
+        assert_eq!(
+            editor(&page).form.draft.targets["tool"].exe,
+            "/usr/bin/tool"
+        );
+        assert!(!page.is_dirty());
+    }
+
+    #[test]
     fn saving_target_edits_changes_only_those_lines() {
         let (root, paths) = setup();
         write(&paths, TARGETED);
@@ -2826,15 +2925,32 @@ desktop = true
         write(&paths, TARGETED);
         let mut page = page(&paths);
         let _ = page.update(&paths, Event::AddOpen(true));
+        let sequence = page.scan_sequence;
         assert_eq!(editor(&page).scan, Some(Scan::Scanning));
-        let _ = page.update(&paths, Event::Scanned(1, load::scan(&paths, "game")));
+        let _ = page.update(
+            &paths,
+            Event::Scanned(1, sequence, load::scan(&paths, "game")),
+        );
         assert_eq!(editor(&page).scan, Some(Scan::NoPrefix));
         let prefix = fake_prefix(&paths);
-        let _ = page.update(&paths, Event::Scanned(7, Scan::NoPrefix));
-        let _ = page.update(&paths, Event::Scanned(1, load::scan(&paths, "game")));
+        let shortcut =
+            prefix.join("drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Broken.lnk");
+        fs::create_dir_all(shortcut.parent().unwrap()).unwrap();
+        fs::write(shortcut, "not a shortcut").unwrap();
+        let _ = page.update(
+            &paths,
+            Event::Scanned(1, sequence, load::scan(&paths, "game")),
+        );
+        let current = editor(&page).scan.clone();
+        let _ = page.update(
+            &paths,
+            Event::Scanned(7, sequence, Scan::Failed("stale".into())),
+        );
+        assert_eq!(editor(&page).scan, current);
         let Some(Scan::Programs {
             programs,
             held_back,
+            unreadable,
         }) = editor(&page).scan.clone()
         else {
             panic!("{:?}", editor(&page).scan);
@@ -2847,6 +2963,7 @@ desktop = true
             }]
         );
         assert_eq!(held_back.len(), 1);
+        assert_eq!(unreadable, ["Skipped the shortcut Broken: not a shortcut"]);
         let _ = page.update(&paths, Event::ProgramPicked(programs[0].clone()));
         assert_eq!(
             editor(&page).new_target,
@@ -2962,5 +3079,16 @@ desktop = true
         add(&mut page, &paths);
         let added = &editor(&page).form.draft.targets["sh"];
         assert!(!added.desktop && added.name.is_empty());
+        let relative = portable.join("apps/other.exe");
+        fs::create_dir_all(relative.parent().unwrap()).unwrap();
+        fs::write(relative, "").unwrap();
+        let _ = page.update(&paths, Event::NewTargetName("other".into()));
+        let _ = page.update(&paths, Event::NewTargetPath("apps/other.exe".into()));
+        add(&mut page, &paths);
+        assert_eq!(editor(&page).add_error, None);
+        assert_eq!(
+            editor(&page).form.draft.targets["other"].exe,
+            "apps/other.exe"
+        );
     }
 }
