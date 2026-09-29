@@ -27,6 +27,9 @@ flow, not screens of their own.
 - Settings use real controls: switches and choices for the keys that have
   them, KEY and VALUE rows for `env`.
 - Settings come before create and import. 0038 takes those.
+- Inherited on/off settings are switches that show the value in effect,
+  with a reset button once overridden. No yes/no/default dropdowns
+  (decision 1).
 
 ## Existing foundation
 
@@ -61,8 +64,9 @@ changed, whether it's running, and any desktop entry failure. The CLI's
 `Applied`. The GUI calls the same function, so both frontends lock, check,
 write, and reconcile desktop entries the same way.
 
-The GUI builds `pairs` and `unset` from its controls: a key set to Default
-is unset, everything else is written with the value TOML expects.
+The GUI builds `pairs` and `unset` from its controls: a reset button or an
+emptied field unsets the key, everything else is written with the value
+TOML expects.
 
 ### Where it lives
 
@@ -79,10 +83,10 @@ winetricks).
   `GE-Proton-Latest`), arch (`win64`, `win32`; fixed to win64 on Proton).
   Choosing a runner of the other kind is refused before Save, with the same
   "make a new environment" reason the CLI gives.
-- **Launch:** gamemode, mangohud, wayland (decision 1 for how inheriting
-  looks). Gamescope is a switch; turning it on shows width, height, output
-  width and height, filter, scaler, window, FPS limits, grab cursor, and
-  extra args. Empty fields stay unset.
+- **Launch:** gamemode, mangohud, wayland, and gamescope as switches with
+  a reset button once overridden (decision 1). Gamescope on shows width,
+  height, output width and height, filter, scaler, window, FPS limits, grab
+  cursor, and extra args. Empty fields stay unset.
 - **Components (Wine only):** DXVK and vkd3d-proton, each None, Latest, or
   an installed build. vkd3d is disabled until DXVK is set. Both are
   disabled on Proton with the reason.
@@ -143,18 +147,34 @@ gamemode, mangohud, and wayland have three states on an environment (on,
 off, or unset, which follows the global config), and targets add a fourth
 level.
 
-**Recommended:** option A, a dropdown whose Default entry says what it
-resolves to and where from.
+**Settled:** option A. Each is a switch showing the value in effect, with a
+label saying where it comes from. Flipping it overrides, and a reset button
+shows up only on overridden rows, which unsets the key. An environment that
+hasn't overridden a setting keeps following the global config, so changing
+the global switch changes every such environment's next launch. The
+maintainer turned down dropdowns for yes, no, and default: a switch is one
+click and reads at a glance.
 
 ```
-option A: dropdown                         option B: switch plus inherit
-Gamemode   [ Default (on, global) v ]      Gamemode   [x] same as global  (on)
-MangoHud   [ On                   v ]      MangoHud   [ ] same as global  (==o)
-Wayland    [ Off                  v ]      Wayland    [ ] same as global  (o==)
+option A: switch plus reset (settled)      option B: flipping back = default
+Gamemode   (==o)  global                   Gamemode   (==o)  global
+MangoHud   (o==)  set here  [reset]        MangoHud   (o==)  set here
+Wayland    (==o)  set here  [reset]        (flipping MangoHud back on drops
+                                            the override)
 ```
 
-A is one control per row and explains itself. B keeps the switch look but
-doubles the controls, and a greyed-out switch is easy to misread.
+B couldn't pin a value that matches global, and would have to guess at Save
+whether a hand-written `gamemode = true` equal to global means unset.
+
+- On a target, the label says `environment` or `global`, whichever the
+  value falls back to, and reset unsets the target's key.
+- Gamescope follows the same rule. A target's gamescope table replaces the
+  environment's whole table, so editing a field on a target that inherits
+  copies the environment's fields into the target first. Switching it off on
+  a target writes `gamescope = false`.
+- An existing key counts as overridden even when it matches what it would
+  inherit, so a hand-written value keeps its reset button and nothing is
+  unset behind the maintainer's back.
 
 ### 2. Where the page opens
 
@@ -171,7 +191,7 @@ option A: full page                        option B: wider panel
 |   Runner    [ GE-Proton-Latest v ]     | |               | ...            |
 |   Arch      [ win64            v ]     | |               | Targets        |
 | Launch                                 | |               |  > game        |
-|   Gamemode  [ Default (on)     v ]     | |               |                |
+|   Gamemode  (==o)  global              | |               |                |
 | ...                                    | |               |                |
 |----------------------------------------| |               |----------------|
 | 2 changes            [Revert] [Save]   | |               | [Revert][Save] |
@@ -194,7 +214,7 @@ option A: save bar                         option B: live
 
 A target card has exe, args (one per row), working dir, name, the default
 marker, desktop entry, and its own gamemode, mangohud, wayland, and
-gamescope (off, same as the environment, or its own settings).
+gamescope switches (decision 1).
 
 **Recommended:** Add target offers the installed programs from
 `programs::scan`, like `setup`, plus a typed path for anything the scan
@@ -211,8 +231,8 @@ Targets                                         [+ Add target]
      Args       [-nosplash] [+]
      Working dir  (the exe's own)
      Desktop entry  [x]   Name  Hades
-     Gamemode   [ Same as environment v ]
-     Gamescope  [ Same as environment v ]
+     Gamemode   (==o)  environment
+     Gamescope  (o==)  set here  [reset]
                                                [Remove target]
  > server
 ```
@@ -239,7 +259,7 @@ Targets                                         [+ Add target]
   kind refusal, runner kind mismatch, desktop reconcile, and the unset
   report.
 - GUI `update` tests without a window: controls to `pairs` and `unset`
-  (Default unsets, empty gamescope fields stay unset, removed env rows
+  (reset unsets, empty gamescope fields stay unset, removed env rows
   unset), dirty tracking, revert, the leave prompt, and reload on a file
   change.
 - A round trip test: load a commented config, change one control, save, and
