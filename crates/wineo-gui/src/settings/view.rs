@@ -431,15 +431,17 @@ fn target_body<'a>(
         ),
     ]
     .spacing(12);
-    rows = rows.push(switch_row(
-        "Default",
-        is_default,
-        None,
-        move |on| target_event(target, TargetEdit::Default(on)),
-        None,
-        locked,
-        palette,
-    ));
+    if form.draft.targets.len() > 1 {
+        rows = rows.push(switch_row(
+            "Default",
+            is_default,
+            None,
+            move |on| target_event(target, TargetEdit::Default(on)),
+            None,
+            locked,
+            palette,
+        ));
+    }
     // A hand-written entry in a portable folder can still be turned off.
     let refusal = editor.desktop_refusal().filter(|_| !values.desktop);
     rows = rows.push(switch_row(
@@ -779,6 +781,13 @@ fn add_target(
     ));
     if let Some(error) = &editor.add_error {
         rows = rows.push(text(error.as_str()).size(12).color(palette.danger));
+    }
+    if let Some(name) = editor.duplicate_target() {
+        rows = rows.push(
+            text(format!("Already used by target `{name}`."))
+                .size(12)
+                .color(palette.muted),
+        );
     }
     let checking = if resolving { "Checking..." } else { "" };
     rows = rows.push(

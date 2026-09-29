@@ -804,6 +804,14 @@ impl Form {
         }
         None
     }
+    pub(crate) fn protonfixes_problem(&self) -> Option<&'static str> {
+        let (loaded, draft) = (&self.loaded, &self.draft);
+        ((draft.gameid != loaded.gameid && !draft.gameid.is_empty())
+            || (draft.store != loaded.store && !draft.store.is_empty()))
+        .then_some(
+            "Game id and store only apply to Proton runners. Pick a Proton runner or clear them.",
+        )
+    }
     /// Why an edited prefix can't be saved. A typed relative path would be
     /// resolved from wherever the GUI was started, so it's refused the way
     /// the example config asks. A hand-written one that isn't edited is left
@@ -972,6 +980,13 @@ impl Form {
             .targets
             .contains_key(name)
             .then(|| format!("There is already a target called `{name}`."))
+    }
+    pub(crate) fn using_exe(&self, exe: &str) -> Option<&str> {
+        self.draft
+            .targets
+            .iter()
+            .find(|(_, target)| targets::same_exe(&target.exe, exe))
+            .map(|(name, _)| name.as_str())
     }
     /// A free target name for a program, the way `setup` names one.
     pub(crate) fn suggest_target(&self, label: &str, exe: &str) -> String {
@@ -1644,6 +1659,24 @@ mod tests {
         let mut form = Form::new(values(&TARGETS.replace("default = true\n", "")));
         form.remove_target("tool");
         assert_eq!(form.targets_problem(false), None);
+    }
+
+    #[test]
+    fn a_lone_target_needs_no_default() {
+        let single = TARGETS
+            .split("[targets.tool]")
+            .next()
+            .unwrap()
+            .replace("default = true\n", "");
+        let mut form = Form::new(values(&single));
+        form.draft
+            .targets
+            .get_mut("game")
+            .unwrap()
+            .args
+            .push("-a".into());
+        assert_eq!(form.targets_problem(false), None);
+        assert!(form.is_dirty());
     }
 
     #[test]

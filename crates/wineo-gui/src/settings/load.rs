@@ -18,7 +18,7 @@ use wineo_core::runner::Runner;
 use wineo_core::runner_alias;
 use wineo_core::runners::Runners;
 use wineo_core::settings::{self, Applied, CheckError, ConfigFile};
-use wineo_core::{art, launch, prefix, programs, winpath};
+use wineo_core::{art, prefix, programs, target_path, winpath};
 
 use super::Event;
 use super::form::{Edits, Inherited, Values};
@@ -65,6 +65,7 @@ pub(crate) struct Loaded {
     /// Each target with an art dir, and where it is, which removing the
     /// target deletes.
     pub(crate) target_art: BTreeMap<String, String>,
+    pub(crate) wine_prefix: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +163,7 @@ fn content(paths: &Paths, name: &str) -> anyhow::Result<Loaded> {
         global_warning,
         portable: paths.portable_root().is_some(),
         target_art: target_art(paths, name, environment.config.targets.keys()),
+        wine_prefix: wine_prefix(paths, &environment),
     })
 }
 
@@ -241,70 +243,39 @@ pub(crate) fn scan(paths: &Paths, name: &str) -> Scan {
     }
 }
 
-/// A path as typed or pasted, which may come wrapped in quotes or with the
-/// backslash a shell puts before a space. Matches `setup`.
-pub(crate) fn clean_path(typed: &str) -> String {
-    let typed = typed.trim();
-    let unquoted = ['"', '\'']
-        .iter()
-        .find_map(|quote| typed.strip_prefix(*quote)?.strip_suffix(*quote))
-        .unwrap_or(typed);
-    if winpath::is_windows_path(unquoted) {
-        unquoted.to_owned()
-    } else {
-        unquoted.replace("\\ ", " ")
-    }
-}
-
-/// A typed exe as a target's `exe` holds it, checked the way `setup` checks
-/// one: a Windows path as typed, a Unix path inside `drive_c` as its `C:`
-/// path, and any other Unix path with the home directory as `~`. A native
-/// environment takes a bare name on its PATH too. Unlike `setup`, a relative
-/// path is refused, since the GUI's working directory means nothing to the
-/// person typing it.
+/// Resolves a typed target path after enforcing the GUI's stable path rule.
 pub(crate) fn resolve_exe(paths: &Paths, name: &str, typed: &str) -> Result<String, String> {
-    let typed = clean_path(typed);
+    let typed = target_path::clean_path(typed);
     if typed.is_empty() {
         return Err("Enter the path to the program.".to_owned());
     }
-    let environment = Environment::load(paths, name).map_err(|error| error.to_string())?;
     let bare = !typed.contains('/') && !typed.starts_with('~');
     let windows = winpath::is_windows_path(&typed);
     if !bare && !windows && !Path::new(&typed).is_absolute() && !typed.starts_with("~/") {
         return Err("The path must be absolute or start with ~/.".to_owned());
     }
+    let environment = Environment::load(paths, name).map_err(|error| error.to_string())?;
     if environment.config.wine().is_none() {
         let global = GlobalConfig::load_or_default(paths).map_err(|error| error.to_string())?;
-        let stored = if bare {
-            typed
-        } else {
-            let unix = paths.absolute(&typed).map_err(|error| error.to_string())?;
-            paths
-                .store(&unix)
-                .unwrap_or_else(|_| unix.display().to_string())
-        };
-        launch::check_native_exe(paths, &global, name, &environment.config.env, &stored)
-            .map_err(|error| error.to_string())?;
-        return Ok(stored);
+        let mut env = global.env;
+        env.extend(environment.config.env);
+        return target_path::native_exe(paths, name, &env, &typed).map_err(|error| {
+            if error == "Enter the path to the program" {
+                format!("{error}.")
+            } else {
+                error
+            }
+        });
     }
-    let missing = || format!("`{typed}` does not exist.");
-    let wine_prefix = wine_prefix(paths, &environment);
-    if windows {
-        let wine_prefix = wine_prefix.as_deref().ok_or_else(missing)?;
-        return match winpath::to_unix(wine_prefix, &typed) {
-            Some(unix) if unix.is_file() => Ok(typed),
-            _ => Err(missing()),
-        };
-    }
-    let unix = paths.absolute(&typed).map_err(|error| error.to_string())?;
-    if !unix.is_file() {
-        return Err(missing());
-    }
-    Ok(wine_prefix
-        .as_deref()
-        .and_then(|wine_prefix| winpath::from_unix(wine_prefix, &unix))
-        .or_else(|| paths.store(&unix).ok())
-        .unwrap_or_else(|| unix.display().to_string()))
+    target_path::resolve_exe(paths, wine_prefix(paths, &environment).as_deref(), &typed).map_err(
+        |error| {
+            if error.ends_with(" does not exist") {
+                format!("{error}.")
+            } else {
+                error
+            }
+        },
+    )
 }
 
 /// The system wine, installed runners, and aliases, in `wineo runners` order,

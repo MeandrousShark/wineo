@@ -190,6 +190,7 @@ pub(crate) struct Editor {
     pub(crate) target_args_input: BTreeMap<String, String>,
     pub(crate) target_gamescope_args_input: BTreeMap<String, String>,
     pub(crate) new_target: NewTarget,
+    pub(crate) candidate_exe: Option<String>,
     /// Why the last target add was refused.
     pub(crate) add_error: Option<String>,
     /// The target asking to be removed.
@@ -215,6 +216,7 @@ impl Editor {
             target_args_input: BTreeMap::new(),
             target_gamescope_args_input: BTreeMap::new(),
             new_target: NewTarget::default(),
+            candidate_exe: None,
             add_error: None,
             removing: None,
             open_cards: BTreeSet::new(),
@@ -233,6 +235,7 @@ impl Editor {
         self.target_gamescope_args_input
             .clone_from(&from.target_gamescope_args_input);
         self.new_target.clone_from(&from.new_target);
+        self.candidate_exe.clone_from(&from.candidate_exe);
     }
     fn clear_inputs(&mut self) {
         self.args_input.clear();
@@ -242,6 +245,7 @@ impl Editor {
         self.target_args_input.clear();
         self.target_gamescope_args_input.clear();
         self.new_target = NewTarget::default();
+        self.candidate_exe = None;
         self.add_error = None;
         self.removing = None;
     }
@@ -269,6 +273,11 @@ impl Editor {
                 .form
                 .new_target_problem(&self.new_target.name)
                 .is_none()
+    }
+    pub(crate) fn duplicate_target(&self) -> Option<&str> {
+        self.candidate_exe
+            .as_deref()
+            .and_then(|exe| self.form.using_exe(exe))
     }
     /// Why a target's desktop entry can't be turned on, if it can't.
     pub(crate) fn desktop_refusal(&self) -> Option<String> {
@@ -312,8 +321,13 @@ impl Editor {
     /// editable so it can be cleared.
     pub(crate) fn protonfixes_shown(&self) -> bool {
         let loaded = &self.form.loaded;
+        let draft = &self.form.draft;
         !self.info.native
-            && (self.proton() || !loaded.gameid.is_empty() || !loaded.store.is_empty())
+            && (self.proton()
+                || !loaded.gameid.is_empty()
+                || !loaded.store.is_empty()
+                || !draft.gameid.is_empty()
+                || !draft.store.is_empty())
     }
     pub(crate) fn build_refusal(&self, name: &str, component: Component) -> Option<String> {
         load::component_refusal(name, self.draft_runner().as_ref(), component)
@@ -494,6 +508,12 @@ impl Page {
             .into_iter()
             .filter(|component| editor.form.draft.build(*component).is_some())
             .find_map(|component| editor.build_refusal(&self.name, component))
+            .or_else(|| {
+                (!editor.proton())
+                    .then(|| editor.form.protonfixes_problem())
+                    .flatten()
+                    .map(str::to_owned)
+            })
             .or_else(|| editor.form.problem(editor.draft_runner().is_some()))
             .or_else(|| editor.form.targets_problem(editor.info.portable))
     }
@@ -885,6 +905,7 @@ impl Page {
             }
             Event::ProgramPicked(program) => {
                 if let Some(editor) = self.editor_mut() {
+                    editor.candidate_exe = Some(program.exe.clone());
                     editor.new_target = NewTarget {
                         name: editor.form.suggest_target(&program.name, &program.exe),
                         path: program.exe,
@@ -903,6 +924,11 @@ impl Page {
             }
             Event::NewTargetPath(path) => {
                 if let Some(editor) = self.editor_mut() {
+                    editor.candidate_exe = wineo_core::target_path::candidate_exe(
+                        paths,
+                        editor.info.wine_prefix.as_deref(),
+                        &path,
+                    );
                     editor.new_target.path = path;
                     // The picked program's name no longer fits a typed path.
                     editor.new_target.label = None;
@@ -1210,6 +1236,7 @@ impl Editor {
         };
         self.form.add_target(&name, values)?;
         self.new_target = NewTarget::default();
+        self.candidate_exe = None;
         self.add_error = None;
         self.add_open = false;
         self.open_cards.insert(name);
@@ -2189,14 +2216,44 @@ mod tests {
         assert!(!shown.build_enabled("game", Component::Dxvk));
         let _ = page.update(&paths, Event::GameId("umu-1".into()));
         assert_eq!(editor(&page).form.draft.gameid, "umu-1");
+        assert!(page.can_save());
         let wine = RunnerChoice {
             name: "wine-tkg".into(),
             proton: Some(false),
         };
         let _ = page.update(&paths, Event::RunnerPicked(wine));
         let shown = editor(&page);
-        assert!(!shown.proton() && !shown.protonfixes_shown());
+        assert!(!shown.proton() && shown.protonfixes_shown());
         assert!(shown.build_enabled("game", Component::Dxvk));
+        assert_eq!(
+            page.problem().as_deref(),
+            Some(
+                "Game id and store only apply to Proton runners. Pick a Proton runner or clear them."
+            )
+        );
+        assert!(!page.can_save());
+        let _ = page.update(&paths, Event::GameId(String::new()));
+        assert_eq!(page.problem(), None);
+        assert!(!editor(&page).protonfixes_shown());
+        let _ = page.update(
+            &paths,
+            Event::RunnerPicked(RunnerChoice {
+                name: "GE-Proton9-20".into(),
+                proton: Some(true),
+            }),
+        );
+        let _ = page.update(&paths, Event::Store("gog".into()));
+        let _ = page.update(
+            &paths,
+            Event::RunnerPicked(RunnerChoice {
+                name: "wine-tkg".into(),
+                proton: Some(false),
+            }),
+        );
+        assert!(editor(&page).protonfixes_shown());
+        assert!(!page.can_save());
+        let _ = page.update(&paths, Event::Store(String::new()));
+        assert_eq!(page.problem(), None);
     }
 
     #[test]
@@ -2720,6 +2777,31 @@ desktop = true
         assert_eq!(added.exe, "~/Apps/My Tool.exe");
         assert!(added.desktop);
         assert_eq!(added.name, "My Tool");
+    }
+
+    #[test]
+    fn add_target_notes_an_exe_already_used_in_the_draft() {
+        let (_root, paths) = setup();
+        write(&paths, TARGETED);
+        let prefix = fake_prefix(&paths);
+        let game = prefix.join("drive_c/Games/game.exe");
+        fs::write(&game, "").unwrap();
+        let mut page = page(&paths);
+        let _ = page.update(
+            &paths,
+            Event::ProgramPicked(ProgramChoice {
+                name: "Game Again".into(),
+                exe: r"c:\games\GAME.exe".into(),
+            }),
+        );
+        assert_eq!(editor(&page).duplicate_target(), Some("game"));
+        assert!(editor(&page).can_add_target());
+        let _ = page.update(&paths, Event::NewTargetPath(game.display().to_string()));
+        assert_eq!(editor(&page).duplicate_target(), Some("game"));
+        target(&mut page, &paths, "tool", TargetEdit::Exe("/bin/sh".into()));
+        let _ = page.update(&paths, Event::NewTargetPath("/bin/sh".into()));
+        assert_eq!(editor(&page).duplicate_target(), Some("tool"));
+        assert!(editor(&page).can_add_target());
     }
 
     fn fake_prefix(paths: &Paths) -> std::path::PathBuf {

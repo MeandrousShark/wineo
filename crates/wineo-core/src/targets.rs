@@ -368,7 +368,7 @@ fn base_default(targets: &BTreeMap<String, Target>) -> Option<String> {
         .map(|(name, _)| name.clone())
 }
 
-fn same_exe(left: &str, right: &str) -> bool {
+pub fn same_exe(left: &str, right: &str) -> bool {
     if winpath::is_windows_path(left) && winpath::is_windows_path(right) {
         left.replace('/', "\\")
             .eq_ignore_ascii_case(&right.replace('/', "\\"))
