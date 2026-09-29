@@ -1,212 +1,53 @@
 mod artwork;
+mod grid;
+mod keys;
+mod library;
+mod panel;
+mod theme;
+mod wheel;
+mod worker;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use iced::advanced::text::Paragraph as _;
-use iced::widget::{
-    Row, Space, button, column, container, image, mouse_area, row, scrollable, stack, text,
-    text_input,
-};
-use iced::{
-    Center, Color, ContentFit, Element, Fill, Font, Settings, Size, Subscription, Task, Theme,
-    border, font, mouse, window,
-};
-use wineo_core::art::{self, ArtConfig};
-use wineo_core::environment::Environment;
+use iced::widget::{image, scrollable};
+use iced::{Settings, Subscription, Task, Theme, keyboard, window};
+use wineo_core::cancel::Token;
 use wineo_core::paths::Paths;
-use wineo_core::report::{self, OverviewFilter};
+#[cfg(test)]
 use wineo_core::runtime::State;
-use wineo_core::{stats, time};
 
-const CARD_WIDTH: f32 = 180.0;
+#[cfg(test)]
+use crate::library::playtime_label;
+use crate::library::{Card, load_library};
+use crate::panel::{LogBuffer, PanelError};
+use crate::theme::Palette;
+
+pub(crate) const CARD_WIDTH: f32 = 180.0;
 const CARD_ROW: f32 = 330.0;
-const GAP: f32 = 16.0;
+pub(crate) const GAP: f32 = 16.0;
 const SCROLL_ID: &str = "library";
+const LOG_ID: &str = "panel-log";
+const SEARCH_ID: &str = "library-search";
 // iced moves 60px per wheel line, which felt too fast beside native apps.
 const WHEEL_STEP_SCALE: f32 = 0.45;
 
-const fn rgb(hex: u32) -> Color {
-    Color::from_rgb8((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
-}
-
-#[derive(Clone, Copy)]
-struct Palette {
-    background: Color,
-    surface: Color,
-    border: Color,
-    foreground: Color,
-    muted: Color,
-    primary: Color,
-    success: Color,
-    warning: Color,
-    danger: Color,
-}
-
-impl Palette {
-    const DARK: Self = Self {
-        background: rgb(0x16171b),
-        surface: rgb(0x1f2126),
-        border: rgb(0x2c2f36),
-        foreground: rgb(0xe6e6e9),
-        muted: rgb(0x8b8f98),
-        primary: rgb(0x6d8cff),
-        success: rgb(0x3ecf6e),
-        warning: rgb(0xe5a34a),
-        danger: rgb(0xe5534b),
-    };
-    const LIGHT: Self = Self {
-        background: rgb(0xf6f7f9),
-        surface: rgb(0xffffff),
-        border: rgb(0xd9dde4),
-        foreground: rgb(0x20242b),
-        muted: rgb(0x59616d),
-        primary: rgb(0x3158ca),
-        success: rgb(0x198044),
-        warning: rgb(0xa65d12),
-        danger: rgb(0xb93431),
-    };
-    fn from_mode(mode: iced::theme::Mode) -> Self {
-        if mode == iced::theme::Mode::Light {
-            Self::LIGHT
-        } else {
-            Self::DARK
-        }
-    }
-    fn theme(self) -> Theme {
-        Theme::custom(
-            "wineo",
-            iced::theme::Palette {
-                background: self.background,
-                text: self.foreground,
-                primary: self.primary,
-                success: self.success,
-                warning: self.warning,
-                danger: self.danger,
-            },
-        )
-    }
-}
-
-#[derive(Debug, Clone)]
-struct Card {
-    name: String,
-    state: State,
-    busy: bool,
-    error: Option<String>,
-    playtime: String,
-    art: Option<PathBuf>,
-}
-
-impl Card {
-    fn state_word(&self) -> &'static str {
-        if self.error.is_some() {
-            "error"
-        } else if self.busy {
-            "busy"
-        } else {
-            self.state.as_str()
-        }
-    }
-    fn dot(&self, palette: Palette) -> Color {
-        if self.error.is_some() || self.busy || self.state == State::Failed {
-            palette.warning
-        } else if self.state == State::Running {
-            palette.success
-        } else {
-            palette.muted
-        }
-    }
-    fn playtime(&self) -> &str {
-        &self.playtime
-    }
-}
-
-fn playtime_label(seconds: i64) -> String {
-    if seconds <= 0 {
-        "never played".into()
-    } else {
-        time::duration_hm(seconds)
-    }
-}
-
-fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
-    let overview = report::overview(paths, OverviewFilter::default())?;
-    let played: HashMap<_, _> = stats::overview(paths)?
-        .rows
-        .into_iter()
-        .map(|(name, summary)| (name, summary.seconds))
-        .collect();
-    let mut cards = Vec::new();
-    for item in overview.environments {
-        let (error, art) = match Environment::load(paths, &item.name) {
-            Ok(env) => {
-                let dir = paths.art_dir(&item.name);
-                let resolved = (|| {
-                    let config = ArtConfig::load(&dir)?;
-                    let target = env
-                        .config
-                        .targets
-                        .iter()
-                        .find(|(_, target)| target.default)
-                        .map(|(name, _)| name.as_str())
-                        .or_else(|| {
-                            if env.config.targets.len() == 1 {
-                                env.config.targets.keys().next().map(String::as_str)
-                            } else {
-                                None
-                            }
-                        });
-                    Ok::<_, wineo_core::Error>(
-                        art::resolve(&dir, &config, target, art::Kind::Grid)?
-                            .map(|found| found.found.path),
-                    )
-                })();
-                match resolved {
-                    Ok(path) => (None, path),
-                    Err(error) => (Some(error.to_string()), None),
-                }
-            }
-            Err(error) => (Some(error.to_string()), None),
-        };
-        cards.push(Card {
-            playtime: playtime_label(played.get(&item.name).copied().unwrap_or(0)),
-            name: item.name,
-            state: item.status.state,
-            busy: item.busy.is_some() || item.unresolved,
-            error,
-            art,
-        });
-    }
-    for error in overview.errors {
-        if cards.iter().any(|card| card.name == error.name) {
-            continue;
-        }
-        cards.push(Card {
-            playtime: playtime_label(played.get(&error.name).copied().unwrap_or(0)),
-            name: error.name,
-            state: State::Inactive,
-            busy: false,
-            error: Some(error.message),
-            art: None,
-        });
-    }
-    cards.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(cards)
-}
-
-struct App {
+pub(crate) struct App {
     paths: Paths,
-    palette: Palette,
+    pub(crate) palette: Palette,
     search: String,
     cards: Vec<Card>,
-    selected: Option<String>,
-    hovered: Option<String>,
-    images: HashMap<PathBuf, image::Handle>,
-    loading: HashSet<PathBuf>,
-    failed_images: HashSet<PathBuf>,
+    pub(crate) selected: Option<String>,
+    preferred_column: Option<usize>,
+    panel_open: bool,
+    pub(crate) target: Option<String>,
+    pub(crate) logo_scrim: bool,
+    pub(crate) hovered: Option<String>,
+    pub(crate) images: HashMap<(PathBuf, artwork::Kind), image::Handle>,
+    loading: HashSet<(PathBuf, artwork::Kind)>,
+    failed_images: HashSet<(PathBuf, artwork::Kind)>,
     error: Option<String>,
     refreshing: bool,
     viewport_width: f32,
@@ -214,22 +55,65 @@ struct App {
     scroll_offset: f32,
     row_pitch: f32,
     scroll_visible_until: Option<Instant>,
-    mouse_down: bool,
+    pub(crate) operation: Option<Operation>,
+    pub(crate) panel_error: Option<PanelError>,
+    pub(crate) panel_note: Option<String>,
+    pub(crate) log_view: bool,
+    pub(crate) log_buffer: LogBuffer,
+    log_token: Option<Token>,
+    log_generation: u64,
+    pub(crate) spinner_frame: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OperationKind {
+    Start,
+    Stop,
+}
+
+pub(crate) struct Operation {
+    name: String,
+    kind: OperationKind,
+    token: Option<Token>,
+    cancelled: bool,
+    status: String,
 }
 
 #[derive(Debug, Clone)]
-enum Message {
+pub(crate) enum Message {
     SearchChanged(String),
     Select(String),
+    ClosePanel,
+    TargetPicked(String),
+    Play,
+    Stop,
+    CleanUp,
+    CancelStart,
+    LaunchProgress(String, String),
+    LaunchNote(String, String),
+    StartFinished(String, Result<wineo_core::launch::StartOutcome, PanelError>),
+    StopFinished(String, Result<Vec<String>, PanelError>),
+    OpenLog,
+    CloseLog,
+    LogChunk(u64, String),
+    LogFinished(u64, Result<(), String>),
+    LogScrolled,
     Hover(Option<String>),
     Refresh,
     Loaded(Result<Vec<Card>, String>),
-    ArtLoaded(PathBuf, Result<image::Handle, String>),
+    ArtLoaded((PathBuf, artwork::Kind), Result<image::Handle, String>),
     Scrolled(scrollable::Viewport),
     ScrollIdle,
     Window(window::Event),
     ThemeChanged(iced::theme::Mode),
-    MouseButton(bool),
+    SpinnerTick,
+    Key(keyboard::Key, keyboard::Modifiers, iced::event::Status),
+    KeyWithFocus(
+        keyboard::Key,
+        keyboard::Modifiers,
+        iced::event::Status,
+        bool,
+    ),
 }
 
 impl App {
@@ -240,6 +124,10 @@ impl App {
             search: String::new(),
             cards: Vec::new(),
             selected: None,
+            preferred_column: None,
+            panel_open: false,
+            target: None,
+            logo_scrim: std::env::var("WINEO_GUI_LOGO").is_ok_and(|value| value == "scrim"),
             hovered: None,
             images: HashMap::new(),
             loading: HashSet::new(),
@@ -251,7 +139,14 @@ impl App {
             scroll_offset: 0.0,
             row_pitch: CARD_ROW,
             scroll_visible_until: None,
-            mouse_down: false,
+            operation: None,
+            panel_error: None,
+            panel_note: None,
+            log_view: false,
+            log_buffer: LogBuffer::default(),
+            log_token: None,
+            log_generation: 0,
+            spinner_frame: 0,
         };
         let load = Self::load(app.paths.clone());
         (
@@ -282,15 +177,13 @@ impl App {
             iced::time::every(Duration::from_secs(2)).map(|_| Message::Refresh),
             iced::system::theme_changes().map(Message::ThemeChanged),
             window::events().map(|(_, event)| Message::Window(event)),
-            iced::event::listen_with(|event, _, _| match event {
-                iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                    Some(Message::MouseButton(true))
-                }
-                iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                    Some(Message::MouseButton(false))
+            iced::event::listen_with(|event, status, _| match event {
+                iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+                    Some(Message::Key(key, modifiers, status))
                 }
                 _ => None,
             }),
+            iced::time::every(Duration::from_millis(120)).map(|_| Message::SpinnerTick),
             idle,
         ])
     }
@@ -298,6 +191,7 @@ impl App {
         match message {
             Message::SearchChanged(search) => {
                 self.search = search;
+                self.preferred_column = None;
                 self.scroll_offset = 0.0;
                 Task::batch([
                     iced::widget::operation::scroll_to(
@@ -308,9 +202,138 @@ impl App {
                 ])
             }
             Message::Select(name) => {
-                self.selected = Some(name);
+                if self.selected.as_deref() == Some(&name) && self.panel_open {
+                    self.close_panel();
+                    Task::none()
+                } else {
+                    self.close_log();
+                    self.selected = Some(name.clone());
+                    self.preferred_column = self
+                        .filtered()
+                        .iter()
+                        .position(|card| card.name == name)
+                        .map(|index| index % self.columns());
+                    self.panel_open = true;
+                    self.target = self
+                        .cards
+                        .iter()
+                        .find(|card| card.name == name)
+                        .and_then(|card| card.default_target.clone());
+                    self.panel_error = None;
+                    self.panel_note = None;
+                    self.load_panel_art()
+                }
+            }
+            Message::ClosePanel => {
+                self.close_panel();
                 Task::none()
             }
+            Message::TargetPicked(target) => {
+                self.target = Some(target);
+                self.load_panel_art()
+            }
+            Message::Play => self.start_selected(),
+            Message::Stop | Message::CleanUp => self.stop_selected(),
+            Message::CancelStart => {
+                if let Some(operation) = &mut self.operation
+                    && operation.kind == OperationKind::Start
+                {
+                    if let Some(token) = &operation.token {
+                        if operation.cancelled {
+                            token.force();
+                            operation.status = "Force stopping...".to_owned();
+                        } else {
+                            token.cancel();
+                            operation.status = "Canceling...".to_owned();
+                        }
+                    }
+                    operation.cancelled = true;
+                }
+                Task::none()
+            }
+            Message::LaunchProgress(name, status) => {
+                if let Some(operation) = &mut self.operation
+                    && operation.name == name
+                    && operation.kind == OperationKind::Start
+                    && !operation.cancelled
+                {
+                    operation.status = status;
+                }
+                Task::none()
+            }
+            Message::LaunchNote(name, note) => {
+                if self.selected.as_deref() == Some(&name) {
+                    self.panel_note = Some(note);
+                }
+                Task::none()
+            }
+            Message::StartFinished(name, result) => {
+                let cancelled = self
+                    .operation
+                    .as_ref()
+                    .is_some_and(|operation| operation.name == name && operation.cancelled);
+                if self.operation.as_ref().is_some_and(|operation| {
+                    operation.name == name && operation.kind == OperationKind::Start
+                }) {
+                    self.operation = None;
+                }
+                if self.selected.as_deref() == Some(&name)
+                    && let Err(error) = result
+                    && !cancelled
+                {
+                    self.panel_error = Some(error);
+                }
+                if self.refreshing {
+                    Task::none()
+                } else {
+                    self.refreshing = true;
+                    Self::load(self.paths.clone())
+                }
+            }
+            Message::StopFinished(name, result) => {
+                if self.operation.as_ref().is_some_and(|operation| {
+                    operation.name == name && operation.kind == OperationKind::Stop
+                }) {
+                    self.operation = None;
+                }
+                if self.selected.as_deref() == Some(&name) {
+                    match result {
+                        Ok(messages) => {
+                            self.panel_note = (!messages.is_empty()).then(|| messages.join("\n"))
+                        }
+                        Err(error) => self.panel_error = Some(error),
+                    }
+                }
+                if self.refreshing {
+                    Task::none()
+                } else {
+                    self.refreshing = true;
+                    Self::load(self.paths.clone())
+                }
+            }
+            Message::OpenLog => self.open_log(),
+            Message::CloseLog => {
+                self.close_log();
+                Task::none()
+            }
+            Message::LogChunk(generation, chunk) => {
+                if self.log_view && self.log_generation == generation {
+                    self.log_buffer.push(&chunk);
+                    iced::widget::operation::snap_to_end(iced::widget::Id::new(LOG_ID))
+                } else {
+                    Task::none()
+                }
+            }
+            Message::LogFinished(generation, result) => {
+                if self.log_view
+                    && self.log_generation == generation
+                    && let Err(error) = result
+                {
+                    self.panel_note = Some(error);
+                }
+                Task::none()
+            }
+            Message::LogScrolled => Task::none(),
             Message::Hover(name) => {
                 self.hovered = name;
                 Task::none()
@@ -323,52 +346,37 @@ impl App {
             Message::Loaded(Ok(cards)) => {
                 self.refreshing = false;
                 self.merge(cards);
-                self.load_visible_art()
+                Task::batch([self.load_visible_art(), self.load_panel_art()])
             }
             Message::Loaded(Err(error)) => {
                 self.refreshing = false;
                 self.error = Some(error);
                 Task::none()
             }
-            Message::ArtLoaded(path, result) => {
-                self.loading.remove(&path);
+            Message::ArtLoaded(key, result) => {
+                self.loading.remove(&key);
                 match result {
                     Ok(handle) => {
-                        self.images.insert(path, handle);
+                        self.images.insert(key, handle);
                     }
                     Err(_) => {
-                        self.failed_images.insert(path);
+                        self.failed_images.insert(key);
                     }
                 }
                 Task::none()
             }
             Message::Scrolled(viewport) => {
-                self.viewport_width = viewport.bounds().width;
+                self.viewport_width =
+                    viewport.bounds().width + if self.panel_open { 420.0 } else { 0.0 };
                 self.viewport_height = viewport.bounds().height;
                 let columns = self.columns();
                 let rows = self.filtered().len().div_ceil(columns);
                 if rows > 0 {
                     self.row_pitch = (viewport.content_bounds().height - 32.0 + GAP) / rows as f32;
                 }
-                let raw = viewport.absolute_offset().y;
-                let factor = if self.mouse_down {
-                    1.0
-                } else {
-                    WHEEL_STEP_SCALE
-                };
-                let corrected = self.scroll_offset + (raw - self.scroll_offset) * factor;
-                self.scroll_offset = corrected;
+                self.scroll_offset = viewport.absolute_offset().y;
                 self.scroll_visible_until = Some(Instant::now() + Duration::from_millis(850));
-                Task::batch([
-                    iced::widget::operation::scroll_to(
-                        iced::widget::Id::new(SCROLL_ID),
-                        scrollable::AbsoluteOffset {
-                            x: 0.0,
-                            y: corrected,
-                        },
-                    ),
-                    self.load_visible_art(),
-                ])
+                self.load_visible_art()
             }
             Message::ScrollIdle => {
                 if self
@@ -389,10 +397,22 @@ impl App {
                 self.palette = Palette::from_mode(mode);
                 Task::none()
             }
-            Message::MouseButton(down) => {
-                self.mouse_down = down;
+            Message::SpinnerTick => {
+                if self.operation.is_some() {
+                    self.spinner_frame = (self.spinner_frame + 1) % 4;
+                }
                 Task::none()
             }
+            Message::Key(key, modifiers, status) => iced::widget::operation::is_focused(
+                iced::widget::Id::new(SEARCH_ID),
+            )
+            .map(move |focused| Message::KeyWithFocus(key.clone(), modifiers, status, focused)),
+            Message::KeyWithFocus(key, modifiers, status, focused) => self.handle_key(
+                key,
+                modifiers,
+                focused,
+                status == iced::event::Status::Captured,
+            ),
         }
     }
     fn merge(&mut self, cards: Vec<Card>) {
@@ -402,11 +422,24 @@ impl App {
             .is_some_and(|name| !cards.iter().any(|card| &card.name == name))
         {
             self.selected = None;
+            self.preferred_column = None;
+            self.close_panel();
+        }
+        if let Some(card) = self
+            .selected
+            .as_ref()
+            .and_then(|name| cards.iter().find(|card| &card.name == name))
+            && self
+                .target
+                .as_ref()
+                .is_some_and(|target| !card.targets.contains(target))
+        {
+            self.target = card.default_target.clone();
         }
         self.cards = cards;
         self.error = None;
     }
-    fn filtered(&self) -> Vec<&Card> {
+    pub(crate) fn filtered(&self) -> Vec<&Card> {
         let needle = self.search.to_lowercase();
         self.cards
             .iter()
@@ -414,9 +447,8 @@ impl App {
             .collect()
     }
     fn columns(&self) -> usize {
-        ((self.viewport_width - 32.0 + GAP) / (CARD_WIDTH + GAP))
-            .floor()
-            .max(1.0) as usize
+        let width = self.viewport_width - if self.panel_open { 420.0 } else { 0.0 };
+        ((width - 32.0 + GAP) / (CARD_WIDTH + GAP)).floor().max(1.0) as usize
     }
     fn load_visible_art(&mut self) -> Task<Message> {
         let columns = self.columns();
@@ -428,268 +460,34 @@ impl App {
             .skip(first * columns)
             .take(last.saturating_sub(first) * columns)
             .filter_map(|card| card.art.as_ref())
-            .filter(|path| {
-                !self.images.contains_key(*path)
-                    && !self.loading.contains(*path)
-                    && !self.failed_images.contains(*path)
-            })
-            .cloned()
+            .map(|path| (path.clone(), artwork::Kind::Grid))
             .collect();
+        self.load_images(paths)
+    }
+    fn load_images(&mut self, paths: Vec<(PathBuf, artwork::Kind)>) -> Task<Message> {
         let mut tasks = Vec::new();
-        for path in paths {
-            if !self.loading.insert(path.clone()) {
+        for key in paths {
+            if self.images.contains_key(&key)
+                || self.failed_images.contains(&key)
+                || !self.loading.insert(key.clone())
+            {
                 continue;
             }
             tasks.push(Task::perform(
                 async move {
                     let decoded = tokio::task::spawn_blocking({
-                        let path = path.clone();
-                        move || artwork::decode(&path).map_err(|e| e.to_string())
+                        let key = key.clone();
+                        move || artwork::decode(&key.0, key.1).map_err(|e| e.to_string())
                     })
                     .await
                     .map_err(|e| e.to_string());
-                    (path, decoded)
+                    (key, decoded)
                 },
-                |(path, decoded)| Message::ArtLoaded(path, decoded.unwrap_or_else(Err)),
+                |(key, decoded)| Message::ArtLoaded(key, decoded.unwrap_or_else(Err)),
             ));
         }
         Task::batch(tasks)
     }
-    fn view(&self) -> Element<'_, Message> {
-        let palette = self.palette;
-        let mut page = column![
-            self.top_bar(),
-            container(Space::new())
-                .height(1)
-                .style(move |_| container::Style::default().background(palette.border))
-        ];
-        if let Some(error) = &self.error {
-            page = page.push(
-                container(text(format!("Failed to load library: {error}")).color(palette.danger))
-                    .padding(16),
-            );
-        }
-        let visible = self.scroll_visible_until.is_some();
-        let scroll = scrollable(self.grid())
-            .id(iced::widget::Id::new(SCROLL_ID))
-            .width(Fill)
-            .height(Fill)
-            .direction(scrollable::Direction::Vertical(
-                scrollable::Scrollbar::new().width(6).scroller_width(4),
-            ))
-            .on_scroll(Message::Scrolled)
-            .style(move |theme, status| scroll_style(theme, status, palette, visible));
-        container(page.push(scroll))
-            .width(Fill)
-            .height(Fill)
-            .style(move |_| container::Style::default().background(palette.background))
-            .into()
-    }
-    fn top_bar(&self) -> Element<'_, Message> {
-        let palette = self.palette;
-        let input = text_input("Search library...", &self.search)
-            .on_input(Message::SearchChanged)
-            .width(320)
-            .padding(iced::Padding::from([6, 10]).right(30))
-            .style(move |_, status| text_input::Style {
-                background: palette.surface.into(),
-                border: border::rounded(6).width(1).color(
-                    if matches!(status, text_input::Status::Focused { .. }) {
-                        palette.primary
-                    } else {
-                        palette.border
-                    },
-                ),
-                icon: palette.muted,
-                placeholder: palette.muted,
-                value: palette.foreground,
-                selection: palette.primary.scale_alpha(0.4),
-            });
-        // Keep the tree shape stable so clearing text does not drop input focus.
-        let clear: Element<'_, Message> = if self.search.is_empty() {
-            Space::new().into()
-        } else {
-            button(text("x").size(15).color(palette.muted))
-                .on_press(Message::SearchChanged(String::new()))
-                .padding(4)
-                .style(|_, _| button::Style::default())
-                .into()
-        };
-        let search = stack![
-            input,
-            container(clear)
-                .width(Fill)
-                .height(Fill)
-                .align_right(Fill)
-                .center_y(Fill)
-                .padding([0, 6])
-        ];
-        container(
-            row![
-                text("wineo")
-                    .size(18)
-                    .font(Font {
-                        weight: font::Weight::Bold,
-                        ..Font::DEFAULT
-                    })
-                    .color(palette.foreground),
-                search,
-            ]
-            .spacing(16)
-            .align_y(Center),
-        )
-        .padding([8, 16])
-        .width(Fill)
-        .into()
-    }
-    fn grid(&self) -> Element<'_, Message> {
-        let cards = self.filtered().into_iter().map(|card| self.card(card));
-        container(
-            Row::with_children(cards)
-                .spacing(GAP)
-                .wrap()
-                .vertical_spacing(GAP),
-        )
-        .padding(16)
-        .width(Fill)
-        .into()
-    }
-    fn card<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
-        let palette = self.palette;
-        let hovered = self.hovered.as_ref() == Some(&card.name);
-        let selected = self.selected.as_ref() == Some(&card.name);
-        let art = card.art.as_ref().and_then(|path| self.images.get(path));
-        let poster: Element<'_, Message> = match art {
-            Some(handle) => image(handle.clone())
-                .width(Fill)
-                .height(Fill)
-                .content_fit(ContentFit::Cover)
-                .border_radius(4)
-                .opacity(if hovered { 0.85_f32 } else { 1.0_f32 })
-                .into(),
-            None => container(text(&card.name).size(14).color(palette.muted).center())
-                .width(Fill)
-                .height(Fill)
-                .padding(12)
-                .center(Fill)
-                .style(move |_| {
-                    container::Style::default().background(
-                        palette
-                            .surface
-                            .scale_alpha(if hovered { 0.85 } else { 1.0 }),
-                    )
-                })
-                .into(),
-        };
-        let framed = container(container(poster).clip(true))
-            .width(CARD_WIDTH)
-            .height(270)
-            .padding(2)
-            .style(move |_| {
-                container::Style::default().border(border::rounded(6).width(2).color(if selected {
-                    palette.primary
-                } else {
-                    Color::TRANSPARENT
-                }))
-            });
-        let label = truncate_name(&card.name, CARD_WIDTH);
-        let dot_color = card.dot(palette);
-        let meta = row![
-            container(Space::new())
-                .width(8)
-                .height(8)
-                .style(move |_| container::Style::default()
-                    .background(dot_color)
-                    .border(border::rounded(4))),
-            text(card.state_word()).size(12).color(palette.muted),
-            text(card.playtime()).size(12).color(palette.muted),
-        ]
-        .spacing(8)
-        .align_y(Center);
-        let content = column![
-            framed,
-            text(label)
-                .size(14)
-                .font(Font {
-                    weight: font::Weight::Semibold,
-                    ..Font::DEFAULT
-                })
-                .color(palette.foreground)
-                .wrapping(iced::widget::text::Wrapping::None),
-            meta,
-        ]
-        .spacing(4)
-        .width(CARD_WIDTH);
-        mouse_area(content)
-            .on_press(Message::Select(card.name.clone()))
-            .on_enter(Message::Hover(Some(card.name.clone())))
-            .on_exit(Message::Hover(None))
-            .interaction(mouse::Interaction::Pointer)
-            .into()
-    }
-}
-
-fn text_width(content: &str) -> f32 {
-    iced::advanced::graphics::text::Paragraph::with_text(iced::advanced::Text {
-        content,
-        bounds: Size::INFINITE,
-        size: 14.into(),
-        line_height: iced::widget::text::LineHeight::default(),
-        font: Font {
-            weight: font::Weight::Semibold,
-            ..Font::DEFAULT
-        },
-        align_x: iced::advanced::text::Alignment::Default,
-        align_y: iced::alignment::Vertical::Top,
-        shaping: iced::widget::text::Shaping::Advanced,
-        wrapping: iced::widget::text::Wrapping::None,
-    })
-    .min_bounds()
-    .width
-}
-
-fn truncate_name(name: &str, max_width: f32) -> String {
-    if text_width(name) <= max_width {
-        return name.to_owned();
-    }
-    let chars: Vec<_> = name.chars().collect();
-    let (mut low, mut high) = (0, chars.len());
-    while low < high {
-        let mid = (low + high).div_ceil(2);
-        let candidate = chars[..mid].iter().collect::<String>() + "...";
-        if text_width(&candidate) <= max_width {
-            low = mid;
-        } else {
-            high = mid - 1;
-        }
-    }
-    chars[..low]
-        .iter()
-        .collect::<String>()
-        .trim_end()
-        .to_owned()
-        + "..."
-}
-
-fn scroll_style(
-    theme: &Theme,
-    status: scrollable::Status,
-    palette: Palette,
-    visible: bool,
-) -> scrollable::Style {
-    let mut style = scrollable::default(theme, status);
-    let show = visible || !matches!(status, scrollable::Status::Active { .. });
-    for rail in [&mut style.vertical_rail, &mut style.horizontal_rail] {
-        rail.background = None;
-        rail.border = border::rounded(3);
-        rail.scroller.background = if show {
-            palette.border.into()
-        } else {
-            Color::TRANSPARENT.into()
-        };
-        rail.scroller.border = border::rounded(3);
-    }
-    style
 }
 
 fn run() -> anyhow::Result<()> {
@@ -733,9 +531,16 @@ mod tests {
             name: name.into(),
             state,
             busy: false,
+            busy_holder: None,
             error: None,
             playtime: playtime_label(seconds),
+            sessions: 0,
+            last_played: "never".into(),
+            tags: Vec::new(),
+            targets: vec!["game".into()],
+            default_target: Some("game".into()),
             art: None,
+            panel_art: HashMap::new(),
         }
     }
     fn app() -> App {
@@ -818,5 +623,66 @@ mod tests {
                 .iter()
                 .any(|card| card.name == "broken" && card.error.is_some())
         );
+    }
+
+    #[test]
+    fn play_target_uses_default_single_target_or_picker_choice() {
+        let mut app = app();
+        let mut one = card("one", State::Inactive, 0);
+        one.targets = vec!["only".into()];
+        one.default_target = Some("only".into());
+        assert_eq!(app.chosen_target(&one), Some("only"));
+        let mut several = card("many", State::Inactive, 0);
+        several.targets = vec!["a".into(), "b".into()];
+        several.default_target = Some("b".into());
+        assert_eq!(app.chosen_target(&several), Some("b"));
+        app.target = Some("a".into());
+        assert_eq!(app.chosen_target(&several), Some("a"));
+    }
+
+    #[test]
+    fn cancel_then_force_stops_the_same_token() {
+        let mut app = app();
+        let token = Token::new();
+        app.operation = Some(Operation {
+            name: "game".into(),
+            kind: OperationKind::Start,
+            token: Some(token.clone()),
+            cancelled: false,
+            status: "Starting...".into(),
+        });
+        let _ = app.update(Message::CancelStart);
+        assert!(token.is_canceled());
+        assert!(!token.is_forced());
+        assert!(app.operation.as_ref().unwrap().cancelled);
+        let _ = app.update(Message::CancelStart);
+        assert!(token.is_forced());
+    }
+
+    #[test]
+    fn refresh_keeps_open_panel_target_and_log() {
+        let mut app = app();
+        app.cards = vec![card("game", State::Inactive, 0)];
+        app.selected = Some("game".into());
+        app.panel_open = true;
+        app.target = Some("game".into());
+        app.log_view = true;
+        let _ = app.update(Message::Loaded(Ok(vec![card("game", State::Running, 60)])));
+        assert!(app.panel_open);
+        assert!(app.log_view);
+        assert_eq!(app.target.as_deref(), Some("game"));
+        assert_eq!(app.cards[0].state, State::Running);
+    }
+
+    #[test]
+    fn focused_widget_keeps_its_arrow_keys() {
+        let mut app = app();
+        app.cards = vec![card("a", State::Inactive, 0), card("b", State::Inactive, 0)];
+        app.selected = Some("a".into());
+        let right = keyboard::Key::Named(keyboard::key::Named::ArrowRight);
+        let _ = app.handle_key(right.clone(), keyboard::Modifiers::empty(), false, true);
+        assert_eq!(app.selected.as_deref(), Some("a"));
+        let _ = app.handle_key(right, keyboard::Modifiers::empty(), false, false);
+        assert_eq!(app.selected.as_deref(), Some("b"));
     }
 }
