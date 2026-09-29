@@ -1,4 +1,5 @@
 mod artwork;
+mod chips;
 mod grid;
 mod keys;
 mod library;

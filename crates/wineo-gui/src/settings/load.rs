@@ -50,6 +50,8 @@ pub(crate) struct Loaded {
     pub(crate) inherited: Inherited,
     pub(crate) runners: Vec<RunnerChoice>,
     pub(crate) current: Option<Current>,
+    /// Set when the global config can't be read, so the page shows defaults.
+    pub(crate) global_warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,11 +60,27 @@ pub(crate) enum Content {
     Error(String),
 }
 
-/// One read of an environment. `text` is the file as it was read, so a later
-/// read can tell whether it changed.
+/// The environment and global config files as read, so a later read can tell
+/// whether either changed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Texts {
+    pub(crate) environment: Option<String>,
+    pub(crate) global: Option<String>,
+}
+
+impl Texts {
+    pub(crate) fn read(paths: &Paths, name: &str) -> Self {
+        Self {
+            environment: read_text(&paths.environment_config(name)),
+            global: read_text(&paths.global_config()),
+        }
+    }
+}
+
+/// One read of an environment.
 #[derive(Debug, Clone)]
 pub(crate) struct Snapshot {
-    pub(crate) text: Option<String>,
+    pub(crate) texts: Texts,
     pub(crate) content: Content,
 }
 
@@ -76,17 +94,28 @@ pub(crate) fn read_text(path: &PathBuf) -> Option<String> {
 }
 
 pub(crate) fn snapshot(paths: &Paths, name: &str) -> Snapshot {
-    let text = read_text(&paths.environment_config(name));
+    let texts = Texts::read(paths, name);
     let content = match content(paths, name) {
         Ok(loaded) => Content::Form(Box::new(loaded)),
         Err(error) => Content::Error(format!("{error:#}")),
     };
-    Snapshot { text, content }
+    Snapshot { texts, content }
 }
 
 fn content(paths: &Paths, name: &str) -> anyhow::Result<Loaded> {
     let environment = Environment::load(paths, name)?;
-    let global = GlobalConfig::load_or_default(paths)?;
+    // A broken global config shouldn't lock every environment's page, and
+    // the tick reloads the page once it's fixed.
+    let (global, global_warning) = match GlobalConfig::load(paths) {
+        Ok(global) => (global, None),
+        Err(_) => (
+            GlobalConfig::default(),
+            Some(format!(
+                "{} can't be read, so global settings show their defaults",
+                paths.global_config().display()
+            )),
+        ),
+    };
     let inherited = Inherited {
         gamemode: global.gamemode,
         mangohud: global.mangohud,
@@ -105,6 +134,7 @@ fn content(paths: &Paths, name: &str) -> anyhow::Result<Loaded> {
         inherited,
         runners,
         current,
+        global_warning,
     })
 }
 
@@ -156,12 +186,8 @@ fn runner_choices(
     (choices, current)
 }
 
-/// The same reason `wineo set` gives for crossing runner kinds.
-pub(crate) fn kind_mismatch(name: &str, current: &str, changed: &str, kind: &str) -> String {
-    format!(
-        "`{name}` runs on {current} and `{changed}` is a {kind} runner. Their prefix layouts are not compatible, so make a new environment with `wineo new --runner {changed}` instead"
-    )
-}
+pub(crate) const KIND_MISMATCH: &str =
+    "Can't switch between Wine and Proton runners. Make a new environment instead.";
 
 /// What a save did, worded for the bar. `failed` came after `lines` had
 /// already happened.
@@ -234,11 +260,7 @@ pub(crate) fn save(paths: &Paths, name: &str, edits: &Edits) -> Result<Report, S
     match settings::apply(paths, ConfigFile::Environment(name), &pairs, &unset) {
         Ok(applied) => Ok(report(name, applied)),
         Err(error) => Err(match error.downcast_ref::<CheckError>() {
-            Some(CheckError::RunnerKindMismatch {
-                current,
-                changed,
-                kind,
-            }) => kind_mismatch(name, current, changed, kind),
+            Some(CheckError::RunnerKindMismatch { .. }) => KIND_MISMATCH.to_owned(),
             None => PanelError::from_error(&error).text,
         }),
     }
@@ -265,7 +287,7 @@ pub(crate) fn load_task(paths: Paths, name: String, generation: u64) -> Task<Mes
             Message::Settings(Event::Loaded(
                 generation,
                 result.unwrap_or_else(|error| Snapshot {
-                    text: None,
+                    texts: Texts::default(),
                     content: Content::Error(error),
                 }),
             ))
@@ -273,13 +295,13 @@ pub(crate) fn load_task(paths: Paths, name: String, generation: u64) -> Task<Mes
     )
 }
 
-pub(crate) fn check_task(path: PathBuf, generation: u64) -> Task<Message> {
+pub(crate) fn check_task(paths: Paths, name: String, generation: u64) -> Task<Message> {
     blocking(
-        move || read_text(&path),
+        move || Texts::read(&paths, &name),
         move |result| {
             // A failed read is left for the next tick.
             match result {
-                Ok(text) => Message::Settings(Event::Checked(generation, text)),
+                Ok(texts) => Message::Settings(Event::Checked(generation, texts)),
                 Err(_) => Message::Settings(Event::CheckFailed(generation)),
             }
         },

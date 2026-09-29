@@ -9,29 +9,34 @@ use iced::keyboard::{Key, Modifiers, key::Named};
 use wineo_core::paths::Paths;
 
 use crate::{App, Message};
-use form::{Choice, Field, Form, GamescopeState, Switch};
-use load::{Content, Current, Loaded, Report, RunnerChoice, Snapshot};
+use form::{Choice, Field, Form, Switch, Values};
+use load::{Content, Current, Loaded, Report, RunnerChoice, Snapshot, Texts};
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
     Back,
     Discard,
     KeepEditing,
-    /// Save, or Reload once the file changed under unsaved edits.
     Save,
+    /// Throws edits away for what's on disk, once the file changed under them.
+    Reload,
     Revert,
     RunnerPicked(RunnerChoice),
     Switch(Switch, bool),
     Reset(Switch),
     Gamescope(bool),
-    ResetGamescope,
     FieldText(Field, String),
     FieldChoice(Field, Choice),
     GrabCursor(bool),
+    ArgsInput(String),
+    ArgsAdd,
+    ArgsRemove(usize),
+    MenuOpened,
+    MenuClosed,
     OpenConfig,
     Opened(Result<(), String>),
     Loaded(u64, Snapshot),
-    Checked(u64, Option<String>),
+    Checked(u64, Texts),
     CheckFailed(u64),
     Saved(u64, Result<Report, String>),
 }
@@ -41,6 +46,8 @@ pub(crate) struct Editor {
     pub(crate) form: Form,
     /// Why the last runner picked was refused.
     pub(crate) refusal: Option<String>,
+    /// An extra gamescope arg typed but not added yet.
+    pub(crate) args_input: String,
 }
 
 pub(crate) enum View {
@@ -49,22 +56,36 @@ pub(crate) enum View {
     Error(String),
 }
 
+/// How a finished load lands on the page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// The file becomes the page, unless it was edited while loading.
+    Replace,
+    /// The file becomes the base the edits are compared with, and the edits
+    /// stay. For a save that failed partway and for global config changes.
+    Rebase,
+}
+
+struct Pending {
+    mode: Mode,
+    /// The draft when the load started, to tell edits made since.
+    draft: Option<Values>,
+}
+
 pub(crate) struct Page {
     pub(crate) name: String,
     /// Tells this page's worker results from those of a page closed earlier.
     generation: u64,
     pub(crate) view: View,
-    /// The file text the shown state was read from, `None` before the first
-    /// load, and `Some(None)` when there was no file.
-    disk: Option<Option<String>>,
-    loading: bool,
-    /// The load in flight is a background reload, which must not replace
-    /// edits made while it ran.
-    quiet: bool,
+    /// The files the shown state was read from, `None` before the first load.
+    disk: Option<Texts>,
+    pending: Option<Pending>,
     checking: bool,
     pub(crate) saving: bool,
     pub(crate) changed_on_disk: bool,
     pub(crate) leave_prompt: bool,
+    /// A pick list's menu is open, so Escape belongs to it.
+    menu_open: bool,
     /// What the last save did.
     pub(crate) notes: Vec<String>,
     pub(crate) error: Option<String>,
@@ -94,6 +115,11 @@ impl Step {
     }
 }
 
+fn unfocus() -> Task<Message> {
+    iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::unfocus::<()>())
+        .discard()
+}
+
 impl Page {
     fn new(name: String, generation: u64) -> Self {
         Self {
@@ -101,12 +127,12 @@ impl Page {
             generation,
             view: View::Loading,
             disk: None,
-            loading: false,
-            quiet: false,
+            pending: None,
             checking: false,
             saving: false,
             changed_on_disk: false,
             leave_prompt: false,
+            menu_open: false,
             notes: Vec::new(),
             error: None,
         }
@@ -123,6 +149,9 @@ impl Page {
             _ => None,
         }
     }
+    pub(crate) fn loading(&self) -> bool {
+        self.pending.is_some()
+    }
     pub(crate) fn is_dirty(&self) -> bool {
         self.editor().is_some_and(|editor| editor.form.is_dirty())
     }
@@ -130,18 +159,28 @@ impl Page {
         self.editor().map_or(0, |editor| editor.form.changes())
     }
     pub(crate) fn has_file(&self) -> bool {
-        matches!(self.disk, Some(Some(_)))
+        self.disk
+            .as_ref()
+            .is_some_and(|texts| texts.environment.is_some())
     }
     pub(crate) fn can_save(&self) -> bool {
-        !self.saving && !self.loading && (self.changed_on_disk || self.is_dirty())
+        !self.saving && !self.loading() && !self.changed_on_disk && self.is_dirty()
     }
-    fn reload(&mut self, paths: &Paths, quiet: bool) -> Task<Message> {
-        // A reload asked for outright takes over one already running quietly.
-        self.quiet = quiet && (self.quiet || !self.loading);
-        if self.loading {
+    pub(crate) fn can_reload(&self) -> bool {
+        !self.saving && !self.loading() && self.changed_on_disk
+    }
+    pub(crate) fn global_warning(&self) -> Option<&str> {
+        self.editor()
+            .and_then(|editor| editor.info.global_warning.as_deref())
+    }
+    fn reload(&mut self, paths: &Paths, mode: Mode) -> Task<Message> {
+        if self.loading() {
             return Task::none();
         }
-        self.loading = true;
+        self.pending = Some(Pending {
+            mode,
+            draft: self.editor().map(|editor| editor.form.draft.clone()),
+        });
         load::load_task(paths.clone(), self.name.clone(), self.generation)
     }
     /// A stale save report would describe edits that are no longer there.
@@ -149,28 +188,37 @@ impl Page {
         self.notes.clear();
         self.error = None;
     }
-    fn draft(&mut self) -> Option<&mut form::Values> {
+    fn draft(&mut self) -> Option<&mut Values> {
         self.editor_mut().map(|editor| &mut editor.form.draft)
     }
     fn tick(&mut self, paths: &Paths) -> Task<Message> {
-        if self.loading || self.saving || self.checking || self.disk.is_none() {
+        if self.loading() || self.saving || self.checking || self.disk.is_none() {
             return Task::none();
         }
         self.checking = true;
-        load::check_task(paths.environment_config(&self.name), self.generation)
+        load::check_task(paths.clone(), self.name.clone(), self.generation)
     }
     fn update(&mut self, paths: &Paths, event: Event) -> Step {
+        let step = self.handle(paths, event);
+        if !self.is_dirty() {
+            self.leave_prompt = false;
+        }
+        step
+    }
+    fn handle(&mut self, paths: &Paths, event: Event) -> Step {
         match event {
             Event::Back => {
                 if self.saving {
                     Step::none()
                 } else if self.is_dirty() {
                     self.leave_prompt = true;
-                    Step::none()
+                    // Typing would otherwise reach a field behind the prompt.
+                    Step::task(unfocus())
                 } else {
                     Step::close()
                 }
             }
+            Event::Discard if self.saving => Step::none(),
             Event::Discard => Step::close(),
             Event::KeepEditing => {
                 self.leave_prompt = false;
@@ -180,10 +228,6 @@ impl Page {
                 if !self.can_save() {
                     return Step::none();
                 }
-                if self.changed_on_disk {
-                    self.edited();
-                    return Step::task(self.reload(paths, false));
-                }
                 let Some(editor) = self.editor() else {
                     return Step::none();
                 };
@@ -192,6 +236,7 @@ impl Page {
                     return Step::none();
                 }
                 self.saving = true;
+                self.leave_prompt = false;
                 self.edited();
                 Step::task(load::save_task(
                     paths.clone(),
@@ -199,6 +244,13 @@ impl Page {
                     edits,
                     self.generation,
                 ))
+            }
+            Event::Reload => {
+                if !self.can_reload() {
+                    return Step::none();
+                }
+                self.edited();
+                Step::task(self.reload(paths, Mode::Replace))
             }
             Event::Revert => {
                 if self.saving {
@@ -210,20 +262,18 @@ impl Page {
                     editor.refusal = None;
                 }
                 if self.changed_on_disk {
-                    return Step::task(self.reload(paths, false));
+                    return Step::task(self.reload(paths, Mode::Replace));
                 }
                 Step::none()
             }
             Event::RunnerPicked(choice) => {
-                let name = self.name.clone();
                 self.edited();
                 if let Some(editor) = self.editor_mut() {
-                    match refusal(&name, editor.info.current.as_ref(), &choice) {
-                        Some(reason) => editor.refusal = Some(reason),
-                        None => {
-                            editor.refusal = None;
-                            editor.form.draft.runner = Some(choice.name);
-                        }
+                    if refused(editor.info.current.as_ref(), &choice) {
+                        editor.refusal = Some(load::KIND_MISMATCH.to_owned());
+                    } else {
+                        editor.refusal = None;
+                        editor.form.draft.runner = Some(choice.name);
                     }
                 }
                 Step::none()
@@ -245,18 +295,7 @@ impl Page {
             Event::Gamescope(on) => {
                 self.edited();
                 if let Some(draft) = self.draft() {
-                    draft.gamescope = if on {
-                        GamescopeState::On
-                    } else {
-                        GamescopeState::Off
-                    };
-                }
-                Step::none()
-            }
-            Event::ResetGamescope => {
-                self.edited();
-                if let Some(draft) = self.draft() {
-                    draft.gamescope = GamescopeState::Unset;
+                    draft.gamescope = on;
                 }
                 Step::none()
             }
@@ -282,6 +321,39 @@ impl Page {
                 }
                 Step::none()
             }
+            Event::ArgsInput(value) => {
+                if let Some(editor) = self.editor_mut() {
+                    editor.args_input = value;
+                }
+                Step::none()
+            }
+            Event::ArgsAdd => {
+                if let Some(editor) = self.editor_mut()
+                    && !editor.args_input.is_empty()
+                {
+                    let arg = std::mem::take(&mut editor.args_input);
+                    editor.form.draft.fields.args.push(arg);
+                    self.edited();
+                }
+                Step::none()
+            }
+            Event::ArgsRemove(index) => {
+                if let Some(draft) = self.draft()
+                    && index < draft.fields.args.len()
+                {
+                    draft.fields.args.remove(index);
+                    self.edited();
+                }
+                Step::none()
+            }
+            Event::MenuOpened => {
+                self.menu_open = true;
+                Step::none()
+            }
+            Event::MenuClosed => {
+                self.menu_open = false;
+                Step::none()
+            }
             Event::OpenConfig => Step::task(load::open_task(paths.environment_config(&self.name))),
             Event::Opened(result) => {
                 self.error = result.err();
@@ -291,28 +363,33 @@ impl Page {
                 if generation != self.generation {
                     return Step::none();
                 }
-                self.loading = false;
-                let quiet = std::mem::take(&mut self.quiet);
-                if quiet && self.is_dirty() {
-                    self.changed_on_disk = true;
-                    return Step::none();
+                if let Some(pending) = self.pending.take() {
+                    self.land(pending, snapshot);
                 }
-                self.apply(snapshot);
                 Step::none()
             }
-            Event::Checked(generation, text) => {
+            Event::Checked(generation, texts) => {
                 if generation != self.generation {
                     return Step::none();
                 }
                 self.checking = false;
-                if self.loading || self.saving || self.disk.as_ref() == Some(&text) {
+                let Some(disk) = &self.disk else {
+                    return Step::none();
+                };
+                if self.loading() || self.saving || *disk == texts {
                     return Step::none();
                 }
-                if self.is_dirty() {
-                    self.changed_on_disk = true;
-                    Step::none()
+                if disk.environment != texts.environment {
+                    if self.is_dirty() {
+                        self.changed_on_disk = true;
+                        Step::none()
+                    } else {
+                        Step::task(self.reload(paths, Mode::Replace))
+                    }
                 } else {
-                    Step::task(self.reload(paths, true))
+                    // Only the global file changed, which nothing on the page
+                    // edits, so the inherited values can move under the edits.
+                    Step::task(self.reload(paths, Mode::Rebase))
                 }
             }
             Event::CheckFailed(generation) => {
@@ -330,13 +407,14 @@ impl Page {
                     Ok(report) => {
                         self.notes = report.lines;
                         match report.failed {
-                            // Components may have changed, but the file
-                            // didn't, so the edits stay for another try.
+                            // The file may or may not have been written before
+                            // the failure, so read it back as the new base and
+                            // keep the edits, which drops whatever did land.
                             Some(error) => {
                                 self.error = Some(error);
-                                Step::none()
+                                Step::task(self.reload(paths, Mode::Rebase))
                             }
-                            None => Step::task(self.reload(paths, false)),
+                            None => Step::task(self.reload(paths, Mode::Replace)),
                         }
                     }
                     Err(error) => {
@@ -347,33 +425,56 @@ impl Page {
             }
         }
     }
-    fn apply(&mut self, snapshot: Snapshot) {
-        self.disk = Some(snapshot.text);
-        self.changed_on_disk = false;
-        self.view = match snapshot.content {
-            Content::Form(info) => View::Form(Box::new(Editor {
-                form: Form::new(info.values.clone()),
-                info: *info,
-                refusal: None,
-            })),
-            Content::Error(error) => View::Error(error),
-        };
+    fn land(&mut self, pending: Pending, snapshot: Snapshot) {
+        let draft = self.editor().map(|editor| &editor.form.draft);
+        let edited_since = draft != pending.draft.as_ref();
+        match (pending.mode, snapshot.content) {
+            (Mode::Rebase, Content::Form(info)) if self.editor().is_some() => {
+                let keep_base = self.changed_on_disk;
+                let editor = self.editor_mut().expect("checked above");
+                let values = info.values.clone();
+                editor.info = *info;
+                if keep_base {
+                    // The environment file changed under the edits too, so
+                    // Reload stays the way forward.
+                    if let Some(disk) = &mut self.disk {
+                        disk.global = snapshot.texts.global;
+                    }
+                } else {
+                    editor.form.rebase(values);
+                    self.disk = Some(snapshot.texts);
+                }
+            }
+            // Edits made while this ran are the user's, so they stay, and the
+            // page says the file moved on under them.
+            _ if edited_since || (pending.mode == Mode::Rebase && self.is_dirty()) => {
+                self.changed_on_disk = true;
+            }
+            (_, content) => {
+                self.disk = Some(snapshot.texts);
+                self.changed_on_disk = false;
+                let previous = self.editor().map(|editor| &editor.form);
+                self.view = match content {
+                    Content::Form(info) => View::Form(Box::new(Editor {
+                        form: Form::reloaded(info.values.clone(), previous),
+                        info: *info,
+                        refusal: None,
+                        args_input: String::new(),
+                    })),
+                    Content::Error(error) => View::Error(error),
+                };
+            }
+        }
     }
 }
 
 /// Wine and Proton prefixes are laid out differently, so `settings::apply`
 /// refuses a switch between them. Refusing it here says so before Save.
-fn refusal(name: &str, current: Option<&Current>, choice: &RunnerChoice) -> Option<String> {
-    let current = current?;
-    let proton = choice.proton?;
-    (current.proton != proton).then(|| {
-        load::kind_mismatch(
-            name,
-            &current.name,
-            &choice.name,
-            if proton { "proton" } else { "wine" },
-        )
-    })
+fn refused(current: Option<&Current>, choice: &RunnerChoice) -> bool {
+    match (current, choice.proton) {
+        (Some(current), Some(proton)) => current.proton != proton,
+        _ => false,
+    }
 }
 
 impl App {
@@ -383,7 +484,7 @@ impl App {
         };
         self.settings_generation = self.settings_generation.wrapping_add(1);
         let mut page = Page::new(name, self.settings_generation);
-        let task = page.reload(&self.paths, false);
+        let task = page.reload(&self.paths, Mode::Replace);
         self.settings = Some(page);
         task
     }
@@ -409,20 +510,26 @@ impl App {
         modifiers: Modifiers,
         captured: bool,
     ) -> Task<Message> {
+        let Some(page) = &self.settings else {
+            return Task::none();
+        };
+        let (prompt, menu_open) = (page.leave_prompt, page.menu_open);
         match key.as_ref() {
             Key::Character(character)
                 if modifiers.control() && character.eq_ignore_ascii_case("s") =>
             {
                 self.settings_update(Event::Save)
             }
+            Key::Named(Named::Tab) if prompt => Task::none(),
             // Only text inputs take focus in iced, so Tab moves between those.
             Key::Named(Named::Tab) if modifiers.shift() => {
                 iced::widget::operation::focus_previous()
             }
             Key::Named(Named::Tab) => iced::widget::operation::focus_next(),
-            // A focused field uses Escape to let go of focus first.
-            Key::Named(Named::Escape) if !captured => {
-                if self.settings.as_ref().is_some_and(|page| page.leave_prompt) {
+            // A focused field uses Escape to let go of focus first, and pick
+            // list menus don't close on it, so it isn't taken as leaving.
+            Key::Named(Named::Escape) if !captured && !menu_open => {
+                if prompt {
                     self.settings_update(Event::KeepEditing)
                 } else {
                     self.settings_update(Event::Back)
@@ -437,7 +544,9 @@ impl App {
 mod tests {
     use std::ffi::OsString;
     use std::fs;
+    use std::path::Path;
 
+    use wineo_core::config::GlobalConfig;
     use wineo_core::settings::{self, ConfigFile};
 
     use super::*;
@@ -460,16 +569,53 @@ mod tests {
         fs::write(path, text).unwrap();
     }
 
-    fn page(paths: &Paths) -> Page {
-        let mut page = Page::new("game".into(), 1);
-        page.loading = true;
+    fn write_global(paths: &Paths, text: &str) {
+        let path = paths.global_config();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+
+    fn land(page: &mut Page, paths: &Paths) {
+        assert!(page.loading());
         let snapshot = load::snapshot(paths, "game");
         let _ = page.update(paths, Event::Loaded(1, snapshot));
+    }
+
+    fn page(paths: &Paths) -> Page {
+        let mut page = Page::new("game".into(), 1);
+        let _ = page.reload(paths, Mode::Replace);
+        land(&mut page, paths);
         page
     }
 
     fn editor(page: &Page) -> &Editor {
         page.editor().expect("form")
+    }
+
+    fn check(page: &mut Page, paths: &Paths) {
+        page.checking = true;
+        let _ = page.update(paths, Event::Checked(1, Texts::read(paths, "game")));
+    }
+
+    /// Writes what the page would save, the way the worker does.
+    fn apply(page: &Page, paths: &Paths) -> wineo_core::settings::Applied {
+        let edits = editor(page).form.edits();
+        let pairs: Vec<(&str, &str)> = edits
+            .pairs
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        let unset: Vec<&str> = edits.unset.iter().map(String::as_str).collect();
+        settings::apply(paths, ConfigFile::Environment("game"), &pairs, &unset).unwrap()
+    }
+
+    fn saved(page: &mut Page, paths: &Paths, lines: &[&str], failed: Option<&str>) {
+        page.saving = true;
+        let report = Report {
+            lines: lines.iter().map(|line| (*line).to_owned()).collect(),
+            failed: failed.map(str::to_owned),
+        };
+        let _ = page.update(paths, Event::Saved(1, Ok(report)));
     }
 
     #[test]
@@ -479,7 +625,7 @@ mod tests {
         let mut page = page(&paths);
         let draft = &editor(&page).form.draft;
         assert_eq!(draft.gamemode, Some(false));
-        assert_eq!(draft.gamescope, GamescopeState::On);
+        assert!(draft.gamescope);
         assert!(!page.is_dirty());
         let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
         let _ = page.update(&paths, Event::Reset(Switch::Gamemode));
@@ -508,37 +654,52 @@ mod tests {
     }
 
     #[test]
-    fn a_file_change_reloads_quietly_without_edits() {
-        let (_root, paths) = setup();
-        write(&paths, GAME);
-        let mut page = page(&paths);
-        let changed = GAME.replace("gamemode = false", "gamemode = true");
-        write(&paths, &changed);
-        let _ = page.update(&paths, Event::Checked(1, Some(changed.clone())));
-        assert!(page.loading && page.quiet);
-        let _ = page.update(&paths, Event::Loaded(1, load::snapshot(&paths, "game")));
-        assert!(!page.changed_on_disk);
-        assert_eq!(editor(&page).form.draft.gamemode, Some(true));
-        // The same text again is no change.
-        let _ = page.update(&paths, Event::Checked(1, Some(changed)));
-        assert!(!page.loading);
-    }
-
-    #[test]
-    fn a_file_change_under_edits_turns_save_into_reload() {
+    fn the_leave_prompt_goes_when_the_page_is_clean_or_saving() {
         let (_root, paths) = setup();
         write(&paths, GAME);
         let mut page = page(&paths);
         let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
-        let changed = GAME.replace("gamemode = false", "gamemode = true");
-        write(&paths, &changed);
-        let _ = page.update(&paths, Event::Checked(1, Some(changed)));
-        assert!(page.changed_on_disk);
-        assert!(!page.loading);
-        assert_eq!(editor(&page).form.draft.mangohud, Some(true));
+        let _ = page.update(&paths, Event::Back);
+        let _ = page.update(&paths, Event::Revert);
+        assert!(!page.leave_prompt);
+        let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
+        let _ = page.update(&paths, Event::Back);
         let _ = page.update(&paths, Event::Save);
-        assert!(page.loading && !page.saving && !page.quiet);
-        let _ = page.update(&paths, Event::Loaded(1, load::snapshot(&paths, "game")));
+        assert!(page.saving && !page.leave_prompt);
+        page.leave_prompt = true;
+        assert!(!page.update(&paths, Event::Discard).close);
+    }
+
+    #[test]
+    fn a_file_change_reloads_quietly_without_edits() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        write(&paths, &GAME.replace("gamemode = false", "gamemode = true"));
+        check(&mut page, &paths);
+        land(&mut page, &paths);
+        assert!(!page.changed_on_disk);
+        assert_eq!(editor(&page).form.draft.gamemode, Some(true));
+        // The same text again is no change.
+        check(&mut page, &paths);
+        assert!(!page.loading());
+    }
+
+    #[test]
+    fn a_file_change_under_edits_asks_for_reload() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
+        write(&paths, &GAME.replace("gamemode = false", "gamemode = true"));
+        check(&mut page, &paths);
+        assert!(page.changed_on_disk && !page.loading());
+        assert_eq!(editor(&page).form.draft.mangohud, Some(true));
+        // Ctrl+S never throws edits away.
+        let _ = page.update(&paths, Event::Save);
+        assert!(!page.loading() && !page.saving);
+        let _ = page.update(&paths, Event::Reload);
+        land(&mut page, &paths);
         assert!(!page.changed_on_disk);
         assert!(!page.is_dirty());
         assert_eq!(editor(&page).form.draft.gamemode, Some(true));
@@ -549,13 +710,25 @@ mod tests {
         let (_root, paths) = setup();
         write(&paths, GAME);
         let mut page = page(&paths);
-        let changed = GAME.replace("gamemode = false", "gamemode = true");
-        write(&paths, &changed);
-        let _ = page.update(&paths, Event::Checked(1, Some(changed)));
+        write(&paths, &GAME.replace("gamemode = false", "gamemode = true"));
+        check(&mut page, &paths);
         let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
-        let _ = page.update(&paths, Event::Loaded(1, load::snapshot(&paths, "game")));
+        land(&mut page, &paths);
         assert!(page.changed_on_disk);
         assert_eq!(editor(&page).form.draft.mangohud, Some(true));
+    }
+
+    #[test]
+    fn a_stale_load_is_ignored() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        let _ = page.reload(&paths, Mode::Replace);
+        write(&paths, &GAME.replace("gamemode = false", "gamemode = true"));
+        let snapshot = load::snapshot(&paths, "game");
+        let _ = page.update(&paths, Event::Loaded(7, snapshot));
+        assert!(page.loading());
+        assert_eq!(editor(&page).form.draft.gamemode, Some(false));
     }
 
     #[test]
@@ -571,6 +744,37 @@ mod tests {
     }
 
     #[test]
+    fn a_save_reloads_the_page_from_disk() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
+        apply(&page, &paths);
+        saved(&mut page, &paths, &["done"], None);
+        assert!(page.loading());
+        land(&mut page, &paths);
+        assert!(!page.is_dirty() && !page.changed_on_disk);
+        assert_eq!(editor(&page).form.loaded.mangohud, Some(true));
+        assert_eq!(page.notes, ["done"]);
+        check(&mut page, &paths);
+        assert!(!page.loading() && !page.changed_on_disk);
+    }
+
+    #[test]
+    fn edits_made_while_a_save_reloads_are_kept() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
+        apply(&page, &paths);
+        saved(&mut page, &paths, &[], None);
+        let _ = page.update(&paths, Event::Switch(Switch::Gamemode, true));
+        land(&mut page, &paths);
+        assert!(page.changed_on_disk);
+        assert_eq!(editor(&page).form.draft.gamemode, Some(true));
+    }
+
+    #[test]
     fn a_failed_save_keeps_edits_and_shows_the_error() {
         let (_root, paths) = setup();
         write(&paths, GAME);
@@ -578,18 +782,30 @@ mod tests {
         let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
         page.saving = true;
         let _ = page.update(&paths, Event::Saved(1, Err("Environment is busy".into())));
-        assert!(!page.saving);
+        assert!(!page.saving && !page.loading());
         assert_eq!(page.error.as_deref(), Some("Environment is busy"));
         assert!(page.is_dirty());
-        page.saving = true;
-        let report = Report {
-            lines: vec!["Installed DXVK 2.4".into()],
-            failed: Some("bad".into()),
-        };
-        let _ = page.update(&paths, Event::Saved(1, Ok(report)));
+        // Failed before the write: the edits are still edits.
+        saved(&mut page, &paths, &["Installed DXVK 2.4"], Some("bad"));
+        land(&mut page, &paths);
         assert_eq!(page.notes, ["Installed DXVK 2.4"]);
         assert_eq!(page.error.as_deref(), Some("bad"));
-        assert!(page.is_dirty() && !page.loading);
+        assert!(page.is_dirty() && !page.changed_on_disk);
+    }
+
+    #[test]
+    fn a_save_that_failed_after_writing_is_not_an_outside_change() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
+        apply(&page, &paths);
+        saved(&mut page, &paths, &[], Some("desktop entries failed"));
+        land(&mut page, &paths);
+        assert!(!page.is_dirty() && !page.changed_on_disk);
+        assert_eq!(page.error.as_deref(), Some("desktop entries failed"));
+        check(&mut page, &paths);
+        assert!(!page.loading() && !page.changed_on_disk);
     }
 
     #[test]
@@ -612,9 +828,7 @@ mod tests {
         assert_eq!(editor.form.draft.runner.as_deref(), Some("missing"));
         assert_eq!(
             editor.refusal.as_deref(),
-            Some(
-                "`game` runs on wine-tkg and `GE-Proton9-20` is a proton runner. Their prefix layouts are not compatible, so make a new environment with `wineo new --runner GE-Proton9-20` instead"
-            )
+            Some("Can't switch between Wine and Proton runners. Make a new environment instead.")
         );
         assert!(!page.is_dirty());
         let wine = RunnerChoice {
@@ -632,13 +846,37 @@ mod tests {
             name: "gone".into(),
             proton: None,
         };
+        assert!(!refused(
+            page.editor().unwrap().info.current.as_ref(),
+            &unknown
+        ));
+    }
+
+    fn executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn a_kind_mismatch_at_save_gets_the_gui_wording() {
+        let (_root, paths) = setup();
+        let root = GlobalConfig::default().runner_root(&paths).unwrap();
+        for program in ["wine", "wineserver"] {
+            executable(&root.join("wine-tkg/bin").join(program));
+            executable(&root.join("GE-Proton9-20/files/bin").join(program));
+        }
+        executable(&root.join("GE-Proton9-20/proton"));
+        fs::write(root.join("GE-Proton9-20/version"), "1 GE-Proton9-20\n").unwrap();
+        write(&paths, &GAME.replace("\"missing\"", "\"wine-tkg\""));
+        let edits = form::Edits {
+            pairs: vec![("runner".into(), "GE-Proton9-20".into())],
+            unset: Vec::new(),
+        };
         assert_eq!(
-            refusal(
-                "game",
-                page.editor().unwrap().info.current.as_ref(),
-                &unknown
-            ),
-            None
+            load::save(&paths, "game", &edits),
+            Err(load::KIND_MISMATCH.to_owned())
         );
     }
 
@@ -653,21 +891,38 @@ mod tests {
     }
 
     #[test]
+    fn a_broken_global_config_warns_and_reloads_once_fixed() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        write_global(&paths, "mangohud = [");
+        let mut page = page(&paths);
+        let warning = page.global_warning().expect("warning").to_owned();
+        assert!(
+            warning.contains(&paths.global_config().display().to_string()),
+            "{warning}"
+        );
+        assert_eq!(editor(&page).info.inherited, form::Inherited::default());
+        let _ = page.update(&paths, Event::Switch(Switch::Wayland, true));
+        write_global(&paths, "mangohud = true\n");
+        check(&mut page, &paths);
+        land(&mut page, &paths);
+        assert_eq!(page.global_warning(), None);
+        assert_eq!(editor(&page).info.inherited.mangohud, Some(true));
+        // A global change doesn't touch the environment's edits.
+        assert_eq!(editor(&page).form.draft.wayland, Some(true));
+        assert!(!page.changed_on_disk);
+        check(&mut page, &paths);
+        assert!(!page.loading());
+    }
+
+    #[test]
     fn saving_one_control_changes_only_its_line() {
         let (_root, paths) = setup();
         write(&paths, GAME);
         let mut page = page(&paths);
         let _ = page.update(&paths, Event::Switch(Switch::Gamemode, true));
         let _ = page.update(&paths, Event::FieldText(Field::Width, "2560".into()));
-        let edits = editor(&page).form.edits();
-        let pairs: Vec<(&str, &str)> = edits
-            .pairs
-            .iter()
-            .map(|(key, value)| (key.as_str(), value.as_str()))
-            .collect();
-        let unset: Vec<&str> = edits.unset.iter().map(String::as_str).collect();
-        let applied =
-            settings::apply(&paths, ConfigFile::Environment("game"), &pairs, &unset).unwrap();
+        let applied = apply(&page, &paths);
         assert!(applied.failed.is_none(), "{:?}", applied.failed);
         let text = fs::read_to_string(paths.environment_config("game")).unwrap();
         assert_eq!(
@@ -688,23 +943,17 @@ mod tests {
     #[test]
     fn switching_gamescope_on_saves_an_empty_table() {
         let (_root, paths) = setup();
-        let text = "schema_version = 1\nprefix = \"~/p\"\nrunner = \"missing\"\narch = \"win64\"\n";
+        let text = "schema_version = 1\nprefix = \"~/p\"\nrunner = \"missing\"\narch = \"win64\"\ngamescope = false\n";
         write(&paths, text);
         let mut edited = page(&paths);
+        assert!(!editor(&edited).form.draft.gamescope);
         let _ = edited.update(&paths, Event::Gamescope(true));
-        let edits = editor(&edited).form.edits();
-        let pairs: Vec<(&str, &str)> = edits
-            .pairs
-            .iter()
-            .map(|(key, value)| (key.as_str(), value.as_str()))
-            .collect();
-        let unset: Vec<&str> = edits.unset.iter().map(String::as_str).collect();
-        let applied =
-            settings::apply(&paths, ConfigFile::Environment("game"), &pairs, &unset).unwrap();
+        let applied = apply(&edited, &paths);
         assert!(applied.failed.is_none(), "{:?}", applied.failed);
-        assert!(applied.not_set.is_empty());
+        let written = fs::read_to_string(paths.environment_config("game")).unwrap();
+        assert!(written.ends_with("[gamescope]\n"), "{written}");
         let reloaded = page(&paths);
-        assert_eq!(editor(&reloaded).form.draft.gamescope, GamescopeState::On);
+        assert!(editor(&reloaded).form.draft.gamescope);
         assert_eq!(
             editor(&reloaded).form.draft.fields,
             form::GamescopeFields::default()
@@ -712,39 +961,66 @@ mod tests {
     }
 
     #[test]
-    fn switching_gamescope_off_replaces_the_table() {
+    fn switching_gamescope_off_removes_it_and_on_again_restores_fields() {
         let (_root, paths) = setup();
         write(&paths, GAME);
-        let mut edited = page(&paths);
-        let _ = edited.update(&paths, Event::Gamescope(false));
-        let edits = editor(&edited).form.edits();
-        assert_eq!(edits.pairs, [("gamescope".to_owned(), "false".to_owned())]);
-        let applied = settings::apply(
-            &paths,
-            ConfigFile::Environment("game"),
-            &[("gamescope", "false")],
-            &[],
-        )
-        .unwrap();
-        assert!(applied.failed.is_none(), "{:?}", applied.failed);
-        let reloaded = page(&paths);
-        assert_eq!(editor(&reloaded).form.draft.gamescope, GamescopeState::Off);
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::Gamescope(false));
+        apply(&page, &paths);
         let text = fs::read_to_string(paths.environment_config("game")).unwrap();
-        assert!(text.starts_with("# my game\n"), "{text}");
+        assert!(!text.contains("gamescope"), "{text}");
+        saved(&mut page, &paths, &[], None);
+        land(&mut page, &paths);
+        assert!(!page.is_dirty());
+        let _ = page.update(&paths, Event::Gamescope(true));
+        assert_eq!(editor(&page).form.draft.fields.width, "1920");
+        assert_eq!(page.changes(), 2);
     }
 
     #[test]
-    fn escape_asks_before_leaving_and_again_keeps_editing() {
+    fn args_are_added_and_removed_as_chips() {
         let (_root, paths) = setup();
         write(&paths, GAME);
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::ArgsInput(String::new()));
+        let _ = page.update(&paths, Event::ArgsAdd);
+        assert!(!page.is_dirty());
+        for arg in ["--backend", "sdl", "two words"] {
+            let _ = page.update(&paths, Event::ArgsInput(arg.into()));
+            let _ = page.update(&paths, Event::ArgsAdd);
+        }
+        let _ = page.update(&paths, Event::ArgsRemove(1));
+        let _ = page.update(&paths, Event::ArgsRemove(9));
+        assert_eq!(
+            editor(&page).form.draft.fields.args,
+            ["--backend", "two words"]
+        );
+        assert!(editor(&page).args_input.is_empty());
+        apply(&page, &paths);
+        let text = fs::read_to_string(paths.environment_config("game")).unwrap();
+        assert!(
+            text.contains("args = [\"--backend\", \"two words\"]"),
+            "{text}"
+        );
+    }
+
+    fn open_app(paths: &Paths) -> App {
         let mut app = App::boot(paths.clone()).0;
         app.selected = Some("game".into());
         let _ = app.update(Message::OpenSettings);
         let generation = app.settings.as_ref().unwrap().generation;
         let _ = app.update(Message::Settings(Event::Loaded(
             generation,
-            load::snapshot(&paths, "game"),
+            load::snapshot(paths, "game"),
         )));
+        app
+    }
+
+    #[test]
+    fn escape_asks_before_leaving_and_again_keeps_editing() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut app = open_app(&paths);
         let escape = Key::Named(Named::Escape);
         // A focused field takes the first Escape.
         let _ = app.settings_key(&escape, Modifiers::empty(), true);
@@ -760,17 +1036,24 @@ mod tests {
     }
 
     #[test]
+    fn escape_with_a_menu_open_stays_on_the_page() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut app = open_app(&paths);
+        let escape = Key::Named(Named::Escape);
+        let _ = app.update(Message::Settings(Event::MenuOpened));
+        let _ = app.settings_key(&escape, Modifiers::empty(), false);
+        assert!(app.settings.is_some());
+        let _ = app.update(Message::Settings(Event::MenuClosed));
+        let _ = app.settings_key(&escape, Modifiers::empty(), false);
+        assert!(app.settings.is_none());
+    }
+
+    #[test]
     fn leaving_a_clean_page_returns_to_the_library() {
         let (_root, paths) = setup();
         write(&paths, GAME);
-        let mut app = App::boot(paths.clone()).0;
-        app.selected = Some("game".into());
-        let _ = app.update(Message::OpenSettings);
-        let generation = app.settings.as_ref().unwrap().generation;
-        let _ = app.update(Message::Settings(Event::Loaded(
-            generation,
-            load::snapshot(&paths, "game"),
-        )));
+        let mut app = open_app(&paths);
         let _ = app.update(Message::Settings(Event::Back));
         assert!(app.settings.is_none());
         assert_eq!(app.selected.as_deref(), Some("game"));

@@ -4,9 +4,10 @@ use iced::widget::{
 };
 use iced::{Center, Color, Element, Fill, Font, border, font};
 
-use super::form::{self, Choice, Field, GamescopeState, Source, Switch};
+use super::form::{self, Choice, Field, Source, Switch};
 use super::{Editor, Event, Page, View};
 use crate::Message;
+use crate::chips::{Chips, input_style, secondary};
 use crate::panel::{action_button, error_box};
 use crate::theme::Palette;
 
@@ -88,6 +89,9 @@ impl Page {
     }
     fn save_bar(&self, palette: Palette, spinner: usize) -> Element<'_, Message> {
         let mut bar = column![].spacing(6);
+        if let Some(warning) = self.global_warning() {
+            bar = bar.push(text(warning).size(13).color(palette.warning));
+        }
         for note in &self.notes {
             bar = bar.push(text(note).size(13).color(palette.muted));
         }
@@ -125,17 +129,16 @@ impl Page {
                 .padding([6, 16])
                 .style(move |_, status| secondary(palette, status)),
         );
-        let label = if self.changed_on_disk {
-            "Reload"
+        actions = actions.push(if self.changed_on_disk {
+            action_button(
+                "Reload",
+                palette.primary,
+                self.can_reload(),
+                send(Event::Reload),
+            )
         } else {
-            "Save"
-        };
-        actions = actions.push(action_button(
-            label,
-            palette.primary,
-            self.can_save(),
-            send(Event::Save),
-        ));
+            action_button("Save", palette.primary, self.can_save(), send(Event::Save))
+        });
         container(bar.push(actions))
             .padding([12, 16])
             .width(Fill)
@@ -156,6 +159,8 @@ fn editor_view(editor: &Editor, palette: Palette) -> Element<'_, Message> {
         let runner = pick_list(info.runners.as_slice(), selected, |choice| {
             send(Event::RunnerPicked(choice))
         })
+        .on_open(send(Event::MenuOpened))
+        .on_close(send(Event::MenuClosed))
         .width(CONTROL_WIDTH);
         let proton = info.current.as_ref().is_some_and(|current| current.proton);
         let arch = if proton { "win64" } else { info.arch.as_str() };
@@ -190,34 +195,35 @@ fn editor_view(editor: &Editor, palette: Palette) -> Element<'_, Message> {
         launch = launch.push(switch_row(
             switch.label(),
             on,
-            source,
+            Some(source),
             move |on| send(Event::Switch(*switch, on)),
-            send(Event::Reset(*switch)),
+            (source == Source::Here).then(|| send(Event::Reset(*switch))),
             palette,
         ));
     }
-    let (on, source) = form::gamescope_state(draft.gamescope);
+    // There's no global gamescope to fall back to, so this is a plain switch.
     launch = launch.push(switch_row(
         "Gamescope",
-        on,
-        source,
+        draft.gamescope,
+        None,
         |on| send(Event::Gamescope(on)),
-        send(Event::ResetGamescope),
+        None,
         palette,
     ));
-    if draft.gamescope == GamescopeState::On {
-        launch = launch.push(container(gamescope_fields(&draft.fields, palette)).padding(
-            iced::Padding {
+    if draft.gamescope {
+        launch = launch.push(
+            container(gamescope_fields(editor, palette)).padding(iced::Padding {
                 left: 24.0,
                 ..iced::Padding::ZERO
-            },
-        ));
+            }),
+        );
     }
     sections = sections.push(section("Launch", launch.into(), palette));
     sections.into()
 }
 
-fn gamescope_fields(fields: &form::GamescopeFields, palette: Palette) -> Element<'_, Message> {
+fn gamescope_fields(editor: &Editor, palette: Palette) -> Element<'_, Message> {
+    let fields = &editor.form.draft.fields;
     let mut rows = Column::new().spacing(10);
     for field in Field::ALL {
         let control: Element<'_, Message> = match field {
@@ -228,29 +234,30 @@ fn gamescope_fields(fields: &form::GamescopeFields, palette: Palette) -> Element
                 pick_list(options, Some(fields.choice(field)), move |choice| {
                     send(Event::FieldChoice(field, choice))
                 })
+                .on_open(send(Event::MenuOpened))
+                .on_close(send(Event::MenuClosed))
                 .width(CONTROL_WIDTH)
                 .into()
             }
             Field::GrabCursor => toggler(fields.grab_cursor)
                 .on_toggle(|on| send(Event::GrabCursor(on)))
                 .into(),
-            _ => {
-                let placeholder = if field == Field::Args {
-                    "flags separated by spaces"
-                } else {
-                    "unset"
-                };
-                text_input(placeholder, fields.text(field))
-                    .on_input(move |value| send(Event::FieldText(field, value)))
-                    .width(if field == Field::Args {
-                        CONTROL_WIDTH * 1.5
-                    } else {
-                        CONTROL_WIDTH
-                    })
-                    .padding([6, 10])
-                    .style(move |_, status| input_style(palette, status))
-                    .into()
+            Field::Args => Chips {
+                items: &fields.args,
+                input: &editor.args_input,
+                placeholder: "one flag or value",
+                error: None,
+                on_input: Box::new(|value| send(Event::ArgsInput(value))),
+                on_add: send(Event::ArgsAdd),
+                on_remove: Box::new(|index| send(Event::ArgsRemove(index))),
             }
+            .view(palette),
+            _ => text_input("unset", fields.text(field))
+                .on_input(move |value| send(Event::FieldText(field, value)))
+                .width(CONTROL_WIDTH)
+                .padding([6, 10])
+                .style(move |_, status| input_style(palette, status))
+                .into(),
         };
         rows = rows.push(
             row![
@@ -307,20 +314,23 @@ fn setting_row<'a>(
 fn switch_row<'a>(
     label: &'a str,
     on: bool,
-    source: Source,
+    source: Option<Source>,
     toggle: impl Fn(bool) -> Message + 'a,
-    reset: Message,
+    reset: Option<Message>,
     palette: Palette,
 ) -> Element<'a, Message> {
     let mut line = row![
         text(label).color(palette.foreground).width(LABEL_WIDTH),
         container(toggler(on).on_toggle(toggle)).width(64),
-        text(source.label()).size(13).color(palette.muted).width(80),
+        text(source.map_or("", Source::label))
+            .size(13)
+            .color(palette.muted)
+            .width(80),
     ]
     .spacing(12)
     .align_y(Center);
     // Only an overridden row can go back to inheriting.
-    if source == Source::Here {
+    if let Some(reset) = reset {
         line = line.push(
             button(text("Reset").size(13))
                 .on_press(reset)
@@ -372,40 +382,4 @@ fn divider(palette: Palette) -> Element<'static, Message> {
         .height(1)
         .style(move |_| container::Style::default().background(palette.border))
         .into()
-}
-
-fn secondary(palette: Palette, status: button::Status) -> button::Style {
-    let disabled = matches!(status, button::Status::Disabled);
-    button::Style {
-        background: Some(
-            if matches!(status, button::Status::Hovered) {
-                palette.border
-            } else {
-                palette.surface
-            }
-            .into(),
-        ),
-        text_color: palette
-            .foreground
-            .scale_alpha(if disabled { 0.4 } else { 1.0 }),
-        border: border::rounded(6).width(1).color(palette.border),
-        ..button::Style::default()
-    }
-}
-
-fn input_style(palette: Palette, status: text_input::Status) -> text_input::Style {
-    text_input::Style {
-        background: palette.background.into(),
-        border: border::rounded(6).width(1).color(
-            if matches!(status, text_input::Status::Focused { .. }) {
-                palette.primary
-            } else {
-                palette.border
-            },
-        ),
-        icon: palette.muted,
-        placeholder: palette.muted,
-        value: palette.foreground,
-        selection: palette.primary.scale_alpha(0.4),
-    }
 }

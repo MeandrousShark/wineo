@@ -35,7 +35,6 @@ impl Switch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Source {
     Global,
-    Default,
     Here,
 }
 
@@ -43,18 +42,9 @@ impl Source {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Source::Global => "global",
-            Source::Default => "default",
             Source::Here => "set here",
         }
     }
-}
-
-/// What the environment's `gamescope` key holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GamescopeState {
-    Unset,
-    Off,
-    On,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,17 +106,6 @@ impl Field {
             Field::Args => "Extra args",
         }
     }
-    pub(crate) fn is_number(self) -> bool {
-        matches!(
-            self,
-            Field::Width
-                | Field::Height
-                | Field::OutputWidth
-                | Field::OutputHeight
-                | Field::FpsLimit
-                | Field::FpsLimitUnfocused
-        )
-    }
     /// The values a choice field offers, not counting unset.
     pub(crate) fn choices(self) -> Vec<&'static str> {
         match self {
@@ -154,8 +133,8 @@ impl fmt::Display for Choice {
     }
 }
 
-/// Gamescope's fields as the page shows them. An empty string, `None`, or
-/// `false` means the key is left out of the table.
+/// Gamescope's fields as the page shows them. An empty string, `None`,
+/// `false`, or no args means the key is left out of the table.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct GamescopeFields {
     pub(crate) width: String,
@@ -168,8 +147,7 @@ pub(crate) struct GamescopeFields {
     pub(crate) fps_limit: String,
     pub(crate) fps_limit_unfocused: String,
     pub(crate) grab_cursor: bool,
-    /// Split on whitespace when written.
-    pub(crate) args: String,
+    pub(crate) args: Vec<String>,
 }
 
 impl GamescopeFields {
@@ -186,7 +164,7 @@ impl GamescopeFields {
             fps_limit: number(gamescope.fps_limit),
             fps_limit_unfocused: number(gamescope.fps_limit_unfocused),
             grab_cursor: gamescope.grab_cursor,
-            args: gamescope.args.join(" "),
+            args: gamescope.args.clone(),
         }
     }
     pub(crate) fn text(&self, field: Field) -> &str {
@@ -197,8 +175,7 @@ impl GamescopeFields {
             Field::OutputHeight => &self.output_height,
             Field::FpsLimit => &self.fps_limit,
             Field::FpsLimitUnfocused => &self.fps_limit_unfocused,
-            Field::Args => &self.args,
-            Field::Filter | Field::Scaler | Field::Window | Field::GrabCursor => "",
+            Field::Filter | Field::Scaler | Field::Window | Field::GrabCursor | Field::Args => "",
         }
     }
     pub(crate) fn choice(&self, field: Field) -> Choice {
@@ -209,10 +186,11 @@ impl GamescopeFields {
             _ => None,
         })
     }
-    /// Takes typed text, refusing anything a number field can't hold so the
-    /// form never carries a value TOML would reject.
+    /// Takes typed digits, refusing anything else so the form never carries
+    /// a value TOML would reject. `u32` parsing alone would let `+5` in.
     pub(crate) fn set_text(&mut self, field: Field, value: String) -> bool {
-        if field.is_number() && !value.is_empty() && value.parse::<u32>().is_err() {
+        let digits = value.chars().all(|character| character.is_ascii_digit());
+        if !digits || (!value.is_empty() && value.parse::<u32>().is_err()) {
             return false;
         }
         let slot = match field {
@@ -222,8 +200,9 @@ impl GamescopeFields {
             Field::OutputHeight => &mut self.output_height,
             Field::FpsLimit => &mut self.fps_limit,
             Field::FpsLimitUnfocused => &mut self.fps_limit_unfocused,
-            Field::Args => &mut self.args,
-            Field::Filter | Field::Scaler | Field::Window | Field::GrabCursor => return false,
+            Field::Filter | Field::Scaler | Field::Window | Field::GrabCursor | Field::Args => {
+                return false;
+            }
         };
         *slot = value;
         true
@@ -236,19 +215,20 @@ impl GamescopeFields {
             _ => {}
         }
     }
-    /// The raw value `edit::set` takes for a field, or `None` to leave it unset.
+    /// The raw value `edit::set` takes for a field, or `None` to leave it
+    /// unset. Numbers go through `u32`, so `05` and `5` are the same value.
     fn raw(&self, field: Field) -> Option<String> {
-        let text = |value: &str| (!value.is_empty()).then(|| value.to_owned());
         match field {
             Field::Filter | Field::Scaler | Field::Window => {
                 self.choice(field).0.map(str::to_owned)
             }
             Field::GrabCursor => self.grab_cursor.then(|| "true".to_owned()),
-            Field::Args => {
-                let args: Vec<&str> = self.args.split_whitespace().collect();
-                (!args.is_empty()).then(|| toml_array(&args))
-            }
-            _ => text(self.text(field)),
+            Field::Args => (!self.args.is_empty()).then(|| toml_array(&self.args)),
+            _ => self
+                .text(field)
+                .parse::<u32>()
+                .ok()
+                .map(|number| number.to_string()),
         }
     }
 }
@@ -261,18 +241,18 @@ pub(crate) struct Values {
     pub(crate) gamemode: Option<bool>,
     pub(crate) mangohud: Option<bool>,
     pub(crate) wayland: Option<bool>,
-    pub(crate) gamescope: GamescopeState,
+    /// Whether the environment has a gamescope table. A hand-written
+    /// `gamescope = false` reads as off, the same as no key.
+    pub(crate) gamescope: bool,
+    /// Kept while gamescope is off, so switching it back on restores them.
     pub(crate) fields: GamescopeFields,
 }
 
 impl Values {
     pub(crate) fn from_config(config: &EnvironmentConfig) -> Self {
         let (gamescope, fields) = match &config.gamescope {
-            None => (GamescopeState::Unset, GamescopeFields::default()),
-            Some(GamescopeSetting::Off) => (GamescopeState::Off, GamescopeFields::default()),
-            Some(GamescopeSetting::On(table)) => {
-                (GamescopeState::On, GamescopeFields::from_config(table))
-            }
+            Some(GamescopeSetting::On(table)) => (true, GamescopeFields::from_config(table)),
+            None | Some(GamescopeSetting::Off) => (false, GamescopeFields::default()),
         };
         Self {
             runner: config.wine().map(|wine| wine.runner.clone()),
@@ -328,15 +308,6 @@ pub(crate) fn switch_state(value: Option<bool>, inherited: bool) -> (bool, Sourc
     }
 }
 
-/// Gamescope has no global setting, so unset means off.
-pub(crate) fn gamescope_state(state: GamescopeState) -> (bool, Source) {
-    match state {
-        GamescopeState::Unset => (false, Source::Default),
-        GamescopeState::Off => (false, Source::Here),
-        GamescopeState::On => (true, Source::Here),
-    }
-}
-
 /// What a save writes. A reset or emptied control unsets its key.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Edits {
@@ -370,14 +341,38 @@ impl Form {
             draft: values,
         }
     }
+    /// A fresh read of the file, keeping gamescope fields typed while it was
+    /// off so they survive a save or reload until the page is left.
+    pub(crate) fn reloaded(values: Values, previous: Option<&Form>) -> Self {
+        let mut form = Self::new(values);
+        if !form.draft.gamescope
+            && let Some(previous) = previous
+        {
+            form.draft.fields = previous.draft.fields.clone();
+            form.loaded.fields = previous.draft.fields.clone();
+        }
+        form
+    }
+    /// Takes a fresh read as the base but keeps the edits on top of it.
+    pub(crate) fn rebase(&mut self, values: Values) {
+        let fields = (!values.gamescope).then(|| self.draft.fields.clone());
+        self.loaded = values;
+        if let Some(fields) = fields {
+            self.loaded.fields = fields;
+        }
+    }
     pub(crate) fn revert(&mut self) {
+        let fields = self.draft.fields.clone();
         self.draft = self.loaded.clone();
+        if !self.loaded.gamescope {
+            self.draft.fields = fields;
+        }
     }
     pub(crate) fn is_dirty(&self) -> bool {
         self.changes() > 0
     }
     /// How many controls differ from the file. Gamescope's fields only count
-    /// while it's on, since switching it off drops them anyway.
+    /// while it's on, since they aren't written while it's off.
     pub(crate) fn changes(&self) -> usize {
         let (loaded, draft) = (&self.loaded, &self.draft);
         let mut count = usize::from(loaded.runner != draft.runner);
@@ -385,7 +380,7 @@ impl Form {
             count += usize::from(loaded.switch(switch) != draft.switch(switch));
         }
         count += usize::from(loaded.gamescope != draft.gamescope);
-        if draft.gamescope == GamescopeState::On {
+        if draft.gamescope {
             let base = self.gamescope_base();
             count += Field::ALL
                 .iter()
@@ -397,7 +392,7 @@ impl Form {
     /// The fields a gamescope table starts from when this saves: the file's
     /// own table, or an empty one when it had none.
     fn gamescope_base(&self) -> GamescopeFields {
-        if self.loaded.gamescope == GamescopeState::On {
+        if self.loaded.gamescope {
             self.loaded.fields.clone()
         } else {
             GamescopeFields::default()
@@ -417,41 +412,30 @@ impl Form {
                 edits.write(switch.key().to_owned(), value.map(|on| on.to_string()));
             }
         }
-        match draft.gamescope {
-            GamescopeState::Unset if loaded.gamescope != GamescopeState::Unset => {
-                edits.unset.push("gamescope".to_owned());
+        match (loaded.gamescope, draft.gamescope) {
+            // Off removes the key, so a hand-written `gamescope = false` goes
+            // too; the environment level never writes `false`.
+            (true, false) => edits.unset.push("gamescope".to_owned()),
+            (false, true) => {
+                edits.pairs.push(("gamescope".to_owned(), "{}".to_owned()));
             }
-            GamescopeState::Off if loaded.gamescope != GamescopeState::Off => {
-                edits
-                    .pairs
-                    .push(("gamescope".to_owned(), "false".to_owned()));
-            }
-            GamescopeState::On => {
-                let base = self.gamescope_base();
-                let before = edits.pairs.len();
-                for field in Field::ALL {
-                    let value = draft.fields.raw(field);
-                    if base.raw(field) != value {
-                        edits.write(format!("gamescope.{}", field.key()), value);
-                    }
-                }
-                // `set` can only write a table through one of its fields, so
-                // an empty table is a field written and then removed again.
-                if loaded.gamescope != GamescopeState::On && edits.pairs.len() == before {
-                    edits
-                        .pairs
-                        .push(("gamescope.grab_cursor".to_owned(), "false".to_owned()));
-                    edits.unset.push("gamescope.grab_cursor".to_owned());
+            _ => {}
+        }
+        if draft.gamescope {
+            let base = self.gamescope_base();
+            for field in Field::ALL {
+                let value = draft.fields.raw(field);
+                if base.raw(field) != value {
+                    edits.write(format!("gamescope.{}", field.key()), value);
                 }
             }
-            GamescopeState::Unset | GamescopeState::Off => {}
         }
         edits
     }
 }
 
 /// A TOML array of basic strings, the form `edit::set` parses list values from.
-fn toml_array(items: &[&str]) -> String {
+pub(crate) fn toml_array(items: &[String]) -> String {
     let quoted: Vec<String> = items.iter().map(|item| toml_string(item)).collect();
     format!("[{}]", quoted.join(", "))
 }
@@ -559,26 +543,25 @@ mod tests {
     }
 
     #[test]
-    fn empty_gamescope_fields_stay_unset() {
+    fn switching_gamescope_on_writes_a_table_and_skips_empty_fields() {
         let mut form = Form::new(values(WINE));
-        form.draft.gamescope = GamescopeState::On;
+        form.draft.gamescope = true;
+        assert_eq!(pairs(&form.edits()), [("gamescope", "{}")]);
+        assert_eq!(form.changes(), 1);
         form.draft.fields.width = "1920".into();
         form.draft.fields.filter = Some("fsr");
-        form.draft.fields.args = "--hdr-enabled  --expose-wayland".into();
+        form.draft.fields.args = vec!["--backend".into(), "sdl".into(), "a b".into()];
         let edits = form.edits();
         assert_eq!(
             pairs(&edits),
             [
+                ("gamescope", "{}"),
                 ("gamescope.width", "1920"),
                 ("gamescope.filter", "fsr"),
-                (
-                    "gamescope.args",
-                    "[\"--hdr-enabled\", \"--expose-wayland\"]"
-                ),
+                ("gamescope.args", "[\"--backend\", \"sdl\", \"a b\"]"),
             ]
         );
         assert!(edits.unset.is_empty());
-        // The switch and three fields.
         assert_eq!(form.changes(), 4);
     }
 
@@ -590,7 +573,7 @@ mod tests {
         assert_eq!(form.draft.fields.width, "1920");
         form.draft.fields.width.clear();
         form.draft.fields.grab_cursor = false;
-        form.draft.fields.args = " ".into();
+        form.draft.fields.args.clear();
         let edits = form.edits();
         assert!(edits.pairs.is_empty());
         assert_eq!(
@@ -600,36 +583,41 @@ mod tests {
     }
 
     #[test]
-    fn switching_gamescope_on_with_no_fields_writes_an_empty_table() {
-        let mut form = Form::new(values(WINE));
-        form.draft.gamescope = GamescopeState::On;
-        let edits = form.edits();
-        assert_eq!(pairs(&edits), [("gamescope.grab_cursor", "false")]);
-        assert_eq!(edits.unset, ["gamescope.grab_cursor"]);
-        assert_eq!(form.changes(), 1);
-    }
-
-    #[test]
-    fn switching_gamescope_off_and_resetting() {
+    fn switching_gamescope_off_unsets_it_and_on_again_restores_fields() {
         let mut form = Form::new(values(&format!("{WINE}[gamescope]\nwidth = 1920\n")));
-        form.draft.gamescope = GamescopeState::Off;
-        assert_eq!(pairs(&form.edits()), [("gamescope", "false")]);
+        form.draft.gamescope = false;
+        let edits = form.edits();
+        assert!(edits.pairs.is_empty());
+        assert_eq!(edits.unset, ["gamescope"]);
         assert_eq!(form.changes(), 1);
-        form.draft.gamescope = GamescopeState::Unset;
-        assert_eq!(form.edits().unset, ["gamescope"]);
-        // Turning it back on keeps the fields it had.
-        form.draft.gamescope = GamescopeState::On;
+        form.draft.gamescope = true;
         assert!(!form.is_dirty());
     }
 
     #[test]
-    fn gamescope_off_in_the_file_is_set_here() {
-        let form = Form::new(values(&format!("{WINE}gamescope = false\n")));
-        assert_eq!(gamescope_state(form.draft.gamescope), (false, Source::Here));
-        assert_eq!(
-            gamescope_state(GamescopeState::Unset),
-            (false, Source::Default)
-        );
+    fn a_hand_written_false_reads_as_off() {
+        let mut form = Form::new(values(&format!("{WINE}gamescope = false\n")));
+        assert!(!form.draft.gamescope);
+        assert!(form.edits().is_empty());
+        form.draft.gamescope = true;
+        assert_eq!(pairs(&form.edits()), [("gamescope", "{}")]);
+    }
+
+    #[test]
+    fn fields_typed_while_off_survive_a_reload() {
+        let mut form = Form::new(values(WINE));
+        form.draft.fields.width = "1280".into();
+        let form = Form::reloaded(values(WINE), Some(&form));
+        assert!(!form.is_dirty());
+        assert_eq!(form.draft.fields.width, "1280");
+    }
+
+    #[test]
+    fn numbers_compare_by_value() {
+        let mut form = Form::new(values(&format!("{WINE}[gamescope]\nwidth = 5\n")));
+        assert!(form.draft.fields.set_text(Field::Width, "05".into()));
+        assert!(!form.is_dirty());
+        assert!(form.edits().is_empty());
     }
 
     #[test]
@@ -637,14 +625,19 @@ mod tests {
         let mut fields = GamescopeFields::default();
         assert!(!fields.set_text(Field::Width, "19x".into()));
         assert!(!fields.set_text(Field::Width, "-1".into()));
+        assert!(!fields.set_text(Field::Width, "+5".into()));
+        assert!(!fields.set_text(Field::Width, "4294967296".into()));
         assert!(fields.set_text(Field::Width, "1920".into()));
         assert!(fields.set_text(Field::Width, String::new()));
-        assert!(fields.set_text(Field::Args, "-x y".into()));
+        assert!(!fields.set_text(Field::Args, "1".into()));
     }
 
     #[test]
     fn args_are_quoted_for_toml() {
-        assert_eq!(toml_array(&["a\"b", "c\\d"]), r#"["a\"b", "c\\d"]"#);
+        assert_eq!(
+            toml_array(&["a\"b".into(), "c\\d".into()]),
+            r#"["a\"b", "c\\d"]"#
+        );
     }
 
     #[test]
