@@ -707,6 +707,11 @@ fn native_on_path(path_var: &OsStr, name: &str) -> Option<PathBuf> {
         .find(|candidate| runner::is_executable(candidate))
 }
 
+/// Returns the target a launch without `--target` would use.
+pub fn default_target(environment: &Environment) -> Result<&str> {
+    resolve_target(environment, None).map(|(name, _)| name)
+}
+
 fn resolve_target<'a>(
     environment: &'a Environment,
     requested: Option<&str>,
@@ -1010,6 +1015,7 @@ mod tests {
         );
         assert_eq!(resolve_target(&env, Some("c")).unwrap().0, "c");
         assert_eq!(resolve_target(&env, None).unwrap().0, "b");
+        assert_eq!(default_target(&env).unwrap(), "b");
         assert!(matches!(
             resolve_target(&env, Some("zzz")),
             Err(Error::UnknownTarget { .. })
@@ -1017,6 +1023,7 @@ mod tests {
 
         let single = environment("[targets.only]\nexe = \"x\"\n");
         assert_eq!(resolve_target(&single, None).unwrap().0, "only");
+        assert_eq!(default_target(&single).unwrap(), "only");
 
         let none = environment("");
         assert!(matches!(
