@@ -261,6 +261,11 @@ pub fn create(
         }
     })();
     if started {
+        // Best effort, and before the caller cleans up: wineserver would refill
+        // the directory otherwise.
+        if matches!(result, Err(Error::Canceled(_))) {
+            let _ = runner.stop_server(dir, token);
+        }
         events(PrefixEvent::Finished);
     }
     result

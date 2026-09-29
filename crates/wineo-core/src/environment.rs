@@ -524,16 +524,22 @@ fn build_new_prefix(
 }
 
 /// Removes everything inside `dir`. Symlinks are unlinked, never followed.
+/// Keeps going after a failed entry and returns the first error.
 fn empty_dir(dir: &Path) -> io::Result<()> {
+    let mut first = None;
     for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            fs::remove_dir_all(entry.path())?;
-        } else {
-            fs::remove_file(entry.path())?;
+        let removed = entry.and_then(|entry| {
+            if entry.file_type()?.is_dir() {
+                fs::remove_dir_all(entry.path())
+            } else {
+                fs::remove_file(entry.path())
+            }
+        });
+        if let Err(err) = removed {
+            first.get_or_insert(err);
         }
     }
-    Ok(())
+    first.map_or(Ok(()), Err)
 }
 
 fn write_new(path: &Path, contents: &str) -> Result<()> {
@@ -1175,6 +1181,32 @@ mod tests {
         );
         assert!(!prefix.exists());
         assert!(!paths.environment_config("canceled").exists());
+    }
+
+    #[test]
+    fn empty_dir_keeps_going_after_a_failed_entry() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let stuck = root.path().join("stuck");
+        fs::create_dir(&stuck).unwrap();
+        fs::write(stuck.join("inner"), "x").unwrap();
+        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o500)).unwrap();
+        for name in ["a", "b", "c"] {
+            fs::write(root.path().join(name), "x").unwrap();
+        }
+
+        let result = empty_dir(root.path());
+        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o700)).unwrap();
+        // Running as root removes the stuck directory too.
+        if result.is_ok() {
+            return;
+        }
+        let left: Vec<_> = fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["stuck"]);
     }
 
     #[test]

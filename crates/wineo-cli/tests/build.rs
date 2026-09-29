@@ -445,3 +445,106 @@ fn exec_builds_a_real_wine_prefix_from_a_hand_written_config() {
     assert_success(&again);
     assert!(!stderr(&again).contains("Creating"), "{}", stderr(&again));
 }
+
+/// Live processes that inherited `prefix` as their WINEPREFIX, which is how
+/// wineserver and its services can be told apart from other prefixes' wine.
+fn wine_processes_in(prefix: &Path) -> Vec<String> {
+    let needle = format!("WINEPREFIX={}", prefix.display());
+    let mut found = Vec::new();
+    for entry in fs::read_dir("/proc").unwrap().flatten() {
+        let path = entry.path();
+        let Ok(environ) = fs::read(path.join("environ")) else {
+            continue;
+        };
+        if !environ
+            .split(|byte| *byte == 0)
+            .any(|var| var == needle.as_bytes())
+        {
+            continue;
+        }
+        let stat = fs::read_to_string(path.join("stat")).unwrap_or_default();
+        // The state follows the parenthesized name, and zombies are as good as gone.
+        if stat
+            .rsplit(") ")
+            .next()
+            .is_some_and(|rest| rest.starts_with('Z'))
+        {
+            continue;
+        }
+        let name = fs::read_to_string(path.join("comm")).unwrap_or_default();
+        found.push(format!(
+            "{} {}",
+            entry.file_name().to_string_lossy(),
+            name.trim()
+        ));
+    }
+    found
+}
+
+/// Stops any wineserver a failed test left behind.
+struct ServerGuard<'a>(&'a Path);
+
+impl Drop for ServerGuard<'_> {
+    fn drop(&mut self) {
+        let _ = Command::new("wineserver")
+            .arg("-k")
+            .env("WINEPREFIX", self.0)
+            .output();
+    }
+}
+
+fn cancel_real_new(f: &Fixture, prefix: &Path, args: &[&str]) -> std::process::Output {
+    let child = f
+        .wineo()
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for("wineboot to write into the prefix", || {
+        fs::read_dir(prefix).is_ok_and(|mut entries| entries.next().is_some())
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    interrupt(&child);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(130), "{}", stderr(&output));
+    assert!(stderr(&output).ends_with("Canceled. Nothing was created.\n"));
+    // Wine used to keep rewriting the prefix a few seconds after the cleanup.
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    output
+}
+
+#[test]
+#[ignore = "runs wine"]
+fn ctrl_c_during_real_new_in_an_existing_empty_dir_leaves_it_empty() {
+    let f = Fixture::real();
+    let prefix = f.root.path().join("chosen");
+    fs::create_dir(&prefix).unwrap();
+    let _guard = ServerGuard(&prefix);
+
+    cancel_real_new(
+        &f,
+        &prefix,
+        &["new", "-n", "real", "--dir", prefix.to_str().unwrap()],
+    );
+
+    assert!(prefix.is_dir());
+    let left: Vec<_> = fs::read_dir(&prefix).unwrap().flatten().collect();
+    assert!(left.is_empty(), "{left:?}");
+    assert_eq!(wine_processes_in(&prefix), Vec::<String>::new());
+    assert!(f.created_config("real").is_empty());
+}
+
+#[test]
+#[ignore = "runs wine"]
+fn ctrl_c_during_real_new_removes_a_dir_wineo_made_for_good() {
+    let f = Fixture::real();
+    let prefix = f.prefix_root().join("real");
+    let _guard = ServerGuard(&prefix);
+
+    cancel_real_new(&f, &prefix, &["new", "-n", "real"]);
+
+    assert!(!prefix.exists());
+    assert_eq!(wine_processes_in(&prefix), Vec::<String>::new());
+    assert!(f.created_config("real").is_empty());
+}

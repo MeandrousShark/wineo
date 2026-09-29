@@ -25,6 +25,9 @@ const LEADERLESS_GRACE: Duration = Duration::from_millis(200);
 /// answers well within this.
 const IDLE_NOTE_AFTER: Duration = Duration::from_millis(250);
 
+/// How long `stop_server` waits for a killed wineserver to be gone.
+const SERVER_STOP_WAIT: Duration = Duration::from_secs(10);
+
 /// What ending a lost run found to kill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Killed {
@@ -422,6 +425,41 @@ impl Runner {
             .status()
             .context(|| "failed to run wineserver -k".to_owned())?;
         Ok(Killed::Done)
+    }
+
+    /// Stops the wineserver of a prefix nothing else uses, and waits a bounded
+    /// time for it to exit. Wineserver and its services sit outside the process
+    /// group a canceled `wineboot` is signaled through, so they would keep
+    /// writing the prefix after the caller cleaned it up. Proton has no
+    /// wineserver to reach; wineo signals umu's whole process group instead.
+    pub(crate) fn stop_server(&self, prefix: &Path, token: &crate::cancel::Token) -> Result<()> {
+        let Some(mut command) = self.wineserver(prefix) else {
+            return Ok(());
+        };
+        quietly(command.arg("-k"))
+            .status()
+            .context(|| "failed to run wineserver -k".to_owned())?;
+        let Some(mut command) = self.wineserver(prefix) else {
+            return Ok(());
+        };
+        let mut child = quietly(command.arg("-w"))
+            .spawn()
+            .context(|| "failed to run wineserver -w".to_owned())?;
+        let deadline = Instant::now() + SERVER_STOP_WAIT;
+        // A second Ctrl+C gives up waiting rather than holding the exit.
+        while !token.is_forced() && Instant::now() < deadline {
+            if child
+                .try_wait()
+                .context(|| "failed to wait for wineserver -w".to_owned())?
+                .is_some()
+            {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        Ok(())
     }
 
     /// Kills only work whose recorded leader still proves ownership.
