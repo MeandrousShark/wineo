@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0038: GUI new, import, and clone
 
@@ -18,6 +18,11 @@ and winetricks tools follow in 0040.
 
 - Manual artwork selection is a first-class option alongside SteamGridDB.
   Each art kind has **Browse...**, available without a key or network access.
+- The maintainer approved the recommendations on 2026-09-29. The new
+  environment finish page also has **Launch game when this page closes**,
+  unchecked by default. It is available only with a playable target and
+  resolved installer cleanup. Leaving that page starts the chosen default
+  target once when checked; imports and clones keep their no-launch default.
 
 ## Existing foundation
 
@@ -99,7 +104,11 @@ The existing Play path keeps its config-first prefix creation behavior.
 
 Keep general launch tuning on the existing settings page. Once creation
 finishes, offer **Open settings** and **Back to library**, selecting the new
-card and clearing a search that would hide it. Do not start its game.
+card and clearing a search that would hide it. The finish page has **Launch
+game when this page closes**, unchecked by default. Closing the page through
+Back to library or Open settings launches once only when checked and there
+is a playable target with resolved installer cleanup. Closing the application
+does not launch a game.
 
 ### Installers and target setup
 
@@ -237,6 +246,9 @@ copy operation when the GUI exits.
 
 ## Decisions for the maintainer
 
+All five recommendations were approved on 2026-09-29, with the opt-in launch
+checkbox above added to the new environment finish page.
+
 1. **Page shape and entry points:** approve the full-page flows, Add menu,
    and shared card/panel actions menus, or prefer a different arrangement?
 2. **Heroic scope:** include single-game and batch import in 0038 as
@@ -306,6 +318,7 @@ storage behavior requires an amendment approved by the maintainer.
   supported Heroic platforms and libraries.
 - No remove/trash/validate, general downloads or art management, snapshots,
   portable copies, arbitrary exec, or standalone winetricks UI.
-- No copying external game folders, editing Heroic settings, or automatically
-  launching created/imported/cloned games.
+- No copying external game folders or editing Heroic settings. Launch after
+  creation requires the unchecked-by-default finish-page checkbox; imports
+  and clones do not launch automatically.
 - No gamepad navigation, alternate library layouts, or visual-polish redesign.
