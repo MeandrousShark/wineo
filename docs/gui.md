@@ -5,7 +5,9 @@ of cards with its art, whether it's running, and how long it's been played,
 and it starts and stops games. It was added in
 [plan 0036](plans/0036-gui-library-launcher.md).
 
-For now it's a launcher. Creating, importing, editing, and removing
+[Plan 0037](plans/0037-gui-settings.md) added settings pages for each
+environment and for the global config, covering what `wineo set` and the
+target half of `wineo setup` do. Creating, importing, and removing
 environments still happen in the `wineo` CLI, and the app picks up the
 changes on its own.
 
@@ -57,6 +59,75 @@ Games keep running after you close the app, the same as games started with
 If wineo lost track of a run, for example after a crash, the error has a
 **Clean up** button that does what `wineo stop` does.
 
+**Settings** opens the environment's settings page.
+
+## Settings
+
+The panel's **Settings** button opens an environment's page, and the gear
+in the top bar opens the global one. Both replace the library until you
+press **Back**.
+
+Edits collect on the page, and the bar at the bottom counts them.
+**Save** writes them the way `wineo set` does, with the same checks, and
+keeps the file's comments and formatting. **Revert** throws them away.
+Leaving with unsaved edits asks first. While a save runs, the controls are
+locked, since installing DXVK or vkd3d-proton can take a moment. The bar
+then says what changed, and whether a running game picks it up the next
+time it starts.
+
+If the file changes on disk while the page is open, from the CLI or an
+editor, the page reloads on its own when you have no edits. With edits, the
+bar says so, and **Reload** replaces them with what's on disk.
+
+A config that can't be read shows its error and an **Open config file**
+button, and the page reloads once the file is fixed.
+
+### Environment settings
+
+- **Runner:** the runner, from the installed ones, the system wine, and
+  aliases like `GE-Proton-Latest`. Switching between Wine and Proton is
+  refused, since their prefixes aren't compatible. Arch is shown but can't
+  change once the prefix exists.
+- **Launch:** gamemode, MangoHud, and Wayland follow the global config
+  until you flip them. The label says where the value comes from, and
+  **Reset** goes back to following it. Gamescope is a plain switch, since
+  there's no global gamescope. Turning it off forgets its fields when you
+  save, but the page remembers them until you leave, so flipping it back on
+  restores them.
+- **Components (Wine only):** DXVK and vkd3d-proton, each None, Latest, or
+  an installed build. vkd3d-proton needs DXVK. On Proton they're off, and a
+  leftover value gets a **Remove** button.
+- **Winetricks (Wine only)** and **Tags:** chips. Type one and press Enter
+  or **+**.
+- **Environment variables:** name and value rows. `WINEPREFIX` is refused
+  in Wine environments, since wineo manages it.
+- **Targets:** a card per target with its exe, arguments, working
+  directory, desktop entry and its name, and whether it's the default. Its
+  gamemode, MangoHud, Wayland, and gamescope follow the environment until
+  you flip them, like above. **Edit here** copies the environment's
+  gamescope settings into the target, since a target's gamescope replaces
+  the environment's whole table. **Add target** offers the programs
+  installed in the prefix, like `wineo setup`, or a typed path. **Remove**
+  says which desktop entry and art go with the target first. Targets can't
+  be renamed, and a removed name can be used again after saving.
+- **Advanced:** the prefix path, and the game id and store protonfixes use
+  (Proton only). The Heroic id and the kind are shown but can't change.
+
+Native environments only show what they can use. Paths typed on the page
+have to be absolute or start with `~/`, except inside a portable folder.
+
+### Global settings
+
+- **Launch defaults:** gamemode, MangoHud, and Wayland for every
+  environment that doesn't set its own.
+- **New environments:** the runner and arch `wineo new` uses, and where
+  prefixes, runners, DXVK, and vkd3d-proton builds go.
+- **Runs:** how long `stop` waits before killing a game, and how big a log
+  gets.
+- **Art:** whether `new` and `import` fetch every kind of art or only the
+  icon.
+- **Environment variables** for every launch.
+
 ## Keyboard
 
 | Key | Does |
@@ -67,6 +138,14 @@ If wineo lost track of a run, for example after a crash, the error has a
 | `/` or Ctrl+F | Search |
 | Down (in the search) | Back to the cards |
 
+On a settings page:
+
+| Key | Does |
+|---|---|
+| Ctrl+S | Save |
+| Tab, Shift+Tab | Move between text fields |
+| Esc | Leave the field, then the page, asking first if there are edits |
+
 ## Look
 
 The app follows your desktop's light or dark preference and switches when
@@ -74,7 +153,8 @@ it changes.
 
 ## Not yet
 
-- Creating and importing environments, editing settings, validating, and
-  the trash come in later plans.
+- Creating, importing, and cloning environments come in plan 0038.
+  Removing, the trash, and validating come after, then snapshots, portable
+  copies, art, downloads, and running programs.
 - Gamepad navigation.
 - Fetching art from the app. Use `wineo art fetch`.

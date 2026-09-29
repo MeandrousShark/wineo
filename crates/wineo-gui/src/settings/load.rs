@@ -22,6 +22,7 @@ use wineo_core::{art, prefix, programs, target_path, winpath};
 
 use super::Event;
 use super::form::{Edits, Inherited, Values};
+use super::global;
 use crate::Message;
 use crate::panel::PanelError;
 
@@ -71,7 +72,14 @@ pub(crate) struct Loaded {
 #[derive(Debug, Clone)]
 pub(crate) enum Content {
     Form(Box<Loaded>),
+    Global(Box<GlobalLoaded>),
     Error(String),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GlobalLoaded {
+    pub(crate) values: global::Values,
+    pub(crate) runners: Vec<RunnerChoice>,
 }
 
 /// The environment and global config files as read, so a later read can tell
@@ -86,6 +94,12 @@ impl Texts {
     pub(crate) fn read(paths: &Paths, name: &str) -> Self {
         Self {
             environment: read_text(&paths.environment_config(name)),
+            global: read_text(&paths.global_config()),
+        }
+    }
+    pub(crate) fn read_global(paths: &Paths) -> Self {
+        Self {
+            environment: None,
             global: read_text(&paths.global_config()),
         }
     }
@@ -111,6 +125,19 @@ pub(crate) fn snapshot(paths: &Paths, name: &str) -> Snapshot {
     let texts = Texts::read(paths, name);
     let content = match content(paths, name) {
         Ok(loaded) => Content::Form(Box::new(loaded)),
+        Err(error) => Content::Error(format!("{error:#}")),
+    };
+    Snapshot { texts, content }
+}
+
+pub(crate) fn snapshot_global(paths: &Paths) -> Snapshot {
+    let texts = Texts::read_global(paths);
+    let content = match GlobalConfig::load(paths) {
+        Ok(config) => {
+            let values = global::Values::from_config(&config, texts.global.as_deref());
+            let (runners, _) = runner_choices(paths, &config, &config.defaults.runner);
+            Content::Global(Box::new(GlobalLoaded { values, runners }))
+        }
         Err(error) => Content::Error(format!("{error:#}")),
     };
     Snapshot { texts, content }
@@ -297,7 +324,7 @@ pub(crate) fn resolve_exe(paths: &Paths, name: &str, typed: &str) -> Result<Stri
 
 /// The system wine, installed runners, and aliases, in `wineo runners` order,
 /// plus the configured runner when it's none of those.
-fn runner_choices(
+pub(crate) fn runner_choices(
     paths: &Paths,
     global: &GlobalConfig,
     configured: &str,
@@ -456,6 +483,18 @@ pub(crate) fn save(paths: &Paths, name: &str, edits: &Edits) -> Result<Report, S
     }
 }
 
+pub(crate) fn save_global(paths: &Paths, edits: &Edits) -> Result<Report, String> {
+    let pairs: Vec<(&str, &str)> = edits
+        .pairs
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    let unset: Vec<&str> = edits.unset.iter().map(String::as_str).collect();
+    settings::apply(paths, ConfigFile::Global, &pairs, &unset)
+        .map(|applied| report("global settings", applied))
+        .map_err(|error| PanelError::from_error(&error).text)
+}
+
 fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     done: impl FnOnce(Result<T, String>) -> Message + Send + 'static,
@@ -470,9 +509,20 @@ fn blocking<T: Send + 'static>(
     )
 }
 
-pub(crate) fn load_task(paths: Paths, name: String, generation: u64) -> Task<Message> {
+pub(crate) fn load_task(
+    paths: Paths,
+    name: String,
+    global: bool,
+    generation: u64,
+) -> Task<Message> {
     blocking(
-        move || snapshot(&paths, &name),
+        move || {
+            if global {
+                snapshot_global(&paths)
+            } else {
+                snapshot(&paths, &name)
+            }
+        },
         move |result| {
             Message::Settings(Event::Loaded(
                 generation,
@@ -488,11 +538,18 @@ pub(crate) fn load_task(paths: Paths, name: String, generation: u64) -> Task<Mes
 pub(crate) fn check_task(
     paths: Paths,
     name: String,
+    global: bool,
     generation: u64,
     sequence: u64,
 ) -> Task<Message> {
     blocking(
-        move || Texts::read(&paths, &name),
+        move || {
+            if global {
+                Texts::read_global(&paths)
+            } else {
+                Texts::read(&paths, &name)
+            }
+        },
         move |result| {
             // A failed read is left for the next tick.
             match result {
@@ -506,11 +563,18 @@ pub(crate) fn check_task(
 pub(crate) fn save_task(
     paths: Paths,
     name: String,
+    global: bool,
     edits: Edits,
     generation: u64,
 ) -> Task<Message> {
     blocking(
-        move || save(&paths, &name, &edits),
+        move || {
+            if global {
+                save_global(&paths, &edits)
+            } else {
+                save(&paths, &name, &edits)
+            }
+        },
         move |result| Message::Settings(Event::Saved(generation, result.and_then(|saved| saved))),
     )
 }

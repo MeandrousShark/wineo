@@ -49,6 +49,14 @@ pub fn unset(doc: &mut DocumentMut, scope: Scope, key: &str) -> Result<bool, Edi
     }
 }
 
+/// Whether a parsed global file explicitly sets a key that also has a default.
+pub fn global_has_key(text: &str, key: &str) -> bool {
+    let Ok(doc) = text.parse::<DocumentMut>() else {
+        return false;
+    };
+    doc.get(key).is_some()
+}
+
 fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
     match key {
         "prefix" => {
@@ -118,6 +126,17 @@ fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
             let value = parse_arch_value(key, raw)?;
             let table = ensure_table(root, "defaults", "defaults", false)?;
             store_value(table, "arch", value);
+            Ok(())
+        }
+        "art.fetch" => {
+            if !matches!(raw, "all" | "icon") {
+                return Err(EditError::InvalidValue {
+                    key: key.to_owned(),
+                    reason: format!("expected `all` or `icon`, got `{raw}`"),
+                });
+            }
+            let table = ensure_table(root, "art", "art", false)?;
+            store_value(table, "fetch", Value::from(raw.to_owned()));
             Ok(())
         }
         "gamemode" | "wayland" | "mangohud" => {
@@ -382,6 +401,7 @@ fn unset_global(root: &mut Table, key: &str) -> Result<bool, EditError> {
         "defaults.runner_root" => unset_field(root, "defaults", "defaults", "runner_root"),
         "defaults.dxvk_root" => unset_field(root, "defaults", "defaults", "dxvk_root"),
         "defaults.vkd3d_root" => unset_field(root, "defaults", "defaults", "vkd3d_root"),
+        "art.fetch" => unset_field(root, "art", "art", "fetch"),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
                 let var = validate_env_var(key, var)?;
@@ -627,6 +647,19 @@ mod tests {
 
     fn parse(s: &str) -> DocumentMut {
         s.parse().expect("valid toml")
+    }
+
+    #[test]
+    fn global_art_fetch_sets_and_unsets_without_losing_comments() {
+        let mut doc = parse("# art choice\n[art]\nfetch = \"all\" # selected\n");
+        set(&mut doc, Scope::Global, "art.fetch", "icon").unwrap();
+        assert_eq!(
+            doc.to_string(),
+            "# art choice\n[art]\nfetch = \"icon\" # selected\n"
+        );
+        assert!(unset(&mut doc, Scope::Global, "art.fetch").unwrap());
+        assert!(!doc.to_string().contains("fetch"));
+        assert!(set(&mut doc, Scope::Global, "art.fetch", "wrong").is_err());
     }
 
     // -- parse_assignment --

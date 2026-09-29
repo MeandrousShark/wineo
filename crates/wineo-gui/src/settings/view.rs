@@ -5,8 +5,10 @@ use iced::widget::{
 use iced::{Center, Color, Element, Fill, Font, border, font};
 
 use wineo_core::components::Component;
+use wineo_core::config::{self, Arch, ArtFetch};
 
 use super::form::{self, Build, Choice, Field, GamescopeFields, List, Source, Switch};
+use super::global::{self, ArtChoice};
 use super::load::Scan;
 use super::{Editor, Event, Page, TargetEdit, View};
 use crate::Message;
@@ -68,6 +70,7 @@ impl Page {
             View::Form(editor) => {
                 editor_view(&self.name, editor, self.locked(), self.resolving(), palette)
             }
+            View::Global(editor) => global_view(editor, self.locked(), palette),
         };
         let scroll = scrollable(
             container(container(body).max_width(PAGE_WIDTH).width(Fill))
@@ -77,7 +80,7 @@ impl Page {
         .width(Fill)
         .height(Fill);
         let mut page = column![header, divider(palette), scroll];
-        if matches!(self.view, View::Form(_)) {
+        if matches!(self.view, View::Form(_) | View::Global(_)) {
             page = page
                 .push(divider(palette))
                 .push(self.save_bar(palette, spinner));
@@ -269,7 +272,14 @@ fn editor_view<'a>(
     ));
     sections = sections.push(section(
         "Environment variables",
-        env_rows(editor, locked, palette),
+        env_rows(
+            &draft.env,
+            &editor.new_env,
+            draft.env_problems(),
+            draft.new_env_problem(&editor.new_env.key, &editor.new_env.value),
+            locked,
+            palette,
+        ),
         palette,
     ));
     sections = sections.push(section(
@@ -283,6 +293,132 @@ fn editor_view<'a>(
         palette,
     ));
     sections.into()
+}
+
+fn global_view(editor: &global::Editor, locked: bool, palette: Palette) -> Element<'_, Message> {
+    let draft = &editor.form.draft;
+    let mut launch = column![].spacing(12);
+    for key in Switch::ALL {
+        launch = launch.push(switch_row(
+            key.label(),
+            draft.switch(key).unwrap_or(false),
+            None,
+            move |on| send(Event::GlobalSwitch(key, on)),
+            None,
+            locked,
+            palette,
+        ));
+    }
+    let selected_runner = editor
+        .runners
+        .iter()
+        .find(|choice| choice.name == draft.runner);
+    let runner: Element<'_, Message> = if locked {
+        locked_choice(&draft.runner, palette)
+    } else {
+        pick_list(editor.runners.as_slice(), selected_runner, |choice| {
+            send(Event::GlobalRunner(choice))
+        })
+        .on_open(send(Event::MenuOpened))
+        .on_close(send(Event::MenuClosed))
+        .width(CONTROL_WIDTH)
+        .into()
+    };
+    let arch: Element<'_, Message> = if locked {
+        locked_choice(draft.arch.as_str(), palette)
+    } else {
+        pick_list([Arch::Win64, Arch::Win32], Some(draft.arch), |arch| {
+            send(Event::GlobalArch(arch))
+        })
+        .on_open(send(Event::MenuOpened))
+        .on_close(send(Event::MenuClosed))
+        .width(CONTROL_WIDTH)
+        .into()
+    };
+    let mut new_env = column![
+        setting_row("Runner", runner, None, palette),
+        setting_row("Arch", arch, None, palette),
+    ]
+    .spacing(12);
+    for field in global::Field::ROOTS {
+        new_env = new_env.push(setting_row(
+            field.label(),
+            text_field(
+                "unset",
+                draft.field(field),
+                locked,
+                move |value| send(Event::GlobalField(field, value)),
+                palette,
+            ),
+            None,
+            palette,
+        ));
+        let value = draft.field(field);
+        if value != editor.form.loaded.field(field)
+            && !value.is_empty()
+            && !std::path::Path::new(value).is_absolute()
+            && !value.starts_with("~/")
+        {
+            new_env = new_env.push(
+                text("The prefix must be absolute or start with ~/.")
+                    .size(12)
+                    .color(palette.danger),
+            );
+        }
+    }
+    let mut runs = column![].spacing(12);
+    for field in global::Field::NUMBERS {
+        let placeholder = match field {
+            global::Field::StopTimeout => config::DEFAULT_STOP_TIMEOUT.to_string(),
+            global::Field::LogLimitMb => config::DEFAULT_LOG_LIMIT_MB.to_string(),
+            _ => unreachable!("number fields"),
+        };
+        runs = runs.push(setting_row(
+            field.label(),
+            text_field(
+                &placeholder,
+                draft.field(field),
+                locked,
+                move |value| send(Event::GlobalField(field, value)),
+                palette,
+            ),
+            None,
+            palette,
+        ));
+    }
+    let art_choices = [ArtChoice(ArtFetch::All), ArtChoice(ArtFetch::Icon)];
+    let art: Element<'_, Message> = if locked {
+        locked_choice(&ArtChoice(draft.art_fetch).to_string(), palette)
+    } else {
+        pick_list(art_choices, Some(ArtChoice(draft.art_fetch)), |choice| {
+            send(Event::GlobalArt(choice.0))
+        })
+        .on_open(send(Event::MenuOpened))
+        .on_close(send(Event::MenuClosed))
+        .width(CONTROL_WIDTH)
+        .into()
+    };
+    column![
+        section("Launch defaults", launch.into(), palette),
+        section("New environments", new_env.into(), palette),
+        section("Runs", runs.into(), palette),
+        section("Art", setting_row("Fetch", art, None, palette), palette),
+        section(
+            "Environment variables",
+            env_rows(
+                &draft.env,
+                &editor.new_env,
+                draft.env_problems(),
+                draft.new_env_problem(&editor.new_env.key, &editor.new_env.value),
+                locked,
+                palette
+            ),
+            palette
+        ),
+    ]
+    .spacing(24)
+    .width(Fill)
+    .into()
 }
 
 fn indented(content: Element<'_, Message>) -> Element<'_, Message> {
@@ -894,8 +1030,14 @@ fn list_chips(editor: &Editor, list: List, locked: bool, palette: Palette) -> El
 
 const ENV_KEY_WIDTH: f32 = 220.0;
 
-fn env_rows(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Message> {
-    let draft = &editor.form.draft;
+fn env_rows<'a>(
+    env: &'a [form::EnvRow],
+    new: &'a form::EnvRow,
+    problems: Vec<Option<String>>,
+    new_problem: Option<String>,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
     let mut rows = column![].spacing(8);
     let field = |placeholder: &str, value: &str, width: iced::Length| {
         text_input(placeholder, value)
@@ -903,7 +1045,7 @@ fn env_rows(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Mess
             .padding([6, 10])
             .style(move |_, status| input_style(palette, status))
     };
-    for (index, (row, problem)) in draft.env.iter().zip(draft.env_problems()).enumerate() {
+    for (index, (row, problem)) in env.iter().zip(problems).enumerate() {
         let line = row![
             field("NAME", &row.key, ENV_KEY_WIDTH.into())
                 .on_input_maybe((!locked).then_some(move |key| send(Event::EnvKey(index, key)))),
@@ -922,9 +1064,8 @@ fn env_rows(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Mess
             rows = rows.push(text(problem).size(12).color(palette.danger));
         }
     }
-    let new = &editor.new_env;
     let problem = (!new.key.is_empty() || !new.value.is_empty())
-        .then(|| draft.new_env_problem(&new.key, &new.value))
+        .then_some(new_problem)
         .flatten();
     let can_add = !locked && problem.is_none() && !new.key.is_empty();
     rows = rows.push(

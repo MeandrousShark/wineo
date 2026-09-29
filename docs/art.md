@@ -273,6 +273,9 @@ them to the icon:
 fetch = "icon"   # or "all", the default
 ```
 
+`wineo set --global art.fetch=icon` sets it from the command line, and the
+desktop app's global settings page has it too.
+
 This only applies to `new` and `import`. `wineo art fetch` always fetches
 every kind unless `--only` says otherwise.
 

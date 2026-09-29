@@ -194,6 +194,11 @@ impl App {
                     })
                     .color(palette.foreground),
                 search,
+                Space::new().width(Fill),
+                button(text("⚙").size(19))
+                    .on_press(Message::OpenGlobalSettings)
+                    .padding([4, 10])
+                    .style(move |_, status| crate::chips::secondary(palette, status)),
             ]
             .spacing(16)
             .align_y(Center),

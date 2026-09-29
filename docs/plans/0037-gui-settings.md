@@ -273,3 +273,16 @@ Targets                                         [+ Add target]
   change.
 - A round trip test: load a commented config, change one control, save, and
   check that only that line changed.
+
+## Verification progress (2026-09-29)
+
+All six implementation steps are present. Maintainer acceptance testing is
+pending, so the plan remains approved.
+
+- Formatting, Clippy with warnings denied, and the CLI and GUI release builds pass.
+- The frozen workspace test gate passes: 1,482 passed, 16 ignored.
+- Isolated X11 GUI checks cover global settings, saving with comments preserved,
+  reverting, and the unsaved-changes prompt.
+- Settings shortcuts now bypass the absent library search widget. Regression
+  tests cover both settings pages; GUI checks confirm Ctrl+S with and without
+  a focused field, Tab navigation, and Escape to blur then return to the library.

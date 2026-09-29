@@ -1,12 +1,14 @@
-//! The environment settings page, which replaces the library while open.
+//! The settings page, which replaces the library while open.
 
 mod form;
+mod global;
 mod load;
 mod view;
 
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use wineo_core::components::Component;
+use wineo_core::config::{Arch, ArtFetch};
 use wineo_core::paths::Paths;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -48,6 +50,11 @@ pub(crate) enum Event {
     Prefix(String),
     GameId(String),
     Store(String),
+    GlobalSwitch(Switch, bool),
+    GlobalRunner(RunnerChoice),
+    GlobalArch(Arch),
+    GlobalField(global::Field, String),
+    GlobalArt(ArtFetch),
     /// An edit on one target's card.
     Target(String, TargetEdit),
     /// Opens or closes a target's card, which only changes the view.
@@ -134,6 +141,11 @@ impl Event {
                 | Event::Prefix(_)
                 | Event::GameId(_)
                 | Event::Store(_)
+                | Event::GlobalSwitch(..)
+                | Event::GlobalRunner(_)
+                | Event::GlobalArch(_)
+                | Event::GlobalField(..)
+                | Event::GlobalArt(_)
                 | Event::Target(..)
                 | Event::ProgramPicked(_)
                 | Event::NewTargetName(_)
@@ -357,6 +369,7 @@ impl Editor {
 pub(crate) enum View {
     Loading,
     Form(Box<Editor>),
+    Global(Box<global::Editor>),
     Error(String),
 }
 
@@ -377,12 +390,14 @@ struct Pending {
     mode: Mode,
     /// The draft when the load started, to tell edits made since.
     draft: Option<Values>,
+    global_draft: Option<global::Values>,
     /// Follows a save, so the controls stay locked until it lands.
     after_save: bool,
 }
 
 pub(crate) struct Page {
     pub(crate) name: String,
+    global: bool,
     /// Tells this page's worker results from those of a page closed earlier.
     generation: u64,
     pub(crate) view: View,
@@ -442,6 +457,7 @@ impl Page {
     fn new(name: String, generation: u64) -> Self {
         Self {
             name,
+            global: false,
             generation,
             view: View::Loading,
             disk: None,
@@ -458,6 +474,11 @@ impl Page {
             scan_sequence: 0,
             resolving: None,
         }
+    }
+    fn new_global(generation: u64) -> Self {
+        let mut page = Self::new("Global".to_owned(), generation);
+        page.global = true;
+        page
     }
     pub(crate) fn resolving(&self) -> bool {
         self.resolving.is_some()
@@ -492,18 +513,33 @@ impl Page {
         self.checking = false;
     }
     pub(crate) fn is_dirty(&self) -> bool {
-        self.editor().is_some_and(|editor| editor.form.is_dirty())
+        match &self.view {
+            View::Form(editor) => editor.form.is_dirty(),
+            View::Global(editor) => editor.form.is_dirty(),
+            _ => false,
+        }
     }
     pub(crate) fn changes(&self) -> usize {
-        self.editor().map_or(0, |editor| editor.form.changes())
+        match &self.view {
+            View::Form(editor) => editor.form.changes(),
+            View::Global(editor) => editor.form.changes(),
+            _ => 0,
+        }
     }
     pub(crate) fn has_file(&self) -> bool {
-        self.disk
-            .as_ref()
-            .is_some_and(|texts| texts.environment.is_some())
+        self.disk.as_ref().is_some_and(|texts| {
+            if self.global {
+                texts.global.is_some()
+            } else {
+                texts.environment.is_some()
+            }
+        })
     }
     /// Why Save is off even though there are changes.
     pub(crate) fn problem(&self) -> Option<String> {
+        if let View::Global(editor) = &self.view {
+            return editor.form.problem();
+        }
         let editor = self.editor()?;
         // On Proton the builds can only be removed, so that reason comes
         // before one that points at a disabled picker.
@@ -546,9 +582,18 @@ impl Page {
         self.pending = Some(Pending {
             mode,
             draft: self.editor().map(|editor| editor.form.draft.clone()),
+            global_draft: match &self.view {
+                View::Global(editor) => Some(editor.form.draft.clone()),
+                _ => None,
+            },
             after_save,
         });
-        load::load_task(paths.clone(), self.name.clone(), self.generation)
+        load::load_task(
+            paths.clone(),
+            self.name.clone(),
+            self.global,
+            self.generation,
+        )
     }
     /// A stale save report would describe edits that are no longer there.
     fn edited(&mut self) {
@@ -567,6 +612,7 @@ impl Page {
         load::check_task(
             paths.clone(),
             self.name.clone(),
+            self.global,
             self.generation,
             self.check_sequence,
         )
@@ -580,6 +626,37 @@ impl Page {
     }
     fn handle(&mut self, paths: &Paths, event: Event) -> Step {
         if self.locked() && event.edits() {
+            return Step::none();
+        }
+        if self.global
+            && event.edits()
+            && !matches!(
+                event,
+                Event::GlobalSwitch(..)
+                    | Event::GlobalRunner(_)
+                    | Event::GlobalArch(_)
+                    | Event::GlobalField(..)
+                    | Event::GlobalArt(_)
+                    | Event::EnvKey(..)
+                    | Event::EnvValue(..)
+                    | Event::EnvRemove(_)
+                    | Event::NewEnvKey(_)
+                    | Event::NewEnvValue(_)
+                    | Event::EnvAdd
+            )
+        {
+            return Step::none();
+        }
+        if !self.global
+            && matches!(
+                event,
+                Event::GlobalSwitch(..)
+                    | Event::GlobalRunner(_)
+                    | Event::GlobalArch(_)
+                    | Event::GlobalField(..)
+                    | Event::GlobalArt(_)
+            )
+        {
             return Step::none();
         }
         if let Some(editor) = self.editor()
@@ -609,10 +686,11 @@ impl Page {
                 if !self.can_save() {
                     return Step::none();
                 }
-                let Some(editor) = self.editor() else {
-                    return Step::none();
+                let edits = match &self.view {
+                    View::Form(editor) => editor.form.edits(),
+                    View::Global(editor) => editor.form.edits(),
+                    _ => return Step::none(),
                 };
-                let edits = editor.form.edits();
                 if edits.is_empty() {
                     return Step::none();
                 }
@@ -623,6 +701,7 @@ impl Page {
                 Step::task(load::save_task(
                     paths.clone(),
                     self.name.clone(),
+                    self.global,
                     edits,
                     self.generation,
                 ))
@@ -634,6 +713,9 @@ impl Page {
                 self.edited();
                 if let Some(editor) = self.editor_mut() {
                     editor.clear_inputs();
+                }
+                if let View::Global(editor) = &mut self.view {
+                    editor.new_env = EnvRow::default();
                 }
                 Step::task(self.reload(paths, Mode::Replace))
             }
@@ -647,6 +729,10 @@ impl Page {
                     editor.clear_inputs();
                     editor.refusal = None;
                     editor.build_refusal = None;
+                }
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.revert();
+                    editor.new_env = EnvRow::default();
                 }
                 if self.changed_on_disk {
                     return Step::task(self.reload(paths, Mode::Replace));
@@ -784,11 +870,21 @@ impl Page {
                 if let Some(row) = self.draft().and_then(|draft| draft.env.get_mut(index)) {
                     row.key = key;
                     self.edited();
+                } else if let View::Global(editor) = &mut self.view
+                    && let Some(row) = editor.form.draft.env.get_mut(index)
+                {
+                    row.key = key;
+                    self.edited();
                 }
                 Step::none()
             }
             Event::EnvValue(index, value) => {
                 if let Some(row) = self.draft().and_then(|draft| draft.env.get_mut(index)) {
+                    row.value = value;
+                    self.edited();
+                } else if let View::Global(editor) = &mut self.view
+                    && let Some(row) = editor.form.draft.env.get_mut(index)
+                {
                     row.value = value;
                     self.edited();
                 }
@@ -801,16 +897,26 @@ impl Page {
                     draft.env.remove(index);
                     self.edited();
                 }
+                if let View::Global(editor) = &mut self.view
+                    && index < editor.form.draft.env.len()
+                {
+                    editor.form.draft.env.remove(index);
+                    self.edited();
+                }
                 Step::none()
             }
             Event::NewEnvKey(key) => {
                 if let Some(editor) = self.editor_mut() {
+                    editor.new_env.key = key;
+                } else if let View::Global(editor) = &mut self.view {
                     editor.new_env.key = key;
                 }
                 Step::none()
             }
             Event::NewEnvValue(value) => {
                 if let Some(editor) = self.editor_mut() {
+                    editor.new_env.value = value;
+                } else if let View::Global(editor) = &mut self.view {
                     editor.new_env.value = value;
                 }
                 Step::none()
@@ -829,6 +935,55 @@ impl Page {
                     let row = std::mem::take(&mut editor.new_env);
                     editor.form.draft.env.push(row);
                     self.edited();
+                }
+                if let View::Global(editor) = &mut self.view {
+                    let row = &editor.new_env;
+                    if editor
+                        .form
+                        .draft
+                        .new_env_problem(&row.key, &row.value)
+                        .is_none()
+                    {
+                        let row = std::mem::take(&mut editor.new_env);
+                        editor.form.draft.env.push(row);
+                        self.edited();
+                    }
+                }
+                Step::none()
+            }
+            Event::GlobalSwitch(key, on) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.set_switch(key, on);
+                }
+                Step::none()
+            }
+            Event::GlobalRunner(choice) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.runner = choice.name;
+                }
+                Step::none()
+            }
+            Event::GlobalArch(arch) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.arch = arch;
+                }
+                Step::none()
+            }
+            Event::GlobalField(field, value) => {
+                if let View::Global(editor) = &mut self.view
+                    && editor.form.draft.set_field(field, value)
+                {
+                    self.edited();
+                }
+                Step::none()
+            }
+            Event::GlobalArt(fetch) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.art_fetch = fetch;
                 }
                 Step::none()
             }
@@ -994,7 +1149,11 @@ impl Page {
                 self.menu_open = false;
                 Step::none()
             }
-            Event::OpenConfig => Step::task(load::open_task(paths.environment_config(&self.name))),
+            Event::OpenConfig => Step::task(load::open_task(if self.global {
+                paths.global_config()
+            } else {
+                paths.environment_config(&self.name)
+            })),
             Event::Opened(result) => {
                 self.error = result.err();
                 Step::none()
@@ -1042,7 +1201,7 @@ impl Page {
                     self.changed_on_disk = false;
                     return Step::none();
                 }
-                if disk.environment != texts.environment {
+                if self.global || disk.environment != texts.environment {
                     if self.is_dirty() {
                         self.changed_on_disk = true;
                         Step::none()
@@ -1050,8 +1209,7 @@ impl Page {
                         Step::task(self.reload(paths, Mode::Replace))
                     }
                 } else {
-                    // Only the global file changed, which nothing on the page
-                    // edits, so the inherited values can move under the edits.
+                    // Only the global file changed under an environment page.
                     Step::task(self.reload(paths, Mode::Rebase))
                 }
             }
@@ -1190,8 +1348,22 @@ impl Page {
     fn land(&mut self, pending: Pending, snapshot: Snapshot) {
         self.menu_open = false;
         let draft = self.editor().map(|editor| &editor.form.draft);
-        let edited_since = pending.mode == Mode::Replace && draft != pending.draft.as_ref();
+        let global_draft = match &self.view {
+            View::Global(editor) => Some(&editor.form.draft),
+            _ => None,
+        };
+        let edited_since = pending.mode == Mode::Replace
+            && (draft != pending.draft.as_ref() || global_draft != pending.global_draft.as_ref());
         match (pending.mode, snapshot.content) {
+            (Mode::Rebase, Content::Global(info)) if matches!(self.view, View::Global(_)) => {
+                let editor = match &mut self.view {
+                    View::Global(editor) => editor,
+                    _ => unreachable!("checked above"),
+                };
+                editor.form.rebase(info.values.clone());
+                editor.runners = info.runners;
+                self.disk = Some(snapshot.texts);
+            }
             (Mode::Rebase, Content::Form(info)) if self.editor().is_some() => {
                 let keep_base = self.changed_on_disk;
                 let editor = self.editor_mut().expect("checked above");
@@ -1232,6 +1404,15 @@ impl Page {
                             editor.carry_inputs(previous);
                         }
                         View::Form(Box::new(editor))
+                    }
+                    Content::Global(info) => {
+                        let mut editor = global::Editor::new(info.values, info.runners);
+                        if pending.mode == Mode::Replace
+                            && let View::Global(previous) = &self.view
+                        {
+                            editor.new_env.clone_from(&previous.new_env);
+                        }
+                        View::Global(Box::new(editor))
                     }
                     Content::Error(error) => View::Error(error),
                 };
@@ -1292,6 +1473,13 @@ impl App {
         };
         self.settings_generation = self.settings_generation.wrapping_add(1);
         let mut page = Page::new(name, self.settings_generation);
+        let task = page.reload(&self.paths, Mode::Replace);
+        self.settings = Some(page);
+        task
+    }
+    pub(crate) fn open_global_settings(&mut self) -> Task<Message> {
+        self.settings_generation = self.settings_generation.wrapping_add(1);
+        let mut page = Page::new_global(self.settings_generation);
         let task = page.reload(&self.paths, Mode::Replace);
         self.settings = Some(page);
         task
@@ -1359,6 +1547,217 @@ mod tests {
 
     use super::*;
     use form::Source;
+
+    fn global_page(paths: &Paths) -> Page {
+        let mut page = Page::new_global(1);
+        let _ = page.reload(paths, Mode::Replace);
+        let _ = page.update(paths, Event::Loaded(1, load::snapshot_global(paths)));
+        page
+    }
+
+    fn global_editor(page: &Page) -> &global::Editor {
+        match &page.view {
+            View::Global(editor) => editor,
+            _ => panic!("global form expected"),
+        }
+    }
+
+    #[test]
+    fn missing_global_file_shows_defaults_and_is_created_on_save() {
+        let (_root, paths) = setup();
+        let mut page = global_page(&paths);
+        assert!(!page.has_file());
+        assert!(!page.is_dirty());
+        assert_eq!(global_editor(&page).form.draft.arch, Arch::Win64);
+        let _ = page.update(&paths, Event::GlobalSwitch(Switch::Gamemode, true));
+        let edits = global_editor(&page).form.edits();
+        let report = load::save_global(&paths, &edits).unwrap();
+        assert_eq!(report.failed, None);
+        assert_eq!(GlobalConfig::load(&paths).unwrap().gamemode, Some(true));
+        let _ = page.update(&paths, Event::Save);
+        let _ = page.update(&paths, Event::Saved(1, Ok(report)));
+        let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+        assert!(page.has_file());
+        assert!(!page.is_dirty());
+    }
+
+    #[test]
+    fn broken_or_unsupported_global_file_shows_error_and_reloads() {
+        let (_root, paths) = setup();
+        write_global(&paths, "stop_timeout = [\n");
+        let mut page = global_page(&paths);
+        assert!(matches!(page.view, View::Error(_)));
+        assert!(page.has_file());
+        write_global(&paths, "schema_version = 999\n");
+        let sequence = start_check(&mut page);
+        let _ = page.update(
+            &paths,
+            Event::Checked(1, sequence, Texts::read_global(&paths)),
+        );
+        assert!(page.loading());
+        let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+        assert!(matches!(page.view, View::Error(_)));
+        write_global(&paths, "gamemode = true\n");
+        let sequence = start_check(&mut page);
+        let _ = page.update(
+            &paths,
+            Event::Checked(1, sequence, Texts::read_global(&paths)),
+        );
+        let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+        assert_eq!(global_editor(&page).form.draft.gamemode, Some(true));
+    }
+
+    #[test]
+    fn global_page_checks_only_the_global_file_and_reloads_after_an_edit() {
+        let (_root, paths) = setup();
+        write_global(&paths, "gamemode = false\n");
+        let mut page = global_page(&paths);
+        write(&paths, GAME);
+        let sequence = start_check(&mut page);
+        let _ = page.update(
+            &paths,
+            Event::Checked(1, sequence, Texts::read_global(&paths)),
+        );
+        assert!(!page.loading());
+        let _ = page.update(
+            &paths,
+            Event::GlobalField(global::Field::LogLimitMb, "75".into()),
+        );
+        write_global(&paths, "gamemode = true\n");
+        let sequence = start_check(&mut page);
+        let _ = page.update(
+            &paths,
+            Event::Checked(1, sequence, Texts::read_global(&paths)),
+        );
+        assert!(page.changed_on_disk);
+        assert!(!page.can_save() && page.can_reload());
+        let _ = page.update(&paths, Event::Reload);
+        let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+        assert!(!page.is_dirty());
+        assert_eq!(global_editor(&page).form.draft.gamemode, Some(true));
+    }
+
+    #[test]
+    fn global_controls_stay_locked_through_the_save_reload() {
+        let (_root, paths) = setup();
+        write_global(&paths, "[env]\nA = \"1\"\n");
+        let mut page = global_page(&paths);
+        let _ = page.update(&paths, Event::GlobalSwitch(Switch::Gamemode, true));
+        let edits = global_editor(&page).form.edits();
+        let _ = page.update(&paths, Event::Save);
+        assert!(page.locked());
+        let events = [
+            Event::GlobalSwitch(Switch::Wayland, true),
+            Event::GlobalRunner(RunnerChoice {
+                name: "other".into(),
+                proton: None,
+            }),
+            Event::GlobalArch(Arch::Win32),
+            Event::GlobalField(global::Field::PrefixRoot, "/tmp/prefixes".into()),
+            Event::GlobalField(global::Field::RunnerRoot, "/tmp/runners".into()),
+            Event::GlobalField(global::Field::DxvkRoot, "/tmp/dxvk".into()),
+            Event::GlobalField(global::Field::Vkd3dRoot, "/tmp/vkd3d".into()),
+            Event::GlobalField(global::Field::StopTimeout, "15".into()),
+            Event::GlobalField(global::Field::LogLimitMb, "80".into()),
+            Event::GlobalArt(ArtFetch::Icon),
+            Event::EnvKey(0, "B".into()),
+            Event::EnvValue(0, "2".into()),
+            Event::EnvRemove(0),
+            Event::NewEnvKey("C".into()),
+            Event::NewEnvValue("3".into()),
+            Event::EnvAdd,
+        ];
+        for event in events.iter().cloned() {
+            let _ = page.update(&paths, event);
+        }
+        assert_eq!(global_editor(&page).form.edits(), edits);
+        assert_eq!(global_editor(&page).new_env, EnvRow::default());
+        let report = load::save_global(&paths, &edits).unwrap();
+        let _ = page.update(&paths, Event::Saved(1, Ok(report)));
+        assert!(page.locked());
+        for event in events {
+            let _ = page.update(&paths, event);
+        }
+        assert_eq!(global_editor(&page).form.edits(), edits);
+        let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+        assert!(!page.locked() && !page.is_dirty());
+    }
+
+    #[test]
+    fn global_pending_env_text_survives_a_quiet_reload_and_revert_clears_it() {
+        let (_root, paths) = setup();
+        write_global(&paths, "gamemode = false\n");
+        let mut page = global_page(&paths);
+        let _ = page.update(&paths, Event::NewEnvKey("NEW".into()));
+        let _ = page.update(&paths, Event::NewEnvValue("value".into()));
+        write_global(&paths, "gamemode = true\n");
+        let sequence = start_check(&mut page);
+        let _ = page.update(
+            &paths,
+            Event::Checked(1, sequence, Texts::read_global(&paths)),
+        );
+        let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+        assert_eq!(global_editor(&page).new_env.key, "NEW");
+        assert_eq!(global_editor(&page).new_env.value, "value");
+        let _ = page.update(&paths, Event::GlobalArch(Arch::Win32));
+        let _ = page.update(&paths, Event::Revert);
+        assert_eq!(global_editor(&page).new_env, EnvRow::default());
+        assert!(!page.is_dirty());
+    }
+
+    #[test]
+    fn portable_prefix_root_failure_is_shown_in_the_global_save_bar() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_owned();
+        let portable = root.path().join("portable");
+        let paths = Paths::select(
+            move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+            Some(&portable),
+        )
+        .unwrap();
+        let mut page = global_page(&paths);
+        let _ = page.update(
+            &paths,
+            Event::GlobalField(global::Field::PrefixRoot, "/tmp/outside".into()),
+        );
+        assert!(page.can_save());
+        let report = load::save_global(&paths, &global_editor(&page).form.edits()).unwrap();
+        assert!(report.failed.is_some());
+        let _ = page.update(&paths, Event::Save);
+        let _ = page.update(&paths, Event::Saved(1, Ok(report)));
+        assert!(page.error.is_some());
+        assert!(page.is_dirty());
+    }
+
+    #[test]
+    fn commented_global_round_trip_changes_one_control_per_section() {
+        let (_root, paths) = setup();
+        let before = "# global\nschema_version = 1\ngamemode = false # launch\nstop_timeout = 5 # seconds\n\n[defaults]\narch = \"win64\" # new\n\n[art]\nfetch = \"all\" # art\n\n[env]\nA = \"old\" # env\n";
+        write_global(&paths, before);
+        let mut page = global_page(&paths);
+        for event in [
+            Event::GlobalSwitch(Switch::Gamemode, true),
+            Event::GlobalArch(Arch::Win32),
+            Event::GlobalField(global::Field::StopTimeout, "6".into()),
+            Event::GlobalArt(ArtFetch::Icon),
+            Event::EnvValue(0, "new".into()),
+        ] {
+            let _ = page.update(&paths, event);
+        }
+        assert_eq!(page.changes(), 5);
+        let report = load::save_global(&paths, &global_editor(&page).form.edits()).unwrap();
+        assert_eq!(report.failed, None);
+        let after = fs::read_to_string(paths.global_config()).unwrap();
+        assert_eq!(
+            after,
+            before
+                .replace("gamemode = false", "gamemode = true")
+                .replace("stop_timeout = 5", "stop_timeout = 6")
+                .replace("arch = \"win64\"", "arch = \"win32\"")
+                .replace("fetch = \"all\"", "fetch = \"icon\"")
+                .replace("A = \"old\"", "A = \"new\"")
+        );
+    }
 
     fn setup() -> (tempfile::TempDir, Paths) {
         let root = tempfile::tempdir().unwrap();
@@ -2487,6 +2886,60 @@ mod tests {
             load::snapshot(paths, "game"),
         )));
         app
+    }
+
+    #[test]
+    fn save_key_reaches_both_settings_pages_without_the_library_search_widget() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        for global in [false, true] {
+            let mut app = if global {
+                let mut app = App::boot(paths.clone()).0;
+                app.settings = Some(global_page(&paths));
+                app
+            } else {
+                open_app(&paths)
+            };
+            let event = if global {
+                Event::GlobalSwitch(Switch::Gamemode, true)
+            } else {
+                Event::Switch(Switch::Wayland, true)
+            };
+            let _ = app.update(Message::Settings(event));
+            let _ = app.update(Message::Key(
+                Key::Character("s".into()),
+                Modifiers::CTRL,
+                iced::event::Status::Captured,
+            ));
+            assert!(app.settings.as_ref().unwrap().saving);
+        }
+    }
+
+    #[test]
+    fn escape_key_reaches_settings_and_respects_a_focused_field() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        for global in [false, true] {
+            let mut app = if global {
+                let mut app = App::boot(paths.clone()).0;
+                app.settings = Some(global_page(&paths));
+                app
+            } else {
+                open_app(&paths)
+            };
+            let _ = app.update(Message::Key(
+                Key::Named(Named::Escape),
+                Modifiers::empty(),
+                iced::event::Status::Captured,
+            ));
+            assert!(app.settings.is_some());
+            let _ = app.update(Message::Key(
+                Key::Named(Named::Escape),
+                Modifiers::empty(),
+                iced::event::Status::Ignored,
+            ));
+            assert!(app.settings.is_none());
+        }
     }
 
     #[test]

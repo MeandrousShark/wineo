@@ -123,6 +123,7 @@ pub(crate) enum Message {
     ),
     SearchFocusChanged(bool),
     OpenSettings,
+    OpenGlobalSettings,
     Settings(settings::Event),
 }
 
@@ -435,6 +436,9 @@ impl App {
                 }
                 Task::none()
             }
+            Message::Key(key, modifiers, status) if self.settings.is_some() => {
+                self.settings_key(&key, modifiers, status == iced::event::Status::Captured)
+            }
             Message::Key(key, modifiers, status) => iced::widget::operation::is_focused(
                 iced::widget::Id::new(SEARCH_ID),
             )
@@ -450,6 +454,7 @@ impl App {
                 Task::none()
             }
             Message::OpenSettings => self.open_settings(),
+            Message::OpenGlobalSettings => self.open_global_settings(),
             Message::Settings(event) => self.settings_update(event),
         }
     }
