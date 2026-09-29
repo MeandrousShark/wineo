@@ -132,6 +132,12 @@ impl Editor {
         }
     }
     /// Text typed into an add field but not added yet.
+    fn carry_inputs(&mut self, from: &Editor) {
+        self.args_input.clone_from(&from.args_input);
+        self.winetricks_input.clone_from(&from.winetricks_input);
+        self.tags_input.clone_from(&from.tags_input);
+        self.new_env.clone_from(&from.new_env);
+    }
     fn clear_inputs(&mut self) {
         self.args_input.clear();
         self.winetricks_input.clear();
@@ -437,6 +443,9 @@ impl Page {
                     return Step::none();
                 }
                 self.edited();
+                if let Some(editor) = self.editor_mut() {
+                    editor.clear_inputs();
+                }
                 Step::task(self.reload(paths, Mode::Replace))
             }
             Event::Revert => {
@@ -765,7 +774,15 @@ impl Page {
                 self.view = match content {
                     Content::Form(info) => {
                         let form = Form::reloaded(info.values.clone(), previous);
-                        View::Form(Box::new(Editor::new(*info, form)))
+                        let mut editor = Editor::new(*info, form);
+                        // A quiet reload shouldn't eat what's being typed. Reload
+                        // and Revert clear it first, and a save reload drops it.
+                        if pending.mode == Mode::Replace
+                            && let Some(previous) = self.editor()
+                        {
+                            editor.carry_inputs(previous);
+                        }
+                        View::Form(Box::new(editor))
                     }
                     Content::Error(error) => View::Error(error),
                 };
@@ -1569,6 +1586,54 @@ mod tests {
         );
         assert_eq!(editor.form.draft.dxvk.as_deref(), Some("latest"));
         assert!(page.can_save());
+    }
+
+    #[test]
+    fn text_typed_but_not_added_survives_a_quiet_reload() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut page = page(&paths);
+        let typing = [
+            Event::ArgsInput("-e".into()),
+            Event::ListInput(List::Winetricks, "corefonts".into()),
+            Event::ListInput(List::Tags, "rpg".into()),
+            Event::NewEnvKey("A".into()),
+            Event::NewEnvValue("1".into()),
+        ];
+        for event in typing {
+            let _ = page.update(&paths, event);
+        }
+        write(&paths, &GAME.replace("gamemode = false", "gamemode = true"));
+        check(&mut page, &paths);
+        land(&mut page, &paths);
+        assert!(!page.changed_on_disk);
+        let shown = editor(&page);
+        assert_eq!(shown.form.draft.gamemode, Some(true));
+        assert_eq!(
+            (
+                shown.args_input.as_str(),
+                shown.winetricks_input.as_str(),
+                shown.tags_input.as_str()
+            ),
+            ("-e", "corefonts", "rpg")
+        );
+        assert_eq!(
+            (shown.new_env.key.as_str(), shown.new_env.value.as_str()),
+            ("A", "1")
+        );
+        // Typing while the reload runs lands too.
+        write(&paths, GAME);
+        check(&mut page, &paths);
+        let _ = page.update(&paths, Event::ListInput(List::Tags, "co-op".into()));
+        land(&mut page, &paths);
+        assert_eq!(editor(&page).tags_input, "co-op");
+        // Reload after an outside change throws it away with the edits.
+        let _ = page.update(&paths, Event::Switch(Switch::Mangohud, true));
+        write(&paths, &GAME.replace("gamemode = false", "gamemode = true"));
+        check(&mut page, &paths);
+        let _ = page.update(&paths, Event::Reload);
+        land(&mut page, &paths);
+        assert!(editor(&page).tags_input.is_empty());
     }
 
     #[test]
