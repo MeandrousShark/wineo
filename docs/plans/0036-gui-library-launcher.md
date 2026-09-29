@@ -76,7 +76,7 @@ spike's library screen into a real app on top of `wineo-core`.
   error text.
 - A card shows the grid art for the environment's default target, or a
   placeholder with the name; the name; a state dot and word; and playtime
-  ("3 h 12 min", "never played").
+  ("3 h 12 m" as `wineo stats` shows it, or "never played").
 - Art decodes off the UI thread, and the grid only loads what's visible.
 - State refreshes by calling `report::overview` and `stats::overview` on a
   worker every 2 seconds, so a game started or stopped from the CLI shows
