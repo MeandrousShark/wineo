@@ -116,6 +116,9 @@ button, and the page reloads once the file is fixed.
 Native environments only show what they can use. Paths typed on the page
 have to be absolute or start with `~/`, except inside a portable folder.
 
+Long runner names shorten in the middle to keep dropdowns on one row.
+Hover the selected runner to see its full name.
+
 ### Global settings
 
 - **Launch defaults:** gamemode, MangoHud, and Wayland for every

@@ -3,6 +3,7 @@
 mod form;
 mod global;
 mod load;
+mod runner_picker;
 mod view;
 
 use iced::Task;

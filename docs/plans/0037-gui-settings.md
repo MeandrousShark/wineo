@@ -301,3 +301,9 @@ The frozen workspace gate passes with 1,486 tests passed and 16 ignored.
 GUI testing confirms default roots are visible without creating overrides,
 custom art combinations save with comments preserved, and all-off saves as [].
 All 16 art selections are covered by a settings-to-config round-trip test.
+
+Runner-label follow-up: both settings pages now shorten long names by measured
+text width, preserving the beginning and suffix, and show full names on hover.
+The saved runner identity is unchanged. All 135 GUI tests, formatting, Clippy,
+and the release build pass. Isolated GUI checks cover both pages, the open menu,
+and the tooltip.

@@ -180,21 +180,13 @@ fn editor_view<'a>(
     let draft = &editor.form.draft;
     let mut sections = column![].spacing(24).width(Fill);
     if !info.native {
-        let selected = info
-            .runners
-            .iter()
-            .find(|choice| Some(&choice.name) == draft.runner.as_ref());
-        let runner: Element<'_, Message> = if locked {
-            locked_choice(draft.runner.as_deref().unwrap_or_default(), palette)
-        } else {
-            pick_list(info.runners.as_slice(), selected, |choice| {
-                send(Event::RunnerPicked(choice))
-            })
-            .on_open(send(Event::MenuOpened))
-            .on_close(send(Event::MenuClosed))
-            .width(CONTROL_WIDTH)
-            .into()
-        };
+        let runner = super::runner_picker::picker(
+            &info.runners,
+            draft.runner.as_deref().unwrap_or_default(),
+            locked,
+            palette,
+            Event::RunnerPicked,
+        );
         let proton = info.current.as_ref().is_some_and(|current| current.proton);
         let arch = if proton { "win64" } else { info.arch.as_str() };
         let mut rows = column![
@@ -325,21 +317,13 @@ fn global_view<'a>(
             palette,
         ));
     }
-    let selected_runner = editor
-        .runners
-        .iter()
-        .find(|choice| choice.name == draft.runner);
-    let runner: Element<'a, Message> = if locked {
-        locked_choice(&draft.runner, palette)
-    } else {
-        pick_list(editor.runners.as_slice(), selected_runner, |choice| {
-            send(Event::GlobalRunner(choice))
-        })
-        .on_open(send(Event::MenuOpened))
-        .on_close(send(Event::MenuClosed))
-        .width(CONTROL_WIDTH)
-        .into()
-    };
+    let runner = super::runner_picker::picker(
+        &editor.runners,
+        &draft.runner,
+        locked,
+        palette,
+        Event::GlobalRunner,
+    );
     let arch: Element<'a, Message> = if locked {
         locked_choice(draft.arch.as_str(), palette)
     } else {
