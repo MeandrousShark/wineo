@@ -91,6 +91,8 @@ impl Event {
         matches!(
             self,
             Event::BuildPicked(..)
+                | Event::Switch(Switch::Wayland, _)
+                | Event::Reset(Switch::Wayland)
                 | Event::ListInput(List::Winetricks, _)
                 | Event::ListAdd(List::Winetricks)
                 | Event::ListRemove(List::Winetricks, _)
@@ -1487,6 +1489,7 @@ mod tests {
             Event::Prefix("~/p".into()),
             Event::GameId("umu-1".into()),
             Event::Store("gog".into()),
+            Event::Switch(Switch::Wayland, true),
         ] {
             let _ = page.update(&paths, event);
         }
