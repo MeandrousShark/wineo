@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0037: GUI settings
 
@@ -141,6 +141,9 @@ Tab and Shift+Tab move between fields, Ctrl+S saves, and Esc leaves the page
 
 ## Decisions for the maintainer
 
+The maintainer picked switches with reset for decision 1 and accepted the
+other recommendations (2026-09-28).
+
 ### 1. Showing inherited launch options
 
 gamemode, mangohud, and wayland have three states on an environment (on,
@@ -178,7 +181,7 @@ whether a hand-written `gamemode = true` equal to global means unset.
 
 ### 2. Where the page opens
 
-**Recommended:** option A, a full page that replaces the library, with a
+**Settled:** option A, a full page that replaces the library, with a
 Back button. The 420px panel is too narrow for targets and gamescope, and a
 second window is one more thing to manage.
 
@@ -200,7 +203,7 @@ option A: full page                        option B: wider panel
 
 ### 3. Save model
 
-**Recommended:** option A, Save and Revert. A runner or DXVK change can
+**Settled:** option A, Save and Revert. A runner or DXVK change can
 install components or be refused, and saving each toggle as it's flipped
 would make those failures show up mid-edit, one key at a time.
 
@@ -216,7 +219,7 @@ A target card has exe, args (one per row), working dir, name, the default
 marker, desktop entry, and its own gamemode, mangohud, wayland, and
 gamescope switches (decision 1).
 
-**Recommended:** Add target offers the installed programs from
+**Settled:** Add target offers the installed programs from
 `programs::scan`, like `setup`, plus a typed path for anything the scan
 misses. No file chooser dialog in this plan, since it needs a portal
 dependency; add it with 0038, where picking an installer needs one anyway.
