@@ -3,6 +3,21 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.17.0 - 2026-09-28
+
+- `wineo-gui`, wineo's first desktop app, built with iced
+  ([0036](docs/plans/0036-gui-library-launcher.md)). See
+  [Desktop app](docs/gui.md).
+- A library of every environment with its art, state, and playtime, with
+  search and a live refresh that picks up changes made from the CLI.
+- A detail panel with Play, Stop, a target picker, start progress with Cancel
+  and Force stop, a live log, and Clean up for lost runs and unfinished
+  installers. Double-click a card to play it.
+- Keyboard navigation, and light and dark themes that follow the desktop.
+- The Arch package installs `wineo-gui` with a desktop entry and icon.
+- Time and duration formatting moved into `wineo-core`, and
+  `launch::default_target` tells frontends which target a launch uses.
+
 ## 0.16.0 - 2026-09-28
 
 - Heroic import's decisions now live in `wineo-core`: planning a game,
