@@ -57,6 +57,7 @@ impl App {
         search_focused: bool,
         captured: bool,
     ) -> Task<Message> {
+        self.search_focused = search_focused;
         if captured
             && !search_focused
             && matches!(
@@ -81,7 +82,11 @@ impl App {
             self.search.is_empty(),
         ) {
             Action::None => Task::none(),
-            Action::FocusSearch => iced::widget::operation::focus(iced::widget::Id::new(SEARCH_ID)),
+            Action::FocusSearch => iced::widget::operation::focus(iced::widget::Id::new(SEARCH_ID))
+                .chain(
+                    iced::widget::operation::is_focused(iced::widget::Id::new(SEARCH_ID))
+                        .map(Message::SearchFocusChanged),
+                ),
             Action::CloseLog => {
                 self.close_log();
                 Task::none()
@@ -98,12 +103,19 @@ impl App {
                 if self.selected != old {
                     self.selection_changed();
                 }
-                Task::batch([
-                    iced::widget::operation::focus(iced::widget::Id::new("grid-focus")),
+                iced::advanced::widget::operate(
+                    iced::advanced::widget::operation::focusable::unfocus::<()>(),
+                )
+                .discard()
+                .chain(Task::batch([
                     self.scroll_selection(),
                     self.load_visible_art(),
                     self.load_panel_art(),
-                ])
+                ]))
+                .chain(
+                    iced::widget::operation::is_focused(iced::widget::Id::new(SEARCH_ID))
+                        .map(Message::SearchFocusChanged),
+                )
             }
             Action::Move(direction) => {
                 let old = self.selected.clone();

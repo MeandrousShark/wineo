@@ -21,7 +21,7 @@ use wineo_core::runtime::State;
 
 #[cfg(test)]
 use crate::library::playtime_label;
-use crate::library::{Card, load_library};
+use crate::library::{ArtFile, ArtIdentity, Card, load_library};
 use crate::panel::{LogBuffer, PanelError};
 use crate::theme::Palette;
 
@@ -33,11 +33,13 @@ const LOG_ID: &str = "panel-log";
 const SEARCH_ID: &str = "library-search";
 // iced moves 60px per wheel line, which felt too fast beside native apps.
 const WHEEL_STEP_SCALE: f32 = 0.45;
+type ArtKey = (ArtFile, artwork::Kind);
 
 pub(crate) struct App {
     paths: Paths,
     pub(crate) palette: Palette,
     search: String,
+    search_focused: bool,
     cards: Vec<Card>,
     pub(crate) selected: Option<String>,
     preferred_column: Option<usize>,
@@ -45,9 +47,10 @@ pub(crate) struct App {
     pub(crate) target: Option<String>,
     pub(crate) logo_scrim: bool,
     pub(crate) hovered: Option<String>,
-    pub(crate) images: HashMap<(PathBuf, artwork::Kind), image::Handle>,
-    loading: HashSet<(PathBuf, artwork::Kind)>,
-    failed_images: HashSet<(PathBuf, artwork::Kind)>,
+    pub(crate) images: HashMap<ArtKey, image::Handle>,
+    loading: HashSet<ArtKey>,
+    failed_images: HashSet<ArtKey>,
+    current_art: HashMap<PathBuf, ArtIdentity>,
     error: Option<String>,
     refreshing: bool,
     viewport_width: f32,
@@ -101,7 +104,7 @@ pub(crate) enum Message {
     Hover(Option<String>),
     Refresh,
     Loaded(Result<Vec<Card>, String>),
-    ArtLoaded((PathBuf, artwork::Kind), Result<image::Handle, String>),
+    ArtLoaded(ArtKey, Result<image::Handle, String>),
     Scrolled(scrollable::Viewport),
     ScrollIdle,
     Window(window::Event),
@@ -114,6 +117,7 @@ pub(crate) enum Message {
         iced::event::Status,
         bool,
     ),
+    SearchFocusChanged(bool),
 }
 
 impl App {
@@ -122,6 +126,7 @@ impl App {
             paths,
             palette: Palette::DARK,
             search: String::new(),
+            search_focused: false,
             cards: Vec::new(),
             selected: None,
             preferred_column: None,
@@ -132,6 +137,7 @@ impl App {
             images: HashMap::new(),
             loading: HashSet::new(),
             failed_images: HashSet::new(),
+            current_art: HashMap::new(),
             error: None,
             refreshing: true,
             viewport_width: 1200.0,
@@ -355,6 +361,9 @@ impl App {
             }
             Message::ArtLoaded(key, result) => {
                 self.loading.remove(&key);
+                if self.current_art.get(&key.0.path) != Some(&key.0.identity) {
+                    return Task::none();
+                }
                 match result {
                     Ok(handle) => {
                         self.images.insert(key, handle);
@@ -413,6 +422,10 @@ impl App {
                 focused,
                 status == iced::event::Status::Captured,
             ),
+            Message::SearchFocusChanged(focused) => {
+                self.search_focused = focused;
+                Task::none()
+            }
         }
     }
     fn merge(&mut self, cards: Vec<Card>) {
@@ -437,6 +450,24 @@ impl App {
             self.target = card.default_target.clone();
         }
         self.cards = cards;
+        self.current_art = self
+            .cards
+            .iter()
+            .flat_map(|card| {
+                card.art.iter().chain(
+                    card.panel_art
+                        .values()
+                        .flat_map(|art| art.hero.iter().chain(art.logo.iter())),
+                )
+            })
+            .map(|art| (art.path.clone(), art.identity))
+            .collect();
+        self.images
+            .retain(|(art, _), _| self.current_art.get(&art.path) == Some(&art.identity));
+        self.loading
+            .retain(|(art, _)| self.current_art.get(&art.path) == Some(&art.identity));
+        self.failed_images
+            .retain(|(art, _)| self.current_art.get(&art.path) == Some(&art.identity));
         self.error = None;
     }
     pub(crate) fn filtered(&self) -> Vec<&Card> {
@@ -460,11 +491,11 @@ impl App {
             .skip(first * columns)
             .take(last.saturating_sub(first) * columns)
             .filter_map(|card| card.art.as_ref())
-            .map(|path| (path.clone(), artwork::Kind::Grid))
+            .map(|art| (art.clone(), artwork::Kind::Grid))
             .collect();
         self.load_images(paths)
     }
-    fn load_images(&mut self, paths: Vec<(PathBuf, artwork::Kind)>) -> Task<Message> {
+    fn load_images(&mut self, paths: Vec<ArtKey>) -> Task<Message> {
         let mut tasks = Vec::new();
         for key in paths {
             if self.images.contains_key(&key)
@@ -477,7 +508,7 @@ impl App {
                 async move {
                     let decoded = tokio::task::spawn_blocking({
                         let key = key.clone();
-                        move || artwork::decode(&key.0, key.1).map_err(|e| e.to_string())
+                        move || artwork::decode(&key.0.path, key.1).map_err(|e| e.to_string())
                     })
                     .await
                     .map_err(|e| e.to_string());
@@ -573,6 +604,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::SystemTime;
 
     fn card(name: &str, state: State, seconds: i64) -> Card {
         Card {
@@ -580,6 +612,7 @@ mod tests {
             state,
             busy: false,
             busy_holder: None,
+            unresolved: false,
             error: None,
             playtime: playtime_label(seconds),
             sessions: 0,
@@ -596,6 +629,20 @@ mod tests {
             Paths::from_lookup(|key| (key == "HOME").then(|| "/tmp/wineo-gui-tests".into()))
                 .unwrap();
         App::boot(paths).0
+    }
+    fn art_file(path: &str, len: u64) -> ArtFile {
+        ArtFile {
+            path: PathBuf::from(path),
+            identity: ArtIdentity {
+                modified: SystemTime::UNIX_EPOCH,
+                len,
+            },
+        }
+    }
+    fn card_with_art(art: ArtFile) -> Card {
+        let mut card = card("game", State::Inactive, 0);
+        card.art = Some(art);
+        card
     }
     #[test]
     fn app_icon_renders_from_embedded_svg() {
@@ -644,6 +691,45 @@ mod tests {
         assert_eq!(app.scroll_offset, 140.0);
         let _ = app.update(Message::Loaded(Ok(vec![card("other", State::Inactive, 0)])));
         assert_eq!(app.selected, None);
+    }
+
+    #[test]
+    fn changed_art_identity_reloads_and_evicts_old_handle() {
+        let mut app = app();
+        let old = art_file("/tmp/grid.png", 10);
+        let new = art_file("/tmp/grid.png", 20);
+        let old_key = (old.clone(), artwork::Kind::Grid);
+        let new_key = (new.clone(), artwork::Kind::Grid);
+        app.merge(vec![card_with_art(old)]);
+        let _ = app.load_visible_art();
+        assert!(app.loading.contains(&old_key));
+        let handle = image::Handle::from_rgba(1, 1, vec![1, 2, 3, 255]);
+        let _ = app.update(Message::ArtLoaded(old_key.clone(), Ok(handle)));
+        assert!(app.images.contains_key(&old_key));
+        app.merge(vec![card_with_art(new)]);
+        assert!(!app.images.contains_key(&old_key));
+        let _ = app.load_visible_art();
+        assert!(app.loading.contains(&new_key));
+        assert!(!app.loading.contains(&old_key));
+    }
+
+    #[test]
+    fn failed_art_retries_only_after_identity_changes() {
+        let mut app = app();
+        let old = art_file("/tmp/broken.png", 10);
+        let new = art_file("/tmp/broken.png", 20);
+        let old_key = (old.clone(), artwork::Kind::Grid);
+        let new_key = (new.clone(), artwork::Kind::Grid);
+        app.merge(vec![card_with_art(old)]);
+        let _ = app.load_visible_art();
+        let _ = app.update(Message::ArtLoaded(old_key.clone(), Err("invalid".into())));
+        let _ = app.load_visible_art();
+        assert!(app.failed_images.contains(&old_key));
+        assert!(app.loading.is_empty());
+        app.merge(vec![card_with_art(new)]);
+        assert!(!app.failed_images.contains(&old_key));
+        let _ = app.load_visible_art();
+        assert!(app.loading.contains(&new_key));
     }
 
     #[test]
@@ -736,5 +822,29 @@ mod tests {
         assert_eq!(app.selected.as_deref(), Some("a"));
         let _ = app.handle_key(right, keyboard::Modifiers::empty(), false, false);
         assert_eq!(app.selected.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn down_from_search_selects_first_match_then_grid_keys_move() {
+        let mut app = app();
+        app.cards = vec![
+            card("alpha", State::Inactive, 0),
+            card("amber", State::Inactive, 0),
+        ];
+        app.search = "a".into();
+        let down = keyboard::Key::Named(keyboard::key::Named::ArrowDown);
+        let _ = app.handle_key(down, keyboard::Modifiers::empty(), true, true);
+        assert!(app.search_focused);
+        assert_eq!(app.selected.as_deref(), Some("alpha"));
+        let _ = app.update(Message::SearchFocusChanged(false));
+        assert!(!app.search_focused);
+        let right = keyboard::Key::Named(keyboard::key::Named::ArrowRight);
+        let _ = app.handle_key(
+            right,
+            keyboard::Modifiers::empty(),
+            app.search_focused,
+            false,
+        );
+        assert_eq!(app.selected.as_deref(), Some("amber"));
     }
 }

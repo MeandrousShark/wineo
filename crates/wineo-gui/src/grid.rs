@@ -30,7 +30,7 @@ impl App {
         let art = card
             .art
             .as_ref()
-            .and_then(|path| self.images.get(&(path.clone(), crate::artwork::Kind::Grid)));
+            .and_then(|art| self.images.get(&(art.clone(), crate::artwork::Kind::Grid)));
         let poster: Element<'_, Message> = match art {
             Some(handle) => image(handle.clone())
                 .width(Fill)

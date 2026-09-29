@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use iced::Color;
 use wineo_core::art::{self, ArtConfig};
@@ -14,8 +16,33 @@ use crate::theme::Palette;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ArtPaths {
-    pub(super) hero: Option<PathBuf>,
-    pub(super) logo: Option<PathBuf>,
+    pub(super) hero: Option<ArtFile>,
+    pub(super) logo: Option<ArtFile>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct ArtIdentity {
+    pub(super) modified: SystemTime,
+    pub(super) len: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct ArtFile {
+    pub(super) path: PathBuf,
+    pub(super) identity: ArtIdentity,
+}
+
+impl ArtFile {
+    fn resolve(path: PathBuf) -> Option<Self> {
+        let metadata = fs::metadata(&path).ok()?;
+        Some(Self {
+            path,
+            identity: ArtIdentity {
+                modified: metadata.modified().ok()?,
+                len: metadata.len(),
+            },
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -24,6 +51,7 @@ pub(super) struct Card {
     pub(super) state: State,
     pub(super) busy: bool,
     pub(super) busy_holder: Option<String>,
+    pub(super) unresolved: bool,
     pub(super) error: Option<String>,
     pub(super) playtime: String,
     pub(super) sessions: usize,
@@ -31,7 +59,7 @@ pub(super) struct Card {
     pub(super) tags: Vec<String>,
     pub(super) targets: Vec<String>,
     pub(super) default_target: Option<String>,
-    pub(super) art: Option<PathBuf>,
+    pub(super) art: Option<ArtFile>,
     pub(super) panel_art: HashMap<String, ArtPaths>,
 }
 
@@ -97,16 +125,16 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
                         let hero = art::resolve(&dir, &config, Some(target), art::Kind::Hero)
                             .ok()
                             .flatten()
-                            .map(|found| found.found.path);
+                            .and_then(|found| ArtFile::resolve(found.found.path));
                         let logo = art::resolve(&dir, &config, Some(target), art::Kind::Logo)
                             .ok()
                             .flatten()
-                            .map(|found| found.found.path);
+                            .and_then(|found| ArtFile::resolve(found.found.path));
                         panel_art.insert(target.clone(), ArtPaths { hero, logo });
                     }
                     Ok::<_, wineo_core::Error>(
                         art::resolve(&dir, &config, default_target.as_deref(), art::Kind::Grid)?
-                            .map(|found| found.found.path),
+                            .and_then(|found| ArtFile::resolve(found.found.path)),
                     )
                 })();
                 match resolved {
@@ -130,6 +158,7 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
             state: item.status.state,
             busy: item.busy.is_some() || item.unresolved,
             busy_holder: item.busy.map(|holder| holder.as_str().to_owned()),
+            unresolved: item.unresolved,
             error,
             art,
             targets,
@@ -155,6 +184,7 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
             state: State::Inactive,
             busy: false,
             busy_holder: None,
+            unresolved: false,
             error: Some(error.message),
             art: None,
             targets: Vec::new(),
@@ -164,4 +194,20 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
     }
     cards.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(cards)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_art_file_has_no_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grid.png");
+        fs::write(&path, b"first").unwrap();
+        let art = ArtFile::resolve(path.clone()).unwrap();
+        assert_eq!(art.identity.len, 5);
+        fs::remove_file(&path).unwrap();
+        assert!(ArtFile::resolve(path).is_none());
+    }
 }

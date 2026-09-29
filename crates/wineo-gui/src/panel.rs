@@ -111,6 +111,19 @@ pub(crate) fn stop_enabled(card: &Card, operation_busy: bool) -> bool {
     !card.busy && card.state == State::Running && !operation_busy
 }
 
+fn busy_notice(card: &Card, operation_busy: bool) -> Option<(String, bool)> {
+    if let Some(holder) = &card.busy_holder {
+        Some((format!("Busy with {holder}"), false))
+    } else if card.unresolved {
+        Some((
+            "an installer did not finish cleanly".to_owned(),
+            !operation_busy,
+        ))
+    } else {
+        None
+    }
+}
+
 impl App {
     pub(crate) fn chosen_target<'a>(&'a self, card: &'a Card) -> Option<&'a str> {
         self.target.as_deref().or(card.default_target.as_deref())
@@ -164,7 +177,8 @@ impl App {
         else {
             return Task::none();
         };
-        let cleanup = self.panel_error.as_ref().is_some_and(|error| error.cleanup);
+        let cleanup = card.busy_holder.is_none()
+            && (card.unresolved || self.panel_error.as_ref().is_some_and(|error| error.cleanup));
         if !cleanup && !stop_enabled(card, self.operation.is_some()) {
             return Task::none();
         }
@@ -222,7 +236,7 @@ impl App {
             })
             .into_iter()
             .flatten()
-            .filter_map(|(path, kind)| path.map(|path| (path.clone(), kind)))
+            .filter_map(|(art, kind)| art.map(|art| (art.clone(), kind)))
             .collect::<Vec<_>>();
         self.load_images(paths)
     }
@@ -232,10 +246,8 @@ impl App {
         let art = target.and_then(|target| card.panel_art.get(target));
         let hero = art.and_then(|art| art.hero.as_ref());
         let logo = art.and_then(|art| art.logo.as_ref());
-        let hero_image =
-            hero.and_then(|path| self.images.get(&(path.clone(), artwork::Kind::Hero)));
-        let logo_image =
-            logo.and_then(|path| self.images.get(&(path.clone(), artwork::Kind::Logo)));
+        let hero_image = hero.and_then(|art| self.images.get(&(art.clone(), artwork::Kind::Hero)));
+        let logo_image = logo.and_then(|art| self.images.get(&(art.clone(), artwork::Kind::Logo)));
         let hero: Element<'_, Message> = match hero_image {
             Some(handle) => image(handle.clone())
                 .width(Fill)
@@ -408,17 +420,16 @@ impl App {
         if let Some(note) = &self.panel_note {
             inner = inner.push(text(note).size(12).color(palette.muted));
         }
-        if let Some(holder) = &card.busy_holder {
-            inner = inner.push(
-                text(format!("Busy with {holder}"))
-                    .size(12)
-                    .color(palette.muted),
-            );
+        if let Some((notice, cleanup)) = busy_notice(card, operation_busy) {
+            inner = inner.push(text(notice).size(12).color(palette.muted));
+            if cleanup {
+                inner = inner.push(button("Clean up").on_press(Message::CleanUp));
+            }
         }
         if let Some(error) = &self.panel_error {
             let mut box_content =
                 column![text(&error.text).size(14).color(palette.danger)].spacing(8);
-            if error.cleanup {
+            if error.cleanup && !card.unresolved && card.busy_holder.is_none() && !operation_busy {
                 box_content = box_content.push(button("Clean up").on_press(Message::CleanUp));
             }
             inner = inner.push(
@@ -526,6 +537,7 @@ mod tests {
             state,
             busy: false,
             busy_holder: None,
+            unresolved: false,
             error: None,
             playtime: "never played".into(),
             sessions: 0,
@@ -556,6 +568,28 @@ mod tests {
         let mut broken = card(State::Inactive);
         broken.error = Some("broken".into());
         assert!(!play_enabled(&broken, false, Some("game")));
+    }
+
+    #[test]
+    fn unresolved_installer_has_cleanup_and_busy_lock_does_not() {
+        let mut unresolved = card(State::Inactive);
+        unresolved.busy = true;
+        unresolved.unresolved = true;
+        assert_eq!(
+            busy_notice(&unresolved, false),
+            Some(("an installer did not finish cleanly".to_owned(), true))
+        );
+        assert_eq!(
+            busy_notice(&unresolved, true),
+            Some(("an installer did not finish cleanly".to_owned(), false))
+        );
+        let mut busy = card(State::Inactive);
+        busy.busy = true;
+        busy.busy_holder = Some("create".into());
+        assert_eq!(
+            busy_notice(&busy, false),
+            Some(("Busy with create".into(), false))
+        );
     }
 
     #[test]
