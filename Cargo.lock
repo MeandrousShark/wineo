@@ -5857,7 +5857,10 @@ version = "0.16.0"
 dependencies = [
  "anyhow",
  "iced",
+ "image",
+ "resvg",
  "tempfile",
+ "tokio",
  "wineo-core",
 ]
 

@@ -12,6 +12,9 @@ path = "src/main.rs"
 wineo-core.workspace = true
 anyhow.workspace = true
 iced = { version = "0.14", features = ["image", "svg", "tokio", "advanced"] }
+image = { workspace = true, features = ["webp"] }
+resvg = "0.45"
+tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
 tempfile.workspace = true
