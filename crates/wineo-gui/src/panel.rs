@@ -388,6 +388,11 @@ impl App {
                     .on_press(Message::OpenSettings)
                     .padding([6, 12]),
             );
+            extra = extra.push(
+                button("Actions")
+                    .on_press(Message::Context(card.name.clone()))
+                    .padding([6, 12]),
+            );
             inner = inner.push(extra);
         }
         if let Some(operation) = self.operation.as_ref().filter(|op| op.name == card.name) {

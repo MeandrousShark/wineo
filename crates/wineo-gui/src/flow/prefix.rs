@@ -1,0 +1,1221 @@
+use std::path::PathBuf;
+
+use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input};
+use iced::{Element, Fill, Task, border};
+use wineo_core::cancel::Token;
+use wineo_core::config::{Arch, GlobalConfig};
+use wineo_core::import::{self, ImportRequest, Inspection};
+use wineo_core::paths::Paths;
+use wineo_core::runner::Runner;
+use wineo_core::runners::Runners;
+
+use crate::chips::{input_style, secondary};
+use crate::theme::Palette;
+
+#[derive(Debug, Clone)]
+pub(crate) enum Event {
+    Source(String),
+    PickSource,
+    SourcePicked(u64, Result<Option<PathBuf>, String>),
+    Name(String),
+    Runner(String),
+    Mode(bool),
+    Destination(String),
+    PickDestination,
+    DestinationPicked(u64, Result<Option<PathBuf>, String>),
+    Arch(Option<Arch>),
+    Dependencies(bool),
+    RunnersLoaded(Result<Box<RunnerListing>, String>),
+    ReviewLoaded(u64, Result<Box<Review>, String>),
+    Progress(u64, String),
+    Next,
+    Import,
+    ImportFinished(u64, Result<Box<ImportOutcome>, String>),
+    RetryArt,
+    ArtRetried(u64, Result<(), String>),
+    SkipArt,
+    ArtSkipped(u64, Result<(), String>),
+    UseRetained,
+    Back,
+    KeepEditing,
+    Discard,
+    OpenSettings,
+    Library,
+    Cancel,
+    ForceStop,
+    Art(super::artwork::Event),
+}
+
+#[derive(Debug, Clone)]
+struct RunnerChoice {
+    selection: String,
+    name: String,
+    proton: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RunnerListing {
+    choices: Vec<RunnerChoice>,
+    default: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Review {
+    inspection: Inspection,
+    destination: PathBuf,
+    runner_name: String,
+    arch_missing: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ImportOutcome {
+    name: String,
+    art_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Details,
+    Review,
+    Working,
+    ArtFailed,
+    Finished,
+}
+
+pub(crate) struct Page {
+    paths: Paths,
+    source: String,
+    name: String,
+    runner: String,
+    runners: Vec<RunnerChoice>,
+    adopt: bool,
+    destination: String,
+    arch: Option<Arch>,
+    review: Option<Review>,
+    step: Step,
+    error: Option<String>,
+    status: String,
+    show_dependencies: bool,
+    dirty: bool,
+    discard_prompt: bool,
+    token: Option<Token>,
+    generation: u64,
+    action: Option<super::Action>,
+    art: super::artwork::Draft,
+    imported_name: Option<String>,
+    recovery_path: Option<PathBuf>,
+}
+
+impl Page {
+    pub(crate) fn new(paths: Paths) -> (Self, Task<Event>) {
+        let mut page = Self {
+            paths: paths.clone(),
+            source: String::new(),
+            name: String::new(),
+            runner: String::new(),
+            runners: Vec::new(),
+            adopt: false,
+            destination: String::new(),
+            arch: None,
+            review: None,
+            step: Step::Details,
+            error: None,
+            status: String::new(),
+            show_dependencies: false,
+            dirty: false,
+            discard_prompt: false,
+            token: None,
+            generation: 0,
+            action: None,
+            art: super::artwork::Draft::new(),
+            imported_name: None,
+            recovery_path: None,
+        };
+        let load_paths = paths.clone();
+        let load = Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || runner_choices(&load_paths))
+                    .await
+                    .map_err(|error| error.to_string())?
+            },
+            |result| Event::RunnersLoaded(result.map(Box::new)),
+        );
+        let art = page.art.configure(paths, String::new()).map(Event::Art);
+        (page, Task::batch([load, art]))
+    }
+
+    pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
+        match event {
+            Event::Source(value) => {
+                self.generation = self.generation.wrapping_add(1);
+                self.source = value;
+                self.dirty = true;
+                self.clear_review();
+                Task::none()
+            }
+            Event::PickSource => {
+                self.generation = self.generation.wrapping_add(1);
+                let generation = self.generation;
+                Task::perform(
+                    crate::picker::pick("Choose a prefix folder".to_owned(), true),
+                    move |result| Event::SourcePicked(generation, result),
+                )
+            }
+            Event::SourcePicked(generation, _) if generation != self.generation => Task::none(),
+            Event::SourcePicked(_, Ok(Some(path))) => {
+                self.generation = self.generation.wrapping_add(1);
+                self.source = path.display().to_string();
+                self.dirty = true;
+                self.clear_review();
+                Task::none()
+            }
+            Event::SourcePicked(_, Ok(None)) => Task::none(),
+            Event::SourcePicked(_, Err(error)) => {
+                self.error = Some(error);
+                Task::none()
+            }
+            Event::Name(value) => {
+                self.name = value;
+                self.dirty = true;
+                self.clear_review();
+                Task::none()
+            }
+            Event::Runner(value) => {
+                self.runner = value;
+                self.dirty = true;
+                self.clear_review();
+                Task::none()
+            }
+            Event::Mode(adopt) => {
+                self.adopt = adopt;
+                self.dirty = true;
+                self.clear_review();
+                Task::none()
+            }
+            Event::Destination(value) => {
+                self.generation = self.generation.wrapping_add(1);
+                self.destination = value;
+                self.dirty = true;
+                self.clear_review();
+                Task::none()
+            }
+            Event::PickDestination => {
+                self.generation = self.generation.wrapping_add(1);
+                let generation = self.generation;
+                Task::perform(
+                    crate::picker::pick("Choose a copy destination".to_owned(), true),
+                    move |result| Event::DestinationPicked(generation, result),
+                )
+            }
+            Event::DestinationPicked(generation, _) if generation != self.generation => {
+                Task::none()
+            }
+            Event::DestinationPicked(_, Ok(Some(path))) => {
+                self.generation = self.generation.wrapping_add(1);
+                self.destination = path.display().to_string();
+                self.dirty = true;
+                self.clear_review();
+                Task::none()
+            }
+            Event::DestinationPicked(_, Ok(None)) => Task::none(),
+            Event::DestinationPicked(_, Err(error)) => {
+                self.error = Some(error);
+                Task::none()
+            }
+            Event::Arch(arch) => {
+                self.arch = arch;
+                self.clear_review();
+                self.begin_review()
+            }
+            Event::Dependencies(show) => {
+                self.show_dependencies = show;
+                Task::none()
+            }
+            Event::RunnersLoaded(Ok(listing)) => {
+                if self.runner.is_empty() {
+                    self.runner = listing.default;
+                }
+                self.runners = listing.choices;
+                Task::none()
+            }
+            Event::RunnersLoaded(Err(error)) => {
+                self.error = Some(error);
+                Task::none()
+            }
+            Event::ReviewLoaded(generation, result) => {
+                if generation != self.generation || self.step != Step::Working {
+                    return Task::none();
+                }
+                match result {
+                    Ok(review) => {
+                        let review = *review;
+                        if review.arch_missing && self.arch.is_none() {
+                            self.review = Some(review);
+                            self.step = Step::Review;
+                            self.error = Some(
+                                "The prefix has no architecture marker. Choose win64 or win32 and review again.".to_owned(),
+                            );
+                        } else {
+                            self.review = Some(review);
+                            self.step = Step::Review;
+                            self.error = None;
+                        }
+                    }
+                    Err(error) => {
+                        self.step = Step::Details;
+                        self.error = Some(error);
+                    }
+                }
+                Task::none()
+            }
+            Event::Progress(generation, status) => {
+                if generation == self.generation && self.step == Step::Working {
+                    self.status = status;
+                }
+                Task::none()
+            }
+            Event::Import => self.begin_import(),
+            Event::Next => self.begin_review(),
+            Event::ImportFinished(generation, result) => {
+                if generation != self.generation || self.step != Step::Working {
+                    return Task::none();
+                }
+                self.token = None;
+                match result {
+                    Ok(outcome) => {
+                        let outcome = *outcome;
+                        self.imported_name = Some(outcome.name);
+                        self.step = if let Some(error) = outcome.art_error {
+                            self.error = Some(error);
+                            Step::ArtFailed
+                        } else {
+                            self.error = None;
+                            Step::Finished
+                        };
+                    }
+                    Err(error) => {
+                        if !self.adopt
+                            && error.contains("retry this import with --adopt")
+                            && let Some(review) = &self.review
+                        {
+                            self.recovery_path = Some(review.destination.clone());
+                        }
+                        self.error = Some(error);
+                        self.step = Step::Review;
+                    }
+                }
+                Task::none()
+            }
+            Event::RetryArt => self.retry_art(),
+            Event::ArtRetried(generation, result) => {
+                if generation != self.generation || self.step != Step::ArtFailed {
+                    return Task::none();
+                }
+                self.token = None;
+                match result {
+                    Ok(_) => {
+                        self.error = None;
+                        self.step = Step::Finished;
+                    }
+                    Err(error) => self.error = Some(error),
+                }
+                Task::none()
+            }
+            Event::SkipArt => self.skip_art(),
+            Event::ArtSkipped(generation, result) => {
+                if generation != self.generation || self.step != Step::Working {
+                    return Task::none();
+                }
+                self.token = None;
+                self.step = Step::Finished;
+                self.error = result.err();
+                Task::none()
+            }
+            Event::UseRetained => {
+                if let Some(path) = self.recovery_path.take() {
+                    self.source = path.display().to_string();
+                    self.adopt = true;
+                    self.destination.clear();
+                    self.arch = None;
+                    self.review = None;
+                    self.step = Step::Details;
+                    self.error = None;
+                    self.dirty = true;
+                }
+                Task::none()
+            }
+            Event::Back => self.back(),
+            Event::KeepEditing => {
+                self.discard_prompt = false;
+                Task::none()
+            }
+            Event::Discard => {
+                self.discard_prompt = false;
+                self.action = Some(super::Action::Library {
+                    name: None,
+                    launch: false,
+                });
+                Task::none()
+            }
+            Event::OpenSettings => {
+                if let Some(name) = self.imported_name.clone() {
+                    self.action = Some(super::Action::Settings {
+                        name,
+                        launch: false,
+                    });
+                }
+                Task::none()
+            }
+            Event::Library => {
+                self.action = Some(super::Action::Library {
+                    name: self.imported_name.clone(),
+                    launch: false,
+                });
+                Task::none()
+            }
+            Event::Cancel => {
+                self.cancel(false);
+                Task::none()
+            }
+            Event::ForceStop => {
+                self.cancel(true);
+                Task::none()
+            }
+            Event::Art(event) => self.art.update(event).map(Event::Art),
+        }
+    }
+
+    pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
+        let body = match self.step {
+            Step::Details => self.details(palette),
+            Step::Review => self.review_view(palette),
+            Step::Working => column![
+                text(self.status.as_str()).color(palette.muted),
+                self.token.as_ref().map(|token| {
+                    let (label, event) = if token.is_canceled() {
+                        ("Force stop", Event::ForceStop)
+                    } else {
+                        ("Cancel", Event::Cancel)
+                    };
+                    button(text(label))
+                        .on_press(event)
+                        .padding([6, 12])
+                        .style(move |_, status| secondary(palette, status))
+                })
+            ]
+            .spacing(14)
+            .into(),
+            Step::ArtFailed => column![
+                text(format!(
+                    "{} was imported, but artwork could not be copied.",
+                    self.imported_name.as_deref().unwrap_or("Environment")
+                ))
+                .color(palette.warning),
+                row![
+                    button(text("Retry artwork"))
+                        .on_press(Event::RetryArt)
+                        .padding([6, 12])
+                        .style(move |_, status| secondary(palette, status)),
+                    button(text("Skip artwork"))
+                        .on_press(Event::SkipArt)
+                        .padding([6, 12])
+                        .style(move |_, status| secondary(palette, status))
+                ]
+                .spacing(8),
+            ]
+            .spacing(12)
+            .into(),
+            Step::Finished => column![
+                text(format!(
+                    "Imported {}.",
+                    self.imported_name.as_deref().unwrap_or("environment")
+                ))
+                .color(palette.success),
+                text("Scan installed programs and choose game targets now, or add them later in Settings.")
+                    .color(palette.muted),
+                row![
+                    button(text("Set up targets"))
+                        .on_press(Event::OpenSettings)
+                        .padding([8, 14])
+                        .style(move |_, status| secondary(palette, status)),
+                    button(text("Back to library"))
+                        .on_press(Event::Library)
+                        .padding([8, 14])
+                        .style(move |_, status| secondary(palette, status))
+                ]
+                .spacing(8),
+            ]
+            .spacing(12)
+            .into(),
+        };
+        let mut content = column![
+            text("Import prefix").size(22).color(palette.foreground),
+            body
+        ]
+        .spacing(18)
+        .max_width(760);
+        if let Some(error) = &self.error {
+            content = content.push(text(error.as_str()).size(13).color(palette.danger));
+        }
+        let base: Element<'_, Event> = container(scrollable(content).height(Fill))
+            .padding(24)
+            .width(Fill)
+            .height(Fill)
+            .into();
+        if self.discard_prompt {
+            iced::widget::stack![base, discard_prompt(palette)].into()
+        } else {
+            base
+        }
+    }
+
+    pub(crate) fn busy(&self) -> bool {
+        matches!(self.step, Step::Working)
+    }
+
+    pub(crate) fn cancel(&mut self, force: bool) {
+        if let Some(token) = &self.token {
+            if force {
+                token.force();
+                self.status = "Force stopping...".to_owned();
+            } else {
+                token.cancel();
+                self.status = "Canceling...".to_owned();
+            }
+        }
+    }
+
+    pub(crate) fn take_action(&mut self) -> Option<super::Action> {
+        self.action.take()
+    }
+
+    pub(crate) fn submit(&mut self) -> Task<Event> {
+        if self.busy() {
+            return Task::none();
+        }
+        match self.step {
+            Step::Details => self.begin_review(),
+            Step::Review => self.begin_import(),
+            Step::ArtFailed => self.retry_art(),
+            Step::Finished => {
+                self.action = Some(super::Action::Library {
+                    name: self.imported_name.clone(),
+                    launch: false,
+                });
+                Task::none()
+            }
+            Step::Working => Task::none(),
+        }
+    }
+
+    pub(crate) fn back(&mut self) -> Task<Event> {
+        match self.step {
+            Step::Details => {
+                if self.dirty || self.art.is_dirty() {
+                    self.discard_prompt = true;
+                } else {
+                    self.action = Some(super::Action::Library {
+                        name: None,
+                        launch: false,
+                    });
+                }
+                Task::none()
+            }
+            Step::Review => {
+                self.step = Step::Details;
+                self.error = None;
+                Task::none()
+            }
+            Step::ArtFailed | Step::Finished => {
+                self.action = Some(super::Action::Library {
+                    name: self.imported_name.clone(),
+                    launch: false,
+                });
+                Task::none()
+            }
+            Step::Working => Task::none(),
+        }
+    }
+
+    fn details(&self, palette: Palette) -> Element<'_, Event> {
+        let runner_options: Vec<String> = self
+            .runners
+            .iter()
+            .map(|runner| {
+                format!(
+                    "{} -> {} ({})",
+                    runner.selection,
+                    runner.name,
+                    if runner.proton { "Proton" } else { "Wine" }
+                )
+            })
+            .collect();
+        let selected = self
+            .runners
+            .iter()
+            .find(|runner| runner.selection == self.runner)
+            .map(|runner| {
+                format!(
+                    "{} -> {} ({})",
+                    runner.selection,
+                    runner.name,
+                    if runner.proton { "Proton" } else { "Wine" }
+                )
+            });
+        let mut fields = column![
+            text("Source folder").color(palette.foreground),
+            row![
+                text_input("Path to Wine prefix or Proton compatdata", &self.source)
+                    .on_input(Event::Source)
+                    .width(Fill)
+                    .padding(8)
+                    .style(move |_, status| input_style(palette, status)),
+                button(text("Browse..."))
+                    .on_press(Event::PickSource)
+                    .padding([6, 12])
+                    .style(move |_, status| secondary(palette, status))
+            ]
+            .spacing(8),
+            text("Environment name").color(palette.foreground),
+            text_input("Name", &self.name)
+                .on_input(Event::Name)
+                .padding(8)
+                .style(move |_, status| input_style(palette, status)),
+            text("Compatible runner").color(palette.foreground),
+            pick_list(runner_options, selected, |value| Event::Runner(
+                value.split(" -> ").next().unwrap_or(&value).to_owned()
+            ))
+            .placeholder("Choose a runner")
+            .width(Fill),
+            row![
+                button(text(if self.adopt {
+                    "Use in place (selected)"
+                } else {
+                    "Use in place"
+                }))
+                .on_press(Event::Mode(true))
+                .padding([6, 12])
+                .style(move |_, status| secondary(palette, status)),
+                button(text(if !self.adopt {
+                    "Copy (default)"
+                } else {
+                    "Copy"
+                }))
+                .on_press(Event::Mode(false))
+                .padding([6, 12])
+                .style(move |_, status| secondary(palette, status))
+            ]
+            .spacing(8),
+        ]
+        .spacing(8);
+        if self.adopt {
+            fields = fields.push(
+                text("Later launches will modify the original prefix.")
+                    .size(13)
+                    .color(palette.warning),
+            );
+        } else {
+            fields = fields
+                .push(text("Copy destination").color(palette.foreground))
+                .push(
+                    row![
+                        text_input("Default: configured prefix root/name", &self.destination)
+                            .on_input(Event::Destination)
+                            .width(Fill)
+                            .padding(8)
+                            .style(move |_, status| input_style(palette, status)),
+                        button(text("Browse..."))
+                            .on_press(Event::PickDestination)
+                            .padding([6, 12])
+                            .style(move |_, status| secondary(palette, status))
+                    ]
+                    .spacing(8),
+                );
+        }
+        fields = fields.push(self.art.view(palette).map(Event::Art));
+        fields = fields.push(
+            row![
+                button(text("Back"))
+                    .on_press(Event::Back)
+                    .padding([6, 12])
+                    .style(move |_, status| secondary(palette, status)),
+                button(text("Review"))
+                    .on_press(Event::Next)
+                    .padding([6, 12])
+                    .style(move |_, status| secondary(palette, status)),
+            ]
+            .spacing(8),
+        );
+        fields.into()
+    }
+
+    fn review_view(&self, palette: Palette) -> Element<'_, Event> {
+        let Some(review) = &self.review else {
+            return text("Preparing review...").into();
+        };
+        let destination = if self.adopt {
+            format!("Use in place: {}", review.inspection.source_root.display())
+        } else {
+            format!("Copy to: {}", review.destination.display())
+        };
+        let mut content = column![
+            text(format!("Import {}", self.name)).size(18).color(palette.foreground),
+            text(format!("Source: {}", review.inspection.source_root.display())).color(palette.foreground),
+            text(destination).color(palette.foreground),
+            text(format!("Runner: {} -> {}", self.runner, review.runner_name)).color(palette.foreground),
+            text(format!("Layout: {:?}, {}", review.inspection.layout, review.inspection.arch)).color(palette.foreground),
+            text("The source game and external launcher must stay idle during import. External game files and saves stay where they are.").size(13).color(palette.warning),
+        ].spacing(10);
+        if review.arch_missing {
+            content = content
+                .push(text("Architecture was not detected. Choose one:").color(palette.warning));
+            content = content.push(
+                pick_list(vec![Arch::Win64, Arch::Win32], self.arch, |arch| {
+                    Event::Arch(Some(arch))
+                })
+                .placeholder("Choose architecture"),
+            );
+        }
+        if !review.inspection.external_dependencies.is_empty() {
+            let count = review.inspection.external_dependencies.len();
+            content = content.push(
+                button(text(if self.show_dependencies {
+                    format!("Hide {count} external dependencies")
+                } else {
+                    format!("Show all {count} external dependencies")
+                }))
+                .on_press(Event::Dependencies(!self.show_dependencies))
+                .padding([5, 10])
+                .style(move |_, status| secondary(palette, status)),
+            );
+            if self.show_dependencies {
+                for dependency in &review.inspection.external_dependencies {
+                    content = content.push(
+                        text(format!(
+                            "{} -> {}",
+                            dependency.source.display(),
+                            dependency.target.display()
+                        ))
+                        .size(13)
+                        .color(palette.muted),
+                    );
+                }
+            }
+        }
+        content = content.push(self.art.view(palette).map(Event::Art));
+        if self.recovery_path.is_some() {
+            content = content.push(text("A complete copy was retained. Review it with Use in place to register that folder.").size(13).color(palette.warning));
+        }
+        content = content.push(
+            row![
+                button(text("Back"))
+                    .on_press(Event::Back)
+                    .padding([6, 12])
+                    .style(move |_, status| secondary(palette, status)),
+                button(text("Import"))
+                    .on_press(Event::Import)
+                    .padding([6, 12])
+                    .style(move |_, status| secondary(palette, status))
+            ]
+            .spacing(8),
+        );
+        if self.recovery_path.is_some() {
+            content = content.push(
+                button(text("Use retained copy in place"))
+                    .on_press(Event::UseRetained)
+                    .padding([6, 12])
+                    .style(move |_, status| secondary(palette, status)),
+            );
+        }
+        content.into()
+    }
+
+    fn begin_review(&mut self) -> Task<Event> {
+        if self.step == Step::Working {
+            return Task::none();
+        }
+        let source = self.source.clone();
+        let name = self.name.clone();
+        let runner = self.runner.clone();
+        if source.trim().is_empty() || name.trim().is_empty() || runner.is_empty() {
+            self.error = Some("Choose a source, name, and runner before reviewing.".to_owned());
+            return Task::none();
+        }
+        self.error = None;
+        self.step = Step::Working;
+        self.status = "Inspecting the prefix...".to_owned();
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        let paths = self.paths.clone();
+        let adopt = self.adopt;
+        let destination = self.destination.clone();
+        let arch = self.arch;
+        let task = Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    inspect_review(&paths, &source, &name, &runner, adopt, &destination, arch)
+                })
+                .await
+                .map_err(|error| error.to_string())?
+            },
+            move |result| Event::ReviewLoaded(generation, result.map(Box::new)),
+        );
+        let art = self
+            .art
+            .configure(self.paths.clone(), self.name.clone())
+            .map(Event::Art);
+        Task::batch([task, art])
+    }
+
+    fn begin_import(&mut self) -> Task<Event> {
+        if self.step != Step::Review || self.busy() {
+            return Task::none();
+        }
+        let Some(review) = self.review.clone() else {
+            return Task::none();
+        };
+        if review.arch_missing && self.arch.is_none() {
+            self.error = Some("Choose the prefix architecture before importing.".to_owned());
+            return Task::none();
+        }
+        if let Err(error) = self.art.validate() {
+            self.error = Some(error);
+            return Task::none();
+        }
+        let token = Token::new();
+        self.token = Some(token.clone());
+        self.step = Step::Working;
+        self.status = "Importing prefix...".to_owned();
+        self.error = None;
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        let request = ImportRequest {
+            source: review.inspection.source_root.clone(),
+            name: self.name.clone(),
+            runner: self.runner.clone(),
+            destination: (!self.adopt).then(|| review.destination.clone()),
+            adopt: self.adopt,
+            arch: self.arch,
+        };
+        let paths = self.paths.clone();
+        let art = self.art.clone();
+        let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+        let progress_generation = generation;
+        let work = Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let global = GlobalConfig::load(&paths)?;
+                    let imported = import::execute_reviewed(
+                        &paths,
+                        &global,
+                        request,
+                        Some(&review.inspection),
+                        None,
+                        &token,
+                        {
+                            let mut copied = 0_u64;
+                            move |progress| {
+                                if let import::ImportProgress::Copied { .. } = progress {
+                                    copied += 1;
+                                    if copied.is_multiple_of(250) {
+                                        let _ = sender.unbounded_send(Event::Progress(
+                                            progress_generation,
+                                            format!("Copied {copied} files..."),
+                                        ));
+                                    }
+                                }
+                            }
+                        },
+                    )?;
+                    let art_error = apply_art(&paths, &imported.name, &art).err();
+                    Ok::<_, anyhow::Error>(ImportOutcome {
+                        name: imported.name,
+                        art_error,
+                    })
+                })
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|result| result)
+                .map_err(|error| error.to_string())
+            },
+            move |result| Event::ImportFinished(generation, result.map(Box::new)),
+        );
+        Task::batch([Task::run(receiver, |event| event), work])
+    }
+
+    fn retry_art(&mut self) -> Task<Event> {
+        if self.step != Step::ArtFailed || self.busy() {
+            return Task::none();
+        }
+        let Some(name) = self.imported_name.clone() else {
+            return Task::none();
+        };
+        self.step = Step::Working;
+        self.status = "Copying artwork...".to_owned();
+        self.error = None;
+        self.token = Some(Token::new());
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        let paths = self.paths.clone();
+        let art = self.art.clone();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || apply_art(&paths, &name, &art))
+                    .await
+                    .map_err(|error| error.to_string())?
+            },
+            move |result| Event::ArtRetried(generation, result),
+        )
+    }
+
+    fn skip_art(&mut self) -> Task<Event> {
+        if self.step != Step::ArtFailed || self.busy() {
+            return Task::none();
+        }
+        let Some(name) = self.imported_name.clone() else {
+            return Task::none();
+        };
+        self.step = Step::Working;
+        self.status = "Refreshing desktop entries...".to_owned();
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        let paths = self.paths.clone();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    wineo_core::desktop::apply(&paths, &name, false)
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| error.to_string())?
+            },
+            move |result| Event::ArtSkipped(generation, result),
+        )
+    }
+
+    fn clear_review(&mut self) {
+        self.review = None;
+        self.recovery_path = None;
+        if self.step == Step::Review {
+            self.step = Step::Details;
+        }
+        self.error = None;
+    }
+}
+
+fn runner_choices(paths: &Paths) -> Result<RunnerListing, String> {
+    let global = GlobalConfig::load(paths).map_err(|error| error.to_string())?;
+    let runners = Runners::new(paths, &global).map_err(|error| error.to_string())?;
+    let mut choices = Vec::new();
+    if let Ok(runner) = Runner::system() {
+        choices.push(choice(runner));
+    }
+    let listing = runners.list().map_err(|error| error.to_string())?;
+    choices.extend(listing.runners.into_iter().map(choice));
+    for alias in wineo_core::runner_alias::ALIASES {
+        if let Ok(runner) = runners.resolve(alias) {
+            choices.push(choice(runner));
+        }
+    }
+    choices.sort_by(|a, b| a.selection.cmp(&b.selection));
+    choices.dedup_by(|a, b| a.selection == b.selection);
+    let default = choices
+        .iter()
+        .find(|runner| runner.selection == global.defaults.runner)
+        .or_else(|| choices.first())
+        .map(|runner| runner.selection.clone())
+        .unwrap_or_default();
+    Ok(RunnerListing { choices, default })
+}
+
+fn choice(runner: Runner) -> RunnerChoice {
+    RunnerChoice {
+        selection: runner.selection().to_owned(),
+        name: runner.name().to_owned(),
+        proton: runner.is_proton(),
+    }
+}
+
+fn apply_art(paths: &Paths, name: &str, art: &super::artwork::Draft) -> Result<(), String> {
+    art.apply(paths, name)?;
+    wineo_core::desktop::apply(paths, name, false)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn inspect_review(
+    paths: &Paths,
+    source: &str,
+    name: &str,
+    runner_selection: &str,
+    adopt: bool,
+    destination: &str,
+    arch: Option<Arch>,
+) -> Result<Review, String> {
+    let source = paths.absolute(source).map_err(|error| error.to_string())?;
+    let global = GlobalConfig::load(paths).map_err(|error| error.to_string())?;
+    let runner = Runners::new(paths, &global)
+        .and_then(|runners| runners.resolve(runner_selection))
+        .map_err(|error| error.to_string())?;
+    let inspection = match import::inspect(&source, Some(&runner), arch) {
+        Ok(inspection) => (inspection, false),
+        Err(error) if error.to_string().contains("#arch marker") && arch.is_none() => {
+            let inspection = import::inspect(&source, Some(&runner), Some(Arch::Win64))
+                .map_err(|error| error.to_string())?;
+            (inspection, true)
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let destination = if adopt {
+        inspection.0.source_root.clone()
+    } else if destination.trim().is_empty() {
+        global
+            .prefix_root(paths)
+            .map_err(|error| error.to_string())?
+            .join(name)
+    } else {
+        paths
+            .absolute(destination)
+            .map_err(|error| error.to_string())?
+    };
+    if !wineo_core::name::is_valid(name) {
+        return Err(format!("invalid environment name `{name}`"));
+    }
+    if paths.environment_config(name).exists() {
+        return Err(format!("environment `{name}` already exists"));
+    }
+    if !adopt && destination.exists() {
+        return Err(format!(
+            "import destination already exists: {}",
+            destination.display()
+        ));
+    }
+    paths
+        .check_prefix(&destination)
+        .map_err(|error| error.to_string())?;
+    if !adopt {
+        let source_root = wineo_core::paths::resolve(&inspection.0.source_root);
+        let destination_root = wineo_core::paths::resolve(&destination);
+        if source_root.starts_with(&destination_root) || destination_root.starts_with(&source_root)
+        {
+            return Err("source and destination overlap".to_owned());
+        }
+    }
+    Ok(Review {
+        inspection: inspection.0,
+        destination,
+        runner_name: runner.name().to_owned(),
+        arch_missing: inspection.1,
+    })
+}
+
+fn discard_prompt(palette: Palette) -> Element<'static, Event> {
+    container(
+        column![
+            text("Discard this import?")
+                .size(18)
+                .color(palette.foreground),
+            text("Your prefix, name, and artwork selections will be lost.").color(palette.muted),
+            row![
+                button(text("Keep editing"))
+                    .on_press(Event::KeepEditing)
+                    .padding([6, 12])
+                    .style(move |_, status| secondary(palette, status)),
+                button(text("Discard"))
+                    .on_press(Event::Discard)
+                    .padding([6, 12])
+                    .style(move |_, status| secondary(palette, status))
+            ]
+            .spacing(8),
+        ]
+        .spacing(12),
+    )
+    .padding(24)
+    .style(move |_| {
+        container::Style::default()
+            .background(palette.surface)
+            .border(border::rounded(10).width(1).color(palette.border))
+    })
+    .center(Fill)
+    .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    use super::*;
+
+    fn paths(root: &Path) -> Paths {
+        let home = root.to_owned();
+        Paths::from_lookup(move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())))
+            .unwrap()
+    }
+
+    fn fake_runner(paths: &Paths) {
+        let root = paths.default_runner_root().join("fake-wine").join("bin");
+        fs::create_dir_all(&root).unwrap();
+        for program in ["wine", "wineserver"] {
+            let path = root.join(program);
+            fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn prefix(root: &Path, arch: Option<Arch>) -> PathBuf {
+        let prefix = root.join("source-prefix");
+        fs::create_dir_all(prefix.join("drive_c")).unwrap();
+        let marker = arch.map_or(String::new(), |arch| format!("#arch={}\n", arch.as_str()));
+        fs::write(
+            prefix.join("system.reg"),
+            format!("WINE REGISTRY Version 2\n{marker}"),
+        )
+        .unwrap();
+        prefix
+    }
+
+    fn request(review: &Review) -> ImportRequest {
+        ImportRequest {
+            source: review.inspection.source_root.clone(),
+            name: "imported".to_owned(),
+            runner: "fake-wine".to_owned(),
+            destination: Some(review.destination.clone()),
+            adopt: false,
+            arch: Some(review.inspection.arch),
+        }
+    }
+
+    #[test]
+    fn review_is_read_only_and_stale_source_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        fake_runner(&paths);
+        let source = prefix(root.path(), Some(Arch::Win64));
+        let review = inspect_review(
+            &paths,
+            source.to_str().unwrap(),
+            "imported",
+            "fake-wine",
+            false,
+            "",
+            None,
+        )
+        .unwrap();
+        assert_eq!(review.inspection.layout, import::ImportLayout::Wine);
+        assert!(!review.destination.exists());
+        assert!(!paths.environment_config("imported").exists());
+
+        fs::write(
+            source.join("system.reg"),
+            "WINE REGISTRY Version 2\n#arch=win64\nchanged\n",
+        )
+        .unwrap();
+        let error = import::execute_reviewed(
+            &paths,
+            &GlobalConfig::default(),
+            request(&review),
+            Some(&review.inspection),
+            None,
+            &Token::new(),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("changed"));
+        assert!(!review.destination.exists());
+        assert!(!paths.environment_config("imported").exists());
+    }
+
+    #[test]
+    fn canceled_copy_does_not_register_or_publish_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        fake_runner(&paths);
+        let source = prefix(root.path(), Some(Arch::Win64));
+        let review = inspect_review(
+            &paths,
+            source.to_str().unwrap(),
+            "imported",
+            "fake-wine",
+            false,
+            "",
+            None,
+        )
+        .unwrap();
+        let token = Token::new();
+        token.cancel();
+        let result = import::execute_reviewed(
+            &paths,
+            &GlobalConfig::default(),
+            request(&review),
+            Some(&review.inspection),
+            None,
+            &token,
+            |_| {},
+        );
+        assert!(result.is_err());
+        assert!(!review.destination.exists());
+        assert!(!paths.environment_config("imported").exists());
+    }
+
+    #[test]
+    fn missing_architecture_is_requested_only_when_inspection_cannot_detect_it() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        fake_runner(&paths);
+        let source = prefix(root.path(), None);
+        let review = inspect_review(
+            &paths,
+            source.to_str().unwrap(),
+            "imported",
+            "fake-wine",
+            true,
+            "",
+            None,
+        )
+        .unwrap();
+        assert!(review.arch_missing);
+        assert_eq!(review.inspection.arch, Arch::Win64);
+        assert!(!paths.environment_config("imported").exists());
+    }
+
+    #[test]
+    fn submit_uses_the_visible_primary_action_and_ignores_busy_pages() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        fake_runner(&paths);
+        let source = prefix(root.path(), Some(Arch::Win64));
+        let mut page = Page::new(paths).0;
+        page.source = source.display().to_string();
+        page.name = "imported".to_owned();
+        page.runner = "fake-wine".to_owned();
+        let _task = page.submit();
+        assert_eq!(page.step, Step::Working);
+        drop(_task);
+
+        let review = inspect_review(
+            &page.paths,
+            &page.source,
+            &page.name,
+            &page.runner,
+            false,
+            "",
+            None,
+        )
+        .unwrap();
+        page.step = Step::Review;
+        page.review = Some(review);
+        let _task = page.submit();
+        assert_eq!(page.status, "Importing prefix...");
+        drop(_task);
+
+        page.action = None;
+        let status = page.status.clone();
+        let _task = page.submit();
+        assert!(page.action.is_none());
+        assert_eq!(page.status, status);
+    }
+}

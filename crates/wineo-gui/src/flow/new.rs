@@ -1,0 +1,1849 @@
+//! Guided creation of Windows and native environments.
+
+use std::fs;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use iced::futures::channel::mpsc::unbounded;
+use iced::widget::{
+    button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
+};
+use iced::{Center, Element, Fill, Task};
+use wineo_core::cancel::Token;
+use wineo_core::config::{Arch, GlobalConfig};
+use wineo_core::create::{self, CreateEvent, CreateRequest, TargetOutcome};
+use wineo_core::desktop;
+use wineo_core::download::{Client, Progress, Provider};
+use wineo_core::environment::{Environment, NewEnvironment};
+use wineo_core::error::Error as CoreError;
+use wineo_core::install::{self, Wanted};
+use wineo_core::installer::{self, Installer, Outcome, Output};
+use wineo_core::launch;
+use wineo_core::name;
+use wineo_core::paths::Paths;
+use wineo_core::programs;
+use wineo_core::runner::Runner;
+use wineo_core::runners::Runners;
+use wineo_core::runtime::Runtime;
+use wineo_core::supervisor::{Notice, Watched};
+use wineo_core::targets::{self, Batch, Spec, Written};
+use wineo_core::templates::{Template, Templates};
+
+use super::{Action, artwork};
+use crate::picker;
+use crate::theme::Palette;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Windows,
+    Native,
+}
+
+impl Kind {
+    const ALL: [Self; 2] = [Self::Windows, Self::Native];
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Windows => "Windows",
+            Self::Native => "Native Linux",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Empty,
+    Executable,
+    Installer,
+}
+
+impl std::fmt::Display for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Empty => "Empty registration",
+            Self::Executable => "Existing game executable",
+            Self::Installer => "Run an installer",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    Details,
+    Review,
+    Working,
+    Target,
+    Finished,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Options {
+    runner: String,
+    templates: Vec<String>,
+    runners: Vec<String>,
+    arch: Arch,
+    prefix_root: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Review {
+    runner: Option<Runner>,
+    template: Option<Template>,
+    arch: Arch,
+    prefix: Option<PathBuf>,
+    adopted: bool,
+    omitted_components: bool,
+    prerequisite: Option<Prerequisite>,
+}
+
+#[derive(Debug, Clone)]
+enum Prerequisite {
+    Runner(String),
+    Component {
+        provider: Provider,
+        version: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Report {
+    registered: bool,
+    playable: bool,
+    cleanup_resolved: bool,
+    notes: Vec<String>,
+    programs: Vec<(String, String)>,
+    art_error: Option<String>,
+}
+
+impl Report {
+    fn new() -> Self {
+        Self {
+            registered: false,
+            playable: false,
+            cleanup_resolved: true,
+            notes: Vec::new(),
+            programs: Vec::new(),
+            art_error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Draft {
+    name: String,
+    kind: Kind,
+    source: Source,
+    path: String,
+    prefix: String,
+    runner: String,
+    template: String,
+    arch: Option<Arch>,
+    desktop: bool,
+}
+
+impl Default for Draft {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            kind: Kind::Windows,
+            source: Source::Empty,
+            path: String::new(),
+            prefix: String::new(),
+            runner: String::new(),
+            template: String::new(),
+            arch: None,
+            desktop: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum Event {
+    Back,
+    OpenExisting,
+    Discard,
+    KeepEditing,
+    Kind(Kind),
+    Source(String),
+    Name(String),
+    Path(String),
+    Prefix(String),
+    Runner(String),
+    Template(String),
+    Arch(Arch),
+    Desktop(bool),
+    Browse,
+    BrowsePrefix,
+    PrefixPicked(u64, Result<Option<PathBuf>, String>),
+    Picked(u64, Result<Option<PathBuf>, String>),
+    Next,
+    Create,
+    Download(Provider),
+    Downloaded(u64, Result<String, String>),
+    Cancel,
+    Force,
+    OpenSettings,
+    ToLibrary,
+    Launch(bool),
+    TargetPath(String),
+    TargetDesktop(bool),
+    Program(String),
+    AddTarget,
+    SkipTarget,
+    CleanUp,
+    Cleaned(u64, Result<bool, String>),
+    RetryArt,
+    RetryCreation,
+    SkipArt,
+    ArtApplied(u64, Result<Vec<String>, String>),
+    TargetAdded(u64, Result<Vec<String>, String>),
+    Options(Result<Options, String>),
+    Reviewed(u64, Result<Box<Review>, String>),
+    Progress(u64, String),
+    LogChunk(u64, String),
+    Done(u64, Report),
+    Art(artwork::Event),
+}
+
+pub(crate) struct Page {
+    paths: Paths,
+    draft: Draft,
+    art: artwork::Draft,
+    stage: Stage,
+    options: Option<Options>,
+    review: Option<Review>,
+    report: Option<Report>,
+    error: Option<String>,
+    status: String,
+    log: String,
+    target_path: String,
+    target_desktop: bool,
+    launch: bool,
+    leave_prompt: bool,
+    action: Option<Action>,
+    generation: u64,
+    token: Option<Token>,
+    downloading: Option<Provider>,
+    picker_sequence: u64,
+}
+
+impl Page {
+    pub(crate) fn new(paths: Paths) -> (Self, Task<Event>) {
+        let mut page = Self {
+            paths,
+            draft: Draft::default(),
+            art: artwork::Draft::new(),
+            stage: Stage::Details,
+            options: None,
+            review: None,
+            report: None,
+            error: None,
+            status: String::new(),
+            log: String::new(),
+            target_path: String::new(),
+            target_desktop: false,
+            launch: false,
+            leave_prompt: false,
+            action: None,
+            generation: 0,
+            token: None,
+            downloading: None,
+            picker_sequence: 0,
+        };
+        let task = Task::batch([
+            page.load_options(),
+            page.art
+                .configure(page.paths.clone(), String::new())
+                .map(Event::Art),
+        ]);
+        (page, task)
+    }
+
+    fn load_options(&mut self) -> Task<Event> {
+        self.generation = self.generation.wrapping_add(1);
+        let paths = self.paths.clone();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
+                    let available = Runners::new(&paths, &global).map_err(|e| e.to_string())?;
+                    let mut runners = vec![global.defaults.runner.clone(), "wine".to_owned()];
+                    runners.extend(
+                        available
+                            .list()
+                            .map_err(|e| e.to_string())?
+                            .runners
+                            .iter()
+                            .map(|runner| runner.name().to_owned()),
+                    );
+                    runners.sort();
+                    runners.dedup();
+                    let templates = Templates::new(&paths)
+                        .list()
+                        .map_err(|e| e.to_string())?
+                        .into_iter()
+                        .map(|entry| entry.name)
+                        .collect();
+                    Ok::<_, String>(Options {
+                        prefix_root: global.prefix_root(&paths).map_err(|e| e.to_string())?,
+                        runner: global.defaults.runner,
+                        templates,
+                        runners,
+                        arch: global.defaults.arch,
+                    })
+                })
+                .await
+                .map_err(|error| error.to_string())?
+            },
+            Event::Options,
+        )
+    }
+
+    pub(crate) fn busy(&self) -> bool {
+        self.stage == Stage::Working
+    }
+
+    pub(crate) fn cancel(&mut self, force: bool) {
+        if let Some(token) = &self.token {
+            if force {
+                token.force();
+                self.status = "Force stopping...".to_owned();
+            } else {
+                token.cancel();
+                self.status = "Canceling and waiting for cleanup...".to_owned();
+            }
+        }
+    }
+
+    pub(crate) fn take_action(&mut self) -> Option<Action> {
+        self.action.take()
+    }
+
+    pub(crate) fn back(&mut self) -> Task<Event> {
+        self.picker_sequence = self.picker_sequence.wrapping_add(1);
+        match self.stage {
+            Stage::Details => {
+                if self.draft == Draft::default() && !self.art.is_dirty() {
+                    self.action = Some(Action::Library {
+                        name: None,
+                        launch: false,
+                    });
+                } else {
+                    self.leave_prompt = true;
+                }
+            }
+            Stage::Review => self.stage = Stage::Details,
+            Stage::Working => self.cancel(false),
+            Stage::Target => self.finish(),
+            Stage::Finished => self.leave(false),
+        }
+        Task::none()
+    }
+
+    pub(crate) fn submit(&mut self) -> Task<Event> {
+        if self.busy() || self.leave_prompt {
+            return Task::none();
+        }
+        match self.stage {
+            Stage::Details => self.update(Event::Next),
+            Stage::Review => self.update(Event::Create),
+            Stage::Target => self.update(Event::AddTarget),
+            Stage::Finished => self.update(Event::ToLibrary),
+            Stage::Working => Task::none(),
+        }
+    }
+
+    fn edited(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.picker_sequence = self.picker_sequence.wrapping_add(1);
+        self.error = None;
+        self.review = None;
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        let name = self.draft.name.trim();
+        if let Some(problem) = name::problem(name) {
+            return Err(problem);
+        }
+        if self.paths.environment_config(name).exists() {
+            return Err(format!(
+                "An environment named {name} already exists. Open its Settings from the library."
+            ));
+        }
+        if self.draft.source != Source::Empty && self.draft.path.trim().is_empty() {
+            return Err("Choose an executable or installer".to_owned());
+        }
+        if self.draft.kind == Kind::Native && self.draft.source == Source::Installer {
+            return Err("Native environments cannot run a Windows installer".to_owned());
+        }
+        self.art.validate()
+    }
+
+    fn review_task(&mut self) -> Task<Event> {
+        if let Err(error) = self.validate() {
+            self.error = Some(error);
+            return Task::none();
+        }
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        let paths = self.paths.clone();
+        let draft = self.draft.clone();
+        self.status = "Checking creation choices...".to_owned();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || prepare(&paths, &draft))
+                    .await
+                    .map_err(|error| error.to_string())?
+            },
+            move |result| Event::Reviewed(generation, result.map(Box::new)),
+        )
+    }
+
+    fn start(&mut self) -> Task<Event> {
+        if let Err(error) = self.validate() {
+            self.error = Some(error);
+            return Task::none();
+        }
+        let Some(review) = self.review.clone() else {
+            return Task::none();
+        };
+        if review.prerequisite.is_some() {
+            return Task::none();
+        }
+        if self.busy() {
+            return Task::none();
+        }
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        let paths = self.paths.clone();
+        let draft = self.draft.clone();
+        let art = self.art.clone();
+        let token = Token::new();
+        self.token = Some(token.clone());
+        self.stage = Stage::Working;
+        self.status = "Creating environment...".to_owned();
+        self.log.clear();
+        let (sender, receiver) = unbounded();
+        let log_sender = sender.clone();
+        let work = Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    perform(
+                        &paths,
+                        draft,
+                        review,
+                        art,
+                        token,
+                        |line| {
+                            let _ = sender.unbounded_send(Event::Progress(generation, line));
+                        },
+                        |chunk| {
+                            let _ = log_sender.unbounded_send(Event::LogChunk(generation, chunk));
+                        },
+                    )
+                })
+                .await
+                .unwrap_or_else(|error| {
+                    let mut report = Report::new();
+                    report.notes.push(error.to_string());
+                    report
+                })
+            },
+            move |report| Event::Done(generation, report),
+        );
+        Task::batch([Task::run(receiver, |event| event), work])
+    }
+
+    fn download(&mut self, provider: Provider) -> Task<Event> {
+        let Some(prerequisite) = self
+            .review
+            .as_ref()
+            .and_then(|review| review.prerequisite.clone())
+        else {
+            return Task::none();
+        };
+        let valid = match &prerequisite {
+            Prerequisite::Runner(name) => match name.as_str() {
+                "GE-Proton-Latest" => provider == Provider::GeProton,
+                "Proton-CachyOS-Latest" => provider == Provider::ProtonCachyos,
+                _ => matches!(provider, Provider::GeProton | Provider::ProtonCachyos),
+            },
+            Prerequisite::Component {
+                provider: expected, ..
+            } => *expected == provider,
+        };
+        if !valid {
+            return Task::none();
+        }
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        let paths = self.paths.clone();
+        let token = Token::new();
+        self.token = Some(token.clone());
+        self.downloading = Some(provider);
+        self.stage = Stage::Working;
+        self.status = format!("Finding {provider} release...");
+        let (sender, receiver) = unbounded();
+        let work = Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let client = Client::new().map_err(|e| e.to_string())?;
+                    let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
+                    let release = match prerequisite {
+                        Prerequisite::Component {
+                            version: Some(version),
+                            ..
+                        } => client.select_pinned(provider, &version),
+                        _ => client.select(provider, None),
+                    }
+                    .map_err(|e| e.to_string())?;
+                    let name = release.installed_name.clone();
+                    let _ = sender.unbounded_send(Event::Progress(
+                        generation,
+                        format!("Downloading {} ({})", release.tag, release.verification()),
+                    ));
+                    let mut last_progress = Instant::now() - Duration::from_secs(1);
+                    client
+                        .install(&paths, &global, &release, &token, |progress| {
+                            if matches!(progress, Progress::Downloading { .. })
+                                && last_progress.elapsed() < Duration::from_millis(250)
+                            {
+                                return;
+                            }
+                            last_progress = Instant::now();
+                            let line = match progress {
+                                Progress::Downloading { received, total } => {
+                                    format!("Downloading {provider}: {received} / {total} bytes")
+                                }
+                                Progress::Verifying => format!("Verifying {provider}"),
+                                Progress::Extracting => format!("Extracting {provider}"),
+                                Progress::Installed(path) => {
+                                    format!("Installed in {}", path.display())
+                                }
+                                Progress::AlreadyInstalled(path) => {
+                                    format!("Already installed in {}", path.display())
+                                }
+                            };
+                            let _ = sender.unbounded_send(Event::Progress(generation, line));
+                        })
+                        .map_err(|e| e.to_string())?;
+                    Ok::<_, String>(name)
+                })
+                .await
+                .map_err(|e| e.to_string())?
+            },
+            move |result| Event::Downloaded(generation, result),
+        );
+        Task::batch([Task::run(receiver, |event| event), work])
+    }
+
+    fn finish(&mut self) {
+        self.stage = Stage::Finished;
+        self.token = None;
+    }
+
+    fn leave(&mut self, settings: bool) {
+        let name = self.draft.name.clone();
+        let registered = self.report.as_ref().is_some_and(|report| report.registered);
+        let launch = self.launch
+            && self
+                .report
+                .as_ref()
+                .is_some_and(|report| report.playable && report.cleanup_resolved);
+        self.action = Some(if settings && registered {
+            Action::Settings { name, launch }
+        } else {
+            Action::Library {
+                name: registered.then_some(name),
+                launch,
+            }
+        });
+    }
+
+    fn add_target(&mut self) -> Task<Event> {
+        let exe = self.target_path.trim().to_owned();
+        if exe.is_empty() {
+            self.error = Some("Choose a game executable".to_owned());
+            return Task::none();
+        }
+        let paths = self.paths.clone();
+        let name = self.draft.name.clone();
+        let desktop = self.target_desktop;
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        self.stage = Stage::Working;
+        self.status = "Adding game target...".to_owned();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let environment =
+                        Environment::load(&paths, &name).map_err(|e| e.to_string())?;
+                    let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
+                    if let Some(wine) = environment.config.wine() {
+                        let runner = Runners::new(&paths, &global)
+                            .and_then(|runners| runners.resolve(&wine.runner))
+                            .map_err(|e| e.to_string())?;
+                        let prefix = environment.prefix(&paths).map_err(|e| e.to_string())?;
+                        desktop::check(&paths, &runner.wine_prefix(&prefix), &exe)
+                            .map_err(|e| e.to_string())?;
+                    } else {
+                        launch::check_native_exe(&paths, &global, &name, &Default::default(), &exe)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    let mut batch = Batch::new(environment.config.targets);
+                    batch
+                        .add(
+                            &name,
+                            Spec {
+                                exe,
+                                desktop,
+                                ..Spec::default()
+                            },
+                        )
+                        .map_err(|e| e.to_string())?;
+                    batch.set_default(Some(&name));
+                    match targets::write(&paths, &name, &batch).map_err(|e| e.to_string())? {
+                        Written::Saved => {}
+                        Written::Changed(_) => {
+                            return Err("Targets changed on disk. Open Settings and review them."
+                                .to_owned());
+                        }
+                    }
+                    let environment =
+                        Environment::load(&paths, &name).map_err(|e| e.to_string())?;
+                    let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
+                    let note = if let Some(wine) = environment.config.wine() {
+                        let runner = Runners::new(&paths, &global)
+                            .and_then(|runners| runners.resolve(&wine.runner))
+                            .map_err(|e| e.to_string())?;
+                        let prefix = environment.prefix(&paths).map_err(|e| e.to_string())?;
+                        desktop::reconcile(&paths, &global, &environment, Some(&runner), &prefix)
+                            .err()
+                            .map(|error| format!("Desktop entry: {error}"))
+                    } else {
+                        desktop::reconcile_native(&paths, &global, &environment)
+                            .err()
+                            .map(|error| format!("Desktop entry: {error}"))
+                    };
+                    Ok::<_, String>(note.into_iter().collect())
+                })
+                .await
+                .map_err(|e| e.to_string())?
+            },
+            move |result| Event::TargetAdded(generation, result),
+        )
+    }
+
+    pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
+        if self.leave_prompt && !matches!(event, Event::KeepEditing | Event::Discard) {
+            return Task::none();
+        }
+        match event {
+            Event::Back => return self.back(),
+            Event::OpenExisting if self.stage == Stage::Details => {
+                let name = self.draft.name.trim();
+                if self.paths.environment_config(name).exists() {
+                    self.action = Some(Action::Settings {
+                        name: name.to_owned(),
+                        launch: false,
+                    });
+                }
+            }
+            Event::Discard => {
+                self.leave_prompt = false;
+                self.action = Some(Action::Library {
+                    name: None,
+                    launch: false,
+                });
+            }
+            Event::KeepEditing => self.leave_prompt = false,
+            Event::Kind(kind) if self.stage == Stage::Details => {
+                self.draft.kind = kind;
+                if kind == Kind::Native && self.draft.source == Source::Installer {
+                    self.draft.source = Source::Empty;
+                }
+                self.edited();
+            }
+            Event::Source(value) if self.stage == Stage::Details => {
+                self.draft.source = match value.as_str() {
+                    "Existing game executable" => Source::Executable,
+                    "Run an installer" if self.draft.kind == Kind::Windows => Source::Installer,
+                    _ => Source::Empty,
+                };
+                self.edited();
+            }
+            Event::Name(value) if self.stage == Stage::Details => {
+                self.draft.name = value;
+                self.edited();
+            }
+            Event::Path(value) if self.stage == Stage::Details => {
+                self.picker_sequence = self.picker_sequence.wrapping_add(1);
+                self.draft.path = value;
+                self.edited();
+            }
+            Event::Prefix(value) if self.stage == Stage::Details => {
+                self.draft.prefix = value;
+                self.edited();
+            }
+            Event::BrowsePrefix if self.stage == Stage::Details => {
+                self.picker_sequence = self.picker_sequence.wrapping_add(1);
+                let sequence = self.picker_sequence;
+                return Task::perform(
+                    picker::pick("Select prefix folder".to_owned(), true),
+                    move |result| Event::PrefixPicked(sequence, result),
+                );
+            }
+            Event::PrefixPicked(sequence, result)
+                if sequence == self.picker_sequence && self.stage == Stage::Details =>
+            {
+                match result {
+                    Ok(Some(path)) => {
+                        self.draft.prefix = path.to_string_lossy().into_owned();
+                        self.edited();
+                    }
+                    Ok(None) => {}
+                    Err(error) => self.error = Some(error),
+                }
+            }
+            Event::Runner(value) if self.stage == Stage::Details => {
+                self.draft.runner = value;
+                self.edited();
+            }
+            Event::Template(value) if self.stage == Stage::Details => {
+                self.draft.template = value;
+                self.edited();
+            }
+            Event::Arch(value) if self.stage == Stage::Details => {
+                self.draft.arch = Some(value);
+                self.edited();
+            }
+            Event::Desktop(value) if self.stage == Stage::Details => {
+                self.draft.desktop = value;
+                self.edited();
+            }
+            Event::Browse if matches!(self.stage, Stage::Details | Stage::Target) => {
+                self.picker_sequence = self.picker_sequence.wrapping_add(1);
+                let sequence = self.picker_sequence;
+                return Task::perform(
+                    picker::pick("Choose program".to_owned(), false),
+                    move |result| Event::Picked(sequence, result),
+                );
+            }
+            Event::Picked(sequence, result) if sequence == self.picker_sequence => match result {
+                Ok(Some(path)) => {
+                    if self.stage == Stage::Target {
+                        self.target_path = path.display().to_string();
+                    } else if self.stage == Stage::Details {
+                        self.draft.path = path.display().to_string();
+                        self.edited();
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => self.error = Some(error),
+            },
+            Event::Next if self.stage == Stage::Details => return self.review_task(),
+            Event::RetryCreation
+                if self.stage == Stage::Finished
+                    && self
+                        .report
+                        .as_ref()
+                        .is_some_and(|report| !report.registered) =>
+            {
+                self.stage = Stage::Details;
+                self.report = None;
+                self.edited();
+                return self.review_task();
+            }
+            Event::Reviewed(generation, result)
+                if generation == self.generation && self.stage == Stage::Details =>
+            {
+                self.status.clear();
+                match result {
+                    Ok(review) => {
+                        self.error = None;
+                        self.review = Some(*review);
+                        self.stage = Stage::Review;
+                        return self
+                            .art
+                            .configure(self.paths.clone(), self.draft.name.clone())
+                            .map(Event::Art);
+                    }
+                    Err(error) => self.error = Some(error),
+                }
+            }
+            Event::Create if self.stage == Stage::Review => return self.start(),
+            Event::Download(provider) if self.stage == Stage::Review => {
+                return self.download(provider);
+            }
+            Event::Downloaded(generation, result)
+                if generation == self.generation && self.stage == Stage::Working =>
+            {
+                self.token = None;
+                self.downloading = None;
+                match result {
+                    Ok(name) => {
+                        if self.review.as_ref().is_some_and(|review| {
+                            matches!(&review.prerequisite, Some(Prerequisite::Runner(runner))
+                                if runner != "GE-Proton-Latest" && runner != "Proton-CachyOS-Latest")
+                        }) {
+                            self.draft.runner = name.clone();
+                        }
+                        self.status = format!("Installed {name}. Checking choices again...");
+                        self.stage = Stage::Details;
+                        return self.review_task();
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                        self.stage = Stage::Review;
+                    }
+                }
+            }
+            Event::Progress(generation, line)
+                if generation == self.generation && self.stage == Stage::Working =>
+            {
+                self.status.clone_from(&line);
+                self.log.push_str(&line);
+                self.log.push('\n');
+            }
+            Event::LogChunk(generation, chunk)
+                if generation == self.generation && self.stage == Stage::Working =>
+            {
+                self.log.push_str(&chunk);
+                if self.log.len() > 128 * 1024 {
+                    let mut start = self.log.len() - 64 * 1024;
+                    while !self.log.is_char_boundary(start) {
+                        start += 1;
+                    }
+                    self.log.drain(..start);
+                }
+            }
+            Event::Done(generation, report)
+                if generation == self.generation && self.stage == Stage::Working =>
+            {
+                let can_select = report.registered
+                    && report.cleanup_resolved
+                    && self.draft.source == Source::Installer;
+                self.report = Some(report);
+                self.token = None;
+                if can_select {
+                    self.stage = Stage::Target;
+                } else {
+                    self.finish();
+                }
+            }
+            Event::Cancel if self.busy() => self.cancel(false),
+            Event::Force if self.busy() => self.cancel(true),
+            Event::TargetPath(value) if self.stage == Stage::Target => {
+                self.picker_sequence = self.picker_sequence.wrapping_add(1);
+                self.target_path = value;
+            }
+            Event::TargetDesktop(value) if self.stage == Stage::Target => {
+                self.target_desktop = value
+            }
+            Event::Program(exe) if self.stage == Stage::Target => self.target_path = exe,
+            Event::AddTarget if self.stage == Stage::Target => return self.add_target(),
+            Event::SkipTarget if self.stage == Stage::Target => self.finish(),
+            Event::TargetAdded(generation, result)
+                if generation == self.generation && self.stage == Stage::Working =>
+            {
+                match result {
+                    Ok(notes) => {
+                        if let Some(report) = &mut self.report {
+                            report.playable = true;
+                            report.notes.extend(notes);
+                        }
+                        self.finish();
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                        self.stage = Stage::Target;
+                    }
+                }
+            }
+            Event::ArtApplied(generation, result)
+                if generation == self.generation && self.stage == Stage::Working =>
+            {
+                match result {
+                    Ok(notes) => {
+                        if let Some(report) = &mut self.report {
+                            report.notes.extend(notes);
+                            report.art_error = None;
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(report) = &mut self.report {
+                            report.art_error = Some(error);
+                        }
+                    }
+                }
+                self.finish();
+            }
+            Event::CleanUp
+                if self.stage == Stage::Finished
+                    && self.report.as_ref().is_some_and(|r| !r.cleanup_resolved) =>
+            {
+                self.generation = self.generation.wrapping_add(1);
+                let generation = self.generation;
+                let paths = self.paths.clone();
+                let name = self.draft.name.clone();
+                self.stage = Stage::Working;
+                self.status = "Cleaning up installer...".to_owned();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
+                            let outcome = installer::clean_up(
+                                &paths,
+                                &global,
+                                &name,
+                                installer::clean_up_timeout(&global),
+                            )
+                            .map_err(|e| e.to_string())?;
+                            Ok::<_, String>(!matches!(
+                                outcome,
+                                Some(
+                                    installer::Cleaned::Unresolved | installer::Cleaned::Untracked
+                                )
+                            ))
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?
+                    },
+                    move |result| Event::Cleaned(generation, result),
+                );
+            }
+            Event::Cleaned(generation, result)
+                if generation == self.generation && self.stage == Stage::Working =>
+            {
+                match result {
+                    Ok(true) => {
+                        if let Some(report) = &mut self.report {
+                            report.cleanup_resolved = true;
+                            report.notes.push("Installer cleanup resolved".to_owned());
+                        }
+                        if self.draft.source == Source::Installer {
+                            self.stage = Stage::Target;
+                        } else {
+                            self.finish();
+                        }
+                    }
+                    Ok(false) => {
+                        self.error = Some("Installer cleanup is still unresolved".to_owned());
+                        self.finish();
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                        self.finish();
+                    }
+                }
+            }
+            Event::SkipArt if self.stage == Stage::Finished => {
+                if let Some(report) = &mut self.report
+                    && report.art_error.take().is_some()
+                {
+                    report.notes.push("Artwork skipped".to_owned());
+                }
+            }
+            Event::RetryArt
+                if self.stage == Stage::Finished
+                    && self.report.as_ref().is_some_and(|r| r.art_error.is_some()) =>
+            {
+                self.generation = self.generation.wrapping_add(1);
+                let generation = self.generation;
+                let paths = self.paths.clone();
+                let name = self.draft.name.clone();
+                let art = self.art.clone();
+                self.stage = Stage::Working;
+                self.status = "Applying artwork...".to_owned();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let result = art.apply(&paths, &name);
+                            let desktop = desktop::apply(&paths, &name, false)
+                                .map_err(|error| error.to_string());
+                            match (result, desktop) {
+                                (Ok(notes), Ok(_)) => Ok(notes),
+                                (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
+                                (Err(art_error), Err(desktop_error)) => {
+                                    Err(format!("{art_error}; desktop entry: {desktop_error}"))
+                                }
+                            }
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?
+                    },
+                    move |result| Event::ArtApplied(generation, result),
+                );
+            }
+            Event::Launch(value) if self.stage == Stage::Finished => self.launch = value,
+            Event::OpenSettings if self.stage == Stage::Finished => self.leave(true),
+            Event::ToLibrary if self.stage == Stage::Finished => self.leave(false),
+            Event::Art(event) if matches!(self.stage, Stage::Details | Stage::Review) => {
+                return self.art.update(event).map(Event::Art);
+            }
+            Event::Options(result) => match result {
+                Ok(options) => {
+                    self.options = Some(options);
+                }
+                Err(error) => self.error = Some(error),
+            },
+            _ => {}
+        }
+        Task::none()
+    }
+
+    pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
+        let heading = text(match self.stage {
+            Stage::Details => "New environment",
+            Stage::Review => "Review new environment",
+            Stage::Working if self.downloading.is_some() => "Downloading prerequisite",
+            Stage::Working => "Creating environment",
+            Stage::Target => "Choose game target",
+            Stage::Finished => "Environment created",
+        })
+        .size(24)
+        .color(palette.foreground);
+        let mut body = column![heading].spacing(16).width(Fill);
+        match self.stage {
+            Stage::Details => {
+                body = body.push(text("Type")).push(pick_list(
+                    Kind::ALL,
+                    Some(self.draft.kind),
+                    Event::Kind,
+                ));
+                body = body
+                    .push(text("Name"))
+                    .push(text_input("Game name", &self.draft.name).on_input(Event::Name));
+                if self
+                    .paths
+                    .environment_config(self.draft.name.trim())
+                    .exists()
+                {
+                    body = body.push(
+                        button("Open existing environment settings").on_press(Event::OpenExisting),
+                    );
+                }
+                let sources = if self.draft.kind == Kind::Windows {
+                    vec![Source::Empty, Source::Executable, Source::Installer]
+                } else {
+                    vec![Source::Empty, Source::Executable]
+                };
+                body = body.push(text("Starting point")).push(pick_list(
+                    sources,
+                    Some(self.draft.source),
+                    |source| Event::Source(source.to_string()),
+                ));
+                if self.draft.source != Source::Empty {
+                    body = body.push(
+                        row![
+                            text_input("Executable or installer path", &self.draft.path)
+                                .on_input(Event::Path),
+                            button("Browse...").on_press(Event::Browse),
+                        ]
+                        .spacing(8),
+                    );
+                    if self.draft.source == Source::Executable {
+                        body = body.push(
+                            checkbox(self.draft.desktop)
+                                .label("Create desktop entry")
+                                .on_toggle(Event::Desktop),
+                        );
+                    }
+                }
+                if self.draft.kind == Kind::Windows {
+                    body = body.push(text("Template")).push(pick_list(
+                        std::iter::once("None".to_owned())
+                            .chain(
+                                self.options
+                                    .as_ref()
+                                    .into_iter()
+                                    .flat_map(|o| o.templates.iter().cloned()),
+                            )
+                            .collect::<Vec<_>>(),
+                        Some(if self.draft.template.is_empty() {
+                            "None".to_owned()
+                        } else {
+                            self.draft.template.clone()
+                        }),
+                        |value| {
+                            Event::Template(if value == "None" {
+                                String::new()
+                            } else {
+                                value
+                            })
+                        },
+                    ));
+                    body = body.push(text("Runner override")).push(
+                        text_input("Use template or global default", &self.draft.runner)
+                            .on_input(Event::Runner),
+                    );
+                    if let Some(options) = &self.options {
+                        body = body.push(
+                            pick_list(
+                                std::iter::once("Use template or global default".to_owned())
+                                    .chain(options.runners.iter().cloned())
+                                    .collect::<Vec<_>>(),
+                                Some(if self.draft.runner.is_empty() {
+                                    "Use template or global default".to_owned()
+                                } else {
+                                    self.draft.runner.clone()
+                                }),
+                                |runner| {
+                                    Event::Runner(if runner == "Use template or global default" {
+                                        String::new()
+                                    } else {
+                                        runner
+                                    })
+                                },
+                            )
+                            .width(Fill),
+                        );
+                        body = body.push(
+                            text(format!(
+                                "Global default: {} ({}). Available: {}",
+                                options.runner,
+                                options.arch,
+                                options.runners.join(", ")
+                            ))
+                            .size(12)
+                            .color(palette.muted),
+                        );
+                    }
+                    body = body.push(text("Architecture override")).push(
+                        pick_list([Arch::Win64, Arch::Win32], self.draft.arch, Event::Arch)
+                            .placeholder("Use template or global default"),
+                    );
+                    body = body.push(text("Prefix folder override")).push(
+                        row![
+                            text_input("Use default path", &self.draft.prefix)
+                                .on_input(Event::Prefix),
+                            button("Browse...").on_press(Event::BrowsePrefix)
+                        ]
+                        .spacing(8),
+                    );
+                    if self.draft.prefix.is_empty()
+                        && let Some(options) = &self.options
+                    {
+                        body = body.push(
+                            text(format!(
+                                "Default: {}",
+                                options.prefix_root.join(self.draft.name.trim()).display()
+                            ))
+                            .size(12)
+                            .color(palette.muted),
+                        );
+                    }
+                }
+                body = body.push(self.art.view(palette).map(Event::Art));
+                body = body.push(
+                    row![
+                        button("Back").on_press(Event::Back),
+                        button("Next").on_press(Event::Next)
+                    ]
+                    .spacing(8),
+                );
+            }
+            Stage::Review => {
+                if let Some(review) = &self.review {
+                    body = body.push(text(format!("Name: {}", self.draft.name)));
+                    body = body.push(text(format!("Type: {}", self.draft.kind)));
+                    body = body.push(text(format!("Starting point: {}", self.draft.source)));
+                    if !self.draft.path.is_empty() {
+                        body = body.push(text(format!("Program: {}", self.draft.path)));
+                    }
+                    if let Some(runner) = &review.runner {
+                        body = body.push(text(format!(
+                            "Runner: {} ({})",
+                            runner.selection(),
+                            runner.name()
+                        )));
+                    }
+                    if self.draft.kind == Kind::Windows {
+                        body = body.push(text(format!("Architecture: {}", review.arch)));
+                    }
+                    if let Some(prefix) = &review.prefix {
+                        body = body.push(text(format!("Prefix: {}", prefix.display())));
+                        if review.adopted {
+                            body = body.push(
+                                text(
+                                    "This compatible existing prefix will be registered in place.",
+                                )
+                                .color(palette.warning),
+                            );
+                        }
+                    }
+                    if review.omitted_components {
+                        body = body.push(text("This Proton runner bundles DXVK and vkd3d-proton, so the template's component picks will be omitted.").color(palette.warning));
+                    }
+                    if let Some(prerequisite) = &review.prerequisite {
+                        match prerequisite {
+                            Prerequisite::Runner(name) => {
+                                body = body.push(text(format!("Runner {name} is unavailable. Choose a provider to download its latest release:")).color(palette.warning));
+                                let mut providers = row![].spacing(8);
+                                if name != "Proton-CachyOS-Latest" {
+                                    providers = providers.push(
+                                        button("Download GE-Proton")
+                                            .on_press(Event::Download(Provider::GeProton)),
+                                    );
+                                }
+                                if name != "GE-Proton-Latest" {
+                                    providers =
+                                        providers
+                                            .push(button("Download Proton-CachyOS").on_press(
+                                                Event::Download(Provider::ProtonCachyos),
+                                            ));
+                                }
+                                body = body.push(providers);
+                            }
+                            Prerequisite::Component { provider, version } => {
+                                let description = version.as_ref().map_or_else(
+                                    || "latest release".to_owned(),
+                                    |name| format!("exact build {name}"),
+                                );
+                                body = body.push(text(format!("Missing {provider} {description}. Download it before creating this environment?")).color(palette.warning));
+                                body = body.push(
+                                    button(text(format!("Download {provider}")))
+                                        .on_press(Event::Download(*provider)),
+                                );
+                            }
+                        }
+                    }
+                }
+                body = body.push(self.art.view(palette).map(Event::Art));
+                body = body.push(
+                    row![
+                        button("Back").on_press(Event::Back),
+                        button("Create").on_press_maybe(self.review.as_ref().and_then(|review| {
+                            review.prerequisite.is_none().then_some(Event::Create)
+                        }))
+                    ]
+                    .spacing(8),
+                );
+            }
+            Stage::Working => {
+                body = body.push(text(&self.status));
+                body = body.push(
+                    row![
+                        button("Cancel").on_press(Event::Cancel),
+                        button("Force stop").on_press_maybe(
+                            self.token
+                                .as_ref()
+                                .is_some_and(Token::is_canceled)
+                                .then_some(Event::Force)
+                        )
+                    ]
+                    .spacing(8),
+                );
+                if !self.log.is_empty() {
+                    body = body.push(scrollable(text(&self.log)).height(220));
+                }
+            }
+            Stage::Target => {
+                body = body.push(text(
+                    "Choose the game executable. The installer itself is not a target.",
+                ));
+                if let Some(report) = &self.report {
+                    for (label, exe) in &report.programs {
+                        body = body.push(
+                            button(text(format!("{label} - {exe}")))
+                                .on_press(Event::Program(exe.clone())),
+                        );
+                    }
+                }
+                body = body.push(
+                    row![
+                        text_input("Executable path", &self.target_path)
+                            .on_input(Event::TargetPath),
+                        button("Browse...").on_press(Event::Browse)
+                    ]
+                    .spacing(8),
+                );
+                body = body.push(
+                    checkbox(self.target_desktop)
+                        .label("Create desktop entry")
+                        .on_toggle(Event::TargetDesktop),
+                );
+                body = body.push(
+                    row![
+                        button("Skip for now").on_press(Event::SkipTarget),
+                        button("Add target").on_press(Event::AddTarget)
+                    ]
+                    .spacing(8),
+                );
+            }
+            Stage::Finished => {
+                if let Some(report) = &self.report {
+                    if report.registered {
+                        body = body.push(text(format!("{} is in your library.", self.draft.name)));
+                    } else {
+                        body = body.push(
+                            text("Creation did not register an environment.").color(palette.danger),
+                        );
+                    }
+                    for note in &report.notes {
+                        body = body.push(text(note));
+                    }
+                    if !report.cleanup_resolved {
+                        body = body.push(button("Clean up installer").on_press(Event::CleanUp));
+                    }
+                    if let Some(error) = &report.art_error {
+                        body = body.push(text(format!("Artwork: {error}")).color(palette.warning));
+                        body = body.push(button("Retry artwork").on_press(Event::RetryArt));
+                        body = body.push(button("Skip artwork").on_press(Event::SkipArt));
+                    }
+                    if report.registered && report.playable && report.cleanup_resolved {
+                        body = body.push(
+                            checkbox(self.launch)
+                                .label("Launch game when this page closes")
+                                .on_toggle(Event::Launch),
+                        );
+                    }
+                    if report.registered {
+                        body = body.push(
+                            row![
+                                button("Open settings").on_press(Event::OpenSettings),
+                                button("Back to library").on_press(Event::ToLibrary)
+                            ]
+                            .spacing(8),
+                        );
+                    } else {
+                        body = body.push(button("Review again").on_press(Event::RetryCreation));
+                        body = body.push(button("Back to library").on_press(Event::ToLibrary));
+                    }
+                }
+            }
+        }
+        if let Some(error) = &self.error {
+            body = body.push(text(error).color(palette.danger));
+        }
+        if self.leave_prompt {
+            body = body.push(
+                column![
+                    text("Discard this new environment draft?"),
+                    row![
+                        button("Keep editing").on_press(Event::KeepEditing),
+                        button("Discard").on_press(Event::Discard)
+                    ]
+                    .spacing(8)
+                ]
+                .spacing(8),
+            );
+        }
+        container(scrollable(container(body).max_width(760).width(Fill).padding(24)).height(Fill))
+            .width(Fill)
+            .height(Fill)
+            .align_x(Center)
+            .into()
+    }
+}
+
+fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
+    let global = GlobalConfig::load(paths).map_err(|error| error.to_string())?;
+    let name = draft.name.trim();
+    if paths.environment_config(name).exists() {
+        return Err(format!(
+            "An environment named {name} already exists. Open its Settings from the library."
+        ));
+    }
+    if draft.kind == Kind::Native {
+        if draft.source == Source::Executable {
+            launch::check_native_exe(paths, &global, name, &Default::default(), &draft.path)
+                .map_err(|error| error.to_string())?;
+        }
+        return Ok(Review {
+            runner: None,
+            template: None,
+            arch: global.defaults.arch,
+            prefix: None,
+            adopted: false,
+            omitted_components: false,
+            prerequisite: None,
+        });
+    }
+    if draft.source == Source::Installer {
+        launch::check_program_path(paths, &draft.path).map_err(|error| error.to_string())?;
+        let lower = draft.path.to_ascii_lowercase();
+        if !lower.ends_with(".exe") && !lower.ends_with(".msi") {
+            return Err("Choose an .exe or .msi installer".to_owned());
+        }
+    }
+    let template = if draft.template.is_empty() {
+        None
+    } else {
+        Some(
+            Templates::new(paths)
+                .resolve(&draft.template)
+                .map_err(|error| error.to_string())?,
+        )
+    };
+    let runners = Runners::new(paths, &global).map_err(|error| error.to_string())?;
+    let runner_name = if !draft.runner.is_empty() {
+        draft.runner.clone()
+    } else if let Some(template) = &template {
+        template
+            .runner_name(&runners, &global.defaults.runner)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_else(|| global.defaults.runner.clone())
+    } else {
+        global.defaults.runner.clone()
+    };
+    let runner = match runners.resolve(&runner_name) {
+        Ok(runner) => runner,
+        Err(error)
+            if matches!(
+                &error,
+                CoreError::UnknownRunner { .. } | CoreError::ProgramNotFound("wine" | "wineserver")
+            ) || matches!(&error, CoreError::RunnerAlias { reason, .. } if reason.starts_with("no compatible stable release")) =>
+        {
+            let prefix = NewEnvironment {
+                name: name.to_owned(),
+                dir: (!draft.prefix.is_empty()).then(|| draft.prefix.clone()),
+                arch: draft.arch,
+                template: template.clone(),
+            }
+            .prefix_dir(paths, &global)
+            .map_err(|error| error.to_string())?;
+            return Ok(Review {
+                runner: None,
+                template,
+                arch: draft.arch.unwrap_or(global.defaults.arch),
+                prefix: Some(prefix),
+                adopted: false,
+                omitted_components: false,
+                prerequisite: Some(Prerequisite::Runner(runner_name)),
+            });
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let arch = if runner.is_proton() {
+        Arch::Win64
+    } else {
+        draft
+            .arch
+            .or_else(|| template.as_ref().and_then(|template| template.arch))
+            .unwrap_or(global.defaults.arch)
+    };
+    create::check_arch(&runner, Some(arch)).map_err(|error| error.to_string())?;
+    let prefix = NewEnvironment {
+        name: name.to_owned(),
+        dir: (!draft.prefix.is_empty()).then(|| draft.prefix.clone()),
+        arch: Some(arch),
+        template: template.clone(),
+    }
+    .prefix_dir(paths, &global)
+    .map_err(|error| error.to_string())?;
+    let actual = runner.wine_prefix(&prefix);
+    if draft.source == Source::Installer {
+        let installer = if wineo_core::winpath::is_windows_path(&draft.path) {
+            wineo_core::winpath::to_unix(&actual, &draft.path)
+        } else {
+            Some(
+                paths
+                    .absolute(&draft.path)
+                    .map_err(|error| error.to_string())?,
+            )
+        };
+        if !installer.as_ref().is_some_and(|path| path.is_file()) {
+            return Err(format!("Installer {} was not found", draft.path));
+        }
+    }
+    let adopted = wineo_core::prefix::is_prefix(&actual);
+    if prefix.exists() && !adopted {
+        let occupied = fs::read_dir(&prefix)
+            .map_err(|error| error.to_string())?
+            .next()
+            .is_some();
+        if occupied {
+            return Err(format!(
+                "{} is occupied and is not a compatible prefix",
+                prefix.display()
+            ));
+        }
+    }
+    let omitted_components = template
+        .as_ref()
+        .is_some_and(|template| template.for_runner(&runner).1);
+    let prerequisite = if let Some(template) = &template {
+        let (template, _) = template.for_runner(&runner);
+        let wanted = Wanted {
+            dxvk: template.dxvk,
+            vkd3d: template.vkd3d,
+        };
+        match install::check_available(paths, &global, name, &runner, &wanted) {
+            Ok(()) => None,
+            Err(CoreError::NoBuilds { component, .. }) => Some(Prerequisite::Component {
+                provider: component_provider(component)?,
+                version: None,
+            }),
+            Err(CoreError::UnknownBuild {
+                component, name, ..
+            }) => Some(Prerequisite::Component {
+                provider: component_provider(component)?,
+                version: Some(name),
+            }),
+            Err(error) => return Err(error.to_string()),
+        }
+    } else {
+        None
+    };
+    Ok(Review {
+        runner: Some(runner),
+        template,
+        arch,
+        prefix: Some(prefix),
+        adopted,
+        omitted_components,
+        prerequisite,
+    })
+}
+
+fn component_provider(component: &str) -> Result<Provider, String> {
+    match component {
+        "dxvk" => Ok(Provider::Dxvk),
+        "vkd3d" => Ok(Provider::Vkd3d),
+        _ => Err(format!("No download provider for {component}")),
+    }
+}
+
+fn perform(
+    paths: &Paths,
+    draft: Draft,
+    review: Review,
+    art: artwork::Draft,
+    token: Token,
+    mut progress: impl FnMut(String),
+    mut log_output: impl FnMut(String),
+) -> Report {
+    let mut report = Report::new();
+    let name = draft.name.trim();
+    if draft.kind == Kind::Native {
+        let global = match GlobalConfig::load(paths) {
+            Ok(global) => global,
+            Err(error) => {
+                report.notes.push(error.to_string());
+                return report;
+            }
+        };
+        let exe = (draft.source == Source::Executable).then_some(draft.path.as_str());
+        match Environment::create_native(paths, &global, name, exe, draft.desktop) {
+            Ok(environment) => {
+                report.registered = true;
+                report.playable = exe.is_some();
+                progress("Native environment registered".to_owned());
+                apply_art(paths, name, &art, &mut report);
+                if let Err(error) = desktop::reconcile_native(paths, &global, &environment) {
+                    report.notes.push(error.to_string());
+                }
+            }
+            Err(error) => report.notes.push(error.to_string()),
+        }
+        return report;
+    }
+    let Some(runner) = review.runner else {
+        report.notes.push("Missing resolved runner".to_owned());
+        return report;
+    };
+    let request = CreateRequest {
+        name: name.to_owned(),
+        dir: review
+            .prefix
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
+        resolved_runner: Some(runner.clone()),
+        arch: Some(review.arch),
+        template: review.template,
+        exe: (draft.source == Source::Executable).then(|| draft.path.clone()),
+        desktop: draft.desktop,
+        expected_adopted: Some(review.adopted),
+        ..CreateRequest::default()
+    };
+    let created = match create::run(paths, request, &token, |event| match event {
+        CreateEvent::BuildingPrefix { dir, .. } => {
+            progress(format!("Building prefix in {}", dir.display()))
+        }
+        CreateEvent::Saved => progress("Environment registered".to_owned()),
+        CreateEvent::TemplateComponentsOmitted { .. } => {
+            progress("Template components bundled by Proton were omitted".to_owned())
+        }
+        CreateEvent::Components(changes) => {
+            progress(format!("Applied {} component changes", changes.len()))
+        }
+        CreateEvent::Desktop(changes) => {
+            progress(format!("Applied {} desktop changes", changes.len()))
+        }
+        CreateEvent::Registered { .. } => progress("Default target checked".to_owned()),
+    }) {
+        Ok(created) => created,
+        Err(error) => {
+            report.registered = paths.environment_config(name).is_file();
+            report.notes.push(error.to_string());
+            return report;
+        }
+    };
+    report.registered = true;
+    report.playable = created.target == TargetOutcome::Added;
+    if created.target == TargetOutcome::ExeNotFound {
+        report
+            .notes
+            .push("The executable was not found. Add a target in Settings.".to_owned());
+    }
+    apply_art(paths, name, &art, &mut report);
+    if let Err(error) = desktop::reconcile(
+        paths,
+        &created.global,
+        &created.environment,
+        Some(&created.runner),
+        &created.prefix,
+    ) {
+        report.notes.push(format!("Desktop entry: {error}"));
+    }
+    if draft.source != Source::Installer {
+        return report;
+    }
+    let installer = match Installer::prepare_with_runner(
+        created.guard,
+        paths,
+        &created.global,
+        name,
+        &draft.path,
+        &created.runner,
+    ) {
+        Ok(installer) => installer,
+        Err(error) => {
+            report
+                .notes
+                .push(format!("Installer could not start: {error}"));
+            return report;
+        }
+    };
+    let log = Runtime::new(paths, name).install_log_path();
+    if let Some(parent) = log.parent()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        report.notes.push(error.to_string());
+        return report;
+    }
+    progress("Running installer...".to_owned());
+    let mut log_offset = 0;
+    let outcome = installer.run(
+        &token,
+        Duration::from_secs(created.global.stop_timeout.into()),
+        Output::Log(&log),
+        |event| {
+            pump_log(&log, &mut log_offset, &mut log_output);
+            match event {
+                Watched::Notice(Notice::Stopping) => progress("Canceling installer...".to_owned()),
+                Watched::Notice(Notice::Killing) => {
+                    progress("Force stopping installer...".to_owned())
+                }
+                Watched::Notice(Notice::Warning(error)) => {
+                    progress(format!("Installer warning: {error}"))
+                }
+                Watched::Notice(Notice::Heartbeat) | Watched::Exited(_) => {}
+            }
+        },
+    );
+    pump_log(&log, &mut log_offset, &mut log_output);
+    match outcome {
+        Ok(Outcome::Finished { exit_code }) => report.notes.push(format!(
+            "Installer exited with code {}",
+            exit_code.map_or_else(|| "unknown".to_owned(), |code| code.to_string())
+        )),
+        Ok(Outcome::Canceled { exit_code }) => report.notes.push(format!(
+            "Installer canceled (exit code {})",
+            exit_code.map_or_else(|| "unknown".to_owned(), |code| code.to_string())
+        )),
+        Ok(Outcome::Unresolved {
+            exit_code, error, ..
+        }) => {
+            report.cleanup_resolved = false;
+            report.notes.push(format!(
+                "Installer exit code: {}. Cleanup unresolved: {error}",
+                exit_code.map_or_else(|| "unknown".to_owned(), |code| code.to_string())
+            ));
+        }
+        Err(error) => report.notes.push(format!("Installer failed: {error}")),
+    }
+    if Runtime::new(paths, name).check_resolved(name).is_err() {
+        report.cleanup_resolved = false;
+    }
+    if report.cleanup_resolved {
+        match programs::scan(&runner.wine_prefix(&created.prefix)) {
+            Ok(listing) => {
+                report.programs = listing
+                    .programs
+                    .into_iter()
+                    .map(|program| (program.name, program.exe))
+                    .collect()
+            }
+            Err(error) => report.notes.push(format!("Program scan: {error}")),
+        }
+    }
+    report
+}
+
+fn pump_log(path: &std::path::Path, offset: &mut usize, output: &mut impl FnMut(String)) {
+    if let Ok(bytes) = fs::read(path) {
+        if bytes.len() < *offset {
+            *offset = 0;
+        }
+        if bytes.len() > *offset {
+            output(String::from_utf8_lossy(&bytes[*offset..]).into_owned());
+            *offset = bytes.len();
+        }
+    }
+}
+
+fn apply_art(paths: &Paths, name: &str, art: &artwork::Draft, report: &mut Report) {
+    match art.apply(paths, name) {
+        Ok(notes) => report.notes.extend(notes),
+        Err(error) => report.art_error = Some(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    fn page() -> Page {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        Page::new(paths).0
+    }
+
+    fn fake_runner(paths: &Paths) {
+        let bin = GlobalConfig::default()
+            .runner_root(paths)
+            .unwrap()
+            .join("fake")
+            .join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let wine = bin.join("wine");
+        fs::write(&wine, "#!/bin/sh\nif [ \"$1\" = wineboot ]; then\n  mkdir -p \"$WINEPREFIX/drive_c\"\n  printf 'WINE REGISTRY Version 2\\n' > \"$WINEPREFIX/system.reg\"\nfi\nexit 0\n").unwrap();
+        let wineserver = bin.join("wineserver");
+        fs::write(&wineserver, "#!/bin/sh\nexit 0\n").unwrap();
+        for path in [&wine, &wineserver] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[test]
+    fn back_from_review_preserves_details() {
+        let mut page = page();
+        page.draft.name = "test-game".to_owned();
+        page.draft.path = "/games/test.exe".to_owned();
+        page.stage = Stage::Review;
+        let _ = page.back();
+        assert_eq!(page.stage, Stage::Details);
+        assert_eq!(page.draft.path, "/games/test.exe");
+    }
+
+    #[test]
+    fn finished_launch_needs_opt_in_and_playable_target() {
+        let mut page = page();
+        page.draft.name = "test-game".to_owned();
+        page.report = Some(Report {
+            registered: true,
+            playable: true,
+            cleanup_resolved: true,
+            ..Report::new()
+        });
+        page.finish();
+        let _ = page.update(Event::ToLibrary);
+        assert!(matches!(
+            page.take_action(),
+            Some(Action::Library { launch: false, .. })
+        ));
+
+        page.launch = true;
+        page.finish();
+        assert!(page.launch, "artwork retry preserves the launch choice");
+        if let Some(report) = &mut page.report {
+            report.cleanup_resolved = false;
+        }
+        let _ = page.update(Event::ToLibrary);
+        assert!(matches!(
+            page.take_action(),
+            Some(Action::Library { launch: false, .. })
+        ));
+
+        if let Some(report) = &mut page.report {
+            report.cleanup_resolved = true;
+        }
+        let _ = page.update(Event::ToLibrary);
+        assert!(matches!(
+            page.take_action(),
+            Some(Action::Library { launch: true, .. })
+        ));
+    }
+
+    #[test]
+    fn installer_creates_environment_without_registering_it_as_target() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        fake_runner(&paths);
+        let installer = root.path().join("setup.msi");
+        fs::write(&installer, "fixture").unwrap();
+        let draft = Draft {
+            name: "installed-game".to_owned(),
+            source: Source::Installer,
+            path: installer.display().to_string(),
+            runner: "fake".to_owned(),
+            ..Draft::default()
+        };
+        let review = prepare(&paths, &draft).unwrap();
+        let report = perform(
+            &paths,
+            draft,
+            review,
+            artwork::Draft::new(),
+            Token::new(),
+            |_| {},
+            |_| {},
+        );
+        assert!(report.registered, "{:?}", report.notes);
+        assert!(report.cleanup_resolved, "{:?}", report.notes);
+        assert!(!report.playable);
+        assert!(
+            Environment::load(&paths, "installed-game")
+                .unwrap()
+                .config
+                .targets
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn cancellation_before_creation_leaves_no_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        fake_runner(&paths);
+        let draft = Draft {
+            name: "canceled-game".to_owned(),
+            runner: "fake".to_owned(),
+            ..Draft::default()
+        };
+        let review = prepare(&paths, &draft).unwrap();
+        let token = Token::new();
+        token.cancel();
+        let report = perform(
+            &paths,
+            draft,
+            review,
+            artwork::Draft::new(),
+            token,
+            |_| {},
+            |_| {},
+        );
+        assert!(!report.registered);
+        assert!(!paths.environment_config("canceled-game").exists());
+    }
+}

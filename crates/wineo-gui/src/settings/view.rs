@@ -539,7 +539,13 @@ fn target_body<'a>(
                 move |exe| target_event(target, TargetEdit::Exe(exe)),
                 palette
             ),
-            None,
+            Some(
+                button("Browse...")
+                    .on_press_maybe(
+                        (!locked).then(|| send(Event::BrowsePath(Some(target.to_owned()), false)))
+                    )
+                    .into()
+            ),
             palette,
         ),
         setting_row(
@@ -569,7 +575,13 @@ fn target_body<'a>(
                 move |cwd| target_event(target, TargetEdit::Cwd(cwd)),
                 palette
             ),
-            None,
+            Some(
+                button("Browse...")
+                    .on_press_maybe(
+                        (!locked).then(|| send(Event::BrowsePath(Some(target.to_owned()), true)))
+                    )
+                    .into()
+            ),
             palette,
         ),
     ]
@@ -923,7 +935,11 @@ fn add_target(
             .padding([6, 10])
             .style(move |_, status| input_style(palette, status))
             .into(),
-        None,
+        Some(
+            button("Browse...")
+                .on_press_maybe((!locked).then(|| send(Event::BrowsePath(None, false))))
+                .into(),
+        ),
         palette,
     ));
     if let Some(error) = &editor.add_error {

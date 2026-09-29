@@ -71,6 +71,15 @@ pub(crate) enum Event {
     ProgramPicked(ProgramChoice),
     NewTargetName(String),
     NewTargetPath(String),
+    BrowsePath(Option<String>, bool),
+    PickedPath(
+        u64,
+        u64,
+        Option<String>,
+        bool,
+        String,
+        Result<Option<std::path::PathBuf>, String>,
+    ),
     TargetAdd,
     /// The page's generation, the check's sequence, and the typed exe as a
     /// target holds it.
@@ -425,6 +434,7 @@ pub(crate) struct Page {
     scan_sequence: u64,
     /// The add target form as it was sent to be checked.
     resolving: Option<NewTarget>,
+    pub(crate) open_add_after_load: bool,
 }
 
 /// What the app does after the page handles an event.
@@ -476,6 +486,7 @@ impl Page {
             resolve_sequence: 0,
             scan_sequence: 0,
             resolving: None,
+            open_add_after_load: false,
         }
     }
     fn new_global(generation: u64) -> Self {
@@ -670,6 +681,84 @@ impl Page {
             return Step::none();
         }
         match event {
+            Event::BrowsePath(target, cwd) => {
+                if self.locked() || self.global {
+                    return Step::none();
+                }
+                let Some(editor) = self.editor() else {
+                    return Step::none();
+                };
+                let previous = match &target {
+                    Some(target) => match editor.form.draft.targets.get(target) {
+                        Some(values) if cwd => values.cwd.clone(),
+                        Some(values) => values.exe.clone(),
+                        None => return Step::none(),
+                    },
+                    None => editor.new_target.path.clone(),
+                };
+                self.resolve_sequence = self.resolve_sequence.wrapping_add(1);
+                let sequence = self.resolve_sequence;
+                let generation = self.generation;
+                Step::task(Task::perform(
+                    crate::picker::pick(
+                        if cwd {
+                            "Select working directory"
+                        } else {
+                            "Select executable"
+                        }
+                        .to_owned(),
+                        cwd,
+                    ),
+                    move |result| {
+                        Message::Settings(Event::PickedPath(
+                            generation,
+                            sequence,
+                            target.clone(),
+                            cwd,
+                            previous.clone(),
+                            result,
+                        ))
+                    },
+                ))
+            }
+            Event::PickedPath(generation, sequence, target, cwd, previous, result) => {
+                if generation != self.generation
+                    || sequence != self.resolve_sequence
+                    || self.locked()
+                {
+                    return Step::none();
+                }
+                let Some(editor) = self.editor() else {
+                    return Step::none();
+                };
+                let current = match &target {
+                    Some(target) => match editor.form.draft.targets.get(target) {
+                        Some(values) if cwd => &values.cwd,
+                        Some(values) => &values.exe,
+                        None => return Step::none(),
+                    },
+                    None => &editor.new_target.path,
+                };
+                if *current != previous {
+                    return Step::none();
+                }
+                match result {
+                    Ok(Some(path)) => {
+                        let value = path.to_string_lossy().into_owned();
+                        let edit = match target {
+                            Some(target) if cwd => Event::Target(target, TargetEdit::Cwd(value)),
+                            Some(target) => Event::Target(target, TargetEdit::Exe(value)),
+                            None => Event::NewTargetPath(value),
+                        };
+                        self.handle(paths, edit)
+                    }
+                    Ok(None) => Step::none(),
+                    Err(error) => {
+                        self.error = Some(error);
+                        Step::none()
+                    }
+                }
+            }
             Event::Back => {
                 if self.saving {
                     Step::none()
@@ -1177,6 +1266,10 @@ impl Page {
                 if let Some(pending) = self.pending.take() {
                     let after_save = pending.after_save;
                     self.land(pending, snapshot);
+                    if self.open_add_after_load && self.editor().is_some() {
+                        self.open_add_after_load = false;
+                        return self.handle(paths, Event::AddOpen(true));
+                    }
                     if after_save {
                         self.scan_sequence = self.scan_sequence.wrapping_add(1);
                         let sequence = self.scan_sequence;

@@ -95,13 +95,92 @@ impl App {
         mouse_area(content)
             .on_press(Message::Select(card.name.clone()))
             .on_double_click(Message::DoubleClick(card.name.clone()))
+            .on_right_press(Message::Context(card.name.clone()))
             .on_enter(Message::Hover(Some(card.name.clone())))
             .on_exit(Message::Hover(None))
             .interaction(mouse::Interaction::Pointer)
             .into()
     }
     pub(crate) fn view(&self) -> Element<'_, Message> {
+        let page = self.page_view();
+        if self.close_prompt {
+            let message = if self.closing {
+                "Canceling and waiting for cleanup..."
+            } else {
+                "An operation is still running. Cancel it and close wineo?"
+            };
+            let controls = if self.closing {
+                row![button("Force stop").on_press(Message::ForceCloseWork)]
+            } else {
+                row![
+                    button("Keep working").on_press(Message::KeepWorking),
+                    button("Cancel and close").on_press(Message::CancelAndClose),
+                ]
+            }
+            .spacing(12);
+            let palette = self.palette;
+            let prompt = container(column![text(message), controls].spacing(16))
+                .padding(24)
+                .style(move |_| {
+                    container::Style::default()
+                        .background(palette.surface)
+                        .border(border::rounded(8).width(1).color(palette.border))
+                });
+            return stack![
+                page,
+                iced::widget::opaque(
+                    container(prompt)
+                        .center(Fill)
+                        .width(Fill)
+                        .height(Fill)
+                        .style(|_| container::Style::default()
+                            .background(Color::BLACK.scale_alpha(0.6)))
+                ),
+            ]
+            .into();
+        }
+        if let Some(name) = &self.action_menu {
+            let palette = self.palette;
+            let menu = container(
+                column![
+                    text(name).size(16),
+                    button("Settings").on_press(Message::ContextSettings(name.clone())),
+                    button("Clone").on_press_maybe(
+                        (!self.foreground_busy()).then(|| Message::CloneEnvironment(name.clone()))
+                    ),
+                    button("Close menu").on_press(Message::CloseMenu),
+                ]
+                .spacing(8),
+            )
+            .padding(12)
+            .width(220)
+            .style(move |_| {
+                container::Style::default()
+                    .background(palette.surface)
+                    .border(border::rounded(6).width(1).color(palette.border))
+            });
+            return stack![
+                page,
+                container(menu)
+                    .padding(56)
+                    .align_right(Fill)
+                    .align_top(Fill)
+                    .width(Fill)
+                    .height(Fill)
+            ]
+            .into();
+        }
+        page
+    }
+
+    fn page_view(&self) -> Element<'_, Message> {
         let palette = self.palette;
+        if let Some(page) = &self.flow {
+            let generation = self.flow_generation;
+            return page
+                .view(palette)
+                .map(move |event| Message::Flow(generation, event));
+        }
         if let Some(page) = &self.settings {
             return page.view(&self.paths, palette, self.spinner_frame);
         }
@@ -115,6 +194,19 @@ impl App {
             page = page.push(
                 container(text(format!("Failed to load library: {error}")).color(palette.danger))
                     .padding(16),
+            );
+        }
+        if self.cards.is_empty() && !self.refreshing {
+            page = page.push(
+                container(
+                    column![
+                        text("Your library is empty").size(22),
+                        button("Add an environment")
+                            .on_press_maybe((!self.foreground_busy()).then_some(Message::Add)),
+                    ]
+                    .spacing(12),
+                )
+                .padding(24),
             );
         }
         let visible = self.scroll_visible_until.is_some();
@@ -194,6 +286,10 @@ impl App {
                     })
                     .color(palette.foreground),
                 search,
+                button("Add")
+                    .on_press_maybe((!self.foreground_busy()).then_some(Message::Add))
+                    .padding([6, 12])
+                    .style(move |_, status| crate::chips::secondary(palette, status)),
                 Space::new().width(Fill),
                 button(text("⚙").size(19))
                     .on_press(Message::OpenGlobalSettings)

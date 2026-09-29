@@ -1,9 +1,11 @@
 mod artwork;
 mod chips;
+mod flow;
 mod grid;
 mod keys;
 mod library;
 mod panel;
+mod picker;
 mod settings;
 mod theme;
 mod wheel;
@@ -69,6 +71,11 @@ pub(crate) struct App {
     pub(crate) spinner_frame: usize,
     settings: Option<settings::Page>,
     settings_generation: u64,
+    flow: Option<flow::Page>,
+    flow_generation: u64,
+    action_menu: Option<String>,
+    close_prompt: bool,
+    closing: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +132,16 @@ pub(crate) enum Message {
     OpenSettings,
     OpenGlobalSettings,
     Settings(settings::Event),
+    Add,
+    CloneEnvironment(String),
+    Context(String),
+    ContextSettings(String),
+    CloseMenu,
+    Flow(u64, flow::Event),
+    FlowReturned(u64, flow::Action, Result<Vec<Card>, String>),
+    KeepWorking,
+    CancelAndClose,
+    ForceCloseWork,
 }
 
 impl App {
@@ -161,6 +178,11 @@ impl App {
             spinner_frame: 0,
             settings: None,
             settings_generation: 0,
+            flow: None,
+            flow_generation: 0,
+            action_menu: None,
+            close_prompt: false,
+            closing: false,
         };
         let load = Self::load(app.paths.clone());
         (
@@ -202,7 +224,7 @@ impl App {
         ])
     }
     fn update(&mut self, message: Message) -> Task<Message> {
-        match message {
+        let task = match message {
             Message::SearchChanged(search) => {
                 self.search = search;
                 self.scroll_offset = 0.0;
@@ -423,6 +445,14 @@ impl App {
                 self.viewport_height = (size.height - 48.0).max(0.0);
                 self.load_visible_art()
             }
+            Message::Window(window::Event::CloseRequested) => {
+                if self.foreground_busy() {
+                    self.close_prompt = true;
+                    Task::none()
+                } else {
+                    iced::exit()
+                }
+            }
             Message::Window(_) => Task::none(),
             Message::ThemeChanged(mode) => {
                 self.palette = Palette::from_mode(mode);
@@ -436,8 +466,54 @@ impl App {
                 }
                 Task::none()
             }
+            Message::Key(key, _, _) if self.close_prompt => {
+                if key == keyboard::Key::Named(keyboard::key::Named::Escape) && !self.closing {
+                    self.close_prompt = false;
+                }
+                Task::none()
+            }
+            Message::Key(key, modifiers, status) if self.flow.is_some() => {
+                use iced::keyboard::{Key, key::Named};
+                match key.as_ref() {
+                    Key::Character(choice) if matches!(self.flow, Some(flow::Page::Choose(_))) => {
+                        let event = match choice {
+                            "1" => flow::Event::New,
+                            "2" => flow::Event::Prefix,
+                            "3" => flow::Event::Heroic,
+                            _ => return Task::none(),
+                        };
+                        self.flow_update(self.flow_generation, event)
+                    }
+                    Key::Named(Named::Enter) if modifiers.control() => {
+                        let generation = self.flow_generation;
+                        let task = self
+                            .flow
+                            .as_mut()
+                            .unwrap()
+                            .submit()
+                            .map(move |event| Message::Flow(generation, event));
+                        task.chain(self.flow_update(generation, flow::Event::AfterSubmit))
+                    }
+                    Key::Named(Named::Tab) if modifiers.shift() => {
+                        iced::widget::operation::focus_previous()
+                    }
+                    Key::Named(Named::Tab) => iced::widget::operation::focus_next(),
+                    Key::Named(Named::Escape)
+                        if status != iced::event::Status::Captured && !self.close_prompt =>
+                    {
+                        self.flow_update(self.flow_generation, flow::Event::Back)
+                    }
+                    _ => Task::none(),
+                }
+            }
             Message::Key(key, modifiers, status) if self.settings.is_some() => {
                 self.settings_key(&key, modifiers, status == iced::event::Status::Captured)
+            }
+            Message::Key(key, modifiers, _)
+                if modifiers.control()
+                    && matches!(key.as_ref(), keyboard::Key::Character("n" | "N")) =>
+            {
+                self.update(Message::Add)
             }
             Message::Key(key, modifiers, status) => iced::widget::operation::is_focused(
                 iced::widget::Id::new(SEARCH_ID),
@@ -456,7 +532,178 @@ impl App {
             Message::OpenSettings => self.open_settings(),
             Message::OpenGlobalSettings => self.open_global_settings(),
             Message::Settings(event) => self.settings_update(event),
+            Message::Add => {
+                if self.foreground_busy() || self.settings.is_some() || self.flow.is_some() {
+                    return Task::none();
+                }
+                self.close_log();
+                self.action_menu = None;
+                self.flow_generation = self.flow_generation.wrapping_add(1);
+                self.flow = Some(flow::Page::choose(self.paths.clone()));
+                Task::none()
+            }
+            Message::CloneEnvironment(name) => {
+                if self.foreground_busy() || self.settings.is_some() || self.flow.is_some() {
+                    return Task::none();
+                }
+                self.close_log();
+                self.action_menu = None;
+                self.flow_generation = self.flow_generation.wrapping_add(1);
+                let generation = self.flow_generation;
+                let (page, task) = flow::Page::clone(self.paths.clone(), name);
+                self.flow = Some(page);
+                task.map(move |event| Message::Flow(generation, event))
+            }
+            Message::Context(name) => {
+                self.action_menu = if self.action_menu.as_deref() == Some(&name) {
+                    None
+                } else {
+                    Some(name)
+                };
+                Task::none()
+            }
+            Message::CloseMenu => {
+                self.action_menu = None;
+                Task::none()
+            }
+            Message::ContextSettings(name) => {
+                self.action_menu = None;
+                self.selected = Some(name);
+                self.open_settings()
+            }
+            Message::Flow(generation, event) => self.flow_update(generation, event),
+            Message::FlowReturned(generation, action, result)
+                if generation == self.flow_generation =>
+            {
+                self.flow_returned(action, result)
+            }
+            Message::FlowReturned(..) => Task::none(),
+            Message::KeepWorking => {
+                self.close_prompt = false;
+                Task::none()
+            }
+            event @ (Message::CancelAndClose | Message::ForceCloseWork) => {
+                let force = matches!(event, Message::ForceCloseWork);
+                self.closing = true;
+                if let Some(page) = &mut self.flow {
+                    page.cancel(force);
+                }
+                if let Some(operation) = &mut self.operation
+                    && let Some(token) = &operation.token
+                {
+                    if force {
+                        token.force();
+                    } else {
+                        token.cancel();
+                    }
+                    operation.cancelled = true;
+                }
+                if !self.foreground_busy() {
+                    iced::exit()
+                } else {
+                    Task::none()
+                }
+            }
+        };
+        if self.closing && !self.foreground_busy() {
+            task.chain(iced::exit())
+        } else {
+            task
         }
+    }
+    fn foreground_busy(&self) -> bool {
+        self.operation.is_some()
+            || self.flow.as_ref().is_some_and(flow::Page::busy)
+            || self.settings.as_ref().is_some_and(|page| page.saving)
+    }
+
+    fn flow_update(&mut self, generation: u64, event: flow::Event) -> Task<Message> {
+        if generation != self.flow_generation {
+            return Task::none();
+        }
+        let Some(page) = &mut self.flow else {
+            return Task::none();
+        };
+        let choose_back =
+            matches!(page, flow::Page::Choose(_)) && matches!(event, flow::Event::Back);
+        let task = page
+            .update(event)
+            .map(move |event| Message::Flow(generation, event));
+        if self.closing && !page.busy() {
+            return task.chain(iced::exit());
+        }
+        if choose_back {
+            self.flow = None;
+            return task;
+        }
+        if let Some(action) = page.take_action() {
+            self.flow = None;
+            self.flow_generation = self.flow_generation.wrapping_add(1);
+            let generation = self.flow_generation;
+            let paths = self.paths.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        load_library(&paths).map_err(|e| e.to_string())
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                move |cards| Message::FlowReturned(generation, action.clone(), cards),
+            );
+        }
+        task
+    }
+
+    fn flow_returned(
+        &mut self,
+        action: flow::Action,
+        result: Result<Vec<Card>, String>,
+    ) -> Task<Message> {
+        if self.closing {
+            return iced::exit();
+        }
+        match result {
+            Ok(cards) => self.merge(cards),
+            Err(error) => {
+                self.error = Some(error);
+                return Task::none();
+            }
+        }
+        let (name, launch, settings) = match action {
+            flow::Action::Library { name, launch } => (name, launch, false),
+            flow::Action::Settings { name, launch } => (Some(name), launch, true),
+        };
+        let Some(name) = name else {
+            return Task::none();
+        };
+        self.search.clear();
+        self.selected = Some(name.clone());
+        self.panel_open = true;
+        self.target = self
+            .cards
+            .iter()
+            .find(|card| card.name == name)
+            .and_then(|card| card.default_target.clone());
+        self.panel_error = None;
+        self.panel_note = None;
+        let mut tasks = vec![self.load_visible_art(), self.load_panel_art()];
+        if launch {
+            tasks.push(self.start_selected());
+        }
+        if settings {
+            tasks.push(self.open_settings());
+            if self
+                .cards
+                .iter()
+                .find(|card| card.name == name)
+                .is_some_and(|card| card.targets.is_empty())
+                && let Some(page) = &mut self.settings
+            {
+                page.open_add_after_load = true;
+            }
+        }
+        Task::batch(tasks)
     }
     fn merge(&mut self, cards: Vec<Card>) {
         if self
@@ -604,6 +851,7 @@ fn app_icon() -> Option<window::Icon> {
 
 fn window_settings() -> window::Settings {
     window::Settings {
+        exit_on_close_request: false,
         icon: app_icon(),
         platform_specific: window::settings::PlatformSpecific {
             application_id: "wineo-gui".to_owned(),
@@ -676,6 +924,53 @@ mod tests {
     #[test]
     fn app_icon_renders_from_embedded_svg() {
         assert!(app_icon().is_some());
+    }
+
+    #[test]
+    fn flow_result_selects_new_card_even_when_search_hides_it() {
+        let mut app = app();
+        app.search = "other".into();
+        let _ = app.flow_returned(
+            flow::Action::Library {
+                name: Some("new".into()),
+                launch: false,
+            },
+            Ok(vec![card("new", State::Inactive, 0)]),
+        );
+        assert!(app.search.is_empty());
+        assert_eq!(app.selected.as_deref(), Some("new"));
+        assert_eq!(app.target.as_deref(), Some("game"));
+        assert!(app.panel_open);
+        assert!(app.operation.is_none());
+    }
+
+    #[test]
+    fn closing_ignores_pending_launch_and_stale_flow_replies() {
+        let mut app = app();
+        app.flow = Some(flow::Page::choose(app.paths.clone()));
+        app.flow_generation = 5;
+        let _ = app.flow_update(4, flow::Event::New);
+        assert!(matches!(app.flow, Some(flow::Page::Choose(_))));
+        let _ = app.update(Message::FlowReturned(
+            4,
+            flow::Action::Settings {
+                name: "old".into(),
+                launch: true,
+            },
+            Ok(vec![card("old", State::Inactive, 0)]),
+        ));
+        assert!(app.selected.is_none());
+        assert!(app.settings.is_none());
+        app.closing = true;
+        let _ = app.flow_returned(
+            flow::Action::Library {
+                name: Some("new".into()),
+                launch: true,
+            },
+            Ok(vec![card("new", State::Inactive, 0)]),
+        );
+        assert!(app.operation.is_none());
+        assert!(app.selected.is_none());
     }
     #[test]
     fn search_is_case_insensitive() {
