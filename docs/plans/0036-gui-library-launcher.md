@@ -86,8 +86,10 @@ spike's library screen into a real app on top of `wineo-core`.
 
 - The banner is the hero art, shown clean. Without a hero, it's the plain
   surface color.
-- Under the banner: the logo, left-aligned, at most about 64px tall. Without
-  a logo, the name as a heading.
+- The logo sits at the banner's bottom-left, at most about 72px tall, over a
+  gradient scrim when there's hero art. Without a logo, the name is a
+  heading below the banner. (This was option 2 of decision 1; the plan first
+  put the logo under the banner.)
 - Rows: state, playtime, sessions, last played, and tags when present.
 - Play and Stop, with the spike's enabled and disabled rules. An environment
   with more than one target gets a target picker next to Play, preset to the

@@ -36,8 +36,9 @@ Type in the search field to filter by name.
 ## The detail panel
 
 Click a card to open its panel, and click it again or press Esc to close
-it. The panel shows the hero art, the logo or name, the state, playtime,
-sessions, when it was last played, and its tags.
+it. Double-click a card to open it and play it right away. The panel shows
+the hero art with the logo in its corner, the state, playtime, sessions,
+when it was last played, and its tags.
 
 - **Play** starts the environment's default target. An environment with
   more than one target has a picker next to Play.
