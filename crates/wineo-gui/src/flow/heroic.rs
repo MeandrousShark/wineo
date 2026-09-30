@@ -18,7 +18,9 @@ use wineo_core::config::GlobalConfig;
 use wineo_core::download::{Client, Provider};
 use wineo_core::environment::{self, Environment};
 use wineo_core::gamescope::{Filter, Gamescope, GamescopeSetting, Scaler, Window};
-use wineo_core::heroic::{HeroicCandidate, HeroicGameKind, HeroicListing, HeroicSource};
+use wineo_core::heroic::{
+    HeroicCandidate, HeroicGameKind, HeroicListing, HeroicSharedPrefix, HeroicSource,
+};
 use wineo_core::heroic_import::{
     self, Entry, Game, LibraryOptions, LibraryPlan, Options, Playtime, Policy, Registered,
     Resolution, RunnerCopy, RunnerSuggestion, Warning,
@@ -2021,6 +2023,12 @@ impl Page {
                                                 .color(palette.warning),
                                         );
                                     }
+                                    if let Some(note) =
+                                        shared_prefix_note(plan.is_adopt(), plan.shared_prefix())
+                                    {
+                                        body =
+                                            body.push(text(note).size(13).color(palette.warning));
+                                    }
                                 }
                                 Game::Native(plan) => {
                                     body = body.push(text(format!(
@@ -2126,6 +2134,18 @@ impl Page {
                                     for warning in review_warnings(&game.warnings()) {
                                         body = body.push(
                                             text(format!("  {warning}"))
+                                                .size(12)
+                                                .color(palette.warning),
+                                        );
+                                    }
+                                    if let Game::Windows(plan) = game
+                                        && let Some(note) = shared_prefix_note(
+                                            plan.is_adopt(),
+                                            plan.shared_prefix(),
+                                        )
+                                    {
+                                        body = body.push(
+                                            text(format!("  {note}"))
                                                 .size(12)
                                                 .color(palette.warning),
                                         );
@@ -2888,6 +2908,16 @@ fn store_heroic_poster(
         .map(|error| format!("Heroic poster: {error}"))
 }
 
+/// Only matters when the prefix is used in place, since then the other games
+/// keep changing it; a copy is wineo's own.
+fn shared_prefix_note(adopt: bool, shared: &[HeroicSharedPrefix]) -> Option<String> {
+    if !adopt || shared.is_empty() {
+        return None;
+    }
+    let titles: Vec<&str> = shared.iter().map(|game| game.title.as_str()).collect();
+    Some(format!("Shares prefix with: {}", titles.join(", ")))
+}
+
 /// How often copy progress reaches the UI. Core reports every copied file,
 /// and a message per file floods the channel on a large prefix.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -3569,6 +3599,26 @@ mod tests {
             )
             .as_deref(),
             Some("finishing")
+        );
+    }
+
+    #[test]
+    fn shared_prefix_shows_only_when_used_in_place() {
+        let shared = [
+            HeroicSharedPrefix {
+                id: "a".to_owned(),
+                title: "Alpha".to_owned(),
+            },
+            HeroicSharedPrefix {
+                id: "b".to_owned(),
+                title: "Bravo".to_owned(),
+            },
+        ];
+        assert_eq!(shared_prefix_note(false, &shared), None);
+        assert_eq!(shared_prefix_note(true, &[]), None);
+        assert_eq!(
+            shared_prefix_note(true, &shared).as_deref(),
+            Some("Shares prefix with: Alpha, Bravo")
         );
     }
 
