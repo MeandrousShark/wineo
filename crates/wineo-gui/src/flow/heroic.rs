@@ -784,6 +784,19 @@ impl Page {
         )
     }
 
+    /// The body scrollable keeps its offset across steps, so without the snap
+    /// Review opens wherever Details was scrolled to.
+    fn enter_review(&mut self) -> Task<Event> {
+        self.step = Step::Review;
+        iced::widget::operation::snap_to(
+            iced::widget::Id::new(BODY_ID),
+            RelativeOffset {
+                x: None,
+                y: Some(0.0),
+            },
+        )
+    }
+
     fn plan(&mut self) -> Task<Event> {
         if !self.draft.batch && !self.draft.argument_input.trim().is_empty() {
             self.error = Some("Add the typed argument before reviewing".to_owned());
@@ -1444,17 +1457,17 @@ impl Page {
                 Task::none()
             }
             Event::Plan => self.plan(),
-            Event::Planned(generation, result) if generation == self.generation => {
-                match result {
-                    Ok(review) => {
-                        self.review = Some(*review);
-                        self.step = Step::Review;
-                        self.status.clear();
-                    }
-                    Err(error) => self.error = Some(error),
+            Event::Planned(generation, result) if generation == self.generation => match result {
+                Ok(review) => {
+                    self.review = Some(*review);
+                    self.status.clear();
+                    self.enter_review()
                 }
-                Task::none()
-            }
+                Err(error) => {
+                    self.error = Some(error);
+                    Task::none()
+                }
+            },
             Event::CopyRunner => {
                 let Some(Prepared {
                     suggested: Some(RunnerSuggestion::Copy(copy)),
@@ -1546,8 +1559,7 @@ impl Page {
                             self.plan()
                         } else {
                             self.error = Some(error.message);
-                            self.step = Step::Review;
-                            Task::none()
+                            self.enter_review()
                         }
                     }
                 }
@@ -1558,8 +1570,7 @@ impl Page {
                     Ok(value) => value,
                     Err(error) => {
                         self.error = Some(error);
-                        self.step = Step::Review;
-                        return Task::none();
+                        return self.enter_review();
                     }
                 };
                 if changed {
@@ -2237,6 +2248,7 @@ impl Page {
                     .padding(24)
                     .center_x(Fill),
             )
+            .id(iced::widget::Id::new(BODY_ID))
             .height(Fill)
             .into(),
         };
@@ -2396,6 +2408,7 @@ fn launch_settings(draft: &Draft, windows: bool, palette: Palette) -> Element<'_
 }
 
 const GRID_ID: &str = "heroic-grid";
+const BODY_ID: &str = "heroic-body";
 const TILE_WIDTH: f32 = 120.0;
 /// With the focus ring's padding.
 const TILE_OUTER_WIDTH: f32 = TILE_WIDTH + 8.0;
@@ -3406,6 +3419,28 @@ mod tests {
         let _ = page.back();
         assert_eq!(page.step, Step::Games);
         assert_eq!(chosen(&page), ["dusk", "noon"]);
+    }
+
+    #[test]
+    fn a_finished_plan_opens_review_with_a_scroll_to_the_top() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        open_single(&mut page, NOON);
+        let task = page.plan();
+        assert_eq!(page.step, Step::Details);
+        drop(task);
+        let listing = page.listing.clone().unwrap();
+        let review = plan_review(&page.paths, &listing, page.selected, &page.draft).unwrap();
+        let task = page.update(Event::Planned(page.generation, Ok(Box::new(review))));
+        assert_eq!(page.step, Step::Review);
+        assert!(page.status.is_empty());
+        assert_eq!(task.units(), 1);
+
+        let stale = page.update(Event::Planned(
+            page.generation.wrapping_sub(1),
+            Err("old".to_owned()),
+        ));
+        assert_eq!(stale.units(), 0);
     }
 
     /// Feeds the page each listed poster's decode, as the grid's workers would.
