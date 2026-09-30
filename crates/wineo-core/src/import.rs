@@ -185,6 +185,24 @@ pub(crate) fn inspect_root(
     inspect_impl(source, runner, Some(arch), false, &mut check)
 }
 
+/// Whether a directory directly under `root` is itself a prefix. Heroic's
+/// default prefix can hold every game's prefix, and importing it would copy
+/// them all. Only immediate children are read so this stays cheap.
+pub(crate) fn holds_other_prefixes(root: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(root) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        if name == "pfx" || name == "drive_c" || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+        {
+            return false;
+        }
+        let child = entry.path();
+        child.join("system.reg").is_file() || child.join("pfx/system.reg").is_file()
+    })
+}
+
 pub(crate) fn root_layout_ambiguous(source: &Path) -> bool {
     is_prefix_shape(source) && is_prefix_shape(&source.join("pfx"))
 }
@@ -203,6 +221,12 @@ fn inspect_impl(
         source
     };
     let (source_root, wine_prefix, layout) = resolve_layout(&source, runner)?;
+    if holds_other_prefixes(&source_root) {
+        bail!(
+            "{} holds other prefixes; choose the game's own prefix",
+            source_root.display()
+        );
+    }
     validate_prefix(&wine_prefix)?;
 
     let detected = registry_arch(&wine_prefix)?;
@@ -1903,6 +1927,30 @@ mod tests {
             inspection.external_dependencies[0].target,
             Path::new("/mnt/games")
         );
+    }
+
+    #[test]
+    fn a_folder_of_prefixes_is_refused_but_a_proton_prefix_is_not() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("Prefixes/default");
+        prefix(&folder, "win64");
+        prefix(&folder.join("Game One"), "win64");
+        prefix(&folder.join("Game Two/pfx"), "win64");
+        let error = inspect(&folder, None, None).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            format!(
+                "{} holds other prefixes; choose the game's own prefix",
+                fs::canonicalize(&folder).unwrap().display()
+            )
+        );
+
+        let proton = root.path().join("compatdata/123");
+        prefix(&proton, "win64");
+        prefix(&proton.join("pfx"), "win64");
+        let inspection =
+            inspect(&proton, Some(&Runner::fake_proton("GE-Proton9-20")), None).unwrap();
+        assert_eq!(inspection.layout, ImportLayout::Proton);
     }
 
     #[test]

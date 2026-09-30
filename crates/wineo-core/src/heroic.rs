@@ -559,6 +559,11 @@ impl HeroicSource {
                 Some("winePrefix".to_owned()),
                 "prefix is missing system.reg or drive_c",
             ));
+        } else if crate::import::holds_other_prefixes(&prefix) {
+            issues.push(HeroicIssue::invalid(
+                Some("winePrefix".to_owned()),
+                "prefix holds other prefixes; choose the game's own prefix",
+            ));
         } else if prefix_layout == PrefixLayout::Both {
             issues.push(HeroicIssue::conflict(
                 Some("winePrefix".to_owned()),
@@ -1841,6 +1846,26 @@ mod tests {
             &global,
             &format!(r#"{{"hades":{settings}}}"#),
             &library,
+        );
+    }
+
+    #[test]
+    fn a_prefix_holding_other_prefixes_is_invalid() {
+        let (root, source) = fixture();
+        game_fixture(&source, root.path(), "{}", false);
+        let other = root.path().join("prefix/Other Game");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+        let imported = source.inspect("hades").unwrap();
+        let issue = imported
+            .issues
+            .iter()
+            .find(|issue| issue.field.as_deref() == Some("winePrefix"))
+            .unwrap();
+        assert_eq!(issue.kind, HeroicIssueKind::Invalid);
+        assert_eq!(
+            issue.message,
+            "prefix holds other prefixes; choose the game's own prefix"
         );
     }
 
