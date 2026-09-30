@@ -10,7 +10,7 @@ use iced::widget::{
     text, text_input,
 };
 use iced::{Center, Color, ContentFit, Element, Fill, Task, border, mouse};
-use wineo_core::art::Kind;
+use wineo_core::art::{Format, Kind};
 use wineo_core::cancel::Token;
 use wineo_core::components::Component;
 use wineo_core::config::GlobalConfig;
@@ -213,7 +213,7 @@ pub(crate) enum Event {
     SelectAll,
     SelectNone,
     ImportSelected,
-    Poster(u64, String, Result<image::Handle, String>),
+    Poster(u64, String, Result<(image::Handle, Format), String>),
     Prepared(u64, Result<Box<Prepared>, String>),
     BatchPrepared(u64, Result<BatchOptions, String>),
     Name(String),
@@ -281,8 +281,9 @@ pub(crate) struct Page {
     /// Heroic ids picked in the grid, kept while the user goes back and forth.
     chosen: BTreeSet<String>,
     focus: Option<usize>,
-    /// Decoded posters by Heroic id. None when the file couldn't be decoded.
-    posters: HashMap<String, Option<image::Handle>>,
+    /// Decoded posters by Heroic id, with their format. None when the file
+    /// couldn't be decoded, so it's never stored as art either.
+    posters: HashMap<String, Option<(image::Handle, Format)>>,
     poster_generation: u64,
     selected: Option<usize>,
     prepared: Option<Prepared>,
@@ -568,9 +569,11 @@ impl Page {
             let id = candidate.id.clone();
             Some(Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || artwork::preview(&path, Kind::Grid))
-                        .await
-                        .map_err(|e| e.to_string())?
+                    tokio::task::spawn_blocking(move || {
+                        artwork::preview_with_format(&path, Kind::Grid)
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
                 },
                 move |result| Event::Poster(generation, id, result),
             ))
@@ -578,7 +581,23 @@ impl Page {
     }
 
     fn poster(&self, id: &str) -> Option<&image::Handle> {
-        self.posters.get(id).and_then(Option::as_ref)
+        self.posters
+            .get(id)
+            .and_then(Option::as_ref)
+            .map(|(handle, _)| handle)
+    }
+
+    /// The listed posters that decoded in the grid. One that didn't is left
+    /// out, since a file can look like an image and still be unusable.
+    fn usable_posters(&self) -> HashMap<String, (PathBuf, Format)> {
+        self.listing
+            .iter()
+            .flat_map(|listing| &listing.candidates)
+            .filter_map(|candidate| {
+                let (_, format) = self.posters.get(&candidate.id)?.as_ref()?;
+                Some((candidate.id.clone(), (candidate.poster.clone()?, *format)))
+            })
+            .collect()
     }
 
     /// Why the game at `index` can't be picked, or None when it can.
@@ -768,11 +787,7 @@ impl Page {
             return Task::none();
         };
         let source = listing.source.clone();
-        let posters: HashMap<String, PathBuf> = listing
-            .candidates
-            .iter()
-            .filter_map(|candidate| Some((candidate.id.clone(), candidate.poster.clone()?)))
-            .collect();
+        let posters = self.usable_posters();
         let token = Token::new();
         self.token = Some(token.clone());
         self.step = Step::Working;
@@ -866,7 +881,7 @@ impl Page {
                                         &paths,
                                         &name,
                                         app,
-                                        posters.get(app).map(PathBuf::as_path),
+                                        posters.get(app).map(|(path, _)| path.as_path()),
                                     ));
                                     if fetch_batch_art {
                                         notes.extend(
@@ -1086,6 +1101,19 @@ impl Page {
                         self.status.clear();
                         self.step = Step::Details;
                         self.art = artwork::Draft::new();
+                        let candidate = &prepared.candidate;
+                        if let Some((handle, format)) =
+                            self.posters.get(&candidate.id).and_then(Option::as_ref)
+                            && let Some(path) = &candidate.poster
+                        {
+                            self.art.prefill(
+                                Kind::Grid,
+                                path,
+                                heroic_import::poster_name(&candidate.id, *format),
+                                "From Heroic",
+                                handle.clone(),
+                            );
+                        }
                         self.art_generation = self.art_generation.wrapping_add(1);
                         let art_generation = self.art_generation;
                         let task = self
@@ -1435,23 +1463,11 @@ impl Page {
                         self.registered = Some(registered);
                         let art = self.art.clone();
                         let paths = self.paths.clone();
-                        let (app, poster) = self
-                            .prepared
-                            .as_ref()
-                            .map(|prepared| {
-                                (
-                                    prepared.candidate.id.clone(),
-                                    prepared.candidate.poster.clone(),
-                                )
-                            })
-                            .unwrap_or_default();
                         Task::perform(
                             async move {
-                                tokio::task::spawn_blocking(move || {
-                                    apply_single_art(&paths, &name, &app, poster.as_deref(), &art)
-                                })
-                                .await
-                                .map_err(|e| e.to_string())?
+                                tokio::task::spawn_blocking(move || art.apply(&paths, &name))
+                                    .await
+                                    .map_err(|e| e.to_string())?
                             },
                             move |result| Event::ArtFinished(generation, result),
                         )
@@ -2758,9 +2774,9 @@ fn heroic_id(game: &Game) -> &str {
     }
 }
 
-/// Stores Heroic's cached poster as the new environment's Grid art. It runs
-/// before SteamGridDB, which then only fills what's still missing. Art never
-/// undoes an import, so a failure is only a note.
+/// Stores Heroic's cached poster as a batch-imported environment's Grid art.
+/// It runs before SteamGridDB, which then only fills what's still missing. Art
+/// never undoes an import, so a failure is only a note.
 fn store_heroic_poster(
     paths: &Paths,
     name: &str,
@@ -2770,29 +2786,6 @@ fn store_heroic_poster(
     heroic_import::store_poster(paths, name, app, poster?)
         .err()
         .map(|error| format!("Heroic poster: {error}"))
-}
-
-/// A single import's art: Heroic's poster unless a local Grid file was
-/// picked, then the art chosen on the details page.
-fn apply_single_art(
-    paths: &Paths,
-    name: &str,
-    app: &str,
-    poster: Option<&Path>,
-    art: &artwork::Draft,
-) -> Result<Vec<String>, String> {
-    let poster = poster.filter(|_| !art.has_local(Kind::Grid));
-    let note = store_heroic_poster(paths, name, app, poster);
-    match art.apply(paths, name) {
-        Ok(mut notes) => {
-            notes.extend(note);
-            Ok(notes)
-        }
-        Err(error) => Err(match note {
-            Some(note) => format!("{note}\n{error}"),
-            None => error,
-        }),
-    }
 }
 
 fn playtime_note(playtime: &Playtime) -> Option<String> {
@@ -3125,7 +3118,8 @@ mod tests {
     const OLD: usize = 3;
     const STORE: usize = 4;
 
-    /// Native games Dusk (a PNG poster), Dawn (a poster that isn't an image),
+    /// Native games Dusk (a PNG poster), Dawn (a poster with a JPEG signature
+    /// but a corrupt body),
     /// Noon (no poster), and Old, then Store, which Heroic's store owns.
     fn grid_fixture(root: &std::path::Path) -> (Paths, HeroicListing) {
         let heroic = root.join("heroic");
@@ -3176,7 +3170,7 @@ mod tests {
             .unwrap();
         fs::write(
             source.cached_image("https://cdn.example.com/dawn.jpg"),
-            b"not an image",
+            b"\xff\xd8\xff\xe0 corrupt body",
         )
         .unwrap();
         let paths = paths(root);
@@ -3313,33 +3307,55 @@ mod tests {
         assert_eq!(chosen(&page), ["dusk", "noon"]);
     }
 
+    /// Feeds the page each listed poster's decode, as the grid's workers would.
+    fn decode_posters(page: &mut Page) {
+        let listing = page.listing.clone().unwrap();
+        for candidate in &listing.candidates {
+            if let Some(path) = &candidate.poster {
+                let _ = page.update(Event::Poster(
+                    page.poster_generation,
+                    candidate.id.clone(),
+                    artwork::preview_with_format(path, Kind::Grid),
+                ));
+            }
+        }
+    }
+
+    /// Chooses only the game at `index` and opens its details.
+    fn open_single(page: &mut Page, index: usize) {
+        let _ = page.update(Event::Toggle(index));
+        let _ = page.update(Event::ImportSelected);
+        let listing = page.listing.clone().unwrap();
+        let prepared = prepare_game(
+            &page.paths,
+            &listing.source,
+            listing.candidates[index].clone(),
+        )
+        .unwrap();
+        let _ = page.update(Event::Prepared(page.generation, Ok(Box::new(prepared))));
+        assert_eq!(page.step, Step::Details);
+    }
+
     #[test]
     fn missing_and_unreadable_posters_fall_back_to_the_title() {
         let root = tempdir().unwrap();
         let mut page = grid_page(root.path());
         let listing = page.listing.clone().unwrap();
         assert!(listing.candidates[NOON].poster.is_none());
-        let dusk = listing.candidates[DUSK].poster.clone().unwrap();
-        let dawn = listing.candidates[DAWN].poster.clone().unwrap();
-        let generation = page.poster_generation;
-        let _ = page.update(Event::Poster(
-            generation,
-            "dusk".to_owned(),
-            artwork::preview(&dusk, Kind::Grid),
-        ));
-        let _ = page.update(Event::Poster(
-            generation,
-            "dawn".to_owned(),
-            artwork::preview(&dawn, Kind::Grid),
-        ));
+        decode_posters(&mut page);
         assert!(page.poster("dusk").is_some());
         assert!(page.poster("dawn").is_none());
         assert!(page.poster("noon").is_none());
+        assert_eq!(
+            page.usable_posters().into_keys().collect::<Vec<_>>(),
+            ["dusk"]
+        );
         // A reply for an earlier listing is dropped.
+        let dusk = listing.candidates[DUSK].poster.clone().unwrap();
         let _ = page.update(Event::Poster(
-            generation.wrapping_sub(1),
+            page.poster_generation.wrapping_sub(1),
             "noon".to_owned(),
-            artwork::preview(&dusk, Kind::Grid),
+            artwork::preview_with_format(&dusk, Kind::Grid),
         ));
         assert!(page.poster("noon").is_none());
     }
@@ -3392,19 +3408,15 @@ mod tests {
     }
 
     #[test]
-    fn a_heroic_poster_becomes_grid_art_that_steamgriddb_does_not_replace() {
-        const FETCHED: &[u8] = b"\xff\xd8\xff\xe0 fetched";
+    fn a_heroic_poster_is_prefilled_and_stored_as_grid_art() {
         let root = tempdir().unwrap();
         let mut page = grid_page(root.path());
         let heroic = root.path().join("heroic");
         let before = tree(&heroic);
+        decode_posters(&mut page);
+        open_single(&mut page, DUSK);
+        assert_eq!(page.art.prefilled(Kind::Grid), Some("heroic-dusk.png"));
         let listing = page.listing.clone().unwrap();
-        let candidate = listing.candidates[DUSK].clone();
-        page.draft = Draft {
-            name: "dusk".to_owned(),
-            executable: candidate.executable.as_ref().unwrap().display().to_string(),
-            ..Draft::default()
-        };
         let Review::Single { game, .. } =
             plan_review(&page.paths, &listing, Some(DUSK), &page.draft).unwrap()
         else {
@@ -3422,6 +3434,39 @@ mod tests {
         )
         .unwrap();
         let name = registered.environment.name.as_str();
+        page.art.apply(&paths, name).unwrap();
+        let config = wineo_core::art::ArtConfig::load(&paths.art_dir(name)).unwrap();
+        assert_eq!(
+            config.kinds[&Kind::Grid].source,
+            wineo_core::art::Source::Manual("heroic-dusk.png".to_owned())
+        );
+        assert_eq!(
+            fs::read(paths.art_dir(name).join("grid.png")).unwrap(),
+            fs::read(listing.candidates[DUSK].poster.as_ref().unwrap()).unwrap()
+        );
+        assert_eq!(tree(&heroic), before);
+    }
+
+    #[test]
+    fn a_corrupt_poster_is_neither_prefilled_nor_stored() {
+        const FETCHED: &[u8] = b"\xff\xd8\xff\xe0 fetched";
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        decode_posters(&mut page);
+        open_single(&mut page, DAWN);
+        assert_eq!(page.art.prefilled(Kind::Grid), None);
+        // A batch only stores posters that decoded.
+        assert!(!page.usable_posters().contains_key("dawn"));
+        let paths = page.paths.clone();
+        wineo_core::environment::Environment::create_native(
+            &paths,
+            &GlobalConfig::default(),
+            "dawn",
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(store_heroic_poster(&paths, "dawn", "dawn", None), None);
         let art = artwork::Draft::with_fetched(
             Kind::Grid,
             7,
@@ -3431,57 +3476,11 @@ mod tests {
                 format: wineo_core::art::Format::Jpeg,
             },
         );
-        apply_single_art(&paths, name, "dusk", candidate.poster.as_deref(), &art).unwrap();
-        let config = wineo_core::art::ArtConfig::load(&paths.art_dir(name)).unwrap();
+        art.apply(&paths, "dawn").unwrap();
+        let config = wineo_core::art::ArtConfig::load(&paths.art_dir("dawn")).unwrap();
         assert_eq!(
             config.kinds[&Kind::Grid].source,
-            wineo_core::art::Source::Manual("heroic-dusk.png".to_owned())
+            wineo_core::art::Source::SteamGridDb(42)
         );
-        assert_eq!(
-            fs::read(paths.art_dir(name).join("grid.png")).unwrap(),
-            fs::read(candidate.poster.as_ref().unwrap()).unwrap()
-        );
-        assert!(!paths.art_dir(name).join("grid.jpg").exists());
-        assert_eq!(tree(&heroic), before);
-    }
-
-    #[test]
-    fn a_local_grid_pick_wins_over_the_heroic_poster() {
-        let root = tempdir().unwrap();
-        let (paths, listing) = grid_fixture(root.path());
-        wineo_core::environment::Environment::create_native(
-            &paths,
-            &GlobalConfig::default(),
-            "dusk",
-            None,
-            false,
-        )
-        .unwrap();
-        let local = root.path().join("mine.svg");
-        fs::write(
-            &local,
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="3"/>"#,
-        )
-        .unwrap();
-        let art = artwork::Draft::new().with_local(Kind::Grid, &local);
-        let poster = listing.candidates[DUSK].poster.as_deref();
-        apply_single_art(&paths, "dusk", "dusk", poster, &art).unwrap();
-        let config = wineo_core::art::ArtConfig::load(&paths.art_dir("dusk")).unwrap();
-        assert_eq!(
-            config.kinds[&Kind::Grid].source,
-            wineo_core::art::Source::Manual("mine.svg".to_owned())
-        );
-        // A batch has no local picks, and a poster that isn't an image is
-        // skipped quietly.
-        assert_eq!(
-            store_heroic_poster(
-                &paths,
-                "dusk",
-                "dawn",
-                listing.candidates[DAWN].poster.as_deref()
-            ),
-            None
-        );
-        assert_eq!(store_heroic_poster(&paths, "dusk", "noon", None), None);
     }
 }
