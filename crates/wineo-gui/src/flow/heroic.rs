@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use iced::futures::channel::mpsc::{UnboundedSender, unbounded};
 use iced::keyboard::{self, Key, key::Named};
@@ -880,7 +881,10 @@ impl Page {
         self.step = Step::Working;
         self.error = None;
         self.results.clear();
-        self.status = "Importing...".to_owned();
+        self.status = match &review {
+            Review::Single { game, .. } => import_status(game.title(), None, None),
+            Review::Batch(_) => "Importing...".to_owned(),
+        };
         let generation = self.next_generation();
         let paths = self.paths.clone();
         let fetch_batch_art = self.draft.fetch_batch_art;
@@ -896,11 +900,15 @@ impl Page {
                                     message: error.to_string(),
                                     source_changed: false,
                                 })?;
+                            let title = game.title().to_owned();
+                            let mut copy = CopyProgress::default();
                             apply_game(&paths, &global, &source, &game, &token, |progress| {
-                                let _ = sender.unbounded_send(Event::Progress(
-                                    generation,
-                                    format!("Import: {progress:?}"),
-                                ));
+                                if let Some(phase) = copy.record(&progress, Instant::now()) {
+                                    let _ = sender.unbounded_send(Event::Progress(
+                                        generation,
+                                        import_status(&title, None, Some(&phase)),
+                                    ));
+                                }
                             })
                             .map(Arc::new)
                             .map_err(|error| ImportFailure {
@@ -931,7 +939,9 @@ impl Page {
                                 ));
                             }
                             let mut source_changed = false;
-                            for mut game in library.into_ready() {
+                            let ready = library.into_ready();
+                            let count = ready.len();
+                            for (index, mut game) in ready.into_iter().enumerate() {
                                 if token.is_canceled() {
                                     break;
                                 }
@@ -941,10 +951,15 @@ impl Page {
                                 }
                                 let name = game.name().to_owned();
                                 let title = game.title().to_owned();
-                                let _ = sender.unbounded_send(Event::Progress(
-                                    generation,
-                                    format!("Importing {name}..."),
-                                ));
+                                let position = Some((index + 1, count));
+                                let status = |phase: Option<&str>| {
+                                    Event::Progress(
+                                        generation,
+                                        import_status(&title, position, phase),
+                                    )
+                                };
+                                let _ = sender.unbounded_send(status(None));
+                                let mut copy = CopyProgress::default();
                                 let result = (|| {
                                     let registered = apply_game(
                                         &paths,
@@ -953,16 +968,18 @@ impl Page {
                                         &game,
                                         &token,
                                         |progress| {
-                                            let _ = sender.unbounded_send(Event::Progress(
-                                                generation,
-                                                format!("{name}: {progress:?}"),
-                                            ));
+                                            if let Some(phase) =
+                                                copy.record(&progress, Instant::now())
+                                            {
+                                                let _ = sender.unbounded_send(status(Some(&phase)));
+                                            }
                                         },
                                     )?;
                                     let mut notes = Vec::new();
                                     if let Some(note) = playtime_note(&registered.playtime) {
                                         notes.push(note);
                                     }
+                                    let _ = sender.unbounded_send(status(Some("adding artwork")));
                                     let app = heroic_id(&game);
                                     notes.extend(store_heroic_poster(
                                         &paths,
@@ -978,6 +995,8 @@ impl Page {
                                                 }),
                                         );
                                     }
+                                    let _ = sender
+                                        .unbounded_send(status(Some("finalizing desktop entries")));
                                     if let Err(error) = registered.finish(&paths, &global) {
                                         notes.push(format!("Desktop entry: {error}"));
                                     }
@@ -1534,10 +1553,11 @@ impl Page {
                         if let Some(note) = playtime_note(&registered.playtime) {
                             self.notes.push(note);
                         }
-                        self.status = format!(
-                            "Imported {}. Adding artwork...",
-                            registered.environment.name
-                        );
+                        let title = match &self.review {
+                            Some(Review::Single { game, .. }) => game.title(),
+                            _ => &registered.environment.name,
+                        };
+                        self.status = format!("Imported {title}. Adding artwork...");
                         let name = registered.environment.name.clone();
                         self.registered = Some(registered);
                         let art = self.art.clone();
@@ -2868,6 +2888,79 @@ fn store_heroic_poster(
         .map(|error| format!("Heroic poster: {error}"))
 }
 
+/// How often copy progress reaches the UI. Core reports every copied file,
+/// and a message per file floods the channel on a large prefix.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Turns core's import progress into a readable phase, throttled.
+#[derive(Debug, Default)]
+struct CopyProgress {
+    total: u64,
+    copied: u64,
+    sent: Option<Instant>,
+}
+
+impl CopyProgress {
+    /// The phase to show for `progress`, or None when it's too soon after
+    /// the last one. The last copied file always shows.
+    fn record(&mut self, progress: &import::ImportProgress, now: Instant) -> Option<String> {
+        if let import::ImportProgress::Started { entries } = progress {
+            self.total = *entries;
+            self.copied = 0;
+        }
+        if let import::ImportProgress::Copied { .. } = progress {
+            self.copied += 1;
+            let due = self.copied >= self.total
+                || self
+                    .sent
+                    .is_none_or(|sent| now.duration_since(sent) >= PROGRESS_INTERVAL);
+            if !due {
+                return None;
+            }
+        }
+        self.sent = Some(now);
+        Some(self.phase(progress))
+    }
+
+    fn phase(&self, progress: &import::ImportProgress) -> String {
+        match progress {
+            import::ImportProgress::Started { .. } | import::ImportProgress::Copied { .. } => {
+                format!(
+                    "copying prefix ({} of {} files)",
+                    grouped(self.copied),
+                    grouped(self.total)
+                )
+            }
+            import::ImportProgress::Finished { .. } => "finishing".to_owned(),
+        }
+    }
+}
+
+/// "(2 of 5) Importing Title: phase", without the position for a single game
+/// and with an ellipsis before the first phase.
+fn import_status(title: &str, position: Option<(usize, usize)>, phase: Option<&str>) -> String {
+    let position = position
+        .map(|(index, count)| format!("({index} of {count}) "))
+        .unwrap_or_default();
+    match phase {
+        Some(phase) => format!("{position}Importing {title}: {phase}"),
+        None => format!("{position}Importing {title}..."),
+    }
+}
+
+/// `n` with comma thousands separators.
+fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
 /// The review only calls out anti-cheat, once even when both EAC and
 /// BattlEye are on, since the game may not run without it.
 fn review_warnings(warnings: &[Warning]) -> Vec<&'static str> {
@@ -3419,6 +3512,64 @@ mod tests {
             Err("old".to_owned()),
         ));
         assert_eq!(stale.units(), 0);
+    }
+
+    #[test]
+    fn import_status_reads_as_a_sentence() {
+        assert_eq!(
+            import_status("Subverse", None, None),
+            "Importing Subverse..."
+        );
+        assert_eq!(
+            import_status(
+                "Subverse",
+                Some((2, 5)),
+                Some("copying prefix (1,234 of 2,151 files)")
+            ),
+            "(2 of 5) Importing Subverse: copying prefix (1,234 of 2,151 files)"
+        );
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(1000), "1,000");
+        assert_eq!(grouped(1234567), "1,234,567");
+    }
+
+    #[test]
+    fn copy_progress_counts_files_and_throttles() {
+        let start = Instant::now();
+        let copied = || import::ImportProgress::Copied {
+            path: PathBuf::from("drive_c"),
+        };
+        let mut copy = CopyProgress::default();
+        assert_eq!(
+            copy.record(&import::ImportProgress::Started { entries: 2151 }, start)
+                .as_deref(),
+            Some("copying prefix (0 of 2,151 files)")
+        );
+        assert_eq!(copy.record(&copied(), start), None);
+        for _ in 0..1232 {
+            copy.record(&copied(), start + Duration::from_millis(50));
+        }
+        assert_eq!(
+            copy.record(&copied(), start + PROGRESS_INTERVAL).as_deref(),
+            Some("copying prefix (1,234 of 2,151 files)")
+        );
+        for _ in 0..916 {
+            copy.record(&copied(), start + PROGRESS_INTERVAL);
+        }
+        // The last file shows even inside the interval.
+        assert_eq!(
+            copy.record(&copied(), start + PROGRESS_INTERVAL).as_deref(),
+            Some("copying prefix (2,151 of 2,151 files)")
+        );
+        assert_eq!(
+            copy.record(
+                &import::ImportProgress::Finished { entries: 2151 },
+                start + PROGRESS_INTERVAL
+            )
+            .as_deref(),
+            Some("finishing")
+        );
     }
 
     #[test]
