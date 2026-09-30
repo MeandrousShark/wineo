@@ -409,6 +409,9 @@ impl Page {
         if let Some(problem) = name::problem(&name) {
             return Err(problem);
         }
+        if name.len() > name::TITLE_MAX {
+            return Err("Name is too long.".to_owned());
+        }
         if self.paths.environment_config(&name).exists() {
             return Err(format!(
                 "An environment named {name} already exists. Open its Settings from the library."
@@ -2067,6 +2070,19 @@ mod tests {
 
         let _ = page.update(Event::EnvironmentName("bad name".to_owned()));
         assert_eq!(page.validate().unwrap_err(), "spaces not allowed");
+    }
+
+    #[test]
+    fn a_long_override_is_refused_but_a_long_title_is_cut() {
+        let mut page = page();
+        let _ = page.update(Event::Name("word ".repeat(100)));
+        assert!(page.draft.environment_name().len() <= name::TITLE_MAX);
+        assert!(page.validate().is_ok());
+
+        let _ = page.update(Event::EnvironmentName("a".repeat(name::TITLE_MAX + 1)));
+        assert_eq!(page.validate().unwrap_err(), "Name is too long.");
+        let _ = page.update(Event::EnvironmentName("a".repeat(name::TITLE_MAX)));
+        assert!(page.validate().is_ok());
     }
 
     #[test]
