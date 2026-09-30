@@ -20,7 +20,7 @@ use wineo_core::gamescope::{Filter, Gamescope, GamescopeSetting, Scaler, Window}
 use wineo_core::heroic::{HeroicCandidate, HeroicGameKind, HeroicListing, HeroicSource};
 use wineo_core::heroic_import::{
     self, Entry, Game, LibraryOptions, LibraryPlan, Options, Playtime, Policy, Registered,
-    RunnerCopy, RunnerSuggestion,
+    Resolution, RunnerCopy, RunnerSuggestion, Warning,
 };
 use wineo_core::import;
 use wineo_core::paths::Paths;
@@ -1987,46 +1987,16 @@ impl Page {
                                     } else {
                                         "Copy prefix"
                                     }));
-                                    for finding in
-                                        plan.findings().iter().filter(|finding| finding.is_active())
-                                    {
+                                    // Only what stops the import; the rest reads like
+                                    // debug output here.
+                                    for finding in plan.findings().iter().filter(|finding| {
+                                        matches!(
+                                            finding.resolution,
+                                            Resolution::Blocking | Resolution::NeedsInput(_)
+                                        )
+                                    }) {
                                         body = body.push(
-                                            text(format!(
-                                                "{:?}: {}",
-                                                finding.resolution, finding.issue.message
-                                            ))
-                                            .size(13)
-                                            .color(palette.warning),
-                                        );
-                                    }
-                                    for line in heroic_import::runner_dependency_lines(
-                                        plan.runner_dependencies(),
-                                        true,
-                                    ) {
-                                        body =
-                                            body.push(text(line).size(13).color(palette.warning));
-                                    }
-                                    for dependency in &plan.inspection().external_dependencies {
-                                        body = body.push(
-                                            text(format!(
-                                                "External link: {} -> {}",
-                                                dependency.source.display(),
-                                                dependency.target.display()
-                                            ))
-                                            .size(13)
-                                            .color(palette.warning),
-                                        );
-                                    }
-                                    for path in &plan.resolved().external_dependencies {
-                                        body = body.push(
-                                            text(format!("External game path: {}", path.display()))
-                                                .size(13)
-                                                .color(palette.warning),
-                                        );
-                                    }
-                                    for shared in plan.shared_prefix() {
-                                        body = body.push(
-                                            text(format!("Shares prefix with: {}", shared.title))
+                                            text(&finding.issue.message)
                                                 .size(13)
                                                 .color(palette.warning),
                                         );
@@ -2080,10 +2050,8 @@ impl Page {
                             for (key, value) in settings.env {
                                 body = body.push(text(format!("Environment: {key}={value}")));
                             }
-                            for warning in game.warnings() {
-                                body = body.push(
-                                    text(format!("{warning:?}")).size(13).color(palette.warning),
-                                );
+                            for warning in review_warnings(&game.warnings()) {
+                                body = body.push(text(warning).size(13).color(palette.warning));
                             }
                             if let Some((component, version)) = missing_build {
                                 body = body.push(
@@ -2135,9 +2103,9 @@ impl Page {
                                 };
                                 body = body.push(text(line).size(13));
                                 if let Entry::Ready(game) = entry {
-                                    for warning in game.warnings() {
+                                    for warning in review_warnings(&game.warnings()) {
                                         body = body.push(
-                                            text(format!("  {warning:?}"))
+                                            text(format!("  {warning}"))
                                                 .size(12)
                                                 .color(palette.warning),
                                         );
@@ -2900,6 +2868,16 @@ fn store_heroic_poster(
         .map(|error| format!("Heroic poster: {error}"))
 }
 
+/// The review only calls out anti-cheat, once even when both EAC and
+/// BattlEye are on, since the game may not run without it.
+fn review_warnings(warnings: &[Warning]) -> Vec<&'static str> {
+    if warnings.contains(&Warning::AntiCheatNotImported) {
+        vec!["Heroic-managed anti-cheat runtime is not imported"]
+    } else {
+        Vec::new()
+    }
+}
+
 fn playtime_note(playtime: &Playtime) -> Option<String> {
     match playtime {
         Playtime::None | Playtime::Imported => None,
@@ -3441,6 +3419,19 @@ mod tests {
             Err("old".to_owned()),
         ));
         assert_eq!(stale.units(), 0);
+    }
+
+    #[test]
+    fn review_warnings_show_anti_cheat_once_and_nothing_else() {
+        assert!(review_warnings(&[Warning::Omitted(3), Warning::Dropped(1)]).is_empty());
+        assert_eq!(
+            review_warnings(&[
+                Warning::Omitted(2),
+                Warning::AntiCheatNotImported,
+                Warning::NeedsAttention(Vec::new()),
+            ]),
+            ["Heroic-managed anti-cheat runtime is not imported"]
+        );
     }
 
     /// Feeds the page each listed poster's decode, as the grid's workers would.
