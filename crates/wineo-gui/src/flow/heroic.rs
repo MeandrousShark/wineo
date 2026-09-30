@@ -2984,6 +2984,9 @@ impl CopyProgress {
             import::ImportProgress::Started { .. } | import::ImportProgress::Copied { .. } => {
                 format!("copying prefix ({})", self.counts())
             }
+            import::ImportProgress::Checking { entries } => {
+                format!("checking prefix ({} files)", grouped(*entries))
+            }
             import::ImportProgress::Finished { .. } => "finishing".to_owned(),
         }
     }
@@ -3074,6 +3077,9 @@ fn install_prerequisite(
                             import::ImportProgress::Started { .. }
                             | import::ImportProgress::Copied { .. } => {
                                 format!("Copying {} ({})", copy.name, files.counts())
+                            }
+                            import::ImportProgress::Checking { entries } => {
+                                format!("Checking {} ({} files)", copy.name, grouped(entries))
                             }
                             import::ImportProgress::Finished { .. } => {
                                 format!("Finishing copy of {}", copy.name)
@@ -3612,6 +3618,11 @@ mod tests {
             path: PathBuf::from("drive_c"),
         };
         let mut copy = CopyProgress::default();
+        assert_eq!(
+            copy.record(&import::ImportProgress::Checking { entries: 12000 }, start)
+                .as_deref(),
+            Some("checking prefix (12,000 files)")
+        );
         assert_eq!(
             copy.record(&import::ImportProgress::Started { entries: 2151 }, start)
                 .as_deref(),
