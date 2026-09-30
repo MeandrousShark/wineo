@@ -41,6 +41,10 @@ pub enum WinetricksEvent {
     OutputLine(String),
     /// Winetricks started one of the requested verbs.
     Progress(Step),
+    /// The output log is created, emptied, and winetricks is running, so a
+    /// reader can follow it without seeing a previous run's text. Only emitted
+    /// for log output, and independent of whether winetricks prints anything.
+    LogStarted,
     Stopping,
     Killing,
     Warning(String),
@@ -104,6 +108,8 @@ impl Progress {
 struct LineTail {
     file: File,
     pending: Vec<u8>,
+    /// Set after an oversized line was dropped, until its newline arrives.
+    discarding: bool,
 }
 
 /// A line longer than this is dropped rather than held forever.
@@ -114,6 +120,7 @@ impl LineTail {
         Ok(Self {
             file: File::open(path)?,
             pending: Vec::new(),
+            discarding: false,
         })
     }
 
@@ -127,12 +134,19 @@ impl LineTail {
             self.pending.extend_from_slice(&buf[..read]);
             while let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
                 let line: Vec<u8> = self.pending.drain(..=end).collect();
+                // The rest of an oversized line is not a line of its own.
+                if std::mem::take(&mut self.discarding) {
+                    continue;
+                }
                 events(WinetricksEvent::OutputLine(
                     String::from_utf8_lossy(&line[..end]).into_owned(),
                 ));
             }
-            if self.pending.len() > LINE_CAP {
+            if self.discarding {
                 self.pending.clear();
+            } else if self.pending.len() > LINE_CAP {
+                self.pending.clear();
+                self.discarding = true;
             }
         }
     }
@@ -597,6 +611,9 @@ fn run_with_output(
     }
 
     let mut child = command.spawn().context("failed to run winetricks")?;
+    if tail.is_some() {
+        events(WinetricksEvent::LogStarted);
+    }
     let group = child.id();
     let mut stopping = None;
     let mut killing = false;
@@ -930,28 +947,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn install_reports_progress_from_the_log() {
+    /// Runs `child` in a subprocess whose PATH starts with a fake winetricks.
+    fn with_fake_winetricks(script_body: &str, child: &str) {
         let root = tempfile::tempdir().unwrap();
         let bin = root.path().join("bin");
         fs::create_dir(&bin).unwrap();
         let script = bin.join("winetricks");
-        fs::write(
-            &script,
-            "#!/bin/sh\nfor verb in \"$@\"; do\n  case \"$verb\" in -q) ;; *)\n    echo \"Executing w_do_call dep\" >&2\n    echo \"Executing w_do_call $verb\" >&2 ;; esac\ndone\n",
-        )
-        .unwrap();
+        fs::write(&script, script_body).unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
         )))
         .unwrap();
         let output = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "winetricks::tests::install_progress_child",
-                "--nocapture",
-            ])
+            .args(["--exact", child, "--nocapture"])
             .env("WINEO_WINETRICKS_PROGRESS_ROOT", root.path())
             .env("PATH", path)
             .output()
@@ -960,6 +969,88 @@ mod tests {
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn install_reports_progress_from_the_log() {
+        with_fake_winetricks(
+            "#!/bin/sh\nfor verb in \"$@\"; do\n  case \"$verb\" in -q) ;; *)\n    echo \"Executing w_do_call dep\" >&2\n    echo \"Executing w_do_call $verb\" >&2 ;; esac\ndone\n",
+            "winetricks::tests::install_progress_child",
+        );
+    }
+
+    #[test]
+    fn a_silent_install_still_announces_its_log() {
+        with_fake_winetricks(
+            "#!/bin/sh\nsleep 0.3\nprintf 'no newline'\n",
+            "winetricks::tests::silent_install_child",
+        );
+    }
+
+    #[test]
+    fn silent_install_child() {
+        let Some(root) = std::env::var_os("WINEO_WINETRICKS_PROGRESS_ROOT") else {
+            return;
+        };
+        let prefix = std::path::PathBuf::from(root).join("prefix");
+        fs::create_dir(&prefix).unwrap();
+        let log = prefix.join("install.log");
+        // A previous run's text must be gone by the time the log is announced.
+        fs::write(&log, "stale\n").unwrap();
+        let mut seen = Vec::new();
+        install_unattended(
+            "game",
+            &Runner::fake("test"),
+            &prefix,
+            &BTreeMap::new(),
+            &verbs(&["corefonts"]),
+            1,
+            &Token::new(),
+            Output::Log(&log),
+            |event| match event {
+                WinetricksEvent::LogStarted => {
+                    assert!(fs::read(&log).unwrap().is_empty());
+                    seen.push("started");
+                }
+                WinetricksEvent::OutputLine(_) => seen.push("line"),
+                WinetricksEvent::Progress(_) => seen.push("progress"),
+                _ => {}
+            },
+        )
+        .unwrap();
+        assert_eq!(seen, ["started"]);
+    }
+
+    #[test]
+    fn the_rest_of_an_oversized_line_is_dropped() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("install.log");
+        fs::write(&path, "").unwrap();
+        let mut tail = LineTail::open(&path).unwrap();
+        let mut lines = Vec::new();
+        let mut collect = |event: WinetricksEvent| {
+            if let WinetricksEvent::OutputLine(line) = event {
+                lines.push(line);
+            }
+        };
+        let mut writer = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        // Multibyte text so any cut inside a character would show up.
+        let long = "\u{3042}".repeat(LINE_CAP);
+        io::Write::write_all(&mut writer, b"before\n").unwrap();
+        io::Write::write_all(&mut writer, long.as_bytes()).unwrap();
+        tail.pump(&mut collect);
+        io::Write::write_all(
+            &mut writer,
+            b"suffix of the long line\nExecuting w_do_call gdiplus\n",
+        )
+        .unwrap();
+        tail.pump(&mut collect);
+        assert_eq!(lines, ["before", "Executing w_do_call gdiplus"]);
+        let mut progress = Progress::new(&verbs(&["gdiplus"]));
+        assert_eq!(
+            lines.iter().find_map(|line| progress.observe(line)),
+            Some(step("gdiplus", 1, 1))
         );
     }
 

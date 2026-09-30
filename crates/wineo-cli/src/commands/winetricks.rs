@@ -22,6 +22,7 @@ pub fn print_event(event: WinetricksEvent) {
         WinetricksEvent::Warning(warning) => eprintln!("warning: {warning}"),
         WinetricksEvent::OutputLine(_)
         | WinetricksEvent::Progress(_)
+        | WinetricksEvent::LogStarted
         | WinetricksEvent::Done(_) => {}
     }
 }

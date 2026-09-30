@@ -43,7 +43,6 @@ pub(crate) fn start(
                 if let Some(parent) = log.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                let mut output_seen = false;
                 let result = launch::start(
                     &paths,
                     &name,
@@ -67,13 +66,10 @@ pub(crate) fn start(
                                 "No Wayland session is available".to_owned(),
                             ));
                         }
-                        // The first output line proves install.log exists and
-                        // was truncated, so the panel can open it safely.
+                        // LogStarted comes after install.log was emptied, so
+                        // the panel never tails a previous run's text.
                         match &event {
-                            launch::LaunchEvent::Winetricks(WinetricksEvent::OutputLine(_))
-                                if !output_seen =>
-                            {
-                                output_seen = true;
+                            launch::LaunchEvent::Winetricks(WinetricksEvent::LogStarted) => {
                                 let _ = sender.unbounded_send(Message::InstallPhase(
                                     progress_name.clone(),
                                     true,
