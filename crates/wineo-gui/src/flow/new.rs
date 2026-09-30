@@ -1214,29 +1214,38 @@ impl Page {
                     responsive(move |size| {
                         let poster = self.art.poster(palette).map(Event::Art);
                         let icon = self.art.icon(palette).map(Event::Art);
+                        let controls = self.art.controls(palette).map(Event::Art);
+                        let navigation = row![
+                            button("Back").on_press(Event::Back),
+                            button("Next").on_press(Event::Next)
+                        ]
+                        .spacing(8);
                         if size.width >= SIDE_POSTER {
-                            row![poster, self.details_form(Some(icon), palette)]
-                                .spacing(16)
-                                .width(Fill)
-                                .into()
+                            // Keeps everything below the fields aligned with them.
+                            row![
+                                poster,
+                                column![
+                                    self.details_form(Some(icon), palette),
+                                    controls,
+                                    navigation
+                                ]
+                                .spacing(10)
+                            ]
+                            .spacing(16)
+                            .width(Fill)
+                            .into()
                         } else {
                             column![
                                 self.details_form(None, palette),
-                                row![poster, icon].spacing(12)
+                                row![poster, icon].spacing(12),
+                                controls,
+                                navigation
                             ]
                             .spacing(16)
                             .into()
                         }
                     })
                     .height(Shrink),
-                );
-                body = body.push(self.art.controls(palette).map(Event::Art));
-                body = body.push(
-                    row![
-                        button("Back").on_press(Event::Back),
-                        button("Next").on_press(Event::Next)
-                    ]
-                    .spacing(8),
                 );
             }
             Stage::Review => {
