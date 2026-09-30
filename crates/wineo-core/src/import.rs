@@ -48,8 +48,19 @@ pub struct ExternalDependency {
     pub target: PathBuf,
 }
 
-/// A deterministic snapshot of a source tree, including regular-file content,
-/// metadata, and link targets.
+/// A deterministic snapshot of a source tree, used to notice changes between
+/// review and copy. It comes in two kinds that never compare equal.
+///
+/// Imports (`inspect`, `inspect_with`, `execute_reviewed`, Heroic planning,
+/// and runner copies) hash metadata only: path, kind, size, mode, link count,
+/// mtime, ctime, inode, and link target. A source can be a whole library, and
+/// reading every file made a large import look stuck. ctime still catches a
+/// same-size rewrite.
+///
+/// Snapshot, clone, and portable hash regular-file content plus metadata
+/// without inode or ctime. A restore renames the old prefix aside, which
+/// changes its ctime, and rollback must still recognize it. Restore markers
+/// also persist this fingerprint, so its hash must not change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceFingerprint {
     hash: u64,
@@ -171,7 +182,14 @@ pub fn inspect_with(
     mut progress: impl FnMut(ImportProgress),
 ) -> Result<Inspection> {
     let mut check = Check::new(cancel, &mut progress);
-    inspect_impl(source.as_ref(), runner, arch, true, &mut check)
+    inspect_impl(
+        source.as_ref(),
+        runner,
+        arch,
+        true,
+        FingerprintKind::Metadata,
+        &mut check,
+    )
 }
 
 pub(crate) fn inspect_root(
@@ -182,7 +200,14 @@ pub(crate) fn inspect_root(
     let cancel = Token::new();
     let mut quiet = |_| {};
     let mut check = Check::new(&cancel, &mut quiet);
-    inspect_impl(source, runner, Some(arch), false, &mut check)
+    inspect_impl(
+        source,
+        runner,
+        Some(arch),
+        false,
+        FingerprintKind::Content,
+        &mut check,
+    )
 }
 
 /// Whether a directory directly under `root` is itself a prefix. Heroic's
@@ -212,6 +237,7 @@ fn inspect_impl(
     runner: Option<&Runner>,
     arch: Option<Arch>,
     normalize: bool,
+    kind: FingerprintKind,
     check: &mut Check<'_>,
 ) -> Result<Inspection> {
     let source = canonical_source(source)?;
@@ -249,7 +275,7 @@ fn inspect_impl(
         );
     }
 
-    let (external_dependencies, fingerprint) = scan(&source_root, check)?;
+    let (external_dependencies, fingerprint) = scan(&source_root, kind, check)?;
     Ok(Inspection {
         source_root,
         wine_prefix,
@@ -416,7 +442,7 @@ pub fn execute_reviewed(
             &mut progress,
         )?;
         check_cancelled(cancel)?;
-        let after = fingerprint_walk(&source_root, &mut Check::new(cancel, &mut progress), None)?;
+        let after = import_fingerprint(&source_root, &mut Check::new(cancel, &mut progress))?;
         if after != locked.fingerprint {
             bail!(
                 "{} changed while it was being copied; try again",
@@ -437,7 +463,7 @@ pub fn execute_reviewed(
         });
     } else {
         check_cancelled(cancel)?;
-        let after = fingerprint_walk(&source_root, &mut Check::new(cancel, &mut progress), None)?;
+        let after = import_fingerprint(&source_root, &mut Check::new(cancel, &mut progress))?;
         if after != locked.fingerprint {
             bail!(
                 "{} changed while it was being reviewed; try again",
@@ -731,28 +757,134 @@ impl<'a> Check<'a> {
     }
 }
 
+/// Which fingerprint a caller compares; see `SourceFingerprint`.
+#[derive(Debug, Clone, Copy)]
+enum FingerprintKind {
+    Content,
+    Metadata,
+}
+
 /// External links and the fingerprint of `root`, found in one walk.
 fn scan(
     root: &Path,
+    kind: FingerprintKind,
     check: &mut Check<'_>,
 ) -> Result<(Vec<ExternalDependency>, SourceFingerprint)> {
     let mut found = Vec::new();
-    let fingerprint = fingerprint_walk(root, check, Some(&mut found))?;
+    let fingerprint = fingerprint_walk(root, kind, check, Some(&mut found))?;
     found.sort_by(|a, b| a.source.cmp(&b.source));
     Ok((found, fingerprint))
 }
 
+/// The content fingerprint snapshot, clone, and portable compare against.
 pub(crate) fn fingerprint(root: &Path) -> Result<SourceFingerprint> {
     let cancel = Token::new();
-    fingerprint_walk(root, &mut Check::new(&cancel, &mut |_| {}), None)
+    fingerprint_walk(
+        root,
+        FingerprintKind::Content,
+        &mut Check::new(&cancel, &mut |_| {}),
+        None,
+    )
+}
+
+fn import_fingerprint(root: &Path, check: &mut Check<'_>) -> Result<SourceFingerprint> {
+    fingerprint_walk(root, FingerprintKind::Metadata, check, None)
 }
 
 fn fingerprint_walk(
     root: &Path,
+    kind: FingerprintKind,
+    check: &mut Check<'_>,
+    external: Option<&mut Vec<ExternalDependency>>,
+) -> Result<SourceFingerprint> {
+    match kind {
+        FingerprintKind::Content => hash_records(root, check, external, content_record),
+        FingerprintKind::Metadata => hash_records(root, check, external, metadata_record),
+    }
+}
+
+type ContentRecord = (
+    String,
+    u8,
+    u64,
+    u32,
+    u64,
+    Option<(u64, u32)>,
+    Option<u64>,
+    Option<String>,
+);
+
+// This tuple must hash exactly as before, since restore markers persist it.
+fn content_record(relative: String, path: &Path, metadata: &fs::Metadata) -> Result<ContentRecord> {
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|duration| (duration.as_secs(), duration.subsec_nanos()));
+    let content = if metadata.file_type().is_file() {
+        Some(file_digest(path)?)
+    } else {
+        None
+    };
+    Ok((
+        relative,
+        file_kind(metadata),
+        metadata.len(),
+        metadata.mode(),
+        metadata.nlink(),
+        modified,
+        content,
+        link_target(path, metadata)?,
+    ))
+}
+
+type MetadataRecord = (
+    String,
+    u8,
+    u64,
+    u32,
+    u64,
+    (i64, i64),
+    (i64, i64),
+    u64,
+    Option<String>,
+);
+
+// ctime moves on every write, so a same-size rewrite still changes this.
+fn metadata_record(
+    relative: String,
+    path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<MetadataRecord> {
+    Ok((
+        relative,
+        file_kind(metadata),
+        metadata.len(),
+        metadata.mode(),
+        metadata.nlink(),
+        (metadata.mtime(), metadata.mtime_nsec()),
+        (metadata.ctime(), metadata.ctime_nsec()),
+        metadata.ino(),
+        link_target(path, metadata)?,
+    ))
+}
+
+fn link_target(path: &Path, metadata: &fs::Metadata) -> Result<Option<String>> {
+    if !metadata.file_type().is_symlink() {
+        return Ok(None);
+    }
+    let target =
+        fs::read_link(path).with_context(|| format!("failed to read link {}", path.display()))?;
+    Ok(Some(target.to_string_lossy().into_owned()))
+}
+
+fn hash_records<R: Hash>(
+    root: &Path,
     check: &mut Check<'_>,
     mut external: Option<&mut Vec<ExternalDependency>>,
+    record: impl Fn(String, &Path, &fs::Metadata) -> Result<R>,
 ) -> Result<SourceFingerprint> {
-    let mut records = Vec::new();
+    let mut records: Vec<(String, R)> = Vec::new();
     let mut entries = 0;
     walk_no_follow(root, &mut |path, metadata| {
         check.tick()?;
@@ -761,37 +893,18 @@ fn fingerprint_walk(
         {
             found.push(dependency);
         }
-        let relative = path.strip_prefix(root).unwrap_or(path);
-        let link = if metadata.file_type().is_symlink() {
-            Some(fs::read_link(path)?.to_string_lossy().into_owned())
-        } else {
-            None
-        };
-        let modified = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
-            .map(|duration| (duration.as_secs(), duration.subsec_nanos()));
-        let content = if metadata.file_type().is_file() {
-            Some(file_digest(path)?)
-        } else {
-            None
-        };
-        records.push((
-            relative.to_string_lossy().into_owned(),
-            file_kind(metadata),
-            metadata.len(),
-            metadata.mode(),
-            metadata.nlink(),
-            modified,
-            content,
-            link,
-        ));
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned();
+        records.push((relative.clone(), record(relative, path, metadata)?));
         entries += 1;
         Ok(())
     })?;
     check.finish();
     records.sort_by(|a, b| a.0.cmp(&b.0));
+    let records: Vec<R> = records.into_iter().map(|(_, record)| record).collect();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     records.hash(&mut hasher);
     Ok(SourceFingerprint {
@@ -1401,8 +1514,11 @@ pub fn inspect_runner_copy(source: impl AsRef<Path>) -> Result<RunnerCopyInspect
         );
     }
     let cancel = Token::new();
-    let (external_dependencies, fingerprint) =
-        scan(&source, &mut Check::new(&cancel, &mut |_| {}))?;
+    let (external_dependencies, fingerprint) = scan(
+        &source,
+        FingerprintKind::Metadata,
+        &mut Check::new(&cancel, &mut |_| {}),
+    )?;
     Ok(RunnerCopyInspection {
         external_dependencies,
         fingerprint,
@@ -1491,7 +1607,7 @@ fn copy_runner_with_review(
     let staging_path = staging.path().to_owned();
     copy_tree(source, &staging_path, &destination, cancel, &mut progress)?;
     check_cancelled(cancel)?;
-    if fingerprint(source)? != before {
+    if import_fingerprint(source, &mut Check::new(cancel, &mut |_| {}))? != before {
         bail!(
             "runner {} changed while it was being copied; try again",
             source.display()
@@ -1926,6 +2042,51 @@ mod tests {
         assert_eq!(
             inspection.external_dependencies[0].target,
             Path::new("/mnt/games")
+        );
+    }
+
+    #[test]
+    fn import_fingerprint_sees_a_same_size_rewrite_without_reading_content() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        prefix(&source, "win64");
+        let file = source.join("drive_c/save.dat");
+        fs::write(&file, "aaaa").unwrap();
+        let cancel = Token::new();
+        let fingerprint = || import_fingerprint(&source, &mut Check::new(&cancel, &mut |_| {}));
+        let before = fingerprint().unwrap();
+        assert_eq!(fingerprint().unwrap(), before);
+
+        // Coarse kernel timestamps could otherwise give the rewrite the same ctime.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let metadata = fs::metadata(&file).unwrap();
+        fs::write(&file, "bbbb").unwrap();
+        filetime::set_file_mtime(
+            &file,
+            filetime::FileTime::from_last_modification_time(&metadata),
+        )
+        .unwrap();
+        let after = fs::metadata(&file).unwrap();
+        assert_eq!(after.len(), metadata.len());
+        assert_eq!(after.mtime_nsec(), metadata.mtime_nsec());
+        assert_ne!(fingerprint().unwrap(), before);
+    }
+
+    #[test]
+    fn content_fingerprint_of_a_copy_matches_the_original() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        prefix(&source, "win64");
+        fs::write(source.join("drive_c/game.exe"), "game").unwrap();
+        let copy = root.path().join("copy");
+        copy_tree(&source, &copy, &copy, &Token::new(), &mut |_| {}).unwrap();
+        assert_eq!(fingerprint(&copy).unwrap(), fingerprint(&source).unwrap());
+
+        let cancel = Token::new();
+        let mut quiet = |_| {};
+        assert_ne!(
+            import_fingerprint(&copy, &mut Check::new(&cancel, &mut quiet)).unwrap(),
+            import_fingerprint(&source, &mut Check::new(&cancel, &mut quiet)).unwrap()
         );
     }
 
