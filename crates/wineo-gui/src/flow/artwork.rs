@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use iced::widget::{button, checkbox, column, container, image, pick_list, row, text, text_input};
 use iced::{ContentFit, Element, Task, border};
@@ -27,6 +28,11 @@ pub(crate) enum Event {
     Search,
     Searched(u64, Result<Vec<Game>, String>),
     Game(Match),
+    Fetched(
+        Kind,
+        u64,
+        Result<Option<(Arc<art::Downloaded>, image::Handle)>, String>,
+    ),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,9 +58,19 @@ struct Local {
 }
 
 #[derive(Clone, Default)]
+struct Remote {
+    image: Option<Arc<art::Downloaded>>,
+    preview: Option<image::Handle>,
+    loading: bool,
+    error: Option<String>,
+    none_found: bool,
+}
+
+#[derive(Clone, Default)]
 pub(crate) struct Draft {
     paths: Option<Paths>,
     local: BTreeMap<Kind, Local>,
+    remote: BTreeMap<Kind, Remote>,
     fetch: bool,
     kinds: Vec<Kind>,
     key_available: bool,
@@ -64,6 +80,7 @@ pub(crate) struct Draft {
     matches: Vec<Match>,
     selected: Option<Match>,
     sequence: u64,
+    fetch_sequence: u64,
     error: Option<String>,
     configuration_sequence: u64,
     manual_entry: bool,
@@ -83,6 +100,7 @@ impl Draft {
 
     pub(crate) fn set_title(&mut self, title: &str) -> Task<Event> {
         if !self.search_edited && self.search != title {
+            self.clear_fetched();
             self.search = title.to_owned();
             self.sequence = self.sequence.wrapping_add(1);
             self.searching = false;
@@ -186,14 +204,24 @@ impl Draft {
                     Ok((kinds, available)) => {
                         self.kinds = kinds.kinds();
                         self.key_available = available;
+                        if self.fetch && (!available || self.kinds.is_empty()) {
+                            self.fetch = false;
+                            self.clear_fetched();
+                            return Task::none();
+                        }
+                        self.remote.retain(|kind, _| self.kinds.contains(kind));
+                        return self.start_fetches();
                     }
                     Err(error) => self.error = Some(error),
                 }
             }
             Event::Fetch(fetch) => {
-                self.fetch = fetch && self.key_available && !self.kinds.is_empty()
+                self.fetch = fetch && self.key_available && !self.kinds.is_empty();
+                self.clear_fetched();
+                return self.start_fetches();
             }
             Event::SearchText(value) => {
+                self.clear_fetched();
                 self.search = value;
                 self.search_edited = true;
                 self.sequence = self.sequence.wrapping_add(1);
@@ -225,20 +253,93 @@ impl Draft {
                 self.searching = false;
                 match result {
                     Ok(games) => {
+                        self.clear_fetched();
                         self.matches = games.into_iter().map(Match).collect();
                         self.selected = self.matches.first().cloned();
                         self.error = self
                             .matches
                             .is_empty()
                             .then(|| "No matches found".to_owned());
+                        return self.start_fetches();
                     }
                     Err(error) => self.error = Some(error),
                 }
             }
-            Event::Game(game) => self.selected = Some(game),
+            Event::Game(game) => {
+                self.clear_fetched();
+                self.selected = Some(game);
+                return self.start_fetches();
+            }
+            Event::Fetched(kind, sequence, result) if sequence == self.fetch_sequence => {
+                if let Some(remote) = self.remote.get_mut(&kind) {
+                    remote.loading = false;
+                    match result {
+                        Ok(Some((image, preview))) => {
+                            remote.image = Some(image);
+                            remote.preview = Some(preview);
+                        }
+                        Ok(None) => remote.none_found = true,
+                        Err(error) => remote.error = Some(error),
+                    }
+                }
+            }
             _ => {}
         }
         Task::none()
+    }
+
+    fn clear_fetched(&mut self) {
+        self.fetch_sequence = self.fetch_sequence.wrapping_add(1);
+        self.remote.clear();
+    }
+
+    fn start_fetches(&mut self) -> Task<Event> {
+        if !self.fetch {
+            return Task::none();
+        }
+        let (Some(paths), Some(game)) = (self.paths.clone(), self.selected.clone()) else {
+            return Task::none();
+        };
+        let sequence = self.fetch_sequence;
+        let missing: Vec<_> = self
+            .kinds
+            .iter()
+            .copied()
+            .filter(|kind| !self.remote.contains_key(kind))
+            .collect();
+        Task::batch(missing.into_iter().map(|kind| {
+            self.remote.insert(
+                kind,
+                Remote {
+                    loading: true,
+                    ..Remote::default()
+                },
+            );
+            let paths = paths.clone();
+            let game = game.clone();
+            Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || fetch_preview(&paths, game.0.id, kind))
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                move |result| Event::Fetched(kind, sequence, result),
+            )
+        }))
+    }
+
+    fn art_preview(&self, kind: Kind) -> Option<(&image::Handle, bool)> {
+        let local = self.local.get(&kind);
+        if local.is_some_and(|local| !local.path.is_empty()) {
+            local
+                .and_then(|local| local.preview.as_ref())
+                .map(|preview| (preview, false))
+        } else {
+            self.remote
+                .get(&kind)
+                .and_then(|remote| remote.preview.as_ref())
+                .map(|preview| (preview, true))
+        }
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
@@ -254,6 +355,15 @@ impl Draft {
         }
         if self.fetch && self.selected.is_none() {
             return Err("Search SteamGridDB and choose a match, or turn fetching off".to_owned());
+        }
+        if self.remote.iter().any(|(kind, remote)| {
+            remote.loading
+                && self
+                    .local
+                    .get(kind)
+                    .is_none_or(|local| local.path.is_empty())
+        }) {
+            return Err("Fetching artwork...".to_owned());
         }
         Ok(())
     }
@@ -285,13 +395,39 @@ impl Draft {
                         .is_none_or(|local| local.path.is_empty())
                 })
                 .collect();
-            match if kinds.is_empty() {
-                Ok(Vec::new())
-            } else {
-                fetch(paths, name, &game.0, kinds.into_iter())
-            } {
-                Ok(fetched) => notes.extend(fetched),
-                Err(error) => failures.push(format!("Art fetching failed: {error}")),
+            if !kinds.is_empty() {
+                if let Err(error) = art::save_game(paths, name, game.0.id) {
+                    failures.push(format!("Art fetching failed: {error}"));
+                } else {
+                    let mut missing = Vec::new();
+                    for kind in kinds {
+                        if let Some(image) = self
+                            .remote
+                            .get(&kind)
+                            .and_then(|remote| remote.image.as_ref())
+                        {
+                            if let Err(error) =
+                                art_fetch::publish(paths, name, None, kind, image, Mode::Fill)
+                            {
+                                failures.push(format!("Could not fetch {kind}: {error}"));
+                            }
+                        } else if self
+                            .remote
+                            .get(&kind)
+                            .is_some_and(|remote| remote.none_found)
+                        {
+                            notes.push(format!("No {kind} artwork found for {}", game.0.name));
+                        } else {
+                            missing.push(kind);
+                        }
+                    }
+                    if !missing.is_empty() {
+                        match fetch(paths, name, &game.0, missing.into_iter()) {
+                            Ok(fetched) => notes.extend(fetched),
+                            Err(error) => failures.push(format!("Art fetching failed: {error}")),
+                        }
+                    }
+                }
             }
         }
         if failures.is_empty() {
@@ -393,8 +529,8 @@ impl Draft {
     ) -> Element<'a, Event> {
         let local = self.local.get(&kind);
         let selected = local.is_some_and(|local| !local.path.is_empty());
-        let picture: Element<'_, Event> = match local.and_then(|local| local.preview.as_ref()) {
-            Some(handle) => image(handle.clone())
+        let picture: Element<'_, Event> = match self.art_preview(kind) {
+            Some((handle, _)) => image(handle.clone())
                 .width(width - 16)
                 .height(height - 16)
                 .content_fit(ContentFit::Contain)
@@ -445,6 +581,25 @@ impl Draft {
                 tile = tile.push(button("Remove").on_press(Event::Clear(kind)).padding(2));
             }
         }
+        if !selected
+            && self.fetch
+            && self.kinds.contains(&kind)
+            && let Some(remote) = self.remote.get(&kind)
+        {
+            if remote.loading {
+                tile = tile.push(text("Fetching...").size(11).color(palette.muted));
+            } else if let Some(error) = &remote.error {
+                tile = tile.push(text(error).size(11).color(palette.danger));
+            } else if remote.none_found {
+                tile = tile.push(
+                    text(format!("No {kind} artwork found"))
+                        .size(11)
+                        .color(palette.muted),
+                );
+            } else if remote.preview.is_some() {
+                tile = tile.push(text("From SteamGridDB").size(11).color(palette.muted));
+            }
+        }
         tile.into()
     }
 }
@@ -467,11 +622,15 @@ fn preview(path: &Path, kind: Kind) -> Result<image::Handle, String> {
     if bytes.len() as u64 > art::MAX_BYTES {
         return Err("Artwork exceeds 32 MiB".to_owned());
     }
-    let format = art::detect(&bytes)
+    preview_bytes(&bytes, kind)
+}
+
+fn preview_bytes(bytes: &[u8], kind: Kind) -> Result<image::Handle, String> {
+    let format = art::detect(bytes)
         .filter(|format| kind.accepts(*format))
         .ok_or_else(|| format!("Unsupported image format for {kind}"))?;
     if format == art::Format::Svg {
-        let tree = resvg::usvg::Tree::from_data(&bytes, &resvg::usvg::Options::default())
+        let tree = resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default())
             .map_err(|e| e.to_string())?;
         let size = tree.size();
         let scale = (160.0 / size.width()).min(100.0 / size.height()).min(1.0);
@@ -496,7 +655,7 @@ fn preview(path: &Path, kind: Kind) -> Result<image::Handle, String> {
         }
         Ok(image::Handle::from_rgba(width, height, rgba))
     } else {
-        let decoded = ::image::load_from_memory(&bytes)
+        let decoded = ::image::load_from_memory(bytes)
             .map_err(|e| e.to_string())?
             .thumbnail(160, 100)
             .into_rgba8();
@@ -506,6 +665,29 @@ fn preview(path: &Path, kind: Kind) -> Result<image::Handle, String> {
             decoded.into_raw(),
         ))
     }
+}
+
+fn fetch_preview(
+    paths: &Paths,
+    game: u64,
+    kind: Kind,
+) -> Result<Option<(Arc<art::Downloaded>, image::Handle)>, String> {
+    let key = steamgriddb::require_key(
+        paths,
+        |key| std::env::var_os(key),
+        &SecretServiceKeyring::steamgriddb(),
+    )
+    .map_err(|e| e.to_string())?;
+    let https = Https::new().map_err(|e| e.to_string())?;
+    let api = Api::new(&https, &key.value);
+    let language = steamgriddb::language(|key| std::env::var_os(key));
+    art_fetch::choose(&api, game, kind, &language)
+        .map_err(|e| e.to_string())?
+        .map(|downloaded| {
+            let preview = preview_bytes(&downloaded.bytes, kind)?;
+            Ok((Arc::new(downloaded), preview))
+        })
+        .transpose()
 }
 
 fn search(paths: &Paths, term: &str) -> Result<Vec<Game>, String> {
@@ -589,6 +771,111 @@ mod tests {
         let _ = draft.update(Event::Configured(1, Ok((ArtFetch::default(), true))));
         assert!(draft.key_available);
         assert!(!draft.kinds.is_empty());
+    }
+
+    #[test]
+    fn edited_search_keeps_selected_match_and_preview_when_title_changes() {
+        let mut draft = Draft::new();
+        draft.search = "Chosen match".to_owned();
+        draft.search_edited = true;
+        draft.selected = Some(Match(Game {
+            id: 7,
+            name: "Chosen match".to_owned(),
+            year: None,
+        }));
+        draft.remote.insert(
+            Kind::Icon,
+            Remote {
+                preview: Some(image::Handle::from_rgba(1, 1, vec![0; 4])),
+                ..Remote::default()
+            },
+        );
+        let sequence = draft.fetch_sequence;
+        let _ = draft.set_title("Renamed environment");
+        assert_eq!(draft.selected.as_ref().unwrap().0.id, 7);
+        assert!(draft.remote[&Kind::Icon].preview.is_some());
+        assert_eq!(draft.fetch_sequence, sequence);
+    }
+
+    #[test]
+    fn failed_search_keeps_selected_match_and_preview() {
+        let root = tempfile::tempdir().unwrap();
+        let mut draft = Draft::new();
+        draft.paths = Some(paths(root.path()));
+        draft.key_available = true;
+        draft.search = "game".to_owned();
+        draft.selected = Some(Match(Game {
+            id: 7,
+            name: "game".to_owned(),
+            year: None,
+        }));
+        draft.remote.insert(
+            Kind::Icon,
+            Remote {
+                preview: Some(image::Handle::from_rgba(1, 1, vec![0; 4])),
+                ..Remote::default()
+            },
+        );
+        let sequence = draft.fetch_sequence;
+        let _ = draft.update(Event::Search);
+        assert!(draft.searching);
+        assert_eq!(draft.fetch_sequence, sequence);
+        let _ = draft.update(Event::Searched(draft.sequence, Err("offline".to_owned())));
+        assert_eq!(draft.selected.as_ref().unwrap().0.id, 7);
+        assert!(draft.remote[&Kind::Icon].preview.is_some());
+        assert_eq!(draft.fetch_sequence, sequence);
+    }
+
+    #[test]
+    fn reconfiguring_keeps_loaded_previews_and_fetches_only_added_kinds() {
+        let root = tempfile::tempdir().unwrap();
+        let mut draft = Draft::new();
+        draft.paths = Some(paths(root.path()));
+        draft.fetch = true;
+        draft.kinds = vec![Kind::Icon];
+        draft.key_available = true;
+        draft.selected = Some(Match(Game {
+            id: 7,
+            name: "game".to_owned(),
+            year: None,
+        }));
+        let image = Arc::new(art::Downloaded {
+            asset: 42,
+            bytes: vec![1],
+            format: art::Format::Png,
+        });
+        draft.remote.insert(
+            Kind::Icon,
+            Remote {
+                image: Some(image.clone()),
+                preview: Some(image::Handle::from_rgba(1, 1, vec![0; 4])),
+                ..Remote::default()
+            },
+        );
+        draft.configuration_sequence = 1;
+        let sequence = draft.fetch_sequence;
+        let _ = draft.update(Event::Configured(1, Ok((ArtFetch::Icon, true))));
+        assert_eq!(draft.remote.len(), 1);
+        assert!(Arc::ptr_eq(
+            draft.remote[&Kind::Icon].image.as_ref().unwrap(),
+            &image
+        ));
+        assert!(draft.remote[&Kind::Icon].preview.is_some());
+        assert_eq!(draft.fetch_sequence, sequence);
+
+        draft.configuration_sequence = 2;
+        let _ = draft.update(Event::Configured(
+            2,
+            Ok((ArtFetch::Selected([true, true, false, false]), true)),
+        ));
+        assert_eq!(draft.remote.len(), 2);
+        assert!(Arc::ptr_eq(
+            draft.remote[&Kind::Icon].image.as_ref().unwrap(),
+            &image
+        ));
+        assert!(!draft.remote[&Kind::Icon].loading);
+        assert!(draft.remote[&Kind::Grid].loading);
+        assert_eq!(draft.fetch_sequence, sequence);
     }
 
     fn paths(root: &Path) -> Paths {
@@ -721,5 +1008,187 @@ mod tests {
         );
         assert!(draft.apply(&paths, "game").is_err());
         assert!(Environment::load(&paths, "game").is_ok());
+    }
+
+    #[test]
+    fn stale_fetched_art_is_ignored_after_match_change() {
+        let root = tempfile::tempdir().unwrap();
+        let mut draft = Draft::new();
+        draft.paths = Some(paths(root.path()));
+        draft.fetch = true;
+        draft.kinds = vec![Kind::Grid];
+        draft.selected = Some(Match(Game {
+            id: 1,
+            name: "Old".into(),
+            year: None,
+        }));
+        draft.remote.insert(
+            Kind::Grid,
+            Remote {
+                loading: true,
+                ..Remote::default()
+            },
+        );
+        let old_sequence = draft.fetch_sequence;
+        let _ = draft.update(Event::Game(Match(Game {
+            id: 2,
+            name: "New".into(),
+            year: None,
+        })));
+        let image = Arc::new(art::Downloaded {
+            asset: 1,
+            bytes: vec![1],
+            format: art::Format::Png,
+        });
+        let handle = image::Handle::from_rgba(1, 1, vec![0; 4]);
+        let _ = draft.update(Event::Fetched(
+            Kind::Grid,
+            old_sequence,
+            Ok(Some((image, handle))),
+        ));
+        assert!(draft.remote[&Kind::Grid].loading);
+        assert!(draft.remote[&Kind::Grid].image.is_none());
+    }
+
+    #[test]
+    fn current_fetched_result_stores_image_and_preview() {
+        let mut draft = Draft::new();
+        draft.remote.insert(
+            Kind::Grid,
+            Remote {
+                loading: true,
+                ..Remote::default()
+            },
+        );
+        let downloaded = Arc::new(art::Downloaded {
+            asset: 42,
+            bytes: vec![1],
+            format: art::Format::Png,
+        });
+        let preview = image::Handle::from_rgba(1, 1, vec![0; 4]);
+        let _ = draft.update(Event::Fetched(
+            Kind::Grid,
+            draft.fetch_sequence,
+            Ok(Some((downloaded.clone(), preview))),
+        ));
+        assert!(!draft.remote[&Kind::Grid].loading);
+        assert!(Arc::ptr_eq(
+            draft.remote[&Kind::Grid].image.as_ref().unwrap(),
+            &downloaded
+        ));
+        assert!(draft.remote[&Kind::Grid].preview.is_some());
+    }
+
+    #[test]
+    fn none_found_preview_skips_fetch_and_reports_note() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        Environment::create_native(&paths, &GlobalConfig::default(), "game", None, false).unwrap();
+        let mut draft = Draft::new();
+        draft.fetch = true;
+        draft.kinds = vec![Kind::Grid];
+        draft.selected = Some(Match(Game {
+            id: 7,
+            name: "game".to_owned(),
+            year: None,
+        }));
+        draft.remote.insert(
+            Kind::Grid,
+            Remote {
+                loading: true,
+                ..Remote::default()
+            },
+        );
+        let _ = draft.update(Event::Fetched(Kind::Grid, draft.fetch_sequence, Ok(None)));
+        assert!(draft.remote[&Kind::Grid].none_found);
+        assert!(!draft.remote[&Kind::Grid].loading);
+        assert_eq!(
+            draft.apply(&paths, "game").unwrap(),
+            vec!["No grid artwork found for game"]
+        );
+    }
+
+    #[test]
+    fn local_selection_allows_validation_while_remote_is_loading() {
+        let mut draft = Draft::new();
+        draft.remote.insert(
+            Kind::Grid,
+            Remote {
+                loading: true,
+                ..Remote::default()
+            },
+        );
+        draft.local.insert(
+            Kind::Grid,
+            Local {
+                path: "/grid.png".to_owned(),
+                ..Local::default()
+            },
+        );
+        assert!(draft.validate().is_ok());
+    }
+
+    #[test]
+    fn local_selection_wins_over_fetched_preview() {
+        let mut draft = Draft::new();
+        let local_preview = image::Handle::from_rgba(1, 1, vec![0; 4]);
+        draft.local.insert(
+            Kind::Icon,
+            Local {
+                path: "/icon.png".into(),
+                preview: Some(local_preview),
+                ..Local::default()
+            },
+        );
+        draft.remote.insert(
+            Kind::Icon,
+            Remote {
+                preview: Some(image::Handle::from_rgba(1, 1, vec![255; 4])),
+                ..Remote::default()
+            },
+        );
+        let (shown, fetched) = draft.art_preview(Kind::Icon).unwrap();
+        assert!(!fetched);
+        assert!(std::ptr::eq(
+            shown,
+            draft.local[&Kind::Icon].preview.as_ref().unwrap()
+        ));
+    }
+
+    #[test]
+    fn apply_stores_held_art_without_a_request() {
+        const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        Environment::create_native(&paths, &GlobalConfig::default(), "game", None, false).unwrap();
+        let mut draft = Draft::new();
+        draft.fetch = true;
+        draft.kinds = vec![Kind::Grid];
+        draft.selected = Some(Match(Game {
+            id: 7,
+            name: "game".into(),
+            year: None,
+        }));
+        draft.remote.insert(
+            Kind::Grid,
+            Remote {
+                image: Some(Arc::new(art::Downloaded {
+                    asset: 42,
+                    bytes: PNG.to_vec(),
+                    format: art::Format::Png,
+                })),
+                ..Remote::default()
+            },
+        );
+        assert!(draft.apply(&paths, "game").unwrap().is_empty());
+        assert_eq!(
+            std::fs::read(paths.art_dir("game").join("grid.png")).unwrap(),
+            PNG
+        );
+        assert_eq!(art::saved_game(&paths, "game").unwrap(), Some(7));
+        assert_eq!(
+            art::ArtConfig::load(&paths.art_dir("game")).unwrap().kinds[&Kind::Grid].source,
+            art::Source::SteamGridDb(42)
+        );
     }
 }
