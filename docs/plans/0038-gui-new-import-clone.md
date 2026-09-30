@@ -61,6 +61,17 @@ The maintainer approved these changes during acceptance testing:
   its entries packages.
 - Library launches that install winetricks packages show which one is
   installing ("2 of 3") and offer the install log live while it runs.
+- Heroic review opens at the top and shows only the anti-cheat note (once),
+  blocking findings, and the shared prefix note when adopting in place.
+  Import, runner copy, and download progress read as sentences with file
+  counts, throttled to 100 ms, and batch statuses lead with "(2 of 5)". Skip
+  reasons and desktop entry notes are sentences too.
+- Import sources are fingerprinted by metadata instead of content, with
+  progress and cancel while checking (`ImportProgress::Checking`). Snapshot,
+  clone, and portable keep the content fingerprint, since restore markers
+  persist it and a rename changes the moved folder's ctime. A folder holding
+  other prefixes is refused everywhere. A Heroic runner wineo already copied
+  is recognized from its receipt instead of offered for copying again.
 
 These refinements supersede the full-page and visible-art-path details below.
 The implementation keeps SteamGridDB requests explicit; entering a name
