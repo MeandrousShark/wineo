@@ -111,6 +111,15 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   lock, so keep it alive through an installer that runs right after.
   An optional `expected_adopted` checks the reviewed build/adopt decision
   under that lock and refuses a changed destination before writing.
+  `target_name` gives the default target a display name, which becomes its
+  desktop entry's `Name=`; `Environment::create_native_titled` does the same
+  for native games.
+- `name::from_title(title)`: derives a valid environment name from a game
+  title, capped at `name::TITLE_MAX` bytes. It can return an empty string
+  for titles with no letters or digits, so a frontend still validates it.
+- `art::set_manual_as(paths, env, target, kind, file, original)`: stores a
+  file as manual art but records `original` as its source name, for art
+  that came from somewhere other than a file the person picked.
 - `settings::check(paths, global, name, pairs, unset)`: the rules `wineo set`
   enforces, run before `settings::update` writes. It returns the component
   changes it applied.
@@ -182,7 +191,16 @@ desktop entry to support an editable GUI review.
 
 A whole library, for `--all`:
 
-- `sources` and `listing` find Heroic's configs and list every game.
+- `sources` and `listing` find Heroic's configs and list every game. Each
+  `HeroicCandidate` carries `poster`, Heroic's cached copy of the game's
+  poster when it exists (`HeroicSource::cached_image(url)` resolves the
+  cache path). Listing never touches the network.
+- `plan_selection(paths, global, &listing, &selected, runner, &options)` plans
+  only the chosen games; unchosen ones still count for shared-prefix
+  warnings.
+- `store_poster(paths, env, app, poster)` stores a Heroic poster as Grid art
+  named `heroic-<app>.<ext>`. It checks only the file signature, so callers
+  must pass a poster they already decoded.
 - `plan_library(paths, global, &listing, runner, &options) -> LibraryPlan`
   sorts each game into ready, pending a build download, skipped with a
   `SkipReason`, or already imported.
