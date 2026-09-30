@@ -322,8 +322,11 @@ mod tests {
         let copy = root.path().join("prefixes/alpha");
         assert_eq!(registered.destination(), Some(copy.as_path()));
         assert!(copy.join("system.reg").is_file());
+        // Source checks report before the copy starts.
         assert!(matches!(
-            events.first(),
+            events
+                .iter()
+                .find(|event| !matches!(event, ImportProgress::Checking { .. })),
             Some(ImportProgress::Started { .. })
         ));
         assert!(matches!(
