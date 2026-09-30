@@ -13,7 +13,7 @@ wineo-core.workspace = true
 anyhow.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
-iced = { version = "0.14", features = ["image", "svg", "tokio", "advanced"] }
+iced = { version = "0.14", features = ["image-without-codecs", "svg", "tokio", "advanced"] }
 image = { workspace = true, features = ["webp"] }
 resvg = "0.45"
 tokio = { version = "1", features = ["rt", "sync"] }

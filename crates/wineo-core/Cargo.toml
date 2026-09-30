@@ -13,7 +13,6 @@ image.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-shell-words.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 xz2.workspace = true
@@ -25,9 +24,6 @@ signal-hook.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
 
 [lints]
 workspace = true
