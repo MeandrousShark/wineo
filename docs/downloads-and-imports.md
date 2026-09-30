@@ -62,6 +62,14 @@ External game folders, linked saves, and other external data stay where they
 are. Review lists those dependencies. Stop applications using the source before
 importing; a copy is not a live snapshot.
 
+Import checks that the source hasn't changed since review, before and after
+the copy. The check compares file metadata (size, times, inode, links), not
+contents, so it stays fast on large prefixes; touching a file between review
+and import is enough to ask for a fresh review. A folder whose subfolders are
+themselves prefixes, like Heroic's `Prefixes/default`, is refused: choose the
+game's own prefix instead. Clone, snapshot, and portable copy refuse such a
+folder too.
+
 Fully specified imports register the prefix without prompting. Guided imports
 offer target setup afterward, which can be skipped or revisited:
 

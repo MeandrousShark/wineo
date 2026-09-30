@@ -106,7 +106,12 @@ dimmed with the reason under the title. **Import 1 game** opens an editable
 review; importing several opens a batch review with per-game results. A
 game's Heroic poster becomes its grid art, shown as a prefilled pick marked
 **From Heroic** in the single review, where **Remove** lets SteamGridDB fill
-it instead. Imports and clones do not launch automatically.
+it instead. The review opens at the top and only calls out anti-cheat that
+won't be imported, anything that blocks the import, and other games sharing
+the prefix when it's used in place. While importing, the status names the
+game and its phase, such as checking or copying the prefix with a file count,
+with "(2 of 5)" in front during a batch. Imports and clones do not launch
+automatically.
 
 New and import flows show clickable poster, icon, hero, and logo previews.
 New environment previews the game's page: the hero is a banner across the
