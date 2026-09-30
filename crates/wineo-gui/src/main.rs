@@ -57,6 +57,8 @@ pub(crate) struct App {
     current_art: HashMap<PathBuf, ArtIdentity>,
     error: Option<String>,
     refreshing: bool,
+    /// The first library load has answered, so an empty library is real.
+    loaded: bool,
     viewport_width: f32,
     viewport_height: f32,
     scroll_offset: f32,
@@ -180,6 +182,7 @@ impl App {
             current_art: HashMap::new(),
             error: None,
             refreshing: true,
+            loaded: false,
             viewport_width: 1200.0,
             viewport_height: 750.0,
             scroll_offset: 0.0,
@@ -468,11 +471,13 @@ impl App {
             }
             Message::Loaded(Ok(cards)) => {
                 self.refreshing = false;
+                self.loaded = true;
                 self.merge(cards);
                 Task::batch([self.load_visible_art(), self.load_panel_art()])
             }
             Message::Loaded(Err(error)) => {
                 self.refreshing = false;
+                self.loaded = true;
                 self.error = Some(error);
                 Task::none()
             }
@@ -1035,6 +1040,17 @@ mod tests {
     #[test]
     fn app_icon_renders_from_embedded_svg() {
         assert!(app_icon().is_some());
+    }
+
+    #[test]
+    fn an_empty_library_stays_shown_through_background_refreshes() {
+        let mut app = app();
+        assert!(!app.loaded, "nothing claims empty before the first load");
+        let _ = app.update(Message::Loaded(Ok(Vec::new())));
+        assert!(app.loaded);
+        let _ = app.update(Message::Refresh);
+        assert!(app.refreshing);
+        assert!(app.loaded, "a refresh must not hide the empty state");
     }
 
     #[test]

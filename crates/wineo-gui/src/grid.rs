@@ -240,7 +240,9 @@ impl App {
                     .padding(16),
             );
         }
-        if self.cards.is_empty() && !self.refreshing {
+        // Not `refreshing`, which flips every background refresh and made the
+        // empty state blink.
+        if self.cards.is_empty() && self.loaded {
             page = page.push(
                 container(
                     column![
