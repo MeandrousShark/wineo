@@ -112,7 +112,8 @@ struct LineTail {
     discarding: bool,
 }
 
-/// A line longer than this is dropped rather than held forever.
+/// A line longer than this many bytes, not counting its newline, is dropped
+/// rather than held forever.
 const LINE_CAP: usize = 64 * 1024;
 
 impl LineTail {
@@ -134,8 +135,10 @@ impl LineTail {
             self.pending.extend_from_slice(&buf[..read]);
             while let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
                 let line: Vec<u8> = self.pending.drain(..=end).collect();
-                // The rest of an oversized line is not a line of its own.
-                if std::mem::take(&mut self.discarding) {
+                // The rest of an oversized line is not a line of its own, and a
+                // line that only became complete after passing the cap is
+                // dropped like one that overflowed while waiting.
+                if std::mem::take(&mut self.discarding) || end > LINE_CAP {
                     continue;
                 }
                 events(WinetricksEvent::OutputLine(
@@ -1020,6 +1023,64 @@ mod tests {
         )
         .unwrap();
         assert_eq!(seen, ["started"]);
+    }
+
+    /// Feeds `chunks` to a tail one read at a time and returns the lines.
+    fn pump_chunks(chunks: &[&[u8]]) -> Vec<String> {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("install.log");
+        fs::write(&path, "").unwrap();
+        let mut tail = LineTail::open(&path).unwrap();
+        let mut writer = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut lines = Vec::new();
+        for chunk in chunks {
+            io::Write::write_all(&mut writer, chunk).unwrap();
+            tail.pump(&mut |event| {
+                if let WinetricksEvent::OutputLine(line) = event {
+                    lines.push(line);
+                }
+            });
+        }
+        lines
+    }
+
+    #[test]
+    fn a_line_of_exactly_the_cap_is_kept() {
+        let line = "x".repeat(LINE_CAP);
+        assert_eq!(
+            pump_chunks(&[line.as_bytes(), b"\n", b"next\n"]),
+            [line.as_str(), "next"]
+        );
+        assert_eq!(
+            pump_chunks(&[format!("{line}\nnext\n").as_bytes()]),
+            [line.as_str(), "next"]
+        );
+    }
+
+    #[test]
+    fn a_line_one_over_the_cap_is_dropped_even_if_its_newline_comes_later() {
+        let line = "x".repeat(LINE_CAP + 1);
+        assert_eq!(
+            pump_chunks(&[line.as_bytes(), b"\n", b"Executing w_do_call gdiplus\n"]),
+            ["Executing w_do_call gdiplus"]
+        );
+        assert_eq!(
+            pump_chunks(&[format!("{line}\nnext\n").as_bytes()]),
+            ["next"]
+        );
+    }
+
+    #[test]
+    fn carriage_returns_stay_in_the_line_and_progress_ignores_them() {
+        // Lines are raw apart from the newline, so a CRLF split across reads
+        // arrives as one line ending in the carriage return.
+        let lines = pump_chunks(&[b"abc\r", b"\n", b"Executing w_do_call gdiplus\r\n"]);
+        assert_eq!(lines, ["abc\r", "Executing w_do_call gdiplus\r"]);
+        let mut progress = Progress::new(&verbs(&["gdiplus"]));
+        assert_eq!(
+            lines.iter().find_map(|line| progress.observe(line)),
+            Some(step("gdiplus", 1, 1))
+        );
     }
 
     #[test]
