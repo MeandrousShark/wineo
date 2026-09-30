@@ -82,7 +82,12 @@ impl LogBuffer {
         if self.pending.len() > PENDING_CAP {
             // The cut lands inside the partial line, which the view cannot
             // mirror as a front trim.
-            self.pending.drain(..self.pending.len() - PENDING_CAP);
+            let mut start = self.pending.len() - PENDING_CAP;
+            // Output is arbitrary UTF-8, and draining mid-character panics.
+            while !self.pending.is_char_boundary(start) {
+                start += 1;
+            }
+            self.pending.drain(..start);
             self.view.resync(&Self::render(&self.lines, &self.pending))
         } else {
             self.view.push(&chunk, &dropped, || {
@@ -734,6 +739,15 @@ mod tests {
         let mut buffer = LogBuffer::default();
         let _ = buffer.push("head\n");
         let _ = buffer.push(&"x".repeat(PENDING_CAP + 10));
+        assert_eq!(buffer.view().content().text(), buffer.display());
+    }
+
+    #[test]
+    fn oversized_multibyte_partial_line_trims_on_a_char_boundary() {
+        let mut buffer = LogBuffer::default();
+        // Three-byte characters make the byte cut land mid-character.
+        let _ = buffer.push(&"\u{3042}".repeat(PENDING_CAP / 3 + 7));
+        assert!(buffer.display().len() <= PENDING_CAP);
         assert_eq!(buffer.view().content().text(), buffer.display());
     }
 }
