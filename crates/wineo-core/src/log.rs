@@ -302,6 +302,17 @@ impl Tail {
         writer: &mut impl Write,
         token: &Token,
     ) -> anyhow::Result<()> {
+        self.follow_until(writer, token, |file| run_is_over(runtime, path, file))
+    }
+
+    /// Like `follow`, for a log with no run behind it: `over` says when the
+    /// writer is done. It gets the same last read afterwards as a run's end does.
+    pub fn follow_until(
+        &mut self,
+        writer: &mut impl Write,
+        token: &Token,
+        mut over: impl FnMut(&File) -> anyhow::Result<bool>,
+    ) -> anyhow::Result<()> {
         loop {
             if token.is_canceled() {
                 return Ok(());
@@ -310,8 +321,8 @@ impl Tail {
             if token.is_canceled() || !self.stream(writer)? {
                 return Ok(());
             }
-            if run_is_over(runtime, path, &self.file)? {
-                // Whatever was written between the last read and the run ending.
+            if over(&self.file)? {
+                // Whatever was written between the last read and the end.
                 self.stream(writer)?;
                 return Ok(());
             }
@@ -519,6 +530,26 @@ mod tests {
         drop(cap);
         assert_eq!(count(&log), 2, "the final check was skipped");
         assert!(!contents(&log).contains('x'));
+    }
+
+    #[test]
+    fn follow_until_reads_what_arrives_before_the_end() {
+        let root = tempfile::tempdir().unwrap();
+        let (log, file) = session(root.path());
+        let mut writer = &file;
+        writer.write_all(b"first\n").unwrap();
+        let mut tail = Tail::new(File::open(log.path()).unwrap(), None);
+        let mut out = Vec::new();
+        let mut checks = 0;
+        tail.follow_until(&mut out, &Token::new(), |_| {
+            checks += 1;
+            if checks == 1 {
+                writer.write_all(b"last\n").unwrap();
+            }
+            Ok(checks == 2)
+        })
+        .unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "first\nlast\n");
     }
 
     #[test]

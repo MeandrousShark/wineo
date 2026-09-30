@@ -20,7 +20,9 @@ pub fn print_event(event: WinetricksEvent) {
         }
         WinetricksEvent::Killing => eprintln!("Killing everything left in the prefix"),
         WinetricksEvent::Warning(warning) => eprintln!("warning: {warning}"),
-        WinetricksEvent::OutputLine(_) | WinetricksEvent::Done(_) => {}
+        WinetricksEvent::OutputLine(_)
+        | WinetricksEvent::Progress(_)
+        | WinetricksEvent::Done(_) => {}
     }
 }
 

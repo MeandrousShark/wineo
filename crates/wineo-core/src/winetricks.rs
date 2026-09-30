@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
@@ -36,11 +36,106 @@ const POLL: Duration = Duration::from_millis(100);
 #[derive(Debug)]
 pub enum WinetricksEvent {
     Installing(Vec<String>),
+    /// One complete line of winetricks output. Only emitted when the output
+    /// goes to a log file, because that file is what gets read back.
     OutputLine(String),
+    /// Winetricks started one of the requested verbs.
+    Progress(Step),
     Stopping,
     Killing,
     Warning(String),
     Done(ExitStatus),
+}
+
+/// Which requested verb winetricks is on, counting from one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Step {
+    pub verb: String,
+    pub position: usize,
+    pub total: usize,
+}
+
+/// Winetricks prints this from `w_try` before it runs each verb, top-level or
+/// pulled in as a dependency: `Executing w_do_call gdiplus`.
+const VERB_MARKER: &str = "Executing w_do_call ";
+
+/// The verb a winetricks output line says it is starting, if any.
+fn started_verb(line: &str) -> Option<&str> {
+    line.trim_end()
+        .strip_prefix(VERB_MARKER)?
+        .split_whitespace()
+        .next()
+}
+
+/// Follows winetricks output to find which requested verb is running.
+pub struct Progress {
+    verbs: Vec<String>,
+    at: Option<usize>,
+}
+
+impl Progress {
+    pub fn new(verbs: &[String]) -> Self {
+        Self {
+            verbs: verbs.to_vec(),
+            at: None,
+        }
+    }
+
+    /// Returns a step when `line` starts a requested verb later than the last
+    /// one seen. Dependencies that are not requested are skipped, and a
+    /// requested verb that shows up as a dependency of an earlier one is not
+    /// counted again when its own turn comes.
+    pub fn observe(&mut self, line: &str) -> Option<Step> {
+        let verb = started_verb(line)?;
+        let index = self.verbs.iter().position(|wanted| wanted == verb)?;
+        if self.at.is_some_and(|at| index <= at) {
+            return None;
+        }
+        self.at = Some(index);
+        Some(Step {
+            verb: verb.to_owned(),
+            position: index + 1,
+            total: self.verbs.len(),
+        })
+    }
+}
+
+/// Reads complete lines back from the log winetricks is writing.
+struct LineTail {
+    file: File,
+    pending: Vec<u8>,
+}
+
+/// A line longer than this is dropped rather than held forever.
+const LINE_CAP: usize = 64 * 1024;
+
+impl LineTail {
+    fn open(path: &Path) -> io::Result<Self> {
+        Ok(Self {
+            file: File::open(path)?,
+            pending: Vec::new(),
+        })
+    }
+
+    fn pump(&mut self, events: &mut impl FnMut(WinetricksEvent)) {
+        let mut buf = [0u8; 8192];
+        // Progress is best effort, so a failed read just ends this pass.
+        while let Ok(read) = self.file.read(&mut buf) {
+            if read == 0 {
+                break;
+            }
+            self.pending.extend_from_slice(&buf[..read]);
+            while let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = self.pending.drain(..=end).collect();
+                events(WinetricksEvent::OutputLine(
+                    String::from_utf8_lossy(&line[..end]).into_owned(),
+                ));
+            }
+            if self.pending.len() > LINE_CAP {
+                self.pending.clear();
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -485,6 +580,7 @@ fn run_with_output(
         .env("WINEPREFIX", prefix)
         .stdin(Stdio::null())
         .process_group(0);
+    let mut tail = None;
     match output {
         Output::Inherit if to_stderr => {
             command.stdout(Stdio::from(std::io::stderr()));
@@ -493,6 +589,7 @@ fn run_with_output(
         Output::Log(path) => {
             let log = File::create(path)
                 .with_context(|| format!("failed to create {}", path.display()))?;
+            tail = LineTail::open(path).ok();
             command
                 .stdout(Stdio::from(log.try_clone()?))
                 .stderr(Stdio::from(log));
@@ -504,6 +601,9 @@ fn run_with_output(
     let mut stopping = None;
     let mut killing = false;
     let status = loop {
+        if let Some(tail) = &mut tail {
+            tail.pump(&mut events);
+        }
         if token.is_canceled() && stopping.is_none() {
             stopping = Some(Instant::now());
             events(WinetricksEvent::Stopping);
@@ -523,6 +623,9 @@ fn run_with_output(
         }
         token.wait_timeout(POLL);
     };
+    if let Some(tail) = &mut tail {
+        tail.pump(&mut events);
+    }
     settle(
         runner,
         prefix,
@@ -578,11 +681,22 @@ fn install_unattended_with_output(
     token: &Token,
     output: Output<'_>,
     to_stderr: bool,
-    events: impl FnMut(WinetricksEvent),
+    mut events: impl FnMut(WinetricksEvent),
 ) -> anyhow::Result<()> {
     let args: Vec<String> = std::iter::once("-q".to_owned())
         .chain(verbs.iter().cloned())
         .collect();
+    let mut progress = Progress::new(verbs);
+    let events = |event: WinetricksEvent| {
+        let step = match &event {
+            WinetricksEvent::OutputLine(line) => progress.observe(line),
+            _ => None,
+        };
+        events(event);
+        if let Some(step) = step {
+            events(WinetricksEvent::Progress(step));
+        }
+    };
     if !run_with_output(
         runner,
         prefix,
@@ -734,6 +848,149 @@ mod tests {
         for verb in ["", "two words", "line\nbreak", "--force", "-q"] {
             assert!(validate_verb(verb).is_err(), "{verb:?}");
         }
+    }
+
+    fn verbs(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    fn step(verb: &str, position: usize, total: usize) -> Step {
+        Step {
+            verb: verb.to_owned(),
+            position,
+            total,
+        }
+    }
+
+    #[test]
+    fn progress_follows_requested_verbs_in_order() {
+        let mut progress = Progress::new(&verbs(&["corefonts", "gdiplus", "vcrun2022"]));
+        assert_eq!(
+            progress.observe("Using winetricks 20250102 with wine-10.0"),
+            None
+        );
+        assert_eq!(
+            progress.observe("Executing w_do_call corefonts"),
+            Some(step("corefonts", 1, 3))
+        );
+        assert_eq!(progress.observe("Executing wine cabextract -q x.exe"), None);
+        assert_eq!(
+            progress.observe("Executing w_do_call gdiplus\r"),
+            Some(step("gdiplus", 2, 3))
+        );
+        assert_eq!(
+            progress.observe("Executing w_do_call vcrun2022"),
+            Some(step("vcrun2022", 3, 3))
+        );
+    }
+
+    #[test]
+    fn progress_ignores_dependencies_that_were_not_requested() {
+        let mut progress = Progress::new(&verbs(&["dotnet48"]));
+        assert_eq!(progress.observe("Executing w_do_call dotnet40"), None);
+        assert_eq!(
+            progress.observe("Executing w_do_call dotnet_verifier"),
+            None
+        );
+        assert_eq!(
+            progress.observe("Executing w_do_call dotnet48"),
+            Some(step("dotnet48", 1, 1))
+        );
+    }
+
+    #[test]
+    fn progress_does_not_repeat_or_go_backwards() {
+        let mut progress = Progress::new(&verbs(&["dotnet48", "gdiplus", "corefonts"]));
+        assert_eq!(
+            progress.observe("Executing w_do_call dotnet48"),
+            Some(step("dotnet48", 1, 3))
+        );
+        // A dependency of an earlier verb that is also requested counts once.
+        assert_eq!(
+            progress.observe("Executing w_do_call corefonts"),
+            Some(step("corefonts", 3, 3))
+        );
+        assert_eq!(progress.observe("Executing w_do_call gdiplus"), None);
+        assert_eq!(progress.observe("Executing w_do_call corefonts"), None);
+        assert_eq!(progress.observe("Executing w_do_call dotnet48"), None);
+    }
+
+    #[test]
+    fn progress_matches_whole_verb_names_only() {
+        let mut progress = Progress::new(&verbs(&["vcrun2022", "renderer=vulkan"]));
+        assert_eq!(progress.observe("Executing w_do_call vcrun2022_arm"), None);
+        assert_eq!(progress.observe("Executing w_do_call vcrun"), None);
+        assert_eq!(
+            progress.observe("running Executing w_do_call vcrun2022"),
+            None
+        );
+        assert_eq!(
+            progress.observe("Executing w_do_call renderer=vulkan"),
+            Some(step("renderer=vulkan", 2, 2))
+        );
+    }
+
+    #[test]
+    fn install_reports_progress_from_the_log() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let script = bin.join("winetricks");
+        fs::write(
+            &script,
+            "#!/bin/sh\nfor verb in \"$@\"; do\n  case \"$verb\" in -q) ;; *)\n    echo \"Executing w_do_call dep\" >&2\n    echo \"Executing w_do_call $verb\" >&2 ;; esac\ndone\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )))
+        .unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "winetricks::tests::install_progress_child",
+                "--nocapture",
+            ])
+            .env("WINEO_WINETRICKS_PROGRESS_ROOT", root.path())
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn install_progress_child() {
+        let Some(root) = std::env::var_os("WINEO_WINETRICKS_PROGRESS_ROOT") else {
+            return;
+        };
+        let prefix = std::path::PathBuf::from(root).join("prefix");
+        fs::create_dir(&prefix).unwrap();
+        let log = prefix.join("install.log");
+        let mut steps = Vec::new();
+        let mut lines = 0;
+        install_unattended(
+            "game",
+            &Runner::fake("test"),
+            &prefix,
+            &BTreeMap::new(),
+            &verbs(&["corefonts", "gdiplus"]),
+            1,
+            &Token::new(),
+            Output::Log(&log),
+            |event| match event {
+                WinetricksEvent::Progress(step) => steps.push(step),
+                WinetricksEvent::OutputLine(_) => lines += 1,
+                _ => {}
+            },
+        )
+        .unwrap();
+        assert_eq!(lines, 4);
+        assert_eq!(steps, [step("corefonts", 1, 2), step("gdiplus", 2, 2)]);
     }
 
     #[test]
