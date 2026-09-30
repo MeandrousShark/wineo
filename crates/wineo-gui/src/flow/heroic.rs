@@ -1875,9 +1875,13 @@ impl Page {
                 if self.registered.is_some() && self.error.is_some() && self.token.is_none() {
                     body = body.push(button("Retry artwork").on_press(Event::RetryArt));
                     body = body.push(button("Skip artwork").on_press(Event::SkipArt));
-                } else if self.token.is_some() {
-                    body = body.push(button("Cancel").on_press(Event::Cancel));
-                    body = body.push(button("Force stop").on_press(Event::Force));
+                } else if let Some(token) = &self.token {
+                    let (label, event) = if token.is_canceled() {
+                        ("Force stop", Event::Force)
+                    } else {
+                        ("Cancel", Event::Cancel)
+                    };
+                    body = body.push(button(label).on_press(event));
                 }
             }
             Step::Finished => {
