@@ -33,9 +33,9 @@ use super::{Action, artwork};
 use crate::picker;
 use crate::theme::Palette;
 
-const FORM_WIDTH: u32 = 440;
-/// Below this content width the artwork stacks under the form.
-const TWO_COLUMNS: f32 = 800.0;
+/// Poster plus a form wide enough for the Name, Icon, and Type row. Below
+/// this the poster and icon move under the form.
+const SIDE_POSTER: f32 = artwork::POSTER_WIDTH as f32 + 16.0 + 400.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -1016,8 +1016,12 @@ impl Page {
         Task::none()
     }
 
-    fn details_form(&self, palette: Palette) -> Element<'_, Event> {
-        let mut form = column![].spacing(10).width(Fill).max_width(FORM_WIDTH);
+    fn details_form<'a>(
+        &'a self,
+        icon: Option<Element<'a, Event>>,
+        palette: Palette,
+    ) -> Element<'a, Event> {
+        let mut form = column![].spacing(10).width(Fill);
         form = form.push(
             row![
                 column![
@@ -1026,13 +1030,16 @@ impl Page {
                 ]
                 .spacing(4)
                 .width(Fill),
+            ]
+            .push(icon)
+            .push(
                 column![
                     text("Type"),
                     pick_list(Kind::ALL, Some(self.draft.kind), Event::Kind)
                 ]
                 .spacing(4)
                 .width(180),
-            ]
+            )
             .spacing(12),
         );
         if self
@@ -1199,21 +1206,31 @@ impl Page {
         let mut body = column![heading].spacing(10).width(Fill);
         match self.stage {
             Stage::Details => {
+                body = body.push(self.art.banner(palette).map(Event::Art));
+                if let Some(status) = self.art.status_line(palette) {
+                    body = body.push(status.map(Event::Art));
+                }
                 body = body.push(
                     responsive(move |size| {
-                        let form = self.details_form(palette);
-                        let art = self.art.view(palette).map(Event::Art);
-                        if size.width >= TWO_COLUMNS {
-                            row![form, container(art).width(artwork::WIDTH)]
+                        let poster = self.art.poster(palette).map(Event::Art);
+                        let icon = self.art.icon(palette).map(Event::Art);
+                        if size.width >= SIDE_POSTER {
+                            row![poster, self.details_form(Some(icon), palette)]
                                 .spacing(16)
                                 .width(Fill)
                                 .into()
                         } else {
-                            column![form, art].spacing(16).into()
+                            column![
+                                self.details_form(None, palette),
+                                row![poster, icon].spacing(12)
+                            ]
+                            .spacing(16)
+                            .into()
                         }
                     })
                     .height(Shrink),
                 );
+                body = body.push(self.art.controls(palette).map(Event::Art));
                 body = body.push(
                     row![
                         button("Back").on_press(Event::Back),

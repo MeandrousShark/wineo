@@ -2,8 +2,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use iced::widget::{button, checkbox, column, container, image, pick_list, row, text, text_input};
-use iced::{ContentFit, Element, Task, border};
+use iced::widget::{
+    Column, button, checkbox, column, container, image, pick_list, row, stack, text, text_input,
+};
+use iced::{Color, ContentFit, Element, Fill, Padding, Radians, Task, border, gradient};
 use wineo_core::art::{self, Kind};
 use wineo_core::art_fetch::{self, Mode};
 use wineo_core::config::{ArtFetch, GlobalConfig};
@@ -14,8 +16,17 @@ use wineo_core::steamgriddb::{self, Api, Game};
 
 use crate::theme::Palette;
 
-/// Width of the tile block, so parent layouts can reserve a column for it.
-pub(crate) const WIDTH: u32 = 356;
+/// Width of the stacked tile block.
+const WIDTH: u32 = 356;
+/// Matches the hero banner in the library side panel.
+const BANNER_HEIGHT: u32 = 220;
+const LOGO_HEIGHT: u32 = 80;
+const LOGO_MAX_WIDTH: u32 = 280;
+/// Tall enough to line up with the collapsed creation form beside it.
+pub(crate) const POSTER_WIDTH: u32 = 152;
+const POSTER_HEIGHT: u32 = 228;
+/// About the height of a labelled text input, so it sits in the Name row.
+const ICON_SIZE: u32 = 56;
 
 #[derive(Clone, Debug)]
 pub(crate) enum Event {
@@ -441,24 +452,199 @@ impl Draft {
     }
 
     pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
-        let mut content = column![
+        column![
             text("Artwork").size(19),
             text("Click a tile to choose an image. All four are optional.")
                 .size(12)
                 .color(palette.muted),
             column![
-                self.tile(Kind::Hero, "Hero", "Wide background", WIDTH, 112, palette),
+                self.tile(
+                    Kind::Hero,
+                    "Hero",
+                    "Wide background",
+                    WIDTH,
+                    112,
+                    true,
+                    palette
+                ),
                 row![
                     column![
-                        self.tile(Kind::Logo, "Logo", "Title graphic", 196, 78, palette),
-                        self.tile(Kind::Icon, "Icon", "Small square", 98, 98, palette),
+                        self.tile(Kind::Logo, "Logo", "Title graphic", 196, 78, true, palette),
+                        self.tile(Kind::Icon, "Icon", "Small square", 98, 98, true, palette),
                     ]
                     .spacing(10),
-                    self.tile(Kind::Grid, "Poster", "Cover art", 148, 222, palette),
+                    self.tile(Kind::Grid, "Poster", "Cover art", 148, 222, true, palette),
                 ]
                 .spacing(12),
             ]
             .spacing(10),
+            self.control_rows(palette),
+        ]
+        .spacing(10)
+        .into()
+    }
+
+    /// Full-width hero with the logo overlaid, like the library side panel.
+    pub(crate) fn banner(&self, palette: Palette) -> Element<'_, Event> {
+        let hero = self
+            .art_preview(Kind::Hero)
+            .map(|(handle, _)| handle.clone());
+        let has_hero = hero.is_some();
+        let hero_selected = self.is_selected(Kind::Hero);
+        let content: Element<'_, Event> = match hero {
+            Some(handle) => image(handle)
+                .width(Fill)
+                .height(Fill)
+                .content_fit(ContentFit::Cover)
+                .border_radius(6)
+                .into(),
+            None => container(placeholder("Hero", "Wide background", 16, palette))
+                .center(Fill)
+                .into(),
+        };
+        let hero_button = button(container(content).width(Fill).height(Fill).clip(true))
+            .width(Fill)
+            .height(BANNER_HEIGHT)
+            .padding(2)
+            .on_press(Event::Browse(Kind::Hero))
+            .style(move |_, status| button::Style {
+                background: Some(palette.surface.into()),
+                text_color: palette.foreground,
+                border: border::rounded(8)
+                    .width(2)
+                    .color(outline(status, hero_selected, palette)),
+                ..button::Style::default()
+            });
+
+        let logo = self
+            .art_preview(Kind::Logo)
+            .map(|(handle, _)| handle.clone());
+        let logo_button = match logo {
+            Some(handle) => button(
+                container(
+                    image(handle)
+                        .height(LOGO_HEIGHT)
+                        .content_fit(ContentFit::Contain),
+                )
+                .max_width(LOGO_MAX_WIDTH),
+            )
+            .padding(4)
+            .style(move |_, status| button::Style {
+                background: None,
+                text_color: palette.foreground,
+                border: border::rounded(6).width(2).color(
+                    if matches!(status, button::Status::Hovered) {
+                        palette.primary
+                    } else {
+                        Color::TRANSPARENT
+                    },
+                ),
+                ..button::Style::default()
+            }),
+            None => {
+                let selected = self.is_selected(Kind::Logo);
+                button(container(text("Logo").size(14)).center(Fill))
+                    .width(140)
+                    .height(56)
+                    .style(move |_, status| button::Style {
+                        background: Some(palette.surface.scale_alpha(0.9).into()),
+                        text_color: palette.foreground,
+                        border: border::rounded(6)
+                            .width(1)
+                            .color(outline(status, selected, palette)),
+                        ..button::Style::default()
+                    })
+            }
+        }
+        .on_press(Event::Browse(Kind::Logo));
+        // The scrim keeps a light logo readable over a bright hero.
+        let overlay = container(logo_button)
+            .width(Fill)
+            .height(112)
+            .padding(Padding {
+                top: 24.0,
+                right: 16.0,
+                bottom: 12.0,
+                left: 16.0,
+            })
+            .align_left(Fill)
+            .align_bottom(Fill)
+            .style(move |_| {
+                if has_hero {
+                    let gradient = gradient::Linear::new(Radians(std::f32::consts::PI))
+                        .add_stop(0.0, Color::BLACK.scale_alpha(0.0))
+                        .add_stop(1.0, Color::BLACK.scale_alpha(0.78));
+                    container::Style::default()
+                        .background(gradient)
+                        .border(border::rounded(border::bottom(6)))
+                } else {
+                    container::Style::default()
+                }
+            });
+        // A pressed logo button captures the event and the stack stops there,
+        // so the hero underneath never sees the click.
+        stack![
+            hero_button,
+            container(overlay)
+                .width(Fill)
+                .height(BANNER_HEIGHT)
+                .padding(2)
+                .align_bottom(Fill),
+        ]
+        .into()
+    }
+
+    /// Hero and logo statuses for the banner, or `None` when there is nothing to say.
+    pub(crate) fn status_line(&self, palette: Palette) -> Option<Element<'_, Event>> {
+        let parts = self.banner_statuses();
+        if parts.is_empty() {
+            return None;
+        }
+        let mut line = row![].spacing(16);
+        for (kind, notes, selected) in parts {
+            let label = if kind == Kind::Hero { "Hero:" } else { "Logo:" };
+            let mut part = row![text(label).size(11)].spacing(6).align_y(iced::Center);
+            for note in notes {
+                part = part.push(note_view(note, palette));
+            }
+            if selected {
+                part = part.push(remove(kind));
+            }
+            line = line.push(part);
+        }
+        Some(line.wrap().vertical_spacing(4).into())
+    }
+
+    pub(crate) fn poster(&self, palette: Palette) -> Element<'_, Event> {
+        self.tile(
+            Kind::Grid,
+            "Poster",
+            "Cover art",
+            POSTER_WIDTH,
+            POSTER_HEIGHT,
+            false,
+            palette,
+        )
+    }
+
+    pub(crate) fn icon(&self, palette: Palette) -> Element<'_, Event> {
+        self.tile(Kind::Icon, "Icon", "", ICON_SIZE, ICON_SIZE, false, palette)
+    }
+
+    /// File path entry and SteamGridDB controls, for layouts that place tiles themselves.
+    pub(crate) fn controls(&self, palette: Palette) -> Element<'_, Event> {
+        column![
+            text("Click the banner, logo, poster, or icon to choose an image. All are optional.")
+                .size(12)
+                .color(palette.muted),
+            self.control_rows(palette),
+        ]
+        .spacing(10)
+        .into()
+    }
+
+    fn control_rows(&self, palette: Palette) -> Column<'_, Event> {
+        let mut content = column![
             button(if self.manual_entry {
                 "Hide file paths"
             } else {
@@ -518,9 +704,53 @@ impl Draft {
         if let Some(error) = &self.error {
             content = content.push(text(error).color(palette.danger));
         }
-        content.into()
+        content
     }
 
+    fn is_selected(&self, kind: Kind) -> bool {
+        self.local
+            .get(&kind)
+            .is_some_and(|local| !local.path.is_empty())
+    }
+
+    /// Status messages for one kind, in display order.
+    fn notes(&self, kind: Kind) -> Vec<Note<'_>> {
+        let mut notes = Vec::new();
+        if let Some(local) = self.local.get(&kind) {
+            if local.checking {
+                notes.push(Note::Info("Checking image...".to_owned()));
+            } else if let Some(error) = &local.error {
+                notes.push(Note::Error(error));
+            }
+        }
+        if !self.is_selected(kind)
+            && self.fetch
+            && self.kinds.contains(&kind)
+            && let Some(remote) = self.remote.get(&kind)
+        {
+            if remote.loading {
+                notes.push(Note::Info("Fetching...".to_owned()));
+            } else if let Some(error) = &remote.error {
+                notes.push(Note::Error(error));
+            } else if remote.none_found {
+                notes.push(Note::Info(format!("No {kind} artwork found")));
+            } else if remote.preview.is_some() {
+                notes.push(Note::Info("From SteamGridDB".to_owned()));
+            }
+        }
+        notes
+    }
+
+    /// Hero and logo entries worth showing under the banner, with whether each can be removed.
+    fn banner_statuses(&self) -> Vec<(Kind, Vec<Note<'_>>, bool)> {
+        [Kind::Hero, Kind::Logo]
+            .into_iter()
+            .map(|kind| (kind, self.notes(kind), self.is_selected(kind)))
+            .filter(|(_, notes, selected)| !notes.is_empty() || *selected)
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn tile<'a>(
         &'a self,
         kind: Kind,
@@ -528,28 +758,30 @@ impl Draft {
         hint: &'static str,
         width: u32,
         height: u32,
+        labelled: bool,
         palette: Palette,
     ) -> Element<'a, Event> {
-        let local = self.local.get(&kind);
-        let selected = local.is_some_and(|local| !local.path.is_empty());
+        let selected = self.is_selected(kind);
         let picture: Element<'_, Event> = match self.art_preview(kind) {
             Some((handle, _)) => image(handle.clone())
                 .width(width - 16)
                 .height(height - 16)
                 .content_fit(ContentFit::Contain)
                 .into(),
-            None => container(
-                column![
-                    text(title).size(if kind == Kind::Grid { 20 } else { 16 }),
-                    text(hint).size(11).color(palette.muted),
-                    text("Choose image").size(11).color(palette.primary),
-                ]
-                .align_x(iced::Center)
-                .spacing(6),
-            )
+            None if height <= ICON_SIZE => container(text(title).size(12))
+                .width(width - 16)
+                .height(height - 16)
+                .center(Fill)
+                .into(),
+            None => container(placeholder(
+                title,
+                hint,
+                if kind == Kind::Grid { 20 } else { 16 },
+                palette,
+            ))
             .width(width - 16)
             .height(height - 16)
-            .center(iced::Fill)
+            .center(Fill)
             .into(),
         };
         let chooser = button(picture)
@@ -560,50 +792,79 @@ impl Draft {
             .style(move |_, status| button::Style {
                 background: Some(palette.surface.into()),
                 text_color: palette.foreground,
-                border: border::rounded(8).width(1).color(
-                    if matches!(status, button::Status::Hovered) {
-                        palette.primary
-                    } else if selected {
-                        palette.success
-                    } else {
-                        palette.border
-                    },
-                ),
+                border: border::rounded(8)
+                    .width(1)
+                    .color(outline(status, selected, palette)),
                 ..button::Style::default()
             });
-        let mut tile = column![text(title).size(13), chooser]
-            .spacing(5)
-            .width(width);
-        if let Some(local) = local {
-            if local.checking {
-                tile = tile.push(text("Checking image...").size(11).color(palette.muted));
-            } else if let Some(error) = &local.error {
-                tile = tile.push(text(error).size(11).color(palette.danger));
-            }
-            if selected {
-                tile = tile.push(button("Remove").on_press(Event::Clear(kind)).padding(2));
-            }
+        let mut tile = column![].spacing(5).width(width);
+        if labelled {
+            tile = tile.push(text(title).size(13));
         }
-        if !selected
-            && self.fetch
-            && self.kinds.contains(&kind)
-            && let Some(remote) = self.remote.get(&kind)
-        {
-            if remote.loading {
-                tile = tile.push(text("Fetching...").size(11).color(palette.muted));
-            } else if let Some(error) = &remote.error {
-                tile = tile.push(text(error).size(11).color(palette.danger));
-            } else if remote.none_found {
-                tile = tile.push(
-                    text(format!("No {kind} artwork found"))
-                        .size(11)
-                        .color(palette.muted),
-                );
-            } else if remote.preview.is_some() {
-                tile = tile.push(text("From SteamGridDB").size(11).color(palette.muted));
-            }
+        tile = tile.push(chooser);
+        for note in self.notes(kind) {
+            tile = tile.push(note_view(note, palette));
+        }
+        if selected {
+            tile = tile.push(remove(kind));
         }
         tile.into()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Note<'a> {
+    Info(String),
+    Error(&'a str),
+}
+
+fn note_view(note: Note<'_>, palette: Palette) -> Element<'_, Event> {
+    match note {
+        Note::Info(message) => text(message).size(11).color(palette.muted).into(),
+        Note::Error(message) => text(message).size(11).color(palette.danger).into(),
+    }
+}
+
+fn remove<'a>(kind: Kind) -> Element<'a, Event> {
+    button("Remove")
+        .on_press(Event::Clear(kind))
+        .padding(2)
+        .into()
+}
+
+fn placeholder<'a>(
+    title: &'static str,
+    hint: &'static str,
+    size: u32,
+    palette: Palette,
+) -> Column<'a, Event> {
+    column![
+        text(title).size(size),
+        text(hint).size(11).color(palette.muted),
+        text("Choose image").size(11).color(palette.primary),
+    ]
+    .align_x(iced::Center)
+    .spacing(6)
+}
+
+fn outline(status: button::Status, selected: bool, palette: Palette) -> Color {
+    if matches!(status, button::Status::Hovered) {
+        palette.primary
+    } else if selected {
+        palette.success
+    } else {
+        palette.border
+    }
+}
+
+/// Largest decoded preview per kind, sized for where each kind is shown so
+/// the hero banner stays sharp while small tiles stay cheap.
+fn preview_bounds(kind: Kind) -> (u32, u32) {
+    match kind {
+        Kind::Hero => (1000, 500),
+        Kind::Logo => (LOGO_MAX_WIDTH, LOGO_HEIGHT),
+        Kind::Grid => (POSTER_WIDTH, POSTER_HEIGHT),
+        Kind::Icon => (160, 100),
     }
 }
 
@@ -632,11 +893,14 @@ fn preview_bytes(bytes: &[u8], kind: Kind) -> Result<image::Handle, String> {
     let format = art::detect(bytes)
         .filter(|format| kind.accepts(*format))
         .ok_or_else(|| format!("Unsupported image format for {kind}"))?;
+    let (max_width, max_height) = preview_bounds(kind);
     if format == art::Format::Svg {
         let tree = resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default())
             .map_err(|e| e.to_string())?;
         let size = tree.size();
-        let scale = (160.0 / size.width()).min(100.0 / size.height()).min(1.0);
+        let scale = (max_width as f32 / size.width())
+            .min(max_height as f32 / size.height())
+            .min(1.0);
         let width = (size.width() * scale).ceil().max(1.0) as u32;
         let height = (size.height() * scale).ceil().max(1.0) as u32;
         let mut pixels =
@@ -660,7 +924,7 @@ fn preview_bytes(bytes: &[u8], kind: Kind) -> Result<image::Handle, String> {
     } else {
         let decoded = ::image::load_from_memory(bytes)
             .map_err(|e| e.to_string())?
-            .thumbnail(160, 100)
+            .thumbnail(max_width, max_height)
             .into_rgba8();
         Ok(image::Handle::from_rgba(
             decoded.width(),
@@ -1156,6 +1420,107 @@ mod tests {
             shown,
             draft.local[&Kind::Icon].preview.as_ref().unwrap()
         ));
+    }
+
+    fn decoded_size(handle: &image::Handle) -> (u32, u32) {
+        match handle {
+            image::Handle::Rgba { width, height, .. } => (*width, *height),
+            _ => panic!("expected decoded pixels"),
+        }
+    }
+
+    #[test]
+    fn hero_previews_decode_large_enough_for_the_banner() {
+        let mut png = Vec::new();
+        ::image::RgbaImage::new(1920, 620)
+            .write_to(
+                &mut std::io::Cursor::new(&mut png),
+                ::image::ImageFormat::Png,
+            )
+            .unwrap();
+        assert_eq!(
+            decoded_size(&preview_bytes(&png, Kind::Hero).unwrap()),
+            (1000, 323)
+        );
+        let (width, height) = decoded_size(&preview_bytes(&png, Kind::Icon).unwrap());
+        assert!(width <= 160 && height <= 100);
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="620"><rect width="1920" height="620" fill="red"/></svg>"#;
+        assert_eq!(
+            decoded_size(&preview_bytes(svg, Kind::Hero).unwrap()),
+            (1000, 323)
+        );
+        assert_eq!(preview_bounds(Kind::Grid), (POSTER_WIDTH, POSTER_HEIGHT));
+    }
+
+    #[test]
+    fn banner_statuses_only_list_hero_and_logo_with_something_to_say() {
+        let mut draft = Draft::new();
+        assert!(draft.banner_statuses().is_empty());
+        draft.fetch = true;
+        draft.kinds = Kind::ALL.to_vec();
+        draft.remote.insert(
+            Kind::Logo,
+            Remote {
+                loading: true,
+                ..Remote::default()
+            },
+        );
+        draft.remote.insert(
+            Kind::Icon,
+            Remote {
+                none_found: true,
+                ..Remote::default()
+            },
+        );
+        draft.local.insert(
+            Kind::Hero,
+            Local {
+                path: "/hero.png".to_owned(),
+                ..Local::default()
+            },
+        );
+        assert_eq!(
+            draft.banner_statuses(),
+            vec![
+                (Kind::Hero, vec![], true),
+                (
+                    Kind::Logo,
+                    vec![Note::Info("Fetching...".to_owned())],
+                    false
+                ),
+            ]
+        );
+        assert_eq!(
+            draft.notes(Kind::Icon),
+            vec![Note::Info("No icon artwork found".to_owned())]
+        );
+    }
+
+    #[test]
+    fn local_selection_hides_fetch_status() {
+        let mut draft = Draft::new();
+        draft.fetch = true;
+        draft.kinds = vec![Kind::Hero];
+        draft.remote.insert(
+            Kind::Hero,
+            Remote {
+                error: Some("offline".to_owned()),
+                ..Remote::default()
+            },
+        );
+        assert_eq!(draft.notes(Kind::Hero), vec![Note::Error("offline")]);
+        draft.local.insert(
+            Kind::Hero,
+            Local {
+                path: "/hero.png".to_owned(),
+                checking: true,
+                ..Local::default()
+            },
+        );
+        assert_eq!(
+            draft.notes(Kind::Hero),
+            vec![Note::Info("Checking image...".to_owned())]
+        );
     }
 
     #[test]
