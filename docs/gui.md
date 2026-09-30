@@ -89,8 +89,10 @@ Unsupported games explain why they cannot be imported. Imports and clones do
 not launch automatically.
 
 New and import flows show clickable poster, icon, hero, and logo previews.
-On a wide enough window, New environment places the artwork beside the form;
-narrower windows stack it below. Click a placeholder or preview to browse
+New environment previews the game's page: the hero is a banner across the
+top with the logo in its corner, like the library panel, the poster sits
+beside the form, and the icon sits beside the name. Narrow windows move the
+poster and icon below the form. Click a placeholder or preview to browse
 for a file; use **Remove** to drop it. File paths are an optional fallback.
 Manual files work without a SteamGridDB key or network access. Fetching uses
 the global **Art to fetch** switches: after you search and choose a match,
