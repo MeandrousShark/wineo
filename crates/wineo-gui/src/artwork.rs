@@ -19,6 +19,14 @@ pub enum Kind {
 }
 
 impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Grid => "grid",
+            Self::Hero => "hero",
+            Self::Logo => "logo",
+        }
+    }
+
     fn max_size(self) -> (u32, u32) {
         match self {
             Self::Grid => (360, 540),
@@ -34,34 +42,34 @@ type Pixels = (u32, u32, Vec<u8>);
 /// shrunk is cached as a thumbnail under `cache`, since decoding a huge source
 /// on every start costs far more than reading back the small copy.
 pub fn decode(path: &Path, kind: Kind, cache: Option<&Path>) -> Result<iced_image::Handle> {
+    // Taken before anything reads the source, so a file replaced mid-decode is
+    // stored under its old identity and never served for the new one.
+    let identity = cache
+        .and_then(|_| fs::metadata(path).ok())
+        .map(|metadata| identity(&metadata));
+    let entry = |size| {
+        cache
+            .zip(identity.as_deref())
+            .map(|(cache, identity)| Entry::new(cache, path, identity, kind, size))
+    };
     let (width, height, pixels) = if path.extension().is_some_and(|ext| ext == "svg") {
         let (tree, width, height, scale) = open_svg(path, kind)?;
-        let render = || render_svg(&tree, width, height, scale);
-        cached(cache, path, (width, height), scale < 1.0, render)?
+        let entry = entry((width, height)).filter(|_| scale < 1.0);
+        cached(entry, || render_svg(&tree, width, height, scale))?
     } else {
         let (source_width, source_height) = image::image_dimensions(path)
             .with_context(|| format!("failed to decode {}", path.display()))?;
         let (width, height, _) = fit_size(f64::from(source_width), f64::from(source_height), kind);
-        let resizes = (width, height) != (source_width, source_height);
-        cached(cache, path, (width, height), resizes, || {
-            decode_raster(path, kind)
-        })?
+        let entry =
+            entry((width, height)).filter(|_| (width, height) != (source_width, source_height));
+        cached(entry, || decode_raster(path, kind))?
     };
     Ok(iced_image::Handle::from_rgba(width, height, pixels))
 }
 
 /// Serves `render` from the thumbnail cache when the output is a shrunk copy.
 /// Cache trouble never fails a decode, it only costs the speedup.
-fn cached(
-    cache: Option<&Path>,
-    path: &Path,
-    size: (u32, u32),
-    resizes: bool,
-    render: impl FnOnce() -> Result<Pixels>,
-) -> Result<Pixels> {
-    let entry = cache
-        .filter(|_| resizes)
-        .and_then(|cache| Entry::new(cache, path, size));
+fn cached(entry: Option<Entry>, render: impl FnOnce() -> Result<Pixels>) -> Result<Pixels> {
     let Some(entry) = entry else {
         return render();
     };
@@ -73,7 +81,7 @@ fn cached(
     Ok(pixels)
 }
 
-/// One cached thumbnail of one source file at one size.
+/// One cached thumbnail of one source file for one kind at one size.
 struct Entry {
     dir: PathBuf,
     file: PathBuf,
@@ -82,18 +90,22 @@ struct Entry {
 }
 
 impl Entry {
-    fn new(cache: &Path, source: &Path, size: (u32, u32)) -> Option<Self> {
-        // Taken before the source is read, so a file changed mid-decode is
-        // stored under its old identity and never served for the new one.
-        let identity = identity(&fs::metadata(source).ok()?);
+    // The kind is in the name because two kinds can round to the same size
+    // with different scales, which renders an SVG differently.
+    fn new(cache: &Path, source: &Path, identity: &str, kind: Kind, size: (u32, u32)) -> Self {
         let dir = cache.join(hex(&Sha256::digest(source.as_os_str().as_bytes())));
-        let file = dir.join(format!("{identity}-{}x{}.png", size.0, size.1));
-        Some(Self {
+        let file = dir.join(format!(
+            "{identity}-{}-{}x{}.png",
+            kind.name(),
+            size.0,
+            size.1
+        ));
+        Self {
             dir,
             file,
             size,
             source: source.to_owned(),
-        })
+        }
     }
 
     fn read(&self) -> Option<Pixels> {
@@ -474,5 +486,29 @@ mod tests {
         assert_eq!(fs::read_dir(&cache).unwrap().count(), 1);
         assert_eq!(entries(&cache).len(), 1);
         prune(&dir.path().join("missing"));
+    }
+
+    #[test]
+    fn kinds_that_round_to_the_same_size_get_their_own_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let source = dir.path().join("art.svg");
+        // Grid and Hero both fit this to 840x540, with slightly different scales.
+        fs::write(
+            &source,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2000\" height=\"1286\"><rect width=\"2000\" height=\"1286\" fill=\"red\"/></svg>",
+        )
+        .unwrap();
+        let grid = pixel(&decode(&source, Kind::Grid, Some(&cache)).unwrap());
+        let hero = pixel(&decode(&source, Kind::Hero, Some(&cache)).unwrap());
+        assert_eq!((grid.0, grid.1), (840, 540));
+        assert_eq!((hero.0, hero.1), (840, 540));
+        let names: Vec<_> = entries(&cache)
+            .iter()
+            .map(|file| file.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.iter().any(|name| name.ends_with("-grid-840x540.png")));
+        assert!(names.iter().any(|name| name.ends_with("-hero-840x540.png")));
     }
 }
