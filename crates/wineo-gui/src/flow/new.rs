@@ -586,20 +586,10 @@ impl Page {
                                 return;
                             }
                             last_progress = Instant::now();
-                            let line = match progress {
-                                Progress::Downloading { received, total } => {
-                                    format!("Downloading {provider}: {received} / {total} bytes")
-                                }
-                                Progress::Verifying => format!("Verifying {provider}"),
-                                Progress::Extracting => format!("Extracting {provider}"),
-                                Progress::Installed(path) => {
-                                    format!("Installed in {}", path.display())
-                                }
-                                Progress::AlreadyInstalled(path) => {
-                                    format!("Already installed in {}", path.display())
-                                }
-                            };
-                            let _ = sender.unbounded_send(Event::Progress(generation, line));
+                            let _ = sender.unbounded_send(Event::Progress(
+                                generation,
+                                download_line(provider, progress),
+                            ));
                         })
                         .map_err(|e| e.to_string())?;
                     Ok::<_, String>(name)
@@ -2051,6 +2041,18 @@ fn apply_art(paths: &Paths, name: &str, art: &artwork::Draft, report: &mut Repor
     match art.apply(paths, name) {
         Ok(notes) => report.notes.extend(notes),
         Err(error) => report.art_error = Some(error),
+    }
+}
+
+pub(super) fn download_line(provider: Provider, progress: Progress) -> String {
+    match progress {
+        Progress::Downloading { received, total } => {
+            format!("Downloading {provider}: {received} / {total} bytes")
+        }
+        Progress::Verifying => format!("Verifying {provider}"),
+        Progress::Extracting => format!("Extracting {provider}"),
+        Progress::Installed(path) => format!("Installed in {}", path.display()),
+        Progress::AlreadyInstalled(path) => format!("Already installed in {}", path.display()),
     }
 }
 

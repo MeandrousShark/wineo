@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use iced::futures::channel::mpsc::{UnboundedSender, unbounded};
 use iced::keyboard::{self, Key, key::Named};
@@ -14,13 +15,15 @@ use wineo_core::art::{Format, Kind};
 use wineo_core::cancel::Token;
 use wineo_core::components::Component;
 use wineo_core::config::GlobalConfig;
-use wineo_core::download::{Client, Provider};
+use wineo_core::download::{Client, Progress, Provider};
 use wineo_core::environment::{self, Environment};
 use wineo_core::gamescope::{Filter, Gamescope, GamescopeSetting, Scaler, Window};
-use wineo_core::heroic::{HeroicCandidate, HeroicGameKind, HeroicListing, HeroicSource};
+use wineo_core::heroic::{
+    HeroicCandidate, HeroicGameKind, HeroicListing, HeroicSharedPrefix, HeroicSource,
+};
 use wineo_core::heroic_import::{
     self, Entry, Game, LibraryOptions, LibraryPlan, Options, Playtime, Policy, Registered,
-    RunnerCopy, RunnerSuggestion,
+    Resolution, RunnerCopy, RunnerSuggestion, SkipReason, Warning,
 };
 use wineo_core::import;
 use wineo_core::paths::Paths;
@@ -784,6 +787,19 @@ impl Page {
         )
     }
 
+    /// The body scrollable keeps its offset across steps, so without the snap
+    /// Review opens wherever Details was scrolled to.
+    fn enter_review(&mut self) -> Task<Event> {
+        self.step = Step::Review;
+        iced::widget::operation::snap_to(
+            iced::widget::Id::new(BODY_ID),
+            RelativeOffset {
+                x: None,
+                y: Some(0.0),
+            },
+        )
+    }
+
     fn plan(&mut self) -> Task<Event> {
         if !self.draft.batch && !self.draft.argument_input.trim().is_empty() {
             self.error = Some("Add the typed argument before reviewing".to_owned());
@@ -867,7 +883,10 @@ impl Page {
         self.step = Step::Working;
         self.error = None;
         self.results.clear();
-        self.status = "Importing...".to_owned();
+        self.status = match &review {
+            Review::Single { game, .. } => import_status(game.title(), None, None),
+            Review::Batch(_) => "Importing...".to_owned(),
+        };
         let generation = self.next_generation();
         let paths = self.paths.clone();
         let fetch_batch_art = self.draft.fetch_batch_art;
@@ -883,11 +902,15 @@ impl Page {
                                     message: error.to_string(),
                                     source_changed: false,
                                 })?;
+                            let title = game.title().to_owned();
+                            let mut copy = CopyProgress::default();
                             apply_game(&paths, &global, &source, &game, &token, |progress| {
-                                let _ = sender.unbounded_send(Event::Progress(
-                                    generation,
-                                    format!("Import: {progress:?}"),
-                                ));
+                                if let Some(phase) = copy.record(&progress, Instant::now()) {
+                                    let _ = sender.unbounded_send(Event::Progress(
+                                        generation,
+                                        import_status(&title, None, Some(&phase)),
+                                    ));
+                                }
                             })
                             .map(Arc::new)
                             .map_err(|error| ImportFailure {
@@ -918,7 +941,9 @@ impl Page {
                                 ));
                             }
                             let mut source_changed = false;
-                            for mut game in library.into_ready() {
+                            let ready = library.into_ready();
+                            let count = ready.len();
+                            for (index, mut game) in ready.into_iter().enumerate() {
                                 if token.is_canceled() {
                                     break;
                                 }
@@ -928,10 +953,15 @@ impl Page {
                                 }
                                 let name = game.name().to_owned();
                                 let title = game.title().to_owned();
-                                let _ = sender.unbounded_send(Event::Progress(
-                                    generation,
-                                    format!("Importing {name}..."),
-                                ));
+                                let position = Some((index + 1, count));
+                                let status = |phase: Option<&str>| {
+                                    Event::Progress(
+                                        generation,
+                                        import_status(&title, position, phase),
+                                    )
+                                };
+                                let _ = sender.unbounded_send(status(None));
+                                let mut copy = CopyProgress::default();
                                 let result = (|| {
                                     let registered = apply_game(
                                         &paths,
@@ -940,16 +970,18 @@ impl Page {
                                         &game,
                                         &token,
                                         |progress| {
-                                            let _ = sender.unbounded_send(Event::Progress(
-                                                generation,
-                                                format!("{name}: {progress:?}"),
-                                            ));
+                                            if let Some(phase) =
+                                                copy.record(&progress, Instant::now())
+                                            {
+                                                let _ = sender.unbounded_send(status(Some(&phase)));
+                                            }
                                         },
                                     )?;
                                     let mut notes = Vec::new();
                                     if let Some(note) = playtime_note(&registered.playtime) {
                                         notes.push(note);
                                     }
+                                    let _ = sender.unbounded_send(status(Some("adding artwork")));
                                     let app = heroic_id(&game);
                                     notes.extend(store_heroic_poster(
                                         &paths,
@@ -965,6 +997,8 @@ impl Page {
                                                 }),
                                         );
                                     }
+                                    let _ = sender
+                                        .unbounded_send(status(Some("finalizing desktop entries")));
                                     if let Err(error) = registered.finish(&paths, &global) {
                                         notes.push(format!("Desktop entry: {error}"));
                                     }
@@ -1010,7 +1044,7 @@ impl Page {
                         .map(|changes| {
                             changes
                                 .into_iter()
-                                .map(|change| format!("{change:?}"))
+                                .map(|change| crate::settings::desktop_line(&change))
                                 .collect()
                         })
                         .map_err(|e| e.to_string())
@@ -1444,17 +1478,17 @@ impl Page {
                 Task::none()
             }
             Event::Plan => self.plan(),
-            Event::Planned(generation, result) if generation == self.generation => {
-                match result {
-                    Ok(review) => {
-                        self.review = Some(*review);
-                        self.step = Step::Review;
-                        self.status.clear();
-                    }
-                    Err(error) => self.error = Some(error),
+            Event::Planned(generation, result) if generation == self.generation => match result {
+                Ok(review) => {
+                    self.review = Some(*review);
+                    self.status.clear();
+                    self.enter_review()
                 }
-                Task::none()
-            }
+                Err(error) => {
+                    self.error = Some(error);
+                    Task::none()
+                }
+            },
             Event::CopyRunner => {
                 let Some(Prepared {
                     suggested: Some(RunnerSuggestion::Copy(copy)),
@@ -1521,10 +1555,11 @@ impl Page {
                         if let Some(note) = playtime_note(&registered.playtime) {
                             self.notes.push(note);
                         }
-                        self.status = format!(
-                            "Imported {}. Adding artwork...",
-                            registered.environment.name
-                        );
+                        let title = match &self.review {
+                            Some(Review::Single { game, .. }) => game.title(),
+                            _ => &registered.environment.name,
+                        };
+                        self.status = format!("Imported {title}. Adding artwork...");
                         let name = registered.environment.name.clone();
                         self.registered = Some(registered);
                         let art = self.art.clone();
@@ -1546,8 +1581,7 @@ impl Page {
                             self.plan()
                         } else {
                             self.error = Some(error.message);
-                            self.step = Step::Review;
-                            Task::none()
+                            self.enter_review()
                         }
                     }
                 }
@@ -1558,8 +1592,7 @@ impl Page {
                     Ok(value) => value,
                     Err(error) => {
                         self.error = Some(error);
-                        self.step = Step::Review;
-                        return Task::none();
+                        return self.enter_review();
                     }
                 };
                 if changed {
@@ -1976,49 +2009,25 @@ impl Page {
                                     } else {
                                         "Copy prefix"
                                     }));
-                                    for finding in
-                                        plan.findings().iter().filter(|finding| finding.is_active())
+                                    // Only what stops the import; the rest reads like
+                                    // debug output here.
+                                    for finding in plan.findings().iter().filter(|finding| {
+                                        matches!(
+                                            finding.resolution,
+                                            Resolution::Blocking | Resolution::NeedsInput(_)
+                                        )
+                                    }) {
+                                        body = body.push(
+                                            text(&finding.issue.message)
+                                                .size(13)
+                                                .color(palette.warning),
+                                        );
+                                    }
+                                    if let Some(note) =
+                                        shared_prefix_note(plan.is_adopt(), plan.shared_prefix())
                                     {
-                                        body = body.push(
-                                            text(format!(
-                                                "{:?}: {}",
-                                                finding.resolution, finding.issue.message
-                                            ))
-                                            .size(13)
-                                            .color(palette.warning),
-                                        );
-                                    }
-                                    for line in heroic_import::runner_dependency_lines(
-                                        plan.runner_dependencies(),
-                                        true,
-                                    ) {
                                         body =
-                                            body.push(text(line).size(13).color(palette.warning));
-                                    }
-                                    for dependency in &plan.inspection().external_dependencies {
-                                        body = body.push(
-                                            text(format!(
-                                                "External link: {} -> {}",
-                                                dependency.source.display(),
-                                                dependency.target.display()
-                                            ))
-                                            .size(13)
-                                            .color(palette.warning),
-                                        );
-                                    }
-                                    for path in &plan.resolved().external_dependencies {
-                                        body = body.push(
-                                            text(format!("External game path: {}", path.display()))
-                                                .size(13)
-                                                .color(palette.warning),
-                                        );
-                                    }
-                                    for shared in plan.shared_prefix() {
-                                        body = body.push(
-                                            text(format!("Shares prefix with: {}", shared.title))
-                                                .size(13)
-                                                .color(palette.warning),
-                                        );
+                                            body.push(text(note).size(13).color(palette.warning));
                                     }
                                 }
                                 Game::Native(plan) => {
@@ -2069,10 +2078,8 @@ impl Page {
                             for (key, value) in settings.env {
                                 body = body.push(text(format!("Environment: {key}={value}")));
                             }
-                            for warning in game.warnings() {
-                                body = body.push(
-                                    text(format!("{warning:?}")).size(13).color(palette.warning),
-                                );
+                            for warning in review_warnings(&game.warnings()) {
+                                body = body.push(text(warning).size(13).color(palette.warning));
                             }
                             if let Some((component, version)) = missing_build {
                                 body = body.push(
@@ -2119,14 +2126,30 @@ impl Page {
                                         game.reason()
                                     ),
                                     Entry::Skipped(game) => {
-                                        format!("Skipped: {} - {:?}", game.title, game.reason)
+                                        format!(
+                                            "Skipped {}: {}",
+                                            game.title,
+                                            skip_reason(&game.reason)
+                                        )
                                     }
                                 };
                                 body = body.push(text(line).size(13));
                                 if let Entry::Ready(game) = entry {
-                                    for warning in game.warnings() {
+                                    for warning in review_warnings(&game.warnings()) {
                                         body = body.push(
-                                            text(format!("  {warning:?}"))
+                                            text(format!("  {warning}"))
+                                                .size(12)
+                                                .color(palette.warning),
+                                        );
+                                    }
+                                    if let Game::Windows(plan) = game
+                                        && let Some(note) = shared_prefix_note(
+                                            plan.is_adopt(),
+                                            plan.shared_prefix(),
+                                        )
+                                    {
+                                        body = body.push(
+                                            text(format!("  {note}"))
                                                 .size(12)
                                                 .color(palette.warning),
                                         );
@@ -2237,6 +2260,7 @@ impl Page {
                     .padding(24)
                     .center_x(Fill),
             )
+            .id(iced::widget::Id::new(BODY_ID))
             .height(Fill)
             .into(),
         };
@@ -2396,6 +2420,7 @@ fn launch_settings(draft: &Draft, windows: bool, palette: Palette) -> Element<'_
 }
 
 const GRID_ID: &str = "heroic-grid";
+const BODY_ID: &str = "heroic-body";
 const TILE_WIDTH: f32 = 120.0;
 /// With the focus ring's padding.
 const TILE_OUTER_WIDTH: f32 = TILE_WIDTH + 8.0;
@@ -2887,6 +2912,118 @@ fn store_heroic_poster(
         .map(|error| format!("Heroic poster: {error}"))
 }
 
+/// Why a batch left a game out, as the end of "Skipped Title: ...".
+fn skip_reason(reason: &SkipReason) -> String {
+    match reason {
+        SkipReason::LauncherArgs => "Heroic's launch arguments couldn't be parsed".to_owned(),
+        SkipReason::NeedsRunner { proton: true } => "needs a Proton runner".to_owned(),
+        SkipReason::NeedsRunner { proton: false } => "needs a Wine runner".to_owned(),
+        SkipReason::NameTaken(name) => format!("the name {name} is taken"),
+        SkipReason::Blocked(message)
+        | SkipReason::Unreadable(message)
+        | SkipReason::Unavailable(message) => message.clone(),
+    }
+}
+
+/// Only matters when the prefix is used in place, since then the other games
+/// keep changing it; a copy is wineo's own.
+fn shared_prefix_note(adopt: bool, shared: &[HeroicSharedPrefix]) -> Option<String> {
+    if !adopt || shared.is_empty() {
+        return None;
+    }
+    let titles: Vec<&str> = shared.iter().map(|game| game.title.as_str()).collect();
+    Some(format!("Shares prefix with: {}", titles.join(", ")))
+}
+
+/// How often copy progress reaches the UI. Core reports every copied file,
+/// and a message per file floods the channel on a large prefix.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Turns core's import progress into a readable phase, throttled.
+#[derive(Debug, Default)]
+struct CopyProgress {
+    total: u64,
+    copied: u64,
+    sent: Option<Instant>,
+}
+
+impl CopyProgress {
+    /// The phase to show for `progress`, or None when it's too soon after
+    /// the last one.
+    fn record(&mut self, progress: &import::ImportProgress, now: Instant) -> Option<String> {
+        self.due(progress, now).then(|| self.phase(progress))
+    }
+
+    /// Counts `progress` and says whether it should show. The last copied
+    /// file always shows.
+    fn due(&mut self, progress: &import::ImportProgress, now: Instant) -> bool {
+        if let import::ImportProgress::Started { entries } = progress {
+            self.total = *entries;
+            self.copied = 0;
+        }
+        if let import::ImportProgress::Copied { .. } = progress {
+            self.copied += 1;
+            let due = self.copied >= self.total
+                || self
+                    .sent
+                    .is_none_or(|sent| now.duration_since(sent) >= PROGRESS_INTERVAL);
+            if !due {
+                return false;
+            }
+        }
+        self.sent = Some(now);
+        true
+    }
+
+    fn counts(&self) -> String {
+        format!("{} of {} files", grouped(self.copied), grouped(self.total))
+    }
+
+    fn phase(&self, progress: &import::ImportProgress) -> String {
+        match progress {
+            import::ImportProgress::Started { .. } | import::ImportProgress::Copied { .. } => {
+                format!("copying prefix ({})", self.counts())
+            }
+            import::ImportProgress::Finished { .. } => "finishing".to_owned(),
+        }
+    }
+}
+
+/// "(2 of 5) Importing Title: phase", without the position for a single game
+/// and with an ellipsis before the first phase.
+fn import_status(title: &str, position: Option<(usize, usize)>, phase: Option<&str>) -> String {
+    let position = position
+        .map(|(index, count)| format!("({index} of {count}) "))
+        .unwrap_or_default();
+    match phase {
+        Some(phase) => format!("{position}Importing {title}: {phase}"),
+        None => format!("{position}Importing {title}..."),
+    }
+}
+
+/// `n` with comma thousands separators.
+fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// The review only calls out anti-cheat, once even when both EAC and
+/// BattlEye are on, since the game may not run without it.
+fn review_warnings(warnings: &[Warning]) -> Vec<&'static str> {
+    if warnings.contains(&Warning::AntiCheatNotImported) {
+        vec!["Heroic-managed anti-cheat runtime is not imported"]
+    } else {
+        Vec::new()
+    }
+}
+
 fn playtime_note(playtime: &Playtime) -> Option<String> {
     match playtime {
         Playtime::None | Playtime::Imported => None,
@@ -2925,16 +3062,25 @@ fn install_prerequisite(
     match operation {
         Prerequisite::CopyRunner(copy) => {
             let root = global.runner_root(paths).map_err(|e| e.to_string())?;
+            let mut files = CopyProgress::default();
             let receipt = import::copy_runner_reviewed(
                 &copy.inspection,
                 root,
                 &copy.name,
                 token,
                 |progress| {
-                    let _ = sender.unbounded_send(Event::Progress(
-                        generation,
-                        format!("Copying runner: {progress:?}"),
-                    ));
+                    if files.due(&progress, Instant::now()) {
+                        let line = match progress {
+                            import::ImportProgress::Started { .. }
+                            | import::ImportProgress::Copied { .. } => {
+                                format!("Copying {} ({})", copy.name, files.counts())
+                            }
+                            import::ImportProgress::Finished { .. } => {
+                                format!("Finishing copy of {}", copy.name)
+                            }
+                        };
+                        let _ = sender.unbounded_send(Event::Progress(generation, line));
+                    }
                 },
             )
             .map_err(|e| format!("{e:#}"))?;
@@ -2947,11 +3093,20 @@ fn install_prerequisite(
                 None => client.select(provider, None),
             }
             .map_err(|e| format!("{e:#}"))?;
+            // Only byte counts come fast enough to need a throttle.
+            let mut sent: Option<Instant> = None;
             client
                 .install(paths, &global, &release, token, |progress| {
+                    let now = Instant::now();
+                    if matches!(progress, Progress::Downloading { .. })
+                        && sent.is_some_and(|sent| now.duration_since(sent) < PROGRESS_INTERVAL)
+                    {
+                        return;
+                    }
+                    sent = Some(now);
                     let _ = sender.unbounded_send(Event::Progress(
                         generation,
-                        format!("{provider}: {progress:?}"),
+                        super::new::download_line(provider, progress),
                     ));
                 })
                 .map_err(|e| format!("{e:#}"))?;
@@ -3406,6 +3561,135 @@ mod tests {
         let _ = page.back();
         assert_eq!(page.step, Step::Games);
         assert_eq!(chosen(&page), ["dusk", "noon"]);
+    }
+
+    #[test]
+    fn a_finished_plan_opens_review_with_a_scroll_to_the_top() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        open_single(&mut page, NOON);
+        let task = page.plan();
+        assert_eq!(page.step, Step::Details);
+        drop(task);
+        let listing = page.listing.clone().unwrap();
+        let review = plan_review(&page.paths, &listing, page.selected, &page.draft).unwrap();
+        let task = page.update(Event::Planned(page.generation, Ok(Box::new(review))));
+        assert_eq!(page.step, Step::Review);
+        assert!(page.status.is_empty());
+        assert_eq!(task.units(), 1);
+
+        let stale = page.update(Event::Planned(
+            page.generation.wrapping_sub(1),
+            Err("old".to_owned()),
+        ));
+        assert_eq!(stale.units(), 0);
+    }
+
+    #[test]
+    fn import_status_reads_as_a_sentence() {
+        assert_eq!(
+            import_status("Subverse", None, None),
+            "Importing Subverse..."
+        );
+        assert_eq!(
+            import_status(
+                "Subverse",
+                Some((2, 5)),
+                Some("copying prefix (1,234 of 2,151 files)")
+            ),
+            "(2 of 5) Importing Subverse: copying prefix (1,234 of 2,151 files)"
+        );
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(1000), "1,000");
+        assert_eq!(grouped(1234567), "1,234,567");
+    }
+
+    #[test]
+    fn copy_progress_counts_files_and_throttles() {
+        let start = Instant::now();
+        let copied = || import::ImportProgress::Copied {
+            path: PathBuf::from("drive_c"),
+        };
+        let mut copy = CopyProgress::default();
+        assert_eq!(
+            copy.record(&import::ImportProgress::Started { entries: 2151 }, start)
+                .as_deref(),
+            Some("copying prefix (0 of 2,151 files)")
+        );
+        assert_eq!(copy.record(&copied(), start), None);
+        for _ in 0..1232 {
+            copy.record(&copied(), start + Duration::from_millis(50));
+        }
+        assert_eq!(
+            copy.record(&copied(), start + PROGRESS_INTERVAL).as_deref(),
+            Some("copying prefix (1,234 of 2,151 files)")
+        );
+        for _ in 0..916 {
+            copy.record(&copied(), start + PROGRESS_INTERVAL);
+        }
+        // The last file shows even inside the interval.
+        assert_eq!(
+            copy.record(&copied(), start + PROGRESS_INTERVAL).as_deref(),
+            Some("copying prefix (2,151 of 2,151 files)")
+        );
+        assert_eq!(
+            copy.record(
+                &import::ImportProgress::Finished { entries: 2151 },
+                start + PROGRESS_INTERVAL
+            )
+            .as_deref(),
+            Some("finishing")
+        );
+    }
+
+    #[test]
+    fn shared_prefix_shows_only_when_used_in_place() {
+        let shared = [
+            HeroicSharedPrefix {
+                id: "a".to_owned(),
+                title: "Alpha".to_owned(),
+            },
+            HeroicSharedPrefix {
+                id: "b".to_owned(),
+                title: "Bravo".to_owned(),
+            },
+        ];
+        assert_eq!(shared_prefix_note(false, &shared), None);
+        assert_eq!(shared_prefix_note(true, &[]), None);
+        assert_eq!(
+            shared_prefix_note(true, &shared).as_deref(),
+            Some("Shares prefix with: Alpha, Bravo")
+        );
+    }
+
+    #[test]
+    fn skip_reasons_read_as_sentences() {
+        assert_eq!(
+            skip_reason(&SkipReason::NameTaken("dusk".to_owned())),
+            "the name dusk is taken"
+        );
+        assert_eq!(
+            skip_reason(&SkipReason::NeedsRunner { proton: true }),
+            "needs a Proton runner"
+        );
+        assert_eq!(
+            skip_reason(&SkipReason::Blocked("its prefix doesn't exist".to_owned())),
+            "its prefix doesn't exist"
+        );
+    }
+
+    #[test]
+    fn review_warnings_show_anti_cheat_once_and_nothing_else() {
+        assert!(review_warnings(&[Warning::Omitted(3), Warning::Dropped(1)]).is_empty());
+        assert_eq!(
+            review_warnings(&[
+                Warning::Omitted(2),
+                Warning::AntiCheatNotImported,
+                Warning::NeedsAttention(Vec::new()),
+            ]),
+            ["Heroic-managed anti-cheat runtime is not imported"]
+        );
     }
 
     /// Feeds the page each listed poster's decode, as the grid's workers would.
