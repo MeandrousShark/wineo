@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use iced::futures::channel::mpsc::{UnboundedSender, unbounded};
@@ -592,15 +592,49 @@ impl Page {
             .map(|(handle, _)| handle)
     }
 
-    /// The listed posters that decoded in the grid. One that didn't is left
-    /// out, since a file can look like an image and still be unusable.
-    fn usable_posters(&self) -> HashMap<String, (PathBuf, Format)> {
+    /// Offers the single game's poster as its Grid art once the poster has
+    /// decoded. The art draft ignores it if the user already chose or removed
+    /// a Grid file.
+    fn prefill_poster(&mut self) {
+        if self.draft.batch || !matches!(self.step, Step::Details | Step::Review) {
+            return;
+        }
+        let Some(candidate) = self.prepared.as_ref().map(|prepared| &prepared.candidate) else {
+            return;
+        };
+        if let Some(Some((handle, format))) = self.posters.get(&candidate.id)
+            && let Some(path) = &candidate.poster
+        {
+            self.art.prefill(
+                Kind::Grid,
+                path,
+                heroic_import::poster_name(&candidate.id, *format),
+                "From Heroic",
+                handle.clone(),
+            );
+        }
+    }
+
+    /// The listed posters a batch may store. One that failed to decode in the
+    /// grid is left out, since a file can look like an image and still be
+    /// unusable; one still decoding is checked again when it's stored.
+    fn batch_posters(&self) -> HashMap<String, BatchPoster> {
         self.listing
             .iter()
             .flat_map(|listing| &listing.candidates)
             .filter_map(|candidate| {
-                let (_, format) = self.posters.get(&candidate.id)?.as_ref()?;
-                Some((candidate.id.clone(), (candidate.poster.clone()?, *format)))
+                let decoded = match self.posters.get(&candidate.id) {
+                    Some(Some(_)) => true,
+                    Some(None) => return None,
+                    None => false,
+                };
+                Some((
+                    candidate.id.clone(),
+                    BatchPoster {
+                        path: candidate.poster.clone()?,
+                        decoded,
+                    },
+                ))
             })
             .collect()
     }
@@ -800,7 +834,7 @@ impl Page {
             return Task::none();
         };
         let source = listing.source.clone();
-        let posters = self.usable_posters();
+        let posters = self.batch_posters();
         let token = Token::new();
         self.token = Some(token.clone());
         self.step = Step::Working;
@@ -894,7 +928,7 @@ impl Page {
                                         &paths,
                                         &name,
                                         app,
-                                        posters.get(app).map(|(path, _)| path.as_path()),
+                                        posters.get(app),
                                     ));
                                     if fetch_batch_art {
                                         notes.extend(
@@ -1057,6 +1091,8 @@ impl Page {
             }
             Event::Poster(generation, id, result) if generation == self.poster_generation => {
                 self.posters.insert(id, result.ok());
+                // The game's details may have opened before its poster decoded.
+                self.prefill_poster();
                 Task::none()
             }
             Event::Toggle(index) => {
@@ -1116,19 +1152,6 @@ impl Page {
                         self.status.clear();
                         self.step = Step::Details;
                         self.art = artwork::Draft::new();
-                        let candidate = &prepared.candidate;
-                        if let Some((handle, format)) =
-                            self.posters.get(&candidate.id).and_then(Option::as_ref)
-                            && let Some(path) = &candidate.poster
-                        {
-                            self.art.prefill(
-                                Kind::Grid,
-                                path,
-                                heroic_import::poster_name(&candidate.id, *format),
-                                "From Heroic",
-                                handle.clone(),
-                            );
-                        }
                         self.art_generation = self.art_generation.wrapping_add(1);
                         let art_generation = self.art_generation;
                         let task = self
@@ -1136,6 +1159,7 @@ impl Page {
                             .configure(self.paths.clone(), prepared.candidate.title.clone())
                             .map(move |event| Event::Art(art_generation, event));
                         self.prepared = Some(prepared);
+                        self.prefill_poster();
                         return task;
                     }
                     Err(error) => self.error = Some(error),
@@ -2789,16 +2813,29 @@ fn heroic_id(game: &Game) -> &str {
     }
 }
 
+/// A Heroic poster a batch may store, and whether the grid decoded it.
+#[derive(Debug, Clone)]
+struct BatchPoster {
+    path: PathBuf,
+    decoded: bool,
+}
+
 /// Stores Heroic's cached poster as a batch-imported environment's Grid art.
 /// It runs before SteamGridDB, which then only fills what's still missing. Art
-/// never undoes an import, so a failure is only a note.
+/// never undoes an import, so a failure is only a note. Runs on a worker,
+/// since a poster the grid hadn't decoded yet is decoded here.
 fn store_heroic_poster(
     paths: &Paths,
     name: &str,
     app: &str,
-    poster: Option<&Path>,
+    poster: Option<&BatchPoster>,
 ) -> Option<String> {
-    heroic_import::store_poster(paths, name, app, poster?)
+    let poster = poster?;
+    // Core only checks the signature, so the image has to decode first.
+    if !poster.decoded && artwork::preview_with_format(&poster.path, Kind::Grid).is_err() {
+        return None;
+    }
+    heroic_import::store_poster(paths, name, app, &poster.path)
         .err()
         .map(|error| format!("Heroic poster: {error}"))
 }
@@ -3361,10 +3398,9 @@ mod tests {
         assert!(page.poster("dusk").is_some());
         assert!(page.poster("dawn").is_none());
         assert!(page.poster("noon").is_none());
-        assert_eq!(
-            page.usable_posters().into_keys().collect::<Vec<_>>(),
-            ["dusk"]
-        );
+        let posters = page.batch_posters();
+        assert_eq!(posters.keys().collect::<Vec<_>>(), ["dusk"]);
+        assert!(posters["dusk"].decoded);
         // A reply for an earlier listing is dropped.
         let dusk = listing.candidates[DUSK].poster.clone().unwrap();
         let _ = page.update(Event::Poster(
@@ -3503,8 +3539,8 @@ mod tests {
         decode_posters(&mut page);
         open_single(&mut page, DAWN);
         assert_eq!(page.art.prefilled(Kind::Grid), None);
-        // A batch only stores posters that decoded.
-        assert!(!page.usable_posters().contains_key("dawn"));
+        // A batch skips posters that failed to decode.
+        assert!(!page.batch_posters().contains_key("dawn"));
         let paths = page.paths.clone();
         wineo_core::environment::Environment::create_native(
             &paths,
@@ -3529,6 +3565,77 @@ mod tests {
         assert_eq!(
             config.kinds[&Kind::Grid].source,
             wineo_core::art::Source::SteamGridDb(42)
+        );
+    }
+
+    #[test]
+    fn a_poster_that_decodes_after_details_open_is_prefilled_then() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        open_single(&mut page, DUSK);
+        assert_eq!(page.art.prefilled(Kind::Grid), None);
+        decode_posters(&mut page);
+        assert_eq!(page.art.prefilled(Kind::Grid), Some("heroic-dusk.png"));
+    }
+
+    #[test]
+    fn a_removed_poster_is_not_prefilled_again() {
+        let clear = |page: &mut Page| {
+            let _ = page.update(Event::Art(
+                page.art_generation,
+                artwork::Event::Clear(Kind::Grid),
+            ));
+        };
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        decode_posters(&mut page);
+        open_single(&mut page, DUSK);
+        assert_eq!(page.art.prefilled(Kind::Grid), Some("heroic-dusk.png"));
+        clear(&mut page);
+        decode_posters(&mut page);
+        assert_eq!(page.art.prefilled(Kind::Grid), None);
+
+        // Removing it before the poster decodes counts too.
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        open_single(&mut page, DUSK);
+        clear(&mut page);
+        decode_posters(&mut page);
+        assert_eq!(page.art.prefilled(Kind::Grid), None);
+    }
+
+    #[test]
+    fn a_batch_decodes_posters_the_grid_had_not_yet() {
+        let root = tempdir().unwrap();
+        let page = grid_page(root.path());
+        let posters = page.batch_posters();
+        assert!(!posters["dusk"].decoded);
+        assert!(!posters["dawn"].decoded);
+        let paths = page.paths.clone();
+        for name in ["dusk", "dawn"] {
+            wineo_core::environment::Environment::create_native(
+                &paths,
+                &GlobalConfig::default(),
+                name,
+                None,
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                store_heroic_poster(&paths, name, name, posters.get(name)),
+                None
+            );
+        }
+        let config = wineo_core::art::ArtConfig::load(&paths.art_dir("dusk")).unwrap();
+        assert_eq!(
+            config.kinds[&Kind::Grid].source,
+            wineo_core::art::Source::Manual("heroic-dusk.png".to_owned())
+        );
+        assert!(
+            !paths
+                .art_dir("dawn")
+                .join(wineo_core::art::ART_FILE)
+                .exists()
         );
     }
 }

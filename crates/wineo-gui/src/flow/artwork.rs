@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -111,6 +111,9 @@ pub(crate) struct Draft {
     error: Option<String>,
     configuration_sequence: u64,
     manual_entry: bool,
+    /// Kinds the user chose or removed a file for, which a prefill must not
+    /// override.
+    touched: BTreeSet<Kind>,
 }
 
 impl Draft {
@@ -173,6 +176,7 @@ impl Draft {
                 let local = self.local.entry(kind).or_default();
                 local.path = value.clone();
                 local.prefilled = None;
+                self.touched.insert(kind);
                 local.sequence = local.sequence.wrapping_add(1);
                 local.chooser_sequence = local.chooser_sequence.wrapping_add(1);
                 local.preview = None;
@@ -395,7 +399,8 @@ impl Draft {
 
     /// Picks `path` for `kind` on the user's behalf, already decoded as
     /// `preview`. It's stored under the source name `original` and shown with
-    /// `note`, and the user can remove or replace it like their own pick.
+    /// `note`, and the user can remove or replace it like their own pick. Does
+    /// nothing once the user has chosen or removed a file for `kind`.
     pub(crate) fn prefill(
         &mut self,
         kind: Kind,
@@ -404,6 +409,9 @@ impl Draft {
         note: &'static str,
         preview: image::Handle,
     ) {
+        if self.touched.contains(&kind) || self.is_selected(kind) {
+            return;
+        }
         let local = self.local.entry(kind).or_default();
         local.path = path.to_string_lossy().into_owned();
         local.sequence = local.sequence.wrapping_add(1);
