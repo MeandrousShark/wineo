@@ -14,6 +14,9 @@ use wineo_core::steamgriddb::{self, Api, Game};
 
 use crate::theme::Palette;
 
+/// Width of the tile block, so parent layouts can reserve a column for it.
+pub(crate) const WIDTH: u32 = 356;
+
 #[derive(Clone, Debug)]
 pub(crate) enum Event {
     Path(Kind, String),
@@ -444,7 +447,7 @@ impl Draft {
                 .size(12)
                 .color(palette.muted),
             column![
-                self.tile(Kind::Hero, "Hero", "Wide background", 356, 112, palette),
+                self.tile(Kind::Hero, "Hero", "Wide background", WIDTH, 112, palette),
                 row![
                     column![
                         self.tile(Kind::Logo, "Logo", "Title graphic", 196, 78, palette),

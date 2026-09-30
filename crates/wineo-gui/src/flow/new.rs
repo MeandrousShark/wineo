@@ -33,6 +33,10 @@ use super::{Action, artwork};
 use crate::picker;
 use crate::theme::Palette;
 
+const FORM_WIDTH: u32 = 440;
+/// Below this content width the artwork stacks under the form.
+const TWO_COLUMNS: f32 = 800.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Windows,
@@ -1013,7 +1017,7 @@ impl Page {
     }
 
     fn details_form(&self, palette: Palette) -> Element<'_, Event> {
-        let mut form = column![].spacing(10).width(Fill).max_width(440);
+        let mut form = column![].spacing(10).width(Fill).max_width(FORM_WIDTH);
         form = form.push(
             row![
                 column![
@@ -1199,8 +1203,8 @@ impl Page {
                     responsive(move |size| {
                         let form = self.details_form(palette);
                         let art = self.art.view(palette).map(Event::Art);
-                        if size.width >= 800.0 {
-                            row![form, container(art).width(356)]
+                        if size.width >= TWO_COLUMNS {
+                            row![form, container(art).width(artwork::WIDTH)]
                                 .spacing(16)
                                 .width(Fill)
                                 .into()
