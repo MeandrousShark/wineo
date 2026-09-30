@@ -48,8 +48,19 @@ pub struct ExternalDependency {
     pub target: PathBuf,
 }
 
-/// A deterministic snapshot of a source tree, including regular-file content,
-/// metadata, and link targets.
+/// A deterministic snapshot of a source tree, used to notice changes between
+/// review and copy. It comes in two kinds that never compare equal.
+///
+/// Imports (`inspect`, `inspect_with`, `execute_reviewed`, Heroic planning,
+/// and runner copies) hash metadata only: path, kind, size, mode, link count,
+/// mtime, ctime, inode, and link target. A source can be a whole library, and
+/// reading every file made a large import look stuck. ctime still catches a
+/// same-size rewrite.
+///
+/// Snapshot, clone, and portable hash regular-file content plus metadata
+/// without inode or ctime. A restore renames the old prefix aside, which
+/// changes its ctime, and rollback must still recognize it. Restore markers
+/// also persist this fingerprint, so its hash must not change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceFingerprint {
     hash: u64,
@@ -97,12 +108,23 @@ pub struct ImportedSettings {
     pub heroic_id: Option<String>,
 }
 
-/// Events emitted while copying a prefix or runner tree.
+/// Events emitted while checking and copying a prefix or runner tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportProgress {
-    Started { entries: u64 },
-    Copied { path: PathBuf },
-    Finished { entries: u64 },
+    /// Entries walked so far by the current source check. Each check starts
+    /// counting from zero again.
+    Checking {
+        entries: u64,
+    },
+    Started {
+        entries: u64,
+    },
+    Copied {
+        path: PathBuf,
+    },
+    Finished {
+        entries: u64,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -147,7 +169,27 @@ pub fn inspect(
     runner: Option<&Runner>,
     arch: Option<Arch>,
 ) -> Result<Inspection> {
-    inspect_impl(source.as_ref(), runner, arch, true)
+    inspect_with(source, runner, arch, &Token::new(), |_| {})
+}
+
+/// `inspect` that reports `ImportProgress::Checking` while it walks the
+/// source and stops with `Cancelled` when `cancel` is set.
+pub fn inspect_with(
+    source: impl AsRef<Path>,
+    runner: Option<&Runner>,
+    arch: Option<Arch>,
+    cancel: &Token,
+    mut progress: impl FnMut(ImportProgress),
+) -> Result<Inspection> {
+    let mut check = Check::new(cancel, &mut progress);
+    inspect_impl(
+        source.as_ref(),
+        runner,
+        arch,
+        true,
+        FingerprintKind::Metadata,
+        &mut check,
+    )
 }
 
 pub(crate) fn inspect_root(
@@ -155,7 +197,35 @@ pub(crate) fn inspect_root(
     runner: Option<&Runner>,
     arch: Arch,
 ) -> Result<Inspection> {
-    inspect_impl(source, runner, Some(arch), false)
+    let cancel = Token::new();
+    let mut quiet = |_| {};
+    let mut check = Check::new(&cancel, &mut quiet);
+    inspect_impl(
+        source,
+        runner,
+        Some(arch),
+        false,
+        FingerprintKind::Content,
+        &mut check,
+    )
+}
+
+/// Whether a directory directly under `root` is itself a prefix. Heroic's
+/// default prefix can hold every game's prefix, and importing it would copy
+/// them all. Only immediate children are read so this stays cheap.
+pub(crate) fn holds_other_prefixes(root: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(root) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        if name == "pfx" || name == "drive_c" || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+        {
+            return false;
+        }
+        let child = entry.path();
+        child.join("system.reg").is_file() || child.join("pfx/system.reg").is_file()
+    })
 }
 
 pub(crate) fn root_layout_ambiguous(source: &Path) -> bool {
@@ -167,6 +237,8 @@ fn inspect_impl(
     runner: Option<&Runner>,
     arch: Option<Arch>,
     normalize: bool,
+    kind: FingerprintKind,
+    check: &mut Check<'_>,
 ) -> Result<Inspection> {
     let source = canonical_source(source)?;
     let source = if normalize {
@@ -175,6 +247,12 @@ fn inspect_impl(
         source
     };
     let (source_root, wine_prefix, layout) = resolve_layout(&source, runner)?;
+    if holds_other_prefixes(&source_root) {
+        bail!(
+            "{} holds other prefixes; choose the game's own prefix",
+            source_root.display()
+        );
+    }
     validate_prefix(&wine_prefix)?;
 
     let detected = registry_arch(&wine_prefix)?;
@@ -197,8 +275,7 @@ fn inspect_impl(
         );
     }
 
-    let external_dependencies = find_external_dependencies(&source_root)?;
-    let fingerprint = fingerprint(&source_root)?;
+    let (external_dependencies, fingerprint) = scan(&source_root, kind, check)?;
     Ok(Inspection {
         source_root,
         wine_prefix,
@@ -245,7 +322,13 @@ pub fn execute_reviewed(
         .map_err(|err| anyhow!(err))?
         .resolve(&request.runner)
         .map_err(|err| anyhow!(err))?;
-    let first = inspect(&request.source, Some(&runner), request.arch)?;
+    let first = inspect_with(
+        &request.source,
+        Some(&runner),
+        request.arch,
+        cancel,
+        &mut progress,
+    )?;
     if let Some(reviewed) = reviewed {
         ensure_same_review(reviewed, &first)?;
     }
@@ -284,7 +367,13 @@ pub fn execute_reviewed(
             &[&source_root, &destination],
         )
         .map_err(|err| anyhow!(err))?;
-    let locked = inspect(&request.source, Some(&runner), request.arch)?;
+    let locked = inspect_with(
+        &request.source,
+        Some(&runner),
+        request.arch,
+        cancel,
+        &mut progress,
+    )?;
     ensure_same_review(&first, &locked)?;
     if let Some(reviewed) = reviewed {
         ensure_same_review(reviewed, &locked)?;
@@ -353,7 +442,7 @@ pub fn execute_reviewed(
             &mut progress,
         )?;
         check_cancelled(cancel)?;
-        let after = fingerprint(&source_root)?;
+        let after = import_fingerprint(&source_root, &mut Check::new(cancel, &mut progress))?;
         if after != locked.fingerprint {
             bail!(
                 "{} changed while it was being copied; try again",
@@ -374,7 +463,7 @@ pub fn execute_reviewed(
         });
     } else {
         check_cancelled(cancel)?;
-        let after = fingerprint(&source_root)?;
+        let after = import_fingerprint(&source_root, &mut Check::new(cancel, &mut progress))?;
         if after != locked.fingerprint {
             bail!(
                 "{} changed while it was being reviewed; try again",
@@ -605,17 +694,8 @@ pub(crate) fn reject_overlapping_paths(source: &Path, destination: &Path) -> Res
 fn find_external_dependencies(root: &Path) -> Result<Vec<ExternalDependency>> {
     let mut found = Vec::new();
     walk_no_follow(root, &mut |path, metadata| {
-        if !metadata.file_type().is_symlink() {
-            return Ok(());
-        }
-        let target = fs::read_link(path)
-            .with_context(|| format!("failed to read link {}", path.display()))?;
-        let resolved = resolve_link(path, &target);
-        if !resolved.starts_with(root) {
-            found.push(ExternalDependency {
-                source: path.to_owned(),
-                target: resolved,
-            });
+        if let Some(dependency) = external_dependency(root, path, metadata)? {
+            found.push(dependency);
         }
         Ok(())
     })?;
@@ -623,40 +703,208 @@ fn find_external_dependencies(root: &Path) -> Result<Vec<ExternalDependency>> {
     Ok(found)
 }
 
+fn external_dependency(
+    root: &Path,
+    path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<Option<ExternalDependency>> {
+    if !metadata.file_type().is_symlink() {
+        return Ok(None);
+    }
+    let target =
+        fs::read_link(path).with_context(|| format!("failed to read link {}", path.display()))?;
+    let resolved = resolve_link(path, &target);
+    Ok((!resolved.starts_with(root)).then(|| ExternalDependency {
+        source: path.to_owned(),
+        target: resolved,
+    }))
+}
+
+const CHECK_INTERVAL: u64 = 1000;
+
+/// Counts entries during a pre-copy walk so a large source reports progress
+/// and can be canceled instead of looking stuck.
+struct Check<'a> {
+    cancel: &'a Token,
+    progress: &'a mut dyn FnMut(ImportProgress),
+    entries: u64,
+}
+
+impl<'a> Check<'a> {
+    fn new(cancel: &'a Token, progress: &'a mut dyn FnMut(ImportProgress)) -> Self {
+        Self {
+            cancel,
+            progress,
+            entries: 0,
+        }
+    }
+
+    fn tick(&mut self) -> Result<()> {
+        check_cancelled(self.cancel)?;
+        self.entries += 1;
+        if self.entries.is_multiple_of(CHECK_INTERVAL) {
+            (self.progress)(ImportProgress::Checking {
+                entries: self.entries,
+            });
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) {
+        (self.progress)(ImportProgress::Checking {
+            entries: self.entries,
+        });
+    }
+}
+
+/// Which fingerprint a caller compares; see `SourceFingerprint`.
+#[derive(Debug, Clone, Copy)]
+enum FingerprintKind {
+    Content,
+    Metadata,
+}
+
+/// External links and the fingerprint of `root`, found in one walk.
+fn scan(
+    root: &Path,
+    kind: FingerprintKind,
+    check: &mut Check<'_>,
+) -> Result<(Vec<ExternalDependency>, SourceFingerprint)> {
+    let mut found = Vec::new();
+    let fingerprint = fingerprint_walk(root, kind, check, Some(&mut found))?;
+    found.sort_by(|a, b| a.source.cmp(&b.source));
+    Ok((found, fingerprint))
+}
+
+/// The content fingerprint snapshot, clone, and portable compare against.
 pub(crate) fn fingerprint(root: &Path) -> Result<SourceFingerprint> {
-    let mut records = Vec::new();
+    let cancel = Token::new();
+    fingerprint_walk(
+        root,
+        FingerprintKind::Content,
+        &mut Check::new(&cancel, &mut |_| {}),
+        None,
+    )
+}
+
+fn import_fingerprint(root: &Path, check: &mut Check<'_>) -> Result<SourceFingerprint> {
+    fingerprint_walk(root, FingerprintKind::Metadata, check, None)
+}
+
+fn fingerprint_walk(
+    root: &Path,
+    kind: FingerprintKind,
+    check: &mut Check<'_>,
+    external: Option<&mut Vec<ExternalDependency>>,
+) -> Result<SourceFingerprint> {
+    match kind {
+        FingerprintKind::Content => hash_records(root, check, external, content_record),
+        FingerprintKind::Metadata => hash_records(root, check, external, metadata_record),
+    }
+}
+
+type ContentRecord = (
+    String,
+    u8,
+    u64,
+    u32,
+    u64,
+    Option<(u64, u32)>,
+    Option<u64>,
+    Option<String>,
+);
+
+// This tuple must hash exactly as before, since restore markers persist it.
+fn content_record(relative: String, path: &Path, metadata: &fs::Metadata) -> Result<ContentRecord> {
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|duration| (duration.as_secs(), duration.subsec_nanos()));
+    let content = if metadata.file_type().is_file() {
+        Some(file_digest(path)?)
+    } else {
+        None
+    };
+    Ok((
+        relative,
+        file_kind(metadata),
+        metadata.len(),
+        metadata.mode(),
+        metadata.nlink(),
+        modified,
+        content,
+        link_target(path, metadata)?,
+    ))
+}
+
+type MetadataRecord = (
+    String,
+    u8,
+    u64,
+    u32,
+    u64,
+    (i64, i64),
+    (i64, i64),
+    u64,
+    Option<String>,
+);
+
+// ctime moves on every write, so a same-size rewrite still changes this.
+fn metadata_record(
+    relative: String,
+    path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<MetadataRecord> {
+    Ok((
+        relative,
+        file_kind(metadata),
+        metadata.len(),
+        metadata.mode(),
+        metadata.nlink(),
+        (metadata.mtime(), metadata.mtime_nsec()),
+        (metadata.ctime(), metadata.ctime_nsec()),
+        metadata.ino(),
+        link_target(path, metadata)?,
+    ))
+}
+
+fn link_target(path: &Path, metadata: &fs::Metadata) -> Result<Option<String>> {
+    if !metadata.file_type().is_symlink() {
+        return Ok(None);
+    }
+    let target =
+        fs::read_link(path).with_context(|| format!("failed to read link {}", path.display()))?;
+    Ok(Some(target.to_string_lossy().into_owned()))
+}
+
+fn hash_records<R: Hash>(
+    root: &Path,
+    check: &mut Check<'_>,
+    mut external: Option<&mut Vec<ExternalDependency>>,
+    record: impl Fn(String, &Path, &fs::Metadata) -> Result<R>,
+) -> Result<SourceFingerprint> {
+    let mut records: Vec<(String, R)> = Vec::new();
     let mut entries = 0;
     walk_no_follow(root, &mut |path, metadata| {
-        let relative = path.strip_prefix(root).unwrap_or(path);
-        let link = if metadata.file_type().is_symlink() {
-            Some(fs::read_link(path)?.to_string_lossy().into_owned())
-        } else {
-            None
-        };
-        let modified = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
-            .map(|duration| (duration.as_secs(), duration.subsec_nanos()));
-        let content = if metadata.file_type().is_file() {
-            Some(file_digest(path)?)
-        } else {
-            None
-        };
-        records.push((
-            relative.to_string_lossy().into_owned(),
-            file_kind(metadata),
-            metadata.len(),
-            metadata.mode(),
-            metadata.nlink(),
-            modified,
-            content,
-            link,
-        ));
+        check.tick()?;
+        if let Some(found) = external.as_deref_mut()
+            && let Some(dependency) = external_dependency(root, path, metadata)?
+        {
+            found.push(dependency);
+        }
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned();
+        records.push((relative.clone(), record(relative, path, metadata)?));
         entries += 1;
         Ok(())
     })?;
+    check.finish();
     records.sort_by(|a, b| a.0.cmp(&b.0));
+    let records: Vec<R> = records.into_iter().map(|(_, record)| record).collect();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     records.hash(&mut hasher);
     Ok(SourceFingerprint {
@@ -833,7 +1081,13 @@ fn copy_tree_with_reflink_mode(
     progress: &mut impl FnMut(ImportProgress),
     strict_reflink: bool,
 ) -> Result<()> {
-    let total = fingerprint(source)?.entries;
+    // Only the count is needed here, so skip reading file content.
+    let mut total = 0;
+    walk_no_follow(source, &mut |_, _| {
+        check_cancelled(cancel)?;
+        total += 1;
+        Ok(())
+    })?;
     progress(ImportProgress::Started { entries: total });
     fs::create_dir_all(destination)
         .with_context(|| format!("failed to create {}", destination.display()))?;
@@ -1259,9 +1513,15 @@ pub fn inspect_runner_copy(source: impl AsRef<Path>) -> Result<RunnerCopyInspect
             source.display()
         );
     }
+    let cancel = Token::new();
+    let (external_dependencies, fingerprint) = scan(
+        &source,
+        FingerprintKind::Metadata,
+        &mut Check::new(&cancel, &mut |_| {}),
+    )?;
     Ok(RunnerCopyInspection {
-        external_dependencies: find_external_dependencies(&source)?,
-        fingerprint: fingerprint(&source)?,
+        external_dependencies,
+        fingerprint,
         source,
         supports_wine,
         supports_proton,
@@ -1347,7 +1607,7 @@ fn copy_runner_with_review(
     let staging_path = staging.path().to_owned();
     copy_tree(source, &staging_path, &destination, cancel, &mut progress)?;
     check_cancelled(cancel)?;
-    if fingerprint(source)? != before {
+    if import_fingerprint(source, &mut Check::new(cancel, &mut |_| {}))? != before {
         bail!(
             "runner {} changed while it was being copied; try again",
             source.display()
@@ -1786,6 +2046,75 @@ mod tests {
     }
 
     #[test]
+    fn import_fingerprint_sees_a_same_size_rewrite_without_reading_content() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        prefix(&source, "win64");
+        let file = source.join("drive_c/save.dat");
+        fs::write(&file, "aaaa").unwrap();
+        let cancel = Token::new();
+        let fingerprint = || import_fingerprint(&source, &mut Check::new(&cancel, &mut |_| {}));
+        let before = fingerprint().unwrap();
+        assert_eq!(fingerprint().unwrap(), before);
+
+        // Coarse kernel timestamps could otherwise give the rewrite the same ctime.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let metadata = fs::metadata(&file).unwrap();
+        fs::write(&file, "bbbb").unwrap();
+        filetime::set_file_mtime(
+            &file,
+            filetime::FileTime::from_last_modification_time(&metadata),
+        )
+        .unwrap();
+        let after = fs::metadata(&file).unwrap();
+        assert_eq!(after.len(), metadata.len());
+        assert_eq!(after.mtime_nsec(), metadata.mtime_nsec());
+        assert_ne!(fingerprint().unwrap(), before);
+    }
+
+    #[test]
+    fn content_fingerprint_of_a_copy_matches_the_original() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        prefix(&source, "win64");
+        fs::write(source.join("drive_c/game.exe"), "game").unwrap();
+        let copy = root.path().join("copy");
+        copy_tree(&source, &copy, &copy, &Token::new(), &mut |_| {}).unwrap();
+        assert_eq!(fingerprint(&copy).unwrap(), fingerprint(&source).unwrap());
+
+        let cancel = Token::new();
+        let mut quiet = |_| {};
+        assert_ne!(
+            import_fingerprint(&copy, &mut Check::new(&cancel, &mut quiet)).unwrap(),
+            import_fingerprint(&source, &mut Check::new(&cancel, &mut quiet)).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_folder_of_prefixes_is_refused_but_a_proton_prefix_is_not() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("Prefixes/default");
+        prefix(&folder, "win64");
+        prefix(&folder.join("Game One"), "win64");
+        prefix(&folder.join("Game Two/pfx"), "win64");
+        let error = inspect(&folder, None, None).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            format!(
+                "{} holds other prefixes; choose the game's own prefix",
+                fs::canonicalize(&folder).unwrap().display()
+            )
+        );
+
+        let proton = root.path().join("compatdata/123");
+        prefix(&proton, "win64");
+        prefix(&proton.join("pfx"), "win64");
+        let inspection =
+            inspect(&proton, Some(&Runner::fake_proton("GE-Proton9-20")), None).unwrap();
+        assert_eq!(inspection.layout, ImportLayout::Proton);
+    }
+
+    #[test]
     fn both_layout_markers_require_a_runner_choice() {
         let root = tempfile::tempdir().unwrap();
         prefix(root.path(), "win64");
@@ -1884,6 +2213,61 @@ mod tests {
         assert!(copied.join("pfx/system.reg").is_file());
         assert!(copied.join("pfx/drive_c").is_dir());
         assert!(paths.environment_config("stellar").exists());
+    }
+
+    #[test]
+    fn import_reports_checking_and_stops_when_canceled_during_a_check() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let runner_root = root.path().join("runners");
+        let prefix_root = root.path().join("prefixes");
+        wine_runner(&runner_root, "wine-build");
+        let source = root.path().join("source");
+        prefix(&source, "win64");
+        for index in 0..1200 {
+            fs::write(source.join(format!("drive_c/{index}")), "x").unwrap();
+        }
+        let global = base_global(&runner_root, &prefix_root);
+        let request = |name: &str| ImportRequest {
+            source: source.clone(),
+            name: name.to_owned(),
+            runner: "wine-build".to_owned(),
+            destination: None,
+            adopt: false,
+            arch: None,
+        };
+
+        let canceled = Token::new();
+        let result = execute(&paths, &global, request("stopped"), &canceled, |event| {
+            if matches!(event, ImportProgress::Checking { .. }) {
+                canceled.cancel();
+            }
+        });
+        assert!(result.unwrap_err().is::<Cancelled>());
+        assert!(!prefix_root.join("stopped").exists());
+        assert!(!paths.environment_config("stopped").exists());
+
+        let mut events = Vec::new();
+        execute(&paths, &global, request("done"), &Token::new(), |event| {
+            events.push(event)
+        })
+        .unwrap();
+        let started = events
+            .iter()
+            .position(|event| matches!(event, ImportProgress::Started { .. }))
+            .unwrap();
+        let checks = |events: &[ImportProgress]| {
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    ImportProgress::Checking { entries } => Some(*entries),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        // Two inspections before the copy, each with a periodic and a final count.
+        assert_eq!(checks(&events[..started]), [1000, 1203, 1000, 1203]);
+        assert_eq!(checks(&events[started..]), [1000, 1203]);
     }
 
     #[test]
