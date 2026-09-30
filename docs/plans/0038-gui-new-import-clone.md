@@ -431,6 +431,7 @@ real-game and installer acceptance above.
 Maintainer acceptance progress (2026-09-30):
 
 - Creating a Windows environment from a real installer passed in the GUI.
+- Creating an environment from an existing exe passed in the GUI.
 
 ## Scope limits
 
