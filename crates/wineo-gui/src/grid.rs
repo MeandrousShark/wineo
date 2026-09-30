@@ -245,7 +245,7 @@ impl App {
                 container(
                     column![
                         text("Your library is empty").size(22),
-                        button("Add an environment")
+                        button("Add a game")
                             .on_press_maybe((!self.foreground_busy()).then_some(Message::Add)),
                     ]
                     .spacing(12),
