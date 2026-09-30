@@ -428,6 +428,10 @@ real-game and installer acceptance above.
   canceled file choosers, opt-in launch once, and installer cancel-and-close.
   No real games, installers, or network downloads were used.
 
+Maintainer acceptance progress (2026-09-30):
+
+- Creating a Windows environment from a real installer passed in the GUI.
+
 ## Scope limits
 
 - No changes to the config schema, import ownership, copying semantics, or
