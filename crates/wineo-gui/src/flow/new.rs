@@ -1327,18 +1327,12 @@ impl Page {
             }
             Stage::Working => {
                 body = body.push(text(&self.status));
-                body = body.push(
-                    row![
-                        button("Cancel").on_press(Event::Cancel),
-                        button("Force stop").on_press_maybe(
-                            self.token
-                                .as_ref()
-                                .is_some_and(Token::is_canceled)
-                                .then_some(Event::Force)
-                        )
-                    ]
-                    .spacing(8),
-                );
+                // Force stop only makes sense after a cancel, like the other flows.
+                body = body.push(if self.token.as_ref().is_some_and(Token::is_canceled) {
+                    button("Force stop").on_press(Event::Force)
+                } else {
+                    button("Cancel").on_press(Event::Cancel)
+                });
                 if !self.log.is_empty() {
                     body = body.push(scrollable(text(&self.log)).height(220));
                 }
