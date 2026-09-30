@@ -98,7 +98,7 @@ pub(crate) struct Draft {
     fetch_sequence: u64,
     // Mirrors fetch_sequence so running blocking jobs can see they are stale.
     fetch_generation: Arc<AtomicU64>,
-    fetch_handles: Vec<iced::task::Handle>,
+    fetch_handles: BTreeMap<Kind, iced::task::Handle>,
     error: Option<String>,
     configuration_sequence: u64,
     manual_entry: bool,
@@ -228,6 +228,13 @@ impl Draft {
                             return Task::none();
                         }
                         self.remote.retain(|kind, _| self.kinds.contains(kind));
+                        self.fetch_handles.retain(|kind, handle| {
+                            let keep = self.kinds.contains(kind);
+                            if !keep {
+                                handle.abort();
+                            }
+                            keep
+                        });
                         return self.start_fetches();
                     }
                     Err(error) => self.error = Some(error),
@@ -289,6 +296,7 @@ impl Draft {
                 return self.start_fetches();
             }
             Event::Fetched(kind, sequence, result) if sequence == self.fetch_sequence => {
+                self.fetch_handles.remove(&kind);
                 if let Some(remote) = self.remote.get_mut(&kind) {
                     remote.loading = false;
                     match result {
@@ -311,7 +319,7 @@ impl Draft {
         self.fetch_generation
             .store(self.fetch_sequence, Ordering::Relaxed);
         // Aborting only drops the async wrapper; running blocking jobs stop via the generation.
-        for handle in self.fetch_handles.drain(..) {
+        for handle in std::mem::take(&mut self.fetch_handles).into_values() {
             handle.abort();
         }
         self.remote.clear();
@@ -355,7 +363,7 @@ impl Draft {
                 move |result| Event::Fetched(kind, sequence, result),
             )
             .abortable();
-            self.fetch_handles.push(handle);
+            self.fetch_handles.insert(kind, handle);
             tasks.push(task);
         }
         Task::batch(tasks)
@@ -1106,6 +1114,28 @@ mod tests {
         let generation = draft.fetch_generation.clone();
         draft.clear_fetched();
         assert_eq!(generation.load(Ordering::Relaxed), draft.fetch_sequence);
+    }
+
+    #[test]
+    fn fetch_handles_are_pruned_and_dropped_kinds_are_aborted() {
+        let mut draft = Draft::new();
+        draft.fetch = true;
+        draft.key_available = true;
+        draft.kinds = vec![Kind::Icon, Kind::Hero];
+        let (_, icon) = Task::<Event>::none().abortable();
+        let (_, hero) = Task::<Event>::none().abortable();
+        draft.fetch_handles.insert(Kind::Icon, icon.clone());
+        draft.fetch_handles.insert(Kind::Hero, hero.clone());
+        draft.configuration_sequence = 1;
+        let _ = draft.update(Event::Configured(1, Ok((ArtFetch::Icon, true))));
+        assert!(hero.is_aborted());
+        assert!(!icon.is_aborted());
+        assert_eq!(
+            draft.fetch_handles.keys().copied().collect::<Vec<_>>(),
+            vec![Kind::Icon]
+        );
+        let _ = draft.update(Event::Fetched(Kind::Icon, draft.fetch_sequence, Ok(None)));
+        assert!(draft.fetch_handles.is_empty());
     }
 
     #[test]
