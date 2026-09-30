@@ -155,8 +155,21 @@ pub fn store_poster(
     let Some(format) = art::detect(&bytes).filter(|format| Kind::Grid.accepts(*format)) else {
         return Ok(None);
     };
-    let original = format!("heroic-{app_name}.{}", format.extension());
-    art::set_manual_bytes(paths, env, None, Kind::Grid, &bytes, &original).map(Some)
+    art::set_manual_bytes(
+        paths,
+        env,
+        None,
+        Kind::Grid,
+        &bytes,
+        &poster_name(app_name, format),
+    )
+    .map(Some)
+}
+
+/// The source name a Heroic poster is recorded under, so its provenance reads
+/// as a manual pick from Heroic.
+pub fn poster_name(app_name: &str, format: art::Format) -> String {
+    format!("heroic-{app_name}.{}", format.extension())
 }
 
 pub(super) fn ensure_unchanged(
