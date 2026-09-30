@@ -1,12 +1,14 @@
 //! Which wineo runner a Heroic game should use.
 
+use std::fs;
 use std::path::PathBuf;
 
 use anyhow::Context;
 
 use crate::config::GlobalConfig;
+use crate::download;
 use crate::heroic::{HeroicImport, HeroicRunnerKind};
-use crate::import::{self, RunnerCopyInspection};
+use crate::import::{self, RunnerCopyInspection, RunnerProvenance};
 use crate::paths::Paths;
 use crate::runner::Runner;
 use crate::runners::Runners;
@@ -63,7 +65,7 @@ pub fn inspect_copyable_runner(imported: &HeroicImport) -> anyhow::Result<Runner
     Ok(reviewed)
 }
 
-/// Whether `runner` is the copy Heroic keeps, when Heroic keeps one.
+/// Whether `runner` is the copy Heroic keeps, or a copy wineo made from it.
 fn runner_matches_source(
     paths: &Paths,
     global: &GlobalConfig,
@@ -76,7 +78,19 @@ fn runner_matches_source(
     let Ok(root) = global.runner_root(paths) else {
         return false;
     };
-    crate::paths::resolve(source) == crate::paths::resolve(&root.join(runner.name()))
+    let installed = root.join(runner.name());
+    let source = crate::paths::resolve(source);
+    if source == crate::paths::resolve(&installed) {
+        return true;
+    }
+    // A copy lives under its own path, so only its receipt says where it came
+    // from. A missing or unreadable receipt just means it isn't a known copy.
+    fs::read(installed.join(download::RECEIPT))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<RunnerProvenance>(&bytes).ok())
+        .is_some_and(|receipt| {
+            receipt.method == "copy" && crate::paths::resolve(&receipt.source) == source
+        })
 }
 
 /// Suggests what to do about the runner of `imported`. With `requested`, a
@@ -139,6 +153,7 @@ pub fn suggest_runner(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::Path;
 
     use tempfile::tempdir;
@@ -229,6 +244,88 @@ mod tests {
         ));
         // Naming Heroic's own runner does.
         let suggestion = suggest_runner(&paths, &global, &imported, Some("wine-heroic")).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
+    }
+
+    /// Heroic's runner, plus a same-named Proton runner in wineo's root with an
+    /// optional receipt.
+    fn copied_proton(root: &Path, receipt: Option<&str>) -> HeroicImport {
+        let heroic_tools = root.join("heroic-tools");
+        fake_proton_runner(&heroic_tools, "GE-Proton-latest");
+        let installed = root.join("wineo-runners");
+        fake_proton_runner(&installed, "GE-Proton-latest");
+        if let Some(receipt) = receipt {
+            fs::write(
+                installed.join("GE-Proton-latest/.wineo-install.json"),
+                receipt,
+            )
+            .unwrap();
+        }
+        let mut imported = reviewed_import(root);
+        imported.runner.kind = HeroicRunnerKind::Proton;
+        imported.runner.name = "GE-Proton-latest".to_owned();
+        imported.runner.source = Some(heroic_tools.join("GE-Proton-latest"));
+        imported
+    }
+
+    fn copy_receipt(source: &Path, method: &str) -> String {
+        serde_json::json!({
+            "architecture": "x86_64",
+            "asset": "",
+            "digest": "",
+            "method": method,
+            "provider": "ge-proton",
+            "source": source,
+            "stable": true,
+            "variant": "baseline",
+            "verified_digests": [],
+            "version": "GE-Proton10-3",
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_runner_copied_from_heroic_is_used() {
+        let root = tempdir().unwrap();
+        let global = global(root.path());
+        let paths = paths(root.path());
+        let source = root.path().join("heroic-tools/GE-Proton-latest");
+        let imported = copied_proton(root.path(), Some(&copy_receipt(&source, "copy")));
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Use(name) if name == "GE-Proton-latest"));
+        let suggestion =
+            suggest_runner(&paths, &global, &imported, Some("GE-Proton-latest")).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Use(name) if name == "GE-Proton-latest"));
+    }
+
+    #[test]
+    fn a_same_named_runner_copied_from_elsewhere_is_not_heroics() {
+        let root = tempdir().unwrap();
+        let global = global(root.path());
+        let paths = paths(root.path());
+        let other = root.path().join("elsewhere/GE-Proton-latest");
+        let imported = copied_proton(root.path(), Some(&copy_receipt(&other, "copy")));
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
+
+        // Only a copy receipt counts, not another install method.
+        let source = root.path().join("heroic-tools/GE-Proton-latest");
+        let imported = copied_proton(root.path(), Some(&copy_receipt(&source, "download")));
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
+    }
+
+    #[test]
+    fn a_same_named_runner_without_a_usable_receipt_is_not_heroics() {
+        let root = tempdir().unwrap();
+        let global = global(root.path());
+        let paths = paths(root.path());
+        let imported = copied_proton(root.path(), None);
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
+
+        let imported = copied_proton(root.path(), Some("not json"));
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
         assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
     }
 
