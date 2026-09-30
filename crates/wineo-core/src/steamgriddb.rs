@@ -447,12 +447,10 @@ pub fn rank(kind: Kind, images: &mut [Image], language: &str) {
     // Highest first, with an unknown value after every known one.
     let high = |value: Option<i64>| (value.is_none(), std::cmp::Reverse(value));
     let area = |image: &Image| {
-        high(
-            image
-                .width
-                .zip(image.height)
-                .map(|(width, height)| (width * height) as i64),
-        )
+        high(image.width.zip(image.height).map(|(width, height)| {
+            // The API's numbers are untrusted, and an overflow would panic in debug.
+            i64::try_from(width.saturating_mul(height)).unwrap_or(i64::MAX)
+        }))
     };
     let preferred = |image: &Image, over: Format| match image.format {
         Some(Format::Png) => 0,
@@ -465,7 +463,7 @@ pub fn rank(kind: Kind, images: &mut [Image], language: &str) {
             .zip(image.height)
             .is_some_and(|(width, height)| width.min(height) >= 128)
     };
-    // Unknown dimensions are neither oversized nor big enough.
+    // Oversized needs both sides known; big enough below needs only a known width.
     let oversized = |image: &Image| {
         image
             .width
@@ -1295,6 +1293,23 @@ mod tests {
             scored(sized(candidate(3), 1920, 620), 1),
         ];
         assert_eq!(ranked(Kind::Hero, heroes, "en"), [3, 2, 1]);
+    }
+
+    #[test]
+    fn a_known_width_is_big_enough_without_a_height() {
+        let mut wide = scored(candidate(1), 1);
+        wide.width = Some(1600);
+        let images = vec![wide, scored(sized(candidate(2), 800, 300), 99)];
+        assert_eq!(ranked(Kind::Logo, images, "en"), [1, 2]);
+    }
+
+    #[test]
+    fn huge_reported_sizes_rank_without_overflowing() {
+        let images = vec![
+            sized(candidate(1), u64::MAX, u64::MAX),
+            sized(candidate(2), 512, 512),
+        ];
+        assert_eq!(ranked(Kind::Icon, images, "en"), [1, 2]);
     }
 
     #[test]
