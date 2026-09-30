@@ -39,6 +39,18 @@ The maintainer approved these changes during acceptance testing:
   options section. Template selection shows a compact summary of its changes.
 - Dismissing a chooser without a selection is silent, including portals that
   report the dismissal as an Other response.
+- New environment previews the game's page: a hero banner with the logo in
+  its corner like the library panel, the poster beside the form, and the
+  icon beside the name. Art controls and Back/Next align with the form, and
+  narrow windows stack the poster and icon below it. Hero, logo, and icon
+  status share one line under the banner.
+- Choosing a SteamGridDB match downloads each enabled kind right away and
+  shows it in its tile; creation stores those bytes instead of fetching
+  again. Changing the match cancels superseded fetches before decoding.
+- Logo and hero ranking prefers big enough over biggest (logos 1200 px wide,
+  heroes 1920 px), and images over 4096 px on the long side are used only
+  when nothing smaller exists. This also changes CLI `art fetch` picks. The
+  spinner tick runs only while something spins, so the idle GUI stays quiet.
 
 These refinements supersede the full-page and visible-art-path details below.
 The implementation keeps SteamGridDB requests explicit; entering a name
