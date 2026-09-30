@@ -1997,6 +1997,9 @@ fn perform(
     );
     pump_log(&log, &mut log_offset, &mut log_output);
     match outcome {
+        Ok(Outcome::Finished { exit_code: Some(0) }) => {
+            report.notes.push("Installed successfully".to_owned());
+        }
         Ok(Outcome::Finished { exit_code }) => report.notes.push(format!(
             "Installer exited with code {}",
             exit_code.map_or_else(|| "unknown".to_owned(), |code| code.to_string())
