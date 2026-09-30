@@ -190,7 +190,12 @@ grids to the portrait sizes 600x900, 342x482, and 660x930. `--asset` skips
 all of these filters. Icons must be at least 128 px on their short side to
 rank first, and icons and logos prefer the official style. Ranking then
 prefers your language (from `LC_ALL`, `LC_MESSAGES`, or `LANG`, with `C` or
-`POSIX` meaning `en`, and `en` next), higher score, and larger images. An
+`POSIX` meaning `en`, and `en` next), higher score, and larger images.
+For logos and heroes, an image that is big enough (logos 1200 px wide,
+heroes 1920 px) ranks above a smaller one, and past that size score decides
+instead of pixels. Logos and heroes whose
+long side exceeds 4096 px are only used when nothing smaller exists, since
+they cost far more to decode than they add on screen. An
 error during a fetch stops it but keeps the kinds already fetched, so
 running it again fills the rest. An interrupted download leaves no partial
 file. Without a terminal, a search with no matches fails with `` no
