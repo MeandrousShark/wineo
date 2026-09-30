@@ -342,6 +342,33 @@ impl Page {
         self.token.is_some()
     }
 
+    /// Background work is running: an import, or a listing, inspection, or
+    /// plan whose status stays set until its reply clears it.
+    pub(crate) fn waiting(&self) -> bool {
+        self.busy()
+            || (!self.status.is_empty()
+                && matches!(
+                    self.step,
+                    Step::Sources | Step::Games | Step::Details | Step::Review
+                ))
+    }
+
+    /// The status sits by the button that started the work, where the
+    /// person is looking, rather than at the top of the page.
+    fn status_by_action(&self) -> bool {
+        self.waiting() && matches!(self.step, Step::Games | Step::Details | Step::Review)
+    }
+
+    fn working<'a>(&'a self, palette: Palette, spin: f32) -> Element<'a, Event> {
+        row![
+            crate::spinner::spinner(palette, spin, 16.0),
+            text(&self.status).color(palette.muted)
+        ]
+        .spacing(8)
+        .align_y(Center)
+        .into()
+    }
+
     pub(crate) fn cancel(&mut self, force: bool) {
         if let Some(token) = &self.token {
             if force {
@@ -1670,7 +1697,7 @@ impl Page {
             .into()
     }
 
-    pub(crate) fn view(&self, palette: Palette, width: f32) -> Element<'_, Event> {
+    pub(crate) fn view(&self, palette: Palette, width: f32, spin: f32) -> Element<'_, Event> {
         let mut body = column![].spacing(14).width(Fill);
         let title = match self.step {
             Step::Sources => "Import from Heroic".to_owned(),
@@ -1682,7 +1709,9 @@ impl Page {
             Step::Finished => "Heroic import finished".to_owned(),
         };
         body = body.push(text(title).size(26).color(palette.foreground));
-        if !self.status.is_empty() {
+        if self.waiting() && !self.status_by_action() {
+            body = body.push(self.working(palette, spin));
+        } else if !self.status.is_empty() && !self.status_by_action() {
             body = body.push(text(&self.status).color(palette.muted));
         }
         for note in &self.notes {
@@ -1723,18 +1752,20 @@ impl Page {
                     }
                     let count = self.chosen.len();
                     let idle = !self.busy();
-                    body = body.push(
-                        row![
-                            button("Select all").on_press_maybe(idle.then_some(Event::SelectAll)),
-                            button("Select none")
-                                .on_press_maybe((idle && count > 0).then_some(Event::SelectNone)),
-                            button(text(import_label(count))).on_press_maybe(
-                                (idle && count > 0).then_some(Event::ImportSelected)
-                            ),
-                        ]
-                        .spacing(12)
-                        .align_y(Center),
-                    );
+                    let mut actions = row![
+                        button("Select all").on_press_maybe(idle.then_some(Event::SelectAll)),
+                        button("Select none")
+                            .on_press_maybe((idle && count > 0).then_some(Event::SelectNone)),
+                        button(text(import_label(count))).on_press_maybe(
+                            (!self.waiting() && count > 0).then_some(Event::ImportSelected)
+                        ),
+                    ]
+                    .spacing(12)
+                    .align_y(Center);
+                    if self.status_by_action() {
+                        actions = actions.push(self.working(palette, spin));
+                    }
+                    body = body.push(actions);
                 }
             }
             Step::Details => {
@@ -1893,7 +1924,15 @@ impl Page {
                             .map(move |event| Event::Art(art_generation, event)),
                     );
                 }
-                body = body.push(button("Next: Review").on_press(Event::Plan));
+                let mut next = row![
+                    button("Next: Review").on_press_maybe((!self.waiting()).then_some(Event::Plan))
+                ]
+                .spacing(12)
+                .align_y(Center);
+                if self.status_by_action() {
+                    next = next.push(self.working(palette, spin));
+                }
+                body = body.push(next);
             }
             Step::Review => {
                 if let Some(review) = &self.review {
@@ -2114,8 +2153,16 @@ impl Page {
                             library.ready_count() > 0 || !library.backfills().is_empty()
                         }
                     };
-                    body = body
-                        .push(button("Import").on_press_maybe(can_import.then_some(Event::Import)));
+                    let mut import =
+                        row![button("Import").on_press_maybe(
+                            (can_import && !self.waiting()).then_some(Event::Import)
+                        )]
+                        .spacing(12)
+                        .align_y(Center);
+                    if self.status_by_action() {
+                        import = import.push(self.working(palette, spin));
+                    }
+                    body = body.push(import);
                 }
             }
             Step::Working => {
@@ -3236,6 +3283,8 @@ mod tests {
         let (mut page, _) = Page::new(paths);
         page.step = Step::Games;
         page.listing = Some(listing);
+        // A finished listing reply clears the "Reading Heroic games" status.
+        page.status.clear();
         page.already.insert("old".to_owned(), "old".to_owned());
         page
     }
@@ -3409,6 +3458,34 @@ mod tests {
             artwork::preview_with_format(&dusk, Kind::Grid),
         ));
         assert!(page.poster("noon").is_none());
+    }
+
+    #[test]
+    fn inspecting_a_game_shows_the_spinner_by_the_import_button_until_its_reply() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        let listing = page.listing.clone().unwrap();
+        let reply = Ok(Box::new(
+            prepare_game(
+                &page.paths,
+                &listing.source,
+                listing.candidates[NOON].clone(),
+            )
+            .unwrap(),
+        ));
+        assert!(!page.waiting());
+        let _ = page.update(Event::Toggle(NOON));
+        let _ = page.update(Event::ImportSelected);
+        assert!(page.waiting());
+        assert!(page.status_by_action());
+        let flow = crate::flow::Page::Heroic(Box::new(page));
+        assert!(flow.spinning());
+        let crate::flow::Page::Heroic(page) = flow else {
+            unreachable!()
+        };
+        let mut page = *page;
+        let _ = page.update(Event::Prepared(page.generation, reply));
+        assert!(!page.waiting());
     }
 
     #[test]

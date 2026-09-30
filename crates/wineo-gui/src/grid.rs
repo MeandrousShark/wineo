@@ -122,7 +122,7 @@ impl App {
             };
             let width = self.flow_width();
             let dialog = container(
-                flow.view(palette, width)
+                flow.view(palette, width, self.spinner_angle)
                     .map(move |event| Message::Flow(generation, event)),
             )
             .width(width)

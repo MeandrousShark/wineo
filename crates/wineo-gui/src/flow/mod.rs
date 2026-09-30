@@ -94,8 +94,14 @@ impl Page {
         }
     }
 
-    /// `width` is the dialog's width, for pages that lay out by it.
-    pub(crate) fn view(&self, palette: Palette, width: f32) -> Element<'_, Event> {
+    /// Background work that should show the spinner.
+    pub(crate) fn spinning(&self) -> bool {
+        matches!(self, Self::Heroic(page) if page.waiting())
+    }
+
+    /// `width` is the dialog's width, for pages that lay out by it, and
+    /// `spin` is the spinner's angle.
+    pub(crate) fn view(&self, palette: Palette, width: f32, spin: f32) -> Element<'_, Event> {
         match self {
             Self::New(page) => page
                 .view(palette)
@@ -105,7 +111,7 @@ impl Page {
                 .map(|event| Event::Import(Box::new(event))),
             Self::Clone(page) => page.view(palette).map(|event| Event::Copy(Box::new(event))),
             Self::Heroic(page) => page
-                .view(palette, width)
+                .view(palette, width, spin)
                 .map(|event| Event::HeroicMessage(Box::new(event))),
             Self::Choose(_) => container(
                 column![

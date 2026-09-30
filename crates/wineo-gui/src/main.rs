@@ -225,6 +225,12 @@ impl App {
             Message::Loaded,
         )
     }
+    fn spinning(&self) -> bool {
+        self.operation.is_some()
+            || self.settings.as_ref().is_some_and(|page| page.saving)
+            || self.flow.as_ref().is_some_and(flow::Page::spinning)
+    }
+
     fn subscription(&self) -> Subscription<Message> {
         let idle = if self.scroll_visible_until.is_some() {
             iced::time::every(Duration::from_millis(250)).map(|_| Message::ScrollIdle)
@@ -232,12 +238,11 @@ impl App {
             Subscription::none()
         };
         // Every message rebuilds the view, so an always-on tick keeps the app busy while idle.
-        let spinner =
-            if self.operation.is_some() || self.settings.as_ref().is_some_and(|page| page.saving) {
-                window::frames().map(Message::SpinnerTick)
-            } else {
-                Subscription::none()
-            };
+        let spinner = if self.spinning() {
+            window::frames().map(Message::SpinnerTick)
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
             iced::time::every(Duration::from_secs(2)).map(|_| Message::Refresh),
             iced::system::theme_changes().map(Message::ThemeChanged),
@@ -528,9 +533,7 @@ impl App {
                 Task::none()
             }
             Message::SpinnerTick(now) => {
-                if self.operation.is_some()
-                    || self.settings.as_ref().is_some_and(|page| page.saving)
-                {
+                if self.spinning() {
                     self.spinner_angle = spinner::angle(self.spinner_start, now);
                 }
                 Task::none()
