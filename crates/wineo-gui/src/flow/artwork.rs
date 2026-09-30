@@ -519,6 +519,7 @@ impl Draft {
         let logo = self
             .art_preview(Kind::Logo)
             .map(|(handle, _)| handle.clone());
+        let logo_selected = self.is_selected(Kind::Logo);
         let logo_button = match logo {
             Some(handle) => button(
                 container(
@@ -535,26 +536,27 @@ impl Draft {
                 border: border::rounded(6).width(2).color(
                     if matches!(status, button::Status::Hovered) {
                         palette.primary
+                    } else if logo_selected {
+                        palette.success
                     } else {
                         Color::TRANSPARENT
                     },
                 ),
                 ..button::Style::default()
             }),
-            None => {
-                let selected = self.is_selected(Kind::Logo);
-                button(container(text("Logo").size(14)).center(Fill))
-                    .width(140)
-                    .height(56)
-                    .style(move |_, status| button::Style {
-                        background: Some(palette.surface.scale_alpha(0.9).into()),
-                        text_color: palette.foreground,
-                        border: border::rounded(6)
-                            .width(1)
-                            .color(outline(status, selected, palette)),
-                        ..button::Style::default()
-                    })
-            }
+            None => button(container(text("Logo").size(14)).center(Fill))
+                .width(140)
+                .height(56)
+                .style(move |_, status| button::Style {
+                    background: Some(palette.surface.scale_alpha(0.9).into()),
+                    text_color: palette.foreground,
+                    border: border::rounded(6).width(1).color(outline(
+                        status,
+                        logo_selected,
+                        palette,
+                    )),
+                    ..button::Style::default()
+                }),
         }
         .on_press(Event::Browse(Kind::Logo));
         // The scrim keeps a light logo readable over a bright hero.
@@ -594,7 +596,7 @@ impl Draft {
         .into()
     }
 
-    /// Hero and logo statuses for the banner, or `None` when there is nothing to say.
+    /// Hero, logo, and icon statuses for the banner, or `None` when there is nothing to say.
     pub(crate) fn status_line(&self, palette: Palette) -> Option<Element<'_, Event>> {
         let parts = self.banner_statuses();
         if parts.is_empty() {
@@ -602,7 +604,11 @@ impl Draft {
         }
         let mut line = row![].spacing(16);
         for (kind, notes, selected) in parts {
-            let label = if kind == Kind::Hero { "Hero:" } else { "Logo:" };
+            let label = match kind {
+                Kind::Hero => "Hero:",
+                Kind::Logo => "Logo:",
+                _ => "Icon:",
+            };
             let mut part = row![text(label).size(11)].spacing(6).align_y(iced::Center);
             for note in notes {
                 part = part.push(note_view(note, palette));
@@ -628,7 +634,7 @@ impl Draft {
     }
 
     pub(crate) fn icon(&self, palette: Palette) -> Element<'_, Event> {
-        self.tile(Kind::Icon, "Icon", "", ICON_SIZE, ICON_SIZE, false, palette)
+        self.chooser(Kind::Icon, "Icon", "", ICON_SIZE, ICON_SIZE, palette)
     }
 
     /// File path entry and SteamGridDB controls, for layouts that place tiles themselves.
@@ -741,9 +747,11 @@ impl Draft {
         notes
     }
 
-    /// Hero and logo entries worth showing under the banner, with whether each can be removed.
+    /// Hero, logo, and icon entries worth showing under the banner, with
+    /// whether each can be removed. The icon's status lives here so the Name
+    /// row it sits in stays one line tall.
     fn banner_statuses(&self) -> Vec<(Kind, Vec<Note<'_>>, bool)> {
-        [Kind::Hero, Kind::Logo]
+        [Kind::Hero, Kind::Logo, Kind::Icon]
             .into_iter()
             .map(|kind| (kind, self.notes(kind), self.is_selected(kind)))
             .filter(|(_, notes, selected)| !notes.is_empty() || *selected)
@@ -759,6 +767,29 @@ impl Draft {
         width: u32,
         height: u32,
         labelled: bool,
+        palette: Palette,
+    ) -> Element<'a, Event> {
+        let mut tile = column![].spacing(5).width(width);
+        if labelled {
+            tile = tile.push(text(title).size(13));
+        }
+        tile = tile.push(self.chooser(kind, title, hint, width, height, palette));
+        for note in self.notes(kind) {
+            tile = tile.push(note_view(note, palette));
+        }
+        if self.is_selected(kind) {
+            tile = tile.push(remove(kind));
+        }
+        tile.into()
+    }
+
+    fn chooser<'a>(
+        &'a self,
+        kind: Kind,
+        title: &'static str,
+        hint: &'static str,
+        width: u32,
+        height: u32,
         palette: Palette,
     ) -> Element<'a, Event> {
         let selected = self.is_selected(kind);
@@ -784,7 +815,7 @@ impl Draft {
             .center(Fill)
             .into(),
         };
-        let chooser = button(picture)
+        button(picture)
             .width(width)
             .height(height)
             .padding(8)
@@ -796,19 +827,8 @@ impl Draft {
                     .width(1)
                     .color(outline(status, selected, palette)),
                 ..button::Style::default()
-            });
-        let mut tile = column![].spacing(5).width(width);
-        if labelled {
-            tile = tile.push(text(title).size(13));
-        }
-        tile = tile.push(chooser);
-        for note in self.notes(kind) {
-            tile = tile.push(note_view(note, palette));
-        }
-        if selected {
-            tile = tile.push(remove(kind));
-        }
-        tile.into()
+            })
+            .into()
     }
 }
 
@@ -1453,7 +1473,7 @@ mod tests {
     }
 
     #[test]
-    fn banner_statuses_only_list_hero_and_logo_with_something_to_say() {
+    fn banner_statuses_list_hero_logo_and_icon_with_something_to_say() {
         let mut draft = Draft::new();
         assert!(draft.banner_statuses().is_empty());
         draft.fetch = true;
@@ -1486,6 +1506,11 @@ mod tests {
                 (
                     Kind::Logo,
                     vec![Note::Info("Fetching...".to_owned())],
+                    false
+                ),
+                (
+                    Kind::Icon,
+                    vec![Note::Info("No icon artwork found".to_owned())],
                     false
                 ),
             ]
