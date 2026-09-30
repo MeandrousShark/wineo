@@ -392,7 +392,7 @@ impl Page {
                 if self.source.is_some() {
                     self.leave_prompt = true
                 } else {
-                    self.exit()
+                    self.action = Some(Action::Choose)
                 }
             }
             Step::Games => self.step = Step::Sources,
@@ -792,7 +792,7 @@ impl Page {
             Event::Back => self.back(),
             Event::Discard => {
                 self.leave_prompt = false;
-                self.exit();
+                self.action = Some(Action::Choose);
                 Task::none()
             }
             Event::KeepEditing => {

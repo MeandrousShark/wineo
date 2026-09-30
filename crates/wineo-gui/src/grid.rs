@@ -102,7 +102,38 @@ impl App {
             .into()
     }
     pub(crate) fn view(&self) -> Element<'_, Message> {
-        let page = self.page_view();
+        let mut page = self.page_view();
+        if let Some(flow) = &self.flow {
+            let palette = self.palette;
+            let generation = self.flow_generation;
+            let (width, height) = if matches!(flow, crate::flow::Page::Choose(_)) {
+                (680.0, 430.0)
+            } else {
+                (900.0, 720.0)
+            };
+            let dialog = container(
+                flow.view(palette)
+                    .map(move |event| Message::Flow(generation, event)),
+            )
+            .width((self.window_size.width - 40.0).clamp(280.0, width))
+            .height((self.window_size.height - 40.0).clamp(240.0, height))
+            .clip(true)
+            .style(move |_| {
+                container::Style::default()
+                    .background(palette.background)
+                    .border(border::rounded(12).width(1).color(palette.border))
+            });
+            page = stack![
+                page,
+                iced::widget::opaque(
+                    mouse_area(container(dialog).center(Fill).style(|_| {
+                        container::Style::default().background(Color::BLACK.scale_alpha(0.55))
+                    }))
+                    .on_scroll(|_| Message::OverlayInput)
+                )
+            ]
+            .into();
+        }
         if self.close_prompt {
             let message = if self.closing {
                 "Canceling and waiting for cleanup..."
@@ -140,10 +171,13 @@ impl App {
             .into();
         }
         if let Some(name) = &self.action_menu {
+            let position = menu_position(self.action_menu_position, self.window_size);
             let palette = self.palette;
             let menu = container(
                 column![
-                    text(name).size(16),
+                    text(truncate_name(name, 176.0))
+                        .size(14)
+                        .wrapping(iced::widget::text::Wrapping::None),
                     button("Settings").on_press(Message::ContextSettings(name.clone())),
                     button("Clone").on_press_maybe(
                         (!self.foreground_busy()).then(|| Message::CloneEnvironment(name.clone()))
@@ -161,10 +195,16 @@ impl App {
             });
             return stack![
                 page,
+                mouse_area(Space::new().width(Fill).height(Fill))
+                    .on_press(Message::CloseMenu)
+                    .on_right_press(Message::CloseMenu),
                 container(menu)
-                    .padding(56)
-                    .align_right(Fill)
-                    .align_top(Fill)
+                    .padding(iced::Padding {
+                        top: position.y,
+                        left: position.x,
+                        right: 0.0,
+                        bottom: 0.0
+                    })
                     .width(Fill)
                     .height(Fill)
             ]
@@ -175,12 +215,6 @@ impl App {
 
     fn page_view(&self) -> Element<'_, Message> {
         let palette = self.palette;
-        if let Some(page) = &self.flow {
-            let generation = self.flow_generation;
-            return page
-                .view(palette)
-                .map(move |event| Message::Flow(generation, event));
-        }
         if let Some(page) = &self.settings {
             return page.view(&self.paths, palette, self.spinner_frame);
         }
@@ -257,6 +291,26 @@ impl App {
                 value: palette.foreground,
                 selection: palette.primary.scale_alpha(0.4),
             });
+        let input: Element<'_, Message> = if self.flow.is_some() {
+            container(
+                text(if self.search.is_empty() {
+                    "Search library..."
+                } else {
+                    &self.search
+                })
+                .color(palette.muted),
+            )
+            .padding([6, 10])
+            .width(320)
+            .style(move |_| {
+                container::Style::default()
+                    .background(palette.surface)
+                    .border(border::rounded(6).width(1).color(palette.border))
+            })
+            .into()
+        } else {
+            input.into()
+        };
         // Keep the tree shape stable so clearing text does not drop input focus.
         let clear: Element<'_, Message> = if self.search.is_empty() {
             Space::new().into()
@@ -324,6 +378,13 @@ fn text_width(content: &str) -> f32 {
     .width
 }
 
+fn menu_position(pointer: iced::Point, window: Size) -> iced::Point {
+    iced::Point::new(
+        (pointer.x + 4.0).clamp(8.0, (window.width - 228.0).max(8.0)),
+        (pointer.y + 4.0).clamp(8.0, (window.height - 188.0).max(8.0)),
+    )
+}
+
 fn truncate_name(name: &str, max_width: f32) -> String {
     if text_width(name) <= max_width {
         return name.to_owned();
@@ -366,4 +427,23 @@ pub(super) fn scroll_style(
         rail.scroller.border = border::rounded(3);
     }
     style
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_menu_follows_pointer_and_stays_inside_window() {
+        assert_eq!(
+            menu_position(iced::Point::new(100.0, 200.0), Size::new(1200.0, 800.0)),
+            iced::Point::new(104.0, 204.0)
+        );
+        let position = menu_position(iced::Point::new(1199.0, 799.0), Size::new(1200.0, 800.0));
+        assert_eq!(position, iced::Point::new(972.0, 612.0));
+        assert_eq!(
+            menu_position(iced::Point::ORIGIN, Size::new(100.0, 100.0)),
+            iced::Point::new(8.0, 8.0)
+        );
+    }
 }

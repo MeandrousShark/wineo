@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use iced::widget::{button, checkbox, column, image, pick_list, row, text, text_input};
-use iced::{Element, Task};
+use iced::widget::{button, checkbox, column, container, image, pick_list, row, text, text_input};
+use iced::{ContentFit, Element, Task, border};
 use wineo_core::art::{self, Kind};
 use wineo_core::art_fetch::{self, Mode};
 use wineo_core::config::{ArtFetch, GlobalConfig};
@@ -20,6 +20,7 @@ pub(crate) enum Event {
     Picked(Kind, u64, Result<Option<PathBuf>, String>),
     Preview(Kind, u64, Result<image::Handle, String>),
     Clear(Kind),
+    ManualEntry(bool),
     Configured(u64, Result<(ArtFetch, bool), String>),
     Fetch(bool),
     SearchText(String),
@@ -64,6 +65,8 @@ pub(crate) struct Draft {
     selected: Option<Match>,
     sequence: u64,
     error: Option<String>,
+    configuration_sequence: u64,
+    manual_entry: bool,
 }
 
 impl Draft {
@@ -78,13 +81,25 @@ impl Draft {
             || self.local.values().any(|local| !local.path.is_empty())
     }
 
+    pub(crate) fn set_title(&mut self, title: &str) -> Task<Event> {
+        if !self.search_edited && self.search != title {
+            self.search = title.to_owned();
+            self.sequence = self.sequence.wrapping_add(1);
+            self.searching = false;
+            self.matches.clear();
+            self.selected = None;
+            self.error = None;
+        }
+        Task::none()
+    }
+
     pub(crate) fn configure(&mut self, paths: Paths, title: String) -> Task<Event> {
         self.paths = Some(paths.clone());
         if self.search.is_empty() {
             self.search = title;
         }
-        self.sequence = self.sequence.wrapping_add(1);
-        let sequence = self.sequence;
+        self.configuration_sequence = self.configuration_sequence.wrapping_add(1);
+        let sequence = self.configuration_sequence;
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
@@ -151,7 +166,7 @@ impl Draft {
                         return self.update(Event::Path(kind, path.to_string_lossy().into_owned()));
                     }
                     Ok(None) => {}
-                    Err(error) => self.local.entry(kind).or_default().error = Some(error),
+                    Err(_) => self.manual_entry = true,
                 }
             }
             Event::Preview(kind, sequence, result) => {
@@ -165,13 +180,16 @@ impl Draft {
                 }
             }
             Event::Clear(kind) => return self.update(Event::Path(kind, String::new())),
-            Event::Configured(sequence, result) if sequence == self.sequence => match result {
-                Ok((kinds, available)) => {
-                    self.kinds = kinds.kinds();
-                    self.key_available = available;
+            Event::ManualEntry(open) => self.manual_entry = open,
+            Event::Configured(sequence, result) if sequence == self.configuration_sequence => {
+                match result {
+                    Ok((kinds, available)) => {
+                        self.kinds = kinds.kinds();
+                        self.key_available = available;
+                    }
+                    Err(error) => self.error = Some(error),
                 }
-                Err(error) => self.error = Some(error),
-            },
+            }
             Event::Fetch(fetch) => {
                 self.fetch = fetch && self.key_available && !self.kinds.is_empty()
             }
@@ -284,34 +302,46 @@ impl Draft {
     }
 
     pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
-        let mut content = column![text("Artwork").size(19)].spacing(10);
-        for kind in Kind::ALL {
-            let local = self.local.get(&kind);
-            let value = local.map_or("", |local| local.path.as_str());
-            let field = row![
-                text(format!("{kind}")).width(55),
-                text_input("Local image path", value)
-                    .on_input(move |value| Event::Path(kind, value)),
-                button("Browse...").on_press(Event::Browse(kind)),
-                button("Clear selection").on_press(Event::Clear(kind)),
+        let mut content = column![
+            text("Artwork").size(19),
+            text("Click a tile to choose an image. All four are optional.")
+                .size(12)
+                .color(palette.muted),
+            row![
+                self.tile(Kind::Grid, "Poster", "Cover art", 152, 190, palette),
+                column![
+                    self.tile(Kind::Hero, "Hero", "Wide background", 312, 98, palette),
+                    row![
+                        self.tile(Kind::Icon, "Icon", "Small square", 102, 82, palette),
+                        self.tile(Kind::Logo, "Logo", "Title graphic", 200, 82, palette),
+                    ]
+                    .spacing(10),
+                ]
+                .spacing(10),
             ]
-            .spacing(8);
-            content = content.push(field);
-            if let Some(local) = local {
-                if let Some(handle) = &local.preview {
-                    content = content.push(
-                        image(handle.clone())
-                            .width(160)
-                            .height(90)
-                            .content_fit(iced::ContentFit::Contain),
-                    );
-                }
-                if let Some(error) = &local.error {
-                    content = content.push(text(error).color(palette.danger));
-                }
-                if local.checking {
-                    content = content.push(text("Checking image...").color(palette.muted));
-                }
+            .spacing(12),
+            button(if self.manual_entry {
+                "Hide file paths"
+            } else {
+                "Enter a file path instead"
+            })
+            .on_press(Event::ManualEntry(!self.manual_entry)),
+        ]
+        .spacing(10);
+        if self.manual_entry {
+            for kind in Kind::ALL {
+                let value = self
+                    .local
+                    .get(&kind)
+                    .map_or("", |local| local.path.as_str());
+                content = content.push(
+                    row![
+                        text(format!("{kind}")).width(55),
+                        text_input("Image file path", value)
+                            .on_input(move |value| Event::Path(kind, value)),
+                    ]
+                    .spacing(8),
+                );
             }
         }
         if !self.kinds.is_empty() {
@@ -350,6 +380,72 @@ impl Draft {
             content = content.push(text(error).color(palette.danger));
         }
         content.into()
+    }
+
+    fn tile<'a>(
+        &'a self,
+        kind: Kind,
+        title: &'static str,
+        hint: &'static str,
+        width: u32,
+        height: u32,
+        palette: Palette,
+    ) -> Element<'a, Event> {
+        let local = self.local.get(&kind);
+        let selected = local.is_some_and(|local| !local.path.is_empty());
+        let picture: Element<'_, Event> = match local.and_then(|local| local.preview.as_ref()) {
+            Some(handle) => image(handle.clone())
+                .width(width - 16)
+                .height(height - 16)
+                .content_fit(ContentFit::Contain)
+                .into(),
+            None => container(
+                column![
+                    text(title).size(if kind == Kind::Grid { 20 } else { 16 }),
+                    text(hint).size(11).color(palette.muted),
+                    text("Choose image").size(11).color(palette.primary),
+                ]
+                .align_x(iced::Center)
+                .spacing(6),
+            )
+            .width(width - 16)
+            .height(height - 16)
+            .center(iced::Fill)
+            .into(),
+        };
+        let chooser = button(picture)
+            .width(width)
+            .height(height)
+            .padding(8)
+            .on_press(Event::Browse(kind))
+            .style(move |_, status| button::Style {
+                background: Some(palette.surface.into()),
+                text_color: palette.foreground,
+                border: border::rounded(8).width(1).color(
+                    if matches!(status, button::Status::Hovered) {
+                        palette.primary
+                    } else if selected {
+                        palette.success
+                    } else {
+                        palette.border
+                    },
+                ),
+                ..button::Style::default()
+            });
+        let mut tile = column![text(title).size(13), chooser]
+            .spacing(5)
+            .width(width);
+        if let Some(local) = local {
+            if local.checking {
+                tile = tile.push(text("Checking image...").size(11).color(palette.muted));
+            } else if let Some(error) = &local.error {
+                tile = tile.push(text(error).size(11).color(palette.danger));
+            }
+            if selected {
+                tile = tile.push(button("Remove").on_press(Event::Clear(kind)).padding(2));
+            }
+        }
+        tile.into()
     }
 }
 
@@ -485,6 +581,16 @@ mod tests {
     use super::*;
     use wineo_core::environment::Environment;
 
+    #[test]
+    fn typing_title_does_not_discard_pending_art_configuration() {
+        let mut draft = Draft::new();
+        draft.configuration_sequence = 1;
+        let _ = draft.set_title("new title");
+        let _ = draft.update(Event::Configured(1, Ok((ArtFetch::default(), true))));
+        assert!(draft.key_available);
+        assert!(!draft.kinds.is_empty());
+    }
+
     fn paths(root: &Path) -> Paths {
         Paths::from_lookup(|key| (key == "HOME").then(|| root.as_os_str().to_owned())).unwrap()
     }
@@ -554,6 +660,16 @@ mod tests {
         draft.local.get_mut(&Kind::Grid).unwrap().checking = true;
         let _ = draft.update(Event::Browse(Kind::Grid));
         let _ = draft.update(Event::Picked(Kind::Grid, 4, Ok(None)));
+        assert!(!draft.manual_entry);
+        let _ = draft.update(Event::Browse(Kind::Grid));
+        let _ = draft.update(Event::Picked(
+            Kind::Grid,
+            5,
+            Err("portal unavailable".to_owned()),
+        ));
+        assert!(draft.manual_entry);
+        assert_eq!(draft.local[&Kind::Grid].path, "/new.png");
+        assert!(draft.local[&Kind::Grid].error.is_none());
         let _ = draft.update(Event::Preview(
             Kind::Grid,
             3,
@@ -561,6 +677,29 @@ mod tests {
         ));
         assert!(!draft.local[&Kind::Grid].checking);
         assert!(draft.local[&Kind::Grid].preview.is_some());
+    }
+
+    #[test]
+    fn title_change_refreshes_unedited_search_without_accepting_stale_results() {
+        let mut draft = Draft::new();
+        draft.search = "Old title".to_owned();
+        draft.searching = true;
+        draft.sequence = 5;
+        let _ = draft.set_title("New title");
+        assert_eq!(draft.search, "New title");
+        assert!(!draft.searching);
+        let _ = draft.update(Event::Searched(
+            5,
+            Ok(vec![Game {
+                id: 1,
+                name: "Old title".to_owned(),
+                year: None,
+            }]),
+        ));
+        assert!(draft.matches.is_empty());
+        let _ = draft.update(Event::SearchText("Custom match".to_owned()));
+        let _ = draft.set_title("Third title");
+        assert_eq!(draft.search, "Custom match");
     }
 
     #[test]

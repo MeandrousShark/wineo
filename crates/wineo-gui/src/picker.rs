@@ -22,7 +22,7 @@ pub(crate) async fn pick(title: String, directory: bool) -> Result<Option<PathBu
                     .map_err(|_| "Choose a local file or folder".to_owned())
             })
             .transpose(),
-        Err(ashpd::Error::Response(ResponseError::Cancelled)) => Ok(None),
+        Err(ashpd::Error::Response(ResponseError::Cancelled | ResponseError::Other)) => Ok(None),
         Err(error) => Err(format!(
             "File chooser unavailable: {error}. Enter a path instead."
         )),

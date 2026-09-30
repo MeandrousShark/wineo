@@ -12,6 +12,7 @@ use crate::theme::Palette;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Action {
+    Choose,
     Library { name: Option<String>, launch: bool },
     Settings { name: String, launch: bool },
 }

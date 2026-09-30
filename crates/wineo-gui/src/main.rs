@@ -74,6 +74,9 @@ pub(crate) struct App {
     flow: Option<flow::Page>,
     flow_generation: u64,
     action_menu: Option<String>,
+    pointer: iced::Point,
+    action_menu_position: iced::Point,
+    window_size: iced::Size,
     close_prompt: bool,
     closing: bool,
 }
@@ -135,6 +138,8 @@ pub(crate) enum Message {
     Add,
     CloneEnvironment(String),
     Context(String),
+    PointerMoved(iced::Point),
+    OverlayInput,
     ContextSettings(String),
     CloseMenu,
     Flow(u64, flow::Event),
@@ -181,6 +186,9 @@ impl App {
             flow: None,
             flow_generation: 0,
             action_menu: None,
+            pointer: iced::Point::ORIGIN,
+            action_menu_position: iced::Point::ORIGIN,
+            window_size: iced::Size::new(1200.0, 800.0),
             close_prompt: false,
             closing: false,
         };
@@ -217,6 +225,9 @@ impl App {
                 iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                     Some(Message::Key(key, modifiers, status))
                 }
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::PointerMoved(position))
+                }
                 _ => None,
             }),
             iced::time::every(Duration::from_millis(120)).map(|_| Message::SpinnerTick),
@@ -224,6 +235,31 @@ impl App {
         ])
     }
     fn update(&mut self, message: Message) -> Task<Message> {
+        if self.flow.is_some()
+            && matches!(
+                message,
+                Message::SearchChanged(_)
+                    | Message::Select(_)
+                    | Message::DoubleClick(_)
+                    | Message::ClosePanel
+                    | Message::TargetPicked(_)
+                    | Message::Play
+                    | Message::Stop
+                    | Message::CleanUp
+                    | Message::CancelStart
+                    | Message::OpenLog
+                    | Message::CloseLog
+                    | Message::Context(_)
+                    | Message::ContextSettings(_)
+                    | Message::OpenSettings
+                    | Message::OpenGlobalSettings
+                    | Message::KeyWithFocus(..)
+                    | Message::Scrolled(_)
+                    | Message::Hover(_)
+            )
+        {
+            return Task::none();
+        }
         let task = match message {
             Message::SearchChanged(search) => {
                 self.search = search;
@@ -441,6 +477,7 @@ impl App {
                 Task::none()
             }
             Message::Window(window::Event::Resized(size) | window::Event::Opened { size, .. }) => {
+                self.window_size = size;
                 self.viewport_width = size.width;
                 self.viewport_height = (size.height - 48.0).max(0.0);
                 self.load_visible_art()
@@ -540,7 +577,9 @@ impl App {
                 self.action_menu = None;
                 self.flow_generation = self.flow_generation.wrapping_add(1);
                 self.flow = Some(flow::Page::choose(self.paths.clone()));
-                Task::none()
+                iced::advanced::widget::operate(
+                    iced::advanced::widget::operation::focusable::unfocus(),
+                )
             }
             Message::CloneEnvironment(name) => {
                 if self.foreground_busy() || self.settings.is_some() || self.flow.is_some() {
@@ -552,9 +591,15 @@ impl App {
                 let generation = self.flow_generation;
                 let (page, task) = flow::Page::clone(self.paths.clone(), name);
                 self.flow = Some(page);
-                task.map(move |event| Message::Flow(generation, event))
+                Task::batch([
+                    task.map(move |event| Message::Flow(generation, event)),
+                    iced::advanced::widget::operate(
+                        iced::advanced::widget::operation::focusable::unfocus(),
+                    ),
+                ])
             }
             Message::Context(name) => {
+                self.action_menu_position = self.pointer;
                 self.action_menu = if self.action_menu.as_deref() == Some(&name) {
                     None
                 } else {
@@ -562,6 +607,11 @@ impl App {
                 };
                 Task::none()
             }
+            Message::PointerMoved(position) => {
+                self.pointer = position;
+                Task::none()
+            }
+            Message::OverlayInput => Task::none(),
             Message::CloseMenu => {
                 self.action_menu = None;
                 Task::none()
@@ -637,6 +687,11 @@ impl App {
             return task;
         }
         if let Some(action) = page.take_action() {
+            if matches!(action, flow::Action::Choose) {
+                self.flow_generation = self.flow_generation.wrapping_add(1);
+                self.flow = Some(flow::Page::choose(self.paths.clone()));
+                return Task::none();
+            }
             self.flow = None;
             self.flow_generation = self.flow_generation.wrapping_add(1);
             let generation = self.flow_generation;
@@ -671,6 +726,7 @@ impl App {
             }
         }
         let (name, launch, settings) = match action {
+            flow::Action::Choose => return Task::none(),
             flow::Action::Library { name, launch } => (name, launch, false),
             flow::Action::Settings { name, launch } => (Some(name), launch, true),
         };
@@ -924,6 +980,36 @@ mod tests {
     #[test]
     fn app_icon_renders_from_embedded_svg() {
         assert!(app_icon().is_some());
+    }
+
+    #[test]
+    fn back_from_new_returns_to_add_choices_without_closing() {
+        let mut app = app();
+        let _ = app.update(Message::Add);
+        let generation = app.flow_generation;
+        let _ = app.flow_update(generation, flow::Event::New);
+        let _ = app.flow_update(generation, flow::Event::Back);
+        assert!(matches!(app.flow, Some(flow::Page::Choose(_))));
+        assert!(!app.closing);
+        assert_ne!(app.flow_generation, generation);
+        let _ = app.flow_update(generation, flow::Event::Back);
+        assert!(app.flow.is_some(), "stale Back cannot dismiss Add");
+    }
+
+    #[test]
+    fn creation_overlay_rejects_background_library_actions() {
+        let mut app = app();
+        app.search = "original".into();
+        let _ = app.update(Message::Add);
+        let _ = app.update(Message::SearchChanged("hidden".into()));
+        let _ = app.update(Message::Select("other".into()));
+        let _ = app.update(Message::OpenGlobalSettings);
+        let _ = app.update(Message::Play);
+        assert_eq!(app.search, "original");
+        assert!(app.selected.is_none());
+        assert!(app.settings.is_none());
+        assert!(app.operation.is_none());
+        assert!(matches!(app.flow, Some(flow::Page::Choose(_))));
     }
 
     #[test]

@@ -24,6 +24,30 @@ and winetricks tools follow in 0040.
   resolved installer cleanup. Leaving that page starts the chosen default
   target once when checked; imports and clones keep their no-launch default.
 
+## Maintainer refinements
+
+The maintainer approved these changes during acceptance testing:
+
+- Add, creation, import, and clone use a compact modal overlay above the
+  visible library. Initial Back returns to Add choices, with existing draft
+  discard prompts preserved. Context menus open near their triggering pointer.
+- Artwork uses clickable poster, icon, logo, and hero placeholders/previews
+  instead of visible path fields. Clicking opens Browse; manual path entry
+  remains an optional fallback. Title-based fetching may populate previews
+  when a key and global art settings allow it, without replacing local art.
+- Windows creation groups infrequent options in a collapsed Additional wine
+  options section. Template selection shows a compact summary of its changes.
+- Dismissing a chooser without a selection is silent, including portals that
+  report the dismissal as an Other response.
+
+These refinements supersede the full-page and visible-art-path details below.
+The implementation keeps SteamGridDB requests explicit; entering a name
+seeds its search field without starting a network request.
+Displayed GUI checks verified pointer placement, the library behind the
+overlay, Back to Add, silent Other chooser dismissal, clickable art tiles,
+and the gaming-template summary. Regression checks also cover modal keyboard
+isolation and stale title/configuration replies.
+
 ## Existing foundation
 
 - `create::run` accepts a name, prefix location, runner, architecture,

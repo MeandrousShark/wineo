@@ -68,10 +68,11 @@ game paths, disable desktop entries, clear the Heroic id, and reset playtime.
 
 ## Add, import, and clone
 
-**Add** opens full-page flows for **New environment**, **Import prefix**, or
-**Import from Heroic**. The same choices are available when the library is
-empty. Back preserves entries, and leaving a filled draft asks before
-discarding it.
+**Add** opens a compact overlay for **New environment**, **Import prefix**,
+or **Import from Heroic**, keeping the library visible behind it. The same
+choices are available when the library is empty. Back preserves entries;
+leaving an initial draft returns to Add choices and asks before discarding
+edits.
 
 New environments can be Windows or Native Linux. Windows supports an empty
 environment, an existing executable, or an installer; Native Linux supports
@@ -87,13 +88,18 @@ or import all eligible games with a batch review and per-game results.
 Unsupported games explain why they cannot be imported. Imports and clones do
 not launch automatically.
 
-New and import reviews offer **Browse...** for Icon, Grid, Hero, and Logo,
-with a preview and **Clear selection** for each kind. Manual files work
+New and import flows show clickable poster, icon, hero, and logo previews.
+Click a placeholder or preview to browse for a file; use **Clear selection**
+to remove it. File paths are an optional fallback. Manual files work
 without a SteamGridDB key or network access. Local files can be mixed with
 fetched art, and the local choice wins for that kind. Fetching uses the
 global **Art to fetch** switches. If artwork fails after registration, retry
 or skip it. General artwork, key, and download management remain CLI tasks;
 GUI managers are planned separately.
+
+Windows creation keeps runner, architecture, and prefix overrides under
+**Additional wine options**. Selecting a template shows a compact summary
+of the settings it changes. Native creation hides the Wine-only controls.
 
 The new environment finish page has an unchecked **Launch game when this
 page closes** option when a playable target is ready. If checked, leaving for

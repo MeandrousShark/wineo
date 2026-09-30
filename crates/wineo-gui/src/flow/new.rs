@@ -10,7 +10,7 @@ use iced::widget::{
 };
 use iced::{Center, Element, Fill, Task};
 use wineo_core::cancel::Token;
-use wineo_core::config::{Arch, GlobalConfig};
+use wineo_core::config::{Arch, GamescopeSetting, GlobalConfig};
 use wineo_core::create::{self, CreateEvent, CreateRequest, TargetOutcome};
 use wineo_core::desktop;
 use wineo_core::download::{Client, Progress, Provider};
@@ -172,6 +172,7 @@ pub(crate) enum Event {
     Prefix(String),
     Runner(String),
     Template(String),
+    ToggleAdditionalWineOptions,
     Arch(Arch),
     Desktop(bool),
     Browse,
@@ -213,6 +214,8 @@ pub(crate) struct Page {
     art: artwork::Draft,
     stage: Stage,
     options: Option<Options>,
+    template_preview: Option<Template>,
+    additional_wine_options: bool,
     review: Option<Review>,
     report: Option<Report>,
     error: Option<String>,
@@ -237,6 +240,8 @@ impl Page {
             art: artwork::Draft::new(),
             stage: Stage::Details,
             options: None,
+            template_preview: None,
+            additional_wine_options: false,
             review: None,
             report: None,
             error: None,
@@ -326,10 +331,7 @@ impl Page {
         match self.stage {
             Stage::Details => {
                 if self.draft == Draft::default() && !self.art.is_dirty() {
-                    self.action = Some(Action::Library {
-                        name: None,
-                        launch: false,
-                    });
+                    self.action = Some(Action::Choose);
                 } else {
                     self.leave_prompt = true;
                 }
@@ -360,6 +362,10 @@ impl Page {
         self.picker_sequence = self.picker_sequence.wrapping_add(1);
         self.error = None;
         self.review = None;
+    }
+
+    fn additional_wine_options_visible(&self) -> bool {
+        self.draft.kind == Kind::Windows && self.additional_wine_options
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -653,10 +659,7 @@ impl Page {
             }
             Event::Discard => {
                 self.leave_prompt = false;
-                self.action = Some(Action::Library {
-                    name: None,
-                    launch: false,
-                });
+                self.action = Some(Action::Choose);
             }
             Event::KeepEditing => self.leave_prompt = false,
             Event::Kind(kind) if self.stage == Stage::Details => {
@@ -677,6 +680,7 @@ impl Page {
             Event::Name(value) if self.stage == Stage::Details => {
                 self.draft.name = value;
                 self.edited();
+                return self.art.set_title(&self.draft.name).map(Event::Art);
             }
             Event::Path(value) if self.stage == Stage::Details => {
                 self.picker_sequence = self.picker_sequence.wrapping_add(1);
@@ -714,6 +718,20 @@ impl Page {
             Event::Template(value) if self.stage == Stage::Details => {
                 self.draft.template = value;
                 self.edited();
+                self.template_preview = if self.draft.template.is_empty() {
+                    None
+                } else {
+                    match Templates::new(&self.paths).resolve(&self.draft.template) {
+                        Ok(template) => Some(template),
+                        Err(error) => {
+                            self.error = Some(error.to_string());
+                            None
+                        }
+                    }
+                };
+            }
+            Event::ToggleAdditionalWineOptions if self.stage == Stage::Details => {
+                self.additional_wine_options = !self.additional_wine_options;
             }
             Event::Arch(value) if self.stage == Stage::Details => {
                 self.draft.arch = Some(value);
@@ -1005,17 +1023,26 @@ impl Page {
         })
         .size(24)
         .color(palette.foreground);
-        let mut body = column![heading].spacing(16).width(Fill);
+        let mut body = column![heading].spacing(10).width(Fill);
         match self.stage {
             Stage::Details => {
-                body = body.push(text("Type")).push(pick_list(
-                    Kind::ALL,
-                    Some(self.draft.kind),
-                    Event::Kind,
-                ));
-                body = body
-                    .push(text("Name"))
-                    .push(text_input("Game name", &self.draft.name).on_input(Event::Name));
+                body = body.push(
+                    row![
+                        column![
+                            text("Name"),
+                            text_input("Game name", &self.draft.name).on_input(Event::Name)
+                        ]
+                        .spacing(4)
+                        .width(Fill),
+                        column![
+                            text("Type"),
+                            pick_list(Kind::ALL, Some(self.draft.kind), Event::Kind)
+                        ]
+                        .spacing(4)
+                        .width(180),
+                    ]
+                    .spacing(12),
+                );
                 if self
                     .paths
                     .environment_config(self.draft.name.trim())
@@ -1030,11 +1057,15 @@ impl Page {
                 } else {
                     vec![Source::Empty, Source::Executable]
                 };
-                body = body.push(text("Starting point")).push(pick_list(
-                    sources,
-                    Some(self.draft.source),
-                    |source| Event::Source(source.to_string()),
-                ));
+                body = body.push(
+                    column![
+                        text("Starting point"),
+                        pick_list(sources, Some(self.draft.source), |source| {
+                            Event::Source(source.to_string())
+                        })
+                    ]
+                    .spacing(4),
+                );
                 if self.draft.source != Source::Empty {
                     body = body.push(
                         row![
@@ -1053,87 +1084,114 @@ impl Page {
                     }
                 }
                 if self.draft.kind == Kind::Windows {
-                    body = body.push(text("Template")).push(pick_list(
-                        std::iter::once("None".to_owned())
-                            .chain(
-                                self.options
-                                    .as_ref()
-                                    .into_iter()
-                                    .flat_map(|o| o.templates.iter().cloned()),
-                            )
-                            .collect::<Vec<_>>(),
-                        Some(if self.draft.template.is_empty() {
-                            "None".to_owned()
-                        } else {
-                            self.draft.template.clone()
-                        }),
-                        |value| {
-                            Event::Template(if value == "None" {
-                                String::new()
-                            } else {
-                                value
-                            })
-                        },
-                    ));
-                    body = body.push(text("Runner override")).push(
-                        text_input("Use template or global default", &self.draft.runner)
-                            .on_input(Event::Runner),
-                    );
-                    if let Some(options) = &self.options {
-                        body = body.push(
+                    body = body.push(
+                        column![
+                            text("Template"),
                             pick_list(
-                                std::iter::once("Use template or global default".to_owned())
-                                    .chain(options.runners.iter().cloned())
+                                std::iter::once("None".to_owned())
+                                    .chain(
+                                        self.options
+                                            .as_ref()
+                                            .into_iter()
+                                            .flat_map(|o| o.templates.iter().cloned()),
+                                    )
                                     .collect::<Vec<_>>(),
-                                Some(if self.draft.runner.is_empty() {
-                                    "Use template or global default".to_owned()
+                                Some(if self.draft.template.is_empty() {
+                                    "None".to_owned()
                                 } else {
-                                    self.draft.runner.clone()
+                                    self.draft.template.clone()
                                 }),
-                                |runner| {
-                                    Event::Runner(if runner == "Use template or global default" {
+                                |value| {
+                                    Event::Template(if value == "None" {
                                         String::new()
                                     } else {
-                                        runner
+                                        value
                                     })
                                 },
                             )
-                            .width(Fill),
-                        );
-                        body = body.push(
-                            text(format!(
-                                "Global default: {} ({}). Available: {}",
-                                options.runner,
-                                options.arch,
-                                options.runners.join(", ")
-                            ))
-                            .size(12)
-                            .color(palette.muted),
-                        );
-                    }
-                    body = body.push(text("Architecture override")).push(
-                        pick_list([Arch::Win64, Arch::Win32], self.draft.arch, Event::Arch)
-                            .placeholder("Use template or global default"),
-                    );
-                    body = body.push(text("Prefix folder override")).push(
-                        row![
-                            text_input("Use default path", &self.draft.prefix)
-                                .on_input(Event::Prefix),
-                            button("Browse...").on_press(Event::BrowsePrefix)
                         ]
-                        .spacing(8),
+                        .spacing(4),
                     );
-                    if self.draft.prefix.is_empty()
-                        && let Some(options) = &self.options
-                    {
-                        body = body.push(
-                            text(format!(
-                                "Default: {}",
-                                options.prefix_root.join(self.draft.name.trim()).display()
-                            ))
-                            .size(12)
-                            .color(palette.muted),
+                    if let Some(template) = &self.template_preview {
+                        let effects = template_effects(template, &self.draft);
+                        let mut summary = column![text("This template sets:").size(12)].spacing(2);
+                        for effect in effects {
+                            summary = summary.push(text(effect).size(12));
+                        }
+                        body = body.push(summary);
+                    }
+                    body = body.push(
+                        button(if self.additional_wine_options_visible() {
+                            "Additional wine options (hide)"
+                        } else {
+                            "Additional wine options"
+                        })
+                        .on_press(Event::ToggleAdditionalWineOptions),
+                    );
+                    if self.additional_wine_options_visible() {
+                        let mut options_body = column![
+                            text("Runner override"),
+                            text_input("Use template or global default", &self.draft.runner)
+                                .on_input(Event::Runner)
+                        ]
+                        .spacing(6);
+                        if let Some(options) = &self.options {
+                            options_body = options_body.push(
+                                pick_list(
+                                    std::iter::once("Use template or global default".to_owned())
+                                        .chain(options.runners.iter().cloned())
+                                        .collect::<Vec<_>>(),
+                                    Some(if self.draft.runner.is_empty() {
+                                        "Use template or global default".to_owned()
+                                    } else {
+                                        self.draft.runner.clone()
+                                    }),
+                                    |runner| {
+                                        Event::Runner(
+                                            if runner == "Use template or global default" {
+                                                String::new()
+                                            } else {
+                                                runner
+                                            },
+                                        )
+                                    },
+                                )
+                                .width(Fill),
+                            );
+                            options_body = options_body.push(
+                                text(format!(
+                                    "Global default: {} ({})",
+                                    options.runner, options.arch
+                                ))
+                                .size(12)
+                                .color(palette.muted),
+                            );
+                        }
+                        options_body = options_body.push(text("Architecture override")).push(
+                            pick_list([Arch::Win64, Arch::Win32], self.draft.arch, Event::Arch)
+                                .placeholder("Use template or global default"),
                         );
+                        options_body = options_body.push(text("Prefix folder override")).push(
+                            row![
+                                text_input("Use default path", &self.draft.prefix)
+                                    .on_input(Event::Prefix),
+                                button("Browse...").on_press(Event::BrowsePrefix)
+                            ]
+                            .spacing(8),
+                        );
+                        if self.draft.prefix.is_empty()
+                            && let Some(options) = &self.options
+                        {
+                            options_body = options_body.push(
+                                text(format!(
+                                    "Default: {}",
+                                    options.prefix_root.join(self.draft.name.trim()).display()
+                                ))
+                                .size(12)
+                                .color(palette.muted),
+                            );
+                        }
+                        body = body.push(container(options_body).padding(10));
                     }
                 }
                 body = body.push(self.art.view(palette).map(Event::Art));
@@ -1337,6 +1395,75 @@ impl Page {
             .align_x(Center)
             .into()
     }
+}
+
+fn template_effects(template: &Template, draft: &Draft) -> Vec<String> {
+    let mut effects = Vec::new();
+    if !draft.runner.is_empty() {
+        effects.push(format!("Runner: {} (your override)", draft.runner));
+    } else if let Some(runner) = &template.runner {
+        let label = if runner == "proton" {
+            "newest installed Proton, or the global default".to_owned()
+        } else {
+            runner.clone()
+        };
+        effects.push(format!("Runner: {label}"));
+    }
+    if draft.arch.is_none()
+        && let Some(arch) = template.arch
+    {
+        effects.push(format!("Architecture: {arch}"));
+    }
+    if template.dxvk.is_some() || template.vkd3d.is_some() {
+        let mut components = Vec::new();
+        if let Some(dxvk) = &template.dxvk {
+            components.push(format!("DXVK {dxvk}"));
+        }
+        if let Some(vkd3d) = &template.vkd3d {
+            components.push(format!("vkd3d {vkd3d}"));
+        }
+        effects.push(format!(
+            "Graphics: {} (Proton uses its bundled versions)",
+            components.join(" + ")
+        ));
+    }
+    for (label, enabled) in [
+        ("GameMode", template.gamemode),
+        ("Wayland", template.wayland),
+        ("MangoHud", template.mangohud),
+    ] {
+        if let Some(enabled) = enabled {
+            effects.push(format!("{label}: {}", if enabled { "on" } else { "off" }));
+        }
+    }
+    if let Some(gamescope) = &template.gamescope {
+        effects.push(format!(
+            "Gamescope: {}",
+            if matches!(gamescope, GamescopeSetting::Off) {
+                "off"
+            } else {
+                "on"
+            }
+        ));
+    }
+    for (label, value) in [("Game ID", &template.gameid), ("Store", &template.store)] {
+        if let Some(value) = value {
+            effects.push(format!("{label}: {value}"));
+        }
+    }
+    if !template.winetricks.is_empty() {
+        effects.push(format!("Winetricks: {}", template.winetricks.join(", ")));
+    }
+    if !template.tags.is_empty() {
+        effects.push(format!("Tags: {}", template.tags.join(", ")));
+    }
+    if !template.env.is_empty() {
+        effects.push(format!(
+            "Environment variables: {}",
+            template.env.keys().cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    effects
 }
 
 fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
@@ -1742,6 +1869,39 @@ mod tests {
         let _ = page.back();
         assert_eq!(page.stage, Stage::Details);
         assert_eq!(page.draft.path, "/games/test.exe");
+    }
+
+    #[test]
+    fn details_back_returns_to_add_choices() {
+        let mut page = page();
+        let _ = page.back();
+        assert!(matches!(page.take_action(), Some(Action::Choose)));
+
+        page.draft.name = "draft".to_owned();
+        let _ = page.back();
+        assert!(page.leave_prompt);
+        let _ = page.update(Event::Discard);
+        assert!(matches!(page.take_action(), Some(Action::Choose)));
+    }
+
+    #[test]
+    fn gaming_template_shows_effects_and_extra_options_only_for_windows() {
+        let mut page = page();
+        let _ = page.update(Event::Template("gaming".to_owned()));
+        let effects = template_effects(page.template_preview.as_ref().unwrap(), &page.draft);
+        assert_eq!(
+            effects,
+            [
+                "Runner: newest installed Proton, or the global default",
+                "Graphics: DXVK latest + vkd3d latest (Proton uses its bundled versions)",
+                "GameMode: on"
+            ]
+        );
+        assert!(!page.additional_wine_options_visible());
+        let _ = page.update(Event::ToggleAdditionalWineOptions);
+        assert!(page.additional_wine_options_visible());
+        let _ = page.update(Event::Kind(Kind::Native));
+        assert!(!page.additional_wine_options_visible());
     }
 
     #[test]

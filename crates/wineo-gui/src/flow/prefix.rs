@@ -178,7 +178,7 @@ impl Page {
                 self.name = value;
                 self.dirty = true;
                 self.clear_review();
-                Task::none()
+                self.art.set_title(&self.name).map(Event::Art)
             }
             Event::Runner(value) => {
                 self.runner = value;
@@ -351,10 +351,7 @@ impl Page {
             }
             Event::Discard => {
                 self.discard_prompt = false;
-                self.action = Some(super::Action::Library {
-                    name: None,
-                    launch: false,
-                });
+                self.action = Some(super::Action::Choose);
                 Task::none()
             }
             Event::OpenSettings => {
@@ -514,10 +511,7 @@ impl Page {
                 if self.dirty || self.art.is_dirty() {
                     self.discard_prompt = true;
                 } else {
-                    self.action = Some(super::Action::Library {
-                        name: None,
-                        launch: false,
-                    });
+                    self.action = Some(super::Action::Choose);
                 }
                 Task::none()
             }
