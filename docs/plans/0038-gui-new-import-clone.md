@@ -51,6 +51,14 @@ The maintainer approved these changes during acceptance testing:
   heroes 1920 px), and images over 4096 px on the long side are used only
   when nothing smaller exists. This also changes CLI `art fetch` picks. The
   spinner tick runs only while something spins, so the idle GUI stays quiet.
+- New environment's Name is the game's title for the desktop entry; the
+  environment name is derived from it (`name::from_title`, capped at 64
+  bytes) with a live preview and an Edit override. Desktop entry names
+  escape backslashes.
+- GUI logs (panel and installer) are selectable, with Copy and Jump to end.
+  Force stop replaces Cancel only after canceling, in every flow. The
+  spinner is a smooth rotating arc, and the winetricks settings field calls
+  its entries packages.
 
 These refinements supersede the full-page and visible-art-path details below.
 The implementation keeps SteamGridDB requests explicit; entering a name
