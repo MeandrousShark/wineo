@@ -1440,7 +1440,6 @@ impl Page {
                         }
                     }
                 }
-                body = body.push(self.art.view(palette).map(Event::Art));
                 body = body.push(
                     row![
                         button("Back").on_press(Event::Back),
