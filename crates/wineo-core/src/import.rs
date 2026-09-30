@@ -743,17 +743,22 @@ impl<'a> Check<'a> {
         check_cancelled(self.cancel)?;
         self.entries += 1;
         if self.entries.is_multiple_of(CHECK_INTERVAL) {
-            (self.progress)(ImportProgress::Checking {
-                entries: self.entries,
-            });
+            self.report()?;
         }
         Ok(())
     }
 
-    fn finish(&mut self) {
+    fn finish(&mut self) -> Result<()> {
+        self.report()
+    }
+
+    // A cancel can arrive during the callback itself, and the last one of a
+    // walk has no later entry to notice it before the caller publishes.
+    fn report(&mut self) -> Result<()> {
         (self.progress)(ImportProgress::Checking {
             entries: self.entries,
         });
+        check_cancelled(self.cancel)
     }
 }
 
@@ -902,7 +907,7 @@ fn hash_records<R: Hash>(
         entries += 1;
         Ok(())
     })?;
-    check.finish();
+    check.finish()?;
     records.sort_by(|a, b| a.0.cmp(&b.0));
     let records: Vec<R> = records.into_iter().map(|(_, record)| record).collect();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -2268,6 +2273,35 @@ mod tests {
         // Two inspections before the copy, each with a periodic and a final count.
         assert_eq!(checks(&events[..started]), [1000, 1203, 1000, 1203]);
         assert_eq!(checks(&events[started..]), [1000, 1203]);
+
+        // Canceling on the last check after the copy must still stop before
+        // publication.
+        let late = Token::new();
+        let mut copying = false;
+        let result = execute(
+            &paths,
+            &global,
+            request("late"),
+            &late,
+            |event| match event {
+                ImportProgress::Started { .. } => copying = true,
+                ImportProgress::Checking { entries: 1203 } if copying => late.cancel(),
+                _ => {}
+            },
+        );
+        assert!(result.unwrap_err().is::<Cancelled>());
+        assert!(!prefix_root.join("late").exists());
+        assert!(!paths.environment_config("late").exists());
+        let staging = fs::read_dir(&prefix_root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".wineo-import-")
+            });
+        assert!(!staging, "staging directory left behind");
     }
 
     #[test]
