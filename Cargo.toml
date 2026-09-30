@@ -36,3 +36,7 @@ toml_edit = "0.25"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# makepkg strips the package anyway, so local release builds match it.
+[profile.release]
+strip = "symbols"
