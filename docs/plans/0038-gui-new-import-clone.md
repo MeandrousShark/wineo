@@ -60,6 +60,44 @@ overlay, Back to Add, silent Other chooser dismissal, clickable art tiles,
 and the gaming-template summary. Regression checks also cover modal keyboard
 isolation and stale title/configuration replies.
 
+## Amendment: Heroic poster grid
+
+Amendment status: draft, awaiting the maintainer's approval. The maintainer
+chose each option below during acceptance on 2026-09-29.
+
+Heroic import's game step becomes a poster grid with multiselect, replacing
+the single-game list and the separate import-all path.
+
+- Core reads each library entry's `art_square` URL (Heroic's portrait
+  poster) and resolves the cached copy at `images-cache/<sha256 of the URL>`
+  under that source's config directory, native or Flatpak. Lookups never
+  touch the network or change Heroic's files.
+- Each tile shows the cached poster, decoded off the UI thread at tile size,
+  with the title below. A missing or unreadable poster shows a title
+  placeholder instead; the picker makes no network requests.
+- Already imported and unsupported games stay visible but dimmed and not
+  selectable, with the existing reason under the title.
+- Clicking a tile toggles its selection. **Select all** selects every
+  eligible game and **Select none** clears the selection. Keyboard: arrows
+  move, Space toggles, Ctrl+A selects all, Enter imports.
+- **Import N games** is disabled with nothing selected. One selected game
+  opens today's editable single review; two or more open the batch review
+  with a plan built only from the selection. Batch results, cancellation,
+  and art fetching work as they do today.
+- When an imported game has a cached poster and no local Grid pick, it is
+  stored as the environment's Grid art through `art::set_manual`, named
+  `heroic-<app name>.<ext>` so its provenance reads as a manual pick from
+  Heroic without an `art.toml` schema change. SteamGridDB fetching then
+  fills only the kinds still missing.
+
+Tests cover cache path resolution for native and Flatpak roots, placeholder
+fallback for missing and invalid files, selection with ineligible games,
+select all and none, one versus several selected, a batch plan limited to
+the selection, the stored poster and its provenance with SteamGridDB not
+replacing it, and Heroic's files staying byte-for-byte unchanged.
+Acceptance adds: pick one game and several games from the grid, including
+Select all then deselecting some.
+
 ## Existing foundation
 
 - `create::run` accepts a name, prefix location, runner, architecture,
