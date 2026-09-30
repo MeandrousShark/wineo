@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use iced::widget::{
-    Space, button, column, container, image, pick_list, row, scrollable, stack, text,
+    Space, button, column, container, image, pick_list, row, scrollable, stack, text, text_editor,
 };
 use iced::{Center, Color, ContentFit, Element, Fill, Font, Task, border, font};
 use wineo_core::cancel::Token;
@@ -12,10 +12,12 @@ use wineo_core::winetricks::WinetricksEvent;
 
 use crate::artwork;
 use crate::library::Card;
+use crate::logview::{self, LogView};
 use crate::theme::Palette;
 use crate::{App, Message, Operation, OperationKind, worker};
 
 const PANEL_WIDTH: f32 = 420.0;
+pub(crate) const LOG_ID: &str = "panel-log";
 const LOG_LINES: usize = 2000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,30 +56,86 @@ impl PanelError {
 pub(crate) struct LogBuffer {
     lines: VecDeque<String>,
     pending: String,
+    view: LogView,
 }
 
+const PENDING_CAP: usize = 64 * 1024;
+
 impl LogBuffer {
-    pub(crate) fn push(&mut self, chunk: &str) {
-        self.pending.push_str(chunk);
+    /// Returns true when the log view should snap to the end.
+    #[must_use]
+    pub(crate) fn push(&mut self, chunk: &str) -> bool {
+        let chunk = logview::normalize(chunk);
+        self.pending.push_str(&chunk);
+        let mut dropped = String::new();
         while let Some(end) = self.pending.find('\n') {
-            let line = self.pending[..end].trim_end_matches('\r').to_owned();
+            let line = self.pending[..end].to_owned();
             self.pending.drain(..=end);
             self.lines.push_back(line);
-            if self.lines.len() > LOG_LINES {
-                self.lines.pop_front();
+            if self.lines.len() > LOG_LINES
+                && let Some(old) = self.lines.pop_front()
+            {
+                dropped.push_str(&old);
+                dropped.push('\n');
             }
         }
-        if self.pending.len() > 64 * 1024 {
-            self.pending.drain(..self.pending.len() - 64 * 1024);
+        if self.pending.len() > PENDING_CAP {
+            // The cut lands inside the partial line, which the view cannot
+            // mirror as a front trim.
+            let mut start = self.pending.len() - PENDING_CAP;
+            // Output is arbitrary UTF-8, and draining mid-character panics.
+            while !self.pending.is_char_boundary(start) {
+                start += 1;
+            }
+            self.pending.drain(..start);
+            self.view.resync(&Self::render(&self.lines, &self.pending))
+        } else {
+            self.view.push(&chunk, &dropped, || {
+                Self::render(&self.lines, &self.pending)
+            })
         }
     }
-    pub(crate) fn display(&self) -> String {
-        let mut text = self.lines.iter().cloned().collect::<Vec<_>>().join("\n");
-        if !text.is_empty() {
+    fn render(lines: &VecDeque<String>, pending: &str) -> String {
+        let mut text = lines.iter().cloned().collect::<Vec<_>>().join("\n");
+        // Test the deque, not the text: a log of only blank lines is still
+        // "\n" separated, and the view is a plain concatenation of chunks.
+        if !lines.is_empty() {
             text.push('\n');
         }
-        text.push_str(&self.pending);
+        text.push_str(pending);
         text
+    }
+    pub(crate) fn display(&self) -> String {
+        Self::render(&self.lines, &self.pending)
+    }
+    pub(crate) fn view(&self) -> &LogView {
+        &self.view
+    }
+    #[must_use]
+    pub(crate) fn act(&mut self, action: text_editor::Action) -> bool {
+        self.view
+            .perform(action, || Self::render(&self.lines, &self.pending))
+    }
+    #[must_use]
+    pub(crate) fn follow(&mut self) -> bool {
+        self.view
+            .follow(|| Self::render(&self.lines, &self.pending))
+    }
+    #[must_use]
+    pub(crate) fn scrolled(&mut self, viewport: scrollable::Viewport) -> bool {
+        self.view.scrolled(
+            viewport.absolute_offset().y,
+            viewport.bounds().height,
+            viewport.content_bounds().height,
+            || Self::render(&self.lines, &self.pending),
+        )
+    }
+    pub(crate) fn has_text(&self) -> bool {
+        !self.lines.is_empty() || !self.pending.is_empty()
+    }
+    pub(crate) fn copy(&mut self) -> String {
+        self.view.mark_copied();
+        self.display()
     }
 }
 
@@ -355,17 +413,26 @@ impl App {
         ));
         let mut inner = column![].spacing(8).width(Fill);
         if self.log_view {
-            inner = inner.push(button("Back").on_press(Message::CloseLog).padding([6, 12]));
-            let log_text = text(self.log_buffer.display())
-                .font(Font::MONOSPACE)
-                .size(12)
-                .color(palette.foreground);
             inner = inner.push(
-                scrollable(container(log_text).padding(8).width(Fill))
-                    .id(iced::widget::Id::new("panel-log"))
-                    .height(Fill)
-                    .on_scroll(|_| Message::LogScrolled),
+                row![
+                    button("Back").on_press(Message::CloseLog).padding([6, 12]),
+                    logview::controls(
+                        self.log_buffer.view(),
+                        self.log_buffer.has_text(),
+                        Message::CopyLog,
+                        Message::LogFollow,
+                    )
+                ]
+                .spacing(8),
             );
+            inner = inner.push(logview::editor(
+                self.log_buffer.view(),
+                palette,
+                Fill,
+                LOG_ID,
+                Message::LogAction,
+                Message::LogScrolled,
+            ));
         } else if let Some(error) = &card.error {
             inner = inner.push(error_box(error, palette));
         } else {
@@ -625,11 +692,61 @@ mod tests {
     fn buffer_keeps_last_lines_and_partial_line() {
         let mut buffer = LogBuffer::default();
         for index in 0..2100 {
-            buffer.push(&format!("{index}\n"));
+            let _ = buffer.push(&format!("{index}\n"));
         }
-        buffer.push("tail");
+        let _ = buffer.push("tail");
         assert_eq!(buffer.lines.len(), 2000);
         assert_eq!(buffer.lines.front().unwrap(), "100");
         assert!(buffer.display().ends_with("2099\ntail"));
+    }
+
+    #[test]
+    fn view_matches_the_capped_buffer() {
+        let mut buffer = LogBuffer::default();
+        for index in 0..2100 {
+            let _ = buffer.push(&format!("{index}\r\n"));
+        }
+        let _ = buffer.push("tail");
+        assert_eq!(buffer.view().content().text(), buffer.display());
+        assert_eq!(buffer.view().content().line_count(), 2001);
+    }
+
+    #[test]
+    fn copy_returns_the_whole_log_even_while_paused() {
+        let mut buffer = LogBuffer::default();
+        let _ = buffer.push("one\ntwo\n");
+        let _ = buffer.act(text_editor::Action::SelectAll);
+        let _ = buffer.push("three\nfour");
+        assert!(buffer.view().paused());
+        assert_eq!(buffer.view().content().text(), "one\ntwo\n");
+        assert_eq!(buffer.copy(), "one\ntwo\nthree\nfour");
+        assert!(buffer.view().copied());
+        let _ = buffer.push("\n");
+        assert!(!buffer.view().copied());
+    }
+
+    #[test]
+    fn blank_lines_are_kept() {
+        let mut buffer = LogBuffer::default();
+        let _ = buffer.push("\n\n");
+        assert_eq!(buffer.display(), "\n\n");
+        assert_eq!(buffer.view().content().text(), buffer.display());
+    }
+
+    #[test]
+    fn oversized_partial_line_resyncs_the_view() {
+        let mut buffer = LogBuffer::default();
+        let _ = buffer.push("head\n");
+        let _ = buffer.push(&"x".repeat(PENDING_CAP + 10));
+        assert_eq!(buffer.view().content().text(), buffer.display());
+    }
+
+    #[test]
+    fn oversized_multibyte_partial_line_trims_on_a_char_boundary() {
+        let mut buffer = LogBuffer::default();
+        // Three-byte characters make the byte cut land mid-character.
+        let _ = buffer.push(&"\u{3042}".repeat(PENDING_CAP / 3 + 7));
+        assert!(buffer.display().len() <= PENDING_CAP);
+        assert_eq!(buffer.view().content().text(), buffer.display());
     }
 }

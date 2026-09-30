@@ -4,6 +4,7 @@ mod flow;
 mod grid;
 mod keys;
 mod library;
+mod logview;
 mod panel;
 mod picker;
 mod settings;
@@ -27,14 +28,13 @@ use wineo_core::runtime::State;
 #[cfg(test)]
 use crate::library::playtime_label;
 use crate::library::{ArtFile, ArtIdentity, Card, load_library};
-use crate::panel::{LogBuffer, PanelError};
+use crate::panel::{LOG_ID, LogBuffer, PanelError};
 use crate::theme::Palette;
 
 pub(crate) const CARD_WIDTH: f32 = 180.0;
 const CARD_ROW: f32 = 330.0;
 pub(crate) const GAP: f32 = 16.0;
 const SCROLL_ID: &str = "library";
-const LOG_ID: &str = "panel-log";
 const SEARCH_ID: &str = "library-search";
 // iced moves 60px per wheel line, which felt too fast beside native apps.
 const WHEEL_STEP_SCALE: f32 = 0.7;
@@ -116,7 +116,10 @@ pub(crate) enum Message {
     CloseLog,
     LogChunk(u64, String),
     LogFinished(u64, Result<(), String>),
-    LogScrolled,
+    LogAction(iced::widget::text_editor::Action),
+    LogScrolled(scrollable::Viewport),
+    LogFollow,
+    CopyLog,
     Hover(Option<String>),
     Refresh,
     Loaded(Result<Vec<Card>, String>),
@@ -408,14 +411,9 @@ impl App {
                 self.close_log();
                 Task::none()
             }
-            Message::LogChunk(generation, chunk) => {
-                if self.log_view && self.log_generation == generation {
-                    self.log_buffer.push(&chunk);
-                    iced::widget::operation::snap_to_end(iced::widget::Id::new(LOG_ID))
-                } else {
-                    Task::none()
-                }
-            }
+            Message::LogChunk(generation, chunk) => Self::follow_if(
+                self.log_view && self.log_generation == generation && self.log_buffer.push(&chunk),
+            ),
             Message::LogFinished(generation, result) => {
                 if self.log_view
                     && self.log_generation == generation
@@ -425,7 +423,14 @@ impl App {
                 }
                 Task::none()
             }
-            Message::LogScrolled => Task::none(),
+            Message::LogAction(action) => {
+                Self::follow_if(self.log_view && self.log_buffer.act(action))
+            }
+            Message::LogScrolled(viewport) => {
+                Self::follow_if(self.log_view && self.log_buffer.scrolled(viewport))
+            }
+            Message::LogFollow => Self::follow_if(self.log_buffer.follow()),
+            Message::CopyLog => iced::clipboard::write(self.log_buffer.copy()),
             Message::Hover(name) => {
                 self.hovered = name;
                 Task::none()
@@ -669,6 +674,13 @@ impl App {
             task.chain(iced::exit())
         } else {
             task
+        }
+    }
+    fn follow_if(snap: bool) -> Task<Message> {
+        if snap {
+            logview::snap_to_end(LOG_ID)
+        } else {
+            Task::none()
         }
     }
     fn foreground_busy(&self) -> bool {
