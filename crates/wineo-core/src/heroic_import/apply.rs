@@ -129,6 +129,10 @@ pub fn apply_native(
 /// pick named `heroic-<app_name>.<ext>` so its origin is visible. Returns None
 /// without storing anything when the file is gone, too large, or not a format
 /// Grid art can be. Heroic's file is only read.
+///
+/// The format is judged by the file's signature alone, since core has no
+/// image decoder: a file with a valid header and a corrupt body is stored.
+/// Callers must pass a poster they have already decoded successfully.
 pub fn store_poster(
     paths: &Paths,
     env: &str,
@@ -489,6 +493,22 @@ mod tests {
         assert_eq!(record(&paths), art::Source::Manual("heroic-a.jpg".into()));
         assert!(!paths.art_dir(name).join("grid.png").exists());
         assert_eq!(tree(source.config_dir()), before);
+    }
+
+    #[test]
+    fn a_poster_is_judged_by_its_signature_alone() {
+        // Callers decode posters first; this pins down why they must.
+        const CORRUPT: &[u8] = b"\xff\xd8\xff\xe0 corrupt body";
+        let root = tempdir().unwrap();
+        let (paths, global, source) = library(root.path());
+        let plan = plan(&paths, &global, &source);
+        let registered = apply(&paths, &global, &source, &plan, &Token::new(), |_| {}).unwrap();
+        let name = registered.environment.name.as_str();
+        let poster = root.path().join("corrupt");
+        fs::write(&poster, CORRUPT).unwrap();
+        let stored = store_poster(&paths, name, "a", &poster).unwrap().unwrap();
+        assert_eq!(stored.format, art::Format::Jpeg);
+        assert_eq!(fs::read(stored.path).unwrap(), CORRUPT);
     }
 
     #[test]
