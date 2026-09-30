@@ -19,7 +19,7 @@ use wineo_core::download::{Client, Progress, Provider};
 use wineo_core::environment::{self, Environment};
 use wineo_core::gamescope::{Filter, Gamescope, GamescopeSetting, Scaler, Window};
 use wineo_core::heroic::{
-    HeroicCandidate, HeroicGameKind, HeroicListing, HeroicSharedPrefix, HeroicSource,
+    HeroicCandidate, HeroicGameKind, HeroicListing, HeroicOrigin, HeroicSharedPrefix, HeroicSource,
 };
 use wineo_core::heroic_import::{
     self, Entry, Game, LibraryOptions, LibraryPlan, Options, Playtime, Policy, Registered,
@@ -1761,8 +1761,8 @@ impl Page {
                 for (index, source) in self.sources.iter().enumerate() {
                     body = body.push(
                         button(text(format!(
-                            "{:?}: {}",
-                            source.origin(),
+                            "{}: {}",
+                            origin_label(source.origin()),
                             source.config_dir().display()
                         )))
                         .on_press(Event::Source(index)),
@@ -3015,6 +3015,15 @@ fn grouped(n: u64) -> String {
         out.push(digit);
     }
     out
+}
+
+/// How a Heroic config was found, as the Sources page names it.
+fn origin_label(origin: HeroicOrigin) -> &'static str {
+    match origin {
+        HeroicOrigin::Native => "Native",
+        HeroicOrigin::Flatpak => "Flatpak",
+        HeroicOrigin::Explicit => "Folder",
+    }
 }
 
 /// The review only calls out anti-cheat, once even when both EAC and
