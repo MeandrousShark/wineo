@@ -62,7 +62,7 @@ isolation and stale title/configuration replies.
 
 ## Amendment: Heroic poster grid
 
-Amendment status: draft, awaiting the maintainer's approval. The maintainer
+Amendment status: approved on 2026-09-29. The maintainer
 chose each option below during acceptance on 2026-09-29.
 
 Heroic import's game step becomes a poster grid with multiselect, replacing
