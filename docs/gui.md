@@ -26,6 +26,14 @@ Each environment gets a card with its grid art, or its name when it has
 none. Art comes from `wineo art`, using the default target's art when it
 has its own. See [Art](art.md) for adding and fetching it.
 
+Art bigger than the app shows it is shrunk once and kept in
+`$XDG_CACHE_HOME/wineo/art` (default `~/.cache/wineo/art`), so later starts
+don't decode the full-size file again. The original in the art store is
+never changed. Each size is made from the original, and replacing art makes
+a new copy. The app removes copies of changed or deleted art when it starts.
+A portable folder uses the host's cache too. Deleting the folder is always
+safe.
+
 Under the art are the environment's state and playtime, the same numbers
 `wineo list` and `wineo stats` show. An environment whose config can't be
 read gets a warning dot, and its panel shows the error.
