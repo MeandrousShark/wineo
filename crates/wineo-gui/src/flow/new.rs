@@ -1502,10 +1502,15 @@ impl Page {
                 );
                 body = body.push(
                     row![
-                        button("Skip for now").on_press(Event::SkipTarget),
-                        button("Add target").on_press(Event::AddTarget)
+                        button("Confirm")
+                            .padding([8, 20])
+                            .on_press(Event::AddTarget),
+                        button("Skip for now")
+                            .style(move |_, status| crate::chips::link(palette, status))
+                            .on_press(Event::SkipTarget),
                     ]
-                    .spacing(8),
+                    .spacing(16)
+                    .align_y(Center),
                 );
             }
             Stage::Finished => {

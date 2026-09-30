@@ -79,6 +79,20 @@ pub(crate) fn secondary(palette: Palette, status: button::Status) -> button::Sty
     }
 }
 
+/// Plain text that reads as a link, for escape hatches that shouldn't
+/// compete with the main button.
+pub(crate) fn link(palette: Palette, status: button::Status) -> button::Style {
+    button::Style {
+        background: None,
+        text_color: if matches!(status, button::Status::Hovered) {
+            palette.foreground
+        } else {
+            palette.muted
+        },
+        ..button::Style::default()
+    }
+}
+
 pub(crate) fn input_style(palette: Palette, status: text_input::Status) -> text_input::Style {
     text_input::Style {
         background: palette.background.into(),

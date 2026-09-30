@@ -74,7 +74,8 @@ The maintainer approved these changes during acceptance testing:
   is recognized from its receipt instead of offered for copying again.
 - New environment's starting point is a radio group: Run an installer
   (Windows only), Existing install, and Empty registration. Its review
-  leaves artwork out, since Details already picks it.
+  leaves artwork out, since Details already picks it. Choose game target
+  leads with a Confirm button and offers Skip for now as a quieter link.
 
 These refinements supersede the full-page and visible-art-path details below.
 The implementation keeps SteamGridDB requests explicit; entering a name
