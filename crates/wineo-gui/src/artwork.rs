@@ -1,8 +1,15 @@
-use std::path::Path;
+use std::ffi::OsStr;
+use std::fs;
+use std::io::{self, BufWriter, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
 use iced::widget::image as iced_image;
-use image::GenericImageView;
+use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
+use image::{ExtendedColorType, GenericImageView, ImageEncoder};
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -21,16 +28,176 @@ impl Kind {
     }
 }
 
-pub fn decode(path: &Path, kind: Kind) -> Result<iced_image::Handle> {
+type Pixels = (u32, u32, Vec<u8>);
+
+/// Decodes art to at most the size its kind is drawn at. Art that has to be
+/// shrunk is cached as a thumbnail under `cache`, since decoding a huge source
+/// on every start costs far more than reading back the small copy.
+pub fn decode(path: &Path, kind: Kind, cache: Option<&Path>) -> Result<iced_image::Handle> {
     let (width, height, pixels) = if path.extension().is_some_and(|ext| ext == "svg") {
-        decode_svg(path, kind)?
+        let (tree, width, height, scale) = open_svg(path, kind)?;
+        let render = || render_svg(&tree, width, height, scale);
+        cached(cache, path, (width, height), scale < 1.0, render)?
     } else {
-        decode_raster(path, kind)?
+        let (source_width, source_height) = image::image_dimensions(path)
+            .with_context(|| format!("failed to decode {}", path.display()))?;
+        let (width, height, _) = fit_size(f64::from(source_width), f64::from(source_height), kind);
+        let resizes = (width, height) != (source_width, source_height);
+        cached(cache, path, (width, height), resizes, || {
+            decode_raster(path, kind)
+        })?
     };
     Ok(iced_image::Handle::from_rgba(width, height, pixels))
 }
 
-fn decode_raster(path: &Path, kind: Kind) -> Result<(u32, u32, Vec<u8>)> {
+/// Serves `render` from the thumbnail cache when the output is a shrunk copy.
+/// Cache trouble never fails a decode, it only costs the speedup.
+fn cached(
+    cache: Option<&Path>,
+    path: &Path,
+    size: (u32, u32),
+    resizes: bool,
+    render: impl FnOnce() -> Result<Pixels>,
+) -> Result<Pixels> {
+    let entry = cache
+        .filter(|_| resizes)
+        .and_then(|cache| Entry::new(cache, path, size));
+    let Some(entry) = entry else {
+        return render();
+    };
+    if let Some(pixels) = entry.read() {
+        return Ok(pixels);
+    }
+    let pixels = render()?;
+    entry.write(&pixels);
+    Ok(pixels)
+}
+
+/// One cached thumbnail of one source file at one size.
+struct Entry {
+    dir: PathBuf,
+    file: PathBuf,
+    size: (u32, u32),
+    source: PathBuf,
+}
+
+impl Entry {
+    fn new(cache: &Path, source: &Path, size: (u32, u32)) -> Option<Self> {
+        // Taken before the source is read, so a file changed mid-decode is
+        // stored under its old identity and never served for the new one.
+        let identity = identity(&fs::metadata(source).ok()?);
+        let dir = cache.join(hex(&Sha256::digest(source.as_os_str().as_bytes())));
+        let file = dir.join(format!("{identity}-{}x{}.png", size.0, size.1));
+        Some(Self {
+            dir,
+            file,
+            size,
+            source: source.to_owned(),
+        })
+    }
+
+    fn read(&self) -> Option<Pixels> {
+        let image = image::open(&self.file).ok()?;
+        (image.dimensions() == self.size).then(|| {
+            let (width, height) = self.size;
+            (width, height, image.into_rgba8().into_raw())
+        })
+    }
+
+    fn write(&self, (width, height, pixels): &Pixels) {
+        let _ = self.try_write(*width, *height, pixels);
+    }
+
+    fn try_write(&self, width: u32, height: u32, pixels: &[u8]) -> Result<()> {
+        fs::create_dir_all(&self.dir)?;
+        let mut temp = tempfile::Builder::new()
+            .prefix(TEMP_PREFIX)
+            .tempfile_in(&self.dir)?;
+        let mut out = BufWriter::new(temp.as_file_mut());
+        PngEncoder::new_with_quality(&mut out, CompressionType::Fast, PngFilter::Adaptive)
+            .write_image(pixels, width, height, ExtendedColorType::Rgba8)?;
+        out.flush()?;
+        drop(out);
+        temp.persist(&self.file)?;
+        // Pruning reads this to know which source the directory belongs to.
+        let marker = self.dir.join(SOURCE_FILE);
+        if fs::read(&marker).ok().as_deref() != Some(self.source.as_os_str().as_bytes()) {
+            let mut temp = tempfile::Builder::new()
+                .prefix(TEMP_PREFIX)
+                .tempfile_in(&self.dir)?;
+            temp.write_all(self.source.as_os_str().as_bytes())?;
+            temp.persist(marker)?;
+        }
+        Ok(())
+    }
+}
+
+const SOURCE_FILE: &str = "source";
+// Leftover temp files are skipped by `prune`, since one may be mid-write in
+// another instance.
+const TEMP_PREFIX: &str = ".tmp";
+
+fn identity(metadata: &fs::Metadata) -> String {
+    let nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |time| time.as_nanos());
+    let mut hash = Sha256::new();
+    hash.update(nanos.to_le_bytes());
+    hash.update(metadata.len().to_le_bytes());
+    hex(&hash.finalize()[..8])
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Removes cache entries whose source is gone or has changed. Best effort, and
+/// independent of any library, so instances that share the host cache never
+/// delete each other's live thumbnails.
+pub fn prune(cache: &Path) {
+    let Ok(dirs) = fs::read_dir(cache) else {
+        return;
+    };
+    for dir in dirs
+        .flatten()
+        .map(|dir| dir.path())
+        .filter(|dir| dir.is_dir())
+    {
+        prune_dir(&dir);
+    }
+}
+
+fn prune_dir(dir: &Path) {
+    let source = fs::read(dir.join(SOURCE_FILE))
+        .ok()
+        .map(|bytes| PathBuf::from(OsStr::from_bytes(&bytes)));
+    let metadata = source.as_deref().map(fs::metadata);
+    let current = match metadata {
+        Some(Ok(metadata)) => identity(&metadata),
+        // Anything else might be a drive that is briefly unavailable.
+        Some(Err(error)) if error.kind() != io::ErrorKind::NotFound => return,
+        _ => {
+            let _ = fs::remove_dir_all(dir);
+            return;
+        }
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let keep = format!("{current}-");
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == SOURCE_FILE || name.starts_with(TEMP_PREFIX) || name.starts_with(&keep) {
+            continue;
+        }
+        let _ = fs::remove_file(entry.path());
+    }
+}
+
+fn decode_raster(path: &Path, kind: Kind) -> Result<Pixels> {
     let image =
         image::open(path).with_context(|| format!("failed to decode {}", path.display()))?;
     let (width, height) = image.dimensions();
@@ -65,17 +232,21 @@ fn fit_size(width: f64, height: f64, kind: Kind) -> (u32, u32, f64) {
     (width, height, scale)
 }
 
-fn decode_svg(path: &Path, kind: Kind) -> Result<(u32, u32, Vec<u8>)> {
+fn open_svg(path: &Path, kind: Kind) -> Result<(resvg::usvg::Tree, u32, u32, f64)> {
     let bytes =
         std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     let tree = resvg::usvg::Tree::from_data(&bytes, &resvg::usvg::Options::default())
         .with_context(|| format!("failed to parse {}", path.display()))?;
     let size = tree.size();
     let (width, height, scale) = fit_size(f64::from(size.width()), f64::from(size.height()), kind);
+    Ok((tree, width, height, scale))
+}
+
+fn render_svg(tree: &resvg::usvg::Tree, width: u32, height: u32, scale: f64) -> Result<Pixels> {
     let mut pixmap =
         resvg::tiny_skia::Pixmap::new(width, height).context("SVG dimensions are too large")?;
     resvg::render(
-        &tree,
+        tree,
         resvg::tiny_skia::Transform::from_scale(scale as f32, scale as f32),
         &mut pixmap.as_mut(),
     );
@@ -111,7 +282,7 @@ mod tests {
         ] {
             let path = dir.path().join(format!("grid.{extension}"));
             raster.save_with_format(&path, format).unwrap();
-            assert!(decode(&path, Kind::Grid).is_ok(), "{extension}");
+            assert!(decode(&path, Kind::Grid, None).is_ok(), "{extension}");
         }
         let svg = dir.path().join("grid.svg");
         std::fs::write(
@@ -119,7 +290,7 @@ mod tests {
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2\" height=\"3\"><rect width=\"2\" height=\"3\" fill=\"red\"/></svg>",
         )
         .unwrap();
-        assert!(decode(&svg, Kind::Grid).is_ok());
+        assert!(decode(&svg, Kind::Grid, None).is_ok());
     }
 
     #[test]
@@ -163,7 +334,145 @@ mod tests {
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2000\" height=\"1000\"><rect width=\"2000\" height=\"1000\" fill=\"red\"/></svg>",
         )
         .unwrap();
-        let svg = decode_svg(&svg_path, Kind::Hero).unwrap();
+        let (tree, width, height, scale) = open_svg(&svg_path, Kind::Hero).unwrap();
+        let svg = render_svg(&tree, width, height, scale).unwrap();
         assert_eq!((svg.0, svg.1), (880, 440));
+    }
+
+    fn save_png(path: &Path, width: u32, height: u32, color: [u8; 3]) {
+        image::RgbImage::from_pixel(width, height, image::Rgb(color))
+            .save(path)
+            .unwrap();
+    }
+
+    fn entries(cache: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        for dir in fs::read_dir(cache).into_iter().flatten().flatten() {
+            for file in fs::read_dir(dir.path()).unwrap().flatten() {
+                if file.file_name() != SOURCE_FILE {
+                    found.push(file.path());
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    fn pixel(handle: &iced_image::Handle) -> (u32, u32, Vec<u8>) {
+        match handle {
+            iced_image::Handle::Rgba {
+                width,
+                height,
+                pixels,
+                ..
+            } => (*width, *height, pixels.to_vec()),
+            other => panic!("unexpected handle {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shrunk_art_is_cached_and_served_from_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let source = dir.path().join("hero.png");
+        save_png(&source, 2000, 1000, [40, 100, 180]);
+
+        let first = pixel(&decode(&source, Kind::Hero, Some(&cache)).unwrap());
+        assert_eq!((first.0, first.1), (880, 440));
+        let found = entries(&cache);
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0]
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with("-880x440.png")
+        );
+
+        // A marker colour only the cached copy has proves the second decode hit.
+        save_png(&found[0], 880, 440, [200, 10, 10]);
+        let second = pixel(&decode(&source, Kind::Hero, Some(&cache)).unwrap());
+        assert_eq!((second.0, second.1), (880, 440));
+        assert_eq!(&second.2[..4], &[200, 10, 10, 255]);
+        assert_ne!(first.2, second.2);
+        assert_eq!(entries(&cache), found);
+    }
+
+    #[test]
+    fn art_that_needs_no_resize_skips_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let source = dir.path().join("small.png");
+        save_png(&source, 80, 40, [1, 2, 3]);
+        let handle = pixel(&decode(&source, Kind::Hero, Some(&cache)).unwrap());
+        assert_eq!((handle.0, handle.1), (80, 40));
+        assert!(!cache.exists());
+    }
+
+    #[test]
+    fn a_bad_cache_file_falls_back_to_the_original_and_is_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let source = dir.path().join("hero.png");
+        save_png(&source, 2000, 1000, [40, 100, 180]);
+        decode(&source, Kind::Hero, Some(&cache)).unwrap();
+        let file = entries(&cache).remove(0);
+
+        fs::write(&file, b"not a png").unwrap();
+        let handle = pixel(&decode(&source, Kind::Hero, Some(&cache)).unwrap());
+        assert_eq!((handle.0, handle.1), (880, 440));
+        assert_eq!(&handle.2[..4], &[40, 100, 180, 255]);
+        assert_eq!(image::open(&file).unwrap().dimensions(), (880, 440));
+
+        save_png(&file, 100, 100, [0, 0, 0]);
+        decode(&source, Kind::Hero, Some(&cache)).unwrap();
+        assert_eq!(image::open(&file).unwrap().dimensions(), (880, 440));
+    }
+
+    #[test]
+    fn a_changed_source_gets_a_new_entry_and_prune_drops_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let source = dir.path().join("hero.png");
+        save_png(&source, 2000, 1000, [40, 100, 180]);
+        decode(&source, Kind::Hero, Some(&cache)).unwrap();
+        let old = entries(&cache);
+
+        save_png(&source, 2400, 1200, [40, 100, 180]);
+        decode(&source, Kind::Hero, Some(&cache)).unwrap();
+        let both = entries(&cache);
+        assert_eq!(both.len(), 2);
+
+        prune(&cache);
+        let kept = entries(&cache);
+        assert_eq!(kept.len(), 1);
+        assert_ne!(kept, old);
+        let current = pixel(&decode(&source, Kind::Hero, Some(&cache)).unwrap());
+        assert_eq!((current.0, current.1), (880, 440));
+        assert_eq!(entries(&cache), kept);
+    }
+
+    #[test]
+    fn prune_removes_dirs_for_missing_sources_and_missing_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let gone = dir.path().join("gone.png");
+        let live = dir.path().join("live.png");
+        save_png(&gone, 2000, 1000, [1, 1, 1]);
+        save_png(&live, 2000, 1000, [2, 2, 2]);
+        decode(&gone, Kind::Hero, Some(&cache)).unwrap();
+        decode(&live, Kind::Hero, Some(&cache)).unwrap();
+        let orphan = cache.join("orphan");
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(orphan.join("x-1x1.png"), b"x").unwrap();
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 3);
+
+        fs::remove_file(&gone).unwrap();
+        prune(&cache);
+        assert!(!orphan.exists());
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 1);
+        assert_eq!(entries(&cache).len(), 1);
+        prune(&dir.path().join("missing"));
     }
 }

@@ -16,6 +16,7 @@ mod worker;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iced::widget::{image, scrollable};
@@ -38,6 +39,7 @@ const SCROLL_ID: &str = "library";
 const SEARCH_ID: &str = "library-search";
 // iced moves 60px per wheel line, which felt too fast beside native apps.
 const WHEEL_STEP_SCALE: f32 = 0.7;
+const MAX_DECODES: usize = 2;
 type ArtKey = (ArtFile, artwork::Kind);
 
 pub(crate) struct App {
@@ -53,6 +55,9 @@ pub(crate) struct App {
     pub(crate) hovered: Option<String>,
     pub(crate) images: HashMap<ArtKey, image::Handle>,
     loading: HashSet<ArtKey>,
+    /// Caps concurrent art decodes, since a huge source costs far more memory
+    /// than its thumbnail.
+    decodes: Arc<tokio::sync::Semaphore>,
     failed_images: HashSet<ArtKey>,
     current_art: HashMap<PathBuf, ArtIdentity>,
     error: Option<String>,
@@ -178,6 +183,7 @@ impl App {
             hovered: None,
             images: HashMap::new(),
             loading: HashSet::new(),
+            decodes: Arc::new(tokio::sync::Semaphore::new(MAX_DECODES)),
             failed_images: HashSet::new(),
             current_art: HashMap::new(),
             error: None,
@@ -210,9 +216,18 @@ impl App {
             closing: false,
         };
         let load = Self::load(app.paths.clone());
+        let cache = app.paths.art_cache_dir();
+        let prune = Task::future(async move {
+            let _ = tokio::task::spawn_blocking(move || artwork::prune(&cache)).await;
+        })
+        .discard();
         (
             app,
-            Task::batch([load, iced::system::theme().map(Message::ThemeChanged)]),
+            Task::batch([
+                load,
+                prune,
+                iced::system::theme().map(Message::ThemeChanged),
+            ]),
         )
     }
     fn theme(&self) -> Theme {
@@ -889,6 +904,7 @@ impl App {
     }
     fn load_images(&mut self, paths: Vec<ArtKey>) -> Task<Message> {
         let mut tasks = Vec::new();
+        let cache = self.paths.art_cache_dir();
         for key in paths {
             if self.images.contains_key(&key)
                 || self.failed_images.contains(&key)
@@ -896,14 +912,24 @@ impl App {
             {
                 continue;
             }
+            let decodes = self.decodes.clone();
+            let cache = cache.clone();
             tasks.push(Task::perform(
                 async move {
-                    let decoded = tokio::task::spawn_blocking({
-                        let key = key.clone();
-                        move || artwork::decode(&key.0.path, key.1).map_err(|e| e.to_string())
-                    })
-                    .await
-                    .map_err(|e| e.to_string());
+                    let decoded = match decodes.acquire_owned().await {
+                        Ok(permit) => tokio::task::spawn_blocking({
+                            let key = key.clone();
+                            move || {
+                                let decoded = artwork::decode(&key.0.path, key.1, Some(&cache))
+                                    .map_err(|e| e.to_string());
+                                drop(permit);
+                                decoded
+                            }
+                        })
+                        .await
+                        .map_err(|e| e.to_string()),
+                        Err(error) => Err(error.to_string()),
+                    };
                     (key, decoded)
                 },
                 |(key, decoded)| Message::ArtLoaded(key, decoded.unwrap_or_else(Err)),

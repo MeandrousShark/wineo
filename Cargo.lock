@@ -5880,6 +5880,7 @@ dependencies = [
  "iced",
  "image",
  "resvg",
+ "sha2",
  "tempfile",
  "tokio",
  "wineo-core",

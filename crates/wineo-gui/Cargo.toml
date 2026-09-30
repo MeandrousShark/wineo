@@ -11,14 +11,13 @@ path = "src/main.rs"
 [dependencies]
 wineo-core.workspace = true
 anyhow.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
 iced = { version = "0.14", features = ["image", "svg", "tokio", "advanced"] }
 image = { workspace = true, features = ["webp"] }
 resvg = "0.45"
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "sync"] }
 ashpd = { version = "0.12.3", default-features = false, features = ["tokio"] }
-
-[dev-dependencies]
-tempfile.workspace = true
 
 [lints]
 workspace = true
