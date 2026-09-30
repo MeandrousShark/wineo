@@ -421,8 +421,23 @@ pub fn language(lookup: impl Fn(&str) -> Option<OsString>) -> String {
     code.to_ascii_lowercase()
 }
 
+/// Logo width from which a logo is sharp enough for its display size.
+const LOGO_ENOUGH_WIDTH: u64 = 1200;
+
+/// Hero width from which a hero is sharp enough for its display size.
+const HERO_ENOUGH_WIDTH: u64 = 1920;
+
+/// The long side beyond which a logo or hero is only used when nothing smaller
+/// exists: decoding it costs seconds and hundreds of megabytes of RGBA.
+const OVERSIZED_SIDE: u64 = 4096;
+
 /// Sorts images best first by the plan's keys for `kind`. The lowest ID
 /// breaks every tie, so the order is total.
+///
+/// Logos and heroes rank big enough over biggest, not the other way round:
+/// decode time and memory grow with pixels while they are shown small, so
+/// pixels past the threshold buy nothing. Oversized images go last so they
+/// only win when nothing else exists.
 pub fn rank(kind: Kind, images: &mut [Image], language: &str) {
     let language_rank = |image: &Image| match image.language.as_deref() {
         Some(found) if found == language => 0,
@@ -450,6 +465,22 @@ pub fn rank(kind: Kind, images: &mut [Image], language: &str) {
             .zip(image.height)
             .is_some_and(|(width, height)| width.min(height) >= 128)
     };
+    // Unknown dimensions are neither oversized nor big enough.
+    let oversized = |image: &Image| {
+        image
+            .width
+            .zip(image.height)
+            .is_some_and(|(width, height)| width.max(height) > OVERSIZED_SIDE)
+    };
+    let wide_enough = |image: &Image, threshold: u64| image.width.is_some_and(|w| w >= threshold);
+    // Area for images below the threshold; every image at or above it ties.
+    let capped_area = |image: &Image, threshold: u64| {
+        if wide_enough(image, threshold) {
+            high(Some(0))
+        } else {
+            area(image)
+        }
+    };
     images.sort_by(|a, b| {
         let common = |image: &Image| (high(image.score), area(image), image.id);
         match kind {
@@ -468,19 +499,33 @@ pub fn rank(kind: Kind, images: &mut [Image], language: &str) {
                     common(b),
                 )),
             Kind::Grid => (language_rank(a), common(a)).cmp(&(language_rank(b), common(b))),
-            Kind::Hero => common(a).cmp(&common(b)),
-            Kind::Logo => (
-                !a.official,
-                language_rank(a),
-                preferred(a, Format::Webp),
-                common(a),
-            )
-                .cmp(&(
-                    !b.official,
-                    language_rank(b),
-                    preferred(b, Format::Webp),
-                    common(b),
-                )),
+            Kind::Hero => {
+                let key = |image: &Image| {
+                    (
+                        oversized(image),
+                        !wide_enough(image, HERO_ENOUGH_WIDTH),
+                        high(image.score),
+                        capped_area(image, HERO_ENOUGH_WIDTH),
+                        image.id,
+                    )
+                };
+                key(a).cmp(&key(b))
+            }
+            Kind::Logo => {
+                let key = |image: &Image| {
+                    (
+                        oversized(image),
+                        !image.official,
+                        language_rank(image),
+                        preferred(image, Format::Webp),
+                        !wide_enough(image, LOGO_ENOUGH_WIDTH),
+                        high(image.score),
+                        capped_area(image, LOGO_ENOUGH_WIDTH),
+                        image.id,
+                    )
+                };
+                key(a).cmp(&key(b))
+            }
         }
     });
 }
@@ -1144,5 +1189,122 @@ mod tests {
             logo(6, true, "de", Some(Format::Png), 1),
         ];
         assert_eq!(ranked(Kind::Logo, logos, "de"), [6, 5, 4, 3, 2, 1]);
+    }
+
+    fn scored(mut image: Image, score: i64) -> Image {
+        image.score = Some(score);
+        image
+    }
+
+    #[test]
+    fn oversized_logos_lose_to_any_normal_one() {
+        let images = vec![
+            scored(sized(candidate(1), 8192, 4482), 50),
+            sized(candidate(2), 1600, 876),
+        ];
+        assert_eq!(ranked(Kind::Logo, images, "en"), [2, 1]);
+    }
+
+    #[test]
+    fn oversized_only_lists_still_yield_the_best_oversized() {
+        let logos = vec![
+            sized(candidate(1), 8192, 4482),
+            scored(sized(candidate(2), 8192, 4482), 3),
+        ];
+        assert_eq!(ranked(Kind::Logo, logos, "en"), [2, 1]);
+        let heroes = vec![
+            sized(candidate(1), 5000, 1600),
+            scored(sized(candidate(2), 6000, 2000), 3),
+        ];
+        assert_eq!(ranked(Kind::Hero, heroes, "en"), [2, 1]);
+    }
+
+    #[test]
+    fn oversized_is_judged_on_the_long_side_only_when_both_sizes_are_known() {
+        let heroes = vec![
+            sized(candidate(1), 4097, 100),
+            sized(candidate(2), 4096, 4096),
+            Image {
+                width: Some(9000),
+                ..candidate(3)
+            },
+        ];
+        // 4096 is not oversized, and a missing height means unknown.
+        assert_eq!(ranked(Kind::Hero, heroes, "en"), [2, 3, 1]);
+    }
+
+    #[test]
+    fn big_enough_logos_rank_by_score_not_size() {
+        let images = vec![
+            scored(sized(candidate(1), 3000, 1000), 1),
+            scored(sized(candidate(2), 1200, 400), 5),
+        ];
+        assert_eq!(ranked(Kind::Logo, images, "en"), [2, 1]);
+    }
+
+    #[test]
+    fn big_enough_logos_beat_smaller_higher_scored_ones() {
+        let images = vec![
+            scored(sized(candidate(1), 1199, 600), 99),
+            scored(sized(candidate(2), 1200, 100), 0),
+        ];
+        assert_eq!(ranked(Kind::Logo, images, "en"), [2, 1]);
+    }
+
+    #[test]
+    fn big_enough_logos_with_equal_scores_tie_on_id() {
+        let images = vec![
+            sized(candidate(3), 3000, 1000),
+            sized(candidate(2), 1200, 400),
+        ];
+        assert_eq!(ranked(Kind::Logo, images, "en"), [2, 3]);
+    }
+
+    #[test]
+    fn too_small_logos_still_prefer_more_pixels_after_score() {
+        let images = vec![
+            sized(candidate(1), 400, 100),
+            sized(candidate(2), 800, 200),
+            candidate(3),
+        ];
+        assert_eq!(ranked(Kind::Logo, images, "en"), [2, 1, 3]);
+    }
+
+    #[test]
+    fn heroes_rank_big_enough_by_score_over_bigger() {
+        let images = vec![
+            scored(sized(candidate(1), 3840, 1240), 2),
+            scored(sized(candidate(2), 1920, 620), 5),
+            scored(sized(candidate(3), 1919, 620), 99),
+        ];
+        assert_eq!(ranked(Kind::Hero, images, "en"), [2, 1, 3]);
+    }
+
+    #[test]
+    fn unknown_dimensions_are_neither_oversized_nor_big_enough() {
+        let images = vec![
+            scored(sized(candidate(1), 8192, 4482), 99),
+            scored(candidate(2), 99),
+            scored(sized(candidate(3), 1600, 876), 1),
+        ];
+        // Known and big enough, then unknown, then oversized.
+        assert_eq!(ranked(Kind::Logo, images.clone(), "en"), [3, 2, 1]);
+        let heroes = vec![
+            scored(sized(candidate(1), 8192, 4482), 99),
+            scored(candidate(2), 99),
+            scored(sized(candidate(3), 1920, 620), 1),
+        ];
+        assert_eq!(ranked(Kind::Hero, heroes, "en"), [3, 2, 1]);
+    }
+
+    #[test]
+    fn icons_and_grids_still_prefer_the_biggest_regardless_of_size() {
+        let images = vec![
+            sized(candidate(1), 512, 512),
+            sized(candidate(2), 8192, 8192),
+            sized(candidate(3), 1024, 1024),
+        ];
+        assert_eq!(ranked(Kind::Icon, images.clone(), "en"), [2, 3, 1]);
+        assert_eq!(ranked(Kind::Grid, images, "en"), [2, 3, 1]);
     }
 }
