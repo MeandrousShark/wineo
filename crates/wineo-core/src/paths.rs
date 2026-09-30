@@ -20,6 +20,8 @@ pub struct Paths {
     state: PathBuf,
     /// The XDG state dir, shared by every root, for locks that have to be.
     host_state: PathBuf,
+    /// The XDG cache dir, which belongs to the host even in a portable folder.
+    cache: PathBuf,
     portable: Option<PathBuf>,
 }
 
@@ -56,6 +58,7 @@ impl Paths {
         let mut paths = Self {
             config: base("XDG_CONFIG_HOME", ".config"),
             data: base("XDG_DATA_HOME", ".local/share"),
+            cache: base("XDG_CACHE_HOME", ".cache"),
             host_state: state.clone(),
             state,
             home,
@@ -176,6 +179,12 @@ impl Paths {
             Some(root) => root.join("art").join(name),
             None => self.data.join("art").join(name),
         }
+    }
+
+    /// Thumbnails of stored art. Always on the host, since a cache is cheap to
+    /// rebuild and a portable folder shouldn't carry it.
+    pub fn art_cache_dir(&self) -> PathBuf {
+        self.cache.join("art")
     }
 
     /// An environment's playtime log. A portable folder carries it, so it
@@ -513,6 +522,10 @@ mod tests {
             Path::new("/home/me/.local/share/wineo/art/notepad")
         );
         assert_eq!(
+            paths.art_cache_dir(),
+            Path::new("/home/me/.cache/wineo/art")
+        );
+        assert_eq!(
             paths.stats_log("notepad"),
             Path::new("/home/me/.local/share/wineo/stats/notepad.jsonl")
         );
@@ -544,6 +557,17 @@ mod tests {
         assert_eq!(paths.art_dir("x"), Path::new("/data/wineo/art/x"));
         assert_eq!(paths.stats_log("x"), Path::new("/data/wineo/stats/x.jsonl"));
         assert_eq!(paths.host_data(), Path::new("/data/wineo"));
+    }
+
+    #[test]
+    fn art_cache_follows_xdg_cache_home_and_ignores_relative_values() {
+        let paths = paths(&[("HOME", "/home/me"), ("XDG_CACHE_HOME", "/cache")]).unwrap();
+        assert_eq!(paths.art_cache_dir(), Path::new("/cache/wineo/art"));
+        let paths = self::paths(&[("HOME", "/home/me"), ("XDG_CACHE_HOME", "relative")]).unwrap();
+        assert_eq!(
+            paths.art_cache_dir(),
+            Path::new("/home/me/.cache/wineo/art")
+        );
     }
 
     #[test]
@@ -676,6 +700,10 @@ mod tests {
             Path::new("/mnt/usb/wineo/stats/hades.jsonl")
         );
         assert_eq!(paths.host_data(), Path::new("/home/me/.local/share/wineo"));
+        assert_eq!(
+            paths.art_cache_dir(),
+            Path::new("/home/me/.cache/wineo/art")
+        );
         let state = Path::new("/home/me/.local/state/wineo/.portable");
         assert!(paths.runtime_dir("hades").starts_with(state));
         assert!(paths.locks_dir().starts_with(state));
