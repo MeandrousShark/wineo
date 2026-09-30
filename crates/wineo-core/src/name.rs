@@ -7,10 +7,16 @@ pub fn is_valid(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// The longest name `from_title` returns, so a pasted blurb can't become a
+/// file name the filesystem refuses. Names typed by hand are not held to it by
+/// `is_valid`, since existing configs may already exceed it.
+pub const TITLE_MAX: usize = 64;
+
 /// Derives an environment name from a human-readable game title. Letters with
 /// common Latin accents are folded to ASCII so accented titles stay readable,
 /// and everything else that is not allowed in a name becomes a single `-`.
-/// The result is empty when the title has no ASCII-foldable letters or digits.
+/// The result is empty when the title has no ASCII-foldable letters or digits,
+/// and is cut to `TITLE_MAX` bytes at a word boundary when it can be.
 pub fn from_title(title: &str) -> String {
     let mut out = String::new();
     let mut gap = false;
@@ -38,22 +44,54 @@ pub fn from_title(title: &str) -> String {
         gap = false;
         out.push_str(&piece.to_ascii_lowercase());
     }
+    if out.len() > TITLE_MAX {
+        // The output is ASCII, so any byte index is a char boundary. Index
+        // TITLE_MAX itself counts, since cutting there ends on a whole word.
+        let cut = out[..=TITLE_MAX].rfind('-').filter(|&at| at > 0);
+        out.truncate(cut.unwrap_or(TITLE_MAX));
+        out.truncate(out.trim_end_matches('-').len());
+    }
     out
 }
 
 fn fold(character: char) -> Option<&'static str> {
     Some(match character {
+        // Latin-1 Supplement, which leaves out the multiplication and
+        // division signs that sit among the letters.
         '\u{e0}'..='\u{e5}' | '\u{c0}'..='\u{c5}' => "a",
         '\u{e6}' | '\u{c6}' => "ae",
         '\u{e7}' | '\u{c7}' => "c",
+        '\u{f0}' | '\u{d0}' => "d",
         '\u{e8}'..='\u{eb}' | '\u{c8}'..='\u{cb}' => "e",
         '\u{ec}'..='\u{ef}' | '\u{cc}'..='\u{cf}' => "i",
         '\u{f1}' | '\u{d1}' => "n",
         '\u{f2}'..='\u{f6}' | '\u{d2}'..='\u{d6}' | '\u{f8}' | '\u{d8}' => "o",
-        '\u{153}' | '\u{152}' => "oe",
         '\u{df}' => "ss",
         '\u{f9}'..='\u{fc}' | '\u{d9}'..='\u{dc}' => "u",
         '\u{fd}' | '\u{ff}' | '\u{dd}' => "y",
+        '\u{fe}' | '\u{de}' => "th",
+        // Latin Extended-A.
+        '\u{100}'..='\u{105}' => "a",
+        '\u{106}'..='\u{10d}' => "c",
+        '\u{10e}'..='\u{111}' => "d",
+        '\u{112}'..='\u{11b}' => "e",
+        '\u{11c}'..='\u{123}' => "g",
+        '\u{124}'..='\u{127}' => "h",
+        '\u{128}'..='\u{131}' => "i",
+        '\u{132}' | '\u{133}' => "ij",
+        '\u{134}' | '\u{135}' => "j",
+        '\u{136}'..='\u{138}' => "k",
+        '\u{139}'..='\u{142}' => "l",
+        '\u{143}'..='\u{14b}' => "n",
+        '\u{14c}'..='\u{151}' => "o",
+        '\u{152}' | '\u{153}' => "oe",
+        '\u{154}'..='\u{159}' => "r",
+        '\u{15a}'..='\u{161}' | '\u{17f}' => "s",
+        '\u{162}'..='\u{167}' => "t",
+        '\u{168}'..='\u{173}' => "u",
+        '\u{174}' | '\u{175}' => "w",
+        '\u{176}'..='\u{178}' => "y",
+        '\u{179}'..='\u{17e}' => "z",
         _ => return None,
     })
 }
@@ -140,6 +178,36 @@ mod tests {
             assert_eq!(derived, expected, "{title}");
             assert!(derived.is_empty() || is_valid(&derived), "{title}");
         }
+    }
+
+    #[test]
+    fn extended_latin_letters_fold_to_ascii() {
+        for (title, expected) in [
+            ("\u{141}\u{f3}d\u{17a}", "lodz"),
+            ("\u{160}koda \u{160}t\u{11b}p\u{e1}n", "skoda-stepan"),
+            ("Stra\u{df}e", "strasse"),
+            (
+                "\u{d0}\u{fe}\u{111}\u{151}\u{171}\u{130}\u{131}",
+                "dthdouii",
+            ),
+            ("Sm\u{f8}rrebr\u{f8}d \u{d7} 2", "smorrebrod-2"),
+        ] {
+            assert_eq!(from_title(title), expected, "{title}");
+        }
+    }
+
+    #[test]
+    fn long_titles_are_cut_to_a_valid_name() {
+        let derived = from_title(&"word ".repeat(60));
+        assert!(derived.len() <= TITLE_MAX, "{derived}");
+        assert!(is_valid(&derived));
+        assert!(!derived.ends_with('-'));
+        assert_eq!(derived, ["word"; 13].join("-"));
+
+        assert_eq!(from_title(&"a".repeat(300)).len(), TITLE_MAX);
+        // A separator right at the limit still leaves a whole word.
+        let exact = format!("{} b", "a".repeat(TITLE_MAX));
+        assert_eq!(from_title(&exact), "a".repeat(TITLE_MAX));
     }
 
     #[test]
