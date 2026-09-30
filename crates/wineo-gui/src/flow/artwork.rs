@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use iced::widget::{
     Column, button, checkbox, column, container, image, pick_list, row, stack, text, text_input,
@@ -95,6 +96,9 @@ pub(crate) struct Draft {
     selected: Option<Match>,
     sequence: u64,
     fetch_sequence: u64,
+    // Mirrors fetch_sequence so running blocking jobs can see they are stale.
+    fetch_generation: Arc<AtomicU64>,
+    fetch_handles: Vec<iced::task::Handle>,
     error: Option<String>,
     configuration_sequence: u64,
     manual_entry: bool,
@@ -304,6 +308,12 @@ impl Draft {
 
     fn clear_fetched(&mut self) {
         self.fetch_sequence = self.fetch_sequence.wrapping_add(1);
+        self.fetch_generation
+            .store(self.fetch_sequence, Ordering::Relaxed);
+        // Aborting only drops the async wrapper; running blocking jobs stop via the generation.
+        for handle in self.fetch_handles.drain(..) {
+            handle.abort();
+        }
         self.remote.clear();
     }
 
@@ -321,7 +331,9 @@ impl Draft {
             .copied()
             .filter(|kind| !self.remote.contains_key(kind))
             .collect();
-        Task::batch(missing.into_iter().map(|kind| {
+        let generation = self.fetch_generation.clone();
+        let mut tasks = Vec::new();
+        for kind in missing {
             self.remote.insert(
                 kind,
                 Remote {
@@ -331,15 +343,22 @@ impl Draft {
             );
             let paths = paths.clone();
             let game = game.clone();
-            Task::perform(
+            let generation = generation.clone();
+            let (task, handle) = Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || fetch_preview(&paths, game.0.id, kind))
-                        .await
-                        .unwrap_or_else(|e| Err(e.to_string()))
+                    tokio::task::spawn_blocking(move || {
+                        fetch_preview(&paths, game.0.id, kind, &generation, sequence)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
                 },
                 move |result| Event::Fetched(kind, sequence, result),
             )
-        }))
+            .abortable();
+            self.fetch_handles.push(handle);
+            tasks.push(task);
+        }
+        Task::batch(tasks)
     }
 
     fn art_preview(&self, kind: Kind) -> Option<(&image::Handle, bool)> {
@@ -958,7 +977,13 @@ fn fetch_preview(
     paths: &Paths,
     game: u64,
     kind: Kind,
+    generation: &AtomicU64,
+    sequence: u64,
 ) -> Result<Option<(Arc<art::Downloaded>, image::Handle)>, String> {
+    let stale = || generation.load(Ordering::Relaxed) != sequence;
+    if stale() {
+        return Ok(None);
+    }
     let key = steamgriddb::require_key(
         paths,
         |key| std::env::var_os(key),
@@ -966,15 +991,29 @@ fn fetch_preview(
     )
     .map_err(|e| e.to_string())?;
     let https = Https::new().map_err(|e| e.to_string())?;
+    if stale() {
+        return Ok(None);
+    }
     let api = Api::new(&https, &key.value);
     let language = steamgriddb::language(|key| std::env::var_os(key));
-    art_fetch::choose(&api, game, kind, &language)
-        .map_err(|e| e.to_string())?
-        .map(|downloaded| {
-            let preview = preview_bytes(&downloaded.bytes, kind)?;
-            Ok((Arc::new(downloaded), preview))
-        })
-        .transpose()
+    let chosen = art_fetch::choose(&api, game, kind, &language).map_err(|e| e.to_string())?;
+    decode_if_current(generation, sequence, chosen, |downloaded| {
+        let preview = preview_bytes(&downloaded.bytes, kind)?;
+        Ok((Arc::new(downloaded), preview))
+    })
+}
+
+// Decoding is the expensive step, so a superseded selection skips it.
+fn decode_if_current<T, U>(
+    generation: &AtomicU64,
+    sequence: u64,
+    chosen: Option<T>,
+    decode: impl FnOnce(T) -> Result<U, String>,
+) -> Result<Option<U>, String> {
+    if generation.load(Ordering::Relaxed) != sequence {
+        return Ok(None);
+    }
+    chosen.map(decode).transpose()
 }
 
 fn search(paths: &Paths, term: &str) -> Result<Vec<Game>, String> {
@@ -1049,6 +1088,25 @@ pub(crate) fn fetch_default(paths: &Paths, name: &str, title: &str) -> Result<Ve
 mod tests {
     use super::*;
     use wineo_core::environment::Environment;
+
+    #[test]
+    fn stale_generation_skips_decode() {
+        let generation = AtomicU64::new(2);
+        let result = decode_if_current(&generation, 1, Some(()), |()| -> Result<u8, String> {
+            panic!("decoded a stale download")
+        });
+        assert_eq!(result, Ok(None));
+        let result = decode_if_current(&generation, 2, Some(()), |()| Ok(7u8));
+        assert_eq!(result, Ok(Some(7)));
+    }
+
+    #[test]
+    fn clearing_bumps_shared_generation() {
+        let mut draft = Draft::new();
+        let generation = draft.fetch_generation.clone();
+        draft.clear_fetched();
+        assert_eq!(generation.load(Ordering::Relaxed), draft.fetch_sequence);
+    }
 
     #[test]
     fn typing_title_does_not_discard_pending_art_configuration() {
