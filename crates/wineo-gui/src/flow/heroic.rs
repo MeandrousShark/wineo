@@ -15,7 +15,7 @@ use wineo_core::art::{Format, Kind};
 use wineo_core::cancel::Token;
 use wineo_core::components::Component;
 use wineo_core::config::GlobalConfig;
-use wineo_core::download::{Client, Provider};
+use wineo_core::download::{Client, Progress, Provider};
 use wineo_core::environment::{self, Environment};
 use wineo_core::gamescope::{Filter, Gamescope, GamescopeSetting, Scaler, Window};
 use wineo_core::heroic::{
@@ -23,7 +23,7 @@ use wineo_core::heroic::{
 };
 use wineo_core::heroic_import::{
     self, Entry, Game, LibraryOptions, LibraryPlan, Options, Playtime, Policy, Registered,
-    Resolution, RunnerCopy, RunnerSuggestion, Warning,
+    Resolution, RunnerCopy, RunnerSuggestion, SkipReason, Warning,
 };
 use wineo_core::import;
 use wineo_core::paths::Paths;
@@ -1044,7 +1044,7 @@ impl Page {
                         .map(|changes| {
                             changes
                                 .into_iter()
-                                .map(|change| format!("{change:?}"))
+                                .map(|change| crate::settings::desktop_line(&change))
                                 .collect()
                         })
                         .map_err(|e| e.to_string())
@@ -2126,7 +2126,11 @@ impl Page {
                                         game.reason()
                                     ),
                                     Entry::Skipped(game) => {
-                                        format!("Skipped: {} - {:?}", game.title, game.reason)
+                                        format!(
+                                            "Skipped {}: {}",
+                                            game.title,
+                                            skip_reason(&game.reason)
+                                        )
                                     }
                                 };
                                 body = body.push(text(line).size(13));
@@ -2908,6 +2912,19 @@ fn store_heroic_poster(
         .map(|error| format!("Heroic poster: {error}"))
 }
 
+/// Why a batch left a game out, as the end of "Skipped Title: ...".
+fn skip_reason(reason: &SkipReason) -> String {
+    match reason {
+        SkipReason::LauncherArgs => "Heroic's launch arguments couldn't be parsed".to_owned(),
+        SkipReason::NeedsRunner { proton: true } => "needs a Proton runner".to_owned(),
+        SkipReason::NeedsRunner { proton: false } => "needs a Wine runner".to_owned(),
+        SkipReason::NameTaken(name) => format!("the name {name} is taken"),
+        SkipReason::Blocked(message)
+        | SkipReason::Unreadable(message)
+        | SkipReason::Unavailable(message) => message.clone(),
+    }
+}
+
 /// Only matters when the prefix is used in place, since then the other games
 /// keep changing it; a copy is wineo's own.
 fn shared_prefix_note(adopt: bool, shared: &[HeroicSharedPrefix]) -> Option<String> {
@@ -2932,8 +2949,14 @@ struct CopyProgress {
 
 impl CopyProgress {
     /// The phase to show for `progress`, or None when it's too soon after
-    /// the last one. The last copied file always shows.
+    /// the last one.
     fn record(&mut self, progress: &import::ImportProgress, now: Instant) -> Option<String> {
+        self.due(progress, now).then(|| self.phase(progress))
+    }
+
+    /// Counts `progress` and says whether it should show. The last copied
+    /// file always shows.
+    fn due(&mut self, progress: &import::ImportProgress, now: Instant) -> bool {
         if let import::ImportProgress::Started { entries } = progress {
             self.total = *entries;
             self.copied = 0;
@@ -2945,21 +2968,21 @@ impl CopyProgress {
                     .sent
                     .is_none_or(|sent| now.duration_since(sent) >= PROGRESS_INTERVAL);
             if !due {
-                return None;
+                return false;
             }
         }
         self.sent = Some(now);
-        Some(self.phase(progress))
+        true
+    }
+
+    fn counts(&self) -> String {
+        format!("{} of {} files", grouped(self.copied), grouped(self.total))
     }
 
     fn phase(&self, progress: &import::ImportProgress) -> String {
         match progress {
             import::ImportProgress::Started { .. } | import::ImportProgress::Copied { .. } => {
-                format!(
-                    "copying prefix ({} of {} files)",
-                    grouped(self.copied),
-                    grouped(self.total)
-                )
+                format!("copying prefix ({})", self.counts())
             }
             import::ImportProgress::Finished { .. } => "finishing".to_owned(),
         }
@@ -3039,16 +3062,25 @@ fn install_prerequisite(
     match operation {
         Prerequisite::CopyRunner(copy) => {
             let root = global.runner_root(paths).map_err(|e| e.to_string())?;
+            let mut files = CopyProgress::default();
             let receipt = import::copy_runner_reviewed(
                 &copy.inspection,
                 root,
                 &copy.name,
                 token,
                 |progress| {
-                    let _ = sender.unbounded_send(Event::Progress(
-                        generation,
-                        format!("Copying runner: {progress:?}"),
-                    ));
+                    if files.due(&progress, Instant::now()) {
+                        let line = match progress {
+                            import::ImportProgress::Started { .. }
+                            | import::ImportProgress::Copied { .. } => {
+                                format!("Copying {} ({})", copy.name, files.counts())
+                            }
+                            import::ImportProgress::Finished { .. } => {
+                                format!("Finishing copy of {}", copy.name)
+                            }
+                        };
+                        let _ = sender.unbounded_send(Event::Progress(generation, line));
+                    }
                 },
             )
             .map_err(|e| format!("{e:#}"))?;
@@ -3061,11 +3093,20 @@ fn install_prerequisite(
                 None => client.select(provider, None),
             }
             .map_err(|e| format!("{e:#}"))?;
+            // Only byte counts come fast enough to need a throttle.
+            let mut sent: Option<Instant> = None;
             client
                 .install(paths, &global, &release, token, |progress| {
+                    let now = Instant::now();
+                    if matches!(progress, Progress::Downloading { .. })
+                        && sent.is_some_and(|sent| now.duration_since(sent) < PROGRESS_INTERVAL)
+                    {
+                        return;
+                    }
+                    sent = Some(now);
                     let _ = sender.unbounded_send(Event::Progress(
                         generation,
-                        format!("{provider}: {progress:?}"),
+                        super::new::download_line(provider, progress),
                     ));
                 })
                 .map_err(|e| format!("{e:#}"))?;
@@ -3619,6 +3660,22 @@ mod tests {
         assert_eq!(
             shared_prefix_note(true, &shared).as_deref(),
             Some("Shares prefix with: Alpha, Bravo")
+        );
+    }
+
+    #[test]
+    fn skip_reasons_read_as_sentences() {
+        assert_eq!(
+            skip_reason(&SkipReason::NameTaken("dusk".to_owned())),
+            "the name dusk is taken"
+        );
+        assert_eq!(
+            skip_reason(&SkipReason::NeedsRunner { proton: true }),
+            "needs a Proton runner"
+        );
+        assert_eq!(
+            skip_reason(&SkipReason::Blocked("its prefix doesn't exist".to_owned())),
+            "its prefix doesn't exist"
         );
     }
 

@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{App, Message};
 use form::{Build, Choice, EnvRow, Field, Form, List, Switch, TargetValues, Values};
+pub(crate) use load::desktop_line;
 use load::{Content, Current, Loaded, ProgramChoice, Report, RunnerChoice, Scan, Snapshot, Texts};
 
 #[derive(Debug, Clone)]

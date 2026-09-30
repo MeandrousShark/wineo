@@ -414,6 +414,24 @@ pub(crate) struct Report {
     pub(crate) failed: Option<String>,
 }
 
+pub(crate) fn desktop_line(change: &wineo_core::desktop::Change) -> String {
+    use wineo_core::desktop::Change;
+    match change {
+        Change::Wrote { target, icon } => {
+            let icon = if *icon { "" } else { ", with no icon" };
+            format!("Added a desktop entry for {target}{icon}")
+        }
+        Change::Updated { target } => format!("Updated the desktop entry for {target}"),
+        Change::Removed { target } => format!("Removed the desktop entry for {target}"),
+        Change::IconArtUnreadable { target } => {
+            format!("Icon art for {target} could not be read")
+        }
+        Change::Skipped { target, reason } => {
+            format!("No desktop entry for {target}: {reason}")
+        }
+    }
+}
+
 pub(crate) fn report(name: &str, applied: Applied) -> Report {
     let mut lines: Vec<String> = applied
         .components
@@ -432,23 +450,7 @@ pub(crate) fn report(name: &str, applied: Applied) -> Report {
             }
         })
         .collect();
-    lines.extend(applied.desktop.iter().map(|change| {
-        use wineo_core::desktop::Change;
-        match change {
-            Change::Wrote { target, icon } => {
-                let icon = if *icon { "" } else { ", with no icon" };
-                format!("Added a desktop entry for {target}{icon}")
-            }
-            Change::Updated { target } => format!("Updated the desktop entry for {target}"),
-            Change::Removed { target } => format!("Removed the desktop entry for {target}"),
-            Change::IconArtUnreadable { target } => {
-                format!("Icon art for {target} could not be read")
-            }
-            Change::Skipped { target, reason } => {
-                format!("No desktop entry for {target}: {reason}")
-            }
-        }
-    }));
+    lines.extend(applied.desktop.iter().map(desktop_line));
     if let Some(runner) = &applied.changed_runner {
         lines.push(format!(
             "The prefix was not migrated. If it was set up by a newer wine than `{runner}`, it may not work"
