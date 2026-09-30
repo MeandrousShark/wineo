@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 
 use iced::futures::channel::mpsc::unbounded;
 use iced::widget::{
-    button, checkbox, column, container, pick_list, responsive, row, scrollable, text, text_input,
+    button, checkbox, column, container, pick_list, radio, responsive, row, scrollable, text,
+    text_input,
 };
 use iced::{Center, Element, Fill, Shrink, Task};
 use wineo_core::cancel::Token;
@@ -62,7 +63,7 @@ impl std::fmt::Display for Kind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Source {
+pub(crate) enum Source {
     Empty,
     Executable,
     Installer,
@@ -72,7 +73,7 @@ impl std::fmt::Display for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Empty => "Empty registration",
-            Self::Executable => "Existing game executable",
+            Self::Executable => "Existing install",
             Self::Installer => "Run an installer",
         })
     }
@@ -200,7 +201,7 @@ pub(crate) enum Event {
     Discard,
     KeepEditing,
     Kind(Kind),
-    Source(String),
+    Source(Source),
     Name(String),
     EditEnvironment,
     EnvironmentName(String),
@@ -721,10 +722,9 @@ impl Page {
                 self.edited();
             }
             Event::Source(value) if self.stage == Stage::Details => {
-                self.draft.source = match value.as_str() {
-                    "Existing game executable" => Source::Executable,
-                    "Run an installer" if self.draft.kind == Kind::Windows => Source::Installer,
-                    _ => Source::Empty,
+                self.draft.source = match value {
+                    Source::Installer if self.draft.kind != Kind::Windows => Source::Empty,
+                    value => value,
                 };
                 self.edited();
             }
@@ -1166,24 +1166,29 @@ impl Page {
                 .push(button("Open existing environment settings").on_press(Event::OpenExisting));
         }
         let sources = if self.draft.kind == Kind::Windows {
-            vec![Source::Empty, Source::Executable, Source::Installer]
+            vec![Source::Installer, Source::Executable, Source::Empty]
         } else {
-            vec![Source::Empty, Source::Executable]
+            vec![Source::Executable, Source::Empty]
         };
-        form = form.push(
-            column![
-                text("Starting point"),
-                pick_list(sources, Some(self.draft.source), |source| {
-                    Event::Source(source.to_string())
-                })
-            ]
-            .spacing(4),
-        );
+        let mut choices = column![text("Starting point")].spacing(4);
+        for source in sources {
+            choices = choices.push(radio(
+                source.to_string(),
+                source,
+                Some(self.draft.source),
+                Event::Source,
+            ));
+        }
+        form = form.push(choices);
         if self.draft.source != Source::Empty {
+            let hint = if self.draft.source == Source::Installer {
+                "Installer path"
+            } else {
+                "Executable path"
+            };
             form = form.push(
                 row![
-                    text_input("Executable or installer path", &self.draft.path)
-                        .on_input(Event::Path),
+                    text_input(hint, &self.draft.path).on_input(Event::Path),
                     button("Browse...").on_press(Event::Browse),
                 ]
                 .spacing(8),
