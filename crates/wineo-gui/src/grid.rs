@@ -216,7 +216,7 @@ impl App {
     fn page_view(&self) -> Element<'_, Message> {
         let palette = self.palette;
         if let Some(page) = &self.settings {
-            return page.view(&self.paths, palette, self.spinner_frame);
+            return page.view(&self.paths, palette, self.spinner_angle);
         }
         let mut page = column![
             self.top_bar(),

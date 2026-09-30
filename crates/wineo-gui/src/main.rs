@@ -7,6 +7,7 @@ mod library;
 mod panel;
 mod picker;
 mod settings;
+mod spinner;
 mod theme;
 mod wheel;
 mod worker;
@@ -68,7 +69,8 @@ pub(crate) struct App {
     pub(crate) log_buffer: LogBuffer,
     log_token: Option<Token>,
     log_generation: u64,
-    pub(crate) spinner_frame: usize,
+    pub(crate) spinner_angle: f32,
+    spinner_start: Instant,
     settings: Option<settings::Page>,
     settings_generation: u64,
     flow: Option<flow::Page>,
@@ -123,7 +125,7 @@ pub(crate) enum Message {
     ScrollIdle,
     Window(window::Event),
     ThemeChanged(iced::theme::Mode),
-    SpinnerTick,
+    SpinnerTick(Instant),
     Key(keyboard::Key, keyboard::Modifiers, iced::event::Status),
     KeyWithFocus(
         keyboard::Key,
@@ -180,7 +182,8 @@ impl App {
             log_buffer: LogBuffer::default(),
             log_token: None,
             log_generation: 0,
-            spinner_frame: 0,
+            spinner_angle: 0.0,
+            spinner_start: Instant::now(),
             settings: None,
             settings_generation: 0,
             flow: None,
@@ -220,7 +223,7 @@ impl App {
         // Every message rebuilds the view, so an always-on tick keeps the app busy while idle.
         let spinner =
             if self.operation.is_some() || self.settings.as_ref().is_some_and(|page| page.saving) {
-                iced::time::every(Duration::from_millis(120)).map(|_| Message::SpinnerTick)
+                window::frames().map(Message::SpinnerTick)
             } else {
                 Subscription::none()
             };
@@ -502,11 +505,11 @@ impl App {
                 self.palette = Palette::from_mode(mode);
                 Task::none()
             }
-            Message::SpinnerTick => {
+            Message::SpinnerTick(now) => {
                 if self.operation.is_some()
                     || self.settings.as_ref().is_some_and(|page| page.saving)
                 {
-                    self.spinner_frame = (self.spinner_frame + 1) % 4;
+                    self.spinner_angle = spinner::angle(self.spinner_start, now);
                 }
                 Task::none()
             }

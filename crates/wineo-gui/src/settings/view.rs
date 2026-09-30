@@ -38,7 +38,7 @@ impl Page {
         &self,
         paths: &Paths,
         palette: Palette,
-        spinner: usize,
+        spinner: f32,
     ) -> Element<'_, Message> {
         let back = button(text("< Back").size(14))
             .on_press_maybe((!self.saving).then(|| send(Event::Back)))
@@ -106,7 +106,7 @@ impl Page {
             base.into()
         }
     }
-    fn save_bar(&self, palette: Palette, spinner: usize) -> Element<'_, Message> {
+    fn save_bar(&self, palette: Palette, spinner: f32) -> Element<'_, Message> {
         let mut bar = column![].spacing(6);
         if let Some(warning) = self.global_warning() {
             bar = bar.push(text(warning).size(13).color(palette.warning));
@@ -139,8 +139,7 @@ impl Page {
         .align_y(Center);
         actions = actions.push(Space::new().width(Fill));
         if self.saving {
-            let spin = ["◐", "◓", "◑", "◒"][spinner % 4];
-            actions = actions.push(text(spin).size(16).color(palette.muted));
+            actions = actions.push(crate::spinner::spinner(palette, spinner, 16.0));
             actions = actions.push(text("Saving...").size(14).color(palette.muted));
         }
         let revert_enabled = !self.saving && (self.is_dirty() || self.changed_on_disk);

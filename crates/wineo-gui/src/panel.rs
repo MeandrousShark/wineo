@@ -396,10 +396,9 @@ impl App {
             inner = inner.push(extra);
         }
         if let Some(operation) = self.operation.as_ref().filter(|op| op.name == card.name) {
-            let spin = ["◐", "◓", "◑", "◒"][self.spinner_frame % 4];
             inner = inner.push(
                 row![
-                    text(spin).size(16).color(palette.muted),
+                    crate::spinner::spinner(palette, self.spinner_angle, 16.0),
                     text(&operation.status).size(14).color(palette.muted)
                 ]
                 .spacing(8)
