@@ -3,6 +3,14 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.19.1 - 2026-09-30
+
+- `wineo-gui` shrinks art bigger than it's shown once and keeps the copy in
+  `$XDG_CACHE_HOME/wineo/art`, so later starts skip decoding huge files and
+  use far less memory. See [The library](docs/gui.md#the-library).
+- The library decodes at most two images at a time, so a first pass over
+  large art no longer spikes memory.
+
 ## 0.19.0 - 2026-09-30
 
 - Add, import, and clone from `wineo-gui`: new environments from an
