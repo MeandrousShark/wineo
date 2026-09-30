@@ -383,6 +383,48 @@ impl Draft {
         }
     }
 
+    /// Whether the user chose a local file for `kind`.
+    pub(crate) fn has_local(&self, kind: Kind) -> bool {
+        self.local
+            .get(&kind)
+            .is_some_and(|local| !local.path.is_empty())
+    }
+
+    /// A draft holding an already fetched SteamGridDB `image` for `kind`, as
+    /// if the user picked match `game`.
+    #[cfg(test)]
+    pub(crate) fn with_fetched(kind: Kind, game: u64, image: art::Downloaded) -> Self {
+        let mut draft = Self::new();
+        draft.fetch = true;
+        draft.kinds = vec![kind];
+        draft.selected = Some(Match(Game {
+            id: game,
+            name: "game".into(),
+            year: None,
+        }));
+        draft.remote.insert(
+            kind,
+            Remote {
+                image: Some(Arc::new(image)),
+                ..Remote::default()
+            },
+        );
+        draft
+    }
+
+    /// Picks `path` as the local file for `kind`.
+    #[cfg(test)]
+    pub(crate) fn with_local(mut self, kind: Kind, path: &Path) -> Self {
+        self.local.insert(
+            kind,
+            Local {
+                path: path.to_string_lossy().into_owned(),
+                ..Local::default()
+            },
+        );
+        self
+    }
+
     pub(crate) fn validate(&self) -> Result<(), String> {
         for (kind, local) in &self.local {
             if local.checking {
@@ -923,7 +965,7 @@ fn resolve(paths: Option<&Paths>, value: &str) -> Result<PathBuf, String> {
     }
 }
 
-fn preview(path: &Path, kind: Kind) -> Result<image::Handle, String> {
+pub(super) fn preview(path: &Path, kind: Kind) -> Result<image::Handle, String> {
     use std::io::Read;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();

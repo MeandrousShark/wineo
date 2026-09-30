@@ -518,36 +518,49 @@ impl App {
             }
             Message::Key(key, modifiers, status) if self.flow.is_some() => {
                 use iced::keyboard::{Key, key::Named};
-                match key.as_ref() {
-                    Key::Character(choice) if matches!(self.flow, Some(flow::Page::Choose(_))) => {
-                        let event = match choice {
-                            "1" => flow::Event::New,
-                            "2" => flow::Event::Prefix,
-                            "3" => flow::Event::Heroic,
-                            _ => return Task::none(),
-                        };
-                        self.flow_update(self.flow_generation, event)
+                let generation = self.flow_generation;
+                let width = self.flow_width();
+                let own = if status == iced::event::Status::Captured {
+                    None
+                } else {
+                    self.flow.as_mut().unwrap().key(&key, modifiers, width)
+                };
+                if let Some(task) = own {
+                    task.map(move |event| Message::Flow(generation, event))
+                } else {
+                    match key.as_ref() {
+                        Key::Character(choice)
+                            if matches!(self.flow, Some(flow::Page::Choose(_))) =>
+                        {
+                            let event = match choice {
+                                "1" => flow::Event::New,
+                                "2" => flow::Event::Prefix,
+                                "3" => flow::Event::Heroic,
+                                _ => return Task::none(),
+                            };
+                            self.flow_update(self.flow_generation, event)
+                        }
+                        Key::Named(Named::Enter) if modifiers.control() => {
+                            let generation = self.flow_generation;
+                            let task = self
+                                .flow
+                                .as_mut()
+                                .unwrap()
+                                .submit()
+                                .map(move |event| Message::Flow(generation, event));
+                            task.chain(self.flow_update(generation, flow::Event::AfterSubmit))
+                        }
+                        Key::Named(Named::Tab) if modifiers.shift() => {
+                            iced::widget::operation::focus_previous()
+                        }
+                        Key::Named(Named::Tab) => iced::widget::operation::focus_next(),
+                        Key::Named(Named::Escape)
+                            if status != iced::event::Status::Captured && !self.close_prompt =>
+                        {
+                            self.flow_update(self.flow_generation, flow::Event::Back)
+                        }
+                        _ => Task::none(),
                     }
-                    Key::Named(Named::Enter) if modifiers.control() => {
-                        let generation = self.flow_generation;
-                        let task = self
-                            .flow
-                            .as_mut()
-                            .unwrap()
-                            .submit()
-                            .map(move |event| Message::Flow(generation, event));
-                        task.chain(self.flow_update(generation, flow::Event::AfterSubmit))
-                    }
-                    Key::Named(Named::Tab) if modifiers.shift() => {
-                        iced::widget::operation::focus_previous()
-                    }
-                    Key::Named(Named::Tab) => iced::widget::operation::focus_next(),
-                    Key::Named(Named::Escape)
-                        if status != iced::event::Status::Captured && !self.close_prompt =>
-                    {
-                        self.flow_update(self.flow_generation, flow::Event::Back)
-                    }
-                    _ => Task::none(),
                 }
             }
             Message::Key(key, modifiers, status) if self.settings.is_some() => {
