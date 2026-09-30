@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0038: GUI new, import, and clone
 
@@ -412,8 +412,8 @@ storage behavior requires an amendment approved by the maintainer.
 
 ## Implementation verification
 
-Implemented on 2026-09-29. The plan stays approved pending the maintainer's
-real-game and installer acceptance above.
+Implemented on 2026-09-29. Maintainer acceptance with real games and
+installers passed on 2026-09-30.
 
 - Formatting and workspace clippy with warnings denied passed.
 - The full suite and frozen serial workspace gate passed. The latter ran
@@ -428,10 +428,14 @@ real-game and installer acceptance above.
   canceled file choosers, opt-in launch once, and installer cancel-and-close.
   No real games, installers, or network downloads were used.
 
-Maintainer acceptance progress (2026-09-30):
+Maintainer acceptance passed:
 
-- Creating a Windows environment from a real installer passed in the GUI.
-- Creating an environment from an existing exe passed in the GUI.
+- 2026-09-29: registering a native game, single and batch Heroic import,
+  Wine and native clone, and cancellation during copying and installation.
+- 2026-09-30: creating from a real installer, creating from an existing
+  exe, and importing a prefix.
+
+Released as v0.19.0 after maintainer acceptance passed.
 
 ## Scope limits
 

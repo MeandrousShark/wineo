@@ -51,7 +51,7 @@ Completed: [0036: GUI library launcher](plans/0036-gui-library-launcher.md).
 See [Desktop app](gui.md) for using it.
 Completed: [0037: GUI settings](plans/0037-gui-settings.md).
 See [Settings](gui.md#settings) for the pages.
-Approved and in progress: [0038: GUI new, import, and clone](plans/0038-gui-new-import-clone.md).
+Completed: [0038: GUI new, import, and clone](plans/0038-gui-new-import-clone.md).
 See [Add, import, and clone](gui.md#add-import-and-clone) for the current flows.
 
 **Category**
@@ -82,7 +82,7 @@ See [Add, import, and clone](gui.md#add-import-and-clone) for the current flows.
 | Integrity checking | Portability/Data | **4** | | Detect damaged or tampered files | Scope still open: prefix or game files, snapshots, or re-verifying downloads (already sha256-checked on install). |
 | Import from Lutris/Bottles and Heroic store metadata | Compatibility | **3** | 0008 | Extends generic import and Heroic sideloaded-game import | 0008 covers manually added Heroic games only. Store integration and other launchers remain separate work. |
 | Managed copying of portable application folders | Portability/Data | **3** | 0007, 0008 | Optional organization for applications used in place today | 0008 copies prefixes but leaves external game folders where they are. Storage layout and removal semantics need a later plan. |
-| wineo-gui | UX | **1** | [GUI entry criteria](#gui-entry-criteria) | Build on a mature CLI and shared core operations | iced. [Plan 0036](plans/0036-gui-library-launcher.md) (library launcher) and [0037](plans/0037-gui-settings.md) (settings) are done; [0038](plans/0038-gui-new-import-clone.md) (new, import, clone) is approved and in progress. See [Desktop app](gui.md). Next are removal, trash, restore, prune, and validate, then snapshots, portable copies, general art and download management, exec, and winetricks. |
+| wineo-gui | UX | **1** | [GUI entry criteria](#gui-entry-criteria) | Build on a mature CLI and shared core operations | iced. Plans [0036](plans/0036-gui-library-launcher.md) (library launcher), [0037](plans/0037-gui-settings.md) (settings), and [0038](plans/0038-gui-new-import-clone.md) (new, import, clone) are done. See [Desktop app](gui.md). Next are removal, trash, restore, prune, and validate, then snapshots, portable copies, general art and download management, exec, and winetricks. |
 | GUI visual polish | UX | **2** | 0036 | Make the desktop app feel finished rather than spike-grade | From the maintainer's 0036 testing (2026-09-28): redesign the Play, Stop, and Log buttons, which look like spike or built-in styles, and give them one consistent shape (Log differs from Play and Stop today). Give the detail panel some depth, like a shadow or elevation, and animate it opening and closing. From 0038 testing (2026-09-30): lay out the new environment review more nicely, since it's a plain list of lines today. |
 | GUI context menu and actions | UX | **2** | 0036 | Reach per-environment actions without the CLI | 0038 adds Settings and Clone to the card menu and detail actions dropdown. Other actions, including remove, run an exe, and browse art, remain future GUI work. |
 | GUI themes and customization | UX | **3** | 0036 | Let people make the app their own | From the maintainer's 0036 testing (2026-09-28): custom themes with a few presets, added with a GUI settings page. Longer term, a deeply customizable GUI. The palette tokens from 0036 are the starting point. |

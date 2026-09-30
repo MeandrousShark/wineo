@@ -3,6 +3,26 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.19.0 - 2026-09-30
+
+- Add, import, and clone from `wineo-gui`: new environments from an
+  installer, an existing install, or an empty registration, plus prefix
+  imports, Heroic imports, and Wine and native clones
+  ([0038](docs/plans/0038-gui-new-import-clone.md)). See
+  [Add, import, and clone](docs/gui.md#add-import-and-clone).
+- Heroic import picks one or many games from a poster grid built from
+  Heroic's cached posters.
+- Clickable art tiles for local files and SteamGridDB matches, and a new
+  environment previews its library page as you fill it in.
+- Missing runners and components can be downloaded inline, with progress,
+  cancel, and live installer and winetricks logs.
+- `wineo art fetch` prefers logos about 1200 px wide and heroes about
+  1920 px over the biggest image, and uses images over 4096 px only when
+  nothing smaller exists.
+- Import sources are checked by metadata instead of content, with progress
+  and cancel. Import, snapshot, clone, and portable refuse a folder that
+  holds other prefixes.
+
 ## 0.18.0 - 2026-09-29
 
 - Environment and global settings pages in `wineo-gui`, including targets,
