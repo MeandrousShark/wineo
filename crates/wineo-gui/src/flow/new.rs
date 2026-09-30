@@ -34,6 +34,7 @@ use crate::logview::{self, LogView};
 use crate::picker;
 use crate::theme::Palette;
 
+const LOG_ID: &str = "install-log";
 const LOG_CAP: usize = 128 * 1024;
 const LOG_KEEP: usize = 64 * 1024;
 
@@ -213,6 +214,7 @@ pub(crate) enum Event {
     Progress(u64, String),
     LogChunk(u64, String),
     LogAction(iced::widget::text_editor::Action),
+    LogScrolled(iced::widget::scrollable::Viewport),
     LogFollow,
     CopyLog,
     Done(u64, Report),
@@ -319,7 +321,8 @@ impl Page {
         )
     }
 
-    fn append_log(&mut self, text: &str) {
+    #[must_use]
+    fn append_log(&mut self, text: &str) -> bool {
         let text = logview::normalize(text);
         self.log.push_str(&text);
         let mut dropped = String::new();
@@ -331,7 +334,7 @@ impl Page {
             dropped = self.log.drain(..start).collect();
         }
         let log = &self.log;
-        self.log_view.push(&text, &dropped, || log.clone());
+        self.log_view.push(&text, &dropped, || log.clone())
     }
 
     pub(crate) fn busy(&self) -> bool {
@@ -851,20 +854,40 @@ impl Page {
                 if generation == self.generation && self.stage == Stage::Working =>
             {
                 self.status.clone_from(&line);
-                self.append_log(&format!("{line}\n"));
+                if self.append_log(&format!("{line}\n")) {
+                    return snap_log();
+                }
             }
             Event::LogChunk(generation, chunk)
                 if generation == self.generation && self.stage == Stage::Working =>
             {
-                self.append_log(&chunk);
+                if self.append_log(&chunk) {
+                    return snap_log();
+                }
             }
             Event::LogAction(action) => {
                 let log = &self.log;
-                self.log_view.perform(action, || log.clone());
+                if self.log_view.perform(action, || log.clone()) {
+                    return snap_log();
+                }
+            }
+            Event::LogScrolled(viewport) => {
+                let log = &self.log;
+                let snap = self.log_view.scrolled(
+                    viewport.absolute_offset().y,
+                    viewport.bounds().height,
+                    viewport.content_bounds().height,
+                    || log.clone(),
+                );
+                if snap {
+                    return snap_log();
+                }
             }
             Event::LogFollow => {
                 let log = &self.log;
-                self.log_view.follow(|| log.clone());
+                if self.log_view.follow(|| log.clone()) {
+                    return snap_log();
+                }
             }
             Event::CopyLog => {
                 self.log_view.mark_copied();
@@ -1373,7 +1396,9 @@ impl Page {
                         &self.log_view,
                         palette,
                         220,
+                        LOG_ID,
                         Event::LogAction,
+                        Event::LogScrolled,
                     ));
                 }
             }
@@ -1550,6 +1575,10 @@ fn template_effects(template: &Template, draft: &Draft) -> Vec<String> {
         ));
     }
     effects
+}
+
+fn snap_log() -> Task<Event> {
+    logview::snap_to_end(LOG_ID)
 }
 
 fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
@@ -1934,7 +1963,7 @@ mod tests {
     fn installer_log_stays_capped_and_mirrored_in_the_view() {
         let mut page = page();
         for index in 0..4000 {
-            page.append_log(&format!("{index} {}\r\n", "x".repeat(60)));
+            let _ = page.append_log(&format!("{index} {}\r\n", "x".repeat(60)));
         }
         assert!(page.log.len() <= LOG_CAP);
         assert!(page.log.len() > LOG_KEEP);
@@ -1945,11 +1974,11 @@ mod tests {
     #[test]
     fn installer_log_pauses_while_selected_and_copies_everything() {
         let mut page = page();
-        page.append_log("first\n");
+        let _ = page.append_log("first\n");
         let _ = page.update(Event::LogAction(
             iced::widget::text_editor::Action::SelectAll,
         ));
-        page.append_log("second\n");
+        let _ = page.append_log("second\n");
         assert!(page.log_view.paused());
         assert_eq!(page.log_view.content().text(), "first\n");
         let _ = page.update(Event::CopyLog);

@@ -27,7 +27,7 @@ use wineo_core::runtime::State;
 #[cfg(test)]
 use crate::library::playtime_label;
 use crate::library::{ArtFile, ArtIdentity, Card, load_library};
-use crate::panel::{LogBuffer, PanelError};
+use crate::panel::{LOG_ID, LogBuffer, PanelError};
 use crate::theme::Palette;
 
 pub(crate) const CARD_WIDTH: f32 = 180.0;
@@ -115,6 +115,7 @@ pub(crate) enum Message {
     LogChunk(u64, String),
     LogFinished(u64, Result<(), String>),
     LogAction(iced::widget::text_editor::Action),
+    LogScrolled(scrollable::Viewport),
     LogFollow,
     CopyLog,
     Hover(Option<String>),
@@ -407,12 +408,9 @@ impl App {
                 self.close_log();
                 Task::none()
             }
-            Message::LogChunk(generation, chunk) => {
-                if self.log_view && self.log_generation == generation {
-                    self.log_buffer.push(&chunk);
-                }
-                Task::none()
-            }
+            Message::LogChunk(generation, chunk) => Self::follow_if(
+                self.log_view && self.log_generation == generation && self.log_buffer.push(&chunk),
+            ),
             Message::LogFinished(generation, result) => {
                 if self.log_view
                     && self.log_generation == generation
@@ -423,15 +421,12 @@ impl App {
                 Task::none()
             }
             Message::LogAction(action) => {
-                if self.log_view {
-                    self.log_buffer.act(action);
-                }
-                Task::none()
+                Self::follow_if(self.log_view && self.log_buffer.act(action))
             }
-            Message::LogFollow => {
-                self.log_buffer.follow();
-                Task::none()
+            Message::LogScrolled(viewport) => {
+                Self::follow_if(self.log_view && self.log_buffer.scrolled(viewport))
             }
+            Message::LogFollow => Self::follow_if(self.log_buffer.follow()),
             Message::CopyLog => iced::clipboard::write(self.log_buffer.copy()),
             Message::Hover(name) => {
                 self.hovered = name;
@@ -676,6 +671,13 @@ impl App {
             task.chain(iced::exit())
         } else {
             task
+        }
+    }
+    fn follow_if(snap: bool) -> Task<Message> {
+        if snap {
+            logview::snap_to_end(LOG_ID)
+        } else {
+            Task::none()
         }
     }
     fn foreground_busy(&self) -> bool {

@@ -12,23 +12,33 @@ use std::sync::Arc;
 use iced::widget::text_editor::{
     self, Action, Binding, Content, Cursor, Edit, KeyPress, Motion, Position,
 };
-use iced::widget::{Row, button, row, text_editor as editor_widget};
-use iced::{Background, Border, Color, Element, Font, Length};
+use iced::widget::{Id, Row, button, row, scrollable, text_editor as editor_widget};
+use iced::{Background, Border, Color, Element, Font, Length, Task};
 
 use crate::theme::Palette;
+use crate::{WHEEL_STEP_SCALE, wheel};
 
-#[derive(Default)]
 pub(crate) struct LogView {
     content: Content,
-    /// Net lines scrolled above the tail. The editor does not expose its
-    /// scroll offset, so this is tracked from the wheel actions it emits.
-    away: i32,
-    /// The caret was moved by keyboard, so the tail position is unknown and
-    /// only an explicit jump to the end resumes following.
-    lost: bool,
+    /// Whether the reader is at the bottom of the outer scrollable. It only
+    /// flips on real scrolling (see `scrolled`), never on content growth.
+    at_bottom: bool,
+    last_offset: f32,
     /// Output arrived while paused and is not in `content` yet.
     stale: bool,
     copied: bool,
+}
+
+impl Default for LogView {
+    fn default() -> Self {
+        Self {
+            content: Content::default(),
+            at_bottom: true,
+            last_offset: 0.0,
+            stale: false,
+            copied: false,
+        }
+    }
 }
 
 /// Carriage returns would split lines differently in the editor than in the
@@ -50,7 +60,7 @@ impl LogView {
     /// cursor rather than `Content::selection`, which copies the whole
     /// selected text and would run on every frame.
     pub(crate) fn paused(&self) -> bool {
-        self.lost || self.away > 0 || self.content.cursor().selection.is_some()
+        !self.at_bottom || self.content.cursor().selection.is_some()
     }
 
     /// Whether there is held output the reader could jump to.
@@ -68,11 +78,19 @@ impl LogView {
 
     /// Adds `added` at the end and removes `dropped` from the front, mirroring
     /// what the caller just did to its source text (already normalized).
-    pub(crate) fn push(&mut self, added: &str, dropped: &str, source: impl FnOnce() -> String) {
+    /// Returns true when the content changed and the scrollable should snap
+    /// to the end.
+    #[must_use]
+    pub(crate) fn push(
+        &mut self,
+        added: &str,
+        dropped: &str,
+        source: impl FnOnce() -> String,
+    ) -> bool {
         self.copied = false;
         if self.paused() {
             self.stale = true;
-            return;
+            return false;
         }
         self.content.perform(Action::Move(Motion::DocumentEnd));
         self.content
@@ -80,50 +98,81 @@ impl LogView {
         if !self.trim_front(dropped) {
             self.rebuild(&source());
         }
+        true
     }
 
     /// Replaces the content after the source changed in a way `push` cannot
-    /// mirror. Only meaningful while following.
-    pub(crate) fn resync(&mut self, source: &str) {
+    /// mirror. Only takes effect while following.
+    #[must_use]
+    pub(crate) fn resync(&mut self, source: &str) -> bool {
         self.copied = false;
         if self.paused() {
             self.stale = true;
+            false
         } else {
             self.rebuild(source);
+            true
         }
     }
 
-    /// Applies a widget action. The log is read-only, so edits are dropped.
-    pub(crate) fn perform(&mut self, action: Action, source: impl FnOnce() -> String) {
-        if action.is_edit() {
-            return;
+    /// Applies a widget action. The log is read-only, so edits are dropped,
+    /// and wheel scrolling belongs to the outer scrollable. Returns true when
+    /// the scrollable should snap to the end.
+    #[must_use]
+    pub(crate) fn perform(&mut self, action: Action, source: impl FnOnce() -> String) -> bool {
+        if action.is_edit() || matches!(action, Action::Scroll { .. }) {
+            return false;
         }
         self.copied = false;
-        match &action {
-            // The editor reports wheel-up as negative lines.
-            Action::Scroll { lines } => self.away = (self.away - lines).max(0),
-            Action::Move(Motion::DocumentEnd) => {
-                self.away = 0;
-                self.lost = false;
-            }
-            Action::Move(_) => self.lost = true,
-            _ => {}
-        }
+        let jump = matches!(action, Action::Move(Motion::DocumentEnd));
         self.content.perform(action);
-        if self.stale && !self.paused() {
-            self.rebuild(&source());
+        if jump {
+            self.at_bottom = true;
         }
+        self.resume_if_ready(jump, source)
     }
 
-    pub(crate) fn follow(&mut self, source: impl FnOnce() -> String) {
-        self.perform(Action::Move(Motion::DocumentEnd), source);
+    #[must_use]
+    pub(crate) fn follow(&mut self, source: impl FnOnce() -> String) -> bool {
+        self.perform(Action::Move(Motion::DocumentEnd), source)
+    }
+
+    /// Tracks the scrollable's viewport. Scrolling up leaves the tail; only
+    /// reaching the bottom (or a jump) returns to it. Growth alone does not
+    /// count: right after an append the content is taller than the offset
+    /// until the scrollable is snapped, and that must not read as scrolling
+    /// away. Returns true when the reader is back at the tail with held
+    /// output.
+    #[must_use]
+    pub(crate) fn scrolled(
+        &mut self,
+        offset: f32,
+        height: f32,
+        content_height: f32,
+        source: impl FnOnce() -> String,
+    ) -> bool {
+        if offset + height >= content_height - 1.0 {
+            self.at_bottom = true;
+        } else if offset < self.last_offset - 0.5 {
+            self.at_bottom = false;
+        }
+        self.last_offset = offset;
+        self.resume_if_ready(false, source)
+    }
+
+    fn resume_if_ready(&mut self, force: bool, source: impl FnOnce() -> String) -> bool {
+        if self.stale && !self.paused() {
+            self.rebuild(&source());
+            true
+        } else {
+            force
+        }
     }
 
     fn rebuild(&mut self, source: &str) {
         self.content = Content::with_text(source);
         self.content.perform(Action::Move(Motion::DocumentEnd));
-        self.away = 0;
-        self.lost = false;
+        self.at_bottom = true;
         self.stale = false;
     }
 
@@ -152,33 +201,29 @@ impl LogView {
     }
 }
 
-/// The log text box. The style keeps the panel look the old plain text had,
-/// with a border so a focused log is visible.
+/// The log text box. The editor lays out its full content and an outer
+/// scrollable provides the viewport and scrollbar. That also lets the wheel
+/// through: with an unbounded height the editor neither emits nor captures
+/// scroll actions, so the scrollable handles it.
 pub(crate) fn editor<'a, Message: Clone + 'a>(
     view: &'a LogView,
     palette: Palette,
     height: impl Into<Length>,
+    id: &'static str,
     on_action: impl Fn(Action) -> Message + 'a,
+    on_scroll: impl Fn(scrollable::Viewport) -> Message + 'a,
 ) -> Element<'a, Message> {
-    editor_widget(view.content())
+    let editor = editor_widget(view.content())
         .on_action(on_action)
         .key_binding(key_binding)
         .font(Font::MONOSPACE)
         .size(12)
         .padding(8)
-        .height(height)
         .style(move |theme, status| {
             let base = text_editor::default(theme, status);
             text_editor::Style {
                 background: Background::Color(Color::TRANSPARENT),
-                border: Border {
-                    color: if matches!(status, text_editor::Status::Focused { .. }) {
-                        palette.primary
-                    } else {
-                        palette.border
-                    },
-                    ..base.border
-                },
+                border: Border::default(),
                 value: palette.foreground,
                 selection: Color {
                     a: 0.4,
@@ -186,8 +231,18 @@ pub(crate) fn editor<'a, Message: Clone + 'a>(
                 },
                 ..base
             }
-        })
-        .into()
+        });
+    wheel::scale(
+        scrollable(editor)
+            .id(Id::new(id))
+            .height(height)
+            .on_scroll(on_scroll),
+        WHEEL_STEP_SCALE,
+    )
+}
+
+pub(crate) fn snap_to_end<Message: 'static>(id: &'static str) -> Task<Message> {
+    iced::widget::operation::snap_to_end(Id::new(id))
 }
 
 /// Copy, plus a jump to the end while live output is being held back.
@@ -260,7 +315,7 @@ mod tests {
         let mut source = String::new();
         for chunk in ["one\ntw", "o\nthree\n", "four"] {
             source.push_str(chunk);
-            view.push(chunk, "", || source.clone());
+            assert!(view.push(chunk, "", || source.clone()));
             assert_eq!(text(&view), source);
         }
         assert!(!view.paused());
@@ -269,14 +324,12 @@ mod tests {
     #[test]
     fn selection_pauses_updates_and_keeps_the_selection() {
         let mut view = LogView::default();
-        let mut source = "one\ntwo\n".to_owned();
-        view.push(&source, "", || unreachable!());
-        view.perform(Action::SelectAll, || unreachable!());
+        assert!(view.push("one\ntwo\n", "", || unreachable!()));
+        let _ = view.perform(Action::SelectAll, || unreachable!());
         assert!(view.paused());
         assert_eq!(view.content.selection().as_deref(), Some("one\ntwo\n"));
 
-        source.push_str("three\n");
-        view.push("three\n", "", || unreachable!());
+        assert!(!view.push("three\n", "", || unreachable!()));
         assert_eq!(text(&view), "one\ntwo\n");
         assert_eq!(view.content.selection().as_deref(), Some("one\ntwo\n"));
         assert!(view.can_follow());
@@ -286,52 +339,87 @@ mod tests {
     fn jumping_to_the_end_resumes_with_everything() {
         let mut view = LogView::default();
         let mut source = "one\n".to_owned();
-        view.push(&source, "", || unreachable!());
-        view.perform(Action::SelectAll, || unreachable!());
+        assert!(view.push(&source, "", || unreachable!()));
+        let _ = view.perform(Action::SelectAll, || unreachable!());
         source.push_str("two\nthree");
-        view.push("two\nthree", "", || unreachable!());
-        view.follow(|| source.clone());
+        assert!(!view.push("two\nthree", "", || unreachable!()));
+        assert!(view.follow(|| source.clone()));
         assert_eq!(text(&view), source);
         assert!(!view.paused());
         assert!(!view.can_follow());
     }
 
     #[test]
-    fn scrolling_up_pauses_until_scrolled_back_down() {
+    fn scrolling_up_pauses_and_reaching_the_bottom_resumes() {
         let mut view = LogView::default();
         let mut source = numbered(50);
-        view.push(&source, "", || unreachable!());
-        view.perform(Action::Scroll { lines: -8 }, || unreachable!());
+        assert!(view.push(&source, "", || unreachable!()));
+        // Viewport of 200 over 1000: first at the bottom, then scrolled up.
+        assert!(!view.scrolled(800.0, 200.0, 1000.0, || unreachable!()));
+        assert!(!view.scrolled(500.0, 200.0, 1000.0, || unreachable!()));
         assert!(view.paused());
-        source.push_str("late\n");
-        view.push("late\n", "", || unreachable!());
-        assert!(!text(&view).contains("late"));
 
-        view.perform(Action::Scroll { lines: 5 }, || source.clone());
+        source.push_str("late\n");
+        assert!(!view.push("late\n", "", || unreachable!()));
+        assert!(!text(&view).contains("late"));
+        assert!(view.can_follow());
+
+        // Scrolling down without reaching the bottom stays paused.
+        assert!(!view.scrolled(700.0, 200.0, 1000.0, || unreachable!()));
         assert!(view.paused());
-        view.perform(Action::Scroll { lines: 5 }, || source.clone());
+        assert!(view.scrolled(800.0, 200.0, 1000.0, || source.clone()));
         assert!(!view.paused());
         assert_eq!(text(&view), source);
     }
 
     #[test]
-    fn keyboard_motion_pauses_until_the_end_key() {
+    fn growth_after_an_append_does_not_read_as_scrolling_away() {
+        let mut view = LogView::default();
+        assert!(!view.scrolled(800.0, 200.0, 1000.0, || unreachable!()));
+        // Same offset, taller content: the scrollable has not snapped yet.
+        assert!(!view.scrolled(800.0, 200.0, 1040.0, || unreachable!()));
+        assert!(!view.paused());
+        assert!(view.push("more\n", "", || unreachable!()));
+    }
+
+    #[test]
+    fn content_clamped_by_a_trim_stays_at_the_bottom() {
+        let mut view = LogView::default();
+        assert!(!view.scrolled(800.0, 200.0, 1000.0, || unreachable!()));
+        // The offset shrinks only because the content did.
+        assert!(!view.scrolled(400.0, 200.0, 600.0, || unreachable!()));
+        assert!(!view.paused());
+    }
+
+    #[test]
+    fn keyboard_motion_keeps_following_but_the_end_key_clears_selection() {
         let mut view = LogView::default();
         let mut source = numbered(5);
-        view.push(&source, "", || unreachable!());
-        view.perform(Action::Move(Motion::Up), || unreachable!());
+        assert!(view.push(&source, "", || unreachable!()));
+        // Caret motion does not scroll the outer scrollable, so it is not a
+        // reason to pause.
+        assert!(!view.perform(Action::Move(Motion::Up), || unreachable!()));
+        assert!(!view.paused());
+        let _ = view.perform(Action::Select(Motion::Up), || unreachable!());
         assert!(view.paused());
         source.push_str("more\n");
-        view.push("more\n", "", || unreachable!());
-        assert!(!text(&view).contains("more"));
-        view.perform(Action::Move(Motion::DocumentEnd), || source.clone());
+        assert!(!view.push("more\n", "", || unreachable!()));
+        assert!(view.perform(Action::Move(Motion::DocumentEnd), || source.clone()));
         assert_eq!(text(&view), source);
+    }
+
+    #[test]
+    fn wheel_scroll_actions_are_left_to_the_scrollable() {
+        let mut view = LogView::default();
+        assert!(view.push(&numbered(5), "", || unreachable!()));
+        assert!(!view.perform(Action::Scroll { lines: -4 }, || unreachable!()));
+        assert!(!view.paused());
     }
 
     #[test]
     fn edits_are_rejected() {
         let mut view = LogView::default();
-        view.push("keep\n", "", || unreachable!());
+        assert!(view.push("keep\n", "", || unreachable!()));
         for edit in [
             Edit::Insert('x'),
             Edit::Paste(Arc::new("pasted".to_owned())),
@@ -339,7 +427,7 @@ mod tests {
             Edit::Backspace,
             Edit::Delete,
         ] {
-            view.perform(Action::Edit(edit), || unreachable!());
+            assert!(!view.perform(Action::Edit(edit), || unreachable!()));
         }
         assert_eq!(text(&view), "keep\n");
         assert!(!view.paused());
@@ -349,11 +437,11 @@ mod tests {
     fn front_trimming_mirrors_the_source() {
         let mut view = LogView::default();
         let mut source = numbered(20);
-        view.push(&source, "", || unreachable!());
+        assert!(view.push(&source, "", || unreachable!()));
         // Whole lines, then a cut in the middle of a line.
         for cut in [8, 17] {
             let dropped: String = source.drain(..cut).collect();
-            view.push("", &dropped, || unreachable!());
+            assert!(view.push("", &dropped, || unreachable!()));
             assert_eq!(text(&view), source);
         }
         assert!(!view.paused());
@@ -362,8 +450,8 @@ mod tests {
     #[test]
     fn mismatched_trim_rebuilds_from_the_source() {
         let mut view = LogView::default();
-        view.push("a\n", "", || unreachable!());
-        view.push("b\n", "x\ny\nz\nw\n", || "rebuilt".to_owned());
+        let _ = view.push("a\n", "", || unreachable!());
+        let _ = view.push("b\n", "x\ny\nz\nw\n", || "rebuilt".to_owned());
         assert_eq!(text(&view), "rebuilt");
     }
 
