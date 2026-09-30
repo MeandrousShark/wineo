@@ -307,19 +307,19 @@ impl Draft {
             text("Click a tile to choose an image. All four are optional.")
                 .size(12)
                 .color(palette.muted),
-            row![
-                self.tile(Kind::Grid, "Poster", "Cover art", 152, 190, palette),
-                column![
-                    self.tile(Kind::Hero, "Hero", "Wide background", 312, 98, palette),
-                    row![
-                        self.tile(Kind::Icon, "Icon", "Small square", 102, 82, palette),
-                        self.tile(Kind::Logo, "Logo", "Title graphic", 200, 82, palette),
+            column![
+                self.tile(Kind::Hero, "Hero", "Wide background", 356, 112, palette),
+                row![
+                    column![
+                        self.tile(Kind::Logo, "Logo", "Title graphic", 196, 78, palette),
+                        self.tile(Kind::Icon, "Icon", "Small square", 98, 98, palette),
                     ]
                     .spacing(10),
+                    self.tile(Kind::Grid, "Poster", "Cover art", 148, 222, palette),
                 ]
-                .spacing(10),
+                .spacing(12),
             ]
-            .spacing(12),
+            .spacing(10),
             button(if self.manual_entry {
                 "Hide file paths"
             } else {
