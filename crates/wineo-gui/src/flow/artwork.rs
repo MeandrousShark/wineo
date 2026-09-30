@@ -70,6 +70,15 @@ struct Local {
     preview: Option<image::Handle>,
     error: Option<String>,
     checking: bool,
+    /// Set when the flow chose this file rather than the user.
+    prefilled: Option<Prefilled>,
+}
+
+#[derive(Clone)]
+struct Prefilled {
+    /// The source name recorded instead of the file's own.
+    original: String,
+    note: &'static str,
 }
 
 #[derive(Clone, Default)]
@@ -168,6 +177,7 @@ impl Draft {
                 let paths = self.paths.clone();
                 let local = self.local.entry(kind).or_default();
                 local.path = value.clone();
+                local.prefilled = None;
                 local.sequence = local.sequence.wrapping_add(1);
                 local.chooser_sequence = local.chooser_sequence.wrapping_add(1);
                 local.preview = None;
@@ -388,6 +398,58 @@ impl Draft {
         }
     }
 
+    /// Picks `path` for `kind` on the user's behalf, already decoded as
+    /// `preview`. It's stored under the source name `original` and shown with
+    /// `note`, and the user can remove or replace it like their own pick.
+    pub(crate) fn prefill(
+        &mut self,
+        kind: Kind,
+        path: &Path,
+        original: String,
+        note: &'static str,
+        preview: image::Handle,
+    ) {
+        let local = self.local.entry(kind).or_default();
+        local.path = path.to_string_lossy().into_owned();
+        local.sequence = local.sequence.wrapping_add(1);
+        local.chooser_sequence = local.chooser_sequence.wrapping_add(1);
+        local.preview = Some(preview);
+        local.error = None;
+        local.checking = false;
+        local.prefilled = Some(Prefilled { original, note });
+    }
+
+    /// The source name a prefilled `kind` would be recorded under.
+    #[cfg(test)]
+    pub(crate) fn prefilled(&self, kind: Kind) -> Option<&str> {
+        self.local
+            .get(&kind)
+            .and_then(|local| local.prefilled.as_ref())
+            .map(|prefilled| prefilled.original.as_str())
+    }
+
+    /// A draft holding an already fetched SteamGridDB `image` for `kind`, as
+    /// if the user picked match `game`.
+    #[cfg(test)]
+    pub(crate) fn with_fetched(kind: Kind, game: u64, image: art::Downloaded) -> Self {
+        let mut draft = Self::new();
+        draft.fetch = true;
+        draft.kinds = vec![kind];
+        draft.selected = Some(Match(Game {
+            id: game,
+            name: "game".into(),
+            year: None,
+        }));
+        draft.remote.insert(
+            kind,
+            Remote {
+                image: Some(Arc::new(image)),
+                ..Remote::default()
+            },
+        );
+        draft
+    }
+
     pub(crate) fn validate(&self) -> Result<(), String> {
         for (kind, local) in &self.local {
             if local.checking {
@@ -422,7 +484,13 @@ impl Draft {
                 continue;
             }
             let result = resolve(Some(paths), &local.path).and_then(|path| {
-                art::set_manual(paths, name, None, *kind, &path).map_err(|e| e.to_string())
+                match &local.prefilled {
+                    Some(prefilled) => {
+                        art::set_manual_as(paths, name, None, *kind, &path, &prefilled.original)
+                    }
+                    None => art::set_manual(paths, name, None, *kind, &path),
+                }
+                .map_err(|e| e.to_string())
             });
             if let Err(error) = result {
                 failures.push(format!("Could not store {kind}: {error}"));
@@ -759,6 +827,8 @@ impl Draft {
                 notes.push(Note::Info("Checking image...".to_owned()));
             } else if let Some(error) = &local.error {
                 notes.push(Note::Error(error));
+            } else if let Some(prefilled) = &local.prefilled {
+                notes.push(Note::Info(prefilled.note.to_owned()));
             }
         }
         if !self.is_selected(kind)
@@ -929,6 +999,14 @@ fn resolve(paths: Option<&Paths>, value: &str) -> Result<PathBuf, String> {
 }
 
 fn preview(path: &Path, kind: Kind) -> Result<image::Handle, String> {
+    preview_with_format(path, kind).map(|(handle, _)| handle)
+}
+
+/// Decodes `path` for `kind`, and says which format it is stored as.
+pub(super) fn preview_with_format(
+    path: &Path,
+    kind: Kind,
+) -> Result<(image::Handle, art::Format), String> {
     use std::io::Read;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
@@ -938,7 +1016,10 @@ fn preview(path: &Path, kind: Kind) -> Result<image::Handle, String> {
     if bytes.len() as u64 > art::MAX_BYTES {
         return Err("Artwork exceeds 32 MiB".to_owned());
     }
-    preview_bytes(&bytes, kind)
+    let handle = preview_bytes(&bytes, kind)?;
+    let format =
+        art::detect(&bytes).ok_or_else(|| format!("Unsupported image format for {kind}"))?;
+    Ok((handle, format))
 }
 
 fn preview_bytes(bytes: &[u8], kind: Kind) -> Result<image::Handle, String> {
@@ -1676,5 +1757,70 @@ mod tests {
             art::ArtConfig::load(&paths.art_dir("game")).unwrap().kinds[&Kind::Grid].source,
             art::Source::SteamGridDb(42)
         );
+    }
+
+    #[test]
+    fn a_prefilled_pick_is_stored_under_its_name_until_removed_or_replaced() {
+        const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+        const FETCHED: &[u8] = b"\xff\xd8\xff\xe0 fetched";
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let poster = root.path().join("0123abcd");
+        std::fs::write(&poster, PNG).unwrap();
+        let mine = root.path().join("mine.png");
+        std::fs::write(&mine, PNG).unwrap();
+        let fetched = || {
+            Draft::with_fetched(
+                Kind::Grid,
+                7,
+                art::Downloaded {
+                    asset: 42,
+                    bytes: FETCHED.to_vec(),
+                    format: art::Format::Jpeg,
+                },
+            )
+        };
+        let prefill = |draft: &mut Draft| {
+            draft.prefill(
+                Kind::Grid,
+                &poster,
+                "heroic-a.png".to_owned(),
+                "From Heroic",
+                image::Handle::from_rgba(1, 1, vec![0; 4]),
+            )
+        };
+        let grid = |env: &str| {
+            art::ArtConfig::load(&paths.art_dir(env)).unwrap().kinds[&Kind::Grid]
+                .source
+                .clone()
+        };
+        for env in ["kept", "removed", "replaced"] {
+            Environment::create_native(&paths, &GlobalConfig::default(), env, None, false).unwrap();
+        }
+
+        let mut draft = fetched();
+        prefill(&mut draft);
+        assert!(draft.is_selected(Kind::Grid));
+        assert_eq!(
+            draft.notes(Kind::Grid),
+            [Note::Info("From Heroic".to_owned())]
+        );
+        draft.apply(&paths, "kept").unwrap();
+        assert_eq!(grid("kept"), art::Source::Manual("heroic-a.png".into()));
+        assert!(!paths.art_dir("kept").join("grid.jpg").exists());
+
+        let mut draft = fetched();
+        prefill(&mut draft);
+        let _ = draft.update(Event::Clear(Kind::Grid));
+        assert!(!draft.is_selected(Kind::Grid));
+        draft.apply(&paths, "removed").unwrap();
+        assert_eq!(grid("removed"), art::Source::SteamGridDb(42));
+
+        let mut draft = fetched();
+        prefill(&mut draft);
+        let _ = draft.update(Event::Path(Kind::Grid, mine.to_string_lossy().into_owned()));
+        assert_eq!(draft.prefilled(Kind::Grid), None);
+        draft.apply(&paths, "replaced").unwrap();
+        assert_eq!(grid("replaced"), art::Source::Manual("mine.png".into()));
     }
 }

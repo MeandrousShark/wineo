@@ -5,7 +5,7 @@ mod new;
 mod prefix;
 
 use iced::widget::{button, column, container, text};
-use iced::{Element, Fill, Task};
+use iced::{Element, Fill, Task, keyboard};
 use wineo_core::paths::Paths;
 
 use crate::theme::Palette;
@@ -94,7 +94,8 @@ impl Page {
         }
     }
 
-    pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
+    /// `width` is the dialog's width, for pages that lay out by it.
+    pub(crate) fn view(&self, palette: Palette, width: f32) -> Element<'_, Event> {
         match self {
             Self::New(page) => page
                 .view(palette)
@@ -104,7 +105,7 @@ impl Page {
                 .map(|event| Event::Import(Box::new(event))),
             Self::Clone(page) => page.view(palette).map(|event| Event::Copy(Box::new(event))),
             Self::Heroic(page) => page
-                .view(palette)
+                .view(palette, width)
                 .map(|event| Event::HeroicMessage(Box::new(event))),
             Self::Choose(_) => container(
                 column![
@@ -129,6 +130,22 @@ impl Page {
             .width(Fill)
             .height(Fill)
             .into(),
+        }
+    }
+
+    /// A key the page handles itself, before the flow's shared keys. `width`
+    /// is the dialog's width, as passed to `view`.
+    pub(crate) fn key(
+        &mut self,
+        key: &keyboard::Key,
+        modifiers: keyboard::Modifiers,
+        width: f32,
+    ) -> Option<Task<Event>> {
+        match self {
+            Self::Heroic(page) => page
+                .key(key, modifiers, width)
+                .map(|task| task.map(|event| Event::HeroicMessage(Box::new(event)))),
+            _ => None,
         }
     }
 

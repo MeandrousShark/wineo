@@ -13,7 +13,8 @@ mod plan;
 mod runner;
 
 pub use apply::{
-    ApplyError, Playtime, Registered, apply, apply_native, store_poster, write_import_log,
+    ApplyError, Playtime, Registered, apply, apply_native, poster_name, store_poster,
+    write_import_log,
 };
 
 pub use library::{

@@ -101,21 +101,31 @@ impl App {
             .interaction(mouse::Interaction::Pointer)
             .into()
     }
+    /// How wide the Add, import, and clone dialog is in the current window.
+    pub(crate) fn flow_width(&self) -> f32 {
+        let widest = if matches!(self.flow, Some(crate::flow::Page::Choose(_))) {
+            680.0
+        } else {
+            900.0
+        };
+        (self.window_size.width - 40.0).clamp(280.0, widest)
+    }
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let mut page = self.page_view();
         if let Some(flow) = &self.flow {
             let palette = self.palette;
             let generation = self.flow_generation;
-            let (width, height) = if matches!(flow, crate::flow::Page::Choose(_)) {
-                (680.0, 430.0)
+            let height = if matches!(flow, crate::flow::Page::Choose(_)) {
+                430.0
             } else {
-                (900.0, 720.0)
+                720.0
             };
+            let width = self.flow_width();
             let dialog = container(
-                flow.view(palette)
+                flow.view(palette, width)
                     .map(move |event| Message::Flow(generation, event)),
             )
-            .width((self.window_size.width - 40.0).clamp(280.0, width))
+            .width(width)
             .height((self.window_size.height - 40.0).clamp(240.0, height))
             .clip(true)
             .style(move |_| {

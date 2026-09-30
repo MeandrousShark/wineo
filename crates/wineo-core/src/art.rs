@@ -337,13 +337,26 @@ pub fn set_manual(
     kind: Kind,
     file: &Path,
 ) -> Result<Stored> {
-    check_spot(paths, env, target)?;
-    let bytes = read_art(file)?;
     let original = file
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    store_manual(paths, env, target, kind, &bytes, &original, file)
+    set_manual_as(paths, env, target, kind, file, &original)
+}
+
+/// Like `set_manual`, but records `original` as the source's name instead of
+/// the file's own.
+pub fn set_manual_as(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    file: &Path,
+    original: &str,
+) -> Result<Stored> {
+    check_spot(paths, env, target)?;
+    let bytes = read_art(file)?;
+    store_manual(paths, env, target, kind, &bytes, original, file)
 }
 
 /// Like `set_manual`, for an image already in memory. `original` is the file
@@ -1832,6 +1845,19 @@ manual = \"logo.png\"
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, bytes).unwrap();
         path
+    }
+
+    #[test]
+    fn set_as_records_the_given_name() {
+        let (root, paths) = store();
+        let file = source(root.path(), "0123abcd", WEBP);
+        set_manual_as(&paths, "hades", None, Kind::Grid, &file, "heroic-a.webp").unwrap();
+        let art = paths.art_dir("hades");
+        assert_eq!(fs::read(art.join("grid.webp")).unwrap(), WEBP);
+        assert_eq!(
+            ArtConfig::load(&art).unwrap().record(None, Kind::Grid),
+            Some(&manual(Format::Webp, "heroic-a.webp"))
+        );
     }
 
     #[test]

@@ -1,12 +1,16 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use iced::futures::channel::mpsc::{UnboundedSender, unbounded};
+use iced::keyboard::{self, Key, key::Named};
+use iced::widget::operation::RelativeOffset;
 use iced::widget::{
-    button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
+    Row, button, checkbox, column, container, image, mouse_area, pick_list, row, scrollable, stack,
+    text, text_input,
 };
-use iced::{Center, Element, Fill, Task};
+use iced::{Center, Color, ContentFit, Element, Fill, Task, border, mouse};
+use wineo_core::art::{Format, Kind};
 use wineo_core::cancel::Token;
 use wineo_core::components::Component;
 use wineo_core::config::GlobalConfig;
@@ -84,6 +88,8 @@ struct Draft {
     adopt: bool,
     desktop: bool,
     batch: bool,
+    /// The Heroic ids a batch imports.
+    games: BTreeSet<String>,
     fetch_batch_art: bool,
     environment: Vec<String>,
     environment_input: String,
@@ -203,8 +209,11 @@ pub(crate) enum Event {
         u64,
         Result<(HeroicListing, HashMap<String, String>), String>,
     ),
-    Game(usize),
-    Batch,
+    Toggle(usize),
+    SelectAll,
+    SelectNone,
+    ImportSelected,
+    Poster(u64, String, Result<(image::Handle, Format), String>),
     Prepared(u64, Result<Box<Prepared>, String>),
     BatchPrepared(u64, Result<BatchOptions, String>),
     Name(String),
@@ -269,6 +278,13 @@ pub(crate) struct Page {
     source: Option<usize>,
     listing: Option<HeroicListing>,
     already: HashMap<String, String>,
+    /// Heroic ids picked in the grid, kept while the user goes back and forth.
+    chosen: BTreeSet<String>,
+    focus: Option<usize>,
+    /// Decoded posters by Heroic id, with their format. None when the file
+    /// couldn't be decoded, so it's never stored as art either.
+    posters: HashMap<String, Option<(image::Handle, Format)>>,
+    poster_generation: u64,
     selected: Option<usize>,
     prepared: Option<Prepared>,
     batch_options: Option<BatchOptions>,
@@ -298,6 +314,10 @@ impl Page {
             source: None,
             listing: None,
             already: HashMap::new(),
+            chosen: BTreeSet::new(),
+            focus: None,
+            posters: HashMap::new(),
+            poster_generation: 0,
             selected: None,
             prepared: None,
             batch_options: None,
@@ -351,29 +371,7 @@ impl Page {
                 self.update(Event::OpenSourcePath)
             }
             Step::Sources if self.sources.len() == 1 => self.update(Event::Source(0)),
-            Step::Games => {
-                let eligible: Vec<usize> = self
-                    .listing
-                    .as_ref()
-                    .map(|listing| {
-                        listing
-                            .candidates
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(index, candidate)| {
-                                (heroic_import::blocker(candidate).is_none()
-                                    && !self.already.contains_key(&candidate.id))
-                                .then_some(index)
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if eligible.len() == 1 {
-                    self.update(Event::Game(eligible[0]))
-                } else {
-                    Task::none()
-                }
-            }
+            Step::Games => self.import_chosen(),
             Step::Details => self.plan(),
             Step::Review => self.start_import(),
             Step::Finished => self.update(Event::BackToLibrary),
@@ -387,6 +385,11 @@ impl Page {
         }
         self.error = None;
         self.next_picker();
+        if matches!(self.step, Step::Games | Step::Details | Step::Review) {
+            // A reply to what this step started must not reopen it.
+            self.next_generation();
+            self.status.clear();
+        }
         match self.step {
             Step::Sources => {
                 if self.source.is_some() {
@@ -446,6 +449,10 @@ impl Page {
         self.error = None;
         self.listing = None;
         self.already.clear();
+        self.chosen.clear();
+        self.focus = None;
+        self.posters.clear();
+        self.poster_generation = self.poster_generation.wrapping_add(1);
         self.prepared = None;
         self.batch_options = None;
         self.review = None;
@@ -523,6 +530,7 @@ impl Page {
         self.selected = None;
         self.draft = Draft {
             batch: true,
+            games: self.chosen.clone(),
             ..Draft::default()
         };
         self.prepared = None;
@@ -554,6 +562,164 @@ impl Page {
                 .map_err(|e| e.to_string())?
             },
             move |result| Event::BatchPrepared(generation, result),
+        )
+    }
+
+    /// Decodes each cached poster on a worker. A game without one keeps its
+    /// title placeholder.
+    fn load_posters(&self, listing: &HeroicListing) -> Task<Event> {
+        let generation = self.poster_generation;
+        Task::batch(listing.candidates.iter().filter_map(|candidate| {
+            let path = candidate.poster.clone()?;
+            let id = candidate.id.clone();
+            Some(Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        artwork::preview_with_format(&path, Kind::Grid)
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
+                },
+                move |result| Event::Poster(generation, id, result),
+            ))
+        }))
+    }
+
+    fn poster(&self, id: &str) -> Option<&image::Handle> {
+        self.posters
+            .get(id)
+            .and_then(Option::as_ref)
+            .map(|(handle, _)| handle)
+    }
+
+    /// The listed posters that decoded in the grid. One that didn't is left
+    /// out, since a file can look like an image and still be unusable.
+    fn usable_posters(&self) -> HashMap<String, (PathBuf, Format)> {
+        self.listing
+            .iter()
+            .flat_map(|listing| &listing.candidates)
+            .filter_map(|candidate| {
+                let (_, format) = self.posters.get(&candidate.id)?.as_ref()?;
+                Some((candidate.id.clone(), (candidate.poster.clone()?, *format)))
+            })
+            .collect()
+    }
+
+    /// Why the game at `index` can't be picked, or None when it can.
+    fn ineligible(&self, index: usize) -> Option<String> {
+        let candidate = self.listing.as_ref()?.candidates.get(index)?;
+        if let Some(name) = self.already.get(&candidate.id) {
+            return Some(format!("Already imported as {name}"));
+        }
+        heroic_import::blocker(candidate).map(|issue| issue.message.clone())
+    }
+
+    /// The ids of every game that can be picked.
+    fn eligible(&self) -> impl Iterator<Item = String> + '_ {
+        self.listing
+            .iter()
+            .flat_map(|listing| listing.candidates.iter().enumerate())
+            .filter(|(index, _)| self.ineligible(*index).is_none())
+            .map(|(_, candidate)| candidate.id.clone())
+    }
+
+    fn toggle(&mut self, index: usize) {
+        if self.ineligible(index).is_some() {
+            return;
+        }
+        let Some(candidate) = self
+            .listing
+            .as_ref()
+            .and_then(|listing| listing.candidates.get(index))
+        else {
+            return;
+        };
+        if !self.chosen.remove(&candidate.id) {
+            self.chosen.insert(candidate.id.clone());
+        }
+        self.selection_changed();
+    }
+
+    /// Drops a pending inspection of the old selection, so its reply can't
+    /// open details for a game no longer chosen.
+    fn selection_changed(&mut self) {
+        self.next_generation();
+        self.status.clear();
+    }
+
+    /// One game opens the editable single review; several share the batch
+    /// options.
+    fn import_chosen(&mut self) -> Task<Event> {
+        if self.busy() || self.step != Step::Games {
+            return Task::none();
+        }
+        let Some(listing) = &self.listing else {
+            return Task::none();
+        };
+        let chosen: Vec<usize> = listing
+            .candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| self.chosen.contains(&candidate.id))
+            .map(|(index, _)| index)
+            .collect();
+        match chosen[..] {
+            [] => Task::none(),
+            [index] => self.prepare(index),
+            _ => self.prepare_batch(),
+        }
+    }
+
+    /// Grid keys: arrows move, Space toggles, Ctrl+A selects all, and Enter
+    /// imports. None leaves the key to the flow's shared handling.
+    pub(crate) fn key(
+        &mut self,
+        key: &Key,
+        modifiers: keyboard::Modifiers,
+        width: f32,
+    ) -> Option<Task<Event>> {
+        if self.step != Step::Games || self.busy() {
+            return None;
+        }
+        let count = self.listing.as_ref()?.candidates.len();
+        let columns = grid_columns(width);
+        match key.as_ref() {
+            Key::Named(
+                named @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
+            ) => {
+                self.focus = move_focus(self.focus, named, columns, count);
+                Some(self.reveal_focus(columns, count))
+            }
+            Key::Named(Named::Space) | Key::Character(" ") => {
+                if let Some(index) = self.focus {
+                    self.toggle(index);
+                }
+                Some(Task::none())
+            }
+            Key::Character("a" | "A") if modifiers.control() => Some(self.update(Event::SelectAll)),
+            Key::Named(Named::Enter) if !modifiers.control() => Some(self.import_chosen()),
+            _ => None,
+        }
+    }
+
+    /// Scrolls so the focused row shows. Rows are all one height, so scrolling
+    /// in proportion to the row keeps it in view.
+    fn reveal_focus(&self, columns: usize, count: usize) -> Task<Event> {
+        let Some(index) = self.focus else {
+            return Task::none();
+        };
+        let rows = count.div_ceil(columns.max(1));
+        let y = if rows > 1 {
+            (index / columns.max(1)) as f32 / (rows - 1) as f32
+        } else {
+            0.0
+        };
+        iced::widget::operation::snap_to(
+            iced::widget::Id::new(GRID_ID),
+            RelativeOffset {
+                x: None,
+                y: Some(y),
+            },
         )
     }
 
@@ -634,6 +800,7 @@ impl Page {
             return Task::none();
         };
         let source = listing.source.clone();
+        let posters = self.usable_posters();
         let token = Token::new();
         self.token = Some(token.clone());
         self.step = Step::Working;
@@ -722,6 +889,13 @@ impl Page {
                                     if let Some(note) = playtime_note(&registered.playtime) {
                                         notes.push(note);
                                     }
+                                    let app = heroic_id(&game);
+                                    notes.extend(store_heroic_poster(
+                                        &paths,
+                                        &name,
+                                        app,
+                                        posters.get(app).map(|(path, _)| path.as_path()),
+                                    ));
                                     if fetch_batch_art {
                                         notes.extend(
                                             artwork::fetch_default(&paths, &name, &title)
@@ -871,16 +1045,36 @@ impl Page {
             Event::Listed(generation, result) if generation == self.generation => {
                 match result {
                     Ok((listing, already)) => {
+                        let task = self.load_posters(&listing);
                         self.listing = Some(listing);
                         self.already = already;
                         self.status.clear();
+                        return task;
                     }
                     Err(error) => self.error = Some(error),
                 }
                 Task::none()
             }
-            Event::Game(index) => self.prepare(index),
-            Event::Batch => self.prepare_batch(),
+            Event::Poster(generation, id, result) if generation == self.poster_generation => {
+                self.posters.insert(id, result.ok());
+                Task::none()
+            }
+            Event::Toggle(index) => {
+                self.focus = Some(index);
+                self.toggle(index);
+                Task::none()
+            }
+            Event::SelectAll => {
+                self.chosen = self.eligible().collect();
+                self.selection_changed();
+                Task::none()
+            }
+            Event::SelectNone => {
+                self.chosen.clear();
+                self.selection_changed();
+                Task::none()
+            }
+            Event::ImportSelected => self.import_chosen(),
             Event::BatchPrepared(generation, result) if generation == self.generation => {
                 match result {
                     Ok(options) => {
@@ -922,6 +1116,19 @@ impl Page {
                         self.status.clear();
                         self.step = Step::Details;
                         self.art = artwork::Draft::new();
+                        let candidate = &prepared.candidate;
+                        if let Some((handle, format)) =
+                            self.posters.get(&candidate.id).and_then(Option::as_ref)
+                            && let Some(path) = &candidate.poster
+                        {
+                            self.art.prefill(
+                                Kind::Grid,
+                                path,
+                                heroic_import::poster_name(&candidate.id, *format),
+                                "From Heroic",
+                                handle.clone(),
+                            );
+                        }
                         self.art_generation = self.art_generation.wrapping_add(1);
                         let art_generation = self.art_generation;
                         let task = self
@@ -1402,21 +1609,53 @@ impl Page {
         }
     }
 
-    pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
+    fn grid<'a>(
+        &'a self,
+        listing: &'a HeroicListing,
+        palette: Palette,
+        width: f32,
+    ) -> Element<'a, Event> {
+        let columns = grid_columns(width);
+        let mut rows = column![].spacing(TILE_GAP);
+        let tiles: Vec<Element<'a, Event>> = listing
+            .candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                tile(
+                    Tile {
+                        index,
+                        title: &candidate.title,
+                        poster: self.poster(&candidate.id),
+                        reason: self.ineligible(index),
+                        chosen: self.chosen.contains(&candidate.id),
+                        focused: self.focus == Some(index),
+                    },
+                    palette,
+                )
+            })
+            .collect();
+        let mut tiles = tiles.into_iter().peekable();
+        while tiles.peek().is_some() {
+            rows = rows.push(Row::with_children(tiles.by_ref().take(columns)).spacing(TILE_GAP));
+        }
+        scrollable(rows)
+            .id(iced::widget::Id::new(GRID_ID))
+            .width(Fill)
+            .height(Fill)
+            .into()
+    }
+
+    pub(crate) fn view(&self, palette: Palette, width: f32) -> Element<'_, Event> {
         let mut body = column![].spacing(14).width(Fill);
         let title = match self.step {
-            Step::Sources => "Import from Heroic",
-            Step::Games => "Choose a Heroic game",
-            Step::Details => {
-                if self.draft.batch {
-                    "Import all eligible games"
-                } else {
-                    "Import details"
-                }
-            }
-            Step::Review => "Review Heroic import",
-            Step::Working => "Importing from Heroic",
-            Step::Finished => "Heroic import finished",
+            Step::Sources => "Import from Heroic".to_owned(),
+            Step::Games => "Choose Heroic games".to_owned(),
+            Step::Details if self.draft.batch => import_label(self.draft.games.len()),
+            Step::Details => "Import details".to_owned(),
+            Step::Review => "Review Heroic import".to_owned(),
+            Step::Working => "Importing from Heroic".to_owned(),
+            Step::Finished => "Heroic import finished".to_owned(),
         };
         body = body.push(text(title).size(26).color(palette.foreground));
         if !self.status.is_empty() {
@@ -1455,25 +1694,23 @@ impl Page {
             }
             Step::Games => {
                 if let Some(listing) = &self.listing {
-                    for (index, candidate) in listing.candidates.iter().enumerate() {
-                        let label = format!("{} ({})", candidate.title, kind_label(candidate.kind));
-                        let issue = heroic_import::blocker(candidate);
-                        let row = if let Some(name) = self.already.get(&candidate.id) {
-                            button(text(format!("{label} - already imported as {name}")))
-                                .on_press(Event::OpenExisting(name.clone()))
-                        } else {
-                            button(text(label))
-                                .on_press_maybe(issue.is_none().then_some(Event::Game(index)))
-                        };
-                        body = body.push(row);
-                        if let Some(issue) = issue {
-                            body = body.push(text(&issue.message).size(12).color(palette.warning));
-                        }
-                    }
                     for issue in &listing.issues {
                         body = body.push(text(&issue.message).size(12).color(palette.warning));
                     }
-                    body = body.push(button("Import all eligible games").on_press(Event::Batch));
+                    let count = self.chosen.len();
+                    let idle = !self.busy();
+                    body = body.push(
+                        row![
+                            button("Select all").on_press_maybe(idle.then_some(Event::SelectAll)),
+                            button("Select none")
+                                .on_press_maybe((idle && count > 0).then_some(Event::SelectNone)),
+                            button(text(import_label(count))).on_press_maybe(
+                                (idle && count > 0).then_some(Event::ImportSelected)
+                            ),
+                        ]
+                        .spacing(12)
+                        .align_y(Center),
+                    );
                 }
             }
             Step::Details => {
@@ -1908,20 +2145,34 @@ impl Page {
         }
         let back = button("< Back")
             .on_press_maybe((!self.busy() && self.step != Step::Finished).then_some(Event::Back));
-        let page = column![
-            row![back].align_y(Center),
-            scrollable(
+        let content: Element<'_, Event> = match (&self.listing, self.step) {
+            // The grid scrolls on its own under fixed controls, so keyboard
+            // focus can scroll it to a known row.
+            (Some(listing), Step::Games) => container(
+                column![body, self.grid(listing, palette, width)]
+                    .spacing(14)
+                    .height(Fill),
+            )
+            .max_width(780)
+            .width(Fill)
+            .height(Fill)
+            .padding(24)
+            .center_x(Fill)
+            .into(),
+            _ => scrollable(
                 container(body)
                     .max_width(780)
                     .width(Fill)
                     .padding(24)
-                    .center_x(Fill)
+                    .center_x(Fill),
             )
             .height(Fill)
-        ]
-        .spacing(12)
-        .width(Fill)
-        .height(Fill);
+            .into(),
+        };
+        let page = column![row![back].align_y(Center), content]
+            .spacing(12)
+            .width(Fill)
+            .height(Fill);
         let mut page: Element<'_, Event> = container(page).width(Fill).height(Fill).into();
         if self.leave_prompt {
             page = container(
@@ -2073,12 +2324,161 @@ fn launch_settings(draft: &Draft, windows: bool, palette: Palette) -> Element<'_
     body.into()
 }
 
-fn kind_label(kind: HeroicGameKind) -> &'static str {
-    match kind {
-        HeroicGameKind::Windows => "Windows",
-        HeroicGameKind::Native => "Native Linux",
-        HeroicGameKind::Browser => "browser - unsupported",
-        HeroicGameKind::Unknown => "unsupported",
+const GRID_ID: &str = "heroic-grid";
+const TILE_WIDTH: f32 = 120.0;
+/// With the focus ring's padding.
+const TILE_OUTER_WIDTH: f32 = TILE_WIDTH + 8.0;
+const TILE_POSTER_HEIGHT: f32 = 180.0;
+/// Room under the poster for the title and two lines of reason, fixed so
+/// every row is the same height.
+const TILE_HEIGHT: f32 = 244.0;
+const TILE_GAP: f32 = 12.0;
+
+/// How many tiles fit across a flow dialog `width` wide, after the page's
+/// max width, padding, and the scrollbar.
+fn grid_columns(width: f32) -> usize {
+    let content = width.min(780.0) - 48.0 - 16.0;
+    ((content + TILE_GAP) / (TILE_OUTER_WIDTH + TILE_GAP))
+        .floor()
+        .max(1.0) as usize
+}
+
+fn move_focus(focus: Option<usize>, key: Named, columns: usize, count: usize) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    let Some(index) = focus.filter(|index| *index < count) else {
+        return Some(0);
+    };
+    let columns = columns.max(1);
+    Some(match key {
+        Named::ArrowLeft => index.saturating_sub(1),
+        Named::ArrowRight => (index + 1).min(count - 1),
+        Named::ArrowUp => index.checked_sub(columns).unwrap_or(index),
+        Named::ArrowDown if index + columns < count => index + columns,
+        // The last row can be short, so Down from above its end lands on its
+        // last tile.
+        Named::ArrowDown if (count - 1) / columns > index / columns => count - 1,
+        _ => index,
+    })
+}
+
+fn import_label(count: usize) -> String {
+    if count == 1 {
+        "Import 1 game".to_owned()
+    } else {
+        format!("Import {count} games")
+    }
+}
+
+struct Tile<'a> {
+    index: usize,
+    title: &'a str,
+    poster: Option<&'a image::Handle>,
+    reason: Option<String>,
+    chosen: bool,
+    focused: bool,
+}
+
+fn tile(tile: Tile<'_>, palette: Palette) -> Element<'_, Event> {
+    let dimmed = tile.reason.is_some();
+    let art: Element<'_, Event> = match tile.poster {
+        Some(handle) => image(handle.clone())
+            .width(Fill)
+            .height(Fill)
+            .content_fit(ContentFit::Cover)
+            .border_radius(4)
+            .opacity(if dimmed { 0.35_f32 } else { 1.0_f32 })
+            .into(),
+        None => container(
+            text(tile.title)
+                .size(13)
+                .color(if dimmed {
+                    palette.muted.scale_alpha(0.6)
+                } else {
+                    palette.muted
+                })
+                .center(),
+        )
+        .width(Fill)
+        .height(Fill)
+        .padding(8)
+        .center(Fill)
+        .style(move |_| {
+            container::Style::default()
+                .background(palette.surface.scale_alpha(if dimmed { 0.5 } else { 1.0 }))
+                .border(border::rounded(4))
+        })
+        .into(),
+    };
+    let chosen = tile.chosen;
+    let mut layers = stack![
+        container(container(art).clip(true))
+            .width(TILE_WIDTH)
+            .height(TILE_POSTER_HEIGHT)
+            .padding(3)
+            .style(move |_| {
+                container::Style::default().border(border::rounded(6).width(3).color(if chosen {
+                    palette.primary
+                } else {
+                    Color::TRANSPARENT
+                }))
+            })
+    ];
+    if chosen {
+        layers = layers.push(
+            container(
+                container(text("✓").size(14).color(palette.background))
+                    .width(22)
+                    .height(22)
+                    .center(22)
+                    .style(move |_| {
+                        container::Style::default()
+                            .background(palette.primary)
+                            .border(border::rounded(11))
+                    }),
+            )
+            .width(TILE_WIDTH)
+            .padding(8)
+            .align_right(TILE_WIDTH),
+        );
+    }
+    let mut content = column![
+        layers,
+        text(tile.title)
+            .size(13)
+            .color(if dimmed {
+                palette.muted
+            } else {
+                palette.foreground
+            })
+            .wrapping(iced::widget::text::Wrapping::None),
+    ]
+    .spacing(4)
+    .width(TILE_WIDTH);
+    if let Some(reason) = tile.reason {
+        content = content.push(text(reason).size(11).color(palette.warning));
+    }
+    let focused = tile.focused;
+    let framed = container(content)
+        .width(TILE_OUTER_WIDTH)
+        .height(TILE_HEIGHT)
+        .padding(4)
+        .clip(true)
+        .style(move |_| {
+            container::Style::default().border(border::rounded(8).width(1).color(if focused {
+                palette.foreground
+            } else {
+                Color::TRANSPARENT
+            }))
+        });
+    let area = mouse_area(framed);
+    if dimmed {
+        area.into()
+    } else {
+        area.on_press(Event::Toggle(tile.index))
+            .interaction(mouse::Interaction::Pointer)
+            .into()
     }
 }
 
@@ -2216,10 +2616,9 @@ fn plan_review(
         wineo_core::desktop::supported(paths).map_err(|e| e.to_string())?;
     }
     if draft.batch {
-        let has_windows = listing
-            .candidates
-            .iter()
-            .any(|candidate| candidate.kind == HeroicGameKind::Windows);
+        let has_windows = listing.candidates.iter().any(|candidate| {
+            draft.games.contains(&candidate.id) && candidate.kind == HeroicGameKind::Windows
+        });
         let runner = if has_windows {
             if draft.runner.trim().is_empty() {
                 return Err("Choose or download a runner for Windows games".to_owned());
@@ -2228,10 +2627,11 @@ fn plan_review(
         } else {
             None
         };
-        let mut library = heroic_import::plan_library(
+        let mut library = heroic_import::plan_selection(
             paths,
             &global,
             listing,
+            &draft.games,
             runner,
             &LibraryOptions {
                 adopt: draft.adopt,
@@ -2380,6 +2780,27 @@ fn apply_game(
         Game::Windows(plan) => heroic_import::apply(paths, global, source, plan, token, progress),
         Game::Native(plan) => heroic_import::apply_native(paths, source, plan),
     }
+}
+
+fn heroic_id(game: &Game) -> &str {
+    match game {
+        Game::Windows(plan) => &plan.heroic().id,
+        Game::Native(plan) => &plan.heroic().id,
+    }
+}
+
+/// Stores Heroic's cached poster as a batch-imported environment's Grid art.
+/// It runs before SteamGridDB, which then only fills what's still missing. Art
+/// never undoes an import, so a failure is only a note.
+fn store_heroic_poster(
+    paths: &Paths,
+    name: &str,
+    app: &str,
+    poster: Option<&Path>,
+) -> Option<String> {
+    heroic_import::store_poster(paths, name, app, poster?)
+        .err()
+        .map(|error| format!("Heroic poster: {error}"))
 }
 
 fn playtime_note(playtime: &Playtime) -> Option<String> {
@@ -2701,6 +3122,413 @@ mod tests {
         assert_eq!(
             fs::read_to_string(settings).unwrap(),
             r#"{"dusk":{"launcherArgs":"--new"}}"#
+        );
+    }
+
+    // -- the poster grid --
+
+    const DUSK: usize = 0;
+    const DAWN: usize = 1;
+    const NOON: usize = 2;
+    const OLD: usize = 3;
+    const STORE: usize = 4;
+
+    /// Native games Dusk (a PNG poster), Dawn (a poster with a JPEG signature
+    /// but a corrupt body),
+    /// Noon (no poster), and Old, then Store, which Heroic's store owns.
+    fn grid_fixture(root: &std::path::Path) -> (Paths, HeroicListing) {
+        let heroic = root.join("heroic");
+        for dir in ["sideload_apps", "GamesConfig", "store", "images-cache"] {
+            fs::create_dir_all(heroic.join(dir)).unwrap();
+        }
+        let source = HeroicSource::from_config_dir_with_home(heroic.clone(), root.to_owned());
+        let mut games = Vec::new();
+        for (id, title) in [
+            ("dusk", "Dusk"),
+            ("dawn", "Dawn"),
+            ("noon", "Noon"),
+            ("old", "Old"),
+        ] {
+            let exe = root.join("games").join(id);
+            fs::create_dir_all(exe.parent().unwrap()).unwrap();
+            fs::write(&exe, "#!/bin/sh\n").unwrap();
+            fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::write(
+                heroic.join(format!("GamesConfig/{id}.json")),
+                format!(r#"{{"{id}":{{}}}}"#),
+            )
+            .unwrap();
+            let art = if id == "noon" {
+                String::new()
+            } else {
+                format!(r#""art_square":"https://cdn.example.com/{id}.jpg","#)
+            };
+            games.push(format!(
+                r#"{{"app_name":"{id}","title":"{title}","runner":"sideload",{art}"install":{{"platform":"linux","executable":"{}"}}}}"#,
+                exe.display()
+            ));
+        }
+        games.push(
+            r#"{"app_name":"store","title":"Store","runner":"legendary","install":{"platform":"Windows","executable":"x.exe"}}"#
+                .to_owned(),
+        );
+        fs::write(
+            heroic.join("sideload_apps/library.json"),
+            format!(r#"{{"games":[{}]}}"#, games.join(",")),
+        )
+        .unwrap();
+        ::image::RgbImage::from_pixel(4, 6, ::image::Rgb([40, 100, 180]))
+            .save_with_format(
+                source.cached_image("https://cdn.example.com/dusk.jpg"),
+                ::image::ImageFormat::Png,
+            )
+            .unwrap();
+        fs::write(
+            source.cached_image("https://cdn.example.com/dawn.jpg"),
+            b"\xff\xd8\xff\xe0 corrupt body",
+        )
+        .unwrap();
+        let paths = paths(root);
+        let global = GlobalConfig::load(&paths).unwrap();
+        let listing = heroic_import::listing(&paths, &global, &source).unwrap();
+        (paths, listing)
+    }
+
+    fn grid_page(root: &std::path::Path) -> Page {
+        let (paths, listing) = grid_fixture(root);
+        let (mut page, _) = Page::new(paths);
+        page.step = Step::Games;
+        page.listing = Some(listing);
+        page.already.insert("old".to_owned(), "old".to_owned());
+        page
+    }
+
+    fn chosen(page: &Page) -> Vec<&str> {
+        page.chosen.iter().map(String::as_str).collect()
+    }
+
+    /// Every file under `dir` with its bytes, to show nothing there changed.
+    fn tree(dir: &std::path::Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        let mut files = std::collections::BTreeMap::new();
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files.extend(tree(&path));
+            } else {
+                files.insert(path.clone(), fs::read(&path).unwrap());
+            }
+        }
+        files
+    }
+
+    #[test]
+    fn toggling_and_select_all_skip_ineligible_games() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        assert!(
+            page.ineligible(OLD)
+                .unwrap()
+                .contains("Already imported as old")
+        );
+        assert!(page.ineligible(STORE).is_some());
+        let _ = page.update(Event::Toggle(OLD));
+        let _ = page.update(Event::Toggle(STORE));
+        assert!(page.chosen.is_empty());
+        let _ = page.update(Event::Toggle(DUSK));
+        assert_eq!(chosen(&page), ["dusk"]);
+        let _ = page.update(Event::Toggle(DUSK));
+        assert!(page.chosen.is_empty());
+        let _ = page.update(Event::SelectAll);
+        assert_eq!(chosen(&page), ["dawn", "dusk", "noon"]);
+        let _ = page.update(Event::Toggle(DAWN));
+        assert_eq!(chosen(&page), ["dusk", "noon"]);
+        let _ = page.update(Event::SelectNone);
+        assert!(page.chosen.is_empty());
+    }
+
+    #[test]
+    fn importing_nothing_does_nothing() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        assert_eq!(import_label(0), "Import 0 games");
+        assert_eq!(import_label(1), "Import 1 game");
+        assert_eq!(import_label(3), "Import 3 games");
+        let generation = page.generation;
+        let _ = page.update(Event::ImportSelected);
+        let _ = page.submit();
+        assert_eq!(page.step, Step::Games);
+        assert_eq!(page.generation, generation);
+        assert_eq!(page.selected, None);
+    }
+
+    #[test]
+    fn one_chosen_game_opens_the_single_review() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        let _ = page.update(Event::Toggle(NOON));
+        let _ = page.update(Event::ImportSelected);
+        assert_eq!(page.selected, Some(NOON));
+        let listing = page.listing.clone().unwrap();
+        let prepared = prepare_game(
+            &page.paths,
+            &listing.source,
+            listing.candidates[NOON].clone(),
+        )
+        .unwrap();
+        let _ = page.update(Event::Prepared(page.generation, Ok(Box::new(prepared))));
+        assert_eq!(page.step, Step::Details);
+        assert!(!page.draft.batch);
+        assert_eq!(page.draft.name, "noon");
+        let _ = page.back();
+        assert_eq!(page.step, Step::Games);
+        assert_eq!(chosen(&page), ["noon"]);
+    }
+
+    #[test]
+    fn several_chosen_games_plan_a_batch_of_only_those() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        let _ = page.update(Event::Toggle(DUSK));
+        let _ = page.update(Event::Toggle(NOON));
+        let _ = page.update(Event::ImportSelected);
+        assert_eq!(page.step, Step::Details);
+        assert!(page.draft.batch);
+        assert_eq!(
+            page.draft.games,
+            BTreeSet::from(["dusk".to_owned(), "noon".to_owned()])
+        );
+        let listing = page.listing.clone().unwrap();
+        let Review::Batch(library) = plan_review(&page.paths, &listing, None, &page.draft).unwrap()
+        else {
+            panic!("expected a batch review");
+        };
+        let mut ready: Vec<&str> = library
+            .entries()
+            .iter()
+            .map(|entry| match entry {
+                Entry::Ready(game) => heroic_id(game),
+                _ => panic!("expected only ready games"),
+            })
+            .collect();
+        ready.sort();
+        assert_eq!(ready, ["dusk", "noon"]);
+
+        page.review = Some(Review::Batch(library));
+        page.step = Step::Review;
+        let _ = page.back();
+        assert_eq!(page.step, Step::Details);
+        let _ = page.back();
+        assert_eq!(page.step, Step::Games);
+        assert_eq!(chosen(&page), ["dusk", "noon"]);
+    }
+
+    /// Feeds the page each listed poster's decode, as the grid's workers would.
+    fn decode_posters(page: &mut Page) {
+        let listing = page.listing.clone().unwrap();
+        for candidate in &listing.candidates {
+            if let Some(path) = &candidate.poster {
+                let _ = page.update(Event::Poster(
+                    page.poster_generation,
+                    candidate.id.clone(),
+                    artwork::preview_with_format(path, Kind::Grid),
+                ));
+            }
+        }
+    }
+
+    /// Chooses only the game at `index` and opens its details.
+    fn open_single(page: &mut Page, index: usize) {
+        let _ = page.update(Event::Toggle(index));
+        let _ = page.update(Event::ImportSelected);
+        let listing = page.listing.clone().unwrap();
+        let prepared = prepare_game(
+            &page.paths,
+            &listing.source,
+            listing.candidates[index].clone(),
+        )
+        .unwrap();
+        let _ = page.update(Event::Prepared(page.generation, Ok(Box::new(prepared))));
+        assert_eq!(page.step, Step::Details);
+    }
+
+    #[test]
+    fn missing_and_unreadable_posters_fall_back_to_the_title() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        let listing = page.listing.clone().unwrap();
+        assert!(listing.candidates[NOON].poster.is_none());
+        decode_posters(&mut page);
+        assert!(page.poster("dusk").is_some());
+        assert!(page.poster("dawn").is_none());
+        assert!(page.poster("noon").is_none());
+        assert_eq!(
+            page.usable_posters().into_keys().collect::<Vec<_>>(),
+            ["dusk"]
+        );
+        // A reply for an earlier listing is dropped.
+        let dusk = listing.candidates[DUSK].poster.clone().unwrap();
+        let _ = page.update(Event::Poster(
+            page.poster_generation.wrapping_sub(1),
+            "noon".to_owned(),
+            artwork::preview_with_format(&dusk, Kind::Grid),
+        ));
+        assert!(page.poster("noon").is_none());
+    }
+
+    #[test]
+    fn a_late_inspection_cannot_open_details_for_an_old_selection() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        let listing = page.listing.clone().unwrap();
+        let paths = page.paths.clone();
+        let prepared = || {
+            Ok(Box::new(
+                prepare_game(&paths, &listing.source, listing.candidates[NOON].clone()).unwrap(),
+            ))
+        };
+        let reply = prepared();
+        let _ = page.update(Event::Toggle(NOON));
+        let _ = page.update(Event::ImportSelected);
+        let pending = page.generation;
+        let _ = page.update(Event::Toggle(DUSK));
+        let _ = page.update(Event::Prepared(pending, reply));
+        assert_eq!(page.step, Step::Games);
+        assert!(page.prepared.is_none());
+        assert!(page.status.is_empty());
+
+        let reply = prepared();
+        let _ = page.update(Event::SelectNone);
+        let _ = page.update(Event::Toggle(NOON));
+        let _ = page.update(Event::ImportSelected);
+        let pending = page.generation;
+        let _ = page.back();
+        assert_eq!(page.step, Step::Sources);
+        let _ = page.update(Event::Prepared(pending, reply));
+        assert_eq!(page.step, Step::Sources);
+        assert!(page.prepared.is_none());
+    }
+
+    #[test]
+    fn arrows_move_focus_across_rows() {
+        assert_eq!(move_focus(None, Named::ArrowRight, 3, 0), None);
+        assert_eq!(move_focus(None, Named::ArrowDown, 3, 5), Some(0));
+        assert_eq!(move_focus(Some(0), Named::ArrowLeft, 3, 5), Some(0));
+        assert_eq!(move_focus(Some(0), Named::ArrowRight, 3, 5), Some(1));
+        assert_eq!(move_focus(Some(4), Named::ArrowRight, 3, 5), Some(4));
+        assert_eq!(move_focus(Some(1), Named::ArrowDown, 3, 5), Some(4));
+        // The last row has two tiles, so Down from its right lands on its end.
+        assert_eq!(move_focus(Some(2), Named::ArrowDown, 3, 5), Some(4));
+        assert_eq!(move_focus(Some(4), Named::ArrowDown, 3, 5), Some(4));
+        assert_eq!(move_focus(Some(4), Named::ArrowUp, 3, 5), Some(1));
+        assert_eq!(move_focus(Some(1), Named::ArrowUp, 3, 5), Some(1));
+        assert!(grid_columns(900.0) >= 4);
+        assert_eq!(grid_columns(280.0), 1);
+    }
+
+    #[test]
+    fn grid_keys_toggle_select_all_and_import() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        let none = keyboard::Modifiers::empty();
+        let key = |page: &mut Page, key: Key, modifiers| page.key(&key, modifiers, 900.0);
+        assert!(key(&mut page, Key::Named(Named::ArrowRight), none).is_some());
+        assert_eq!(page.focus, Some(DUSK));
+        assert!(key(&mut page, Key::Named(Named::Space), none).is_some());
+        assert_eq!(chosen(&page), ["dusk"]);
+        let _ = key(&mut page, Key::Named(Named::ArrowRight), none);
+        let _ = key(&mut page, Key::Named(Named::ArrowRight), none);
+        let _ = key(&mut page, Key::Named(Named::ArrowRight), none);
+        assert_eq!(page.focus, Some(OLD));
+        let _ = key(&mut page, Key::Named(Named::Space), none);
+        assert_eq!(chosen(&page), ["dusk"]);
+        let _ = key(
+            &mut page,
+            Key::Character("a".into()),
+            keyboard::Modifiers::CTRL,
+        );
+        assert_eq!(chosen(&page), ["dawn", "dusk", "noon"]);
+        // Other keys, like Escape for Back, are left to the flow.
+        assert!(key(&mut page, Key::Named(Named::Escape), none).is_none());
+        assert!(key(&mut page, Key::Named(Named::Enter), none).is_some());
+        assert_eq!(page.step, Step::Details);
+        assert!(page.draft.batch);
+        assert!(key(&mut page, Key::Named(Named::Space), none).is_none());
+    }
+
+    #[test]
+    fn a_heroic_poster_is_prefilled_and_stored_as_grid_art() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        let heroic = root.path().join("heroic");
+        let before = tree(&heroic);
+        decode_posters(&mut page);
+        open_single(&mut page, DUSK);
+        assert_eq!(page.art.prefilled(Kind::Grid), Some("heroic-dusk.png"));
+        let listing = page.listing.clone().unwrap();
+        let Review::Single { game, .. } =
+            plan_review(&page.paths, &listing, Some(DUSK), &page.draft).unwrap()
+        else {
+            panic!("expected a single review");
+        };
+        let paths = page.paths.clone();
+        let global = GlobalConfig::load(&paths).unwrap();
+        let registered = apply_game(
+            &paths,
+            &global,
+            &listing.source,
+            &game,
+            &Token::new(),
+            |_| {},
+        )
+        .unwrap();
+        let name = registered.environment.name.as_str();
+        page.art.apply(&paths, name).unwrap();
+        let config = wineo_core::art::ArtConfig::load(&paths.art_dir(name)).unwrap();
+        assert_eq!(
+            config.kinds[&Kind::Grid].source,
+            wineo_core::art::Source::Manual("heroic-dusk.png".to_owned())
+        );
+        assert_eq!(
+            fs::read(paths.art_dir(name).join("grid.png")).unwrap(),
+            fs::read(listing.candidates[DUSK].poster.as_ref().unwrap()).unwrap()
+        );
+        assert_eq!(tree(&heroic), before);
+    }
+
+    #[test]
+    fn a_corrupt_poster_is_neither_prefilled_nor_stored() {
+        const FETCHED: &[u8] = b"\xff\xd8\xff\xe0 fetched";
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        decode_posters(&mut page);
+        open_single(&mut page, DAWN);
+        assert_eq!(page.art.prefilled(Kind::Grid), None);
+        // A batch only stores posters that decoded.
+        assert!(!page.usable_posters().contains_key("dawn"));
+        let paths = page.paths.clone();
+        wineo_core::environment::Environment::create_native(
+            &paths,
+            &GlobalConfig::default(),
+            "dawn",
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(store_heroic_poster(&paths, "dawn", "dawn", None), None);
+        let art = artwork::Draft::with_fetched(
+            Kind::Grid,
+            7,
+            wineo_core::art::Downloaded {
+                asset: 42,
+                bytes: FETCHED.to_vec(),
+                format: wineo_core::art::Format::Jpeg,
+            },
+        );
+        art.apply(&paths, "dawn").unwrap();
+        let config = wineo_core::art::ArtConfig::load(&paths.art_dir("dawn")).unwrap();
+        assert_eq!(
+            config.kinds[&Kind::Grid].source,
+            wineo_core::art::Source::SteamGridDb(42)
         );
     }
 }
