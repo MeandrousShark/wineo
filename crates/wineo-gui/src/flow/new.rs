@@ -1021,7 +1021,7 @@ impl Page {
                     Ok(true) => {
                         if let Some(report) = &mut self.report {
                             report.cleanup_resolved = true;
-                            report.notes.push("Installer cleanup resolved".to_owned());
+                            report.notes.push("Installer cleaned up".to_owned());
                         }
                         if self.draft.source == Source::Installer {
                             self.stage = Stage::Target;
@@ -2000,21 +2000,20 @@ fn perform(
         Ok(Outcome::Finished { exit_code: Some(0) }) => {
             report.notes.push("Installed successfully".to_owned());
         }
-        Ok(Outcome::Finished { exit_code }) => report.notes.push(format!(
-            "Installer exited with code {}",
-            exit_code.map_or_else(|| "unknown".to_owned(), |code| code.to_string())
-        )),
-        Ok(Outcome::Canceled { exit_code }) => report.notes.push(format!(
-            "Installer canceled (exit code {})",
-            exit_code.map_or_else(|| "unknown".to_owned(), |code| code.to_string())
-        )),
-        Ok(Outcome::Unresolved {
-            exit_code, error, ..
-        }) => {
+        Ok(Outcome::Finished {
+            exit_code: Some(code),
+        }) => report
+            .notes
+            .push(format!("Installer reported an error (code {code})")),
+        Ok(Outcome::Finished { exit_code: None }) => report
+            .notes
+            .push("Installer finished, but its result is unknown".to_owned()),
+        // After a cancel the code only reflects how it was stopped.
+        Ok(Outcome::Canceled { .. }) => report.notes.push("Installer canceled".to_owned()),
+        Ok(Outcome::Unresolved { error, .. }) => {
             report.cleanup_resolved = false;
             report.notes.push(format!(
-                "Installer exit code: {}. Cleanup unresolved: {error}",
-                exit_code.map_or_else(|| "unknown".to_owned(), |code| code.to_string())
+                "Programs the installer started may still be running: {error}"
             ));
         }
         Err(error) => report.notes.push(format!("Installer failed: {error}")),
