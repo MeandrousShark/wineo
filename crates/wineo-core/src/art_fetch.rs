@@ -54,6 +54,29 @@ pub fn fetch_kind(
     {
         return Ok(skipped);
     }
+    let image = match choose_for(api, game, kind, language, mode)? {
+        Choice::Image(image) => image,
+        Choice::NoneFound => return Ok(Fetched::NoneFound),
+        Choice::AssetNotFound => return Ok(Fetched::AssetNotFound),
+    };
+    publish(paths, env, target, kind, &image, mode)
+}
+
+/// Chooses and downloads the best usable ranked image without an environment.
+pub fn choose(api: &Api, game: u64, kind: Kind, language: &str) -> Result<Option<Downloaded>> {
+    match choose_for(api, game, kind, language, Mode::Fill)? {
+        Choice::Image(image) => Ok(Some(image)),
+        Choice::NoneFound | Choice::AssetNotFound => Ok(None),
+    }
+}
+
+enum Choice {
+    Image(Downloaded),
+    NoneFound,
+    AssetNotFound,
+}
+
+fn choose_for(api: &Api, game: u64, kind: Kind, language: &str, mode: Mode) -> Result<Choice> {
     // The user picked an asset by hand, so none of ranking's filters apply.
     let filters = match mode {
         Mode::Asset(_) => Filters::None,
@@ -63,7 +86,7 @@ pub fn fetch_kind(
     if let Mode::Asset(asset) = mode {
         images.retain(|image| image.id == asset);
         if images.is_empty() {
-            return Ok(Fetched::AssetNotFound);
+            return Ok(Choice::AssetNotFound);
         }
     }
     rank(kind, &mut images, language);
@@ -75,25 +98,41 @@ pub fn fetch_kind(
             }
             continue;
         };
-        let image = Downloaded {
+        return Ok(Choice::Image(Downloaded {
             asset: image.id,
             bytes,
             format,
-        };
-        let replace = mode != Mode::Fill;
-        return Ok(
-            match art::publish_fetched(paths, env, target, kind, &image, replace)? {
-                Some(stored) => Fetched::Stored {
-                    asset: image.asset,
-                    stored,
-                },
-                None => {
-                    existing(paths, env, target, kind)?.unwrap_or(Fetched::Skipped { source: None })
-                }
-            },
-        );
+        }));
     }
-    Ok(Fetched::NoneFound)
+    Ok(Choice::NoneFound)
+}
+
+/// Publishes a downloaded image, keeping existing art in Fill mode.
+pub fn publish(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    image: &Downloaded,
+    mode: Mode,
+) -> Result<Fetched> {
+    art::check_spot(paths, env, target)?;
+    if mode == Mode::Fill
+        && let Some(skipped) = existing(paths, env, target, kind)?
+    {
+        return Ok(skipped);
+    }
+    Ok(
+        match art::publish_fetched(paths, env, target, kind, image, mode != Mode::Fill)? {
+            Some(stored) => Fetched::Stored {
+                asset: image.asset,
+                stored,
+            },
+            None => {
+                existing(paths, env, target, kind)?.unwrap_or(Fetched::Skipped { source: None })
+            }
+        },
+    )
 }
 
 /// The skip for a kind that already has art, if it has any.
@@ -221,6 +260,49 @@ mod tests {
         assert_eq!(names(&art), ["art.toml", "grid.png"]);
         // Only the best candidate was downloaded.
         assert!(!api.urls().contains(&"https://cdn.example/3".to_owned()));
+    }
+
+    #[test]
+    fn choose_downloads_without_an_environment_and_publish_stores_it() {
+        let (_root, paths) = setup();
+        let api = FakeApi::default();
+        serve(&api, Kind::Icon, &[(1, b"bad"), (2, PNG)]);
+        let config = paths.environment_config("hades");
+        let saved = fs::read(&config).unwrap();
+        fs::remove_file(&config).unwrap();
+        let image = choose(&Api::new(&api, "k"), 7, Kind::Icon, "en")
+            .unwrap()
+            .unwrap();
+        assert_eq!(image.asset, 2);
+        assert_eq!(image.bytes, PNG);
+        assert_eq!(image.format, Format::Png);
+        fs::write(config, saved).unwrap();
+        let requests = api.urls().len();
+        assert!(matches!(
+            publish(&paths, "hades", None, Kind::Icon, &image, Mode::Fill).unwrap(),
+            Fetched::Stored { asset: 2, .. }
+        ));
+        assert_eq!(api.urls().len(), requests);
+        assert_eq!(
+            fs::read(paths.art_dir("hades").join("icon.png")).unwrap(),
+            PNG
+        );
+    }
+
+    #[test]
+    fn publish_fill_keeps_art_added_after_choose() {
+        let (_root, paths) = setup();
+        let api = FakeApi::default();
+        serve(&api, Kind::Hero, &[(4, JPEG)]);
+        let image = choose(&Api::new(&api, "k"), 7, Kind::Hero, "en")
+            .unwrap()
+            .unwrap();
+        let manual = manual(&paths, "hero.png", PNG);
+        assert_eq!(
+            publish(&paths, "hades", None, Kind::Hero, &image, Mode::Fill).unwrap(),
+            Fetched::Skipped { source: None }
+        );
+        assert_eq!(fs::read(manual).unwrap(), PNG);
     }
 
     #[test]

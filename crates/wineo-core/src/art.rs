@@ -387,7 +387,8 @@ pub fn set_manual(
 }
 
 /// A SteamGridDB image, downloaded and identified.
-pub(crate) struct Downloaded {
+#[derive(Debug)]
+pub struct Downloaded {
     pub asset: u64,
     pub bytes: Vec<u8>,
     pub format: Format,
