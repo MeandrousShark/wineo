@@ -1039,7 +1039,7 @@ fn list_chips(editor: &Editor, list: List, locked: bool, palette: Palette) -> El
         items,
         input,
         placeholder: match list {
-            List::Winetricks => "a verb, like corefonts",
+            List::Winetricks => "a package, like corefonts or dotnet48",
             List::Tags => "a tag",
         },
         error: list.problem(items, input),
