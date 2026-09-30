@@ -385,6 +385,11 @@ impl Page {
         }
         self.error = None;
         self.next_picker();
+        if matches!(self.step, Step::Games | Step::Details | Step::Review) {
+            // A reply to what this step started must not reopen it.
+            self.next_generation();
+            self.status.clear();
+        }
         match self.step {
             Step::Sources => {
                 if self.source.is_some() {
@@ -632,6 +637,14 @@ impl Page {
         if !self.chosen.remove(&candidate.id) {
             self.chosen.insert(candidate.id.clone());
         }
+        self.selection_changed();
+    }
+
+    /// Drops a pending inspection of the old selection, so its reply can't
+    /// open details for a game no longer chosen.
+    fn selection_changed(&mut self) {
+        self.next_generation();
+        self.status.clear();
     }
 
     /// One game opens the editable single review; several share the batch
@@ -1053,10 +1066,12 @@ impl Page {
             }
             Event::SelectAll => {
                 self.chosen = self.eligible().collect();
+                self.selection_changed();
                 Task::none()
             }
             Event::SelectNone => {
                 self.chosen.clear();
+                self.selection_changed();
                 Task::none()
             }
             Event::ImportSelected => self.import_chosen(),
@@ -3358,6 +3373,39 @@ mod tests {
             artwork::preview_with_format(&dusk, Kind::Grid),
         ));
         assert!(page.poster("noon").is_none());
+    }
+
+    #[test]
+    fn a_late_inspection_cannot_open_details_for_an_old_selection() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        let listing = page.listing.clone().unwrap();
+        let paths = page.paths.clone();
+        let prepared = || {
+            Ok(Box::new(
+                prepare_game(&paths, &listing.source, listing.candidates[NOON].clone()).unwrap(),
+            ))
+        };
+        let reply = prepared();
+        let _ = page.update(Event::Toggle(NOON));
+        let _ = page.update(Event::ImportSelected);
+        let pending = page.generation;
+        let _ = page.update(Event::Toggle(DUSK));
+        let _ = page.update(Event::Prepared(pending, reply));
+        assert_eq!(page.step, Step::Games);
+        assert!(page.prepared.is_none());
+        assert!(page.status.is_empty());
+
+        let reply = prepared();
+        let _ = page.update(Event::SelectNone);
+        let _ = page.update(Event::Toggle(NOON));
+        let _ = page.update(Event::ImportSelected);
+        let pending = page.generation;
+        let _ = page.back();
+        assert_eq!(page.step, Step::Sources);
+        let _ = page.update(Event::Prepared(pending, reply));
+        assert_eq!(page.step, Step::Sources);
+        assert!(page.prepared.is_none());
     }
 
     #[test]
