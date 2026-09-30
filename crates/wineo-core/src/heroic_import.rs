@@ -12,11 +12,13 @@ mod native;
 mod plan;
 mod runner;
 
-pub use apply::{ApplyError, Playtime, Registered, apply, apply_native, write_import_log};
+pub use apply::{
+    ApplyError, Playtime, Registered, apply, apply_native, store_poster, write_import_log,
+};
 
 pub use library::{
     Backfill, BuildOffer, Entry, Game, LibraryOptions, LibraryPlan, PendingGame, Skipped, blocker,
-    default_name, listing, plan_library, sources,
+    default_name, listing, plan_library, plan_selection, sources,
 };
 pub use native::{NativePlan, plan_native};
 pub use plan::{

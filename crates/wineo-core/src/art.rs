@@ -339,16 +339,53 @@ pub fn set_manual(
 ) -> Result<Stored> {
     check_spot(paths, env, target)?;
     let bytes = read_art(file)?;
-    let format = detect(&bytes)
+    let original = file
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    store_manual(paths, env, target, kind, &bytes, &original, file)
+}
+
+/// Like `set_manual`, for an image already in memory. `original` is the file
+/// name recorded as its source.
+pub fn set_manual_bytes(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    bytes: &[u8],
+    original: &str,
+) -> Result<Stored> {
+    check_spot(paths, env, target)?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err(Error::ArtTooLarge(PathBuf::from(original)));
+    }
+    store_manual(
+        paths,
+        env,
+        target,
+        kind,
+        bytes,
+        original,
+        Path::new(original),
+    )
+}
+
+fn store_manual(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    bytes: &[u8],
+    original: &str,
+    file: &Path,
+) -> Result<Stored> {
+    let format = detect(bytes)
         .filter(|format| kind.accepts(*format))
         .ok_or_else(|| Error::ArtFormat {
             path: file.to_owned(),
             accepted: accepted(kind),
         })?;
-    let original = file
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
 
     let art_dir = paths.art_dir(env);
     let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
@@ -359,14 +396,14 @@ pub fn set_manual(
     fs::create_dir_all(&dir).context(|| format!("failed to create {}", dir.display()))?;
     let path = dir.join(kind.file_name(format));
     let tmp = dir.join(format!(".{}.tmp", kind.file_name(format)));
-    fs::write(&tmp, &bytes).context(|| format!("failed to write {}", path.display()))?;
+    fs::write(&tmp, bytes).context(|| format!("failed to write {}", path.display()))?;
     fs::rename(&tmp, &path).context(|| format!("failed to write {}", path.display()))?;
     art.set(
         target,
         kind,
         Record {
             format,
-            source: Source::Manual(original),
+            source: Source::Manual(original.to_owned()),
         },
     )?;
     art.save()?;

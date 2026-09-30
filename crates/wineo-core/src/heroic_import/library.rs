@@ -533,10 +533,43 @@ pub fn plan_library(
     runner: Option<&str>,
     options: &LibraryOptions,
 ) -> anyhow::Result<LibraryPlan> {
+    plan_candidates(paths, global, listing, runner, options, |_| true)
+}
+
+/// Like `plan_library`, but only for the games whose ids are in `selected`.
+/// Games outside the selection still count when warning about a shared
+/// prefix, since they use it all the same.
+pub fn plan_selection(
+    paths: &Paths,
+    global: &GlobalConfig,
+    listing: &HeroicListing,
+    selected: &BTreeSet<String>,
+    runner: Option<&str>,
+    options: &LibraryOptions,
+) -> anyhow::Result<LibraryPlan> {
+    plan_candidates(paths, global, listing, runner, options, |candidate| {
+        selected.contains(&candidate.id)
+    })
+}
+
+fn plan_candidates(
+    paths: &Paths,
+    global: &GlobalConfig,
+    listing: &HeroicListing,
+    runner: Option<&str>,
+    options: &LibraryOptions,
+    selected: impl Fn(&HeroicCandidate) -> bool,
+) -> anyhow::Result<LibraryPlan> {
     let source = &listing.source;
+    let all_windows: Vec<&HeroicCandidate> = listing
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.kind != HeroicGameKind::Native)
+        .collect();
     let (natives, windows): (Vec<&HeroicCandidate>, Vec<&HeroicCandidate>) = listing
         .candidates
         .iter()
+        .filter(|candidate| selected(candidate))
         .partition(|candidate| candidate.kind == HeroicGameKind::Native);
     let runner = match runner {
         Some(name) => Some((name, Runners::new(paths, global)?.resolve(name)?)),
@@ -593,7 +626,7 @@ pub fn plan_library(
     if let Some((name, runner)) = &runner {
         runner_name = Some((*name).to_owned());
         let mut claimed = claimed;
-        let shared_by_prefix = shared_prefixes(&windows);
+        let shared_by_prefix = shared_prefixes(&all_windows);
         let mut used_names: BTreeSet<String> = BTreeSet::new();
         let mut root_checked = false;
         for candidate in &windows {
@@ -841,6 +874,7 @@ mod tests {
             prefix: None,
             runner: None,
             executable: None,
+            poster: None,
             issues,
         }
     }
@@ -1327,6 +1361,50 @@ mod tests {
                 title: "Delta".to_owned()
             }])]
         );
+    }
+
+    #[test]
+    fn a_selection_plans_only_the_chosen_games() {
+        let root = tempdir().unwrap();
+        let mut library = Library::new(root.path());
+        library.windows("a", "Alpha", "p1", "");
+        library.windows("b", "Bravo", "p2", "");
+        library.windows("d", "Delta", "p1", "");
+        library.native("e", "Echo");
+        let (paths, global, listing) = library.write();
+        let selected = BTreeSet::from(["a".to_owned(), "e".to_owned()]);
+        let plan = plan_selection(
+            &paths,
+            &global,
+            &listing,
+            &selected,
+            Some("fake"),
+            &LibraryOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(names(&plan), ["ready echo", "ready alpha"]);
+        // Delta isn't imported, but it still uses Alpha's prefix.
+        let Entry::Ready(Game::Windows(alpha)) = &plan.entries()[1] else {
+            panic!("expected a ready game");
+        };
+        assert_eq!(
+            alpha.warnings(),
+            vec![Warning::SharedPrefix(vec![HeroicSharedPrefix {
+                id: "d".to_owned(),
+                title: "Delta".to_owned()
+            }])]
+        );
+        let natives = BTreeSet::from(["e".to_owned()]);
+        let plan = plan_selection(
+            &paths,
+            &global,
+            &listing,
+            &natives,
+            None,
+            &LibraryOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(names(&plan), ["ready echo"]);
     }
 
     #[test]

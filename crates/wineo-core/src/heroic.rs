@@ -199,6 +199,9 @@ impl HeroicSource {
                 prefix: None,
                 runner: None,
                 executable: executable(entry),
+                poster: string_field(entry, &["art_square"])
+                    .map(|url| self.cached_image(url))
+                    .filter(|path| path.is_file()),
                 issues: Vec::new(),
             };
             if !valid_game_id(raw_id) {
@@ -751,6 +754,14 @@ impl HeroicSource {
         })
     }
 
+    /// Where Heroic caches the image it downloaded from `url`. It may not
+    /// exist, since Heroic only caches what it has shown.
+    pub fn cached_image(&self, url: &str) -> PathBuf {
+        self.config_dir
+            .join("images-cache")
+            .join(hex_digest(Sha256::digest(url.as_bytes())))
+    }
+
     fn config_path(&self) -> PathBuf {
         self.config_dir.join("config.json")
     }
@@ -831,6 +842,9 @@ pub struct HeroicCandidate {
     pub prefix: Option<PathBuf>,
     pub runner: Option<HeroicRunner>,
     pub executable: Option<PathBuf>,
+    /// Heroic's cached copy of the game's portrait poster (`art_square`),
+    /// when it has one.
+    pub poster: Option<PathBuf>,
     pub issues: Vec<HeroicIssue>,
 }
 
@@ -2436,5 +2450,64 @@ mod tests {
             other.last_played,
             Some("2026-01-02T00:00:00Z".parse().unwrap())
         );
+    }
+
+    const POSTER_URL: &str = "https://cdn.example.com/art/Poster.JPG";
+    const POSTER_DIGEST: &str = "44f8d500fbcdedb36b8b6ece0c50218a82c365af8d8d4b9456ebab732d1e94cb";
+
+    #[test]
+    fn cached_images_are_named_by_the_lowercase_sha256_of_the_url() {
+        let home = tempfile::tempdir().unwrap();
+        let native = home.path().join(".config/heroic");
+        fs::create_dir_all(native.join("sideload_apps")).unwrap();
+        let flatpak = home
+            .path()
+            .join(".var/app/com.heroicgameslauncher.hgl/config/heroic");
+        fs::create_dir_all(flatpak.join("sideload_apps")).unwrap();
+        let sources = HeroicSource::discover(home.path(), None, None).unwrap();
+        assert_eq!(sources.len(), 2);
+        for source in sources {
+            let expected = match source.origin() {
+                HeroicOrigin::Native => native.join("images-cache").join(POSTER_DIGEST),
+                _ => flatpak.join("images-cache").join(POSTER_DIGEST),
+            };
+            assert_eq!(source.cached_image(POSTER_URL), expected);
+        }
+    }
+
+    #[test]
+    fn a_listing_finds_cached_posters_and_skips_missing_ones() {
+        let (root, source) = fixture();
+        let prefix = wine_prefix(root.path());
+        let global = format!(
+            r#"{{"defaultSettings":{{"winePrefix":"{}","wineVersion":{{"type":"wine","name":"System","bin":"wine"}}}}}}"#,
+            prefix.display()
+        );
+        let exe = prefix.join("game.exe").display().to_string();
+        let library = format!(
+            r#"{{"games":[
+                {{"app_name":"cached","title":"Cached","runner":"sideload","art_square":"{POSTER_URL}","install":{{"platform":"Windows","executable":"{exe}"}}}},
+                {{"app_name":"uncached","title":"Uncached","runner":"sideload","art_square":"https://cdn.example.com/other.jpg","install":{{"platform":"Windows","executable":"{exe}"}}}},
+                {{"app_name":"bare","title":"Bare","runner":"sideload","art_cover":"{POSTER_URL}","install":{{"platform":"Windows","executable":"{exe}"}}}}
+            ]}}"#
+        );
+        write_fixture(&source, &global, "", &library);
+        let cache = source.config_dir().join("images-cache");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join(POSTER_DIGEST), b"\xff\xd8\xff poster").unwrap();
+        let listing = source.list_candidates().unwrap();
+        let poster = |id: &str| {
+            listing
+                .candidates
+                .iter()
+                .find(|candidate| candidate.id == id)
+                .unwrap()
+                .poster
+                .clone()
+        };
+        assert_eq!(poster("cached"), Some(cache.join(POSTER_DIGEST)));
+        assert_eq!(poster("uncached"), None);
+        // art_cover is Heroic's landscape art, not the poster.
+        assert_eq!(poster("bare"), None);
     }
 }

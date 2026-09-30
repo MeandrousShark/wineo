@@ -4,11 +4,13 @@
 //! frontend fetches art between them: the desktop entry is written last so it
 //! gets the art's icon from the start.
 
-use std::io::Write;
+use std::fs;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
+use crate::art::{self, Kind};
 use crate::cancel::Token;
 use crate::config::GlobalConfig;
 use crate::desktop::{self, Change};
@@ -121,6 +123,40 @@ pub fn apply_native(
         runner: None,
         destination: None,
     })
+}
+
+/// Stores Heroic's cached `poster` as `env`'s Grid art, recorded as a manual
+/// pick named `heroic-<app_name>.<ext>` so its origin is visible. Returns None
+/// without storing anything when the file is gone, too large, or not a format
+/// Grid art can be. Heroic's file is only read.
+pub fn store_poster(
+    paths: &Paths,
+    env: &str,
+    app_name: &str,
+    poster: &Path,
+) -> crate::Result<Option<art::Stored>> {
+    let mut bytes = Vec::new();
+    let read = fs::File::open(poster)
+        .and_then(|file| file.take(art::MAX_BYTES + 1).read_to_end(&mut bytes));
+    match read {
+        Ok(_) => {}
+        // Heroic may have pruned its cache since the game was listed.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(crate::error::Error::Io {
+                context: format!("failed to read {}", poster.display()),
+                source: error,
+            });
+        }
+    }
+    if bytes.len() as u64 > art::MAX_BYTES {
+        return Ok(None);
+    }
+    let Some(format) = art::detect(&bytes).filter(|format| Kind::Grid.accepts(*format)) else {
+        return Ok(None);
+    };
+    let original = format!("heroic-{app_name}.{}", format.extension());
+    art::set_manual_bytes(paths, env, None, Kind::Grid, &bytes, &original).map(Some)
 }
 
 pub(super) fn ensure_unchanged(
@@ -380,5 +416,89 @@ mod tests {
         write_import_log(&paths, "game", body).unwrap();
         let contents = fs::read_to_string(&log_path).unwrap();
         assert_eq!(contents.matches("=== ").count(), 2, "{contents}");
+    }
+
+    /// Every file under `dir` with its bytes, to show nothing there changed.
+    fn tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        let mut files = std::collections::BTreeMap::new();
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files.extend(tree(&path));
+            } else {
+                files.insert(path.clone(), fs::read(&path).unwrap());
+            }
+        }
+        files
+    }
+
+    #[test]
+    fn a_heroic_poster_is_stored_as_manual_grid_art_that_fetching_keeps() {
+        const JPEG: &[u8] = b"\xff\xd8\xff\xe0 poster";
+        let root = tempdir().unwrap();
+        let (paths, global, source) = library(root.path());
+        let cache = source.config_dir().join("images-cache");
+        fs::create_dir_all(&cache).unwrap();
+        let poster = cache.join("0123abcd");
+        fs::write(&poster, JPEG).unwrap();
+        let before = tree(source.config_dir());
+        let plan = plan(&paths, &global, &source);
+        let registered = apply(&paths, &global, &source, &plan, &Token::new(), |_| {}).unwrap();
+        let name = registered.environment.name.as_str();
+
+        let stored = store_poster(&paths, name, "a", &poster).unwrap().unwrap();
+        assert_eq!(stored.format, art::Format::Jpeg);
+        assert_eq!(
+            fs::read(paths.art_dir(name).join("grid.jpg")).unwrap(),
+            JPEG
+        );
+        let record = |paths: &Paths| {
+            art::ArtConfig::load(&paths.art_dir(name)).unwrap().kinds[&Kind::Grid]
+                .source
+                .clone()
+        };
+        assert_eq!(record(&paths), art::Source::Manual("heroic-a.jpg".into()));
+
+        let fetched = art::Downloaded {
+            asset: 42,
+            bytes: b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec(),
+            format: art::Format::Png,
+        };
+        crate::art_fetch::publish(
+            &paths,
+            name,
+            None,
+            Kind::Grid,
+            &fetched,
+            crate::art_fetch::Mode::Fill,
+        )
+        .unwrap();
+        assert_eq!(record(&paths), art::Source::Manual("heroic-a.jpg".into()));
+        assert!(!paths.art_dir(name).join("grid.png").exists());
+        assert_eq!(tree(source.config_dir()), before);
+    }
+
+    #[test]
+    fn a_missing_or_unusable_poster_is_skipped() {
+        let root = tempdir().unwrap();
+        let (paths, global, source) = library(root.path());
+        let plan = plan(&paths, &global, &source);
+        let registered = apply(&paths, &global, &source, &plan, &Token::new(), |_| {}).unwrap();
+        let name = registered.environment.name.as_str();
+        let missing = root.path().join("gone");
+        assert_eq!(store_poster(&paths, name, "a", &missing).unwrap(), None);
+        // Icons can be ICO, but Grid art can't.
+        let ico = root.path().join("icon");
+        let mut bytes = vec![0, 0, 1, 0, 1, 0, 16, 16, 0, 0, 1, 0, 32, 0];
+        bytes.extend(4u32.to_le_bytes());
+        bytes.extend(22u32.to_le_bytes());
+        bytes.extend([0; 4]);
+        assert_eq!(art::detect(&bytes), Some(art::Format::Ico));
+        fs::write(&ico, bytes).unwrap();
+        assert_eq!(store_poster(&paths, name, "a", &ico).unwrap(), None);
+        let text = root.path().join("text");
+        fs::write(&text, b"not an image").unwrap();
+        assert_eq!(store_poster(&paths, name, "a", &text).unwrap(), None);
+        assert!(!paths.art_dir(name).join(art::ART_FILE).exists());
     }
 }
