@@ -130,7 +130,10 @@ mod tests {
             ("under_score", "under_score"),
             ("\u{30cf}\u{30fc}\u{30c7}\u{30b9}", ""),
             ("Assassin\u{2019}s Creed\u{2122}", "assassins-creed"),
-            ("\u{c5}ngstr\u{f6}m \u{df} \u{e6}\u{153}", "angstrom-ss-aeoe"),
+            (
+                "\u{c5}ngstr\u{f6}m \u{df} \u{e6}\u{153}",
+                "angstrom-ss-aeoe",
+            ),
             ("Cafe\u{301}", "cafe"),
         ] {
             let derived = from_title(title);

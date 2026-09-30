@@ -109,6 +109,11 @@ impl Draft {
         Self::default()
     }
 
+    #[cfg(test)]
+    pub(super) fn search_text(&self) -> &str {
+        &self.search
+    }
+
     pub(crate) fn is_dirty(&self) -> bool {
         self.fetch
             || self.search_edited
