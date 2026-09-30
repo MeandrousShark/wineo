@@ -4,6 +4,7 @@ mod flow;
 mod grid;
 mod keys;
 mod library;
+mod logview;
 mod panel;
 mod picker;
 mod settings;
@@ -33,7 +34,6 @@ pub(crate) const CARD_WIDTH: f32 = 180.0;
 const CARD_ROW: f32 = 330.0;
 pub(crate) const GAP: f32 = 16.0;
 const SCROLL_ID: &str = "library";
-const LOG_ID: &str = "panel-log";
 const SEARCH_ID: &str = "library-search";
 // iced moves 60px per wheel line, which felt too fast beside native apps.
 const WHEEL_STEP_SCALE: f32 = 0.7;
@@ -114,7 +114,9 @@ pub(crate) enum Message {
     CloseLog,
     LogChunk(u64, String),
     LogFinished(u64, Result<(), String>),
-    LogScrolled,
+    LogAction(iced::widget::text_editor::Action),
+    LogFollow,
+    CopyLog,
     Hover(Option<String>),
     Refresh,
     Loaded(Result<Vec<Card>, String>),
@@ -408,10 +410,8 @@ impl App {
             Message::LogChunk(generation, chunk) => {
                 if self.log_view && self.log_generation == generation {
                     self.log_buffer.push(&chunk);
-                    iced::widget::operation::snap_to_end(iced::widget::Id::new(LOG_ID))
-                } else {
-                    Task::none()
                 }
+                Task::none()
             }
             Message::LogFinished(generation, result) => {
                 if self.log_view
@@ -422,7 +422,17 @@ impl App {
                 }
                 Task::none()
             }
-            Message::LogScrolled => Task::none(),
+            Message::LogAction(action) => {
+                if self.log_view {
+                    self.log_buffer.act(action);
+                }
+                Task::none()
+            }
+            Message::LogFollow => {
+                self.log_buffer.follow();
+                Task::none()
+            }
+            Message::CopyLog => iced::clipboard::write(self.log_buffer.copy()),
             Message::Hover(name) => {
                 self.hovered = name;
                 Task::none()

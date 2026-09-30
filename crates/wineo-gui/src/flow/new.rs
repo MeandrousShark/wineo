@@ -30,8 +30,12 @@ use wineo_core::targets::{self, Batch, Spec, Written};
 use wineo_core::templates::{Template, Templates};
 
 use super::{Action, artwork};
+use crate::logview::{self, LogView};
 use crate::picker;
 use crate::theme::Palette;
+
+const LOG_CAP: usize = 128 * 1024;
+const LOG_KEEP: usize = 64 * 1024;
 
 /// Poster plus a form wide enough for the Name, Icon, and Type row. Below
 /// this the poster and icon move under the form.
@@ -208,6 +212,9 @@ pub(crate) enum Event {
     Reviewed(u64, Result<Box<Review>, String>),
     Progress(u64, String),
     LogChunk(u64, String),
+    LogAction(iced::widget::text_editor::Action),
+    LogFollow,
+    CopyLog,
     Done(u64, Report),
     Art(artwork::Event),
 }
@@ -225,6 +232,7 @@ pub(crate) struct Page {
     error: Option<String>,
     status: String,
     log: String,
+    log_view: LogView,
     target_path: String,
     target_desktop: bool,
     launch: bool,
@@ -251,6 +259,7 @@ impl Page {
             error: None,
             status: String::new(),
             log: String::new(),
+            log_view: LogView::default(),
             target_path: String::new(),
             target_desktop: false,
             launch: false,
@@ -308,6 +317,21 @@ impl Page {
             },
             Event::Options,
         )
+    }
+
+    fn append_log(&mut self, text: &str) {
+        let text = logview::normalize(text);
+        self.log.push_str(&text);
+        let mut dropped = String::new();
+        if self.log.len() > LOG_CAP {
+            let mut start = self.log.len() - LOG_KEEP;
+            while !self.log.is_char_boundary(start) {
+                start += 1;
+            }
+            dropped = self.log.drain(..start).collect();
+        }
+        let log = &self.log;
+        self.log_view.push(&text, &dropped, || log.clone());
     }
 
     pub(crate) fn busy(&self) -> bool {
@@ -435,6 +459,7 @@ impl Page {
         self.stage = Stage::Working;
         self.status = "Creating environment...".to_owned();
         self.log.clear();
+        self.log_view = LogView::default();
         let (sender, receiver) = unbounded();
         let log_sender = sender.clone();
         let work = Task::perform(
@@ -826,20 +851,24 @@ impl Page {
                 if generation == self.generation && self.stage == Stage::Working =>
             {
                 self.status.clone_from(&line);
-                self.log.push_str(&line);
-                self.log.push('\n');
+                self.append_log(&format!("{line}\n"));
             }
             Event::LogChunk(generation, chunk)
                 if generation == self.generation && self.stage == Stage::Working =>
             {
-                self.log.push_str(&chunk);
-                if self.log.len() > 128 * 1024 {
-                    let mut start = self.log.len() - 64 * 1024;
-                    while !self.log.is_char_boundary(start) {
-                        start += 1;
-                    }
-                    self.log.drain(..start);
-                }
+                self.append_log(&chunk);
+            }
+            Event::LogAction(action) => {
+                let log = &self.log;
+                self.log_view.perform(action, || log.clone());
+            }
+            Event::LogFollow => {
+                let log = &self.log;
+                self.log_view.follow(|| log.clone());
+            }
+            Event::CopyLog => {
+                self.log_view.mark_copied();
+                return iced::clipboard::write(self.log.clone());
             }
             Event::Done(generation, report)
                 if generation == self.generation && self.stage == Stage::Working =>
@@ -1334,7 +1363,18 @@ impl Page {
                     button("Cancel").on_press(Event::Cancel)
                 });
                 if !self.log.is_empty() {
-                    body = body.push(scrollable(text(&self.log)).height(220));
+                    body = body.push(logview::controls(
+                        &self.log_view,
+                        true,
+                        Event::CopyLog,
+                        Event::LogFollow,
+                    ));
+                    body = body.push(logview::editor(
+                        &self.log_view,
+                        palette,
+                        220,
+                        Event::LogAction,
+                    ));
                 }
             }
             Stage::Target => {
@@ -1888,6 +1928,35 @@ mod tests {
         let paths =
             Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
         Page::new(paths).0
+    }
+
+    #[test]
+    fn installer_log_stays_capped_and_mirrored_in_the_view() {
+        let mut page = page();
+        for index in 0..4000 {
+            page.append_log(&format!("{index} {}\r\n", "x".repeat(60)));
+        }
+        assert!(page.log.len() <= LOG_CAP);
+        assert!(page.log.len() > LOG_KEEP);
+        assert!(!page.log.contains('\r'));
+        assert_eq!(page.log_view.content().text(), page.log);
+    }
+
+    #[test]
+    fn installer_log_pauses_while_selected_and_copies_everything() {
+        let mut page = page();
+        page.append_log("first\n");
+        let _ = page.update(Event::LogAction(
+            iced::widget::text_editor::Action::SelectAll,
+        ));
+        page.append_log("second\n");
+        assert!(page.log_view.paused());
+        assert_eq!(page.log_view.content().text(), "first\n");
+        let _ = page.update(Event::CopyLog);
+        assert!(page.log_view.copied());
+        assert_eq!(page.log, "first\nsecond\n");
+        let _ = page.update(Event::LogFollow);
+        assert_eq!(page.log_view.content().text(), page.log);
     }
 
     fn fake_runner(paths: &Paths) {
