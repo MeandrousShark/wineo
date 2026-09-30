@@ -53,7 +53,10 @@ when it was last played, and its tags.
 
 Starting can take a while the first time, since it builds a missing prefix
 and installs missing winetricks packages first. The panel shows what it's
-doing. **Cancel** stops the start cleanly, and pressing it again as
+doing, including which package is installing, like "Installing gdiplus
+(2 of 3)...". **Log** is available during the install and follows the
+install log, labeled **Install log**; once the game runs, **Log** shows its
+**Game output** instead. **Cancel** stops the start cleanly, and pressing it again as
 **Force stop** kills it right away, like pressing Ctrl+C twice in the CLI.
 Creation and imports work the same way: **Force stop** replaces **Cancel**
 only after you cancel.

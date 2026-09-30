@@ -59,6 +59,8 @@ The maintainer approved these changes during acceptance testing:
   Force stop replaces Cancel only after canceling, in every flow. The
   spinner is a smooth rotating arc, and the winetricks settings field calls
   its entries packages.
+- Library launches that install winetricks packages show which one is
+  installing ("2 of 3") and offer the install log live while it runs.
 
 These refinements supersede the full-page and visible-art-path details below.
 The implementation keeps SteamGridDB requests explicit; entering a name
