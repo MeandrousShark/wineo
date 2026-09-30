@@ -14,6 +14,7 @@ use crate::artwork;
 use crate::library::Card;
 use crate::logview::{self, LogView};
 use crate::theme::Palette;
+use crate::worker::LogSource;
 use crate::{App, Message, Operation, OperationKind, worker};
 
 const PANEL_WIDTH: f32 = 420.0;
@@ -150,6 +151,10 @@ pub(crate) fn status(event: &LaunchEvent) -> Option<&'static str> {
 
 pub(crate) fn event_status(event: &LaunchEvent) -> Option<String> {
     match event {
+        LaunchEvent::Winetricks(WinetricksEvent::Progress(step)) => Some(match step.total {
+            1 => format!("Installing {}...", step.verb),
+            total => format!("Installing {} ({} of {total})...", step.verb, step.position),
+        }),
         LaunchEvent::Winetricks(WinetricksEvent::Installing(verbs)) => {
             Some(format!("Installing {}...", verbs.join(", ")))
         }
@@ -216,16 +221,19 @@ impl App {
         }
         let name = card.name.clone();
         let token = Token::new();
+        let install_done = Token::new();
         self.operation = Some(Operation {
             name: name.clone(),
             kind: OperationKind::Start,
             token: Some(token.clone()),
             cancelled: false,
             status: "Starting...".to_owned(),
+            install_done: Some(install_done.clone()),
+            installing: false,
         });
         self.panel_error = None;
         self.panel_note = None;
-        worker::start(self.paths.clone(), name, target, token)
+        worker::start(self.paths.clone(), name, target, token, install_done)
     }
     pub(crate) fn stop_selected(&mut self) -> Task<Message> {
         let Some(card) = self
@@ -250,6 +258,8 @@ impl App {
             token: None,
             cancelled: false,
             status: "Stopping...".to_owned(),
+            install_done: None,
+            installing: false,
         });
         self.panel_error = None;
         self.panel_note = None;
@@ -263,16 +273,33 @@ impl App {
         else {
             return Task::none();
         };
-        if card.state == State::Inactive {
+        let Some(source) = self.log_source(card) else {
             return Task::none();
-        }
+        };
         let name = card.name.clone();
         self.close_log();
         self.log_view = true;
+        self.log_install = matches!(source, LogSource::Install(_));
         self.log_buffer = LogBuffer::default();
         let token = Token::new();
         self.log_token = Some(token.clone());
-        worker::log(self.paths.clone(), name, self.log_generation, token)
+        worker::log(self.paths.clone(), name, self.log_generation, token, source)
+    }
+    /// The log the panel can show for a card right now. An install in progress
+    /// wins over the state, because the environment is still Inactive then.
+    pub(crate) fn log_source(&self, card: &Card) -> Option<LogSource> {
+        let installing = self.operation.as_ref().filter(|operation| {
+            operation.name == card.name
+                && operation.kind == OperationKind::Start
+                && operation.installing
+        });
+        if let Some(done) = installing.and_then(|operation| operation.install_done.clone()) {
+            Some(LogSource::Install(done))
+        } else if card.state != State::Inactive {
+            Some(LogSource::Output)
+        } else {
+            None
+        }
     }
     pub(crate) fn load_panel_art(&mut self) -> Task<Message> {
         if !self.panel_open {
@@ -421,9 +448,17 @@ impl App {
                         self.log_buffer.has_text(),
                         Message::CopyLog,
                         Message::LogFollow,
-                    )
+                    ),
+                    text(if self.log_install {
+                        "Install log"
+                    } else {
+                        "Game output"
+                    })
+                    .size(14)
+                    .color(palette.muted)
                 ]
-                .spacing(8),
+                .spacing(8)
+                .align_y(Center),
             );
             inner = inner.push(logview::editor(
                 self.log_buffer.view(),
@@ -447,7 +482,7 @@ impl App {
         if !self.log_view {
             inner = inner.push(actions);
             let mut extra = row![].spacing(8);
-            if card.state != State::Inactive {
+            if self.log_source(card).is_some() {
                 extra = extra.push(button("Log").on_press(Message::OpenLog).padding([6, 12]));
             }
             extra = extra.push(
@@ -597,6 +632,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use wineo_core::operation::Operation;
+    use wineo_core::winetricks::Step;
 
     fn card(state: State) -> Card {
         Card {
@@ -672,6 +708,26 @@ mod tests {
             Some("Installing corefonts...".into())
         );
         assert_eq!(event_status(&LaunchEvent::NoWaylandSession), None);
+    }
+
+    fn progress(verb: &str, position: usize, total: usize) -> LaunchEvent {
+        LaunchEvent::Winetricks(WinetricksEvent::Progress(Step {
+            verb: verb.into(),
+            position,
+            total,
+        }))
+    }
+
+    #[test]
+    fn install_progress_names_the_verb_and_count() {
+        assert_eq!(
+            event_status(&progress("gdiplus", 2, 3)),
+            Some("Installing gdiplus (2 of 3)...".into())
+        );
+        assert_eq!(
+            event_status(&progress("corefonts", 1, 1)),
+            Some("Installing corefonts...".into())
+        );
     }
 
     #[test]

@@ -69,6 +69,8 @@ pub(crate) struct App {
     pub(crate) log_buffer: LogBuffer,
     log_token: Option<Token>,
     log_generation: u64,
+    /// True while the log view shows install.log rather than output.log.
+    pub(crate) log_install: bool,
     pub(crate) spinner_angle: f32,
     spinner_start: Instant,
     settings: Option<settings::Page>,
@@ -95,6 +97,10 @@ pub(crate) struct Operation {
     token: Option<Token>,
     cancelled: bool,
     status: String,
+    /// Canceled once the winetricks install phase is over. Only a start has one.
+    install_done: Option<Token>,
+    /// True while winetricks is installing, which is when install.log can be read.
+    installing: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +116,7 @@ pub(crate) enum Message {
     CancelStart,
     LaunchProgress(String, String),
     LaunchNote(String, String),
+    InstallPhase(String, bool),
     StartFinished(String, Result<wineo_core::launch::StartOutcome, PanelError>),
     StopFinished(String, Result<Vec<String>, PanelError>),
     OpenLog,
@@ -185,6 +192,7 @@ impl App {
             log_buffer: LogBuffer::default(),
             log_token: None,
             log_generation: 0,
+            log_install: false,
             spinner_angle: 0.0,
             spinner_start: Instant::now(),
             settings: None,
@@ -353,6 +361,15 @@ impl App {
                     && !operation.cancelled
                 {
                     operation.status = status;
+                }
+                Task::none()
+            }
+            Message::InstallPhase(name, installing) => {
+                if let Some(operation) = &mut self.operation
+                    && operation.name == name
+                    && operation.kind == OperationKind::Start
+                {
+                    operation.installing = installing;
                 }
                 Task::none()
             }
@@ -1281,6 +1298,8 @@ mod tests {
             token: Some(token.clone()),
             cancelled: false,
             status: "Starting...".into(),
+            install_done: None,
+            installing: false,
         });
         let _ = app.update(Message::CancelStart);
         assert!(token.is_canceled());
@@ -1288,6 +1307,102 @@ mod tests {
         assert!(app.operation.as_ref().unwrap().cancelled);
         let _ = app.update(Message::CancelStart);
         assert!(token.is_forced());
+    }
+
+    fn installing_start(name: &str, installing: bool) -> Operation {
+        Operation {
+            name: name.into(),
+            kind: OperationKind::Start,
+            token: Some(Token::new()),
+            cancelled: false,
+            status: "Installing...".into(),
+            install_done: Some(Token::new()),
+            installing,
+        }
+    }
+
+    fn selected_app(state: State) -> App {
+        let mut app = app();
+        app.cards = vec![card("game", state, 0)];
+        app.selected = Some("game".into());
+        app.panel_open = true;
+        app
+    }
+
+    #[test]
+    fn install_phase_message_follows_the_start_operation() {
+        let mut app = selected_app(State::Inactive);
+        app.operation = Some(installing_start("game", false));
+        let _ = app.update(Message::InstallPhase("other".into(), true));
+        assert!(!app.operation.as_ref().unwrap().installing);
+        let _ = app.update(Message::InstallPhase("game".into(), true));
+        assert!(app.operation.as_ref().unwrap().installing);
+        let _ = app.update(Message::InstallPhase("game".into(), false));
+        assert!(!app.operation.as_ref().unwrap().installing);
+    }
+
+    #[test]
+    fn log_is_offered_for_an_inactive_card_only_while_installing() {
+        let mut app = selected_app(State::Inactive);
+        assert!(app.log_source(&app.cards[0]).is_none());
+        app.operation = Some(installing_start("game", false));
+        assert!(app.log_source(&app.cards[0]).is_none());
+        app.operation = Some(installing_start("game", true));
+        assert!(matches!(
+            app.log_source(&app.cards[0]),
+            Some(worker::LogSource::Install(_))
+        ));
+        app.operation = Some(installing_start("other", true));
+        assert!(app.log_source(&app.cards[0]).is_none());
+    }
+
+    #[test]
+    fn open_log_picks_the_file_for_the_phase() {
+        let mut app = selected_app(State::Inactive);
+        let _ = app.open_log();
+        assert!(!app.log_view);
+
+        app.operation = Some(installing_start("game", true));
+        let _ = app.open_log();
+        assert!(app.log_view);
+        assert!(app.log_install);
+
+        // Once the game runs, the same button shows its output.
+        app.close_log();
+        app.operation = None;
+        app.cards = vec![card("game", State::Running, 0)];
+        let _ = app.open_log();
+        assert!(app.log_view);
+        assert!(!app.log_install);
+    }
+
+    #[test]
+    fn switching_logs_drops_chunks_from_the_old_one() {
+        let mut app = selected_app(State::Inactive);
+        app.operation = Some(installing_start("game", true));
+        let _ = app.open_log();
+        let install = app.log_generation;
+        let _ = app.update(Message::LogChunk(install, "install line\n".into()));
+
+        app.operation = None;
+        app.cards = vec![card("game", State::Running, 0)];
+        let _ = app.open_log();
+        assert_ne!(app.log_generation, install);
+        let _ = app.update(Message::LogChunk(install, "late install line\n".into()));
+        let _ = app.update(Message::LogChunk(app.log_generation, "game line\n".into()));
+        assert_eq!(app.log_buffer.display(), "game line\n");
+    }
+
+    #[test]
+    fn finishing_the_install_keeps_the_open_install_log() {
+        let mut app = selected_app(State::Inactive);
+        app.operation = Some(installing_start("game", true));
+        let _ = app.open_log();
+        let generation = app.log_generation;
+        let _ = app.update(Message::InstallPhase("game".into(), false));
+        let _ = app.update(Message::LogFinished(generation, Ok(())));
+        assert!(app.log_view);
+        assert!(app.log_install);
     }
 
     #[test]

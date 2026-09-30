@@ -10,11 +10,28 @@ use wineo_core::launch::{self, Overrides};
 use wineo_core::log::{Log, Tail};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::{RunMode, Runtime, State};
+use wineo_core::winetricks::WinetricksEvent;
 
 use crate::Message;
 use crate::panel::{PanelError, event_status};
 
-pub(crate) fn start(paths: Paths, name: String, target: String, token: Token) -> Task<Message> {
+/// Which of an environment's logs the panel follows.
+#[derive(Debug, Clone)]
+pub(crate) enum LogSource {
+    /// The running game's output.log.
+    Output,
+    /// install.log while winetricks installs. The token is canceled once the
+    /// install phase is over, which is when the tail stops following.
+    Install(Token),
+}
+
+pub(crate) fn start(
+    paths: Paths,
+    name: String,
+    target: String,
+    token: Token,
+    install_done: Token,
+) -> Task<Message> {
     let (sender, receiver) = unbounded();
     let progress_name = name.clone();
     let finish_name = name.clone();
@@ -26,7 +43,7 @@ pub(crate) fn start(paths: Paths, name: String, target: String, token: Token) ->
                 if let Some(parent) = log.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                launch::start(
+                let result = launch::start(
                     &paths,
                     &name,
                     Overrides {
@@ -49,8 +66,29 @@ pub(crate) fn start(paths: Paths, name: String, target: String, token: Token) ->
                                 "No Wayland session is available".to_owned(),
                             ));
                         }
+                        // LogStarted comes after install.log was emptied, so
+                        // the panel never tails a previous run's text.
+                        match &event {
+                            launch::LaunchEvent::Winetricks(WinetricksEvent::LogStarted) => {
+                                let _ = sender.unbounded_send(Message::InstallPhase(
+                                    progress_name.clone(),
+                                    true,
+                                ));
+                            }
+                            launch::LaunchEvent::Winetricks(WinetricksEvent::Done(_)) => {
+                                install_done.cancel();
+                                let _ = sender.unbounded_send(Message::InstallPhase(
+                                    progress_name.clone(),
+                                    false,
+                                ));
+                            }
+                            _ => {}
+                        }
                     },
-                )
+                );
+                // An error before Done still ends the install phase.
+                install_done.cancel();
+                result
             })
             .await
             .map_err(anyhow::Error::from)
@@ -94,18 +132,36 @@ impl Write for ChannelWriter {
     }
 }
 
-pub(crate) fn log(paths: Paths, name: String, generation: u64, token: Token) -> Task<Message> {
+pub(crate) fn log(
+    paths: Paths,
+    name: String,
+    generation: u64,
+    token: Token,
+    source: LogSource,
+) -> Task<Message> {
     let (sender, receiver) = unbounded();
     let work = Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
                 let runtime = Runtime::new(&paths, &name);
-                let path = runtime.log_path();
+                let path = match &source {
+                    LogSource::Output => runtime.log_path(),
+                    LogSource::Install(_) => runtime.install_log_path(),
+                };
                 let file = File::open(&path)
                     .with_context(|| format!("failed to open {}", path.display()))?;
-                let mut tail = Tail::new(file, Some(Log::new(path.clone())));
+                // Only output.log is capped and cleared by a supervisor, so
+                // only it has a reset counter to honor.
+                let session = matches!(source, LogSource::Output).then(|| Log::new(path.clone()));
+                let mut tail = Tail::new(file, session);
                 tail.seek_to_last_lines(2000)?;
                 let mut writer = ChannelWriter(sender, generation);
+                if let LogSource::Install(done) = &source {
+                    if tail.stream(&mut writer)? && !done.is_canceled() {
+                        tail.follow_until(&mut writer, &token, |_| Ok(done.is_canceled()))?;
+                    }
+                    return Ok(());
+                }
                 let attached = runtime.status().is_ok_and(|status| {
                     status.state == State::Running
                         && status.run.is_some_and(|run| run.mode == RunMode::Attached)
