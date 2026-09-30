@@ -136,7 +136,11 @@ impl Report {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Draft {
-    name: String,
+    /// The free-text game title. The environment name derives from it.
+    title: String,
+    /// The user's own environment name. None follows the title, and clearing
+    /// the text resumes following it.
+    environment: Option<String>,
     kind: Kind,
     source: Source,
     path: String,
@@ -150,7 +154,8 @@ struct Draft {
 impl Default for Draft {
     fn default() -> Self {
         Self {
-            name: String::new(),
+            title: String::new(),
+            environment: None,
             kind: Kind::Windows,
             source: Source::Empty,
             path: String::new(),
@@ -163,6 +168,26 @@ impl Default for Draft {
     }
 }
 
+impl Draft {
+    fn derived_environment(&self) -> String {
+        name::from_title(&self.title)
+    }
+
+    /// The name used for the environment, its files, and its config.
+    fn environment_name(&self) -> String {
+        match self.environment.as_deref().map(str::trim) {
+            Some(name) if !name.is_empty() => name.to_owned(),
+            _ => self.derived_environment(),
+        }
+    }
+
+    /// What the desktop entry is called, when the title says anything.
+    fn target_title(&self) -> Option<String> {
+        let title = self.title.trim();
+        (!title.is_empty()).then(|| title.to_owned())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
     Back,
@@ -172,6 +197,8 @@ pub(crate) enum Event {
     Kind(Kind),
     Source(String),
     Name(String),
+    EditEnvironment,
+    EnvironmentName(String),
     Path(String),
     Prefix(String),
     Runner(String),
@@ -220,6 +247,7 @@ pub(crate) struct Page {
     options: Option<Options>,
     template_preview: Option<Template>,
     additional_wine_options: bool,
+    editing_environment: bool,
     review: Option<Review>,
     report: Option<Report>,
     error: Option<String>,
@@ -246,6 +274,7 @@ impl Page {
             options: None,
             template_preview: None,
             additional_wine_options: false,
+            editing_environment: false,
             review: None,
             report: None,
             error: None,
@@ -373,11 +402,17 @@ impl Page {
     }
 
     fn validate(&self) -> Result<(), String> {
-        let name = self.draft.name.trim();
-        if let Some(problem) = name::problem(name) {
+        let name = self.draft.environment_name();
+        if name.is_empty() {
+            return Err("Name needs letters or digits.".to_owned());
+        }
+        if let Some(problem) = name::problem(&name) {
             return Err(problem);
         }
-        if self.paths.environment_config(name).exists() {
+        if name.len() > name::TITLE_MAX {
+            return Err("Name is too long.".to_owned());
+        }
+        if self.paths.environment_config(&name).exists() {
             return Err(format!(
                 "An environment named {name} already exists. Open its Settings from the library."
             ));
@@ -555,7 +590,7 @@ impl Page {
     }
 
     fn leave(&mut self, settings: bool) {
-        let name = self.draft.name.clone();
+        let name = self.draft.environment_name();
         let registered = self.report.as_ref().is_some_and(|report| report.registered);
         let launch = self.launch
             && self
@@ -579,7 +614,8 @@ impl Page {
             return Task::none();
         }
         let paths = self.paths.clone();
-        let name = self.draft.name.clone();
+        let name = self.draft.environment_name();
+        let title = self.draft.target_title();
         let desktop = self.target_desktop;
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
@@ -604,14 +640,7 @@ impl Page {
                     }
                     let mut batch = Batch::new(environment.config.targets);
                     batch
-                        .add(
-                            &name,
-                            Spec {
-                                exe,
-                                desktop,
-                                ..Spec::default()
-                            },
-                        )
+                        .add(&name, target_spec(exe, title, desktop))
                         .map_err(|e| e.to_string())?;
                     batch.set_default(Some(&name));
                     match targets::write(&paths, &name, &batch).map_err(|e| e.to_string())? {
@@ -653,10 +682,10 @@ impl Page {
         match event {
             Event::Back => return self.back(),
             Event::OpenExisting if self.stage == Stage::Details => {
-                let name = self.draft.name.trim();
-                if self.paths.environment_config(name).exists() {
+                let name = self.draft.environment_name();
+                if self.paths.environment_config(&name).exists() {
                     self.action = Some(Action::Settings {
-                        name: name.to_owned(),
+                        name,
                         launch: false,
                     });
                 }
@@ -682,9 +711,16 @@ impl Page {
                 self.edited();
             }
             Event::Name(value) if self.stage == Stage::Details => {
-                self.draft.name = value;
+                self.draft.title = value;
                 self.edited();
-                return self.art.set_title(&self.draft.name).map(Event::Art);
+                return self.art.set_title(&self.draft.title).map(Event::Art);
+            }
+            Event::EditEnvironment if self.stage == Stage::Details => {
+                self.editing_environment = true;
+            }
+            Event::EnvironmentName(value) if self.stage == Stage::Details => {
+                self.draft.environment = Some(value);
+                self.edited();
             }
             Event::Path(value) if self.stage == Stage::Details => {
                 self.picker_sequence = self.picker_sequence.wrapping_add(1);
@@ -789,7 +825,7 @@ impl Page {
                         self.stage = Stage::Review;
                         return self
                             .art
-                            .configure(self.paths.clone(), self.draft.name.clone())
+                            .configure(self.paths.clone(), self.draft.title.clone())
                             .map(Event::Art);
                     }
                     Err(error) => self.error = Some(error),
@@ -909,7 +945,7 @@ impl Page {
                 self.generation = self.generation.wrapping_add(1);
                 let generation = self.generation;
                 let paths = self.paths.clone();
-                let name = self.draft.name.clone();
+                let name = self.draft.environment_name();
                 self.stage = Stage::Working;
                 self.status = "Cleaning up installer...".to_owned();
                 return Task::perform(
@@ -975,7 +1011,7 @@ impl Page {
                 self.generation = self.generation.wrapping_add(1);
                 let generation = self.generation;
                 let paths = self.paths.clone();
-                let name = self.draft.name.clone();
+                let name = self.draft.environment_name();
                 let art = self.art.clone();
                 self.stage = Stage::Working;
                 self.status = "Applying artwork...".to_owned();
@@ -1022,31 +1058,68 @@ impl Page {
         palette: Palette,
     ) -> Element<'a, Event> {
         let mut form = column![].spacing(10).width(Fill);
+        let environment = self.draft.environment_name();
+        let mut name_field = column![
+            text("Name"),
+            text_input("Game name", &self.draft.title).on_input(Event::Name)
+        ]
+        .spacing(4)
+        .width(Fill);
+        let mut derived = row![
+            text(format!(
+                "Environment: {}",
+                if environment.is_empty() {
+                    "(none yet)"
+                } else {
+                    &environment
+                }
+            ))
+            .size(12)
+            .color(palette.muted)
+        ]
+        .spacing(8);
+        if !self.editing_environment {
+            derived = derived.push(
+                button(text("Edit").size(12))
+                    .padding(0)
+                    .on_press(Event::EditEnvironment)
+                    .style(move |_, status| button::Style {
+                        text_color: if matches!(status, button::Status::Hovered) {
+                            palette.foreground
+                        } else {
+                            palette.primary
+                        },
+                        ..button::Style::default()
+                    }),
+            );
+        }
+        name_field = name_field.push(derived);
+        if self.editing_environment {
+            name_field = name_field.push(text("Environment name")).push(
+                text_input(
+                    "Environment name",
+                    self.draft
+                        .environment
+                        .as_deref()
+                        .unwrap_or(&self.draft.derived_environment()),
+                )
+                .on_input(Event::EnvironmentName),
+            );
+        }
         form = form.push(
-            row![
-                column![
-                    text("Name"),
-                    text_input("Game name", &self.draft.name).on_input(Event::Name)
-                ]
-                .spacing(4)
-                .width(Fill),
-            ]
-            .push(icon)
-            .push(
-                column![
-                    text("Type"),
-                    pick_list(Kind::ALL, Some(self.draft.kind), Event::Kind)
-                ]
-                .spacing(4)
-                .width(180),
-            )
-            .spacing(12),
+            row![name_field]
+                .push(icon)
+                .push(
+                    column![
+                        text("Type"),
+                        pick_list(Kind::ALL, Some(self.draft.kind), Event::Kind)
+                    ]
+                    .spacing(4)
+                    .width(180),
+                )
+                .spacing(12),
         );
-        if self
-            .paths
-            .environment_config(self.draft.name.trim())
-            .exists()
-        {
+        if !environment.is_empty() && self.paths.environment_config(&environment).exists() {
             form = form
                 .push(button("Open existing environment settings").on_press(Event::OpenExisting));
         }
@@ -1180,7 +1253,7 @@ impl Page {
                     options_body = options_body.push(
                         text(format!(
                             "Default: {}",
-                            options.prefix_root.join(self.draft.name.trim()).display()
+                            options.prefix_root.join(&environment).display()
                         ))
                         .size(12)
                         .color(palette.muted),
@@ -1250,7 +1323,13 @@ impl Page {
             }
             Stage::Review => {
                 if let Some(review) = &self.review {
-                    body = body.push(text(format!("Name: {}", self.draft.name)));
+                    if let Some(title) = self.draft.target_title() {
+                        body = body.push(text(format!("Name: {title}")));
+                    }
+                    body = body.push(text(format!(
+                        "Environment: {}",
+                        self.draft.environment_name()
+                    )));
                     body = body.push(text(format!("Type: {}", self.draft.kind)));
                     body = body.push(text(format!("Starting point: {}", self.draft.source)));
                     if !self.draft.path.is_empty() {
@@ -1373,7 +1452,12 @@ impl Page {
             Stage::Finished => {
                 if let Some(report) = &self.report {
                     if report.registered {
-                        body = body.push(text(format!("{} is in your library.", self.draft.name)));
+                        body = body.push(text(format!(
+                            "{} is in your library.",
+                            self.draft
+                                .target_title()
+                                .unwrap_or_else(|| self.draft.environment_name())
+                        )));
                     } else {
                         body = body.push(
                             text("Creation did not register an environment.").color(palette.danger),
@@ -1514,7 +1598,8 @@ fn template_effects(template: &Template, draft: &Draft) -> Vec<String> {
 
 fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
     let global = GlobalConfig::load(paths).map_err(|error| error.to_string())?;
-    let name = draft.name.trim();
+    let name = draft.environment_name();
+    let name = name.as_str();
     if paths.environment_config(name).exists() {
         return Err(format!(
             "An environment named {name} already exists. Open its Settings from the library."
@@ -1680,6 +1765,35 @@ fn component_provider(component: &str) -> Result<Provider, String> {
     }
 }
 
+fn create_request(draft: &Draft, review: Review, runner: Runner) -> CreateRequest {
+    CreateRequest {
+        name: draft.environment_name(),
+        dir: review
+            .prefix
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
+        resolved_runner: Some(runner),
+        arch: Some(review.arch),
+        template: review.template,
+        exe: (draft.source == Source::Executable).then(|| draft.path.clone()),
+        target_name: draft.target_title(),
+        desktop: draft.desktop,
+        expected_adopted: Some(review.adopted),
+        ..CreateRequest::default()
+    }
+}
+
+/// The picked installer program is the environment's only target, so it takes
+/// the game title for its desktop entry.
+fn target_spec(exe: String, title: Option<String>, desktop: bool) -> Spec {
+    Spec {
+        exe,
+        name: title,
+        desktop,
+        ..Spec::default()
+    }
+}
+
 fn perform(
     paths: &Paths,
     draft: Draft,
@@ -1690,7 +1804,8 @@ fn perform(
     mut log_output: impl FnMut(String),
 ) -> Report {
     let mut report = Report::new();
-    let name = draft.name.trim();
+    let name = draft.environment_name();
+    let name = name.as_str();
     if draft.kind == Kind::Native {
         let global = match GlobalConfig::load(paths) {
             Ok(global) => global,
@@ -1700,7 +1815,14 @@ fn perform(
             }
         };
         let exe = (draft.source == Source::Executable).then_some(draft.path.as_str());
-        match Environment::create_native(paths, &global, name, exe, draft.desktop) {
+        match Environment::create_native_titled(
+            paths,
+            &global,
+            name,
+            exe,
+            draft.target_title().as_deref(),
+            draft.desktop,
+        ) {
             Ok(environment) => {
                 report.registered = true;
                 report.playable = exe.is_some();
@@ -1714,24 +1836,11 @@ fn perform(
         }
         return report;
     }
-    let Some(runner) = review.runner else {
+    let Some(runner) = review.runner.clone() else {
         report.notes.push("Missing resolved runner".to_owned());
         return report;
     };
-    let request = CreateRequest {
-        name: name.to_owned(),
-        dir: review
-            .prefix
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned()),
-        resolved_runner: Some(runner.clone()),
-        arch: Some(review.arch),
-        template: review.template,
-        exe: (draft.source == Source::Executable).then(|| draft.path.clone()),
-        desktop: draft.desktop,
-        expected_adopted: Some(review.adopted),
-        ..CreateRequest::default()
-    };
+    let request = create_request(&draft, review, runner.clone());
     let created = match create::run(paths, request, &token, |event| match event {
         CreateEvent::BuildingPrefix { dir, .. } => {
             progress(format!("Building prefix in {}", dir.display()))
@@ -1909,7 +2018,7 @@ mod tests {
     #[test]
     fn back_from_review_preserves_details() {
         let mut page = page();
-        page.draft.name = "test-game".to_owned();
+        page.draft.title = "test-game".to_owned();
         page.draft.path = "/games/test.exe".to_owned();
         page.stage = Stage::Review;
         let _ = page.back();
@@ -1923,11 +2032,146 @@ mod tests {
         let _ = page.back();
         assert!(matches!(page.take_action(), Some(Action::Choose)));
 
-        page.draft.name = "draft".to_owned();
+        page.draft.title = "draft".to_owned();
         let _ = page.back();
         assert!(page.leave_prompt);
         let _ = page.update(Event::Discard);
         assert!(matches!(page.take_action(), Some(Action::Choose)));
+    }
+
+    #[test]
+    fn typing_a_title_derives_the_environment_name_and_seeds_art_search() {
+        let mut page = page();
+        let _ = page.update(Event::Name("The Sims 4".to_owned()));
+        assert_eq!(page.draft.environment_name(), "the-sims-4");
+        assert_eq!(page.art.search_text(), "The Sims 4");
+        assert!(page.draft != Draft::default(), "a title counts as an edit");
+    }
+
+    #[test]
+    fn edited_environment_name_stops_following_the_title_until_cleared() {
+        let mut page = page();
+        let _ = page.update(Event::Name("The Sims 4".to_owned()));
+        let _ = page.update(Event::EditEnvironment);
+        let _ = page.update(Event::EnvironmentName("sims".to_owned()));
+        let _ = page.update(Event::Name("The Sims 5".to_owned()));
+        assert_eq!(page.draft.environment_name(), "sims");
+
+        let _ = page.update(Event::EnvironmentName(String::new()));
+        assert_eq!(page.draft.environment_name(), "the-sims-5");
+        let _ = page.update(Event::Name("Hades".to_owned()));
+        assert_eq!(page.draft.environment_name(), "hades");
+
+        let _ = page.update(Event::EnvironmentName("bad name".to_owned()));
+        assert_eq!(page.validate().unwrap_err(), "spaces not allowed");
+    }
+
+    #[test]
+    fn a_long_override_is_refused_but_a_long_title_is_cut() {
+        let mut page = page();
+        let _ = page.update(Event::Name("word ".repeat(100)));
+        assert!(page.draft.environment_name().len() <= name::TITLE_MAX);
+        assert!(page.validate().is_ok());
+
+        let _ = page.update(Event::EnvironmentName("a".repeat(name::TITLE_MAX + 1)));
+        assert_eq!(page.validate().unwrap_err(), "Name is too long.");
+        let _ = page.update(Event::EnvironmentName("a".repeat(name::TITLE_MAX)));
+        assert!(page.validate().is_ok());
+    }
+
+    #[test]
+    fn a_title_without_letters_or_digits_needs_an_override() {
+        let mut page = page();
+        let _ = page.update(Event::Name("\u{30cf}\u{30fc}\u{30c7}\u{30b9}".to_owned()));
+        assert_eq!(
+            page.validate().unwrap_err(),
+            "Name needs letters or digits."
+        );
+        let _ = page.update(Event::EnvironmentName("hades".to_owned()));
+        assert!(page.validate().is_ok());
+    }
+
+    #[test]
+    fn executable_creation_uses_the_slug_for_the_environment_and_the_title_for_the_target() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        fake_runner(&paths);
+        let exe = root.path().join("game.exe");
+        fs::write(&exe, "").unwrap();
+        let draft = Draft {
+            title: "The Sims 4".to_owned(),
+            source: Source::Executable,
+            path: exe.display().to_string(),
+            runner: "fake".to_owned(),
+            ..Draft::default()
+        };
+        let review = prepare(&paths, &draft).unwrap();
+        let runner = review.runner.clone().unwrap();
+        let request = create_request(&draft, review.clone(), runner);
+        assert_eq!(request.name, "the-sims-4");
+        assert_eq!(request.target_name.as_deref(), Some("The Sims 4"));
+
+        let report = perform(
+            &paths,
+            draft,
+            review,
+            artwork::Draft::new(),
+            Token::new(),
+            |_| {},
+            |_| {},
+        );
+        assert!(report.registered, "{:?}", report.notes);
+        let environment = Environment::load(&paths, "the-sims-4").unwrap();
+        assert_eq!(
+            environment.config.targets["the-sims-4"].name.as_deref(),
+            Some("The Sims 4")
+        );
+    }
+
+    #[test]
+    fn native_executable_titles_its_target() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        let exe = root.path().join("game.sh");
+        fs::write(&exe, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        let draft = Draft {
+            title: "Half-Life 2".to_owned(),
+            kind: Kind::Native,
+            source: Source::Executable,
+            path: exe.display().to_string(),
+            ..Draft::default()
+        };
+        let review = prepare(&paths, &draft).unwrap();
+        let report = perform(
+            &paths,
+            draft,
+            review,
+            artwork::Draft::new(),
+            Token::new(),
+            |_| {},
+            |_| {},
+        );
+        assert!(report.registered, "{:?}", report.notes);
+        let environment = Environment::load(&paths, "half-life-2").unwrap();
+        assert_eq!(
+            environment.config.targets["half-life-2"].name.as_deref(),
+            Some("Half-Life 2")
+        );
+    }
+
+    #[test]
+    fn picked_installer_program_takes_the_title() {
+        let spec = target_spec(
+            "C:\\Game\\game.exe".to_owned(),
+            Some("Hades".to_owned()),
+            true,
+        );
+        assert_eq!(spec.name.as_deref(), Some("Hades"));
+        assert!(spec.desktop);
+        assert_eq!(target_spec(String::new(), None, false).name, None);
     }
 
     #[test]
@@ -1953,7 +2197,7 @@ mod tests {
     #[test]
     fn finished_launch_needs_opt_in_and_playable_target() {
         let mut page = page();
-        page.draft.name = "test-game".to_owned();
+        page.draft.title = "test-game".to_owned();
         page.report = Some(Report {
             registered: true,
             playable: true,
@@ -1998,7 +2242,7 @@ mod tests {
         let installer = root.path().join("setup.msi");
         fs::write(&installer, "fixture").unwrap();
         let draft = Draft {
-            name: "installed-game".to_owned(),
+            title: "installed-game".to_owned(),
             source: Source::Installer,
             path: installer.display().to_string(),
             runner: "fake".to_owned(),
@@ -2033,7 +2277,7 @@ mod tests {
             Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
         fake_runner(&paths);
         let draft = Draft {
-            name: "canceled-game".to_owned(),
+            title: "canceled-game".to_owned(),
             runner: "fake".to_owned(),
             ..Draft::default()
         };

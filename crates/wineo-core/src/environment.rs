@@ -207,6 +207,19 @@ impl Environment {
         exe: Option<&str>,
         desktop: bool,
     ) -> Result<Self> {
+        Self::create_native_titled(paths, global, name, exe, None, desktop)
+    }
+
+    /// Like `create_native`, with `title` naming the default target's desktop
+    /// entry instead of the environment.
+    pub fn create_native_titled(
+        paths: &Paths,
+        global: &GlobalConfig,
+        name: &str,
+        exe: Option<&str>,
+        title: Option<&str>,
+        desktop: bool,
+    ) -> Result<Self> {
         check_name(name)?;
         let path = paths.environment_config(name);
         if path.exists() {
@@ -219,6 +232,9 @@ impl Environment {
             let mut table = toml_edit::Table::new();
             table["exe"] = value(paths.store_value(exe)?);
             table["default"] = value(true);
+            if let Some(title) = title {
+                table["name"] = value(title);
+            }
             if desktop {
                 table["desktop"] = value(true);
             }

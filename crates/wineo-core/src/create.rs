@@ -30,6 +30,9 @@ pub struct CreateRequest {
     pub template: Option<Template>,
     pub template_name: Option<String>,
     pub exe: Option<String>,
+    /// What the default target's desktop entry is called. None uses the
+    /// environment name.
+    pub target_name: Option<String>,
     pub desktop: bool,
     /// Refuse a changed create/adopt decision after a caller's review.
     pub expected_adopted: Option<bool>,
@@ -169,7 +172,15 @@ pub fn run(
     )?;
     events(CreateEvent::Saved);
     let target = match request.exe {
-        Some(exe) if add_default_target(paths, &environment, &exe, request.desktop)? => {
+        Some(exe)
+            if add_default_target(
+                paths,
+                &environment,
+                &exe,
+                request.target_name,
+                request.desktop,
+            )? =>
+        {
             TargetOutcome::Added
         }
         Some(_) => TargetOutcome::ExeNotFound,
@@ -228,6 +239,7 @@ fn add_default_target(
     paths: &Paths,
     environment: &Environment,
     exe: &str,
+    name: Option<String>,
     desktop: bool,
 ) -> anyhow::Result<bool> {
     let prefix = environment.prefix(paths)?;
@@ -241,7 +253,7 @@ fn add_default_target(
             exe: exe.to_owned(),
             args: Vec::new(),
             cwd: None,
-            name: None,
+            name,
             desktop,
         },
     )?;
@@ -362,6 +374,24 @@ mod tests {
                 .acquire(Operation::Create, "game", &[])
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn target_name_titles_the_default_target() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        fake_runner(&paths, "fake");
+        let exe = root.path().join("game.exe");
+        fs::write(&exe, "").unwrap();
+        let mut request = request("the-sims-4");
+        request.exe = Some(exe.display().to_string());
+        request.target_name = Some("The Sims 4".to_owned());
+        let created = run(&paths, request, &Token::new(), |event| {
+            build_registry(event, &mut Vec::new())
+        })
+        .unwrap();
+        let target = &created.environment.config.targets["the-sims-4"];
+        assert_eq!(target.name.as_deref(), Some("The Sims 4"));
     }
 
     #[test]

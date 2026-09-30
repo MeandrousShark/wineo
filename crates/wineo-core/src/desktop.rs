@@ -356,7 +356,9 @@ fn read_entry(path: &Path) -> Option<Entry> {
     Some(Entry {
         environment: value(ENVIRONMENT_KEY)?,
         target: value(TARGET_KEY)?,
-        name: value("Name").unwrap_or_default(),
+        name: value("Name")
+            .map(|name| unescape(&name))
+            .unwrap_or_default(),
         path: path.to_owned(),
     })
 }
@@ -654,12 +656,41 @@ fn render(desired: &Desired) -> String {
 /// A desktop entry value is a single line, so anything that would break out of
 /// one goes. Names come from shortcuts, which can hold whatever an installer put there.
 fn clean(value: &str) -> String {
+    // The spec reads a backslash in a string value as an escape, so a literal
+    // one has to be doubled or `AC\DC` would come back as `AC` plus a stray
+    // escape.
     value
         .chars()
         .filter(|char| !char.is_control())
         .collect::<String>()
         .trim()
-        .to_owned()
+        .replace('\\', "\\\\")
+}
+
+/// Reverses the string escapes of the Desktop Entry spec, so a name reads back
+/// as the text it was written from.
+fn unescape(value: &str) -> String {
+    let mut out = String::new();
+    let mut chars = value.chars();
+    while let Some(char) = chars.next() {
+        if char != '\\' {
+            out.push(char);
+            continue;
+        }
+        match chars.next() {
+            Some('s') => out.push(' '),
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// What wine reports as the window class, which is the executable's file name.
@@ -1143,6 +1174,29 @@ mod tests {
                 .unwrap()
                 .contains("\nName=Hades II\n")
         );
+    }
+
+    #[test]
+    fn a_backslash_in_the_name_is_escaped_and_reads_back() {
+        let fixture = Fixture::new();
+        let environment = fixture.environment(
+            "\n[targets.hades]\nexe = 'C:\\Hades\\Hades.exe'\ndesktop = true\nname = 'AC\\DC'\n",
+        );
+        fixture.reconcile(&environment);
+        assert!(
+            fixture
+                .entry("hades")
+                .unwrap()
+                .contains("\nName=AC\\\\DC\n")
+        );
+        assert_eq!(list(&fixture.paths).unwrap()[0].name, "AC\\DC");
+        // The rendered text is what change detection compares, so it settles.
+        assert!(fixture.reconcile(&environment).is_empty());
+    }
+
+    #[test]
+    fn entry_escapes_read_back() {
+        assert_eq!(unescape("AC\\\\DC\\sx\\q\\"), "AC\\DC x\\q\\");
     }
 
     #[test]
