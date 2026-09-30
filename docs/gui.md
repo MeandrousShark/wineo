@@ -89,12 +89,15 @@ Unsupported games explain why they cannot be imported. Imports and clones do
 not launch automatically.
 
 New and import flows show clickable poster, icon, hero, and logo previews.
-Click a placeholder or preview to browse for a file; use **Clear selection**
-to remove it. File paths are an optional fallback. Manual files work
-without a SteamGridDB key or network access. Local files can be mixed with
-fetched art, and the local choice wins for that kind. Fetching uses the
-global **Art to fetch** switches. If artwork fails after registration, retry
-or skip it. General artwork, key, and download management remain CLI tasks;
+On a wide enough window, New environment places the artwork beside the form;
+narrower windows stack it below. Click a placeholder or preview to browse
+for a file; use **Remove** to drop it. File paths are an optional fallback.
+Manual files work without a SteamGridDB key or network access. Fetching uses
+the global **Art to fetch** switches: after you search and choose a match,
+each enabled kind downloads right away and appears in its tile, and creation
+stores those images without downloading them again. Local files can be mixed
+with fetched art, and the local choice wins for that kind. If artwork fails
+after registration, retry or skip it. General artwork, key, and download management remain CLI tasks;
 GUI managers are planned separately.
 
 Windows creation keeps runner, architecture, and prefix overrides under
