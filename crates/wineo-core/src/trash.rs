@@ -960,11 +960,18 @@ fn copy_verified(source: &Path, destination: &Path, expected: &str) -> Result<()
     Ok(())
 }
 
-#[cfg(test)]
+// Frontend tests need real interrupted operations without duplicating private markers.
+#[cfg(any(test, feature = "test-support"))]
 thread_local! { static TRASH_FAILPOINT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) }; }
 
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn set_trash_failpoint(at: Option<&'static str>) {
+    TRASH_FAILPOINT.with(|point| point.set(at));
+}
+
 fn failpoint(_at: &str) -> Result<()> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     TRASH_FAILPOINT.with(|point| {
         if point.get() == Some(_at) {
             point.set(None);
@@ -2530,7 +2537,7 @@ mod tests {
         ] {
             let f = Fixture::new();
             f.config("game", "kind = 'native'\n");
-            TRASH_FAILPOINT.with(|slot| slot.set(Some(point)));
+            set_trash_failpoint(Some(point));
             assert!(
                 remove(&f.paths, "game", false)
                     .unwrap_err()
@@ -2600,7 +2607,7 @@ mod tests {
             fs::write(&source, raw).unwrap();
             if point.starts_with("return.") {
                 let entry = remove(&paths, "game", false).unwrap();
-                TRASH_FAILPOINT.with(|slot| slot.set(Some(point)));
+                set_trash_failpoint(Some(point));
                 assert!(
                     restore(&paths, &entry.id)
                         .unwrap_err()
@@ -2612,7 +2619,7 @@ mod tests {
                 recover(&paths, &entry.id).unwrap();
                 assert!(list(&paths).unwrap().is_empty(), "{point}");
             } else {
-                TRASH_FAILPOINT.with(|slot| slot.set(Some(point)));
+                set_trash_failpoint(Some(point));
                 assert!(
                     remove(&paths, "game", false)
                         .unwrap_err()
