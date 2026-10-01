@@ -534,6 +534,9 @@ impl Page {
             _ => false,
         }
     }
+    pub(crate) fn navigation_blocked(&self) -> bool {
+        self.leave_prompt || self.menu_open || self.locked()
+    }
     pub(crate) fn changes(&self) -> usize {
         match &self.view {
             View::Form(editor) => editor.form.changes(),
@@ -1577,6 +1580,7 @@ impl App {
         let Some(name) = self.selected.clone() else {
             return Task::none();
         };
+        self.section = crate::sidebar::Section::Library;
         self.settings_generation = self.settings_generation.wrapping_add(1);
         let mut page = Page::new(name, self.settings_generation);
         let task = page.reload(&self.paths, Mode::Replace);
@@ -1584,6 +1588,7 @@ impl App {
         task
     }
     pub(crate) fn open_global_settings(&mut self) -> Task<Message> {
+        self.section = crate::sidebar::Section::Library;
         self.settings_generation = self.settings_generation.wrapping_add(1);
         let mut page = Page::new_global(self.settings_generation);
         let task = page.reload(&self.paths, Mode::Replace);
@@ -1597,6 +1602,11 @@ impl App {
         let step = page.update(&self.paths, event);
         if step.close {
             self.settings = None;
+            if let Some(section) = self.pending_section.take() {
+                return Task::batch([step.task, self.switch_section(section)]);
+            }
+        } else if !page.leave_prompt {
+            self.pending_section = None;
         }
         step.task
     }
@@ -3113,6 +3123,131 @@ mod tests {
         let _ = app.update(Message::Settings(Event::Back));
         assert!(app.settings.is_none());
         assert_eq!(app.selected.as_deref(), Some("game"));
+    }
+
+    fn sidebar_app(paths: &Paths, global: bool) -> App {
+        if global {
+            let mut app = App::boot(paths.clone()).0;
+            app.settings = Some(global_page(paths));
+            app
+        } else {
+            open_app(paths)
+        }
+    }
+
+    fn sidebar_request(section: crate::sidebar::Section, keyboard: bool) -> Message {
+        if keyboard {
+            let digit = match section {
+                crate::sidebar::Section::Library => "1",
+                crate::sidebar::Section::Trash => "2",
+                crate::sidebar::Section::Checkup => "3",
+            };
+            Message::Key(
+                Key::Character(digit.into()),
+                Modifiers::CTRL,
+                iced::event::Status::Ignored,
+            )
+        } else {
+            Message::Section(section)
+        }
+    }
+
+    #[test]
+    fn sidebar_leaves_clean_settings_and_confirms_dirty_settings() {
+        use crate::sidebar::Section;
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        for global in [false, true] {
+            for keyboard in [false, true] {
+                for section in [Section::Library, Section::Trash, Section::Checkup] {
+                    let mut app = sidebar_app(&paths, global);
+                    let _ = app.update(sidebar_request(section, keyboard));
+                    assert!(app.settings.is_none());
+                    assert_eq!(app.section, section);
+
+                    let mut app = sidebar_app(&paths, global);
+                    let edit = if global {
+                        Event::GlobalSwitch(Switch::Gamemode, true)
+                    } else {
+                        Event::Switch(Switch::Wayland, true)
+                    };
+                    let _ = app.update(Message::Settings(edit));
+                    let _ = app.update(sidebar_request(section, keyboard));
+                    let page = app.settings.as_ref().unwrap();
+                    assert!(page.is_dirty() && page.leave_prompt);
+                    assert_eq!(app.section, Section::Library);
+                    assert_eq!(app.pending_section, Some(section));
+                    let _ = app.update(Message::Settings(Event::Discard));
+                    assert!(app.settings.is_none());
+                    assert_eq!(app.section, section);
+                    assert_eq!(app.pending_section, None);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sidebar_keys_respect_fields_and_the_unsaved_prompt() {
+        use crate::sidebar::Section;
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        for global in [false, true] {
+            let mut app = sidebar_app(&paths, global);
+            let edit = if global {
+                Event::GlobalSwitch(Switch::Gamemode, true)
+            } else {
+                Event::Switch(Switch::Wayland, true)
+            };
+            let _ = app.update(Message::Settings(edit));
+            for digit in ["1", "2", "3"] {
+                let _ = app.update(Message::Key(
+                    Key::Character(digit.into()),
+                    Modifiers::CTRL,
+                    iced::event::Status::Captured,
+                ));
+                assert!(!app.settings.as_ref().unwrap().leave_prompt);
+                assert_eq!(app.pending_section, None);
+            }
+            let _ = app.update(Message::Section(Section::Trash));
+            for section in [Section::Library, Section::Checkup] {
+                let _ = app.update(sidebar_request(section, true));
+                let _ = app.update(Message::Section(section));
+                let _ = app.update(Message::KeyWithFocus(
+                    Key::Character("3".into()),
+                    Modifiers::CTRL,
+                    iced::event::Status::Ignored,
+                    false,
+                ));
+                assert_eq!(app.section, Section::Library);
+                assert_eq!(app.pending_section, Some(Section::Trash));
+            }
+            let _ = app.update(Message::Settings(Event::KeepEditing));
+            assert!(app.settings.as_ref().unwrap().is_dirty());
+            assert!(!app.settings.as_ref().unwrap().leave_prompt);
+            assert_eq!(app.pending_section, None);
+            let _ = app.update(Message::Settings(Event::Back));
+            let _ = app.update(Message::Settings(Event::Discard));
+            assert_eq!(app.section, Section::Library);
+        }
+    }
+
+    #[test]
+    fn sidebar_cannot_leave_settings_during_a_save_or_open_menu() {
+        use crate::sidebar::Section;
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        for global in [false, true] {
+            let mut app = sidebar_app(&paths, global);
+            let _ = app.update(Message::Settings(Event::MenuOpened));
+            let _ = app.update(sidebar_request(Section::Trash, true));
+            assert!(app.settings.is_some());
+            let _ = app.update(Message::Settings(Event::MenuClosed));
+            app.settings.as_mut().unwrap().saving = true;
+            let _ = app.update(Message::Section(Section::Checkup));
+            assert!(app.settings.is_some());
+            assert_eq!(app.section, Section::Library);
+            assert_eq!(app.pending_section, None);
+        }
     }
 
     fn target(page: &mut Page, paths: &Paths, name: &str, edit: TargetEdit) {

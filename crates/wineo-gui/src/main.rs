@@ -8,6 +8,7 @@ mod logview;
 mod panel;
 mod picker;
 mod settings;
+mod sidebar;
 mod spinner;
 mod theme;
 mod wheel;
@@ -82,6 +83,10 @@ pub(crate) struct App {
     spinner_start: Instant,
     settings: Option<settings::Page>,
     settings_generation: u64,
+    section: sidebar::Section,
+    pending_section: Option<sidebar::Section>,
+    trash_badge: sidebar::TrashBadge,
+    trash_refreshing: bool,
     flow: Option<flow::Page>,
     flow_generation: u64,
     action_menu: Option<String>,
@@ -137,6 +142,8 @@ pub(crate) enum Message {
     Hover(Option<String>),
     Refresh,
     Loaded(Result<Vec<Card>, String>),
+    Section(sidebar::Section),
+    TrashBadgeLoaded(sidebar::TrashBadge),
     ArtLoaded(ArtKey, Result<image::Handle, String>),
     Scrolled(scrollable::Viewport),
     ScrollIdle,
@@ -189,7 +196,7 @@ impl App {
             error: None,
             refreshing: true,
             loaded: false,
-            viewport_width: 1200.0,
+            viewport_width: 1200.0 - sidebar::WIDTH,
             viewport_height: 750.0,
             scroll_offset: 0.0,
             row_pitch: CARD_ROW,
@@ -206,6 +213,10 @@ impl App {
             spinner_start: Instant::now(),
             settings: None,
             settings_generation: 0,
+            section: sidebar::Section::Library,
+            pending_section: None,
+            trash_badge: sidebar::TrashBadge::default(),
+            trash_refreshing: true,
             flow: None,
             flow_generation: 0,
             action_menu: None,
@@ -216,6 +227,7 @@ impl App {
             closing: false,
         };
         let load = Self::load(app.paths.clone());
+        let badge = Self::load_trash_badge(app.paths.clone());
         let cache = app.paths.art_cache_dir();
         let prune = Task::future(async move {
             let _ = tokio::task::spawn_blocking(move || artwork::prune(&cache)).await;
@@ -225,6 +237,7 @@ impl App {
             app,
             Task::batch([
                 load,
+                badge,
                 prune,
                 iced::system::theme().map(Message::ThemeChanged),
             ]),
@@ -482,7 +495,19 @@ impl App {
                     self.refreshing = true;
                     Self::load(self.paths.clone())
                 };
-                Task::batch([library, self.settings_tick()])
+                let badge = if self.trash_refreshing {
+                    Task::none()
+                } else {
+                    self.trash_refreshing = true;
+                    Self::load_trash_badge(self.paths.clone())
+                };
+                Task::batch([library, badge, self.settings_tick()])
+            }
+            Message::Section(section) => self.navigate_section(section),
+            Message::TrashBadgeLoaded(badge) => {
+                self.trash_refreshing = false;
+                self.trash_badge = badge;
+                Task::none()
             }
             Message::Loaded(Ok(cards)) => {
                 self.refreshing = false;
@@ -535,7 +560,7 @@ impl App {
             }
             Message::Window(window::Event::Resized(size) | window::Event::Opened { size, .. }) => {
                 self.window_size = size;
-                self.viewport_width = size.width;
+                self.viewport_width = (size.width - sidebar::WIDTH).max(0.0);
                 self.viewport_height = (size.height - 48.0).max(0.0);
                 self.load_visible_art()
             }
@@ -566,6 +591,9 @@ impl App {
             }
             Message::Key(key, modifiers, status) if self.flow.is_some() => {
                 use iced::keyboard::{Key, key::Named};
+                if sidebar::shortcut(&key, modifiers).is_some() {
+                    return Task::none();
+                }
                 let generation = self.flow_generation;
                 let width = self.flow_width();
                 let own = if status == iced::event::Status::Captured {
@@ -611,6 +639,15 @@ impl App {
                     }
                 }
             }
+            Message::Key(key, modifiers, status)
+                if sidebar::shortcut(&key, modifiers).is_some() =>
+            {
+                if status == iced::event::Status::Captured {
+                    Task::none()
+                } else {
+                    self.navigate_section(sidebar::shortcut(&key, modifiers).unwrap())
+                }
+            }
             Message::Key(key, modifiers, status) if self.settings.is_some() => {
                 self.settings_key(&key, modifiers, status == iced::event::Status::Captured)
             }
@@ -638,7 +675,11 @@ impl App {
             Message::OpenGlobalSettings => self.open_global_settings(),
             Message::Settings(event) => self.settings_update(event),
             Message::Add => {
-                if self.foreground_busy() || self.settings.is_some() || self.flow.is_some() {
+                if self.foreground_busy()
+                    || self.settings.is_some()
+                    || self.flow.is_some()
+                    || self.section != sidebar::Section::Library
+                {
                     return Task::none();
                 }
                 self.close_log();

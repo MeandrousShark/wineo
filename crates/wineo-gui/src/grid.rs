@@ -111,7 +111,10 @@ impl App {
         (self.window_size.width - 40.0).clamp(280.0, widest)
     }
     pub(crate) fn view(&self) -> Element<'_, Message> {
-        let mut page = self.page_view();
+        let mut page: Element<'_, Message> = row![self.sidebar(), self.page_view()]
+            .width(Fill)
+            .height(Fill)
+            .into();
         if let Some(flow) = &self.flow {
             let palette = self.palette;
             let generation = self.flow_generation;
@@ -234,6 +237,29 @@ impl App {
                 .height(1)
                 .style(move |_| container::Style::default().background(palette.border))
         ];
+        if self.section != crate::sidebar::Section::Library {
+            let description = match self.section {
+                crate::sidebar::Section::Trash => "Trash management is coming soon.",
+                crate::sidebar::Section::Checkup => "Checkup is coming soon.",
+                crate::sidebar::Section::Library => unreachable!(),
+            };
+            return container(
+                page.push(
+                    container(
+                        column![
+                            text(self.section.label()).size(22),
+                            text(description).color(palette.muted),
+                        ]
+                        .spacing(12),
+                    )
+                    .padding(24),
+                ),
+            )
+            .width(Fill)
+            .height(Fill)
+            .style(move |_| container::Style::default().background(palette.background))
+            .into();
+        }
         if let Some(error) = &self.error {
             page = page.push(
                 container(text(format!("Failed to load library: {error}")).color(palette.danger))
@@ -284,6 +310,22 @@ impl App {
     }
     fn top_bar(&self) -> Element<'_, Message> {
         let palette = self.palette;
+        if self.section != crate::sidebar::Section::Library {
+            return container(
+                row![
+                    text("wineo").size(18).color(palette.foreground),
+                    Space::new().width(Fill),
+                    button(text("⚙").size(19))
+                        .on_press(Message::OpenGlobalSettings)
+                        .padding([4, 10])
+                        .style(move |_, status| crate::chips::secondary(palette, status)),
+                ]
+                .align_y(Center),
+            )
+            .padding([8, 16])
+            .width(Fill)
+            .into();
+        }
         let input = text_input("Search library...", &self.search)
             .id(iced::widget::Id::new(SEARCH_ID))
             .on_input(Message::SearchChanged)
