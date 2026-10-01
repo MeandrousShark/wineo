@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use iced::Task;
 use iced::futures::channel::mpsc::{UnboundedSender, unbounded};
 use wineo_core::cancel::Token;
 use wineo_core::components::Component;
 use wineo_core::config::GlobalConfig;
-use wineo_core::download::{self, Progress, Provider};
+use wineo_core::download::{self, Provider};
 use wineo_core::error::Error as CoreError;
 use wineo_core::paths::Paths;
 use wineo_core::runtime::Runtime;
@@ -151,16 +151,13 @@ fn apply_one(
         token,
         output,
         |event| {
-            if matches!(event, WinetricksEvent::LogStarted)
-                && let Some(environment) = &install_environment
-            {
-                let _ = sender.unbounded_send(Event::InstallStarted(
-                    generation,
-                    environment.clone(),
-                    install_done.clone(),
-                ));
-            }
-            let _ = sender.unbounded_send(Event::Winetricks(generation, Arc::new(event)));
+            forward_winetricks(
+                sender,
+                generation,
+                install_environment.as_deref(),
+                &install_done,
+                event,
+            );
         },
         |component, version| download_build(paths, component, version, token, generation, sender),
     );
@@ -169,6 +166,29 @@ fn apply_one(
         let _ = sender.unbounded_send(Event::InstallEnded(generation));
     }
     result
+}
+
+fn forward_winetricks(
+    sender: &UnboundedSender<Event>,
+    generation: u64,
+    environment: Option<&str>,
+    done: &Token,
+    event: WinetricksEvent,
+) {
+    if matches!(event, WinetricksEvent::LogStarted)
+        && let Some(environment) = environment
+    {
+        let _ = sender.unbounded_send(Event::InstallStarted(
+            generation,
+            environment.to_owned(),
+            done.clone(),
+        ));
+    }
+    if crate::panel::winetricks_status(&event).is_some()
+        || matches!(event, WinetricksEvent::Stopping | WinetricksEvent::Killing)
+    {
+        let _ = sender.unbounded_send(Event::Winetricks(generation, Arc::new(event)));
+    }
 }
 
 fn download_build(
@@ -194,38 +214,64 @@ fn download_build(
         format!("Downloading {} ({})", release.tag, release.verification()),
     ));
 
-    let mut last_progress = Instant::now() - PROGRESS_INTERVAL;
-    client.install(paths, &global, &release, token, |progress| {
-        let now = Instant::now();
-        if matches!(progress, Progress::Downloading { .. })
-            && now.duration_since(last_progress) < PROGRESS_INTERVAL
-        {
-            return;
-        }
-        last_progress = now;
-        let _ = sender.unbounded_send(Event::Progress(
-            generation,
-            download_line(provider, progress),
-        ));
-    })?;
+    crate::download_progress::install(
+        &client,
+        paths,
+        &global,
+        &release,
+        token,
+        PROGRESS_INTERVAL,
+        |line| {
+            let _ = sender.unbounded_send(Event::Progress(generation, line));
+        },
+    )?;
     Ok(())
-}
-
-fn download_line(provider: Provider, progress: Progress) -> String {
-    match progress {
-        Progress::Downloading { received, total } => {
-            format!("Downloading {provider}: {received} / {total} bytes")
-        }
-        Progress::Verifying => format!("Verifying {provider}"),
-        Progress::Extracting => format!("Extracting {provider}"),
-        Progress::Installed(path) => format!("Installed in {}", path.display()),
-        Progress::AlreadyInstalled(path) => format!("Already installed in {}", path.display()),
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wineo_core::download::Progress;
+
+    #[test]
+    fn winetricks_only_forwards_status_events_and_log_start() {
+        use std::os::unix::process::ExitStatusExt;
+        use wineo_core::winetricks::Step;
+
+        let (sender, mut receiver) = unbounded();
+        let done = Token::new();
+        for event in [
+            WinetricksEvent::OutputLine("log line".into()),
+            WinetricksEvent::Done(std::process::ExitStatus::from_raw(0)),
+            WinetricksEvent::Warning("warning".into()),
+        ] {
+            forward_winetricks(&sender, 7, Some("game"), &done, event);
+        }
+        assert!(receiver.try_recv().is_err());
+        forward_winetricks(&sender, 7, Some("game"), &done, WinetricksEvent::LogStarted);
+        assert!(
+            matches!(receiver.try_recv().unwrap(), Event::InstallStarted(7, name, _) if name == "game")
+        );
+        assert!(receiver.try_recv().is_err());
+        for event in [
+            WinetricksEvent::Progress(Step {
+                verb: "gdiplus".into(),
+                position: 1,
+                total: 1,
+            }),
+            WinetricksEvent::Installing(vec!["gdiplus".into()]),
+            WinetricksEvent::Stopping,
+            WinetricksEvent::Killing,
+        ] {
+            let expected = std::mem::discriminant(&event);
+            forward_winetricks(&sender, 7, Some("game"), &done, event);
+            let Event::Winetricks(7, event) = receiver.try_recv().unwrap() else {
+                panic!("missing status event");
+            };
+            assert_eq!(std::mem::discriminant(event.as_ref()), expected);
+        }
+        assert!(receiver.try_recv().is_err());
+    }
 
     fn fix(name: &str) -> Fix {
         Fix::CleanUpLostRun {
@@ -350,7 +396,7 @@ mod tests {
     #[test]
     fn download_progress_matches_the_install_flows() {
         assert_eq!(
-            download_line(
+            crate::download_progress::download_line(
                 Provider::Dxvk,
                 Progress::Downloading {
                     received: 4,

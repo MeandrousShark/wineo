@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use iced::futures::channel::mpsc::unbounded;
 use iced::widget::{
@@ -14,7 +14,7 @@ use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GamescopeSetting, GlobalConfig};
 use wineo_core::create::{self, CreateEvent, CreateRequest, TargetOutcome};
 use wineo_core::desktop;
-use wineo_core::download::{Client, Progress, Provider};
+use wineo_core::download::{Client, Provider};
 use wineo_core::environment::{Environment, NewEnvironment};
 use wineo_core::error::Error as CoreError;
 use wineo_core::install::{self, Wanted};
@@ -578,21 +578,18 @@ impl Page {
                         generation,
                         format!("Downloading {} ({})", release.tag, release.verification()),
                     ));
-                    let mut last_progress = Instant::now() - Duration::from_secs(1);
-                    client
-                        .install(&paths, &global, &release, &token, |progress| {
-                            if matches!(progress, Progress::Downloading { .. })
-                                && last_progress.elapsed() < Duration::from_millis(250)
-                            {
-                                return;
-                            }
-                            last_progress = Instant::now();
-                            let _ = sender.unbounded_send(Event::Progress(
-                                generation,
-                                download_line(provider, progress),
-                            ));
-                        })
-                        .map_err(|e| e.to_string())?;
+                    crate::download_progress::install(
+                        &client,
+                        &paths,
+                        &global,
+                        &release,
+                        &token,
+                        Duration::from_millis(250),
+                        |line| {
+                            let _ = sender.unbounded_send(Event::Progress(generation, line));
+                        },
+                    )
+                    .map_err(|e| e.to_string())?;
                     Ok::<_, String>(name)
                 })
                 .await
@@ -2052,18 +2049,6 @@ fn apply_art(paths: &Paths, name: &str, art: &artwork::Draft, report: &mut Repor
     match art.apply(paths, name) {
         Ok(notes) => report.notes.extend(notes),
         Err(error) => report.art_error = Some(error),
-    }
-}
-
-pub(super) fn download_line(provider: Provider, progress: Progress) -> String {
-    match progress {
-        Progress::Downloading { received, total } => {
-            format!("Downloading {provider}: {received} / {total} bytes")
-        }
-        Progress::Verifying => format!("Verifying {provider}"),
-        Progress::Extracting => format!("Extracting {provider}"),
-        Progress::Installed(path) => format!("Installed in {}", path.display()),
-        Progress::AlreadyInstalled(path) => format!("Already installed in {}", path.display()),
     }
 }
 

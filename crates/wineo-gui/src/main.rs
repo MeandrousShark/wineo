@@ -2,6 +2,7 @@ mod artwork;
 mod checkup;
 mod checkup_work;
 mod chips;
+mod download_progress;
 mod flow;
 mod focus_button;
 mod grid;
@@ -112,6 +113,7 @@ pub(crate) struct App {
     trash_generation: u64,
     trash_page: trash_page::Page,
     checkups: HashMap<checkup::Scope, checkup::Results>,
+    check_generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,6 +273,7 @@ impl App {
             trash_generation: 0,
             trash_page: trash_page::Page::default(),
             checkups: HashMap::new(),
+            check_generation: 0,
         };
         let load = app.reload_library();
         let badge = app.reload_badge();
@@ -393,6 +396,7 @@ impl App {
                     | Message::Hover(_)
                     | Message::Add
                     | Message::CloneEnvironment(_)
+                    | Message::Checkup(checkup::Event::Fix(_) | checkup::Event::Check(_))
             )
         {
             return Task::none();
@@ -431,6 +435,9 @@ impl App {
                     Task::none()
                 } else {
                     self.close_log();
+                    if self.selected.as_deref() != Some(&name) {
+                        self.close_checkup();
+                    }
                     self.selected = Some(name.clone());
                     self.panel_open = true;
                     self.target = self
@@ -760,10 +767,10 @@ impl App {
                 }
             }
             Message::Key(key, modifiers, status) => {
-                if let Some(task) = checkup::key(self, &key, modifiers, status) {
-                    return task;
-                }
-                if let Some(task) = removal::key(self, &key, modifiers, status) {
+                let results_tab = self.checkup_visible()
+                    && !self.log_view
+                    && key == keyboard::Key::Named(keyboard::key::Named::Tab);
+                if !results_tab && let Some(task) = removal::key(self, &key, modifiers, status) {
                     return task;
                 }
                 // shortcuts::capture normally takes these first. This covers a
@@ -854,6 +861,9 @@ impl App {
             }
             Message::ContextSettings(name) => {
                 self.action_menu = None;
+                if self.selected.as_deref() != Some(&name) {
+                    self.close_checkup();
+                }
                 self.selected = Some(name);
                 self.open_settings()
             }
@@ -980,6 +990,9 @@ impl App {
             return Task::none();
         };
         self.search.clear();
+        if self.selected.as_deref() != Some(&name) {
+            self.close_checkup();
+        }
         self.selected = Some(name.clone());
         self.panel_open = true;
         self.target = self

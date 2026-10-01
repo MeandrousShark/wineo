@@ -53,10 +53,14 @@ impl Outcome {
         );
         if self.canceled {
             lines.push((
-                format!(
-                    "Canceled. {} skipped.",
-                    plural(self.skipped, "fix", "fixes")
-                ),
+                if self.skipped == 0 {
+                    "Canceled.".into()
+                } else {
+                    format!(
+                        "Canceled. {} skipped.",
+                        plural(self.skipped, "fix", "fixes")
+                    )
+                },
                 None,
             ));
         }
@@ -73,12 +77,16 @@ pub(crate) struct Results {
     checked: Vec<Fix>,
     error: Option<String>,
     outcome: Option<Outcome>,
+    clear_outcome_on_accept: bool,
     fixed: usize,
 }
 
 impl Results {
     fn accept(&mut self, report: Result<Report, String>) {
         self.checking = false;
+        if self.clear_outcome_on_accept {
+            self.outcome = None;
+        }
         match report {
             Ok(report) => {
                 self.checked = report.fixes();
@@ -142,6 +150,9 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             }
             app.close_log();
             app.action_menu = None;
+            if app.selected.as_deref() != Some(&name) {
+                app.close_checkup();
+            }
             app.selected = Some(name.clone());
             app.panel_open = true;
             app.target = app
@@ -153,14 +164,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.panel_note = None;
             let scope = Scope::Environment(name);
             app.checkups.entry(scope.clone()).or_default().showing = true;
-            let check = if app
-                .checkup_change()
-                .is_some_and(|change| change.scope == scope)
-            {
-                Task::none()
-            } else {
-                app.check(scope, true)
-            };
+            let check = app.check(scope, true);
             Task::batch([check, app.load_panel_art(), unfocus()])
         }
         Event::Check(scope) => app.check(scope, true),
@@ -202,7 +206,8 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if results.checking || fixes.is_empty() {
                 return Task::none();
             }
-            results.generation = results.generation.wrapping_add(1);
+            app.check_generation = app.check_generation.wrapping_add(1);
+            results.generation = app.check_generation;
             results.outcome = None;
             let problem_fixes = results
                 .report
@@ -321,6 +326,7 @@ pub(crate) fn key(
         || app.section != crate::sidebar::Section::Library
         || app.settings.is_some()
         || app.action_menu.is_some()
+        || app.search_focused
     {
         return None;
     }
@@ -345,14 +351,20 @@ pub(crate) fn key(
 
 impl App {
     fn check(&mut self, scope: Scope, clear_outcome: bool) -> Task<Message> {
+        // Removed entries can be recreated before an old check replies.
+        self.check_generation = self.check_generation.wrapping_add(1);
         let results = self.checkups.entry(scope.clone()).or_default();
-        results.generation = results.generation.wrapping_add(1);
+        results.generation = self.check_generation;
         results.checking = true;
         results.error = None;
-        if clear_outcome {
-            results.outcome = None;
-        }
+        results.clear_outcome_on_accept = clear_outcome;
         checkup_work::check(scope, results.generation, self.paths.clone())
+    }
+
+    pub(crate) fn close_checkup(&mut self) {
+        for results in self.checkups.values_mut() {
+            results.showing = false;
+        }
     }
 
     pub(crate) fn checkup_change(&self) -> Option<&Change> {
@@ -438,6 +450,15 @@ impl App {
             .checkup_change()
             .is_some_and(|change| change.scope == scope);
         let mut body = column![].spacing(10);
+        if let Some(outcome) = &results.outcome {
+            for (line, level) in outcome.lines(results.fixed) {
+                body = body.push(text(line).color(match level {
+                    Some(Level::Error) => palette.danger,
+                    Some(Level::Warning) => palette.warning,
+                    None => palette.foreground,
+                }));
+            }
+        }
         if results.checking {
             body = body.push(
                 row![
@@ -479,15 +500,6 @@ impl App {
                         Message::Checkup(event),
                     ));
                 }
-            }
-        }
-        if let Some(outcome) = &results.outcome {
-            for (line, level) in outcome.lines(results.fixed) {
-                body = body.push(text(line).color(match level {
-                    Some(Level::Error) => palette.danger,
-                    Some(Level::Warning) => palette.warning,
-                    None => palette.foreground,
-                }));
             }
         }
         let count = results.selected().len();
@@ -686,6 +698,43 @@ mod tests {
         results.outcome.as_ref().unwrap().lines(results.fixed)
     }
 
+    fn key(app: &mut App, key: Named, focused: bool, captured: bool) -> Task<Message> {
+        app.update(Message::KeyWithFocus(
+            Key::Named(key),
+            Modifiers::empty(),
+            if captured {
+                iced::event::Status::Captured
+            } else {
+                iced::event::Status::Ignored
+            },
+            focused,
+        ))
+    }
+
+    fn add_playable_environment(app: &mut App, name: &str) {
+        std::fs::write(app.paths.environment_config(name), "kind = 'native'\n").unwrap();
+        app.cards = crate::library::load_library(&app.paths).unwrap();
+        let card = app.cards.iter_mut().find(|card| card.name == name).unwrap();
+        card.targets = vec!["game".into()];
+        card.default_target = Some("game".into());
+    }
+
+    #[test]
+    fn cancellation_text_omits_zero_and_pluralizes_skipped_fixes() {
+        for (skipped, expected) in [
+            (0, "Canceled."),
+            (1, "Canceled. 1 fix skipped."),
+            (2, "Canceled. 2 fixes skipped."),
+        ] {
+            let outcome = Outcome {
+                canceled: true,
+                skipped,
+                ..Outcome::default()
+            };
+            assert_eq!(outcome.lines(0).last().unwrap().0, expected);
+        }
+    }
+
     #[test]
     fn results_count_problem_rows_for_shared_fixes_and_use_cli_zero_copy() {
         let (_root, mut app) = fixture();
@@ -854,6 +903,9 @@ mod tests {
         let _ = app.update(Message::Section(crate::sidebar::Section::Library));
         assert_eq!(lines(&app), previous);
         send(&mut app, Event::Check(scope()));
+        assert!(app.checkups[&scope()].checking);
+        assert_eq!(lines(&app), previous);
+        loaded(&mut app, Report::default());
         assert!(app.checkups[&scope()].outcome.is_none());
     }
 
@@ -885,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn section_switch_and_panel_close_keep_the_batch_and_results() {
+    fn section_switch_and_panel_close_keep_the_batch_but_reopen_details() {
         let (_root, mut app) = fixture();
         let generation = start(&mut app);
         assert_eq!(app.change.as_ref().unwrap().reason(), "Busy: fixing game");
@@ -893,6 +945,16 @@ mod tests {
         let _ = app.update(Message::Section(crate::sidebar::Section::Trash));
         let _ = app.update(Message::ClosePanel);
         assert!(!token.is_canceled());
+        let _ = app.update(Message::Section(crate::sidebar::Section::Library));
+        let _ = app.update(Message::Select("game".into()));
+        assert!(app.panel_open && !app.checkup_visible());
+        assert_eq!(app.checkup_change().unwrap().status, "Fixing...");
+        let check = app.checkups[&scope()].generation;
+        open(&mut app);
+        assert!(app.checkup_visible() && app.checkups[&scope()].checking);
+        assert!(app.checkups[&scope()].generation > check);
+        assert!(!token.is_canceled());
+        let _ = app.update(Message::ClosePanel);
         send(
             &mut app,
             Event::Finished(
@@ -906,10 +968,205 @@ mod tests {
         loaded(&mut app, Report::default());
         let _ = app.update(Message::Section(crate::sidebar::Section::Library));
         let _ = app.update(Message::Select("game".into()));
-        assert!(app.checkup_visible());
-        assert_eq!(lines(&app)[0].0, "Fixed 2 problems.");
-        let _ = app.handle_key(Key::Named(Named::Escape), Modifiers::empty(), false, false);
         assert!(app.panel_open && !app.checkup_visible());
+        assert_eq!(lines(&app)[0].0, "Fixed 2 problems.");
+        open(&mut app);
+        assert!(app.checkup_visible() && app.checkups[&scope()].checking);
+        assert_eq!(lines(&app)[0].0, "Fixed 2 problems.");
+        loaded(&mut app, Report::default());
+        assert!(app.checkups[&scope()].outcome.is_none());
+        let _ = key(&mut app, Named::Escape, false, false);
+        assert!(app.panel_open && !app.checkup_visible());
+    }
+
+    #[test]
+    fn selection_changes_leave_results_for_mouse_and_keyboard() {
+        for keyboard in [false, true] {
+            let (_root, mut app) = fixture();
+            add_playable_environment(&mut app, "other");
+            open(&mut app);
+            loaded(&mut app, report());
+            if keyboard {
+                let _ = key(&mut app, Named::ArrowRight, false, false);
+            } else {
+                let _ = app.update(Message::Select("other".into()));
+            }
+            assert_eq!(app.selected.as_deref(), Some("other"));
+            assert!(!app.checkups[&scope()].showing);
+            let _ = app.update(Message::Select("game".into()));
+            assert!(app.panel_open && !app.checkup_visible());
+            assert!(app.checkups[&scope()].report.is_some());
+        }
+    }
+
+    #[test]
+    fn results_keys_respect_search_focus() {
+        let (_root, mut app) = fixture();
+        open(&mut app);
+        loaded(&mut app, report());
+        app.search_focused = false;
+        assert_eq!(key(&mut app, Named::Tab, true, true).units(), 0);
+        assert!(app.search_focused && app.checkup_visible());
+        assert!(key(&mut app, Named::Tab, false, false).units() > 0);
+        assert!(!app.search_focused && app.checkup_visible());
+        let _ = key(&mut app, Named::Escape, false, false);
+        assert!(app.panel_open && !app.checkup_visible());
+        open(&mut app);
+        // Search keeps the existing panel Escape behavior instead of results Back.
+        let _ = key(&mut app, Named::Escape, true, false);
+        assert!(!app.panel_open);
+    }
+
+    #[test]
+    fn unfocused_enter_does_not_play_from_results_and_log_keeps_its_behavior() {
+        let (_root, mut app) = fixture();
+        add_playable_environment(&mut app, "game");
+        open(&mut app);
+        loaded(&mut app, report());
+        let _ = key(&mut app, Named::Enter, false, false);
+        assert!(app.operation.is_none() && app.checkup_visible());
+        app.log_view = true;
+        let _ = key(&mut app, Named::Enter, false, false);
+        assert!(app.operation.as_ref().is_some_and(|operation| {
+            operation.name == "game" && operation.kind == crate::OperationKind::Start
+        }));
+    }
+
+    #[test]
+    fn modal_guard_blocks_fix_and_check_events() {
+        for removal in [false, true] {
+            let (_root, mut app) = fixture();
+            open(&mut app);
+            loaded(&mut app, report());
+            if removal {
+                let _ = app.update(Message::Remove("game".into()));
+                assert!(app.removal.is_some());
+            } else {
+                app.flow = Some(crate::flow::Page::choose(app.paths.clone()));
+            }
+            let generation = app.checkups[&scope()].generation;
+            send(&mut app, Event::Check(scope()));
+            send(&mut app, Event::Fix(scope()));
+            assert_eq!(app.checkups[&scope()].generation, generation);
+            assert!(!app.checkups[&scope()].checking);
+            assert!(app.change.is_none());
+        }
+    }
+
+    #[test]
+    fn removed_and_restored_environment_rejects_the_old_checks_reply() {
+        let (_root, mut app) = fixture();
+        open(&mut app);
+        let old_check = app.checkups[&scope()].generation;
+        let _ = app.update(Message::Remove("game".into()));
+        let _ = app.update(Message::ConfirmRemove);
+        let entry = wineo_core::trash::remove(&app.paths, "game", false).unwrap();
+        let _ = app.update(Message::RemoveFinished(
+            app.change_generation,
+            Ok(entry.clone()),
+        ));
+        assert!(!app.checkups.contains_key(&scope()));
+        let _ = app.update(Message::Undo);
+        wineo_core::trash::restore(&app.paths, &entry.id).unwrap();
+        let _ = app.update(Message::UndoFinished(app.change_generation, Ok(())));
+        let _ = app.update(Message::Loaded(Ok(crate::library::load_library(
+            &app.paths,
+        )
+        .unwrap())));
+        open(&mut app);
+        assert!(app.checkups[&scope()].generation > old_check);
+        send(&mut app, Event::Checked(scope(), old_check, Ok(report())));
+        assert!(app.checkups[&scope()].checking);
+        assert!(app.checkups[&scope()].report.is_none());
+        loaded(&mut app, Report::default());
+        assert!(!app.checkups[&scope()].checking);
+        assert!(
+            app.checkups[&scope()]
+                .report
+                .as_ref()
+                .unwrap()
+                .problems
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn play_on_another_environment_keeps_fix_status_and_log_sources_independent() {
+        let (_root, mut app) = fixture();
+        add_playable_environment(&mut app, "other");
+        let generation = start(&mut app);
+        let fix_done = Token::new();
+        send(
+            &mut app,
+            Event::InstallStarted(generation, "game".into(), fix_done.clone()),
+        );
+        send(
+            &mut app,
+            Event::Progress(generation, "Fix installation".into()),
+        );
+        let _ = app.update(Message::Select("other".into()));
+        let _ = app.update(Message::Play);
+        let play_done = app
+            .operation
+            .as_ref()
+            .unwrap()
+            .install_done
+            .clone()
+            .unwrap();
+        let _ = app.update(Message::InstallPhase("other".into(), true));
+        let _ = app.update(Message::LaunchProgress(
+            "other".into(),
+            "Play installation".into(),
+        ));
+        assert_eq!(app.operation.as_ref().unwrap().status, "Play installation");
+        assert_eq!(app.checkup_change().unwrap().status, "Fix installation");
+        for (name, done) in [("game", &fix_done), ("other", &play_done)] {
+            let card = app.cards.iter().find(|card| card.name == name).unwrap();
+            let Some(crate::worker::LogSource::Install(source_done)) = app.log_source(card) else {
+                panic!("missing {name} install log");
+            };
+            assert!(!source_done.is_canceled() && !done.is_canceled());
+        }
+        let _ = app.update(Message::OpenLog);
+        assert!(app.log_view && app.log_install);
+        let play_log = app.log_generation;
+        let _ = app.update(Message::LogChunk(play_log, "play log\n".into()));
+        send(
+            &mut app,
+            Event::Progress(generation, "Fix still running".into()),
+        );
+        assert_eq!(app.operation.as_ref().unwrap().status, "Play installation");
+        assert_eq!(app.log_buffer.display(), "play log\n");
+        let _ = app.update(Message::Select("game".into()));
+        assert!(!app.log_view && app.log_generation > play_log);
+        let _ = app.update(Message::OpenLog);
+        assert!(app.log_view && app.log_install);
+        let fix_log = app.log_generation;
+        let _ = app.update(Message::LogChunk(play_log, "stale play log\n".into()));
+        assert!(app.log_buffer.display().is_empty());
+        let _ = app.update(Message::LogChunk(fix_log, "fix log\n".into()));
+        assert_eq!(app.log_buffer.display(), "fix log\n");
+        send(&mut app, Event::InstallEnded(generation));
+        assert!(fix_done.is_canceled() && !play_done.is_canceled());
+        let game = app.cards.iter().find(|card| card.name == "game").unwrap();
+        assert!(app.log_source(game).is_none());
+        let other = app.cards.iter().find(|card| card.name == "other").unwrap();
+        assert!(matches!(
+            app.log_source(other),
+            Some(crate::worker::LogSource::Install(_))
+        ));
+        let _ = app.update(Message::Select("other".into()));
+        let _ = app.update(Message::OpenLog);
+        assert!(app.log_view && app.log_install);
+        let _ = app.update(Message::LogChunk(fix_log, "stale fix log\n".into()));
+        assert!(app.log_buffer.display().is_empty());
+        assert_eq!(app.checkup_change().unwrap().status, "Fix still running");
+        let _ = app.update(Message::LaunchProgress(
+            "other".into(),
+            "Play starting".into(),
+        ));
+        assert_eq!(app.checkup_change().unwrap().status, "Fix still running");
+        assert_eq!(app.operation.as_ref().unwrap().status, "Play starting");
     }
 
     #[test]

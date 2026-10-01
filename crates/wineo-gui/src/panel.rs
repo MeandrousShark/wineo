@@ -205,6 +205,7 @@ impl App {
     }
     pub(crate) fn close_panel(&mut self) {
         self.close_log();
+        self.close_checkup();
         self.panel_open = false;
         self.target = None;
         self.panel_error = None;

@@ -15,7 +15,7 @@ use wineo_core::art::{Format, Kind};
 use wineo_core::cancel::Token;
 use wineo_core::components::Component;
 use wineo_core::config::GlobalConfig;
-use wineo_core::download::{Client, Progress, Provider};
+use wineo_core::download::{Client, Provider};
 use wineo_core::environment::{self, Environment};
 use wineo_core::gamescope::{Filter, Gamescope, GamescopeSetting, Scaler, Window};
 use wineo_core::heroic::{
@@ -3108,23 +3108,18 @@ fn install_prerequisite(
                 None => client.select(provider, None),
             }
             .map_err(|e| format!("{e:#}"))?;
-            // Only byte counts come fast enough to need a throttle.
-            let mut sent: Option<Instant> = None;
-            client
-                .install(paths, &global, &release, token, |progress| {
-                    let now = Instant::now();
-                    if matches!(progress, Progress::Downloading { .. })
-                        && sent.is_some_and(|sent| now.duration_since(sent) < PROGRESS_INTERVAL)
-                    {
-                        return;
-                    }
-                    sent = Some(now);
-                    let _ = sender.unbounded_send(Event::Progress(
-                        generation,
-                        super::new::download_line(provider, progress),
-                    ));
-                })
-                .map_err(|e| format!("{e:#}"))?;
+            crate::download_progress::install(
+                &client,
+                paths,
+                &global,
+                &release,
+                token,
+                PROGRESS_INTERVAL,
+                |line| {
+                    let _ = sender.unbounded_send(Event::Progress(generation, line));
+                },
+            )
+            .map_err(|e| format!("{e:#}"))?;
             Ok(release.installed_name)
         }
     }

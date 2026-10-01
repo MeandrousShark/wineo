@@ -412,6 +412,8 @@ impl App {
         match result {
             Ok(entry) => {
                 self.cancel_remove_dialog();
+                self.checkups
+                    .remove(&crate::checkup::Scope::Environment(entry.name.clone()));
                 if self.selected.as_deref() == Some(&entry.name) {
                     self.close_panel();
                     self.selected = None;
@@ -1058,6 +1060,29 @@ mod tests {
         assert_eq!(toast.id, entry.id);
         assert!(toast.text.starts_with("Removed game to the trash."));
         assert!(toast.text.contains("Prefix kept."));
+    }
+
+    #[test]
+    fn successful_remove_clears_only_that_environments_checkup() {
+        let (_root, mut app) = fixture(false);
+        let scope = crate::checkup::Scope::Environment("game".into());
+        let other = crate::checkup::Scope::Environment("other".into());
+        let _ = app.update(Message::Checkup(crate::checkup::Event::Open("game".into())));
+        app.checkups.insert(other.clone(), Default::default());
+        assert!(app.checkups.contains_key(&scope));
+        let entry = removed(&mut app);
+        assert!(!app.checkups.contains_key(&scope));
+        assert!(app.checkups.contains_key(&other));
+        let _ = app.update(Message::Undo);
+        trash::restore(&app.paths, &entry.id).unwrap();
+        let _ = app.update(Message::UndoFinished(app.change_generation, Ok(())));
+        let _ = app.update(Message::Loaded(Ok(crate::library::load_library(
+            &app.paths,
+        )
+        .unwrap())));
+        let _ = app.update(Message::Select("game".into()));
+        assert!(app.panel_open && !app.checkup_visible());
+        assert!(!app.checkups.contains_key(&scope));
     }
 
     #[test]

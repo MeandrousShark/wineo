@@ -70,6 +70,7 @@ impl App {
         if self.section != crate::sidebar::Section::Library {
             return Task::none();
         }
+        self.search_focused = search_focused;
         if let Some(task) = crate::checkup::key(
             self,
             &key,
@@ -82,7 +83,20 @@ impl App {
         ) {
             return task;
         }
-        self.search_focused = search_focused;
+        if key == Key::Named(Named::Tab)
+            && let Some(task) = crate::removal::key(
+                self,
+                &key,
+                modifiers,
+                if captured {
+                    iced::event::Status::Captured
+                } else {
+                    iced::event::Status::Ignored
+                },
+            )
+        {
+            return task;
+        }
         if key == Key::Named(Named::Delete) && modifiers.is_empty() {
             return crate::removal::delete_key(self, search_focused, captured);
         }
@@ -165,7 +179,9 @@ impl App {
                 ])
             }
             Action::OpenOrPlay => {
-                if self.panel_open {
+                if self.checkup_visible() && !self.log_view {
+                    Task::none()
+                } else if self.panel_open {
                     self.start_selected()
                 } else if let Some(name) = self.selected.clone() {
                     self.update(Message::Select(name))
@@ -178,6 +194,7 @@ impl App {
 
     fn selection_changed(&mut self) {
         self.close_log();
+        self.close_checkup();
         self.target = self
             .selected
             .as_ref()
