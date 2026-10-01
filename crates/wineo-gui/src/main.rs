@@ -15,6 +15,8 @@ mod shortcuts;
 mod sidebar;
 mod spinner;
 mod theme;
+mod trash_page;
+mod trash_work;
 mod wheel;
 mod worker;
 
@@ -106,6 +108,7 @@ pub(crate) struct App {
     change_generation: u64,
     library_generation: u64,
     trash_generation: u64,
+    trash_page: trash_page::Page,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +205,7 @@ pub(crate) enum Message {
     ToastTick(Instant),
     ToastHover(bool),
     ToastFocus(bool, Instant),
+    Trash(trash_page::Event),
 }
 
 impl App {
@@ -261,6 +265,7 @@ impl App {
             change_generation: 0,
             library_generation: 0,
             trash_generation: 0,
+            trash_page: trash_page::Page::default(),
         };
         let load = app.reload_library();
         let badge = app.reload_badge();
@@ -319,6 +324,7 @@ impl App {
     fn spinning(&self) -> bool {
         self.operation.is_some()
             || self.change.is_some()
+            || (self.section == sidebar::Section::Trash && self.trash_page.reviewing)
             || self.settings.as_ref().is_some_and(|page| page.saving)
             || self.flow.as_ref().is_some_and(flow::Page::spinning)
     }
@@ -358,7 +364,7 @@ impl App {
         ])
     }
     fn update(&mut self, message: Message) -> Task<Message> {
-        if (self.flow.is_some() || self.removal.is_some())
+        if (self.flow.is_some() || self.removal.is_some() || self.trash_confirm_open())
             && matches!(
                 message,
                 Message::SearchChanged(_)
@@ -386,6 +392,7 @@ impl App {
             return Task::none();
         }
         let task = match message {
+            Message::Trash(event) => trash_page::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
             | Message::RemoveSize(..)
@@ -580,7 +587,11 @@ impl App {
                     Task::none()
                 } else {
                     self.trash_refreshing = true;
-                    self.reload_badge()
+                    if self.section == sidebar::Section::Trash {
+                        self.reload_trash_page()
+                    } else {
+                        self.reload_badge()
+                    }
                 };
                 Task::batch([library, badge, self.settings_tick()])
             }
@@ -687,6 +698,9 @@ impl App {
             }
             Message::Key(key, modifiers, _) if self.removal.is_some() => {
                 removal::dialog_key(self, &key, modifiers)
+            }
+            Message::Key(key, modifiers, _) if self.trash_confirm_open() => {
+                trash_page::key(self, &key, modifiers)
             }
             Message::Key(key, modifiers, status) if self.flow.is_some() => {
                 use iced::keyboard::{Key, key::Named};

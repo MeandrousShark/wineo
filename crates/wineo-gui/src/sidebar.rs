@@ -44,6 +44,9 @@ impl TrashBadge {
                     .count()
             }),
             warning: entries.is_err()
+                || entries
+                    .as_ref()
+                    .is_ok_and(|entries| entries.iter().any(|entry| entry.phase != Phase::Trashed))
                 || pending.as_ref().map_or(true, |entries| !entries.is_empty()),
         }
     }
@@ -78,6 +81,7 @@ impl App {
 
     fn sidebar_blocked(&self) -> bool {
         self.close_prompt
+            || self.trash_confirm_open()
             || self.removal.is_some()
             || self.flow.is_some()
             || self
@@ -110,10 +114,10 @@ impl App {
         self.search_focused = false;
         Task::batch([
             iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::unfocus()),
-            if section == Section::Library {
-                self.load_visible_art()
-            } else {
-                Task::none()
+            match section {
+                Section::Library => self.load_visible_art(),
+                Section::Trash => self.reload_trash_page(),
+                Section::Checkup => Task::none(),
             },
         ])
     }
@@ -126,6 +130,9 @@ impl App {
                 .spacing(6)
                 .align_y(Center);
             if section == Section::Trash {
+                if matches!(self.change, Some(crate::removal::Change::Trash(_))) {
+                    label = label.push(crate::spinner::spinner(palette, self.spinner_angle, 12.0));
+                }
                 if let Some(count) = self.trash_badge.count {
                     label = label.push(text(count).size(12).color(palette.muted));
                 }

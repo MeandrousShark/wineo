@@ -119,6 +119,7 @@ impl App {
             Message::Section,
             (self.toast.is_some()
                 && self.removal.is_none()
+                && !self.trash_confirm_open()
                 && self.flow.is_none()
                 && self.settings.is_none()
                 && !self.close_prompt)
@@ -148,6 +149,23 @@ impl App {
                     mouse_area(container(self.remove_view()).center(Fill).style(|_| {
                         container::Style::default().background(Color::BLACK.scale_alpha(0.55))
                     }))
+                    .on_scroll(|_| Message::OverlayInput)
+                )
+            ]
+            .into();
+        }
+        if self.trash_confirm_open() {
+            page = stack![
+                page,
+                iced::widget::opaque(
+                    mouse_area(
+                        container(self.trash_confirm_view())
+                            .center(Fill)
+                            .style(|_| {
+                                container::Style::default()
+                                    .background(Color::BLACK.scale_alpha(0.55))
+                            })
+                    )
                     .on_scroll(|_| Message::OverlayInput)
                 )
             ]
@@ -293,9 +311,16 @@ impl App {
                 container(text(change.reason()).size(12).color(palette.muted)).padding([4, 16]),
             );
         }
+        if self.section == crate::sidebar::Section::Trash {
+            return container(page.push(self.trash_view()))
+                .width(Fill)
+                .height(Fill)
+                .style(move |_| container::Style::default().background(palette.background))
+                .into();
+        }
         if self.section != crate::sidebar::Section::Library {
             let description = match self.section {
-                crate::sidebar::Section::Trash => "Trash management is coming soon.",
+                crate::sidebar::Section::Trash => unreachable!(),
                 crate::sidebar::Section::Checkup => "Checkup is coming soon.",
                 crate::sidebar::Section::Library => unreachable!(),
             };

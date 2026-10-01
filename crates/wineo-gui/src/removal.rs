@@ -33,6 +33,7 @@ pub(crate) enum Change {
         id: String,
         name: String,
     },
+    Trash(crate::trash_page::Change),
 }
 
 impl Change {
@@ -40,6 +41,7 @@ impl Change {
         match self {
             Self::Remove { name, .. } => format!("Busy: removing {name}"),
             Self::Restore { name, .. } => format!("Busy: restoring {name}"),
+            Self::Trash(change) => change.reason(),
         }
     }
 }
@@ -304,6 +306,7 @@ impl App {
             || self.flow.is_some()
             || self.settings.is_some()
             || self.close_prompt
+            || self.trash_confirm_open()
             || self.management_busy()
             || self.remove_reason(&name).is_some()
         {
@@ -387,11 +390,11 @@ impl App {
         }
     }
 
-    fn reload_after_change(&mut self) -> Task<Message> {
+    pub(crate) fn reload_after_change(&mut self) -> Task<Message> {
         self.refreshing = true;
         self.trash_refreshing = true;
         // Always queue fresh reads, even if a periodic read was already in flight.
-        Task::batch([self.reload_library(), self.reload_badge()])
+        Task::batch([self.reload_library(), self.reload_trash_page()])
     }
 
     pub(crate) fn remove_finished(
@@ -441,6 +444,7 @@ impl App {
             || self.flow.is_some()
             || self.settings.is_some()
             || self.close_prompt
+            || self.trash_confirm_open()
         {
             return Task::none();
         }
@@ -607,6 +611,7 @@ impl App {
         let toast = self.toast.as_ref().unwrap();
         let palette = self.palette;
         let enabled = !self.management_busy()
+            && !self.trash_confirm_open()
             && self.flow.is_none()
             && self.removal.is_none()
             && self.settings.is_none()

@@ -57,7 +57,11 @@ impl App {
         search_focused: bool,
         captured: bool,
     ) -> Task<Message> {
-        if self.close_prompt || self.flow.is_some() || self.removal.is_some() {
+        if self.close_prompt
+            || self.flow.is_some()
+            || self.removal.is_some()
+            || self.trash_confirm_open()
+        {
             return Task::none();
         }
         if self.settings.is_some() {

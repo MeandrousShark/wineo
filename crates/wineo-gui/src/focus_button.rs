@@ -473,6 +473,14 @@ mod tests {
             ("remove-prefix", crate::Message::RemovePrefix(true)),
             ("remove-cancel", crate::Message::CancelRemove),
             ("remove-confirm", crate::Message::ConfirmRemove),
+            (
+                "trash-cancel",
+                crate::Message::Trash(crate::trash_page::Event::Dismiss),
+            ),
+            (
+                "trash-confirm",
+                crate::Message::Trash(crate::trash_page::Event::Confirm),
+            ),
         ] {
             for key in [Named::Enter, Named::Space] {
                 let button =
