@@ -415,6 +415,20 @@ impl App {
             Err(remove_work::RemoveError::Failed(error)) => {
                 if let Some(dialog) = &mut self.removal {
                     dialog.error = Some(error);
+                    // Confirm canceled the measurement, so measure again for
+                    // the dialog that stays open.
+                    if dialog.size.is_none()
+                        && let Some(path) = dialog.prefix.clone()
+                    {
+                        self.remove_generation = self.remove_generation.wrapping_add(1);
+                        dialog.measure = Token::new();
+                        let measure = remove_work::measure(
+                            self.remove_generation,
+                            path,
+                            dialog.measure.clone(),
+                        );
+                        return Task::batch([measure, self.reload_after_change()]);
+                    }
                 }
             }
         }
@@ -697,6 +711,24 @@ mod tests {
             app.removal.as_ref().unwrap().error.as_deref(),
             Some("real failure")
         );
+    }
+
+    #[test]
+    fn a_failed_remove_measures_the_prefix_again() {
+        let (_root, mut app) = fixture(true);
+        open(&mut app);
+        let _ = app.update(Message::ConfirmRemove);
+        assert!(app.removal.as_ref().unwrap().measure.is_canceled());
+        let before = app.remove_generation;
+        let _ = app.update(Message::RemoveFinished(
+            app.change_generation,
+            Err("real failure".into()),
+        ));
+        let dialog = app.removal.as_ref().unwrap();
+        assert!(!dialog.measure.is_canceled());
+        assert_ne!(app.remove_generation, before);
+        let _ = app.update(Message::RemoveSize(app.remove_generation, Ok(42)));
+        assert_eq!(app.removal.as_ref().unwrap().size, Some(Ok(42)));
     }
 
     #[test]

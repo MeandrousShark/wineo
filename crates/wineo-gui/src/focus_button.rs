@@ -66,6 +66,11 @@ impl iced::advanced::widget::Operation for Cycle {
         if self.ids.is_empty() {
             return Outcome::None;
         }
+        // A lone control toggles, so Tab can leave the toast's Undo and let
+        // its timer run again.
+        if self.ids.len() == 1 && self.focused.is_some() {
+            return Outcome::Chain(Box::new(focusable::unfocus()));
+        }
         let next = match (self.focused, self.reverse) {
             (Some(index), true) => (index + self.ids.len() - 1) % self.ids.len(),
             (Some(index), false) => (index + 1) % self.ids.len(),
@@ -441,6 +446,25 @@ mod tests {
             );
         }
         assert_eq!(states.iter().position(Focusable::is_focused), Some(4));
+        let mut operation = cycle(&[UNDO_ID], false);
+        for (id, state) in ids.iter().zip(&mut states) {
+            operation.focusable(
+                Some(&iced::widget::Id::new(id)),
+                Rectangle::default(),
+                state,
+            );
+        }
+        let Outcome::Chain(mut unfocus) = operation.finish() else {
+            panic!("missing Undo unfocus")
+        };
+        for (id, state) in ids.iter().zip(&mut states) {
+            unfocus.focusable(
+                Some(&iced::widget::Id::new(id)),
+                Rectangle::default(),
+                state,
+            );
+        }
+        assert_eq!(states.iter().position(Focusable::is_focused), None);
     }
 
     #[test]

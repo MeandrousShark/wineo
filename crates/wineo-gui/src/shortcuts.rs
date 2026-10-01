@@ -4,9 +4,9 @@ use iced::advanced::{
 };
 use iced::{Element, Event, Length, Rectangle, Size, Vector};
 
-// A focused text input inserts digits and captures them even with Ctrl pressed,
-// so the app's key subscription cannot handle these navigation shortcuts.
-/// Handles navigation and the active Undo shortcut before a focused input captures them.
+/// Handles Ctrl+1/2/3 and the active Undo shortcut before any child sees them.
+/// A focused text_input inserts the digit and captures the key regardless of
+/// Ctrl, and the app's key subscription skips captured events.
 pub(crate) fn capture_with_undo<'a, Message, Theme, Renderer>(
     content: impl Into<Element<'a, Message, Theme, Renderer>>,
     on_section: impl Fn(crate::sidebar::Section) -> Message + 'a,
