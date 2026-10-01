@@ -1604,11 +1604,19 @@ impl App {
         let step = page.update(&self.paths, event);
         if step.close {
             self.settings = None;
+            if let Some(name) = self.pending_checkup_environment.take() {
+                self.pending_section = None;
+                return Task::batch([
+                    step.task,
+                    crate::checkup::update(self, crate::checkup::Event::Environment(name)),
+                ]);
+            }
             if let Some(section) = self.pending_section.take() {
                 return Task::batch([step.task, self.switch_section(section)]);
             }
         } else if !page.leave_prompt {
             self.pending_section = None;
+            self.pending_checkup_environment = None;
         }
         step.task
     }
@@ -3184,6 +3192,48 @@ mod tests {
                     assert_eq!(app.section, section);
                     assert_eq!(app.pending_section, None);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn checkup_heading_opens_details_after_discard_and_forgets_kept_edits() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        std::fs::write(paths.environment_config("other"), "kind = 'native'\n").unwrap();
+        for global in [false, true] {
+            for discard in [false, true] {
+                let mut app = sidebar_app(&paths, global);
+                app.cards = crate::library::load_library(&paths).unwrap();
+                app.selected = Some("other".into());
+                let edit = if global {
+                    Event::GlobalSwitch(Switch::Gamemode, true)
+                } else {
+                    Event::Switch(Switch::Wayland, true)
+                };
+                let _ = app.update(Message::Settings(edit));
+                let _ = app.update(Message::Checkup(crate::checkup::Event::Environment(
+                    "game".into(),
+                )));
+                assert!(app.settings.as_ref().unwrap().leave_prompt);
+                assert_eq!(app.selected.as_deref(), Some("other"));
+                assert_eq!(app.pending_checkup_environment.as_deref(), Some("game"));
+                if discard {
+                    let _ = app.update(Message::Settings(Event::Discard));
+                    assert!(app.settings.is_none() && app.panel_open);
+                    assert_eq!(app.selected.as_deref(), Some("game"));
+                    assert_eq!(app.section, crate::sidebar::Section::Library);
+                } else {
+                    let _ = app.update(Message::Settings(Event::KeepEditing));
+                    assert!(app.settings.as_ref().unwrap().is_dirty());
+                    assert_eq!(app.selected.as_deref(), Some("other"));
+                    assert!(app.pending_checkup_environment.is_none());
+                    let _ = app.update(Message::Settings(Event::Back));
+                    let _ = app.update(Message::Settings(Event::Discard));
+                    assert_eq!(app.selected.as_deref(), Some("other"));
+                }
+                assert!(app.pending_section.is_none());
+                assert!(app.pending_checkup_environment.is_none());
             }
         }
     }

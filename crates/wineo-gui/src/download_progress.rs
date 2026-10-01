@@ -5,6 +5,8 @@ use wineo_core::config::GlobalConfig;
 use wineo_core::download::{Client, Progress, Provider, Release};
 use wineo_core::paths::Paths;
 
+/// Throttles progress so a fast download doesn't flood the UI in the new, Heroic,
+/// and checkup flows. Backdating lets the first Downloading event through immediately.
 pub(crate) fn install(
     client: &Client,
     paths: &Paths,

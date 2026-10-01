@@ -67,10 +67,9 @@ impl App {
         if self.settings.is_some() {
             return self.settings_key(&key, modifiers, captured);
         }
-        if self.section != crate::sidebar::Section::Library {
-            return Task::none();
+        if self.section == crate::sidebar::Section::Library {
+            self.search_focused = search_focused;
         }
-        self.search_focused = search_focused;
         if let Some(task) = crate::checkup::key(
             self,
             &key,
@@ -82,6 +81,9 @@ impl App {
             },
         ) {
             return task;
+        }
+        if self.section != crate::sidebar::Section::Library {
+            return Task::none();
         }
         if key == Key::Named(Named::Tab)
             && let Some(task) = crate::removal::key(
@@ -119,7 +121,7 @@ impl App {
             &key,
             modifiers,
             search_focused,
-            self.log_view,
+            self.panel_log_visible(),
             self.panel_open,
             self.search.is_empty(),
         ) {
@@ -179,7 +181,7 @@ impl App {
                 ])
             }
             Action::OpenOrPlay => {
-                if self.checkup_visible() && !self.log_view {
+                if self.checkup_visible() && !self.panel_log_visible() {
                     Task::none()
                 } else if self.panel_open {
                     self.start_selected()

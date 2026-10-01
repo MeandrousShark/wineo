@@ -25,9 +25,7 @@ pub(crate) fn check(scope: Scope, generation: u64, paths: Paths) -> Task<Message
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
-                let result = match &scope {
-                    Scope::Environment(name) => validate::check_environment(&paths, name),
-                };
+                let result = check_report(&paths, &scope);
                 result.map_err(|error| paths.contract_text(&format!("{error:#}")))
             })
             .await
@@ -35,6 +33,13 @@ pub(crate) fn check(scope: Scope, generation: u64, paths: Paths) -> Task<Message
         },
         move |result| Message::Checkup(Event::Checked(event_scope, generation, result)),
     )
+}
+
+pub(crate) fn check_report(paths: &Paths, scope: &Scope) -> wineo_core::Result<validate::Report> {
+    match scope {
+        Scope::Global => validate::check_all(paths),
+        Scope::Environment(name) => validate::check_environment(paths, name),
+    }
 }
 
 pub(crate) fn apply(generation: u64, paths: Paths, fixes: Vec<Fix>, token: Token) -> Task<Message> {

@@ -32,16 +32,31 @@ pub(crate) fn cycle<S: AsRef<str>>(
     ids: &[S],
     reverse: bool,
 ) -> impl iced::advanced::widget::Operation + use<S> {
-    Cycle {
+    let cycle = Cycle {
         ids: ids
             .iter()
             .map(|id| iced::widget::Id::from(id.as_ref().to_owned()))
             .collect(),
         focused: None,
         reverse,
-    }
+    };
+    #[cfg(test)]
+    CYCLES.with_borrow_mut(|cycles| cycles.push(cycle.clone()));
+    cycle
 }
 
+#[cfg(test)]
+// Tests inspect emitted focus operations without starting a GUI runtime.
+thread_local! {
+    static CYCLES: std::cell::RefCell<Vec<Cycle>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_cycles() -> Vec<impl iced::advanced::widget::Operation> {
+    CYCLES.with_borrow_mut(std::mem::take)
+}
+
+#[cfg_attr(test, derive(Clone))]
 struct Cycle {
     ids: Vec<iced::widget::Id>,
     focused: Option<usize>,

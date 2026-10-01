@@ -4,7 +4,7 @@ use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{button, checkbox, column, row, scrollable, text};
 use iced::{Center, Element, Task};
 use wineo_core::cancel::Token;
-use wineo_core::validate::{Fix, Level, Report};
+use wineo_core::validate::{Fix, Level, Problem, Report};
 use wineo_core::winetricks::WinetricksEvent;
 
 use crate::removal::Change as RunningChange;
@@ -12,15 +12,85 @@ use crate::{App, Message, checkup_work, focus_button, spinner};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Scope {
+    Global,
     Environment(String),
 }
 
 impl Scope {
     pub(crate) fn label(&self) -> &str {
         match self {
+            Self::Global => "problems",
             Self::Environment(name) => name,
         }
     }
+
+    fn id(&self, control: &str) -> String {
+        match self {
+            Self::Global => format!("checkup-global-{control}"),
+            Self::Environment(name) => format!("checkup-environment-{name}-{control}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Group {
+    Global,
+    Template(String),
+    Environment(String),
+    Leftover(String),
+    Panel,
+}
+
+impl Group {
+    fn of(problem: &Problem) -> Self {
+        if let Some(name) = &problem.template {
+            Self::Template(name.clone())
+        } else if let Some(name) = &problem.environment {
+            Self::Environment(name.clone())
+        } else if let Some(name) = &problem.stray {
+            Self::Leftover(name.clone())
+        } else {
+            Self::Global
+        }
+    }
+
+    fn environment(&self) -> Option<&str> {
+        match self {
+            Self::Environment(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    fn heading(&self, paths: &wineo_core::paths::Paths) -> String {
+        let shown = |path: std::path::PathBuf| {
+            paths
+                .contract(&path)
+                .unwrap_or_else(|_| path.display().to_string())
+        };
+        match self {
+            Self::Global => shown(paths.global_config()),
+            Self::Template(name) => shown(paths.templates_dir().join(format!("{name}.toml"))),
+            Self::Environment(name) | Self::Leftover(name) => name.clone(),
+            Self::Panel => String::new(),
+        }
+    }
+}
+
+fn groups<'a>(report: &'a Report, scope: &Scope) -> Vec<(Group, Vec<(usize, &'a Problem)>)> {
+    let mut groups: Vec<(Group, Vec<(usize, &Problem)>)> = Vec::new();
+    for (index, problem) in report.problems.iter().enumerate() {
+        let group = if *scope == Scope::Global {
+            Group::of(problem)
+        } else {
+            Group::Panel
+        };
+        if let Some((_, problems)) = groups.iter_mut().find(|(key, _)| *key == group) {
+            problems.push((index, problem));
+        } else {
+            groups.push((group, vec![(index, problem)]));
+        }
+    }
+    groups
 }
 
 #[derive(Debug, Clone, Default)]
@@ -122,7 +192,9 @@ pub(crate) struct Change {
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
-    Open(String),
+    Open(Scope),
+    Environment(String),
+    OpenInstallLog(Scope),
     Check(Scope),
     Checked(Scope, u64, Result<Report, String>),
     Toggle(Scope, Fix, bool),
@@ -138,7 +210,44 @@ pub(crate) enum Event {
 
 pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
     match event {
-        Event::Open(name) => {
+        Event::Open(Scope::Global) => {
+            if app.section != crate::sidebar::Section::Checkup {
+                return Task::none();
+            }
+            if app
+                .checkup_change()
+                .is_some_and(|change| change.scope == Scope::Global)
+            {
+                return Task::none();
+            }
+            app.check(Scope::Global, false)
+        }
+        Event::Environment(name) => {
+            if !app.cards.iter().any(|card| card.name == name) {
+                return Task::none();
+            }
+            let navigation = app.navigate_section(crate::sidebar::Section::Library);
+            if app.settings.is_some() {
+                if app.pending_section == Some(crate::sidebar::Section::Library) {
+                    app.pending_checkup_environment = Some(name);
+                }
+                return navigation;
+            }
+            if app.section != crate::sidebar::Section::Library {
+                return navigation;
+            }
+            app.close_panel();
+            Task::batch([navigation, app.update(Message::Select(name))])
+        }
+        Event::OpenInstallLog(scope) => {
+            let Some((name, source)) = app.checkup_install_log(&scope) else {
+                return Task::none();
+            };
+            let task = app.open_log_for(name, source);
+            app.checkup_log_scope = Some(scope);
+            task
+        }
+        Event::Open(Scope::Environment(name)) => {
             if app.flow.is_some()
                 || app.removal.is_some()
                 || app.trash_confirm_open()
@@ -270,7 +379,21 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                     })
                 }
             }
-            Task::batch([app.check(change.scope, false), app.reload_after_change()])
+            let scopes: Vec<_> = app
+                .checkups
+                .iter()
+                .filter(|(scope, results)| {
+                    **scope == change.scope
+                        || match scope {
+                            // A first check still in flight may have read before this batch.
+                            Scope::Global => results.report.is_some() || results.checking,
+                            Scope::Environment(_) => results.showing,
+                        }
+                })
+                .map(|(scope, _)| scope.clone())
+                .collect();
+            let checks = Task::batch(scopes.into_iter().map(|scope| app.check(scope, false)));
+            Task::batch([checks, app.reload_after_change()])
         }
         event => {
             let generation = match &event {
@@ -321,30 +444,21 @@ pub(crate) fn key(
     modifiers: Modifiers,
     status: iced::event::Status,
 ) -> Option<Task<Message>> {
-    if !app.checkup_visible()
-        || app.log_view
-        || app.section != crate::sidebar::Section::Library
-        || app.settings.is_some()
-        || app.action_menu.is_some()
-        || app.search_focused
-    {
-        return None;
-    }
+    let scope = app.checkup_key_scope()?;
     match key {
-        Key::Named(Named::Escape) if status != iced::event::Status::Captured => {
-            let scope = Scope::Environment(app.selected.clone()?);
+        Key::Named(Named::Escape)
+            if matches!(scope, Scope::Environment(_))
+                && status != iced::event::Status::Captured =>
+        {
             Some(update(app, Event::Back(scope)))
         }
-        Key::Named(Named::Tab) => {
-            let scope = Scope::Environment(app.selected.clone()?);
-            Some(
-                iced::advanced::widget::operate(focus_button::cycle(
-                    &app.checkup_controls(&scope),
-                    modifiers.shift(),
-                ))
-                .discard(),
-            )
-        }
+        Key::Named(Named::Tab) => Some(
+            iced::advanced::widget::operate(focus_button::cycle(
+                &app.checkup_controls(&scope),
+                modifiers.shift(),
+            ))
+            .discard(),
+        ),
         _ => None,
     }
 }
@@ -389,13 +503,55 @@ impl App {
             .is_some_and(|change| change.install.is_some())
     }
 
-    pub(crate) fn checkup_visible(&self) -> bool {
-        self.panel_open
-            && self.selected.as_ref().is_some_and(|name| {
+    pub(crate) fn checkup_scope(&self) -> Option<Scope> {
+        match self.section {
+            crate::sidebar::Section::Checkup => Some(Scope::Global),
+            crate::sidebar::Section::Library if self.panel_open => {
+                let scope = Scope::Environment(self.selected.clone()?);
                 self.checkups
-                    .get(&Scope::Environment(name.clone()))
+                    .get(&scope)
                     .is_some_and(|results| results.showing)
-            })
+                    .then_some(scope)
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn checkup_visible(&self) -> bool {
+        self.checkup_scope().is_some()
+    }
+
+    pub(crate) fn checkup_key_scope(&self) -> Option<Scope> {
+        let scope = self.checkup_scope()?;
+        let log_visible = self.log_view
+            && (if scope == Scope::Global {
+                self.checkup_log_scope.as_ref() == Some(&scope)
+            } else {
+                self.panel_log_visible()
+            });
+        (!log_visible
+            && self.settings.is_none()
+            && self.action_menu.is_none()
+            && !self.search_focused
+            && self.flow.is_none()
+            && self.removal.is_none()
+            && !self.trash_confirm_open()
+            && !self.close_prompt)
+            .then_some(scope)
+    }
+
+    fn checkup_install_log(&self, scope: &Scope) -> Option<(String, crate::worker::LogSource)> {
+        let (name, done) = self
+            .checkup_change()
+            .filter(|change| &change.scope == scope)?
+            .install
+            .as_ref()?;
+        (!done.is_canceled()).then(|| {
+            (
+                name.clone(),
+                crate::worker::LogSource::Install(done.clone()),
+            )
+        })
     }
 
     pub(crate) fn checkup_log_source(&self, name: &str) -> Option<crate::worker::LogSource> {
@@ -417,34 +573,59 @@ impl App {
             .is_some_and(|change| &change.scope == scope);
         let mut ids = Vec::new();
         if !results.checking
-            && !running
             && let Some(report) = &results.report
         {
-            for (index, problem) in report.problems.iter().enumerate() {
-                if problem.fix.is_some() {
-                    ids.push(format!("checkup-fix-{index}"));
+            for (group_index, (group, problems)) in groups(report, scope).into_iter().enumerate() {
+                if let Some(name) = group.environment()
+                    && self.cards.iter().any(|card| card.name == name)
+                {
+                    ids.push(scope.id(&format!("heading-{group_index}")));
+                }
+                for (index, problem) in problems {
+                    if !running && problem.fix.is_some() {
+                        ids.push(scope.id(&format!("fix-{index}")));
+                    }
                 }
             }
         }
         if self.checkup_can_fix(results) {
-            ids.push("checkup-apply".into());
+            ids.push(scope.id("apply"));
         }
-        ids.push("checkup-check".into());
-        ids.push("checkup-back".into());
+        ids.push(scope.id("check"));
+        if *scope != Scope::Global {
+            ids.push(scope.id("back"));
+        }
         if running {
-            ids.push("checkup-cancel".into());
+            ids.push(scope.id("cancel"));
             if self
                 .checkup_change()
                 .is_some_and(|change| change.install.is_some())
             {
-                ids.push("checkup-log".into());
+                ids.push(scope.id("log"));
             }
+        }
+        if self.toast.is_some() {
+            ids.push(focus_button::UNDO_ID.into());
         }
         ids
     }
 
+    pub(crate) fn checkup_page(&self) -> Element<'_, Message> {
+        let content = if self.log_view && self.checkup_log_scope == Some(Scope::Global) {
+            self.log_content()
+        } else {
+            self.checkup_view(Scope::Global)
+        };
+        column![content, self.checkup_status(&Scope::Global)]
+            .spacing(10)
+            .height(iced::Fill)
+            .into()
+    }
+
     pub(crate) fn checkup_view(&self, scope: Scope) -> Element<'_, Message> {
-        let results = &self.checkups[&scope];
+        let Some(results) = self.checkups.get(&scope) else {
+            return text("Checking...").into();
+        };
         let palette = self.palette;
         let running = self
             .checkup_change()
@@ -471,56 +652,77 @@ impl App {
         } else if let Some(error) = &results.error {
             body = body.push(text(error).color(palette.danger));
         } else if let Some(report) = &results.report {
-            body = body.push(text(summary(report)));
-            for (index, problem) in report.problems.iter().enumerate() {
-                let (marker, color) = match problem.level {
-                    Level::Error => ("x", palette.danger),
-                    Level::Warning => ("!", palette.warning),
-                };
-                body =
-                    body.push(row![text(marker).color(color), text(&problem.message)].spacing(8));
-                if let Some(fix) = &problem.fix {
-                    let checked = results.checked.contains(fix);
-                    let event = Event::Toggle(scope.clone(), fix.clone(), !checked);
-                    let toggle_scope = scope.clone();
-                    let toggle_fix = fix.clone();
-                    body = body.push(focus_button::control(
-                        checkbox(checked)
-                            .label(fix.label())
-                            .on_toggle_maybe((!running).then_some(move |checked| {
-                                Message::Checkup(Event::Toggle(
-                                    toggle_scope.clone(),
-                                    toggle_fix.clone(),
-                                    checked,
-                                ))
-                            }))
-                            .into(),
-                        !running,
-                        format!("checkup-fix-{index}"),
-                        Message::Checkup(event),
-                    ));
+            body = body.push(text(scope_summary(report, &scope)));
+            for (group_index, (group, problems)) in groups(report, &scope).into_iter().enumerate() {
+                if scope == Scope::Global {
+                    let heading = group.heading(&self.paths);
+                    body = if let Some(name) = group.environment() {
+                        body.push(control(
+                            heading,
+                            scope.id(&format!("heading-{group_index}")),
+                            self.cards.iter().any(|card| card.name == name),
+                            Event::Environment(name.to_owned()),
+                        ))
+                    } else {
+                        body.push(text(heading))
+                    };
+                }
+                for (index, problem) in problems {
+                    let (marker, color) = match problem.level {
+                        Level::Error => ("x", palette.danger),
+                        Level::Warning => ("!", palette.warning),
+                    };
+                    body = body
+                        .push(row![text(marker).color(color), text(&problem.message)].spacing(8));
+                    if let Some(fix) = &problem.fix {
+                        let checked = results.checked.contains(fix);
+                        let event = Event::Toggle(scope.clone(), fix.clone(), !checked);
+                        let toggle_scope = scope.clone();
+                        let toggle_fix = fix.clone();
+                        body = body.push(focus_button::control(
+                            checkbox(checked)
+                                .label(fix.label())
+                                .on_toggle_maybe((!running).then_some(move |checked| {
+                                    Message::Checkup(Event::Toggle(
+                                        toggle_scope.clone(),
+                                        toggle_fix.clone(),
+                                        checked,
+                                    ))
+                                }))
+                                .into(),
+                            !running,
+                            scope.id(&format!("fix-{index}")),
+                            Message::Checkup(event),
+                        ));
+                    }
                 }
             }
         }
         let count = results.selected().len();
-        body = body.push(
-            row![
-                control(
-                    format!("Fix {}", plural(count, "problem", "problems")),
-                    "checkup-apply",
-                    self.checkup_can_fix(results),
-                    Event::Fix(scope.clone())
-                ),
-                control(
-                    "Check again".into(),
-                    "checkup-check",
-                    true,
-                    Event::Check(scope.clone())
-                ),
-                control("Back".into(), "checkup-back", true, Event::Back(scope)),
-            ]
-            .spacing(8),
-        );
+        let mut controls = row![
+            control(
+                format!("Fix {}", plural(count, "problem", "problems")),
+                scope.id("apply"),
+                self.checkup_can_fix(results),
+                Event::Fix(scope.clone())
+            ),
+            control(
+                "Check again".into(),
+                scope.id("check"),
+                true,
+                Event::Check(scope.clone())
+            ),
+        ]
+        .spacing(8);
+        if scope != Scope::Global {
+            controls = controls.push(control(
+                "Back".into(),
+                scope.id("back"),
+                true,
+                Event::Back(scope),
+            ));
+        }
+        body = body.push(controls);
         if let Some(change) = &self.change {
             body = body.push(text(change.reason()).size(12).color(palette.muted));
         }
@@ -551,20 +753,21 @@ impl App {
                 "Cancel"
             }
             .into(),
-            "checkup-cancel",
+            scope.id("cancel"),
             true,
             Event::Cancel,
         )]
         .spacing(8);
         if change.install.is_some() {
+            let message = Message::Checkup(Event::OpenInstallLog(scope.clone()));
             controls = controls.push(focus_button::control(
                 button("Install log")
-                    .on_press(Message::OpenLog)
+                    .on_press(message.clone())
                     .padding([6, 12])
                     .into(),
                 true,
-                "checkup-log",
-                Message::OpenLog,
+                scope.id("log"),
+                message,
             ));
         }
         body = body.push(controls);
@@ -572,12 +775,7 @@ impl App {
     }
 }
 
-fn control(
-    label: String,
-    id: &'static str,
-    enabled: bool,
-    event: Event,
-) -> Element<'static, Message> {
+fn control(label: String, id: String, enabled: bool, event: Event) -> Element<'static, Message> {
     let message = Message::Checkup(event);
     focus_button::control(
         button(text(label))
@@ -592,6 +790,17 @@ fn control(
 
 fn plural(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
+}
+
+fn scope_summary(report: &Report, scope: &Scope) -> String {
+    if *scope == Scope::Global && report.problems.is_empty() {
+        format!(
+            "No problems in {}.",
+            plural(report.environments.len(), "environment", "environments")
+        )
+    } else {
+        summary(report)
+    }
 }
 
 fn summary(report: &Report) -> String {
@@ -610,6 +819,8 @@ fn summary(report: &Report) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod page_tests;
+
     use super::*;
     use wineo_core::components::Component;
     use wineo_core::validate::{Code, Problem};
@@ -683,7 +894,7 @@ mod tests {
     }
 
     fn open(app: &mut App) {
-        send(app, Event::Open("game".into()));
+        send(app, Event::Open(scope()));
     }
 
     fn start(app: &mut App) -> u64 {
@@ -811,12 +1022,12 @@ mod tests {
         assert_eq!(
             app.checkup_controls(&scope()),
             [
-                "checkup-fix-0",
-                "checkup-fix-1",
-                "checkup-fix-2",
-                "checkup-apply",
-                "checkup-check",
-                "checkup-back"
+                "checkup-environment-game-fix-0",
+                "checkup-environment-game-fix-1",
+                "checkup-environment-game-fix-2",
+                "checkup-environment-game-apply",
+                "checkup-environment-game-check",
+                "checkup-environment-game-back"
             ]
         );
         send(&mut app, Event::Toggle(scope(), download(), false));
@@ -922,7 +1133,7 @@ mod tests {
         assert!(!app.checkup_can_fix(&app.checkups[&scope()]));
         assert!(
             !app.checkup_controls(&scope())
-                .contains(&"checkup-apply".into())
+                .contains(&"checkup-environment-game-apply".into())
         );
         assert_eq!(
             app.change.as_ref().unwrap().reason(),
@@ -1200,7 +1411,7 @@ mod tests {
         ));
         assert!(
             app.checkup_controls(&scope())
-                .contains(&"checkup-log".into())
+                .contains(&"checkup-environment-game-log".into())
         );
         let _ = app.update(Message::OpenLog);
         assert!(app.log_view && app.log_install);
@@ -1211,7 +1422,7 @@ mod tests {
         assert!(app.checkup_log_source("game").is_none());
         assert!(
             !app.checkup_controls(&scope())
-                .contains(&"checkup-log".into())
+                .contains(&"checkup-environment-game-log".into())
         );
     }
 

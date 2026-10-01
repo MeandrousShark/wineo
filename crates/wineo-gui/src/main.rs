@@ -83,6 +83,8 @@ pub(crate) struct App {
     pub(crate) panel_error: Option<PanelError>,
     pub(crate) panel_note: Option<String>,
     pub(crate) log_view: bool,
+    log_error: Option<String>,
+    checkup_log_scope: Option<checkup::Scope>,
     pub(crate) log_buffer: LogBuffer,
     log_token: Option<Token>,
     log_generation: u64,
@@ -94,6 +96,7 @@ pub(crate) struct App {
     settings_generation: u64,
     section: sidebar::Section,
     pending_section: Option<sidebar::Section>,
+    pending_checkup_environment: Option<String>,
     trash_badge: sidebar::TrashBadge,
     trash_refreshing: bool,
     flow: Option<flow::Page>,
@@ -244,6 +247,8 @@ impl App {
             panel_error: None,
             panel_note: None,
             log_view: false,
+            log_error: None,
+            checkup_log_scope: None,
             log_buffer: LogBuffer::default(),
             log_token: None,
             log_generation: 0,
@@ -254,6 +259,7 @@ impl App {
             settings_generation: 0,
             section: sidebar::Section::Library,
             pending_section: None,
+            pending_checkup_environment: None,
             trash_badge: sidebar::TrashBadge::default(),
             trash_refreshing: true,
             flow: None,
@@ -396,7 +402,12 @@ impl App {
                     | Message::Hover(_)
                     | Message::Add
                     | Message::CloneEnvironment(_)
-                    | Message::Checkup(checkup::Event::Fix(_) | checkup::Event::Check(_))
+                    | Message::Checkup(
+                        checkup::Event::Fix(_)
+                            | checkup::Event::Check(_)
+                            | checkup::Event::OpenInstallLog(_)
+                            | checkup::Event::Environment(_)
+                    )
             )
         {
             return Task::none();
@@ -574,7 +585,7 @@ impl App {
                     && self.log_generation == generation
                     && let Err(error) = result
                 {
-                    self.panel_note = Some(error);
+                    self.log_error = Some(error);
                 }
                 Task::none()
             }
@@ -767,8 +778,7 @@ impl App {
                 }
             }
             Message::Key(key, modifiers, status) => {
-                let results_tab = self.checkup_visible()
-                    && !self.log_view
+                let results_tab = self.checkup_key_scope().is_some()
                     && key == keyboard::Key::Named(keyboard::key::Named::Tab);
                 if !results_tab && let Some(task) = removal::key(self, &key, modifiers, status) {
                     return task;

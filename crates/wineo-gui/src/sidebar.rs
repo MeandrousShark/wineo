@@ -116,6 +116,7 @@ impl App {
         if self.section == Section::Trash && section != Section::Trash {
             self.trash_page.cancel_review();
         }
+        let opening_checkup = section == Section::Checkup && self.section != section;
         self.section = section;
         self.action_menu = None;
         self.hovered = None;
@@ -125,6 +126,10 @@ impl App {
             match section {
                 Section::Library => self.load_visible_art(),
                 Section::Trash => self.reload_trash_page(),
+                Section::Checkup if opening_checkup => crate::checkup::update(
+                    self,
+                    crate::checkup::Event::Open(crate::checkup::Scope::Global),
+                ),
                 Section::Checkup => Task::none(),
             },
         ])
@@ -137,6 +142,13 @@ impl App {
             let mut label = row![text(section.label()).size(14), Space::new().width(Fill)]
                 .spacing(6)
                 .align_y(Center);
+            if section == Section::Checkup
+                && self
+                    .checkup_change()
+                    .is_some_and(|change| change.scope == crate::checkup::Scope::Global)
+            {
+                label = label.push(crate::spinner::spinner(palette, self.spinner_angle, 12.0));
+            }
             if section == Section::Trash {
                 if matches!(self.change, Some(crate::removal::Change::Trash(_))) {
                     label = label.push(crate::spinner::spinner(palette, self.spinner_angle, 12.0));

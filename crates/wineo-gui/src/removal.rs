@@ -169,7 +169,11 @@ impl iced::advanced::widget::Operation<(bool, bool)> for RemoveFocus {
 }
 
 pub(crate) fn delete_key(app: &mut App, search: bool, captured: bool) -> Task<Message> {
-    if !search && !captured && !app.log_view && !app.checkup_visible() && app.action_menu.is_none()
+    if !search
+        && !captured
+        && !app.panel_log_visible()
+        && !app.checkup_visible()
+        && app.action_menu.is_none()
     {
         app.selected
             .clone()
@@ -1067,7 +1071,9 @@ mod tests {
         let (_root, mut app) = fixture(false);
         let scope = crate::checkup::Scope::Environment("game".into());
         let other = crate::checkup::Scope::Environment("other".into());
-        let _ = app.update(Message::Checkup(crate::checkup::Event::Open("game".into())));
+        let _ = app.update(Message::Checkup(crate::checkup::Event::Open(
+            crate::checkup::Scope::Environment("game".into()),
+        )));
         app.checkups.insert(other.clone(), Default::default());
         assert!(app.checkups.contains_key(&scope));
         let entry = removed(&mut app);

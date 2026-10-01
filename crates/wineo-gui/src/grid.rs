@@ -254,8 +254,11 @@ impl App {
                         .size(14)
                         .wrapping(iced::widget::text::Wrapping::None),
                     button("Settings").on_press(Message::ContextSettings(name.clone())),
-                    button("Check for problems")
-                        .on_press(Message::Checkup(crate::checkup::Event::Open(name.clone()))),
+                    button("Check for problems").on_press(Message::Checkup(
+                        crate::checkup::Event::Open(crate::checkup::Scope::Environment(
+                            name.clone()
+                        ))
+                    )),
                     button("Clone").on_press_maybe(
                         (!self.foreground_busy()).then(|| Message::CloneEnvironment(name.clone()))
                     ),
@@ -325,11 +328,8 @@ impl App {
             return container(
                 page.push(
                     container(
-                        column![
-                            text(self.section.label()).size(22),
-                            text("Checkup is coming soon.").color(palette.muted),
-                        ]
-                        .spacing(12),
+                        column![text(self.section.label()).size(22), self.checkup_page(),]
+                            .spacing(12),
                     )
                     .padding(24),
                 ),

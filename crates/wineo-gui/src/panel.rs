@@ -196,11 +196,16 @@ impl App {
     pub(crate) fn chosen_target<'a>(&'a self, card: &'a Card) -> Option<&'a str> {
         self.target.as_deref().or(card.default_target.as_deref())
     }
+    pub(crate) fn panel_log_visible(&self) -> bool {
+        self.log_view && self.checkup_log_scope != Some(crate::checkup::Scope::Global)
+    }
     pub(crate) fn close_log(&mut self) {
         if let Some(token) = self.log_token.take() {
             token.cancel();
         }
         self.log_view = false;
+        self.log_error = None;
+        self.checkup_log_scope = None;
         self.log_generation = self.log_generation.wrapping_add(1);
     }
     pub(crate) fn close_panel(&mut self) {
@@ -282,7 +287,10 @@ impl App {
         let Some(source) = self.log_source(card) else {
             return Task::none();
         };
-        let name = card.name.clone();
+        self.open_log_for(card.name.clone(), source)
+    }
+
+    pub(crate) fn open_log_for(&mut self, name: String, source: LogSource) -> Task<Message> {
         self.close_log();
         self.log_view = true;
         self.log_install = matches!(source, LogSource::Install(_));
@@ -290,6 +298,41 @@ impl App {
         let token = Token::new();
         self.log_token = Some(token.clone());
         worker::log(self.paths.clone(), name, self.log_generation, token, source)
+    }
+    pub(crate) fn log_content(&self) -> Element<'_, Message> {
+        let palette = self.palette;
+        let mut body = column![].spacing(8).push(
+            row![
+                button("Back").on_press(Message::CloseLog).padding([6, 12]),
+                logview::controls(
+                    self.log_buffer.view(),
+                    self.log_buffer.has_text(),
+                    Message::CopyLog,
+                    Message::LogFollow,
+                ),
+                text(if self.log_install {
+                    "Install log"
+                } else {
+                    "Game output"
+                })
+                .size(14)
+                .color(palette.muted)
+            ]
+            .spacing(8)
+            .align_y(Center),
+        );
+        if let Some(error) = &self.log_error {
+            body = body.push(text(error).color(palette.danger));
+        }
+        body.push(logview::editor(
+            self.log_buffer.view(),
+            palette,
+            Fill,
+            LOG_ID,
+            Message::LogAction,
+            Message::LogScrolled,
+        ))
+        .into()
     }
     /// The log the panel can show for a card right now. An install in progress
     /// wins over the state, because the environment is still Inactive then.
@@ -448,35 +491,8 @@ impl App {
             Message::Stop,
         ));
         let mut inner = column![].spacing(8).width(Fill);
-        if self.log_view {
-            inner = inner.push(
-                row![
-                    button("Back").on_press(Message::CloseLog).padding([6, 12]),
-                    logview::controls(
-                        self.log_buffer.view(),
-                        self.log_buffer.has_text(),
-                        Message::CopyLog,
-                        Message::LogFollow,
-                    ),
-                    text(if self.log_install {
-                        "Install log"
-                    } else {
-                        "Game output"
-                    })
-                    .size(14)
-                    .color(palette.muted)
-                ]
-                .spacing(8)
-                .align_y(Center),
-            );
-            inner = inner.push(logview::editor(
-                self.log_buffer.view(),
-                palette,
-                Fill,
-                LOG_ID,
-                Message::LogAction,
-                Message::LogScrolled,
-            ));
+        if self.panel_log_visible() {
+            inner = inner.push(self.log_content());
         } else if self.checkup_visible() {
             inner = inner
                 .push(self.checkup_view(crate::checkup::Scope::Environment(card.name.clone())));
@@ -491,7 +507,7 @@ impl App {
                 inner = inner.push(detail_row("Tags", &card.tags.join(", "), palette));
             }
         }
-        if !self.log_view && !self.checkup_visible() {
+        if !self.panel_log_visible() && !self.checkup_visible() {
             inner = inner.push(actions);
             let mut extra = row![].spacing(8);
             if self.log_source(card).is_some() {
