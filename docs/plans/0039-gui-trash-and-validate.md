@@ -57,6 +57,13 @@ Settled on 2026-09-30, from the draft's open decisions:
 - One management action runs at a time, which keeps cancellation, closing,
   and results simple.
 
+Settled on 2026-09-30, during step 2:
+
+- Ctrl+N opens Add only on the Library section. It does nothing on Trash
+  or Checkup.
+- Opening the global settings gear from Trash or Checkup returns to Library
+  on Back. The polish pass may revisit this.
+
 ## Existing foundation
 
 - `trash::remove_with(paths, name, include_prefix, on_wait) -> Entry` moves
