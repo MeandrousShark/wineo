@@ -70,6 +70,18 @@ impl App {
         if self.section != crate::sidebar::Section::Library {
             return Task::none();
         }
+        if let Some(task) = crate::checkup::key(
+            self,
+            &key,
+            modifiers,
+            if captured {
+                iced::event::Status::Captured
+            } else {
+                iced::event::Status::Ignored
+            },
+        ) {
+            return task;
+        }
         self.search_focused = search_focused;
         if key == Key::Named(Named::Delete) && modifiers.is_empty() {
             return crate::removal::delete_key(self, search_focused, captured);

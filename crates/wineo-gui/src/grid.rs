@@ -10,8 +10,8 @@ use crate::theme::Palette;
 use crate::wheel;
 use crate::{App, CARD_WIDTH, GAP, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
 
-// Reserve enough height for the full action menu, including Remove.
-const ACTION_MENU_HEIGHT: f32 = 270.0;
+// Reserve enough height for the full action menu, including Check for problems.
+const ACTION_MENU_HEIGHT: f32 = 308.0;
 
 impl App {
     pub(crate) fn grid(&self) -> Element<'_, Message> {
@@ -209,17 +209,18 @@ impl App {
             } else {
                 "An operation is still running. Cancel it and close wineo?"
             };
-            let controls = if self.closing && self.change.is_some() {
-                row![text("Waiting for the change to finish...")]
-            } else if self.closing {
-                row![button("Force stop").on_press(Message::ForceCloseWork)]
-            } else {
-                row![
-                    button("Keep working").on_press(Message::KeepWorking),
-                    button("Cancel and close").on_press(Message::CancelAndClose),
-                ]
-            }
-            .spacing(12);
+            let controls =
+                if self.closing && self.change.is_some() && !self.checkup_force_available() {
+                    row![text("Waiting for the change to finish...")]
+                } else if self.closing {
+                    row![button("Force stop").on_press(Message::ForceCloseWork)]
+                } else {
+                    row![
+                        button("Keep working").on_press(Message::KeepWorking),
+                        button("Cancel and close").on_press(Message::CancelAndClose),
+                    ]
+                }
+                .spacing(12);
             let palette = self.palette;
             let prompt = container(column![text(message), controls].spacing(16))
                 .padding(24)
@@ -253,6 +254,8 @@ impl App {
                         .size(14)
                         .wrapping(iced::widget::text::Wrapping::None),
                     button("Settings").on_press(Message::ContextSettings(name.clone())),
+                    button("Check for problems")
+                        .on_press(Message::Checkup(crate::checkup::Event::Open(name.clone()))),
                     button("Clone").on_press_maybe(
                         (!self.foreground_busy()).then(|| Message::CloneEnvironment(name.clone()))
                     ),

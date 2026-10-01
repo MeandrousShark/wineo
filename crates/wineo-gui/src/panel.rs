@@ -151,14 +151,19 @@ pub(crate) fn status(event: &LaunchEvent) -> Option<&'static str> {
 
 pub(crate) fn event_status(event: &LaunchEvent) -> Option<String> {
     match event {
-        LaunchEvent::Winetricks(WinetricksEvent::Progress(step)) => Some(match step.total {
+        LaunchEvent::Winetricks(event) => winetricks_status(event),
+        _ => status(event).map(str::to_owned),
+    }
+}
+
+pub(crate) fn winetricks_status(event: &WinetricksEvent) -> Option<String> {
+    match event {
+        WinetricksEvent::Progress(step) => Some(match step.total {
             1 => format!("Installing {}...", step.verb),
             total => format!("Installing {} ({} of {total})...", step.verb, step.position),
         }),
-        LaunchEvent::Winetricks(WinetricksEvent::Installing(verbs)) => {
-            Some(format!("Installing {}...", verbs.join(", ")))
-        }
-        _ => status(event).map(str::to_owned),
+        WinetricksEvent::Installing(verbs) => Some(format!("Installing {}...", verbs.join(", "))),
+        _ => None,
     }
 }
 
@@ -288,6 +293,9 @@ impl App {
     /// The log the panel can show for a card right now. An install in progress
     /// wins over the state, because the environment is still Inactive then.
     pub(crate) fn log_source(&self, card: &Card) -> Option<LogSource> {
+        if let Some(source) = self.checkup_log_source(&card.name) {
+            return Some(source);
+        }
         let installing = self.operation.as_ref().filter(|operation| {
             operation.name == card.name
                 && operation.kind == OperationKind::Start
@@ -468,6 +476,9 @@ impl App {
                 Message::LogAction,
                 Message::LogScrolled,
             ));
+        } else if self.checkup_visible() {
+            inner = inner
+                .push(self.checkup_view(crate::checkup::Scope::Environment(card.name.clone())));
         } else if let Some(error) = &card.error {
             inner = inner.push(error_box(error, palette));
         } else {
@@ -479,7 +490,7 @@ impl App {
                 inner = inner.push(detail_row("Tags", &card.tags.join(", "), palette));
             }
         }
-        if !self.log_view {
+        if !self.log_view && !self.checkup_visible() {
             inner = inner.push(actions);
             let mut extra = row![].spacing(8);
             if self.log_source(card).is_some() {
@@ -497,6 +508,8 @@ impl App {
             );
             inner = inner.push(extra);
         }
+        inner =
+            inner.push(self.checkup_status(&crate::checkup::Scope::Environment(card.name.clone())));
         if let Some(operation) = self.operation.as_ref().filter(|op| op.name == card.name) {
             inner = inner.push(
                 row![

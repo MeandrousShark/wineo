@@ -17,23 +17,26 @@ pub(crate) fn undo<'a>(
 pub(crate) fn control<'a>(
     content: Element<'a, crate::Message>,
     enabled: bool,
-    id: &'static str,
+    id: impl Into<iced::widget::Id>,
     on_press: crate::Message,
 ) -> Element<'a, crate::Message> {
     Element::new(FocusControl {
         content,
         enabled,
-        id,
+        id: id.into(),
         on_press,
     })
 }
 
-pub(crate) fn cycle(
-    ids: &[&'static str],
+pub(crate) fn cycle<S: AsRef<str>>(
+    ids: &[S],
     reverse: bool,
-) -> impl iced::advanced::widget::Operation + use<> {
+) -> impl iced::advanced::widget::Operation + use<S> {
     Cycle {
-        ids: ids.iter().map(|id| iced::widget::Id::new(id)).collect(),
+        ids: ids
+            .iter()
+            .map(|id| iced::widget::Id::from(id.as_ref().to_owned()))
+            .collect(),
         focused: None,
         reverse,
     }
@@ -84,7 +87,7 @@ impl iced::advanced::widget::Operation for Cycle {
 struct FocusControl<'a, R: AdvancedRenderer = iced::Renderer> {
     content: Element<'a, crate::Message, iced::Theme, R>,
     enabled: bool,
-    id: &'static str,
+    id: iced::widget::Id,
     on_press: crate::Message,
 }
 
@@ -158,7 +161,7 @@ where
     ) {
         if self.enabled {
             operation.focusable(
-                Some(&iced::widget::Id::new(self.id)),
+                Some(&self.id),
                 layout.bounds(),
                 tree.state.downcast_mut::<State>(),
             );
@@ -301,7 +304,7 @@ mod tests {
         let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
             content: button.into(),
             enabled: true,
-            id: UNDO_ID,
+            id: UNDO_ID.into(),
             on_press: crate::Message::Undo,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
@@ -344,7 +347,7 @@ mod tests {
         let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
             content: button.into(),
             enabled: true,
-            id: UNDO_ID,
+            id: UNDO_ID.into(),
             on_press: crate::Message::Undo,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
@@ -489,7 +492,7 @@ mod tests {
                     Element::new(FocusControl {
                         content: button.into(),
                         enabled: true,
-                        id,
+                        id: id.into(),
                         on_press: on_press.clone(),
                     });
                 let mut tree = tree::Tree::new(widget.as_widget());

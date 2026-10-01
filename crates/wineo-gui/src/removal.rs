@@ -34,6 +34,7 @@ pub(crate) enum Change {
         name: String,
     },
     Trash(crate::trash_page::Change),
+    Checkup(crate::checkup::Change),
 }
 
 impl Change {
@@ -42,6 +43,7 @@ impl Change {
             Self::Remove { name, .. } => format!("Busy: removing {name}"),
             Self::Restore { name, .. } => format!("Busy: restoring {name}"),
             Self::Trash(change) => change.reason(),
+            Self::Checkup(change) => format!("Busy: fixing {}", change.scope.label()),
         }
     }
 }
@@ -167,7 +169,8 @@ impl iced::advanced::widget::Operation<(bool, bool)> for RemoveFocus {
 }
 
 pub(crate) fn delete_key(app: &mut App, search: bool, captured: bool) -> Task<Message> {
-    if !search && !captured && !app.log_view && app.action_menu.is_none() {
+    if !search && !captured && !app.log_view && !app.checkup_visible() && app.action_menu.is_none()
+    {
         app.selected
             .clone()
             .map_or_else(Task::none, |name| app.open_remove(name))
@@ -364,6 +367,7 @@ impl App {
     }
 
     pub(crate) fn cancel_management(&self) {
+        self.cancel_checkup(false);
         if let Some(Change::Remove {
             token,
             phase: None | Some(RemoveEvent::Waiting),

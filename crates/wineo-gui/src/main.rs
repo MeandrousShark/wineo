@@ -1,4 +1,6 @@
 mod artwork;
+mod checkup;
+mod checkup_work;
 mod chips;
 mod flow;
 mod focus_button;
@@ -109,6 +111,7 @@ pub(crate) struct App {
     library_generation: u64,
     trash_generation: u64,
     trash_page: trash_page::Page,
+    checkups: HashMap<checkup::Scope, checkup::Results>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +209,7 @@ pub(crate) enum Message {
     ToastHover(bool),
     ToastFocus(bool, Instant),
     Trash(trash_page::Event),
+    Checkup(checkup::Event),
 }
 
 impl App {
@@ -266,6 +270,7 @@ impl App {
             library_generation: 0,
             trash_generation: 0,
             trash_page: trash_page::Page::default(),
+            checkups: HashMap::new(),
         };
         let load = app.reload_library();
         let badge = app.reload_badge();
@@ -323,6 +328,7 @@ impl App {
 
     fn spinning(&self) -> bool {
         self.operation.is_some()
+            || self.checkups.values().any(|results| results.checking)
             || self.change.is_some()
             || (self.section == sidebar::Section::Trash && self.trash_page.reviewing)
             || self.settings.as_ref().is_some_and(|page| page.saving)
@@ -392,6 +398,7 @@ impl App {
             return Task::none();
         }
         let task = match message {
+            Message::Checkup(event) => checkup::update(self, event),
             Message::Trash(event) => trash_page::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
@@ -753,6 +760,9 @@ impl App {
                 }
             }
             Message::Key(key, modifiers, status) => {
+                if let Some(task) = checkup::key(self, &key, modifiers, status) {
+                    return task;
+                }
                 if let Some(task) = removal::key(self, &key, modifiers, status) {
                     return task;
                 }
@@ -862,6 +872,7 @@ impl App {
                 let force = matches!(event, Message::ForceCloseWork);
                 self.closing = true;
                 self.cancel_management();
+                self.cancel_checkup(force);
                 if let Some(page) = &mut self.flow {
                     page.cancel(force);
                 }
