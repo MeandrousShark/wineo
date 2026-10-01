@@ -64,6 +64,13 @@ Settled on 2026-09-30, during step 2:
 - Opening the global settings gear from Trash or Checkup returns to Library
   on Back. The polish pass may revisit this.
 
+Settled on 2026-10-01, during step 5:
+
+- Closing the panel leaves the results view, like Log. Reopening the
+  environment shows its details, and a running fix batch still shows its
+  status line there. **Check for problems** runs a fresh check, and the
+  last batch's results stay above it until then.
+
 ## Existing foundation
 
 - `trash::remove_with(paths, name, include_prefix, on_wait) -> Entry` moves
