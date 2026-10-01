@@ -8,6 +8,7 @@ mod logview;
 mod panel;
 mod picker;
 mod settings;
+mod shortcuts;
 mod sidebar;
 mod spinner;
 mod theme;
@@ -639,28 +640,29 @@ impl App {
                     }
                 }
             }
-            Message::Key(key, modifiers, status)
-                if sidebar::shortcut(&key, modifiers).is_some() =>
-            {
-                if status == iced::event::Status::Captured {
-                    Task::none()
+            Message::Key(key, modifiers, status) => {
+                // shortcuts::capture normally takes these first. This covers a
+                // key an open overlay saw and left uncaptured.
+                if let Some(section) = sidebar::shortcut(&key, modifiers) {
+                    if status == iced::event::Status::Captured {
+                        Task::none()
+                    } else {
+                        self.navigate_section(section)
+                    }
+                } else if self.settings.is_some() {
+                    self.settings_key(&key, modifiers, status == iced::event::Status::Captured)
+                } else if modifiers.control()
+                    && matches!(key.as_ref(), keyboard::Key::Character("n" | "N"))
+                {
+                    self.update(Message::Add)
                 } else {
-                    self.navigate_section(sidebar::shortcut(&key, modifiers).unwrap())
+                    iced::widget::operation::is_focused(iced::widget::Id::new(SEARCH_ID)).map(
+                        move |focused| {
+                            Message::KeyWithFocus(key.clone(), modifiers, status, focused)
+                        },
+                    )
                 }
             }
-            Message::Key(key, modifiers, status) if self.settings.is_some() => {
-                self.settings_key(&key, modifiers, status == iced::event::Status::Captured)
-            }
-            Message::Key(key, modifiers, _)
-                if modifiers.control()
-                    && matches!(key.as_ref(), keyboard::Key::Character("n" | "N")) =>
-            {
-                self.update(Message::Add)
-            }
-            Message::Key(key, modifiers, status) => iced::widget::operation::is_focused(
-                iced::widget::Id::new(SEARCH_ID),
-            )
-            .map(move |focused| Message::KeyWithFocus(key.clone(), modifiers, status, focused)),
             Message::KeyWithFocus(key, modifiers, status, focused) => self.handle_key(
                 key,
                 modifiers,

@@ -60,13 +60,6 @@ impl App {
         if self.close_prompt || self.flow.is_some() {
             return Task::none();
         }
-        if let Some(section) = crate::sidebar::shortcut(&key, modifiers) {
-            return if captured {
-                Task::none()
-            } else {
-                self.navigate_section(section)
-            };
-        }
         if self.settings.is_some() {
             return self.settings_key(&key, modifiers, captured);
         }

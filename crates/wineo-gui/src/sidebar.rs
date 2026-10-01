@@ -178,12 +178,8 @@ mod tests {
         (root, App::boot(paths).0)
     }
 
-    fn key(app: &mut App, digit: &str, status: Status) {
-        let _ = app.update(Message::Key(
-            Key::Character(digit.into()),
-            Modifiers::CTRL,
-            status,
-        ));
+    fn key(app: &mut App, digit: &str) {
+        crate::shortcuts::tests::press(app, digit, Modifiers::CTRL);
     }
 
     #[test]
@@ -202,7 +198,7 @@ mod tests {
             } else {
                 Section::Library
             }));
-            key(&mut app, digit, Status::Ignored);
+            key(&mut app, digit);
             assert_eq!(app.section, section);
         }
     }
@@ -211,7 +207,11 @@ mod tests {
     fn captured_keys_and_extra_modifiers_do_not_switch_sections() {
         let (_root, mut app) = fixture();
         for digit in ["1", "2", "3"] {
-            key(&mut app, digit, Status::Captured);
+            let _ = app.update(Message::Key(
+                Key::Character(digit.into()),
+                Modifiers::CTRL,
+                Status::Captured,
+            ));
             let _ = app.update(Message::KeyWithFocus(
                 Key::Character(digit.into()),
                 Modifiers::CTRL,
@@ -245,7 +245,7 @@ mod tests {
             }
             let kind = std::mem::discriminant(app.flow.as_ref().unwrap());
             for digit in ["1", "2", "3"] {
-                key(&mut app, digit, Status::Ignored);
+                key(&mut app, digit);
                 let _ = app.update(Message::KeyWithFocus(
                     Key::Character(digit.into()),
                     Modifiers::CTRL,
@@ -259,14 +259,14 @@ mod tests {
         }
         app.flow = Some(crate::flow::Page::clone(app.paths.clone(), "game".into()).0);
         for digit in ["1", "2", "3"] {
-            key(&mut app, digit, Status::Ignored);
+            key(&mut app, digit);
             let _ = app.update(Message::Section(Section::Checkup));
             assert_eq!(app.section, Section::Library);
         }
         app.flow = None;
         app.close_prompt = true;
         for digit in ["1", "2", "3"] {
-            key(&mut app, digit, Status::Ignored);
+            key(&mut app, digit);
             let _ = app.update(Message::KeyWithFocus(
                 Key::Character(digit.into()),
                 Modifiers::CTRL,
@@ -436,7 +436,7 @@ mod tests {
             assert_eq!(app.operation.as_ref().unwrap().status, "Starting...");
             assert!(!token.is_canceled());
         }
-        key(&mut app, "1", Status::Ignored);
+        key(&mut app, "1");
         assert_eq!(app.section, Section::Library);
         assert!(app.panel_open);
         assert!(app.operation.is_some());

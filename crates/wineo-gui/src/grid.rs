@@ -111,6 +111,10 @@ impl App {
         (self.window_size.width - 40.0).clamp(280.0, widest)
     }
     pub(crate) fn view(&self) -> Element<'_, Message> {
+        crate::shortcuts::capture(self.sidebar_view(), Message::Section)
+    }
+
+    fn sidebar_view(&self) -> Element<'_, Message> {
         let mut page: Element<'_, Message> = row![self.sidebar(), self.page_view()]
             .width(Fill)
             .height(Fill)

@@ -3142,11 +3142,11 @@ mod tests {
                 crate::sidebar::Section::Trash => "2",
                 crate::sidebar::Section::Checkup => "3",
             };
-            Message::Key(
-                Key::Character(digit.into()),
-                Modifiers::CTRL,
-                iced::event::Status::Ignored,
-            )
+            let (mut messages, status) =
+                crate::shortcuts::tests::input_messages("settings field", digit, Modifiers::CTRL);
+            assert_eq!(status, iced::event::Status::Captured);
+            assert!(matches!(messages.as_slice(), [Message::Section(_)]));
+            messages.pop().unwrap()
         } else {
             Message::Section(section)
         }
@@ -3208,7 +3208,9 @@ mod tests {
                 assert!(!app.settings.as_ref().unwrap().leave_prompt);
                 assert_eq!(app.pending_section, None);
             }
-            let _ = app.update(Message::Section(Section::Trash));
+            let _ = app.update(sidebar_request(Section::Trash, true));
+            assert!(app.settings.as_ref().unwrap().leave_prompt);
+            assert_eq!(app.pending_section, Some(Section::Trash));
             for section in [Section::Library, Section::Checkup] {
                 let _ = app.update(sidebar_request(section, true));
                 let _ = app.update(Message::Section(section));
@@ -3240,9 +3242,13 @@ mod tests {
             let mut app = sidebar_app(&paths, global);
             let _ = app.update(Message::Settings(Event::MenuOpened));
             let _ = app.update(sidebar_request(Section::Trash, true));
+            let _ = app.update(Message::Section(Section::Trash));
             assert!(app.settings.is_some());
+            assert_eq!(app.section, Section::Library);
+            assert_eq!(app.pending_section, None);
             let _ = app.update(Message::Settings(Event::MenuClosed));
             app.settings.as_mut().unwrap().saving = true;
+            let _ = app.update(sidebar_request(Section::Checkup, true));
             let _ = app.update(Message::Section(Section::Checkup));
             assert!(app.settings.is_some());
             assert_eq!(app.section, Section::Library);
