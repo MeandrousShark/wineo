@@ -43,6 +43,20 @@ Added at the maintainer's suggestion on 2026-09-30, after the first draft:
 - Tests for unreadable trash, interrupted removal and restore, and a fix
   shared by several environments.
 
+Settled on 2026-09-30, from the draft's open decisions:
+
+- The global settings gear stays in the top bar. Settings isn't rearranged
+  for this release.
+- Prune offers all three CLI selectors: one entry, older than N days, and
+  Empty trash.
+- The Undo toast lasts 10 seconds and pauses while the pointer is over it
+  or it has keyboard focus. Restore on the Trash page stays available
+  afterward.
+- Checkup runs only when asked. The pending-trash badge already surfaces
+  interrupted work.
+- One management action runs at a time, which keeps cancellation, closing,
+  and results simple.
+
 ## Existing foundation
 
 - `trash::remove_with(paths, name, include_prefix, on_wait) -> Entry` moves
@@ -147,7 +161,8 @@ You can restore them from Trash.
   once data starts moving, the button is disabled until it finishes.
 - On success the dialog and the panel close, the card disappears, and a
   toast at the bottom says "Removed hades to the trash." with **Undo** for
-  10 seconds. Undo calls `trash::restore` with the entry ID. If restore
+  10 seconds, paused while the pointer is over it or it has keyboard focus.
+  Undo calls `trash::restore` with the entry ID. If restore
   refuses, for example because a new environment took the name, the toast
   shows the error instead.
 - Desktop entries removed and anything left in place (the prefix after a
@@ -287,26 +302,6 @@ A remove, restore, prune, recovery, or batch of fixes is a running change.
 | Ctrl+1, Ctrl+2, Ctrl+3 | Library, Trash, Checkup |
 | Ctrl+Z | Undo, while the toast shows |
 | Esc | Close the remove dialog or confirm; on the panel's results view, go back to the details |
-
-## Decisions for the maintainer
-
-1. **Gear placement.** Recommended: keep the global settings gear in the
-   top bar for 0039 and decide in the polish pass. The alternative is a
-   **Settings** row at the bottom of the sidebar now.
-2. **Prune controls.** Recommended: all three CLI selectors (one entry,
-   older than N days, and Empty trash), so the GUI has full parity. The
-   lighter option is per-entry and Empty trash only.
-3. **Undo window.** Recommended: 10 seconds, and the toast stays while the
-   pointer is over it. Undo is also always available as Restore on the
-   Trash page.
-4. **Checkup on startup.** Recommended: no. It runs when the page opens.
-   Interrupted trash work, the one thing that blocks other commands, already
-   gets a badge through the cheap pending check.
-5. **One running change at a time.** Recommended: yes, as described under
-   Running changes. Core's locks would make most overlaps safe, but a
-   second change usually fails on a busy lock anyway, and one at a time
-   keeps the status and results easy to follow. The alternative is to
-   allow changes on different environments to overlap.
 
 ## Implementation sequence
 
