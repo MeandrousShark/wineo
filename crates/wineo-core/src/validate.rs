@@ -481,6 +481,21 @@ impl Report {
         self.count(Level::Warning)
     }
 
+    /// Every distinct fix in problem order. Shared downloads are offered once.
+    pub fn fixes(&self) -> Vec<Fix> {
+        let mut fixes = Vec::new();
+        for fix in self
+            .problems
+            .iter()
+            .filter_map(|problem| problem.fix.as_ref())
+        {
+            if !fixes.contains(fix) {
+                fixes.push(fix.clone());
+            }
+        }
+        fixes
+    }
+
     fn count(&self, level: Level) -> usize {
         self.problems
             .iter()
@@ -1313,13 +1328,18 @@ pub fn apply(
     paths: &Paths,
     fix: &Fix,
     token: &crate::cancel::Token,
+    winetricks_output: winetricks::EnsureOutput<'_>,
     winetricks_events: impl FnMut(winetricks::WinetricksEvent),
     download: impl FnOnce(Component, Option<&str>) -> anyhow::Result<()>,
 ) -> anyhow::Result<Vec<Note>> {
     match fix {
-        Fix::InstallWinetricks { environment } => {
-            install_winetricks(paths, environment, token, winetricks_events)?
-        }
+        Fix::InstallWinetricks { environment } => install_winetricks(
+            paths,
+            environment,
+            token,
+            winetricks_output,
+            winetricks_events,
+        )?,
         Fix::Download { component, version } => {
             let global = GlobalConfig::load_or_default(paths)?;
             let asked = version.as_deref().unwrap_or(LATEST);
@@ -1362,20 +1382,14 @@ fn install_winetricks(
     paths: &Paths,
     name: &str,
     token: &crate::cancel::Token,
+    output: winetricks::EnsureOutput<'_>,
     mut events: impl FnMut(winetricks::WinetricksEvent),
 ) -> anyhow::Result<()> {
-    winetricks::ensure(
-        paths,
-        name,
-        &Default::default(),
-        token,
-        winetricks::EnsureOutput::Stderr,
-        |event| {
-            if let winetricks::EnsureEvent::Winetricks(event) = event {
-                events(event);
-            }
-        },
-    )
+    winetricks::ensure(paths, name, &Default::default(), token, output, |event| {
+        if let winetricks::EnsureEvent::Winetricks(event) = event {
+            events(event);
+        }
+    })
 }
 
 /// What `wineo stop` does for a lost run, which is all there is to stop.
@@ -1507,7 +1521,143 @@ mod tests {
         fix: &Fix,
         download: impl FnOnce(Component, Option<&str>) -> anyhow::Result<()>,
     ) -> anyhow::Result<Vec<Note>> {
-        super::apply(paths, fix, &crate::cancel::Token::new(), |_| {}, download)
+        super::apply(
+            paths,
+            fix,
+            &crate::cancel::Token::new(),
+            winetricks::EnsureOutput::Stderr,
+            |_| {},
+            download,
+        )
+    }
+
+    #[test]
+    fn report_fixes_deduplicates_shared_downloads_in_problem_order() {
+        let download = Fix::Download {
+            component: Component::Dxvk,
+            version: Some("2.7".to_owned()),
+        };
+        let cleanup = Fix::RemoveStateDir {
+            environment: "oldgame".to_owned(),
+        };
+        let other = Fix::Download {
+            component: Component::Dxvk,
+            version: Some("2.6".to_owned()),
+        };
+        let report = Report {
+            problems: [
+                Some(download.clone()),
+                None,
+                Some(cleanup.clone()),
+                Some(download.clone()),
+                Some(other.clone()),
+                Some(cleanup.clone()),
+            ]
+            .into_iter()
+            .map(|fix| Problem::new(Code::BuildMissing, None, "problem".to_owned(), fix))
+            .collect(),
+            ..Report::default()
+        };
+        assert_eq!(report.fixes(), [download, cleanup, other]);
+        assert!(Report::default().fixes().is_empty());
+    }
+
+    #[test]
+    fn a_winetricks_fix_with_log_output_reports_progress() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        executable(
+            &bin.join("winetricks"),
+            "#!/bin/sh\nfor verb in \"$@\"; do\n  case \"$verb\" in -q) ;; *) echo \"Executing w_do_call $verb\" >&2 ;; esac\ndone\n",
+        );
+        let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )))
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "validate::tests::winetricks_fix_log_child",
+                "--nocapture",
+            ])
+            .env("WINEO_VALIDATE_LOG_TEST", "1")
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn winetricks_fix_log_child() {
+        if std::env::var_os("WINEO_VALIDATE_LOG_TEST").is_none() {
+            return;
+        }
+        let f = Fixture::new();
+        f.wine("game", "winetricks = ['corefonts', 'gdiplus']\n");
+        f.global("");
+        let log = f.root.join("install.log");
+        fs::write(&log, "stale output\n").unwrap();
+        let mut started = 0;
+        let mut steps = Vec::new();
+        let mut lines = Vec::new();
+        super::apply(
+            &f.paths,
+            &Fix::InstallWinetricks {
+                environment: "game".to_owned(),
+            },
+            &crate::cancel::Token::new(),
+            winetricks::EnsureOutput::Log(&log),
+            |event| match event {
+                winetricks::WinetricksEvent::LogStarted => {
+                    started += 1;
+                    assert!(!fs::read_to_string(&log).unwrap().contains("stale output"));
+                }
+                winetricks::WinetricksEvent::Progress(step) => {
+                    assert_eq!(started, 1);
+                    steps.push(step);
+                }
+                winetricks::WinetricksEvent::OutputLine(line) => {
+                    assert_eq!(started, 1);
+                    lines.push(line);
+                }
+                _ => {}
+            },
+            no_download,
+        )
+        .unwrap();
+        assert_eq!(started, 1);
+        assert_eq!(
+            steps,
+            [
+                winetricks::Step {
+                    verb: "corefonts".to_owned(),
+                    position: 1,
+                    total: 2
+                },
+                winetricks::Step {
+                    verb: "gdiplus".to_owned(),
+                    position: 2,
+                    total: 2
+                },
+            ]
+        );
+        assert_eq!(
+            lines,
+            [
+                "Executing w_do_call corefonts",
+                "Executing w_do_call gdiplus"
+            ]
+        );
+        assert_eq!(
+            fs::read_to_string(log).unwrap(),
+            "Executing w_do_call corefonts\nExecuting w_do_call gdiplus\n"
+        );
     }
 
     const HEALTHY: &str = "[targets.game]\nexe = 'C:\\Game\\game.exe'\n";

@@ -42,7 +42,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         None => validate::check_all(paths),
     };
     let report = check()?;
-    let fixes = fixes(&report);
+    let fixes = report.fixes();
 
     if args.json {
         let (applied, failed) = if args.fix {
@@ -130,22 +130,6 @@ fn exit(report: &Report, failed: bool) -> ExitCode {
     }
 }
 
-/// Every fix offered, once each. Two environments missing the same build
-/// share its download.
-fn fixes(report: &Report) -> Vec<Fix> {
-    let mut fixes: Vec<Fix> = Vec::new();
-    for fix in report
-        .problems
-        .iter()
-        .filter_map(|problem| problem.fix.as_ref())
-    {
-        if !fixes.contains(fix) {
-            fixes.push(fix.clone());
-        }
-    }
-    fixes
-}
-
 /// A fix that failed, for `--json`.
 #[derive(Serialize)]
 struct Failed {
@@ -182,6 +166,7 @@ fn apply_all(paths: &Paths, fixes: &[Fix]) -> (Vec<Fix>, Vec<Failed>) {
             paths,
             fix,
             &token,
+            wineo_core::winetricks::EnsureOutput::Stderr,
             super::winetricks::print_event,
             |component, version| {
                 let global = global.as_ref().map_err(|err| anyhow::anyhow!("{err}"))?;
@@ -542,7 +527,7 @@ mod tests {
             ],
             ..Report::default()
         };
-        assert_eq!(fixes(&report), [download, state_fix()]);
+        assert_eq!(report.fixes(), [download, state_fix()]);
         assert_eq!(report.problems[0].area, Area::Wine);
     }
 
