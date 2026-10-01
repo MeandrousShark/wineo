@@ -32,6 +32,17 @@ Decided on 2026-09-30, before drafting:
 - Validating one environment shows its results in the panel, like **Log**
   does, not in an overlay.
 
+Added at the maintainer's suggestion on 2026-09-30, after the first draft:
+
+- A small core change so validate's winetricks fix reports progress the way
+  Play does.
+- Cancel's reach during a batch of fixes is spelled out.
+- Navigation and closing the window keep or wait for running changes.
+- The library and trash refresh after every change, failed ones included,
+  and partial results stay on screen.
+- Tests for unreadable trash, interrupted removal and restore, and a fix
+  shared by several environments.
+
 ## Existing foundation
 
 - `trash::remove_with(paths, name, include_prefix, on_wait) -> Entry` moves
@@ -50,7 +61,13 @@ Decided on 2026-09-30, before drafting:
 - `validate::check_environment(paths, name)` and `validate::check_all(paths)`
   return a `Report` of `Problem`s with levels, codes, and optional `Fix`es.
   `validate::apply(paths, fix, &token, winetricks_events, download)` applies
-  one fix, including `Fix::RecoverTrash` for interrupted trash work.
+  one fix, including `Fix::RecoverTrash` for interrupted trash work. Its
+  winetricks fix always writes to stderr (`EnsureOutput::Stderr`), so it
+  never emits the `Progress`, `OutputLine`, or `LogStarted` events the
+  panel's install status and **Install log** depend on.
+- A fix shared by several problems, like two environments missing the same
+  DXVK build, is collapsed into one by the CLI's `fixes()` in
+  `commands/validate.rs`. Core's `Report` doesn't do that itself.
 - `Runner::wait_idle_for_copy(prefix, &token)` is a cancellable wait for
   wine to exit, added for 0038's prefix copies.
 - The GUI already has the actions menu (`grid.rs`), a panel that swaps to
@@ -66,8 +83,18 @@ Decided on 2026-09-30, before drafting:
 before anything is written, so canceling it leaves the environment exactly
 as it was. The CLI keeps its current behavior and output.
 
-Nothing else in core changes. Restore, prune, and validate already have the
-shapes a frontend needs.
+### Core: validate fixes for a frontend
+
+- `validate::apply` takes the winetricks output policy as a parameter
+  instead of hardcoding stderr. The CLI passes `EnsureOutput::Stderr` and
+  prints exactly what it does today. The GUI passes
+  `EnsureOutput::Log(install_log_path)`, the same as Play, which turns on
+  the progress and log events.
+- The CLI's `fixes()` moves into core as `Report::fixes()`, every distinct
+  fix in report order, so both frontends collapse shared fixes the same way.
+
+Nothing else in core changes. Restore and prune already have the shapes a
+frontend needs.
 
 ### Sidebar
 
@@ -183,11 +210,23 @@ x  target hades: Hades.exe not found
 - Problems use the CLI's messages and levels. A problem with a fix gets a
   checkbox under it with `Fix::label()`, checked by default, matching the
   CLI's "Enter fixes them all".
-- **Fix N problems** applies the checked fixes in order. Downloads and
-  winetricks installs show progress in the panel's status line, as Play
-  does, with **Cancel** and **Force stop**. When the fixes finish, the
-  check runs again and the view shows what's left, plus any fix that
-  failed.
+- A fix shared by several problems shows under each of them, and the boxes
+  toggle together. It's applied once and counted once in **Fix N
+  problems**.
+- **Fix N problems** applies the checked fixes in order, each on its own,
+  so one failing doesn't stop the rest. Downloads show their progress, and
+  winetricks shows "Installing gdiplus (2 of 3)..." with an **Install log**
+  button that follows the log live, exactly like Play.
+- **Cancel** stops the fix that's running and skips the ones after it.
+  Fixes that already finished stay done. Pressing it again as **Force
+  stop** kills winetricks right away, as in Play. Only downloads and
+  winetricks can be interrupted; the other fixes are quick file changes, so
+  Cancel takes effect once the current one ends. This differs a little from
+  the CLI, where Ctrl+C during a winetricks fix moves on to the next fix.
+- When the batch ends, finished, failed, or canceled, the check runs again.
+  The view shows what's left, followed by a results list that stays until
+  the next check: "Fixed 2 problems.", each failed fix with its error, and
+  "Canceled. 1 fix skipped." when it applies.
 - A fix that hits a busy environment fails with the usual error, and the
   others still run.
 - Hints without a fix, like "download a runner", show as plain text.
@@ -199,9 +238,46 @@ config, each template, each environment, and leftovers from environments
 that no longer exist. Healthy environments aren't listed. Clicking an
 environment's heading opens its panel in the library.
 
-**Fix N problems**, **Check again**, progress, and failures work as in the
-panel. Interrupted trash operations appear here too, as they do in
-`wineo validate`.
+**Fix N problems**, **Check again**, progress, Cancel, shared fixes, and
+results work as in the panel. Interrupted trash operations appear here too,
+as they do in `wineo validate`.
+
+### Running changes, navigation, and closing
+
+A remove, restore, prune, recovery, or batch of fixes is a running change.
+
+- One runs at a time. While one runs, the buttons that would start another
+  are disabled with "Busy: removing hades" as the reason. Launching games
+  and opening pages still work.
+- The remove dialog is modal, so nothing else can be clicked while it runs.
+- The others keep running when you switch sidebar sections, close the
+  panel, or open Settings. Their status stays where they started, on the
+  Trash row, the Checkup page, or the environment's panel, and the result
+  is there when you come back. The sidebar shows a spinner next to Trash or
+  Checkup while one of theirs runs.
+- Closing the window during a running change offers **Keep working** or
+  **Cancel and close**, as in 0038. Cancel and close cancels what can be
+  canceled (the remove's wine wait, a download, winetricks) and waits for
+  the rest, with **Force stop** for winetricks. Data that's already moving
+  in a remove, restore, prune, or recovery is never cut off by closing.
+
+### After a change
+
+- When any running change ends, successfully or not, the library and the
+  trash reload right away instead of waiting for the next tick. A failure
+  can leave state behind, like a `removing` entry or a half-pruned one, and
+  it should show up at once.
+- An interrupted removal or restore that left a pending entry shows the
+  error, then the recovery banner on the Trash page and the badge. The
+  error says so: "Removing hades didn't finish. Recover it from Trash."
+- Partial results stay on screen until the next action in that place: a
+  prune lists which entries were deleted and which failed and why, and a
+  remove that worked but couldn't rewrite a desktop entry says both.
+- When the trash can't be read, for example unavailable portable storage
+  or a bad pending marker, the Trash page shows that error instead of an
+  empty list, the badge shows a warning dot, and nothing on the page can be
+  clicked except **Check again**. A failed check on the Checkup page or in
+  the panel shows its error the same way.
 
 ### Keyboard
 
@@ -226,10 +302,17 @@ panel. Interrupted trash operations appear here too, as they do in
 4. **Checkup on startup.** Recommended: no. It runs when the page opens.
    Interrupted trash work, the one thing that blocks other commands, already
    gets a badge through the cheap pending check.
+5. **One running change at a time.** Recommended: yes, as described under
+   Running changes. Core's locks would make most overlaps safe, but a
+   second change usually fails on a busy lock anyway, and one at a time
+   keeps the status and results easy to follow. The alternative is to
+   allow changes on different environments to overlap.
 
 ## Implementation sequence
 
-1. **Core cancellable remove.** Token on the wine wait, CLI unchanged.
+1. **Core.** Token on the remove's wine wait, the winetricks output
+   parameter on `validate::apply`, and `Report::fixes()`. CLI output
+   unchanged.
 2. **Sidebar shell.** Library, Trash, and Checkup sections with empty
    pages, the badge, navigation keys, and the unsaved settings prompt.
 3. **Remove.** Menu item, dialog, prefix size, worker with cancel, toast
@@ -245,7 +328,9 @@ panel. Interrupted trash operations appear here too, as they do in
 ## Testing and acceptance
 
 - Core: canceling during the wine wait leaves the config, art, playtime,
-  prefix, and desktop entries untouched; the CLI `rm` tests pass unchanged.
+  prefix, and desktop entries untouched. A winetricks fix with log output
+  emits `LogStarted` and `Progress`. `Report::fixes()` returns a shared
+  download fix once. The CLI `rm` and `validate` tests pass unchanged.
 - GUI `update` tests without a window: the prefix box defaults off and maps
   to `include_prefix`; Remove is disabled for running, busy, and lost
   environments; Undo restores by the entry's ID and reports a refusal; the
@@ -253,6 +338,20 @@ panel. Interrupted trash operations appear here too, as they do in
   pending ones; prune confirms hold the reviewed selection; fix checkboxes
   map to the applied fixes; a failed fix doesn't stop the rest; the sidebar
   asks before leaving unsaved settings.
+- GUI `update` tests for the additions: Cancel skips the remaining fixes
+  and keeps finished ones; a shared fix's boxes toggle together and it's
+  applied once; a second running change is refused while one runs; switching
+  sections keeps a running change and its result; every change, failed ones
+  included, reloads the library and trash; partial prune results stay until
+  the next action; an unreadable trash shows its error, not an empty list;
+  a fixture with a `removing` and a `restoring` pending entry shows the
+  banner, and Recover clears it.
+- Acceptance adds: two environments pinning the same missing DXVK build in
+  Checkup (one fix, one download); a winetricks fix with install progress
+  and **Install log**, canceled partway; switching to Library during a
+  prune and coming back to its result; closing the window during a remove
+  wait and during a prune; and a GUI killed in the middle of removing a
+  large prefix, then recovered.
 - Acceptance: remove a Wine game with and without its prefix, Undo one of
   them, restore one from Trash, try restoring over a name that's been
   reused, delete one forever, empty the trash, prune by age, interrupt a
