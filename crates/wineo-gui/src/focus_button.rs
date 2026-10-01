@@ -11,12 +11,76 @@ pub(crate) fn undo<'a>(
     content: Element<'a, crate::Message>,
     enabled: bool,
 ) -> Element<'a, crate::Message> {
-    Element::new(UndoButton { content, enabled })
+    control(content, enabled, UNDO_ID, crate::Message::Undo)
 }
 
-struct UndoButton<'a, R: AdvancedRenderer = iced::Renderer> {
+pub(crate) fn control<'a>(
+    content: Element<'a, crate::Message>,
+    enabled: bool,
+    id: &'static str,
+    on_press: crate::Message,
+) -> Element<'a, crate::Message> {
+    Element::new(FocusControl {
+        content,
+        enabled,
+        id,
+        on_press,
+    })
+}
+
+pub(crate) fn cycle(
+    ids: &[&'static str],
+    reverse: bool,
+) -> impl iced::advanced::widget::Operation + use<> {
+    Cycle {
+        ids: ids.iter().map(|id| iced::widget::Id::new(id)).collect(),
+        focused: None,
+        reverse,
+    }
+}
+
+struct Cycle {
+    ids: Vec<iced::widget::Id>,
+    focused: Option<usize>,
+    reverse: bool,
+}
+
+impl iced::advanced::widget::Operation for Cycle {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+        operate(self);
+    }
+
+    fn focusable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        _bounds: Rectangle,
+        state: &mut dyn Focusable,
+    ) {
+        if state.is_focused() {
+            self.focused = self.ids.iter().position(|target| Some(target) == id);
+        }
+    }
+
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<()> {
+        use iced::advanced::widget::operation::{Outcome, focusable};
+        if self.ids.is_empty() {
+            return Outcome::None;
+        }
+        let next = match (self.focused, self.reverse) {
+            (Some(index), true) => (index + self.ids.len() - 1) % self.ids.len(),
+            (Some(index), false) => (index + 1) % self.ids.len(),
+            (None, true) => self.ids.len() - 1,
+            (None, false) => 0,
+        };
+        Outcome::Chain(Box::new(focusable::focus(self.ids[next].clone())))
+    }
+}
+
+struct FocusControl<'a, R: AdvancedRenderer = iced::Renderer> {
     content: Element<'a, crate::Message, iced::Theme, R>,
     enabled: bool,
+    id: &'static str,
+    on_press: crate::Message,
 }
 
 #[derive(Default)]
@@ -38,7 +102,7 @@ impl iced::advanced::widget::operation::Focusable for State {
     }
 }
 
-impl<R> Widget<crate::Message, iced::Theme, R> for UndoButton<'_, R>
+impl<R> Widget<crate::Message, iced::Theme, R> for FocusControl<'_, R>
 where
     R: AdvancedRenderer,
 {
@@ -89,7 +153,7 @@ where
     ) {
         if self.enabled {
             operation.focusable(
-                Some(&iced::widget::Id::new(UNDO_ID)),
+                Some(&iced::widget::Id::new(self.id)),
                 layout.bounds(),
                 tree.state.downcast_mut::<State>(),
             );
@@ -131,7 +195,7 @@ where
                 repeat: false,
                 ..
             }) if self.enabled && state.focused => {
-                shell.publish(crate::Message::Undo);
+                shell.publish(self.on_press.clone());
                 shell.capture_event();
                 return;
             }
@@ -229,9 +293,11 @@ mod tests {
     fn focus_operation_registers_the_undo_id_and_enter_activates_it() {
         let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("Undo")
             .on_press(crate::Message::Undo);
-        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(UndoButton {
+        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
             content: button.into(),
             enabled: true,
+            id: UNDO_ID,
+            on_press: crate::Message::Undo,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -270,9 +336,11 @@ mod tests {
     fn focused_space_activates_but_unfocused_space_does_not() {
         let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("Undo")
             .on_press(crate::Message::Undo);
-        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(UndoButton {
+        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
             content: button.into(),
             enabled: true,
+            id: UNDO_ID,
+            on_press: crate::Message::Undo,
         });
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(100.0, 32.0);
@@ -312,6 +380,110 @@ mod tests {
         }
 
         assert!(matches!(messages.as_slice(), [crate::Message::Undo]));
+    }
+
+    #[test]
+    fn tab_cycles_only_dialog_controls_and_can_reach_undo() {
+        use iced::advanced::widget::{Operation, operation::Outcome};
+        let ids = [
+            crate::SEARCH_ID,
+            "remove-prefix",
+            "remove-cancel",
+            "remove-confirm",
+            UNDO_ID,
+        ];
+        let mut states = ids.map(|_| State::default());
+        states[0].focus();
+        for (reverse, expected) in [
+            (false, 1),
+            (false, 2),
+            (false, 3),
+            (false, 1),
+            (true, 3),
+            (true, 2),
+            (true, 1),
+        ] {
+            let mut operation = cycle(
+                &["remove-prefix", "remove-cancel", "remove-confirm"],
+                reverse,
+            );
+            for (id, state) in ids.iter().zip(&mut states) {
+                operation.focusable(
+                    Some(&iced::widget::Id::new(id)),
+                    Rectangle::default(),
+                    state,
+                );
+            }
+            let Outcome::Chain(mut focus) = operation.finish() else {
+                panic!("missing focus operation")
+            };
+            for (id, state) in ids.iter().zip(&mut states) {
+                focus.focusable(
+                    Some(&iced::widget::Id::new(id)),
+                    Rectangle::default(),
+                    state,
+                );
+            }
+            assert_eq!(
+                states.iter().position(Focusable::is_focused),
+                Some(expected)
+            );
+        }
+        let operation = cycle(&[UNDO_ID], false);
+        let Outcome::Chain(mut focus) = operation.finish() else {
+            panic!("missing Undo focus")
+        };
+        for (id, state) in ids.iter().zip(&mut states) {
+            focus.focusable(
+                Some(&iced::widget::Id::new(id)),
+                Rectangle::default(),
+                state,
+            );
+        }
+        assert_eq!(states.iter().position(Focusable::is_focused), Some(4));
+    }
+
+    #[test]
+    fn dialog_controls_activate_their_own_messages_with_enter_and_space() {
+        for (id, on_press) in [
+            ("remove-prefix", crate::Message::RemovePrefix(true)),
+            ("remove-cancel", crate::Message::CancelRemove),
+            ("remove-confirm", crate::Message::ConfirmRemove),
+        ] {
+            for key in [Named::Enter, Named::Space] {
+                let button =
+                    iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("control");
+                let mut widget: Element<'_, crate::Message, iced::Theme, ()> =
+                    Element::new(FocusControl {
+                        content: button.into(),
+                        enabled: true,
+                        id,
+                        on_press: on_press.clone(),
+                    });
+                let mut tree = tree::Tree::new(widget.as_widget());
+                tree.state.downcast_mut::<State>().focus();
+                let bounds = Size::new(100.0, 32.0);
+                let node = widget.as_widget_mut().layout(
+                    &mut tree,
+                    &(),
+                    &layout::Limits::new(Size::ZERO, bounds),
+                );
+                let mut messages = Vec::new();
+                let mut shell = Shell::new(&mut messages);
+                widget.as_widget_mut().update(
+                    &mut tree,
+                    &key_event(key),
+                    Layout::new(&node),
+                    mouse::Cursor::Unavailable,
+                    &(),
+                    &mut iced::advanced::clipboard::Null,
+                    &mut shell,
+                    &Rectangle::with_size(bounds),
+                );
+                assert_eq!(shell.event_status(), iced::event::Status::Captured);
+                assert_eq!(format!("{messages:?}"), format!("[{on_press:?}]"));
+            }
+        }
     }
 
     fn key_event(key: Named) -> Event {

@@ -10,6 +10,9 @@ use crate::theme::Palette;
 use crate::wheel;
 use crate::{App, CARD_WIDTH, GAP, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
 
+// Reserve enough height for the full action menu, including Remove.
+const ACTION_MENU_HEIGHT: f32 = 270.0;
+
 impl App {
     pub(crate) fn grid(&self) -> Element<'_, Message> {
         let cards = self.filtered().into_iter().map(|card| self.card(card));
@@ -117,6 +120,7 @@ impl App {
             (self.toast.is_some()
                 && self.removal.is_none()
                 && self.flow.is_none()
+                && self.settings.is_none()
                 && !self.close_prompt)
                 .then_some(Message::Undo),
         )
@@ -221,7 +225,9 @@ impl App {
         }
         if let Some(name) = &self.action_menu {
             let mut position = menu_position(self.action_menu_position, self.window_size);
-            position.y = position.y.min((self.window_size.height - 270.0).max(8.0));
+            position.y = position
+                .y
+                .min((self.window_size.height - ACTION_MENU_HEIGHT).max(8.0));
             let palette = self.palette;
             let menu = container(
                 column![

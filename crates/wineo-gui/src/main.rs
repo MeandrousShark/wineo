@@ -192,7 +192,11 @@ pub(crate) enum Message {
     ConfirmRemove,
     CancelRemove,
     RemoveProgress(u64, wineo_core::trash::RemoveEvent),
-    RemoveFinished(u64, Result<wineo_core::trash::Entry, String>),
+    RemoveFinished(
+        u64,
+        Result<wineo_core::trash::Entry, remove_work::RemoveError>,
+    ),
+    RemoveFocus(iced::event::Status, bool, bool),
     Undo,
     UndoFinished(u64, Result<(), String>),
     ToastTick(Instant),
@@ -382,71 +386,19 @@ impl App {
             return Task::none();
         }
         let task = match message {
-            Message::Remove(name) => self.open_remove(name),
-            Message::RemovePrefix(include) => {
-                if self.change.is_none()
-                    && let Some(dialog) = &mut self.removal
-                {
-                    dialog.include_prefix = include && dialog.prefix.is_some();
-                }
-                Task::none()
-            }
-            Message::RemoveSize(generation, size) => {
-                if generation == self.remove_generation
-                    && let Some(dialog) = &mut self.removal
-                {
-                    dialog.size = Some(size);
-                }
-                Task::none()
-            }
-            Message::ConfirmRemove => self.confirm_remove(),
-            Message::CancelRemove => {
-                self.cancel_remove();
-                Task::none()
-            }
-            Message::RemoveProgress(generation, event) => {
-                if generation != self.change_generation {
-                    return Task::none();
-                }
-                if let Some(removal::Change::Remove { phase, .. }) = &mut self.change {
-                    *phase = Some(event);
-                }
-                Task::none()
-            }
-            Message::RemoveFinished(generation, result) if generation == self.change_generation => {
-                self.remove_finished(result)
-            }
-            Message::RemoveFinished(..) => Task::none(),
-            Message::Undo => self.undo_remove(),
-            Message::UndoFinished(generation, result) if generation == self.change_generation => {
-                self.undo_finished(result)
-            }
-            Message::UndoFinished(..) => Task::none(),
-            Message::ToastHover(hovered) => {
-                if let Some(toast) = &mut self.toast {
-                    toast.advance(Instant::now());
-                    toast.hovered = hovered;
-                }
-                Task::none()
-            }
-            Message::ToastTick(now) => {
-                iced::widget::operation::is_focused(iced::widget::Id::new(focus_button::UNDO_ID))
-                    .map(move |focused| Message::ToastFocus(focused, now))
-            }
-            Message::ToastFocus(focused, now) => {
-                if let Some(toast) = &mut self.toast {
-                    // Focus operations run before this message, so preserve the interval that gained focus.
-                    if focused {
-                        toast.focused = true;
-                    }
-                    toast.advance(now);
-                    toast.focused = focused;
-                    if toast.remaining.is_zero() && self.change.is_none() {
-                        self.toast = None;
-                    }
-                }
-                Task::none()
-            }
+            message @ (Message::Remove(_)
+            | Message::RemovePrefix(_)
+            | Message::RemoveSize(..)
+            | Message::ConfirmRemove
+            | Message::CancelRemove
+            | Message::RemoveProgress(..)
+            | Message::RemoveFinished(..)
+            | Message::RemoveFocus(..)
+            | Message::Undo
+            | Message::UndoFinished(..)
+            | Message::ToastHover(_)
+            | Message::ToastTick(_)
+            | Message::ToastFocus(..)) => removal::update(self, message),
             Message::SearchChanged(search) => {
                 self.search = search;
                 self.scroll_offset = 0.0;
@@ -733,19 +685,9 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Key(key, modifiers, _) if self.removal.is_some() => match key {
-                keyboard::Key::Named(keyboard::key::Named::Escape) => {
-                    self.cancel_remove_dialog();
-                    Task::none()
-                }
-                keyboard::Key::Named(keyboard::key::Named::Tab) if modifiers.shift() => {
-                    iced::widget::operation::focus_previous()
-                }
-                keyboard::Key::Named(keyboard::key::Named::Tab) => {
-                    iced::widget::operation::focus_next()
-                }
-                _ => Task::none(),
-            },
+            Message::Key(key, modifiers, _) if self.removal.is_some() => {
+                removal::dialog_key(self, &key, modifiers)
+            }
             Message::Key(key, modifiers, status) if self.flow.is_some() => {
                 use iced::keyboard::{Key, key::Named};
                 if sidebar::shortcut(&key, modifiers).is_some() {
@@ -797,20 +739,8 @@ impl App {
                 }
             }
             Message::Key(key, modifiers, status) => {
-                if status != iced::event::Status::Captured
-                    && self.toast.is_some()
-                    && modifiers == keyboard::Modifiers::CTRL
-                    && matches!(key.as_ref(), keyboard::Key::Character("z" | "Z"))
-                {
-                    return self.update(Message::Undo);
-                }
-                if key == keyboard::Key::Named(keyboard::key::Named::Tab) && self.settings.is_none()
-                {
-                    return if modifiers.shift() {
-                        iced::widget::operation::focus_previous()
-                    } else {
-                        iced::widget::operation::focus_next()
-                    };
+                if let Some(task) = removal::key(self, &key, modifiers, status) {
+                    return task;
                 }
                 // shortcuts::capture normally takes these first. This covers a
                 // key an open overlay saw and left uncaptured.
@@ -827,25 +757,11 @@ impl App {
                 {
                     self.update(Message::Add)
                 } else {
-                    if key == keyboard::Key::Named(keyboard::key::Named::Delete) {
-                        iced::advanced::widget::operate(
-                            iced::advanced::widget::operation::focusable::count(),
-                        )
-                        .map(move |focus| {
-                            Message::KeyWithFocus(
-                                key.clone(),
-                                modifiers,
-                                status,
-                                focus.focused.is_some(),
-                            )
-                        })
-                    } else {
-                        iced::widget::operation::is_focused(iced::widget::Id::new(SEARCH_ID)).map(
-                            move |focused| {
-                                Message::KeyWithFocus(key.clone(), modifiers, status, focused)
-                            },
-                        )
-                    }
+                    iced::widget::operation::is_focused(iced::widget::Id::new(SEARCH_ID)).map(
+                        move |focused| {
+                            Message::KeyWithFocus(key.clone(), modifiers, status, focused)
+                        },
+                    )
                 }
             }
             Message::KeyWithFocus(key, modifiers, status, focused) => self.handle_key(

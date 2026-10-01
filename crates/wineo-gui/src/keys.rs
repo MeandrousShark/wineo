@@ -67,17 +67,8 @@ impl App {
             return Task::none();
         }
         self.search_focused = search_focused;
-        if key == Key::Named(Named::Delete)
-            && !search_focused
-            && !captured
-            && !self.log_view
-            && self.action_menu.is_none()
-            && modifiers.is_empty()
-        {
-            return self
-                .selected
-                .clone()
-                .map_or_else(Task::none, |name| self.update(Message::Remove(name)));
+        if key == Key::Named(Named::Delete) && modifiers.is_empty() {
+            return crate::removal::delete_key(self, search_focused, captured);
         }
         if captured
             && !search_focused

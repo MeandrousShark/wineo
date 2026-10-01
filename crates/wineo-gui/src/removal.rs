@@ -7,7 +7,12 @@ use wineo_core::cancel::Token;
 use wineo_core::runtime::State;
 use wineo_core::trash::{Entry, RemoveEvent};
 
-use crate::{App, Message, remove_work, spinner};
+use crate::{App, Message, focus_button, remove_work, spinner};
+
+const PREFIX_ID: &str = "remove-prefix";
+const CANCEL_ID: &str = "remove-cancel";
+const REMOVE_ID: &str = "remove-confirm";
+const TOAST_WRAPPING: iced::widget::text::Wrapping = iced::widget::text::Wrapping::WordOrGlyph;
 
 pub(crate) struct Dialog {
     pub(crate) name: String,
@@ -57,9 +62,20 @@ impl Toast {
         }
         if entry.desktop_removed > 0 {
             text.push_str(&format!(
-                " {} desktop entries removed.",
-                entry.desktop_removed
+                " {} desktop entr{} removed.",
+                entry.desktop_removed,
+                if entry.desktop_removed == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
             ));
+        }
+        if let Some(snapshots) = &entry.snapshots_left
+            && snapshots.is_dir()
+            && std::fs::read_dir(snapshots).is_ok_and(|mut entries| entries.next().is_some())
+        {
+            text.push_str(" Snapshots kept.");
         }
         Self {
             id: entry.id,
@@ -79,6 +95,186 @@ impl Toast {
                 .saturating_sub(now.saturating_duration_since(self.last));
         }
         self.last = now.max(self.last);
+    }
+}
+
+pub(crate) fn key(
+    app: &mut App,
+    key: &iced::keyboard::Key,
+    modifiers: iced::keyboard::Modifiers,
+    status: iced::event::Status,
+) -> Option<Task<Message>> {
+    use iced::keyboard::{Key, Modifiers, key::Named};
+    if app.settings.is_some() {
+        return None;
+    }
+    if status != iced::event::Status::Captured
+        && app.toast.is_some()
+        && modifiers == Modifiers::CTRL
+        && matches!(key.as_ref(), Key::Character("z" | "Z"))
+    {
+        return Some(app.undo_remove());
+    }
+    if *key == Key::Named(Named::Tab) && app.toast.is_some() {
+        return Some(
+            iced::advanced::widget::operate(focus_button::cycle(
+                &[focus_button::UNDO_ID],
+                modifiers.shift(),
+            ))
+            .discard(),
+        );
+    }
+    if *key == Key::Named(Named::Delete) && modifiers.is_empty() {
+        return Some(
+            iced::advanced::widget::operate(RemoveFocus::default())
+                .map(move |(search, any)| Message::RemoveFocus(status, search, any)),
+        );
+    }
+    None
+}
+
+#[derive(Default)]
+struct RemoveFocus {
+    search: bool,
+    any: bool,
+}
+
+impl iced::advanced::widget::Operation<(bool, bool)> for RemoveFocus {
+    fn traverse(
+        &mut self,
+        operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<(bool, bool)>),
+    ) {
+        operate(self);
+    }
+
+    fn focusable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        _bounds: iced::Rectangle,
+        state: &mut dyn iced::advanced::widget::operation::Focusable,
+    ) {
+        if state.is_focused() {
+            self.any = true;
+            self.search |= id == Some(&iced::widget::Id::new(crate::SEARCH_ID));
+        }
+    }
+
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<(bool, bool)> {
+        iced::advanced::widget::operation::Outcome::Some((self.search, self.any))
+    }
+}
+
+pub(crate) fn delete_key(app: &mut App, search: bool, captured: bool) -> Task<Message> {
+    if !search && !captured && !app.log_view && app.action_menu.is_none() {
+        app.selected
+            .clone()
+            .map_or_else(Task::none, |name| app.open_remove(name))
+    } else {
+        Task::none()
+    }
+}
+
+pub(crate) fn dialog_key(
+    app: &mut App,
+    key: &iced::keyboard::Key,
+    modifiers: iced::keyboard::Modifiers,
+) -> Task<Message> {
+    use iced::keyboard::{Key, key::Named};
+    match key {
+        Key::Named(Named::Escape) => {
+            app.cancel_remove_dialog();
+            Task::none()
+        }
+        Key::Named(Named::Tab) => {
+            let ids = app.remove_controls();
+            iced::advanced::widget::operate(focus_button::cycle(&ids, modifiers.shift())).discard()
+        }
+        _ => Task::none(),
+    }
+}
+
+pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
+    match message {
+        Message::RemoveFocus(status, search, any) => {
+            app.search_focused = search;
+            if app.section == crate::sidebar::Section::Library
+                && app.settings.is_none()
+                && app.flow.is_none()
+                && app.removal.is_none()
+                && !app.close_prompt
+            {
+                delete_key(app, search, any || status == iced::event::Status::Captured)
+            } else {
+                Task::none()
+            }
+        }
+        Message::Remove(name) => app.open_remove(name),
+        Message::RemovePrefix(include) => {
+            if app.change.is_none()
+                && let Some(dialog) = &mut app.removal
+            {
+                dialog.include_prefix = include && dialog.prefix.is_some();
+            }
+            Task::none()
+        }
+        Message::RemoveSize(generation, size) => {
+            if generation == app.remove_generation
+                && app.change.is_none()
+                && let Some(dialog) = &mut app.removal
+            {
+                dialog.size = Some(size);
+            }
+            Task::none()
+        }
+        Message::ConfirmRemove => app.confirm_remove(),
+        Message::CancelRemove => {
+            app.cancel_remove();
+            Task::none()
+        }
+        Message::RemoveProgress(generation, event) => {
+            if generation != app.change_generation {
+                return Task::none();
+            }
+            if let Some(Change::Remove { phase, .. }) = &mut app.change {
+                *phase = Some(event);
+            }
+            Task::none()
+        }
+        Message::RemoveFinished(generation, result) if generation == app.change_generation => {
+            app.remove_finished(result)
+        }
+        Message::RemoveFinished(..) => Task::none(),
+        Message::Undo => app.undo_remove(),
+        Message::UndoFinished(generation, result) if generation == app.change_generation => {
+            app.undo_finished(result)
+        }
+        Message::UndoFinished(..) => Task::none(),
+        Message::ToastHover(hovered) => {
+            if let Some(toast) = &mut app.toast {
+                toast.advance(Instant::now());
+                toast.hovered = hovered;
+            }
+            Task::none()
+        }
+        Message::ToastTick(now) => {
+            iced::widget::operation::is_focused(iced::widget::Id::new(crate::focus_button::UNDO_ID))
+                .map(move |focused| Message::ToastFocus(focused, now))
+        }
+        Message::ToastFocus(focused, now) => {
+            if let Some(toast) = &mut app.toast {
+                // Focus operations run before this message, so preserve the interval that gained focus.
+                if focused {
+                    toast.focused = true;
+                }
+                toast.advance(now);
+                toast.focused = focused;
+                if toast.remaining.is_zero() && app.change.is_none() {
+                    app.toast = None;
+                }
+            }
+            Task::none()
+        }
+        _ => Task::none(),
     }
 }
 
@@ -144,6 +340,7 @@ impl App {
         if self.management_busy() || self.remove_reason(&dialog.name).is_some() {
             return Task::none();
         }
+        dialog.measure.cancel();
         let token = Token::new();
         let name = dialog.name.clone();
         let include_prefix = dialog.include_prefix && dialog.prefix.is_some();
@@ -197,7 +394,10 @@ impl App {
         Task::batch([self.reload_library(), self.reload_badge()])
     }
 
-    pub(crate) fn remove_finished(&mut self, result: Result<Entry, String>) -> Task<Message> {
+    pub(crate) fn remove_finished(
+        &mut self,
+        result: Result<Entry, remove_work::RemoveError>,
+    ) -> Task<Message> {
         if !matches!(self.change, Some(Change::Remove { .. })) {
             return Task::none();
         }
@@ -205,11 +405,14 @@ impl App {
         match result {
             Ok(entry) => {
                 self.cancel_remove_dialog();
-                self.close_panel();
-                self.selected = None;
+                if self.selected.as_deref() == Some(&entry.name) {
+                    self.close_panel();
+                    self.selected = None;
+                }
                 self.toast = Some(Toast::new(entry));
             }
-            Err(error) => {
+            Err(remove_work::RemoveError::Canceled) => self.cancel_remove_dialog(),
+            Err(remove_work::RemoveError::Failed(error)) => {
                 if let Some(dialog) = &mut self.removal {
                     dialog.error = Some(error);
                 }
@@ -222,6 +425,7 @@ impl App {
         if self.management_busy()
             || self.removal.is_some()
             || self.flow.is_some()
+            || self.settings.is_some()
             || self.close_prompt
         {
             return Task::none();
@@ -259,6 +463,29 @@ impl App {
         self.reload_after_change()
     }
 
+    fn remove_controls(&self) -> Vec<&'static str> {
+        let mut ids = Vec::new();
+        let Some(dialog) = &self.removal else {
+            return ids;
+        };
+        if self.change.is_none() && dialog.prefix.is_some() {
+            ids.push(PREFIX_ID);
+        }
+        if !matches!(
+            self.change,
+            Some(Change::Remove {
+                phase: Some(RemoveEvent::Moving),
+                ..
+            })
+        ) {
+            ids.push(CANCEL_ID);
+        }
+        if self.change.is_none() && self.remove_reason(&dialog.name).is_none() {
+            ids.push(REMOVE_ID);
+        }
+        ids
+    }
+
     pub(crate) fn remove_view(&self) -> Element<'_, Message> {
         let dialog = self.removal.as_ref().unwrap();
         let palette = self.palette;
@@ -276,11 +503,15 @@ impl App {
                 Some(Err(error)) => format!("Size unavailable: {error}"),
             };
             content = content
-                .push(
+                .push(focus_button::control(
                     checkbox(dialog.include_prefix)
                         .label("Also trash the prefix and snapshots")
-                        .on_toggle_maybe(self.change.is_none().then_some(Message::RemovePrefix)),
-                )
+                        .on_toggle_maybe(self.change.is_none().then_some(Message::RemovePrefix))
+                        .into(),
+                    self.change.is_none(),
+                    PREFIX_ID,
+                    Message::RemovePrefix(!dialog.include_prefix),
+                ))
                 .push(
                     text(format!(
                         "{} ({size})",
@@ -305,20 +536,16 @@ impl App {
             content = content.push(
                 row![
                     spinner::spinner(palette, self.spinner_angle, 16.0),
-                    text(if moving {
-                        "Moving to the trash..."
-                    } else {
-                        if matches!(
-                            self.change,
-                            Some(Change::Remove {
-                                phase: Some(RemoveEvent::Waiting),
-                                ..
-                            })
-                        ) {
-                            "Waiting for wine to exit"
-                        } else {
-                            "Removing..."
-                        }
+                    text(match &self.change {
+                        Some(Change::Remove {
+                            phase: Some(RemoveEvent::Moving),
+                            ..
+                        }) => "Moving to the trash...",
+                        Some(Change::Remove {
+                            phase: Some(RemoveEvent::Waiting),
+                            ..
+                        }) => "Waiting for wine to exit",
+                        _ => "Removing...",
                     })
                 ]
                 .spacing(8)
@@ -331,13 +558,25 @@ impl App {
         }
         let mut controls = row![
             Space::new().width(Fill),
-            button("Cancel").on_press_maybe((!moving).then_some(Message::CancelRemove))
+            focus_button::control(
+                button("Cancel")
+                    .on_press_maybe((!moving).then_some(Message::CancelRemove))
+                    .into(),
+                !moving,
+                CANCEL_ID,
+                Message::CancelRemove,
+            )
         ]
         .spacing(12);
         if !running {
-            controls = controls.push(
-                button("Remove").on_press_maybe(reason.is_none().then_some(Message::ConfirmRemove)),
-            );
+            controls = controls.push(focus_button::control(
+                button("Remove")
+                    .on_press_maybe(reason.is_none().then_some(Message::ConfirmRemove))
+                    .into(),
+                reason.is_none(),
+                REMOVE_ID,
+                Message::ConfirmRemove,
+            ));
         }
         container(content.push(controls))
             .padding(24)
@@ -353,19 +592,20 @@ impl App {
     pub(crate) fn toast_view(&self) -> Element<'_, Message> {
         let toast = self.toast.as_ref().unwrap();
         let palette = self.palette;
-        let enabled = !self.management_busy() && self.flow.is_none() && self.removal.is_none();
+        let enabled = !self.management_busy()
+            && self.flow.is_none()
+            && self.removal.is_none()
+            && self.settings.is_none()
+            && !self.close_prompt;
         let undo = crate::focus_button::undo(
             button("Undo")
                 .on_press_maybe(enabled.then_some(Message::Undo))
                 .into(),
             enabled,
         );
-        let mut content = row![
-            text(&toast.text).wrapping(iced::widget::text::Wrapping::None),
-            undo
-        ]
-        .spacing(12)
-        .align_y(Center);
+        let mut content = row![text(&toast.text).width(Fill).wrapping(TOAST_WRAPPING), undo]
+            .spacing(12)
+            .align_y(Center);
         if let Some(change) = &self.change {
             content = content.push(text(change.reason()).size(13));
         }
@@ -430,6 +670,244 @@ mod tests {
     fn open(app: &mut App) {
         let _ = app.update(Message::Remove("game".into()));
         assert!(app.removal.is_some());
+    }
+
+    #[test]
+    fn canceled_remove_closes_quietly_but_real_errors_stay() {
+        let (_root, mut app) = fixture(false);
+        open(&mut app);
+        let _ = app.update(Message::ConfirmRemove);
+        let _ = app.update(Message::RemoveProgress(
+            app.change_generation,
+            RemoveEvent::Waiting,
+        ));
+        let _ = app.update(Message::CancelRemove);
+        let _ = app.update(Message::RemoveFinished(
+            app.change_generation,
+            Err(remove_work::RemoveError::Canceled),
+        ));
+        assert!(app.removal.is_none() && app.change.is_none() && app.toast.is_none());
+        open(&mut app);
+        let _ = app.update(Message::ConfirmRemove);
+        let _ = app.update(Message::RemoveFinished(
+            app.change_generation,
+            Err("real failure".into()),
+        ));
+        assert_eq!(
+            app.removal.as_ref().unwrap().error.as_deref(),
+            Some("real failure")
+        );
+    }
+
+    #[test]
+    fn removing_another_card_keeps_selection_and_panel() {
+        let (_root, mut app) = fixture(false);
+        std::fs::write(app.paths.environment_config("other"), "kind = 'native'\n").unwrap();
+        app.cards = crate::library::load_library(&app.paths).unwrap();
+        app.selected = Some("other".into());
+        app.panel_open = true;
+        removed(&mut app);
+        assert_eq!(app.selected.as_deref(), Some("other"));
+        assert!(app.panel_open);
+    }
+
+    #[test]
+    fn confirming_cancels_measurement_and_ignores_its_result() {
+        let (_root, mut app) = fixture(true);
+        open(&mut app);
+        let token = app.removal.as_ref().unwrap().measure.clone();
+        let _ = app.update(Message::ConfirmRemove);
+        assert!(token.is_canceled());
+        let _ = app.update(Message::RemoveSize(
+            app.remove_generation,
+            Err("late measurement".into()),
+        ));
+        assert!(app.removal.as_ref().unwrap().size.is_none());
+    }
+
+    #[test]
+    fn settings_keep_control_z_and_block_undo() {
+        let (_root, mut app) = fixture(false);
+        removed(&mut app);
+        let _ = app.update(Message::OpenGlobalSettings);
+        assert!(app.settings.is_some());
+        let _ = app.update(Message::Key(
+            Key::Character("z".into()),
+            Modifiers::CTRL,
+            Status::Ignored,
+        ));
+        assert!(app.change.is_none());
+        let _ = app.update(Message::Undo);
+        assert!(app.change.is_none());
+        assert!(
+            key(
+                &mut app,
+                &Key::Character("z".into()),
+                Modifiers::CTRL,
+                Status::Ignored
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn library_tab_is_unchanged_until_undo_is_available() {
+        let (_root, mut app) = fixture(false);
+        for modifiers in [Modifiers::empty(), Modifiers::SHIFT] {
+            assert!(
+                key(
+                    &mut app,
+                    &Key::Named(Named::Tab),
+                    modifiers,
+                    Status::Ignored
+                )
+                .is_none()
+            );
+            assert_eq!(
+                crate::keys::action(
+                    &Key::Named(Named::Tab),
+                    modifiers,
+                    false,
+                    false,
+                    false,
+                    true
+                ),
+                crate::keys::Action::None
+            );
+        }
+        removed(&mut app);
+        assert!(
+            key(
+                &mut app,
+                &Key::Named(Named::Tab),
+                Modifiers::empty(),
+                Status::Ignored
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn dialog_focus_controls_match_each_phase() {
+        let (_root, mut app) = fixture(true);
+        open(&mut app);
+        assert_eq!(app.remove_controls(), [PREFIX_ID, CANCEL_ID, REMOVE_ID]);
+        let _ = app.update(Message::ConfirmRemove);
+        assert_eq!(app.remove_controls(), [CANCEL_ID]);
+        let _ = app.update(Message::RemoveProgress(
+            app.change_generation,
+            RemoveEvent::Moving,
+        ));
+        assert!(app.remove_controls().is_empty());
+        let (_root, mut app) = fixture(false);
+        open(&mut app);
+        assert_eq!(app.remove_controls(), [CANCEL_ID, REMOVE_ID]);
+    }
+
+    #[test]
+    fn delete_focus_distinguishes_search_from_undo() {
+        use iced::advanced::widget::{Operation, operation::Focusable};
+        #[derive(Default)]
+        struct Focus(bool);
+        impl Focusable for Focus {
+            fn is_focused(&self) -> bool {
+                self.0
+            }
+            fn focus(&mut self) {
+                self.0 = true;
+            }
+            fn unfocus(&mut self) {
+                self.0 = false;
+            }
+        }
+        for search in [false, true] {
+            let mut query = RemoveFocus::default();
+            query.focusable(
+                Some(&iced::widget::Id::new(crate::SEARCH_ID)),
+                iced::Rectangle::default(),
+                &mut Focus(search),
+            );
+            query.focusable(
+                Some(&iced::widget::Id::new(focus_button::UNDO_ID)),
+                iced::Rectangle::default(),
+                &mut Focus(!search),
+            );
+            let (_root, mut app) = fixture(false);
+            app.selected = Some("game".into());
+            app.search_focused = !search;
+            let iced::advanced::widget::operation::Outcome::Some((actual_search, any)) =
+                query.finish()
+            else {
+                panic!("missing focus result")
+            };
+            let _ = app.update(Message::RemoveFocus(Status::Ignored, actual_search, any));
+            assert_eq!(app.search_focused, search);
+            assert!(app.removal.is_none());
+        }
+    }
+
+    #[test]
+    fn toast_pluralizes_desktop_entries_and_mentions_retained_snapshots() {
+        let (_root, mut app) = fixture(true);
+        let mut entry = removed(&mut app);
+        let snapshots = app.paths.default_prefix_root().join("kept-snapshots");
+        std::fs::create_dir_all(&snapshots).unwrap();
+        entry.snapshots_left = Some(snapshots.clone());
+        assert!(!Toast::new(entry.clone()).text.contains("Snapshots kept."));
+        std::fs::write(snapshots.join("snapshot"), "snapshot").unwrap();
+        for count in [1, 2] {
+            entry.desktop_removed = count;
+            let toast = Toast::new(entry.clone());
+            assert!(toast.text.contains(if count == 1 {
+                "1 desktop entry removed."
+            } else {
+                "2 desktop entries removed."
+            }));
+            assert!(toast.text.contains("Prefix kept.") && toast.text.contains("Snapshots kept."));
+            assert!(!toast.text.contains('\n'));
+        }
+    }
+
+    #[test]
+    fn long_undo_errors_wrap_even_with_an_unbroken_path() {
+        use iced::advanced::text::{self as advanced_text, Paragraph as _};
+        type Paragraph = <iced::Renderer as advanced_text::Renderer>::Paragraph;
+        let error = format!("Restore failed at /{}", "long-directory-name".repeat(32));
+        let paragraph = Paragraph::with_text(advanced_text::Text {
+            content: error.as_str(),
+            bounds: iced::Size::new(240.0, f32::INFINITY),
+            size: 16.0.into(),
+            line_height: advanced_text::LineHeight::default(),
+            font: iced::Font::DEFAULT,
+            align_x: advanced_text::Alignment::Default,
+            align_y: iced::alignment::Vertical::Top,
+            shaping: advanced_text::Shaping::default(),
+            wrapping: TOAST_WRAPPING,
+        });
+        assert!(paragraph.min_width() <= 240.0);
+        assert!(paragraph.min_height() > 32.0);
+    }
+
+    #[test]
+    fn expiry_during_restore_keeps_toast_and_double_undo_is_blocked() {
+        let (_root, mut app) = fixture(false);
+        let entry = removed(&mut app);
+        let start = app.toast.as_ref().unwrap().last;
+        let _ = app.update(Message::Undo);
+        let generation = app.change_generation;
+        let _ = app.update(Message::Undo);
+        assert_eq!(app.change_generation, generation);
+        assert!(matches!(&app.change, Some(Change::Restore { id, .. }) if id == &entry.id));
+        let _ = app.update(Message::ToastFocus(false, start + Duration::from_secs(11)));
+        assert!(app.toast.as_ref().unwrap().remaining.is_zero());
+        let _ = app.update(Message::UndoFinished(
+            generation,
+            Err("restore failed".into()),
+        ));
+        assert_eq!(
+            app.toast.as_ref().unwrap().remaining,
+            Duration::from_secs(10)
+        );
     }
 
     #[test]
