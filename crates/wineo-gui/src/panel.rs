@@ -638,6 +638,8 @@ mod tests {
         Card {
             name: "game".into(),
             state,
+            lost: false,
+            prefix: None,
             busy: false,
             busy_holder: None,
             unresolved: false,

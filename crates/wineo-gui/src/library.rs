@@ -49,6 +49,8 @@ impl ArtFile {
 pub(super) struct Card {
     pub(super) name: String,
     pub(super) state: State,
+    pub(super) lost: bool,
+    pub(super) prefix: Option<PathBuf>,
     pub(super) busy: bool,
     pub(super) busy_holder: Option<String>,
     pub(super) unresolved: bool,
@@ -111,11 +113,13 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
         .collect();
     let mut cards = Vec::new();
     for item in overview.environments {
+        let mut prefix = None;
         let mut targets = Vec::new();
         let mut default_target = None;
         let mut panel_art = HashMap::new();
         let (error, art) = match Environment::load(paths, &item.name) {
             Ok(env) => {
+                prefix = env.prefix(paths).ok();
                 targets = env.config.targets.keys().cloned().collect();
                 default_target = launch::default_target(&env).ok().map(str::to_owned);
                 let dir = paths.art_dir(&item.name);
@@ -156,6 +160,8 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
             tags: item.tags,
             name: item.name,
             state: item.status.state,
+            lost: item.status.lost,
+            prefix,
             busy: item.busy.is_some() || item.unresolved,
             busy_holder: item.busy.map(|holder| holder.as_str().to_owned()),
             unresolved: item.unresolved,
@@ -182,6 +188,8 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
             tags: Vec::new(),
             name: error.name,
             state: State::Inactive,
+            lost: false,
+            prefix: None,
             busy: false,
             busy_holder: None,
             unresolved: false,

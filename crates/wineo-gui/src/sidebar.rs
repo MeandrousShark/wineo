@@ -78,6 +78,7 @@ impl App {
 
     fn sidebar_blocked(&self) -> bool {
         self.close_prompt
+            || self.removal.is_some()
             || self.flow.is_some()
             || self
                 .settings

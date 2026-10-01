@@ -57,7 +57,7 @@ impl App {
         search_focused: bool,
         captured: bool,
     ) -> Task<Message> {
-        if self.close_prompt || self.flow.is_some() {
+        if self.close_prompt || self.flow.is_some() || self.removal.is_some() {
             return Task::none();
         }
         if self.settings.is_some() {
@@ -67,6 +67,18 @@ impl App {
             return Task::none();
         }
         self.search_focused = search_focused;
+        if key == Key::Named(Named::Delete)
+            && !search_focused
+            && !captured
+            && !self.log_view
+            && self.action_menu.is_none()
+            && modifiers.is_empty()
+        {
+            return self
+                .selected
+                .clone()
+                .map_or_else(Task::none, |name| self.update(Message::Remove(name)));
+        }
         if captured
             && !search_focused
             && matches!(

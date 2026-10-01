@@ -111,7 +111,15 @@ impl App {
         (self.window_size.width - 40.0).clamp(280.0, widest)
     }
     pub(crate) fn view(&self) -> Element<'_, Message> {
-        crate::shortcuts::capture(self.sidebar_view(), Message::Section)
+        crate::shortcuts::capture_with_undo(
+            self.sidebar_view(),
+            Message::Section,
+            (self.toast.is_some()
+                && self.removal.is_none()
+                && self.flow.is_none()
+                && !self.close_prompt)
+                .then_some(Message::Undo),
+        )
     }
 
     fn sidebar_view(&self) -> Element<'_, Message> {
@@ -119,6 +127,28 @@ impl App {
             .width(Fill)
             .height(Fill)
             .into();
+        if self.toast.is_some() {
+            page = stack![
+                page,
+                container(self.toast_view())
+                    .padding(16)
+                    .align_bottom(Fill)
+                    .center_x(Fill)
+            ]
+            .into();
+        }
+        if self.removal.is_some() {
+            page = stack![
+                page,
+                iced::widget::opaque(
+                    mouse_area(container(self.remove_view()).center(Fill).style(|_| {
+                        container::Style::default().background(Color::BLACK.scale_alpha(0.55))
+                    }))
+                    .on_scroll(|_| Message::OverlayInput)
+                )
+            ]
+            .into();
+        }
         if let Some(flow) = &self.flow {
             let palette = self.palette;
             let generation = self.flow_generation;
@@ -157,7 +187,9 @@ impl App {
             } else {
                 "An operation is still running. Cancel it and close wineo?"
             };
-            let controls = if self.closing {
+            let controls = if self.closing && self.change.is_some() {
+                row![text("Waiting for the change to finish...")]
+            } else if self.closing {
                 row![button("Force stop").on_press(Message::ForceCloseWork)]
             } else {
                 row![
@@ -188,7 +220,8 @@ impl App {
             .into();
         }
         if let Some(name) = &self.action_menu {
-            let position = menu_position(self.action_menu_position, self.window_size);
+            let mut position = menu_position(self.action_menu_position, self.window_size);
+            position.y = position.y.min((self.window_size.height - 270.0).max(8.0));
             let palette = self.palette;
             let menu = container(
                 column![
@@ -199,6 +232,14 @@ impl App {
                     button("Clone").on_press_maybe(
                         (!self.foreground_busy()).then(|| Message::CloneEnvironment(name.clone()))
                     ),
+                    button("Remove...").on_press_maybe(
+                        self.remove_reason(name)
+                            .is_none()
+                            .then(|| Message::Remove(name.clone()))
+                    ),
+                    text(self.remove_reason(name).unwrap_or_default())
+                        .size(12)
+                        .color(palette.muted),
                     button("Close menu").on_press(Message::CloseMenu),
                 ]
                 .spacing(8),
@@ -241,6 +282,11 @@ impl App {
                 .height(1)
                 .style(move |_| container::Style::default().background(palette.border))
         ];
+        if let Some(change) = &self.change {
+            page = page.push(
+                container(text(change.reason()).size(12).color(palette.muted)).padding([4, 16]),
+            );
+        }
         if self.section != crate::sidebar::Section::Library {
             let description = match self.section {
                 crate::sidebar::Section::Trash => "Trash management is coming soon.",

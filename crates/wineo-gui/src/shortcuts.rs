@@ -4,32 +4,34 @@ use iced::advanced::{
 };
 use iced::{Element, Event, Length, Rectangle, Size, Vector};
 
-/// Handles Ctrl+1/2/3 before any child sees them. A focused text_input
-/// inserts the digit and captures the key regardless of Ctrl, and the app's
-/// key subscription skips captured events, so it can't be done there.
-pub(crate) fn capture<'a, Message, Theme, Renderer>(
+/// Handles navigation and the active Undo shortcut before a focused input captures them.
+pub(crate) fn capture_with_undo<'a, Message, Theme, Renderer>(
     content: impl Into<Element<'a, Message, Theme, Renderer>>,
     on_section: impl Fn(crate::sidebar::Section) -> Message + 'a,
+    on_undo: Option<Message>,
 ) -> Element<'a, Message, Theme, Renderer>
 where
-    Message: 'a,
+    Message: Clone + 'a,
     Theme: 'a,
     Renderer: AdvancedRenderer + 'a,
 {
     Element::new(SidebarShortcuts {
         content: content.into(),
         on_section: Box::new(on_section),
+        on_undo,
     })
 }
 
 struct SidebarShortcuts<'a, Message, Theme, Renderer> {
     content: Element<'a, Message, Theme, Renderer>,
     on_section: Box<dyn Fn(crate::sidebar::Section) -> Message + 'a>,
+    on_undo: Option<Message>,
 }
 
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for SidebarShortcuts<'_, Message, Theme, Renderer>
 where
+    Message: Clone,
     Renderer: AdvancedRenderer,
 {
     fn tag(&self) -> tree::Tag {
@@ -96,6 +98,15 @@ where
             return;
         }
 
+        if let Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event
+            && *modifiers == iced::keyboard::Modifiers::CTRL
+            && matches!(key.as_ref(), iced::keyboard::Key::Character("z" | "Z"))
+            && let Some(message) = &self.on_undo
+        {
+            shell.publish(message.clone());
+            shell.capture_event();
+            return;
+        }
         self.content.as_widget_mut().update(
             tree, event, layout, cursor, renderer, clipboard, shell, viewport,
         );
@@ -156,9 +167,18 @@ pub(crate) mod tests {
         digit: &str,
         modifiers: Modifiers,
     ) -> (Vec<Message>, Status) {
+        input_messages_with_undo(value, digit, modifiers, false)
+    }
+
+    fn input_messages_with_undo(
+        value: &str,
+        digit: &str,
+        modifiers: Modifiers,
+        undo: bool,
+    ) -> (Vec<Message>, Status) {
         let input = text_input::TextInput::<Message, iced::Theme, ()>::new("Search", value)
             .on_input(Message::SearchChanged);
-        let mut widget = capture(input, Message::Section);
+        let mut widget = capture_with_undo(input, Message::Section, undo.then_some(Message::Undo));
         let mut tree = tree::Tree::new(widget.as_widget());
         let bounds = Size::new(400.0, 40.0);
         let node =
@@ -218,6 +238,19 @@ pub(crate) mod tests {
         })
         .unwrap();
         (root, App::boot(paths).0)
+    }
+
+    #[test]
+    fn control_z_reaches_active_undo_before_a_focused_input() {
+        let (messages, status) = input_messages_with_undo("game", "z", Modifiers::CTRL, true);
+        assert_eq!(status, Status::Captured);
+        assert!(matches!(messages.as_slice(), [Message::Undo]));
+        let (messages, _) = input_messages_with_undo("game", "z", Modifiers::CTRL, false);
+        assert!(
+            !messages
+                .iter()
+                .any(|message| matches!(message, Message::Undo))
+        );
     }
 
     #[test]

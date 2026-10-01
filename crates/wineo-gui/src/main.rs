@@ -1,12 +1,15 @@
 mod artwork;
 mod chips;
 mod flow;
+mod focus_button;
 mod grid;
 mod keys;
 mod library;
 mod logview;
 mod panel;
 mod picker;
+mod removal;
+mod remove_work;
 mod settings;
 mod shortcuts;
 mod sidebar;
@@ -96,6 +99,13 @@ pub(crate) struct App {
     window_size: iced::Size,
     close_prompt: bool,
     closing: bool,
+    removal: Option<removal::Dialog>,
+    remove_generation: u64,
+    change: Option<removal::Change>,
+    toast: Option<removal::Toast>,
+    change_generation: u64,
+    library_generation: u64,
+    trash_generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +153,8 @@ pub(crate) enum Message {
     Hover(Option<String>),
     Refresh,
     Loaded(Result<Vec<Card>, String>),
+    LibraryReloaded(u64, Result<Vec<Card>, String>),
+    TrashReloaded(u64, sidebar::TrashBadge),
     Section(sidebar::Section),
     TrashBadgeLoaded(sidebar::TrashBadge),
     ArtLoaded(ArtKey, Result<image::Handle, String>),
@@ -174,11 +186,23 @@ pub(crate) enum Message {
     KeepWorking,
     CancelAndClose,
     ForceCloseWork,
+    Remove(String),
+    RemovePrefix(bool),
+    RemoveSize(u64, Result<u64, String>),
+    ConfirmRemove,
+    CancelRemove,
+    RemoveProgress(u64, wineo_core::trash::RemoveEvent),
+    RemoveFinished(u64, Result<wineo_core::trash::Entry, String>),
+    Undo,
+    UndoFinished(u64, Result<(), String>),
+    ToastTick(Instant),
+    ToastHover(bool),
+    ToastFocus(bool, Instant),
 }
 
 impl App {
     fn boot(paths: Paths) -> (Self, Task<Message>) {
-        let app = Self {
+        let mut app = Self {
             paths,
             palette: Palette::DARK,
             search: String::new(),
@@ -226,9 +250,16 @@ impl App {
             window_size: iced::Size::new(1200.0, 800.0),
             close_prompt: false,
             closing: false,
+            removal: None,
+            remove_generation: 0,
+            change: None,
+            toast: None,
+            change_generation: 0,
+            library_generation: 0,
+            trash_generation: 0,
         };
-        let load = Self::load(app.paths.clone());
-        let badge = Self::load_trash_badge(app.paths.clone());
+        let load = app.reload_library();
+        let badge = app.reload_badge();
         let cache = app.paths.art_cache_dir();
         let prune = Task::future(async move {
             let _ = tokio::task::spawn_blocking(move || artwork::prune(&cache)).await;
@@ -257,8 +288,33 @@ impl App {
             Message::Loaded,
         )
     }
+    fn reload_library(&mut self) -> Task<Message> {
+        self.library_generation = self.library_generation.wrapping_add(1);
+        let generation = self.library_generation;
+        Self::load(self.paths.clone()).map(move |message| match message {
+            Message::Loaded(result) => Message::LibraryReloaded(generation, result),
+            message => message,
+        })
+    }
+
+    fn reload_badge(&mut self) -> Task<Message> {
+        self.trash_generation = self.trash_generation.wrapping_add(1);
+        let generation = self.trash_generation;
+        Self::load_trash_badge(self.paths.clone()).map(move |message| match message {
+            Message::TrashBadgeLoaded(badge) => Message::TrashReloaded(generation, badge),
+            message => message,
+        })
+    }
+
+    fn management_busy(&self) -> bool {
+        self.change.is_some()
+            || self.flow.as_ref().is_some_and(flow::Page::busy)
+            || self.settings.as_ref().is_some_and(|page| page.saving)
+    }
+
     fn spinning(&self) -> bool {
         self.operation.is_some()
+            || self.change.is_some()
             || self.settings.as_ref().is_some_and(|page| page.saving)
             || self.flow.as_ref().is_some_and(flow::Page::spinning)
     }
@@ -290,10 +346,15 @@ impl App {
             }),
             spinner,
             idle,
+            if self.toast.is_some() {
+                iced::time::every(Duration::from_millis(100)).map(Message::ToastTick)
+            } else {
+                Subscription::none()
+            },
         ])
     }
     fn update(&mut self, message: Message) -> Task<Message> {
-        if self.flow.is_some()
+        if (self.flow.is_some() || self.removal.is_some())
             && matches!(
                 message,
                 Message::SearchChanged(_)
@@ -314,11 +375,78 @@ impl App {
                     | Message::KeyWithFocus(..)
                     | Message::Scrolled(_)
                     | Message::Hover(_)
+                    | Message::Add
+                    | Message::CloneEnvironment(_)
             )
         {
             return Task::none();
         }
         let task = match message {
+            Message::Remove(name) => self.open_remove(name),
+            Message::RemovePrefix(include) => {
+                if self.change.is_none()
+                    && let Some(dialog) = &mut self.removal
+                {
+                    dialog.include_prefix = include && dialog.prefix.is_some();
+                }
+                Task::none()
+            }
+            Message::RemoveSize(generation, size) => {
+                if generation == self.remove_generation
+                    && let Some(dialog) = &mut self.removal
+                {
+                    dialog.size = Some(size);
+                }
+                Task::none()
+            }
+            Message::ConfirmRemove => self.confirm_remove(),
+            Message::CancelRemove => {
+                self.cancel_remove();
+                Task::none()
+            }
+            Message::RemoveProgress(generation, event) => {
+                if generation != self.change_generation {
+                    return Task::none();
+                }
+                if let Some(removal::Change::Remove { phase, .. }) = &mut self.change {
+                    *phase = Some(event);
+                }
+                Task::none()
+            }
+            Message::RemoveFinished(generation, result) if generation == self.change_generation => {
+                self.remove_finished(result)
+            }
+            Message::RemoveFinished(..) => Task::none(),
+            Message::Undo => self.undo_remove(),
+            Message::UndoFinished(generation, result) if generation == self.change_generation => {
+                self.undo_finished(result)
+            }
+            Message::UndoFinished(..) => Task::none(),
+            Message::ToastHover(hovered) => {
+                if let Some(toast) = &mut self.toast {
+                    toast.advance(Instant::now());
+                    toast.hovered = hovered;
+                }
+                Task::none()
+            }
+            Message::ToastTick(now) => {
+                iced::widget::operation::is_focused(iced::widget::Id::new(focus_button::UNDO_ID))
+                    .map(move |focused| Message::ToastFocus(focused, now))
+            }
+            Message::ToastFocus(focused, now) => {
+                if let Some(toast) = &mut self.toast {
+                    // Focus operations run before this message, so preserve the interval that gained focus.
+                    if focused {
+                        toast.focused = true;
+                    }
+                    toast.advance(now);
+                    toast.focused = focused;
+                    if toast.remaining.is_zero() && self.change.is_none() {
+                        self.toast = None;
+                    }
+                }
+                Task::none()
+            }
             Message::SearchChanged(search) => {
                 self.search = search;
                 self.scroll_offset = 0.0;
@@ -436,7 +564,7 @@ impl App {
                     Task::none()
                 } else {
                     self.refreshing = true;
-                    Self::load(self.paths.clone())
+                    self.reload_library()
                 }
             }
             Message::StopFinished(name, result) => {
@@ -457,7 +585,7 @@ impl App {
                     Task::none()
                 } else {
                     self.refreshing = true;
-                    Self::load(self.paths.clone())
+                    self.reload_library()
                 }
             }
             Message::OpenLog => self.open_log(),
@@ -494,17 +622,31 @@ impl App {
                     Task::none()
                 } else {
                     self.refreshing = true;
-                    Self::load(self.paths.clone())
+                    self.reload_library()
                 };
                 let badge = if self.trash_refreshing {
                     Task::none()
                 } else {
                     self.trash_refreshing = true;
-                    Self::load_trash_badge(self.paths.clone())
+                    self.reload_badge()
                 };
                 Task::batch([library, badge, self.settings_tick()])
             }
             Message::Section(section) => self.navigate_section(section),
+            Message::LibraryReloaded(generation, result) => {
+                if generation == self.library_generation {
+                    self.update(Message::Loaded(result))
+                } else {
+                    Task::none()
+                }
+            }
+            Message::TrashReloaded(generation, badge) => {
+                if generation == self.trash_generation {
+                    self.update(Message::TrashBadgeLoaded(badge))
+                } else {
+                    Task::none()
+                }
+            }
             Message::TrashBadgeLoaded(badge) => {
                 self.trash_refreshing = false;
                 self.trash_badge = badge;
@@ -570,6 +712,7 @@ impl App {
                     self.close_prompt = true;
                     Task::none()
                 } else {
+                    self.cancel_remove_dialog();
                     iced::exit()
                 }
             }
@@ -590,6 +733,19 @@ impl App {
                 }
                 Task::none()
             }
+            Message::Key(key, modifiers, _) if self.removal.is_some() => match key {
+                keyboard::Key::Named(keyboard::key::Named::Escape) => {
+                    self.cancel_remove_dialog();
+                    Task::none()
+                }
+                keyboard::Key::Named(keyboard::key::Named::Tab) if modifiers.shift() => {
+                    iced::widget::operation::focus_previous()
+                }
+                keyboard::Key::Named(keyboard::key::Named::Tab) => {
+                    iced::widget::operation::focus_next()
+                }
+                _ => Task::none(),
+            },
             Message::Key(key, modifiers, status) if self.flow.is_some() => {
                 use iced::keyboard::{Key, key::Named};
                 if sidebar::shortcut(&key, modifiers).is_some() {
@@ -641,6 +797,21 @@ impl App {
                 }
             }
             Message::Key(key, modifiers, status) => {
+                if status != iced::event::Status::Captured
+                    && self.toast.is_some()
+                    && modifiers == keyboard::Modifiers::CTRL
+                    && matches!(key.as_ref(), keyboard::Key::Character("z" | "Z"))
+                {
+                    return self.update(Message::Undo);
+                }
+                if key == keyboard::Key::Named(keyboard::key::Named::Tab) && self.settings.is_none()
+                {
+                    return if modifiers.shift() {
+                        iced::widget::operation::focus_previous()
+                    } else {
+                        iced::widget::operation::focus_next()
+                    };
+                }
                 // shortcuts::capture normally takes these first. This covers a
                 // key an open overlay saw and left uncaptured.
                 if let Some(section) = sidebar::shortcut(&key, modifiers) {
@@ -656,11 +827,25 @@ impl App {
                 {
                     self.update(Message::Add)
                 } else {
-                    iced::widget::operation::is_focused(iced::widget::Id::new(SEARCH_ID)).map(
-                        move |focused| {
-                            Message::KeyWithFocus(key.clone(), modifiers, status, focused)
-                        },
-                    )
+                    if key == keyboard::Key::Named(keyboard::key::Named::Delete) {
+                        iced::advanced::widget::operate(
+                            iced::advanced::widget::operation::focusable::count(),
+                        )
+                        .map(move |focus| {
+                            Message::KeyWithFocus(
+                                key.clone(),
+                                modifiers,
+                                status,
+                                focus.focused.is_some(),
+                            )
+                        })
+                    } else {
+                        iced::widget::operation::is_focused(iced::widget::Id::new(SEARCH_ID)).map(
+                            move |focused| {
+                                Message::KeyWithFocus(key.clone(), modifiers, status, focused)
+                            },
+                        )
+                    }
                 }
             }
             Message::KeyWithFocus(key, modifiers, status, focused) => self.handle_key(
@@ -746,6 +931,7 @@ impl App {
             event @ (Message::CancelAndClose | Message::ForceCloseWork) => {
                 let force = matches!(event, Message::ForceCloseWork);
                 self.closing = true;
+                self.cancel_management();
                 if let Some(page) = &mut self.flow {
                     page.cancel(force);
                 }
@@ -780,7 +966,8 @@ impl App {
         }
     }
     fn foreground_busy(&self) -> bool {
-        self.operation.is_some()
+        self.change.is_some()
+            || self.operation.is_some()
             || self.flow.as_ref().is_some_and(flow::Page::busy)
             || self.settings.as_ref().is_some_and(|page| page.saving)
     }
@@ -1072,6 +1259,8 @@ mod tests {
         Card {
             name: name.into(),
             state,
+            lost: false,
+            prefix: None,
             busy: false,
             busy_holder: None,
             unresolved: false,
