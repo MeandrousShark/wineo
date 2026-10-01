@@ -99,7 +99,9 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
 - `view::*`: the serializable shapes behind `--json`, documented in
   [JSON output](json-output.md). A frontend can use the same structs.
 - `validate::check_all(paths) -> Report`: problems with codes and levels,
-  each with an optional `Fix`.
+  each with an optional `Fix`. `validate::check_environment(paths, name)`
+  checks one. `Report::fixes()` lists each fix once, in report order, so
+  two environments missing the same build share one download.
 - `log::Tail`: reads a run's log, tails the last lines, and follows a live
   run into any `Write` sink until the run ends or the token is canceled.
 
@@ -141,8 +143,16 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   show.
 - `winetricks::ensure(...)`: installs the environment's missing declared
   verbs. `winetricks::run_in(...)` runs any verbs.
-- `validate::apply(paths, fix, &token, winetricks_events, download) ->
-  Vec<Note>`: applies one fix.
+- `validate::apply(paths, fix, &token, winetricks_output, winetricks_events,
+  download) -> Vec<Note>`: applies one fix. Pass
+  `EnsureOutput::Log(path)` to get the `LogStarted`, `Progress`, and
+  `OutputLine` events a launch reports. `Stderr` prints winetricks output
+  instead and skips those three.
+- `trash::remove_with(paths, name, include_prefix, &token, on_wait) -> Entry`:
+  moves an environment to the trash, like `wineo rm`. The token cancels the
+  wait for wine to exit, which comes before anything is written, so a
+  canceled removal changes nothing. `trash::restore`, `trash::review_prune`
+  with `trash::prune_reviewed`, and `trash::recover` cover the rest.
 - `Installer::run(&token, stop_timeout, output, watched) -> Outcome`: runs an
   installer until it and everything it started exit.
 - `download::Client::install(..., &token, progress)`, plus
