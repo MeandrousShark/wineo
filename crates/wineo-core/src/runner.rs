@@ -285,6 +285,15 @@ impl Runner {
     /// Waits for a copy source to become idle. Cancellation stops only the
     /// waiter, leaving applications using the source prefix alone.
     pub fn wait_idle_for_copy(&self, prefix: &Path, token: &crate::cancel::Token) -> Result<()> {
+        self.wait_idle_for_copy_noting(prefix, token, || {})
+    }
+
+    pub(crate) fn wait_idle_for_copy_noting(
+        &self,
+        prefix: &Path,
+        token: &crate::cancel::Token,
+        on_wait: impl FnOnce(),
+    ) -> Result<()> {
         if token.is_canceled() {
             return Err(Error::Canceled("waiting for source prefix"));
         }
@@ -293,9 +302,22 @@ impl Runner {
         };
         let command = quietly(command.arg("-w"));
         command.stdin(Stdio::null()).process_group(0);
-        let child = command
+        let mut child = command
             .spawn()
             .context(|| "failed to run wineserver -w".to_owned())?;
+        let deadline = Instant::now() + IDLE_NOTE_AFTER;
+        while !token.is_canceled()
+            && child
+                .try_wait()
+                .context(|| "failed to wait for wineserver -w".to_owned())?
+                .is_none()
+        {
+            if Instant::now() >= deadline {
+                on_wait();
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
         let status =
             crate::prefix::wait_for_child(child, token, || Ok(())).map_err(
                 |error| match error {

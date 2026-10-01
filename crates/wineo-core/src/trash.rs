@@ -1305,13 +1305,20 @@ fn move_out(paths: &Paths, manifest: &mut Manifest, index: usize) -> Result<()> 
 /// Moves owned data into a unique entry. A failure after publication leaves a
 /// `removing` record for explicit rollback; it never falls back to deletion.
 pub fn remove(paths: &Paths, name: &str, include_prefix: bool) -> Result<Entry> {
-    remove_with(paths, name, include_prefix, || {})
+    remove_with(
+        paths,
+        name,
+        include_prefix,
+        &crate::cancel::Token::new(),
+        || {},
+    )
 }
 
 pub fn remove_with(
     paths: &Paths,
     name: &str,
     include_prefix: bool,
+    token: &crate::cancel::Token,
     on_wait: impl FnOnce(),
 ) -> Result<Entry> {
     Environment::ensure_exists(paths, name)?;
@@ -1434,8 +1441,11 @@ pub fn remove_with(
             current
                 .as_ref()
                 .unwrap()
-                .wait_idle(paths, &global, on_wait)?;
+                .wait_idle_for_remove(paths, &global, token, on_wait)?;
         }
+    }
+    if token.is_canceled() {
+        return Err(crate::error::Error::Canceled("removing environment").into());
     }
     create_storage(&paths.trash_dir())?;
     let stamp = jiff::Timestamp::now()
@@ -2144,6 +2154,108 @@ mod tests {
             );
             prefix
         }
+    }
+
+    #[test]
+    fn canceling_removal_during_the_wine_wait_leaves_everything_untouched() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let f = Fixture::new();
+        let prefix = f.wine("game");
+        f.config(
+            "game",
+            &format!(
+                "prefix = '{}'\nrunner = 'fake'\narch = 'win64'\n",
+                prefix.display()
+            ),
+        );
+        let bin = f.paths.default_runner_root().join("fake/bin");
+        fs::create_dir_all(&bin).unwrap();
+        for (program, script) in [
+            ("wine", "#!/bin/sh\nexit 0\n"),
+            (
+                "wineserver",
+                "#!/bin/sh\nif [ \"$1\" = -k ]; then\n  touch \"$WINEPREFIX/killed\"\nelse\n  touch \"$WINEPREFIX/waiting\"\n  exec sleep 30\nfi\n",
+            ),
+        ] {
+            let path = bin.join(program);
+            fs::write(&path, script).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let global = f.paths.global_config();
+        let files = [
+            (global, "# global settings\n"),
+            (f.paths.art_dir("game").join("art.toml"), "# art settings\n"),
+            (f.paths.art_dir("game").join("icon.png"), "icon"),
+            (f.paths.stats_log("game"), "playtime\n"),
+            (prefix.join("drive_c/game.exe"), "game"),
+            (
+                f.paths.snapshot_root(&prefix, "game").join("snapshot"),
+                "snapshot",
+            ),
+            (
+                f.paths.applications_dir().join("wineo-game-game.desktop"),
+                "[Desktop Entry]\nX-Wineo-Environment=game\nX-Wineo-Target=game\n",
+            ),
+            (
+                f.paths
+                    .icons_dir()
+                    .join("hicolor/256x256/apps/wineo-game-game.png"),
+                "desktop icon",
+            ),
+        ];
+        for (path, text) in &files {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let before: Vec<_> = files
+            .iter()
+            .map(|(path, _)| path.clone())
+            .chain([
+                f.paths.environment_config("game"),
+                prefix.join("system.reg"),
+            ])
+            .map(|path| {
+                let bytes = fs::read(&path).unwrap();
+                let identity = identity(&path).unwrap();
+                (path, bytes, identity)
+            })
+            .collect();
+        let token = crate::cancel::Token::new();
+        let mut noticed = false;
+        let result = remove_with(&f.paths, "game", true, &token, || {
+            noticed = true;
+            assert!(prefix.join("waiting").exists());
+            token.cancel();
+        });
+        assert!(noticed);
+        assert!(matches!(
+            result.unwrap_err().downcast_ref::<crate::error::Error>(),
+            Some(crate::error::Error::Canceled(_))
+        ));
+        for (path, bytes, original) in before {
+            assert_eq!(fs::read(&path).unwrap(), bytes, "{}", path.display());
+            assert_eq!(identity(&path).unwrap(), original, "{}", path.display());
+        }
+        assert!(prefix.join("drive_c").is_dir());
+        assert!(!prefix.join("killed").exists());
+        assert!(!f.paths.trash_dir().exists());
+        assert!(!prefix.parent().unwrap().join(".wineo-trash").exists());
+        assert!(pending_entries(&f.paths).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_precanceled_remove_does_not_create_trash_storage() {
+        let f = Fixture::new();
+        f.config("game", "kind = 'native'\n");
+        let token = crate::cancel::Token::new();
+        token.cancel();
+        assert!(remove_with(&f.paths, "game", false, &token, || panic!("no wine wait")).is_err());
+        assert_eq!(
+            fs::read_to_string(f.paths.environment_config("game")).unwrap(),
+            "kind = 'native'\n"
+        );
+        assert!(!f.paths.trash_dir().exists());
     }
 
     #[test]
@@ -3203,6 +3315,7 @@ mod tests {
             &f.paths,
             fix,
             &crate::cancel::Token::new(),
+            crate::winetricks::EnsureOutput::Stderr,
             |_| {},
             |_, _| unreachable!(),
         )

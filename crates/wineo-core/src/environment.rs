@@ -269,6 +269,34 @@ impl Environment {
         global: &GlobalConfig,
         on_wait: impl FnOnce(),
     ) -> Result<()> {
+        self.wait_idle_with(paths, global, |runner, prefix| {
+            runner.wait_idle_noting(prefix, on_wait)
+        })
+    }
+
+    pub(crate) fn wait_idle_for_remove(
+        &self,
+        paths: &Paths,
+        global: &GlobalConfig,
+        token: &Token,
+        on_wait: impl FnOnce(),
+    ) -> Result<()> {
+        self.wait_idle_with(paths, global, |runner, prefix| {
+            match runner.wait_idle_for_copy_noting(prefix, token, on_wait) {
+                Err(Error::Canceled(_)) => Err(Error::Canceled("removing environment")),
+                // wait_idle_noting never failed removal on wineserver's exit status.
+                Err(Error::Unsettled(_)) => Ok(()),
+                other => other,
+            }
+        })
+    }
+
+    fn wait_idle_with(
+        &self,
+        paths: &Paths,
+        global: &GlobalConfig,
+        wait: impl FnOnce(&Runner, &Path) -> Result<()>,
+    ) -> Result<()> {
         let Some(wine) = self.config.wine() else {
             return Ok(());
         };
@@ -286,7 +314,7 @@ impl Environment {
         let Ok(prefix) = self.prefix(paths) else {
             return Ok(());
         };
-        runner.wait_idle_noting(&prefix, on_wait)
+        wait(&runner, &prefix)
     }
 
     /// Builds a missing prefix with cancellation and progress events.

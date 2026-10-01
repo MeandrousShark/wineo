@@ -15,9 +15,15 @@ pub struct Args {
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
-    let entry = trash::remove_with(paths, &args.name, args.delete_prefix, || {
-        eprintln!("Waiting for wine to exit in {}", args.name);
-    })?;
+    let entry = trash::remove_with(
+        paths,
+        &args.name,
+        args.delete_prefix,
+        &wineo_core::cancel::Token::new(),
+        || {
+            eprintln!("Waiting for wine to exit in {}", args.name);
+        },
+    )?;
     if args.delete_prefix && entry.prefix_present == Some(false) {
         eprintln!("The prefix is already gone; its config was retained in trash");
     }
