@@ -2,7 +2,7 @@ use iced::keyboard::{Key, Modifiers};
 use iced::widget::{Space, button, column, container, row, text};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::paths::Paths;
-use wineo_core::trash::{self, Phase};
+use wineo_core::trash::{self, Entry, PendingEntry, Phase};
 
 use crate::{App, Message};
 
@@ -36,18 +36,23 @@ impl TrashBadge {
     pub(crate) fn read(paths: &Paths) -> Self {
         let entries = trash::list(paths);
         let pending = trash::pending_entries(paths);
+        Self::from_entries(entries.as_deref().ok(), pending.as_deref().ok())
+    }
+
+    pub(crate) fn from_entries(
+        entries: Option<&[Entry]>,
+        pending: Option<&[PendingEntry]>,
+    ) -> Self {
         Self {
-            count: entries.as_ref().ok().map(|entries| {
+            count: entries.map(|entries| {
                 entries
                     .iter()
                     .filter(|entry| entry.phase == Phase::Trashed)
                     .count()
             }),
-            warning: entries.is_err()
-                || entries
-                    .as_ref()
-                    .is_ok_and(|entries| entries.iter().any(|entry| entry.phase != Phase::Trashed))
-                || pending.as_ref().map_or(true, |entries| !entries.is_empty()),
+            warning: entries
+                .is_none_or(|entries| entries.iter().any(|entry| entry.phase != Phase::Trashed))
+                || pending.is_none_or(|entries| !entries.is_empty()),
         }
     }
 }
@@ -108,6 +113,9 @@ impl App {
     }
 
     pub(crate) fn switch_section(&mut self, section: Section) -> Task<Message> {
+        if self.section == Section::Trash && section != Section::Trash {
+            self.trash_page.cancel_review();
+        }
         self.section = section;
         self.action_menu = None;
         self.hovered = None;
@@ -172,10 +180,9 @@ impl App {
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::MetadataExt;
 
+    use crate::trash_page::tests::{interrupted_remove, interrupted_restore, pending_fixture};
     use iced::event::Status;
-    use sha2::{Digest, Sha256};
 
     fn fixture() -> (tempfile::TempDir, App) {
         let root = tempfile::tempdir().unwrap();
@@ -293,46 +300,11 @@ mod tests {
         trash::remove(paths, name, false).unwrap()
     }
 
-    fn make_pending(paths: &Paths, entry: &trash::Entry, phase: &str, intent: &str) {
-        let file = paths.trash_dir().join(&entry.id).join("manifest.toml");
-        let manifest = fs::read_to_string(&file)
-            .unwrap()
-            .replace("phase = \"trashed\"", &format!("phase = \"{phase}\""));
-        fs::write(file, &manifest).unwrap();
-        let nested = manifest
-            .lines()
-            .map(|line| {
-                if let Some(header) = line.strip_prefix("[[") {
-                    format!("[[manifest.{header}\n")
-                } else if let Some(header) = line.strip_prefix('[') {
-                    format!("[manifest.{header}\n")
-                } else {
-                    format!("{line}\n")
-                }
-            })
-            .collect::<String>();
-        let root = paths.environments_dir().parent().unwrap().to_owned();
-        let metadata = fs::metadata(paths.trash_dir()).unwrap();
-        let marker = format!(
-            "version = 1\nintent = '{intent}'\nfinished = false\nroot = '{}'\n\n[metadata_identity]\ndevice = {}\ninode = {}\n\n[manifest]\n{nested}",
-            root.display(),
-            metadata.dev(),
-            metadata.ino(),
-        );
-        let hash = Sha256::digest(root.as_os_str().as_encoded_bytes());
-        let filename = format!(
-            "trash-{}-{:016x}.toml",
-            entry.id,
-            u64::from_le_bytes(hash[..8].try_into().unwrap())
-        );
-        let dir = paths.prefix_locks_dir().join(".trash-pending");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(filename), marker).unwrap();
-    }
-
     #[test]
     fn badge_counts_only_trashed_entries_and_warns_about_pending_work() {
-        let (_root, mut app) = fixture();
+        let Some((_root, _config, mut app)) = pending_fixture() else {
+            return;
+        };
         let _ = app.update(Message::TrashBadgeLoaded(TrashBadge::read(&app.paths)));
         assert_eq!(
             app.trash_badge,
@@ -352,8 +324,9 @@ mod tests {
                 warning: false
             }
         );
-        make_pending(&app.paths, &removing, "removing", "remove");
-        make_pending(&app.paths, &restoring, "restoring", "restore");
+        trash::restore(&app.paths, &removing.id).unwrap();
+        interrupted_remove(&app.paths, "removing");
+        interrupted_restore(&app.paths, &restoring.id);
         assert_eq!(trash::pending_entries(&app.paths).unwrap().len(), 2);
         assert_eq!(trash::list(&app.paths).unwrap().len(), 3);
         let _ = app.update(Message::TrashBadgeLoaded(TrashBadge::read(&app.paths)));

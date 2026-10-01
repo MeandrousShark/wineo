@@ -19,6 +19,7 @@ pub(crate) fn read(paths: &Paths) -> Result<Snapshot, String> {
             .cmp(&a.removed_at.parse::<jiff::Timestamp>().ok())
             .then_with(|| b.id.cmp(&a.id))
     });
+    // Legacy interrupted entries can lack a host marker but still need recovery.
     for entry in &entries {
         if entry.phase != Phase::Trashed && !pending.iter().any(|item| item.id == entry.id) {
             pending.push(trash::PendingEntry {

@@ -2,7 +2,6 @@ use super::*;
 use crate::{removal, sidebar};
 use iced::event::Status;
 use iced::keyboard::{Key, Modifiers, key::Named};
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use wineo_core::paths::Paths;
@@ -78,74 +77,51 @@ fn set_removed_at(paths: &Paths, id: &str, at: &str) {
     fs::write(file, rewritten).unwrap();
 }
 
-fn trash_metadata_identity(paths: &Paths) -> String {
-    fs::create_dir_all(paths.trash_dir()).unwrap();
-    let path = paths.trash_dir();
-    let metadata = fs::symlink_metadata(&path).unwrap();
-    let (mount, birth) = match rustix::fs::statx(
-        rustix::fs::CWD,
-        &path,
-        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
-        rustix::fs::StatxFlags::MNT_ID | rustix::fs::StatxFlags::BTIME,
-    ) {
-        Ok(stat) => {
-            let mount = (stat.stx_mask & rustix::fs::StatxFlags::MNT_ID.bits() != 0)
-                .then_some(stat.stx_mnt_id);
-            let birth = (stat.stx_mask & rustix::fs::StatxFlags::BTIME.bits() != 0)
-                .then_some((stat.stx_btime.tv_sec, stat.stx_btime.tv_nsec));
-            (mount, birth)
-        }
-        Err(rustix::io::Errno::NOSYS) => (None, None),
-        Err(error) => panic!("could not inspect trash storage identity: {error}"),
+/// None when no second filesystem is available, like core's own copy tests.
+pub(crate) fn pending_fixture() -> Option<(tempfile::TempDir, tempfile::TempDir, App)> {
+    // Copy failpoints require config and trash metadata on different filesystems.
+    let root = tempfile::tempdir().unwrap();
+    let config = tempfile::tempdir_in("/dev/shm").ok().filter(|config| {
+        fs::metadata(root.path()).unwrap().dev() != fs::metadata(config.path()).unwrap().dev()
+    });
+    let Some(config) = config else {
+        eprintln!("skipping: pending fixtures need /dev/shm on a separate filesystem");
+        return None;
     };
-    let mut fields = format!("device = {}\ninode = {}", metadata.dev(), metadata.ino());
-    if let Some(mount) = mount {
-        fields.push_str(&format!("\nmount = {mount}"));
-    }
-    if let Some((seconds, nanos)) = birth {
-        fields.push_str(&format!("\nbirth = [{seconds}, {nanos}]"));
-    }
-    fields
+    let home = root.path().to_owned();
+    let config_home = config.path().to_owned();
+    let paths = Paths::from_lookup(move |key| match key {
+        "HOME" => Some(home.as_os_str().to_owned()),
+        "XDG_CONFIG_HOME" => Some(config_home.as_os_str().to_owned()),
+        _ => None,
+    })
+    .unwrap();
+    let mut app = App::boot(paths).0;
+    app.refreshing = false;
+    app.trash_refreshing = false;
+    Some((root, config, app))
 }
 
-fn make_pending(
-    paths: &Paths,
-    entry: &trash::Entry,
-    phase: &str,
-    intent: &str,
-    metadata_identity: &str,
-) {
-    let file = paths.trash_dir().join(&entry.id).join("manifest.toml");
-    let manifest = fs::read_to_string(&file)
-        .unwrap()
-        .replace("phase = \"trashed\"", &format!("phase = \"{phase}\""));
-    fs::write(file, &manifest).unwrap();
-    let nested = manifest
-        .lines()
-        .map(|line| {
-            if let Some(header) = line.strip_prefix("[[") {
-                format!("[[manifest.{header}\n")
-            } else if let Some(header) = line.strip_prefix('[') {
-                format!("[manifest.{header}\n")
-            } else {
-                format!("{line}\n")
-            }
-        })
-        .collect::<String>();
-    let root = paths.environments_dir().parent().unwrap().to_owned();
-    let marker = format!(
-        "version = 1\nintent = '{intent}'\nfinished = false\nroot = '{}'\n\n[metadata_identity]\n{metadata_identity}\n\n[manifest]\n{nested}",
-        root.display(),
-    );
-    let hash = Sha256::digest(root.as_os_str().as_encoded_bytes());
-    let filename = format!(
-        "trash-{}-{:016x}.toml",
-        entry.id,
-        u64::from_le_bytes(hash[..8].try_into().unwrap())
-    );
-    let dir = paths.prefix_locks_dir().join(".trash-pending");
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join(filename), marker).unwrap();
+pub(crate) fn interrupted_remove(paths: &Paths, name: &str) -> trash::Entry {
+    trash::set_trash_failpoint(Some("out.after_publish"));
+    let result = trash::remove(paths, name, false);
+    trash::set_trash_failpoint(None);
+    assert!(result.unwrap_err().to_string().contains("injected"));
+    let pending = trash::pending_entries(paths).unwrap();
+    let entry = pending.iter().find(|entry| entry.name == name).unwrap();
+    // Leave only the retained copy so recovery must restore it and detect collisions.
+    fs::remove_file(paths.environment_config(name)).unwrap();
+    let entry = trash::inspect(paths, &entry.id).unwrap();
+    assert_eq!(entry.phase, Phase::Removing);
+    entry
+}
+
+pub(crate) fn interrupted_restore(paths: &Paths, id: &str) {
+    trash::set_trash_failpoint(Some("return.after_identity_write"));
+    let result = trash::restore(paths, id);
+    trash::set_trash_failpoint(None);
+    assert!(result.unwrap_err().to_string().contains("injected"));
+    assert_eq!(trash::inspect(paths, id).unwrap().phase, Phase::Restoring);
 }
 
 fn review(app: &mut App, selection: Selection) -> trash::PruneReview {
@@ -251,6 +227,24 @@ fn restore_refuses_a_replaced_prefix_and_plain_remove_notes_what_stays() {
     let error = finish_restore(&mut app, generation, &entry.id).unwrap_err();
     assert!(error.contains("changed") || error.contains("identity"));
     assert_eq!(app.trash_page.row_errors.get(&entry.id), Some(&error));
+}
+
+#[test]
+fn missing_prefix_is_not_described_as_left_in_place_or_included() {
+    let (_root, app) = fixture();
+    for include_prefix in [false, true] {
+        let name = if include_prefix { "included" } else { "plain" };
+        let prefix = wine(&app.paths, name);
+        fs::remove_dir_all(prefix).unwrap();
+        let entry = trash::remove(&app.paths, name, include_prefix).unwrap();
+        assert_eq!(entry.prefix_present, Some(false));
+        if !include_prefix {
+            assert!(entry.prefix_left.is_some());
+        }
+        assert!(prefix_note(&app.paths, &entry).is_none());
+        assert!(!hover_label(&app.paths, &entry).contains("Prefix left in place:"));
+        assert!(!entry_label(&entry, jiff::Timestamp::now()).contains("prefix included"));
+    }
 }
 
 #[test]
@@ -484,7 +478,71 @@ fn partial_prune_results_survive_refresh_and_section_changes_until_next_action()
     load_current(&mut app);
     assert_eq!(app.trash_page.results.len(), 2);
     send(&mut app, Event::Days("30".into()));
+    assert_eq!(app.trash_page.results.len(), 2);
+    send(&mut app, Event::ReviewOlder);
     assert!(app.trash_page.results.is_empty());
+}
+
+#[test]
+fn prune_results_survive_typing_and_a_failed_reload_until_check_again() {
+    let (_root, mut app) = fixture();
+    native(&app.paths, "deleted");
+    let entry = remove(&app, "deleted");
+    open_trash(&mut app);
+    let frozen = review(&mut app, Selection::All);
+    send(&mut app, Event::Confirm);
+    let generation = app.change_generation;
+    let outcomes = trash_work::prune_selection(&app.paths, &frozen);
+    send(&mut app, Event::Pruned(generation, Ok(outcomes)));
+    load_current(&mut app);
+
+    let label = format!("Deleted deleted ({}) forever.", entry.id);
+    assert_eq!(app.trash_page.feedback(), vec![(label.clone(), false)]);
+    send(&mut app, Event::Days("90".into()));
+    assert_eq!(app.trash_page.days, "90");
+    assert_eq!(app.trash_page.feedback(), vec![(label.clone(), false)]);
+
+    fs::remove_dir(app.paths.trash_dir()).unwrap();
+    fs::write(app.paths.trash_dir(), "unreadable storage").unwrap();
+    let _ = app.reload_trash_page();
+    load_current(&mut app);
+    assert!(app.trash_page.snapshot.as_ref().unwrap().is_err());
+    assert_eq!(app.trash_page.feedback(), vec![(label, false)]);
+    let _ = app.trash_view();
+    send(&mut app, Event::CheckAgain);
+    assert!(app.trash_page.results.is_empty());
+    assert!(app.trash_page.feedback().is_empty());
+}
+
+#[test]
+fn restore_error_survives_a_failed_reload_and_typing_until_next_restore() {
+    let (_root, mut app) = fixture();
+    native(&app.paths, "collision");
+    let entry = remove(&app, "collision");
+    open_trash(&mut app);
+    native(&app.paths, "collision");
+    let generation = start_restore(&mut app, &entry);
+    let error = finish_restore(&mut app, generation, &entry.id).unwrap_err();
+
+    let pending = app.paths.prefix_locks_dir().join(".trash-pending");
+    fs::create_dir_all(&pending).unwrap();
+    let broken = pending.join("trash-broken.toml");
+    fs::write(&broken, "broken marker").unwrap();
+    load_current(&mut app);
+    assert!(app.trash_page.snapshot.as_ref().unwrap().is_err());
+    assert_eq!(
+        app.trash_page.feedback(),
+        vec![(format!("{}: {error}", entry.id), true)]
+    );
+    let _ = app.trash_view();
+
+    fs::remove_file(broken).unwrap();
+    let _ = app.reload_trash_page();
+    load_current(&mut app);
+    send(&mut app, Event::Days("90".into()));
+    assert_eq!(app.trash_page.row_errors.get(&entry.id), Some(&error));
+    start_restore(&mut app, &entry);
+    assert!(app.trash_page.row_errors.is_empty());
 }
 
 #[test]
@@ -546,7 +604,7 @@ fn unreadable_trash_list_blocks_page_actions_until_check_again() {
 }
 
 #[test]
-fn pending_removing_and_restoring_entries_disable_rows_and_recover() {
+fn legacy_pending_removing_and_restoring_entries_disable_rows_and_recover() {
     let (_root, mut app) = fixture();
     native(&app.paths, "removing");
     let removing = remove(&app, "removing");
@@ -615,26 +673,14 @@ fn pending_removing_and_restoring_entries_disable_rows_and_recover() {
 
 #[test]
 fn real_pending_markers_recover_both_phases_and_keep_collision_errors_visible() {
-    let (_root, mut app) = fixture();
-    let metadata_identity = trash_metadata_identity(&app.paths);
+    let Some((_root, _config, mut app)) = pending_fixture() else {
+        return;
+    };
     native(&app.paths, "removing-marker");
-    let removing = remove(&app, "removing-marker");
+    let removing = interrupted_remove(&app.paths, "removing-marker");
     native(&app.paths, "restoring-marker");
     let restoring = remove(&app, "restoring-marker");
-    make_pending(
-        &app.paths,
-        &removing,
-        "removing",
-        "remove",
-        &metadata_identity,
-    );
-    make_pending(
-        &app.paths,
-        &restoring,
-        "restoring",
-        "restore",
-        &metadata_identity,
-    );
+    interrupted_restore(&app.paths, &restoring.id);
     let pending = trash::pending_entries(&app.paths).unwrap();
     assert_eq!(pending.len(), 2);
     assert!(pending.iter().any(|entry| entry.id == removing.id));
@@ -757,6 +803,46 @@ fn stale_list_reads_are_dropped() {
     );
     load_current(&mut app);
     assert_eq!(app.trash_page.snapshot().unwrap().entries[0].id, entry.id);
+}
+
+#[test]
+fn review_completed_after_leaving_trash_is_dropped_even_on_return() {
+    for destination in [
+        Message::Section(sidebar::Section::Library),
+        Message::OpenGlobalSettings,
+        Message::OpenSettings,
+    ] {
+        review_after_leaving_is_dropped(destination);
+    }
+}
+
+fn review_after_leaving_is_dropped(destination: Message) {
+    let (_root, mut app) = fixture();
+    native(&app.paths, "game");
+    remove(&app, "game");
+    open_trash(&mut app);
+    send(&mut app, Event::Review(Selection::All));
+    let generation = app.trash_page.review_generation;
+    let result = trash_work::review_selection(&app.paths, &Selection::All);
+    assert!(app.trash_page.reviewing);
+
+    app.selected = Some("game".into());
+    let _ = app.update(destination);
+    assert!(!app.trash_page.reviewing);
+    assert_ne!(app.trash_page.review_generation, generation);
+    send(&mut app, Event::Reviewed(generation, result.clone()));
+    assert!(app.trash_page.review.is_none());
+    let _ = app.update(Message::Section(sidebar::Section::Trash));
+    load_current(&mut app);
+    assert!(!app.trash_confirm_open());
+
+    send(&mut app, Event::Review(Selection::All));
+    let current_generation = app.trash_page.review_generation;
+    send(&mut app, Event::Reviewed(generation, result.clone()));
+    assert!(app.trash_page.reviewing);
+    assert!(!app.trash_confirm_open());
+    send(&mut app, Event::Reviewed(current_generation, result));
+    assert!(app.trash_confirm_open());
 }
 
 #[test]

@@ -5407,7 +5407,6 @@ dependencies = [
  "image",
  "jiff",
  "resvg",
- "rustix 1.1.4",
  "sha2",
  "tempfile",
  "tokio",

@@ -73,6 +73,12 @@ impl Default for Page {
 }
 
 impl Page {
+    pub(crate) fn cancel_review(&mut self) {
+        self.review = None;
+        self.reviewing = false;
+        self.review_generation = self.review_generation.wrapping_add(1);
+    }
+
     fn clear_feedback(&mut self) {
         self.results.clear();
         self.notice = None;
@@ -83,6 +89,38 @@ impl Page {
 
     fn snapshot(&self) -> Option<&Snapshot> {
         self.snapshot.as_ref()?.as_ref().ok()
+    }
+
+    fn feedback(&self) -> Vec<(String, bool)> {
+        let mut feedback = Vec::new();
+        if let Some(error) = &self.error {
+            feedback.push((error.clone(), true));
+        }
+        if let Some(notice) = &self.notice {
+            feedback.push((notice.clone(), false));
+        }
+        for (id, error) in &self.row_errors {
+            if self
+                .snapshot()
+                .is_none_or(|snapshot| !snapshot.entries.iter().any(|entry| &entry.id == id))
+            {
+                feedback.push((format!("{id}: {error}"), true));
+            }
+        }
+        for (id, error) in &self.recovery_errors {
+            if self
+                .snapshot()
+                .is_none_or(|snapshot| !snapshot.pending.iter().any(|entry| &entry.id == id))
+            {
+                feedback.push((format!("{id}: {error}"), true));
+            }
+        }
+        feedback.extend(
+            self.results
+                .iter()
+                .map(|result| (result.label(), result.result.is_err())),
+        );
+        feedback
     }
 
     pub(crate) fn row_enabled(&self, id: &str) -> bool {
@@ -158,25 +196,14 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.trash_refreshing = false;
             app.trash_page.loading = false;
             app.trash_badge = match &result {
-                Ok(snapshot) => sidebar::TrashBadge {
-                    count: Some(
-                        snapshot
-                            .entries
-                            .iter()
-                            .filter(|entry| entry.phase == Phase::Trashed)
-                            .count(),
-                    ),
-                    warning: !snapshot.pending.is_empty(),
-                },
-                Err(_) => sidebar::TrashBadge {
-                    count: None,
-                    warning: true,
-                },
+                Ok(snapshot) => sidebar::TrashBadge::from_entries(
+                    Some(&snapshot.entries),
+                    Some(&snapshot.pending),
+                ),
+                Err(_) => sidebar::TrashBadge::from_entries(None, None),
             };
             if result.is_err() {
-                app.trash_page.review = None;
-                app.trash_page.reviewing = false;
-                app.trash_page.review_generation = app.trash_page.review_generation.wrapping_add(1);
+                app.trash_page.cancel_review();
             }
             app.trash_page.snapshot = Some(result);
             Task::none()
@@ -187,7 +214,6 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.reload_trash_page()
         }
         Event::Days(days) if app.trash_action_allowed() => {
-            app.trash_page.clear_feedback();
             app.trash_page.days = days;
             Task::none()
         }
@@ -321,7 +347,6 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 .iter()
                 .map(|entry| entry.id.clone())
                 .collect();
-            app.trash_page.clear_feedback();
             app.trash_page.error = review_errors(&review);
             app.begin_trash_change(Change::Prune { ids });
             trash_work::prune(app.change_generation, app.paths.clone(), review)
@@ -372,7 +397,7 @@ pub(crate) fn entry_label(entry: &Entry, now: jiff::Timestamp) -> String {
         |at| wineo_core::time::relative(now, at),
     );
     let mut label = format!("{}   removed {removed}", entry.name);
-    if entry.include_prefix {
+    if entry.include_prefix && entry.prefix_present == Some(true) {
         label.push_str("   prefix included");
     }
     label
@@ -380,7 +405,9 @@ pub(crate) fn entry_label(entry: &Entry, now: jiff::Timestamp) -> String {
 
 fn hover_label(paths: &Paths, entry: &Entry) -> String {
     let mut label = entry.id.clone();
-    if let Some(prefix) = &entry.prefix_left {
+    if entry.prefix_present == Some(true)
+        && let Some(prefix) = &entry.prefix_left
+    {
         label.push_str(&format!("\nPrefix left in place: {}", prefix.display()));
     }
     if let Some(snapshots) = &entry.snapshots_left {
@@ -393,6 +420,9 @@ fn hover_label(paths: &Paths, entry: &Entry) -> String {
 }
 
 pub(crate) fn prefix_note(paths: &Paths, entry: &Entry) -> Option<String> {
+    if entry.prefix_present != Some(true) {
+        return None;
+    }
     entry.prefix_left.as_ref().map(|prefix| {
         paths.contract_text(&format!(
             "{}'s prefix at {} stays where it is.",
@@ -447,13 +477,16 @@ impl App {
         let mut content = column![text("Trash").size(22)].spacing(16);
         match &page.snapshot {
             Some(Err(error)) => {
-                return container(
-                    content
-                        .push(text(error).color(palette.danger))
-                        .push(button("Check again").on_press(message(Event::CheckAgain))),
+                content = self.trash_feedback(content);
+                return scrollable(
+                    container(
+                        content
+                            .push(text(error).color(palette.danger))
+                            .push(button("Check again").on_press(message(Event::CheckAgain))),
+                    )
+                    .padding(24)
+                    .width(Fill),
                 )
-                .padding(24)
-                .width(Fill)
                 .height(Fill)
                 .into();
             }
@@ -564,35 +597,24 @@ impl App {
                 .align_y(Center),
             );
         }
-        if let Some(change) = &self.change {
-            content = content.push(text(change.reason()).color(palette.muted));
-        }
-        if let Some(error) = &page.error {
-            content = content.push(text(error).color(palette.danger));
-        }
-        if let Some(notice) = &page.notice {
-            content = content.push(text(notice));
-        }
-        for (id, error) in &page.row_errors {
-            if !snapshot.entries.iter().any(|entry| &entry.id == id) {
-                content = content.push(text(format!("{id}: {error}")).color(palette.danger));
-            }
-        }
-        for (id, error) in &page.recovery_errors {
-            if !snapshot.pending.iter().any(|entry| &entry.id == id) {
-                content = content.push(text(format!("{id}: {error}")).color(palette.danger));
-            }
-        }
-        for result in &page.results {
-            content = content.push(text(result.label()).color(if result.result.is_err() {
-                palette.danger
-            } else {
-                palette.foreground
-            }));
-        }
+        content = self.trash_feedback(content);
         scrollable(container(content).padding(24).width(Fill))
             .height(Fill)
             .into()
+    }
+
+    fn trash_feedback<'a>(
+        &'a self,
+        mut content: iced::widget::Column<'a, Message>,
+    ) -> iced::widget::Column<'a, Message> {
+        for (label, error) in self.trash_page.feedback() {
+            content = content.push(text(label).color(if error {
+                self.palette.danger
+            } else {
+                self.palette.foreground
+            }));
+        }
+        content
     }
 
     pub(crate) fn trash_confirm_view(&self) -> Element<'_, Message> {
@@ -658,4 +680,4 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

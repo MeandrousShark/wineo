@@ -318,18 +318,13 @@ impl App {
                 .style(move |_| container::Style::default().background(palette.background))
                 .into();
         }
-        if self.section != crate::sidebar::Section::Library {
-            let description = match self.section {
-                crate::sidebar::Section::Trash => unreachable!(),
-                crate::sidebar::Section::Checkup => "Checkup is coming soon.",
-                crate::sidebar::Section::Library => unreachable!(),
-            };
+        if self.section == crate::sidebar::Section::Checkup {
             return container(
                 page.push(
                     container(
                         column![
                             text(self.section.label()).size(22),
-                            text(description).color(palette.muted),
+                            text("Checkup is coming soon.").color(palette.muted),
                         ]
                         .spacing(12),
                     )
