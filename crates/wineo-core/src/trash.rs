@@ -1310,8 +1310,17 @@ pub fn remove(paths: &Paths, name: &str, include_prefix: bool) -> Result<Entry> 
         name,
         include_prefix,
         &crate::cancel::Token::new(),
-        || {},
+        |_| {},
     )
+}
+
+/// What a removal is doing, for a frontend's status line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoveEvent {
+    /// Wine is still up after a moment. The token can still cancel.
+    Waiting,
+    /// Data starts moving. The token is no longer checked.
+    Moving,
 }
 
 pub fn remove_with(
@@ -1319,7 +1328,7 @@ pub fn remove_with(
     name: &str,
     include_prefix: bool,
     token: &crate::cancel::Token,
-    on_wait: impl FnOnce(),
+    mut events: impl FnMut(RemoveEvent),
 ) -> Result<Entry> {
     Environment::ensure_exists(paths, name)?;
     let initial = Environment::load(paths, name).ok();
@@ -1441,12 +1450,13 @@ pub fn remove_with(
             current
                 .as_ref()
                 .unwrap()
-                .wait_idle_for_remove(paths, &global, token, on_wait)?;
+                .wait_idle_for_remove(paths, &global, token, || events(RemoveEvent::Waiting))?;
         }
     }
     if token.is_canceled() {
         return Err(crate::error::Error::Canceled("removing environment").into());
     }
+    events(RemoveEvent::Moving);
     create_storage(&paths.trash_dir())?;
     let stamp = jiff::Timestamp::now()
         .strftime("%Y%m%dT%H%M%SZ")
@@ -2222,13 +2232,13 @@ mod tests {
             })
             .collect();
         let token = crate::cancel::Token::new();
-        let mut noticed = false;
-        let result = remove_with(&f.paths, "game", true, &token, || {
-            noticed = true;
+        let mut events = Vec::new();
+        let result = remove_with(&f.paths, "game", true, &token, |event| {
+            events.push(event);
             assert!(prefix.join("waiting").exists());
             token.cancel();
         });
-        assert!(noticed);
+        assert_eq!(events, [RemoveEvent::Waiting]);
         assert!(matches!(
             result.unwrap_err().downcast_ref::<crate::error::Error>(),
             Some(crate::error::Error::Canceled(_))
@@ -2250,12 +2260,31 @@ mod tests {
         f.config("game", "kind = 'native'\n");
         let token = crate::cancel::Token::new();
         token.cancel();
-        assert!(remove_with(&f.paths, "game", false, &token, || panic!("no wine wait")).is_err());
+        assert!(remove_with(&f.paths, "game", false, &token, |event| panic!("{event:?}")).is_err());
         assert_eq!(
             fs::read_to_string(f.paths.environment_config("game")).unwrap(),
             "kind = 'native'\n"
         );
         assert!(!f.paths.trash_dir().exists());
+    }
+
+    #[test]
+    fn a_remove_reports_moving_once_before_it_writes() {
+        let f = Fixture::new();
+        f.config("game", "kind = 'native'\n");
+        let mut events = Vec::new();
+        remove_with(
+            &f.paths,
+            "game",
+            false,
+            &crate::cancel::Token::new(),
+            |event| {
+                assert!(!f.paths.trash_dir().exists());
+                events.push(event);
+            },
+        )
+        .unwrap();
+        assert_eq!(events, [RemoveEvent::Moving]);
     }
 
     #[test]

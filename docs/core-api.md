@@ -148,10 +148,12 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   `EnsureOutput::Log(path)` to get the `LogStarted`, `Progress`, and
   `OutputLine` events a launch reports. `Stderr` prints winetricks output
   instead and skips those three.
-- `trash::remove_with(paths, name, include_prefix, &token, on_wait) -> Entry`:
+- `trash::remove_with(paths, name, include_prefix, &token, events) -> Entry`:
   moves an environment to the trash, like `wineo rm`. The token cancels the
   wait for wine to exit, which comes before anything is written, so a
-  canceled removal changes nothing. `trash::restore`, `trash::review_prune`
+  canceled removal changes nothing. `RemoveEvent::Waiting` says wine is
+  still up; `RemoveEvent::Moving` comes once, right before the first write,
+  and after it the token is ignored. `trash::restore`, `trash::review_prune`
   with `trash::prune_reviewed`, and `trash::recover` cover the rest.
 - `Installer::run(&token, stop_timeout, output, watched) -> Outcome`: runs an
   installer until it and everything it started exit.

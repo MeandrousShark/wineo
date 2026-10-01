@@ -20,8 +20,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         &args.name,
         args.delete_prefix,
         &wineo_core::cancel::Token::new(),
-        || {
-            eprintln!("Waiting for wine to exit in {}", args.name);
+        |event| {
+            if event == trash::RemoveEvent::Waiting {
+                eprintln!("Waiting for wine to exit in {}", args.name);
+            }
         },
     )?;
     if args.delete_prefix && entry.prefix_present == Some(false) {
