@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0039: GUI removal, trash, and validate
 
