@@ -368,6 +368,30 @@ A remove, restore, prune, recovery, or batch of fixes is a running change.
   with a missing exe and a missing icon and fix the icon, and run a full
   Checkup with a leftover desktop entry.
 
+## Acceptance checklist
+
+Implementation landed on 2026-10-01 (through 69b045f); the workspace tests
+pass (1,777). Maintainer acceptance in a real window, using throwaway
+environments or a `WINEO_PORTABLE_DIR` folder, run with
+`cargo run --release -p wineo-gui`:
+
+1. Remove a Wine game with and without its prefix, then Undo one of them.
+2. Restore one from Trash, and try restoring over a name that's been
+   reused (it should refuse on the row).
+3. Delete forever, Empty trash, and Delete entries older than N days.
+4. Interrupt a removal and recover it from Trash and from Checkup. Closing
+   the app mid-remove of a large prefix on another filesystem from the
+   config is the easy way.
+5. Check for problems on a game with a missing exe and a missing icon, and
+   fix the icon.
+6. A full Checkup with a leftover desktop entry, and two games pinned to the
+   same missing DXVK build (one fix, one download).
+7. A winetricks fix with Install log, canceled partway.
+8. Switch to Library during a prune and come back; close the window during a
+   remove's wine wait and during a prune.
+9. Look at Checkup with a long report, since its layout hasn't been seen in a
+   window.
+
 ## Scope limits
 
 - No restore under a different name. Core refuses collisions, and the GUI
