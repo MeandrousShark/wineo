@@ -13,6 +13,10 @@ environment, and anything left behind by an environment that no longer exists.
 Give a name to check only that environment: its config, targets, runtime
 state, desktop entries, and art.
 
+The desktop app runs the same checks from an environment's
+[Check for problems](gui.md#checking-for-problems) and its
+[Checkup page](gui.md#checkup).
+
 Nothing is launched. Validate never runs wine or a program, so it's fast and
 safe on a running environment.
 

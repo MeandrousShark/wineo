@@ -8,8 +8,13 @@ and it starts and stops games. It was added in
 [Plan 0037](plans/0037-gui-settings.md) added settings pages for each
 environment and for the global config, covering what `wineo set` and the
 target half of `wineo setup` do. The GUI also has guided flows for creating,
-importing, and cloning environments. Removal, trash, and validation remain
-CLI tasks for now.
+importing, and cloning environments.
+[Plan 0039](plans/0039-gui-trash-and-validate.md) added removal, the trash,
+and checking for problems.
+
+A sidebar on the left switches between **Library**, **Trash**, and
+**Checkup**. Add opens from the Library, and the settings gear is in the top
+bar everywhere.
 
 ## Starting it
 
@@ -78,9 +83,90 @@ If wineo lost track of a run, for example after a crash, the error has a
 **Settings** opens the environment's settings page.
 
 The detail actions menu and each card's right-click menu also offer
-**Settings** and **Clone**. Cloning has a review page; Wine clones copy the
-prefix and art, while native clones share the game files. Both keep external
-game paths, disable desktop entries, clear the Heroic id, and reset playtime.
+**Settings**, **Clone**, **Check for problems**, and **Remove...**. Cloning
+has a review page; Wine clones copy the prefix and art, while native clones
+share the game files. Both keep external game paths, disable desktop
+entries, clear the Heroic id, and reset playtime.
+
+### Removing
+
+**Remove...** asks first. Its config, art, and playtime go to the trash, like
+`wineo rm`. **Also trash the prefix and snapshots** is off by default and
+does what `--delete-prefix` does; the dialog shows the prefix's path and
+size. Native environments have no prefix, so the box isn't there. Remove is
+unavailable while the environment is running or busy, or after a lost run
+until **Clean up**.
+
+If wine is still running in the prefix, the dialog waits for it to exit,
+and **Cancel** stops the removal without changing anything. Once data starts
+moving, it can't be canceled.
+
+Afterward, a bar at the bottom says what was removed and what was left in
+place, with **Undo** for 10 seconds. The timer pauses while the pointer is
+over it or **Undo** has focus, and Ctrl+Z works too. Removed environments
+can also be restored from the Trash later.
+
+### Checking for problems
+
+**Check for problems** runs `wineo validate` for that environment and shows
+the results in the panel, like **Log**. Each problem uses the CLI's message.
+A problem with a fix has a checkbox under it, checked by default. Two
+problems fixed the same way, like two games missing the same DXVK build,
+share one fix, and their boxes toggle together.
+
+**Fix N problems** applies the checked fixes one at a time, so one failing
+doesn't stop the rest. Downloads show their progress, and installing
+winetricks packages shows "Installing gdiplus (2 of 3)..." with
+**Install log**, like Play. **Cancel** stops the running fix and skips the
+rest; fixes that already finished stay done. **Force stop** kills winetricks
+right away. When the fixes end, the check runs again, and a short summary of
+what was fixed, what failed, and what was skipped stays until the next check.
+
+Closing the panel leaves the results; reopening the environment shows its
+details. A running batch keeps going and shows its status there.
+
+## Trash
+
+The Trash lists removed environments, newest first, with how long ago they
+were removed and whether the prefix went with them. Hover a row for its ID
+and anything left in place. The sidebar shows how many entries can be
+restored.
+
+- **Restore** brings an entry back under its old name and paths, like
+  `wineo restore`. It refuses when something has taken the name or the
+  prefix was replaced, and says why on the row.
+- **Delete forever**, **Delete entries older than N days**, and
+  **Empty trash** prune, like `wineo prune`. Each shows what it will delete
+  and asks first, and confirming deletes exactly that list. A prefix left
+  in place by a plain remove isn't part of the trash and stays where it is.
+  Results for each entry stay on the page until your next action there.
+  Pruning can't be canceled.
+
+If a removal, restore, or prune was interrupted, the Trash page shows a
+banner with **Recover** for each one, the same recovery as
+`wineo validate --fix`, and the sidebar shows a warning dot. Those entries
+can't be restored or deleted until they're recovered. If the trash can't be
+read at all, the page shows the error and **Check again**.
+
+## Checkup
+
+Checkup runs `wineo validate` for everything when you open it: the global
+config, templates, every environment, and leftovers from environments that
+no longer exist. Problems are grouped like the CLI's report, and healthy
+environments aren't listed. Click an environment's heading to open it in
+the Library. Fixes, progress, and Cancel work as in the panel, and
+interrupted trash work can be recovered here too. The summary of the last
+batch stays until you press **Check again** or fix more, even if the batch
+finished while you were on another page.
+
+## Running changes
+
+Only one remove, restore, prune, recovery, or batch of fixes runs at a time.
+While one runs, the others are unavailable and say what's busy. Games still
+start and pages still open. Switching sections doesn't stop it, and its
+result is waiting when you come back. Closing the window offers
+**Keep working** or **Cancel and close**; the latter cancels what can be
+canceled and waits for the rest.
 
 ## Add, import, and clone
 
@@ -229,9 +315,12 @@ Hover the selected runner to see its full name.
 |---|---|
 | Arrow keys | Move between cards |
 | Enter | Open the panel, or play when it's open |
-| Esc | Close the log, then the panel, then clear the search |
+| Esc | Close the log or results, then the panel, then clear the search |
 | `/` or Ctrl+F | Search |
-| Ctrl+N | Open Add |
+| Ctrl+N | Open Add (Library only) |
+| Delete | Remove the selected environment, asking first (on the details) |
+| Ctrl+Z | Undo a removal while its bar shows |
+| Ctrl+1, Ctrl+2, Ctrl+3 | Library, Trash, Checkup |
 | Down (in the search) | Back to the cards |
 
 On a settings page:
@@ -260,6 +349,6 @@ it changes.
 
 ## Not yet
 
-- Removing, the trash, and validating come next, then snapshots, portable
-  copies, general art and download management, and running programs.
+- Snapshots, portable copies, general art and download management, and
+  running programs come next.
 - Gamepad navigation.

@@ -53,6 +53,8 @@ Completed: [0037: GUI settings](plans/0037-gui-settings.md).
 See [Settings](gui.md#settings) for the pages.
 Completed: [0038: GUI new, import, and clone](plans/0038-gui-new-import-clone.md).
 See [Add, import, and clone](gui.md#add-import-and-clone) for the current flows.
+Completed: [0039: GUI removal, trash, and validate](plans/0039-gui-trash-and-validate.md).
+See [Trash](gui.md#trash) and [Checkup](gui.md#checkup) for the pages.
 
 **Category**
 

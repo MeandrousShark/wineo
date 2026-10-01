@@ -4,6 +4,9 @@ Removing an environment moves its Wineo-managed data into recoverable trash.
 Each removal gets a unique ID, so removing the same name again does not replace
 an earlier entry.
 
+The desktop app does the same from an environment's **Remove...** and its
+[Trash page](gui.md#trash).
+
 ```sh
 wineo rm hades
 wineo rm hades --delete-prefix
