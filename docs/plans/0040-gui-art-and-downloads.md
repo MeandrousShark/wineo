@@ -42,6 +42,9 @@ From the 2026-10-01 planning conversation:
   `GE-Proton-Latest` to an older build.
 - The global default runner counts as a use too.
 - The picker's filters are off on every visit.
+- The Art page shows the saved game's name by looking it up by ID in the
+  background (decided 2026-10-02, during step 4). art.toml keeps only the
+  ID. Until the name arrives, or without a key, the header shows the ID.
 
 ## Existing foundation
 
@@ -85,6 +88,9 @@ From the 2026-10-01 planning conversation:
   `choose_for` does, and publishes it with `publish` in `Mode::Replace`.
   It never lists again, so an image the picker shows can always be used.
   Canceling before publish leaves the existing art untouched.
+- `Api::game(id)` looks a game up by ID (SteamGridDB's `games/id/{id}`)
+  and returns the same `Game` search does, so the Art page can name the
+  saved game.
 
 ### Core and CLI: deleting a build
 
@@ -157,7 +163,10 @@ Showing [Environment] [Target: modded]
   portal chooser from 0038, and **Remove**. The page scrolls when the
   window is short.
 - A transparent logo shows over a checker so its edges are visible.
-- The game line shows the saved SteamGridDB game. **Change** opens the same
+- The game line shows the saved SteamGridDB game's name and year, looked
+  up with `Api::game` when the page opens and kept for the session. While
+  it loads, offline, or without a key, it shows the ID; with no saved game
+  it says "Not picked". **Change** opens the same
   search and match list as 0038's Add flow and saves the pick with
   `save_game`. With no saved game, **Find...** asks for the game first.
 - **Showing** picks the environment or one of its targets, as a segmented
