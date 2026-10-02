@@ -51,7 +51,7 @@ pub(crate) enum Event {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Match(Game);
+pub(crate) struct Match(pub(crate) Game);
 
 impl std::fmt::Display for Match {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1011,7 +1011,7 @@ fn preview(path: &Path, kind: Kind) -> Result<image::Handle, String> {
 }
 
 /// Decodes `path` for `kind`, and says which format it is stored as.
-pub(super) fn preview_with_format(
+pub(crate) fn preview_with_format(
     path: &Path,
     kind: Kind,
 ) -> Result<(image::Handle, art::Format), String> {
@@ -1118,7 +1118,7 @@ fn decode_if_current<T, U>(
     chosen.map(decode).transpose()
 }
 
-fn search(paths: &Paths, term: &str) -> Result<Vec<Game>, String> {
+pub(crate) fn search(paths: &Paths, term: &str) -> Result<Vec<Game>, String> {
     let key = steamgriddb::require_key(
         paths,
         |key| std::env::var_os(key),

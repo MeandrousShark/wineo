@@ -531,6 +531,7 @@ impl App {
             });
         (!log_visible
             && self.settings.is_none()
+            && self.art_page.is_none()
             && self.action_menu.is_none()
             && !self.search_focused
             && self.flow.is_none()

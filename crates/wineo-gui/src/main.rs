@@ -1,3 +1,5 @@
+mod art_navigation;
+mod art_page;
 mod artwork;
 mod checkup;
 mod checkup_work;
@@ -94,6 +96,10 @@ pub(crate) struct App {
     spinner_start: Instant,
     settings: Option<settings::Page>,
     settings_generation: u64,
+    art_page: Option<String>,
+    art_pages: HashMap<String, art_page::Page>,
+    pending_art_writes: HashSet<(String, u64, u64, art_page::EnvironmentIdentity)>,
+    art_generation: u64,
     section: sidebar::Section,
     pending_section: Option<sidebar::Section>,
     pending_checkup_environment: Option<String>,
@@ -184,6 +190,9 @@ pub(crate) enum Message {
     SearchFocusChanged(bool),
     OpenSettings,
     Settings(settings::Event),
+    OpenArt,
+    ContextArt(String),
+    ArtPage(String, u64, art_page::Event),
     Add,
     CloneEnvironment(String),
     Context(String),
@@ -256,6 +265,10 @@ impl App {
             spinner_start: Instant::now(),
             settings: None,
             settings_generation: 0,
+            art_page: None,
+            art_pages: HashMap::new(),
+            pending_art_writes: HashSet::new(),
+            art_generation: 0,
             section: sidebar::Section::Library,
             pending_section: None,
             pending_checkup_environment: None,
@@ -330,12 +343,14 @@ impl App {
 
     fn management_busy(&self) -> bool {
         self.change.is_some()
+            || self.art_busy()
             || self.flow.as_ref().is_some_and(flow::Page::busy)
             || self.settings.as_ref().is_some_and(|page| page.saving)
     }
 
     fn spinning(&self) -> bool {
         self.operation.is_some()
+            || self.art_busy()
             || self.checkups.values().any(|results| results.checking)
             || self.change.is_some()
             || (self.section == sidebar::Section::Trash && self.trash_page.reviewing)
@@ -378,7 +393,10 @@ impl App {
         ])
     }
     fn update(&mut self, message: Message) -> Task<Message> {
-        if (self.flow.is_some() || self.removal.is_some() || self.trash_confirm_open())
+        if (self.flow.is_some()
+            || self.removal.is_some()
+            || self.trash_confirm_open()
+            || self.art_page.is_some())
             && matches!(
                 message,
                 Message::SearchChanged(_)
@@ -394,7 +412,9 @@ impl App {
                     | Message::CloseLog
                     | Message::Context(_)
                     | Message::ContextSettings(_)
+                    | Message::ContextArt(_)
                     | Message::OpenSettings
+                    | Message::OpenArt
                     | Message::KeyWithFocus(..)
                     | Message::Scrolled(_)
                     | Message::Hover(_)
@@ -641,8 +661,9 @@ impl App {
             Message::Loaded(Ok(cards)) => {
                 self.refreshing = false;
                 self.loaded = true;
+                let art = self.refresh_art(&cards);
                 self.merge(cards);
-                Task::batch([self.load_visible_art(), self.load_panel_art()])
+                Task::batch([art, self.load_visible_art(), self.load_panel_art()])
             }
             Message::Loaded(Err(error)) => {
                 self.refreshing = false;
@@ -791,6 +812,8 @@ impl App {
                     }
                 } else if self.settings.is_some() {
                     self.settings_key(&key, modifiers, status == iced::event::Status::Captured)
+                } else if self.art_page.is_some() {
+                    self.art_key(&key, modifiers, status == iced::event::Status::Captured)
                 } else if modifiers.control()
                     && matches!(key.as_ref(), keyboard::Key::Character("n" | "N"))
                 {
@@ -815,9 +838,16 @@ impl App {
             }
             Message::OpenSettings => self.open_settings(),
             Message::Settings(event) => self.settings_update(event),
+            Message::OpenArt => match self.selected.clone() {
+                Some(name) => self.open_art(name),
+                None => Task::none(),
+            },
+            Message::ContextArt(name) => self.open_art(name),
+            Message::ArtPage(name, generation, event) => self.art_update(name, generation, event),
             Message::Add => {
                 if self.foreground_busy()
                     || self.settings.is_some()
+                    || self.art_page.is_some()
                     || self.flow.is_some()
                     || self.section != sidebar::Section::Library
                 {
@@ -832,7 +862,11 @@ impl App {
                 )
             }
             Message::CloneEnvironment(name) => {
-                if self.foreground_busy() || self.settings.is_some() || self.flow.is_some() {
+                if self.foreground_busy()
+                    || self.settings.is_some()
+                    || self.art_page.is_some()
+                    || self.flow.is_some()
+                {
                     return Task::none();
                 }
                 self.close_log();
@@ -925,6 +959,7 @@ impl App {
     }
     fn foreground_busy(&self) -> bool {
         self.change.is_some()
+            || self.art_busy()
             || self.operation.is_some()
             || self.flow.as_ref().is_some_and(flow::Page::busy)
             || self.settings.as_ref().is_some_and(|page| page.saving)

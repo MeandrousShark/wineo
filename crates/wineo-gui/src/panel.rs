@@ -518,6 +518,7 @@ impl App {
                     .on_press(Message::OpenSettings)
                     .padding([6, 12]),
             );
+            extra = extra.push(button("Art").on_press(Message::OpenArt).padding([6, 12]));
             extra = extra.push(
                 button("Actions")
                     .on_press(Message::Context(card.name.clone()))

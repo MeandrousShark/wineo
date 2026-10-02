@@ -109,7 +109,7 @@ pub(crate) fn key(
     status: iced::event::Status,
 ) -> Option<Task<Message>> {
     use iced::keyboard::{Key, Modifiers, key::Named};
-    if app.settings.is_some() {
+    if app.settings.is_some() || app.art_page.is_some() {
         return None;
     }
     if status != iced::event::Status::Captured
@@ -208,6 +208,7 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
             app.search_focused = search;
             if app.section == crate::sidebar::Section::Library
                 && app.settings.is_none()
+                && app.art_page.is_none()
                 && app.flow.is_none()
                 && app.removal.is_none()
                 && !app.close_prompt
@@ -312,6 +313,7 @@ impl App {
         if self.removal.is_some()
             || self.flow.is_some()
             || self.settings.is_some()
+            || self.art_page.is_some()
             || self.close_prompt
             || self.trash_confirm_open()
             || self.management_busy()
@@ -453,6 +455,7 @@ impl App {
             || self.removal.is_some()
             || self.flow.is_some()
             || self.settings.is_some()
+            || self.art_page.is_some()
             || self.close_prompt
             || self.trash_confirm_open()
         {
@@ -625,6 +628,7 @@ impl App {
             && self.flow.is_none()
             && self.removal.is_none()
             && self.settings.is_none()
+            && self.art_page.is_none()
             && !self.close_prompt;
         let undo = crate::focus_button::undo(
             button("Undo")

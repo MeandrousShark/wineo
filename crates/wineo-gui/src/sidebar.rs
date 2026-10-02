@@ -126,6 +126,7 @@ impl App {
     }
 
     pub(crate) fn switch_section(&mut self, section: Section) -> Task<Message> {
+        self.leave_art();
         if self.section == Section::Trash && section != Section::Trash {
             self.trash_page.cancel_review();
         }

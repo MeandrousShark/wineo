@@ -1583,6 +1583,7 @@ impl App {
         let Some(name) = self.selected.clone() else {
             return Task::none();
         };
+        self.leave_art();
         self.trash_page.cancel_review();
         self.section = crate::sidebar::Section::Library;
         self.settings_generation = self.settings_generation.wrapping_add(1);
@@ -1592,6 +1593,7 @@ impl App {
         task
     }
     pub(crate) fn open_global_settings(&mut self) -> Task<Message> {
+        self.leave_art();
         self.trash_page.cancel_review();
         self.section = crate::sidebar::Section::Library;
         self.settings_generation = self.settings_generation.wrapping_add(1);
