@@ -10,13 +10,16 @@ existing iced pages do. Keep CLI process and prompt code out of the GUI.
 
 Reuse the detail actions, per-environment pages, review dialogs, running
 changes, progress, logs, toasts, and Checkup. Layout stays plain until the
-later polish pass. Copy stays neutral: "Run program", "Copy environment",
+later polish pass. Copy stays neutral: "Run program", "Copy to portable folder...",
 and "Stop it first". Key hints use full verb phrases.
 
 ## Settled by the maintainer
 
 - On 2026-10-01, split the old 0040 scope: 0040 covers art and downloads;
   0041 covers snapshots, portable copies, exec, and winetricks.
+- On 2026-10-02: rolling back an interrupted restore only happens when asked
+  for by itself. It is never part of a batch, so `wineo validate --fix` and
+  Checkup's fix-everything action skip it.
 
 ## Existing foundation
 
@@ -60,9 +63,16 @@ and "Stop it first". Key hints use full verb phrases.
   Windows paths, Unix paths, bare names such as `winecfg`, and MSI handling.
   Exec gets environment variables but no target launch wrappers, Wayland
   setting, or game/store protonfixes. It does not install the declared
-  winetricks list. The CLI still owns prefix preparation, launch locks,
-  reconciliation, spawning, and attached waiting. `Operation::Launch` is
-  shared, so CLI exec can coexist with a tracked application.
+  winetricks list. Core already has the preparation pieces:
+  `launch::{runner_locked, ensure_prefix, reconcile}`. CLI exec
+  (`wineo-cli/src/commands/exec.rs`) only sequences them, takes the
+  `Operation::Launch` lock, and spawns and waits attached to the terminal.
+  `Operation::Launch` is shared, so CLI exec can coexist with a tracked
+  application.
+- `Launch::exec` resolves programs relative to the process's current
+  directory: a bare name like `setup.exe` counts as a Unix path when a file
+  with that name exists there (`is_path` in `launch.rs`). That suits a
+  terminal, but a GUI's current directory is wherever it was started.
 - `Installer` already provides exclusive, recorded runs with logs,
   cancellation, and waiting for descendant Wine programs. Its semantics
   differ from exec; using it for every GUI program would change behavior.
@@ -111,7 +121,8 @@ active root are available.
 
 **Recommend A:** compact confirmation with expandable saved/current config,
 and recovery offered both on Snapshots and as a Checkup fix. Recovery is
-core's rollback, never an attempt to finish the new restore.
+core's rollback, never an attempt to finish the new restore. Per the
+settled rule above, rollback only runs when asked for by itself.
 
 ```
 A. Compact review                      B. Dedicated review page
@@ -126,8 +137,9 @@ Recovery: Snapshots or Checkup
           > [Roll back restore]
 ```
 
-A avoids a full page for unchanged config and gives Checkup a working fix;
-adding that fix also exposes it to CLI `validate --fix` and needs approval.
+A avoids a full page for unchanged config and gives Checkup a working fix.
+That fix is single-item only: Checkup shows its own **Roll back restore**
+button, and batch fixing, in Checkup and in CLI `validate --fix`, skips it.
 B keeps recovery separate and leaves Checkup with a link to Snapshots.
 Both show the prefix/config replacement warning and require confirmation.
 
@@ -158,7 +170,8 @@ native program files, nor adds portable-to-portable copying.
 from argument chips, as in Settings. Each added chip is one exact argument,
 including spaces. Never run the text through a shell. Paths from
 Browse are absolute. Typed Unix paths must be absolute or start with `~/`;
-Windows paths and Wine built-in names retain core meaning.
+Windows paths and Wine built-in names retain core meaning. A bare name is
+never resolved against the GUI's current directory (see step 3).
 
 ```
 A. Exact argument chips                B. Quoted argument field
@@ -226,43 +239,58 @@ shown before starting. No embedded winetricks window or verb catalog.
 
 ### 7. Do these operations use the single running-change slot?
 
-**Recommend A:** all four use the existing management slot, including exec
-until its selected lifecycle ends. Page navigation stays available once a
-review dialog is closed; results stay at the originating page. Launches in
-other environments keep working, subject to core locks.
+The slot (`management_busy` in `wineo-gui/src/main.rs`) disables Add, Clone,
+Remove, Downloads, Art, and Settings saves for every environment. Exec and
+**Open winetricks** can stay active as long as an external window is open,
+so putting them in the slot would freeze all of that until the window
+closes.
+
+**Recommend A:** snapshot create/restore/delete/recover and portable copies
+use the existing slot. Exec, Run verbs, Install missing, and Open winetricks
+run as per-environment tool work: they block mutations of their own
+environment (and of others sharing the prefix) but leave the rest of the
+app usable. Results stay at the originating page. Launches in other
+environments keep working, subject to core locks.
 
 ```
-A. One change                          B. Independent tool slot
-Copying Notes...                       Copying Notes...
-Run verbs in Editor:                   Run verbs in Editor:
-"Busy: copying notes."                 Installing corefonts...
-Close > cancel copy and wait           Close > cancel both and wait
+A. Slot for filesystem changes          B. One slot for everything
+winecfg open in Notes                  winecfg open in Notes
+Editor > Clone: works                  Editor > Clone: "Busy: running winecfg."
+Notes > Restore: "Stop it first."      Notes > Restore: "Busy: running winecfg."
+Close > cancel tools and the copy      Close > cancel it and wait
 ```
 
-A reuses current close/cancel handling and keeps status simple. B allows
-parallel work but requires separate tokens, results, conflict rules, and
-close settlement for multiple tools. Both respect environment/prefix locks;
-the UI's slot is not a replacement for core locking.
+A keeps long-lived windows from blocking unrelated work, at the cost of
+per-environment busy state and settling several tool workers on close. B
+reuses current handling but blocks the app while any external window is
+open. Both respect environment/prefix locks; the UI's busy state is not a
+replacement for core locking.
 
 ### 8. Should restore reconcile desktop entries right away?
 
-**Recommend A:** a shared post-restore helper for GUI and CLI, reporting a
-completed restore separately from reconciliation warnings. Restoring targets
-can otherwise leave desktop entries pointing at targets that no longer exist.
+Launch, exec, and winetricks already reconcile desktop entries before they
+run (`launch::reconcile` in `launch/orchestration.rs`). A restore that drops
+a target leaves its entry stale only until the next run in that
+environment.
+
+**Recommend B:** keep current restore behavior, which needs no CLI change.
+The restore result offers **Check for problems**, and Checkup's existing
+stale-entry fix covers the gap.
 
 ```
-A. Reconcile after restore              B. Leave reconciliation to Checkup
+A. Reconcile after restore              B. Leave it to the next run or Checkup
 Restore before-update                 Restore before-update
 Saved targets: editor                  Saved targets: editor
 Entry for removed viewer disappears    Entry for removed viewer remains
 Restored notes.                        Restored notes. [Check for problems]
-Warning if entry update fails          Checkup > fix stale desktop entry
+Warning if entry update fails          Next run or Checkup removes it
 ```
 
-A includes a CLI behavior change requiring explicit approval. B preserves
-current restore behavior and offers Checkup afterward. Neither deletes art
-for removed targets or turns reconciliation failure into rollback of a
-successful restore.
+A removes the window entirely but is a CLI behavior change: a shared
+post-restore helper for GUI and CLI, reporting a completed restore
+separately from reconciliation warnings. Neither deletes art for removed
+targets or turns reconciliation failure into rollback of a successful
+restore.
 
 ## Proposed design
 
@@ -330,17 +358,23 @@ boundaries when the maintainer chooses differently.
   Each opens a per-environment page with Back, like Art. Hide Wine-only
   actions on native environments; portable Wine environments use them too.
 - Exec validates input before building a missing prefix. A new core entry
-  point owns preparation, runner/build locks, runtime checks, reconciliation,
-  spawning, output, cancellation, and the chosen lifecycle from Q5. The GUI
-  only translates form values and renders events/results. No shell, terminal
-  launch, `wineo` subprocess, or duplicated CLI lifecycle code.
+  point sequences the existing `runner_locked`, `ensure_prefix`, and
+  `reconcile`, then owns spawning, output, cancellation, and the chosen
+  lifecycle from Q5. It never resolves a program against the process's
+  current directory. The GUI only translates form values and renders
+  events/results. No shell, terminal launch, `wineo` subprocess, or
+  duplicated CLI lifecycle code.
 - Show creation/reconciliation status, **Output**, and the exit result.
   Nonzero exit is a result, not a successful toast. Do not register a target,
   enable launch wrappers, install declared verbs, or change playtime.
-- Winetricks uses `ensure` for Install missing, `run_in` for explicit
-  arguments, and empty arguments for Open winetricks. Install missing on a
-  missing prefix first uses core prefix preparation; `ensure` alone refuses
-  that state. Do not open winetricks' picker as a side effect of this action.
+- Winetricks uses `run_in` for explicit arguments and empty arguments for
+  Open winetricks. Install missing needs a small core wrapper: `ensure`
+  refuses a missing prefix, so the wrapper builds it first through
+  `launch::ensure_prefix`, as `run_in` does, then installs under `ensure`'s
+  locks. The GUI never sequences prefix preparation itself, and
+  `orchestration::install_winetricks` (which expects a prepared launch and
+  skips locks) is not the entry point. Do not open winetricks' picker as a
+  side effect of this action.
 - Reuse install log viewing and `EnsureEvent` handling. Declared installs
   have verb steps; arbitrary arguments have a spinner, log lines, and
   lifecycle status, without invented percentages. Empty arguments can stay
@@ -353,7 +387,8 @@ boundaries when the maintainer chooses differently.
 
 ### Running changes and core gaps
 
-- Extend the existing running-change slot and close prompt per Q7. Keep
+- Extend the running-change slot, per-environment tool state, and close
+  prompt per Q7. Keep
   tokens/workers outside disposable page state. Switching pages or closing
   a panel must not release locks, cancel an operation, or lose its result.
   Reject stale inspection and log messages with worker generations.
@@ -380,12 +415,12 @@ boundaries when the maintainer chooses differently.
   before shaping that API. Existing Installer is reusable only for Q5-B.
 - Conditional gap: Checkup has no snapshot recovery fix (Q2-A). Add the typed
   fix, label, application, and tests; malformed markers still fail safely.
-- Snapshot restore does not reconcile desktop entries. Refreshing the GUI
-  does not fix that. Q8-A proposes a shared post-restore reconciliation helper,
-  used by GUI and CLI, with notes/partial failure rather than hiding a
-  completed restore. Reconcile entries against restored targets and current
-  art; never delete retained target art. Q8-B instead leaves reconciliation
-  to Checkup. No blanket cleanup of unrelated files.
+- Snapshot restore does not reconcile desktop entries; the next launch,
+  exec, or winetricks run does. With Q8-B the restore result offers
+  **Check for problems**. Q8-A would add a shared post-restore helper, used
+  by GUI and CLI, reporting partial failure without hiding a completed
+  restore and never deleting retained target art. No blanket cleanup of
+  unrelated files.
 - After every outcome refresh the relevant list, library, trash badge,
   installed verbs, and any visible check report. Results and warnings survive
   navigation. A completed restore with a reconciliation failure remains a
@@ -399,35 +434,41 @@ boundaries when the maintainer chooses differently.
 
 Each step is one coder's scoped change, with tests, and can land after its
 listed prerequisites. No implementation starts before the decisions above
-and the post-restore reconciliation proposal are approved.
+are approved.
 
 1. **Core snapshot frontend support.** Cancellable inspection/revalidation,
-   finishing event, and Q2's recovery integration. Preserve existing APIs;
-   test cancellation before swap and recovery refusal. GUI need not change.
+   finishing event, and Q2's recovery integration as a single-item fix that
+   batch fixing skips. Preserve existing APIs; test cancellation before swap,
+   recovery refusal, and that `validate --fix` leaves the marker alone.
 2. **Core portable frontend support.** Cancellable reviews/revalidation,
    native copy progress, and publishing event. Keep current collisions,
    first-copy policy, and CLI output. Independent of step 1.
-3. **Core exec lifecycle.** Implement the Q5-approved lifecycle with output,
-   events, token handling, and build/operation locks. Keep the CLI's attached
-   behavior; share preparation where semantics match. Independent of 1-2.
-4. **Core restore reconciliation.** If approved, shared helper and GUI/CLI
-   outcome notes for entries affected by restored targets. Tests retain art
-   and preserve successful restore after a reconciliation failure. Uses 1.
+3. **Core exec lifecycle.** A frontend entry point that reuses
+   `runner_locked`, `ensure_prefix`, and `reconcile`, and adds the
+   Q5-approved spawn, wait, output, events, and token handling under the
+   build/operation locks. Add a resolution mode that never consults the
+   current directory, so a bare name stays a Wine name. Keep the CLI's
+   attached behavior and cwd-relative paths. Independent of 1-2.
+4. **Core restore reconciliation.** Only if Q8-A is chosen: shared helper
+   and GUI/CLI outcome notes for entries affected by restored targets. Tests
+   retain art and preserve successful restore after a reconciliation
+   failure. Uses 1. With Q8-B this step is dropped.
 5. **GUI snapshots.** Page/menu entry, picker, list, create and restore
    reviews, delete confirm, recovery banner, status/results, and tests.
-   Uses 1 and 4's agreed outcome. Checkup rendering reuses typed fixes.
+   Uses 1, and 4 if chosen. Checkup rendering reuses typed fixes.
 6. **GUI portable copy.** Folder form, Wine/native review, worker,
    progress/cancel, and finish/errors. Uses 2 and the existing Clone flow.
 7. **GUI exec.** Form/argv preview, temporary overrides, worker, log,
    exit result, and tests. Uses 3. No config/target editor changes.
-8. **GUI winetricks.** Q6's controls, status record, declared prefix
-   preparation, arbitrary run/log, cancel/force, and record refresh tests.
-   Existing core entry points suffice; independent of 5-7.
-9. **GUI integration and acceptance checks.** Wire 5-8 into the single slot,
+8. **GUI winetricks.** The core Install missing wrapper that builds a
+   missing prefix, then Q6's controls, status record, arbitrary run/log,
+   cancel/force, and record refresh tests. Independent of 5-7.
+9. **GUI integration and acceptance checks.** Wire 5-8 into the slot and
+   per-environment tool state,
    navigation generations, shared close prompt, refreshes, disabled reasons,
    and keyboard handling. Each earlier GUI step includes its own busy/close
    safety before landing; this step checks interactions across features.
-10. **Docs and maintainer acceptance.** A separate docs pass updates
+10. **Docs and maintainer acceptance.** The primary updates
     `docs/gui.md`, `docs/core-api.md`, feature pages, README links, and the
     features backlog. Record any CLI changes. The primary prepares the
     concrete acceptance checklist and the maintainer runs it before done.
@@ -448,7 +489,9 @@ and the post-restore reconciliation proposal are approved.
   Unknown storage, collisions, overlap, running/shared source, changed
   review, cancel before publish, and partial-publish error paths. Do not
   weaken existing snapshot, portable, or lifecycle tests.
-- Exec: fake Wine/umu commands, built-ins and MSI, quoted argv and overrides,
+- Exec: fake Wine/umu commands, built-ins and MSI, a bare name that matches a
+  file in the current directory still resolving in the prefix, quoted argv
+  and overrides,
   prefix build cancellation, no wrappers/protonfixes/declared installs,
   nonzero exit, locks held for the selected lifetime, cancel without killing
   another shared program, and Q5's descendant/crash behavior. Preserve CLI
@@ -500,5 +543,6 @@ These are draft checklist items, to refine after implementation:
   target registration after exec, or native exec.
 - A winetricks catalog, uninstall, rollback of installed verbs, new global
   or target dependency lists, or embedding external installer windows.
-- Concurrent management workers unless Q7-B is explicitly chosen.
+- Concurrent filesystem-changing workers. Q7-A only lets tool work run
+  beside them.
 - A general UI polish pass or unrelated CLI behavior changes.
