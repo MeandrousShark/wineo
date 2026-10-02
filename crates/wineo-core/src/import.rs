@@ -713,18 +713,6 @@ pub(crate) fn reject_overlapping_paths(source: &Path, destination: &Path) -> Res
     Ok(())
 }
 
-fn find_external_dependencies(root: &Path) -> Result<Vec<ExternalDependency>> {
-    let mut found = Vec::new();
-    walk_no_follow(root, &mut |path, metadata| {
-        if let Some(dependency) = external_dependency(root, path, metadata)? {
-            found.push(dependency);
-        }
-        Ok(())
-    })?;
-    found.sort_by(|a, b| a.source.cmp(&b.source));
-    Ok(found)
-}
-
 fn external_dependency(
     root: &Path,
     path: &Path,
@@ -1071,11 +1059,26 @@ pub(crate) fn copy_tree_with(
 }
 
 /// Links under `root` that point outside it and outside every tree in `moved`.
-pub(crate) fn external_links(root: &Path, moved: &[&Path]) -> Result<Vec<ExternalDependency>> {
-    Ok(find_external_dependencies(root)?
-        .into_iter()
-        .filter(|link| !moved.iter().any(|tree| link.target.starts_with(tree)))
-        .collect())
+pub(crate) fn external_links_with(
+    root: &Path,
+    moved: &[&Path],
+    cancel: &Token,
+    progress: &mut impl FnMut(ImportProgress),
+) -> Result<Vec<ExternalDependency>> {
+    let mut check = Check::new(cancel, progress);
+    let mut found = Vec::new();
+    walk_no_follow(root, &mut |path, metadata| {
+        check.tick()?;
+        if let Some(link) = external_dependency(root, path, metadata)?
+            && !moved.iter().any(|tree| link.target.starts_with(tree))
+        {
+            found.push(link);
+        }
+        Ok(())
+    })?;
+    check.finish()?;
+    found.sort_by(|a, b| a.source.cmp(&b.source));
+    Ok(found)
 }
 
 #[cfg(test)]

@@ -958,12 +958,60 @@ impl StagedArt {
         })
     }
 
+    /// Stages art with cancellation and entry progress, preserving literal links.
+    pub(crate) fn stage_with(
+        locks: &Locks,
+        source: &Path,
+        destination: &Path,
+        staging_root: &Path,
+        cancel: &Token,
+        progress: &mut impl FnMut(crate::import::ImportProgress),
+    ) -> anyhow::Result<Self> {
+        crate::import::check_cancelled(cancel)?;
+        let guard = locks.config(&source.join(ART_FILE))?;
+        let staging = if fs::symlink_metadata(source).is_ok() {
+            let dir = tempfile::Builder::new()
+                .prefix(".wineo-art-")
+                .tempdir_in(staging_root)
+                .context(|| {
+                    format!(
+                        "failed to create a staging dir in {}",
+                        staging_root.display()
+                    )
+                })?;
+            let staged = dir.path().join("art");
+            let entries = art_entries(source, cancel)?;
+            progress(crate::import::ImportProgress::Started { entries });
+            copy_tree_with(source, &staged, cancel, progress)?;
+            Some((dir, staged))
+        } else {
+            None
+        };
+        crate::import::check_cancelled(cancel)?;
+        Ok(Self {
+            staging,
+            destination: destination.to_owned(),
+            _guard: guard,
+        })
+    }
+
     /// Publishes the copy without replacing anything. Returns where it went,
     /// or None when there was no art to copy.
     pub(crate) fn publish(self) -> Result<Option<PathBuf>> {
         let Some((_dir, staged)) = &self.staging else {
             return Ok(None);
         };
+        fs::create_dir_all(
+            self.destination
+                .parent()
+                .expect("an art dir always has a parent"),
+        )
+        .context(|| {
+            format!(
+                "failed to create art directory for {}",
+                self.destination.display()
+            )
+        })?;
         rustix::fs::renameat_with(
             rustix::fs::CWD,
             staged,
@@ -1005,6 +1053,58 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn art_entries(path: &Path, cancel: &Token) -> anyhow::Result<u64> {
+    crate::import::check_cancelled(cancel)?;
+    let mut count = 1;
+    if fs::symlink_metadata(path)?.is_dir() {
+        for entry in fs::read_dir(path)? {
+            count += art_entries(&entry?.path(), cancel)?;
+        }
+    }
+    Ok(count)
+}
+
+fn copy_tree_with(
+    from: &Path,
+    to: &Path,
+    cancel: &Token,
+    progress: &mut impl FnMut(crate::import::ImportProgress),
+) -> anyhow::Result<()> {
+    crate::import::check_cancelled(cancel)?;
+    fs::create_dir(to).context(|| format!("failed to create {}", to.display()))?;
+    for entry in fs::read_dir(from).context(|| format!("failed to read {}", from.display()))? {
+        crate::import::check_cancelled(cancel)?;
+        let entry = entry?;
+        let source = entry.path();
+        let destination = to.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_tree_with(&source, &destination, cancel, progress)?;
+            continue;
+        } else if kind.is_symlink() {
+            std::os::unix::fs::symlink(fs::read_link(&source)?, &destination)?;
+        } else {
+            let mut input = fs::File::open(&source)?;
+            let mut output = fs::File::create(&destination)?;
+            let mut buffer = [0; 128 * 1024];
+            loop {
+                crate::import::check_cancelled(cancel)?;
+                let count = input.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                output.write_all(&buffer[..count])?;
+            }
+            fs::set_permissions(&destination, input.metadata()?.permissions())?;
+        }
+        progress(crate::import::ImportProgress::Copied { path: source });
+    }
+    progress(crate::import::ImportProgress::Copied {
+        path: from.to_owned(),
+    });
+    crate::import::check_cancelled(cancel)
 }
 
 /// The file in an environment's art dir that records where its art came from.

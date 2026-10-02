@@ -25,6 +25,14 @@ use crate::templates::{NEWEST_PROTON, Templates};
 
 pub use crate::import::Cancelled as Canceled;
 
+/// Progress and the point after which a portable copy cannot be canceled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopyEvent {
+    Progress(ImportProgress),
+    /// Publication starts now. Later cancel requests do not stop the copy.
+    Publishing,
+}
+
 /// Whether files can be reflinked from the source into the folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Storage {
@@ -74,6 +82,19 @@ pub fn inspect(
     global: &GlobalConfig,
     name: &str,
 ) -> Result<CopyInspection> {
+    inspect_with(from, to, global, name, &Token::new(), |_| {})
+}
+
+/// Reviews a Wine copy with cancellable source checks and checking progress.
+pub fn inspect_with(
+    from: &Paths,
+    to: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    cancel: &Token,
+    mut progress: impl FnMut(ImportProgress),
+) -> Result<CopyInspection> {
+    import::check_cancelled(cancel)?;
     if from.portable_root().is_some() {
         bail!("portable copy reads the standard layout; drop --portable");
     }
@@ -100,7 +121,13 @@ pub fn inspect(
     } else {
         (None, None)
     };
-    let prefix = import::inspect_root(&configured_root, runner.as_ref(), wine.arch)?;
+    let prefix = import::inspect_root_with(
+        &configured_root,
+        runner.as_ref(),
+        wine.arch,
+        cancel,
+        &mut progress,
+    )?;
     if paths::resolve(&configured_root) != prefix.source_root {
         bail!("configured prefix root does not match inspected source root");
     }
@@ -139,11 +166,16 @@ pub fn inspect(
     let moved = [source_root.as_path(), &resolved_snapshots];
     let mut snapshot_links = Vec::new();
     for item in &snapshots {
-        snapshot_links.extend(import::external_links(&item.path, &moved)?);
+        snapshot_links.extend(import::external_links_with(
+            &item.path,
+            &moved,
+            cancel,
+            &mut progress,
+        )?);
     }
     let snapshot_fingerprints = snapshots
         .iter()
-        .map(|item| import::fingerprint(&item.path))
+        .map(|item| import::fingerprint_with(&item.path, cancel, &mut progress))
         .collect::<Result<Vec<_>>>()?;
 
     let ConfigReview {
@@ -166,8 +198,9 @@ pub fn inspect(
         global_text,
         copied_templates,
         templates_fingerprint,
-    } = first_copy(from, to)?;
+    } = first_copy(from, to, cancel, &mut progress)?;
 
+    import::check_cancelled(cancel)?;
     Ok(CopyInspection {
         name: name.to_owned(),
         storage: storage(&prefix.wine_prefix.join("system.reg"), &folder),
@@ -212,8 +245,34 @@ pub fn execute_reviewed(
     cancel: &Token,
     mut progress: impl FnMut(ImportProgress),
 ) -> Result<Environment> {
+    execute_reviewed_with(from, to, global, reviewed, cancel, |event| {
+        if let CopyEvent::Progress(event) = event {
+            if let ImportProgress::Copied { path } = &event
+                && path.starts_with(from.art_dir(&reviewed.name))
+            {
+                return;
+            }
+            progress(event);
+        }
+    })
+}
+
+/// Executes a Wine copy with cancellable revalidation and a publishing boundary.
+pub fn execute_reviewed_with(
+    from: &Paths,
+    to: &Paths,
+    global: &GlobalConfig,
+    reviewed: &CopyInspection,
+    cancel: &Token,
+    mut events: impl FnMut(CopyEvent),
+) -> Result<Environment> {
     let name = &reviewed.name;
-    ensure_same(reviewed, &inspect(from, to, global, name)?)?;
+    ensure_same(
+        reviewed,
+        &inspect_with(from, to, global, name, cancel, |event| {
+            events(CopyEvent::Progress(event))
+        })?,
+    )?;
     let source_locks = Locks::new(from);
     // The prefix locks are shared by every root, so they are only taken once.
     let _source = source_locks
@@ -230,7 +289,12 @@ pub fn execute_reviewed(
     let _source_config = source_locks
         .config(&from.environment_config(name))
         .map_err(|err| anyhow!(err))?;
-    ensure_same(reviewed, &inspect(from, to, global, name)?)?;
+    ensure_same(
+        reviewed,
+        &inspect_with(from, to, global, name, cancel, |event| {
+            events(CopyEvent::Progress(event))
+        })?,
+    )?;
     for shared in environment::sharing_prefix(from, name, &reviewed.source_root)
         .map_err(|err| anyhow!(err))?
         .names
@@ -278,7 +342,7 @@ pub fn execute_reviewed(
         &reviewed.destination,
         &links,
         cancel,
-        &mut progress,
+        &mut |event| events(CopyEvent::Progress(event)),
     )?;
     // A snapshot becomes the live prefix again on restore, so its links into
     // the prefix or its other snapshots follow the copy too.
@@ -301,7 +365,7 @@ pub fn execute_reviewed(
             &destination_snapshots.join(label),
             &snapshot_links,
             cancel,
-            &mut progress,
+            &mut |event| events(CopyEvent::Progress(event)),
         )?;
         let layout = snapshot::relocate_manifest(to, &staged, &reviewed.destination)?;
         let saved_path = staged.join("config.toml");
@@ -331,12 +395,15 @@ pub fn execute_reviewed(
             &staged_templates,
             &to.templates_dir(),
             cancel,
-            &mut progress,
+            &mut |event| events(CopyEvent::Progress(event)),
         )?;
     }
     import::check_cancelled(cancel)?;
 
-    if import::fingerprint(&reviewed.source_root)? != reviewed.prefix.fingerprint {
+    if import::fingerprint_with(&reviewed.source_root, cancel, &mut |event| {
+        events(CopyEvent::Progress(event))
+    })? != reviewed.prefix.fingerprint
+    {
         bail!(
             "{} changed while it was being copied; try again",
             reviewed.source_root.display()
@@ -347,12 +414,17 @@ pub fn execute_reviewed(
         .iter()
         .zip(&reviewed.snapshot_fingerprints)
     {
-        if import::fingerprint(&source_snapshots.join(label))? != *expected {
+        if import::fingerprint_with(&source_snapshots.join(label), cancel, &mut |event| {
+            events(CopyEvent::Progress(event))
+        })? != *expected
+        {
             bail!("snapshot `{label}` changed while it was being copied; try again");
         }
     }
     if let Some(expected) = reviewed.templates_fingerprint
-        && import::fingerprint(&from.templates_dir())? != expected
+        && import::fingerprint_with(&from.templates_dir(), cancel, &mut |event| {
+            events(CopyEvent::Progress(event))
+        })? != expected
     {
         bail!("templates changed while they were being copied; try again");
     }
@@ -360,6 +432,17 @@ pub fn execute_reviewed(
         bail!("source environment config changed while it was being copied; try again");
     }
     import::validate_staged_prefix(&staged_prefix, &reviewed.destination, reviewed.layout)?;
+
+    let art = StagedArt::stage_with(
+        &source_locks,
+        &from.art_dir(name),
+        &to.art_dir(name),
+        staging.path(),
+        cancel,
+        &mut |event| events(CopyEvent::Progress(event)),
+    )?;
+    import::check_cancelled(cancel)?;
+    events(CopyEvent::Publishing);
 
     let mut published: Vec<PathBuf> = Vec::new();
     let recovery = |published: &[PathBuf], err: anyhow::Error| {
@@ -398,9 +481,7 @@ pub fn execute_reviewed(
             publish(&staged_templates, &to.templates_dir())?;
             published.push(to.templates_dir());
         }
-        let art = StagedArt::stage(&source_locks, &from.art_dir(name), &to.art_dir(name))
-            .and_then(StagedArt::publish)?;
-        published.extend(art);
+        published.extend(art.publish()?);
         published.extend(stats::copy_log(from, to, name)?);
         if let Some(text) = &reviewed.global_text {
             let path = to.global_config();
@@ -414,9 +495,9 @@ pub fn execute_reviewed(
         write_environment_once(to, &destination_global, name, &reviewed.config_text)
     })();
     result.map_err(|err| recovery(&published, err))?;
-    progress(ImportProgress::Finished {
+    events(CopyEvent::Progress(ImportProgress::Finished {
         entries: reviewed.prefix.fingerprint.entries,
-    });
+    }));
     Environment::load(to, name).map_err(|err| anyhow!(err))
 }
 
@@ -429,7 +510,13 @@ struct FirstCopy {
     templates_fingerprint: Option<SourceFingerprint>,
 }
 
-fn first_copy(from: &Paths, to: &Paths) -> Result<FirstCopy> {
+fn first_copy(
+    from: &Paths,
+    to: &Paths,
+    cancel: &Token,
+    progress: &mut impl FnMut(ImportProgress),
+) -> Result<FirstCopy> {
+    import::check_cancelled(cancel)?;
     let config_dir = to
         .environments_dir()
         .parent()
@@ -452,13 +539,25 @@ fn first_copy(from: &Paths, to: &Paths) -> Result<FirstCopy> {
     {
         (Vec::new(), None)
     } else {
-        let mut names: Vec<String> = fs::read_dir(from.templates_dir())?
-            .filter_map(|entry| entry.ok())
-            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
-            .filter_map(|file| file.strip_suffix(".toml").map(str::to_owned))
-            .collect();
+        let mut names = Vec::new();
+        for entry in fs::read_dir(from.templates_dir())? {
+            import::check_cancelled(cancel)?;
+            if let Ok(entry) = entry
+                && let Some(file) = entry.file_name().to_str()
+                && let Some(name) = file.strip_suffix(".toml")
+            {
+                names.push(name.to_owned());
+            }
+        }
         names.sort();
-        (names, Some(import::fingerprint(&from.templates_dir())?))
+        (
+            names,
+            Some(import::fingerprint_with(
+                &from.templates_dir(),
+                cancel,
+                progress,
+            )?),
+        )
     };
     Ok(FirstCopy {
         first_copy,
@@ -491,6 +590,18 @@ pub struct NativeCopyInspection {
 
 /// Reviews copying the native environment `name` into the folder `to` selects.
 pub fn inspect_native(from: &Paths, to: &Paths, name: &str) -> Result<NativeCopyInspection> {
+    inspect_native_with(from, to, name, &Token::new(), |_| {})
+}
+
+/// Reviews a native copy with cancellable template checks and checking progress.
+pub fn inspect_native_with(
+    from: &Paths,
+    to: &Paths,
+    name: &str,
+    cancel: &Token,
+    mut progress: impl FnMut(ImportProgress),
+) -> Result<NativeCopyInspection> {
+    import::check_cancelled(cancel)?;
     if from.portable_root().is_some() {
         bail!("portable copy reads the standard layout; drop --portable");
     }
@@ -545,7 +656,8 @@ pub fn inspect_native(from: &Paths, to: &Paths, name: &str) -> Result<NativeCopy
         global_text,
         copied_templates,
         templates_fingerprint,
-    } = first_copy(from, to)?;
+    } = first_copy(from, to, cancel, &mut progress)?;
+    import::check_cancelled(cancel)?;
     Ok(NativeCopyInspection {
         name: name.to_owned(),
         folder,
@@ -571,6 +683,24 @@ pub fn execute_native(
     reviewed: &NativeCopyInspection,
     cancel: &Token,
 ) -> Result<Environment> {
+    execute_native_with(from, to, reviewed, cancel, |_| {})
+}
+
+/// Executes a native copy with copy progress and a publishing boundary.
+pub fn execute_native_with(
+    from: &Paths,
+    to: &Paths,
+    reviewed: &NativeCopyInspection,
+    cancel: &Token,
+    mut events: impl FnMut(CopyEvent),
+) -> Result<Environment> {
+    let copied = std::cell::Cell::new(0);
+    let mut events = |event| {
+        if matches!(event, CopyEvent::Progress(ImportProgress::Copied { .. })) {
+            copied.set(copied.get() + 1);
+        }
+        events(event);
+    };
     let name = &reviewed.name;
     let source_locks = Locks::new(from);
     let _source = source_locks
@@ -583,7 +713,9 @@ pub fn execute_native(
     let _source_config = source_locks
         .config(&from.environment_config(name))
         .map_err(|err| anyhow!(err))?;
-    let current = inspect_native(from, to, name)?;
+    let current = inspect_native_with(from, to, name, cancel, |event| {
+        events(CopyEvent::Progress(event))
+    })?;
     if current.source_config != reviewed.source_config
         || current.config_text != reviewed.config_text
         || current.global_text != reviewed.global_text
@@ -593,34 +725,55 @@ pub fn execute_native(
     }
     import::check_cancelled(cancel)?;
 
+    fs::create_dir_all(&reviewed.folder)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".wineo-copy-")
+        .tempdir_in(&reviewed.folder)?;
+    let staged_templates = staging.path().join("templates");
+    if reviewed.templates_fingerprint.is_some() {
+        import::copy_tree(
+            &from.templates_dir(),
+            &staged_templates,
+            &to.templates_dir(),
+            cancel,
+            &mut |event| events(CopyEvent::Progress(event)),
+        )?;
+        if reviewed.templates_fingerprint
+            != Some(import::fingerprint_with(
+                &from.templates_dir(),
+                cancel,
+                &mut |event| events(CopyEvent::Progress(event)),
+            )?)
+        {
+            bail!("templates changed while they were being copied; try again");
+        }
+    }
+    let art = StagedArt::stage_with(
+        &source_locks,
+        &from.art_dir(name),
+        &to.art_dir(name),
+        staging.path(),
+        cancel,
+        &mut |event| events(CopyEvent::Progress(event)),
+    )?;
+    import::check_cancelled(cancel)?;
+    events(CopyEvent::Publishing);
+
     let mut published: Vec<PathBuf> = Vec::new();
     let result = (|| -> Result<()> {
         if reviewed.templates_fingerprint.is_some() {
-            let parent = to.templates_dir();
-            let parent = parent.parent().expect("templates have a parent");
-            fs::create_dir_all(parent)?;
-            let staging = tempfile::Builder::new()
-                .prefix(".wineo-copy-")
-                .tempdir_in(parent)?;
-            let staged = staging.path().join("templates");
-            import::copy_tree(
-                &from.templates_dir(),
-                &staged,
-                &to.templates_dir(),
-                cancel,
-                &mut |_| {},
+            fs::create_dir_all(
+                to.templates_dir()
+                    .parent()
+                    .expect("templates have a parent"),
             )?;
-            if reviewed.templates_fingerprint != Some(import::fingerprint(&from.templates_dir())?) {
-                bail!("templates changed while they were being copied; try again");
-            }
+            let staged = &staged_templates;
             let destination_global = destination_global(to, reviewed.global_text.as_deref())?;
-            let _template_guards = template_build_guards(to, &destination_global, &staged)?;
-            publish(&staged, &to.templates_dir())?;
+            let _template_guards = template_build_guards(to, &destination_global, staged)?;
+            publish(staged, &to.templates_dir())?;
             published.push(to.templates_dir());
         }
-        let art = StagedArt::stage(&source_locks, &from.art_dir(name), &to.art_dir(name))
-            .and_then(StagedArt::publish)?;
-        published.extend(art);
+        published.extend(art.publish()?);
         published.extend(stats::copy_log(from, to, name)?);
         if let Some(text) = &reviewed.global_text {
             let path = to.global_config();
@@ -646,6 +799,9 @@ pub fn execute_native(
             paths.join(", ")
         )
     })?;
+    events(CopyEvent::Progress(ImportProgress::Finished {
+        entries: copied.get(),
+    }));
     Environment::load(to, name).map_err(|err| anyhow!(err))
 }
 
@@ -856,5 +1012,291 @@ mod tests {
         assert!(!to.environment_config("game").exists());
         assert!(!usb.join("config").exists());
         assert!(inspect(&from, &to, &global, "game").is_ok());
+    }
+    struct Fixture {
+        _root: tempfile::TempDir,
+        from: Paths,
+        to: Paths,
+        global: GlobalConfig,
+        prefix: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(native: bool) -> Self {
+            let root = tempfile::tempdir().unwrap();
+            let from = paths(root.path(), None);
+            let to = paths(root.path(), Some(&root.path().join("usb")));
+            let prefix = root.path().join("prefix");
+            fs::create_dir_all(prefix.join("drive_c")).unwrap();
+            fs::write(
+                prefix.join("system.reg"),
+                "WINE REGISTRY Version 2\n#arch=win64\n",
+            )
+            .unwrap();
+            fs::write(prefix.join("drive_c/data"), "data").unwrap();
+            fs::create_dir_all(from.environments_dir()).unwrap();
+            let text = if native {
+                "kind = 'native'\n[targets.app]\nexe = '/opt/app'\ndesktop = true\n".to_owned()
+            } else {
+                format!(
+                    "prefix = '{}'\nrunner = 'wine'\narch = 'win64'\n",
+                    prefix.display()
+                )
+            };
+            fs::write(from.environment_config("game"), text).unwrap();
+            fs::create_dir_all(from.templates_dir()).unwrap();
+            fs::write(from.templates_dir().join("work.toml"), "gamemode = true\n").unwrap();
+            fs::write(from.global_config(), "# global\n").unwrap();
+            fs::create_dir_all(from.art_dir("game").join("app")).unwrap();
+            fs::write(from.art_dir("game").join("hero.png"), "art").unwrap();
+            std::os::unix::fs::symlink("../hero.png", from.art_dir("game").join("app/link"))
+                .unwrap();
+            Self {
+                _root: root,
+                from,
+                to,
+                global: GlobalConfig::default(),
+                prefix,
+            }
+        }
+
+        fn assert_unpublished(&self) {
+            assert!(!self.to.environment_config("game").exists());
+            assert!(!self.to.default_prefix_root().join("game").exists());
+            assert!(!self.to.art_dir("game").exists());
+            assert!(!self.to.templates_dir().exists());
+            assert!(!self.to.global_config().parent().unwrap().exists());
+            for directory in [
+                self.to.default_prefix_root(),
+                self.to.portable_root().unwrap().to_owned(),
+            ] {
+                if directory.exists() {
+                    for entry in fs::read_dir(directory).unwrap() {
+                        let name = entry.unwrap().file_name();
+                        assert!(!name.to_string_lossy().starts_with(".wineo-copy-"));
+                        assert!(!name.to_string_lossy().starts_with(".wineo-art-"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn inspection_cancels_wine_and_native_without_destination_writes() {
+        for native in [false, true] {
+            let f = Fixture::new(native);
+            let cancel = Token::new();
+            let mut progress = |event| {
+                assert!(matches!(event, ImportProgress::Checking { .. }));
+                cancel.cancel();
+            };
+            let err = if native {
+                inspect_native_with(&f.from, &f.to, "game", &cancel, &mut progress).unwrap_err()
+            } else {
+                inspect_with(&f.from, &f.to, &f.global, "game", &cancel, &mut progress).unwrap_err()
+            };
+            assert!(err.is::<Canceled>(), "{err}");
+            f.assert_unpublished();
+            assert!(!f.to.portable_root().unwrap().exists());
+        }
+    }
+
+    #[test]
+    fn copy_cancellation_cleans_prefix_template_and_art_staging() {
+        for native in [false, true] {
+            for part in ["prefix", "templates", "art"] {
+                if native && part == "prefix" {
+                    continue;
+                }
+                let f = Fixture::new(native);
+                let cancel = Token::new();
+                let source = match part {
+                    "prefix" => f.prefix.clone(),
+                    "templates" => f.from.templates_dir(),
+                    _ => f.from.art_dir("game"),
+                };
+                let mut canceled = false;
+                let mut events = |event| {
+                    assert_ne!(event, CopyEvent::Publishing);
+                    if let CopyEvent::Progress(ImportProgress::Copied { path }) = event
+                        && path.starts_with(&source)
+                    {
+                        canceled = true;
+                        cancel.cancel();
+                    }
+                };
+                let err = if native {
+                    let review = inspect_native(&f.from, &f.to, "game").unwrap();
+                    execute_native_with(&f.from, &f.to, &review, &cancel, &mut events).unwrap_err()
+                } else {
+                    let review = inspect(&f.from, &f.to, &f.global, "game").unwrap();
+                    execute_reviewed_with(&f.from, &f.to, &f.global, &review, &cancel, &mut events)
+                        .unwrap_err()
+                };
+                assert!(canceled);
+                assert!(err.is::<Canceled>(), "{err}");
+                f.assert_unpublished();
+                if native {
+                    assert!(inspect_native(&f.from, &f.to, "game").unwrap().first_copy);
+                } else {
+                    assert!(
+                        inspect(&f.from, &f.to, &f.global, "game")
+                            .unwrap()
+                            .first_copy
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn execution_revalidation_is_cancellable_before_and_after_copy() {
+        for native in [false, true] {
+            for after_copy in [false, true] {
+                let f = Fixture::new(native);
+                let cancel = Token::new();
+                let mut copying = false;
+                let mut canceled = false;
+                let mut events = |event| match event {
+                    CopyEvent::Progress(ImportProgress::Started { .. }) => copying = true,
+                    CopyEvent::Progress(ImportProgress::Checking { .. })
+                        if copying == after_copy =>
+                    {
+                        canceled = true;
+                        cancel.cancel();
+                    }
+                    CopyEvent::Publishing => panic!("published canceled review"),
+                    _ => {}
+                };
+                let err = if native {
+                    let review = inspect_native(&f.from, &f.to, "game").unwrap();
+                    execute_native_with(&f.from, &f.to, &review, &cancel, &mut events).unwrap_err()
+                } else {
+                    let review = inspect(&f.from, &f.to, &f.global, "game").unwrap();
+                    execute_reviewed_with(&f.from, &f.to, &f.global, &review, &cancel, &mut events)
+                        .unwrap_err()
+                };
+                assert!(canceled);
+                assert!(err.is::<Canceled>(), "{err}");
+                f.assert_unpublished();
+            }
+        }
+    }
+
+    #[test]
+    fn late_cancel_preserves_success_and_native_copy_reports_real_progress() {
+        for native in [false, true] {
+            let f = Fixture::new(native);
+            let cancel = Token::new();
+            let mut events = Vec::new();
+            let mut callback = |event| {
+                if event == CopyEvent::Publishing {
+                    assert!(!f.to.environment_config("game").exists());
+                    assert!(!f.to.default_prefix_root().join("game").exists());
+                    assert!(!f.to.art_dir("game").exists());
+                    assert!(!f.to.templates_dir().exists());
+                    cancel.cancel();
+                }
+                events.push(event);
+            };
+            let result = if native {
+                let review = inspect_native(&f.from, &f.to, "game").unwrap();
+                execute_native_with(&f.from, &f.to, &review, &cancel, &mut callback)
+            } else {
+                let review = inspect(&f.from, &f.to, &f.global, "game").unwrap();
+                execute_reviewed_with(&f.from, &f.to, &f.global, &review, &cancel, &mut callback)
+            };
+            assert_eq!(result.unwrap().name, "game");
+            assert!(cancel.is_canceled());
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| **event == CopyEvent::Publishing)
+                    .count(),
+                1
+            );
+            let boundary = events
+                .iter()
+                .position(|event| *event == CopyEvent::Publishing)
+                .unwrap();
+            assert!(matches!(
+                events.last(),
+                Some(CopyEvent::Progress(ImportProgress::Finished { .. }))
+            ));
+            for source in [f.from.templates_dir(), f.from.art_dir("game")] {
+                assert!(events[..boundary].iter().any(|event| matches!(event,
+                    CopyEvent::Progress(ImportProgress::Copied { path }) if path.starts_with(&source))));
+            }
+            assert_eq!(
+                fs::read_link(f.to.art_dir("game").join("app/link")).unwrap(),
+                Path::new("../hero.png")
+            );
+            let destination = fs::read_to_string(f.to.environment_config("game")).unwrap();
+            if native {
+                assert!(destination.contains("desktop = false"));
+                let totals: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        CopyEvent::Progress(ImportProgress::Started { entries }) => Some(*entries),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(totals, [2, 4]);
+                assert_eq!(
+                    events.last(),
+                    Some(&CopyEvent::Progress(ImportProgress::Finished {
+                        entries: 6
+                    }))
+                );
+            }
+            assert_eq!(
+                fs::read_to_string(f.to.templates_dir().join("work.toml")).unwrap(),
+                "gamemode = true\n"
+            );
+        }
+    }
+
+    #[test]
+    fn publish_failures_still_report_published_paths_after_late_cancel() {
+        for native in [false, true] {
+            let f = Fixture::new(native);
+            let cancel = Token::new();
+            let mut events = |event| {
+                if event == CopyEvent::Publishing {
+                    // Racing art prevents publication after templates (and the Wine prefix).
+                    fs::create_dir_all(f.to.art_dir("game")).unwrap();
+                    cancel.cancel();
+                }
+            };
+            let err = if native {
+                let review = inspect_native(&f.from, &f.to, "game").unwrap();
+                execute_native_with(&f.from, &f.to, &review, &cancel, &mut events).unwrap_err()
+            } else {
+                let review = inspect(&f.from, &f.to, &f.global, "game").unwrap();
+                execute_reviewed_with(&f.from, &f.to, &f.global, &review, &cancel, &mut events)
+                    .unwrap_err()
+            };
+            assert!(!err.is::<Canceled>());
+            let message = err.to_string();
+            assert!(message.contains("copied files remain at"), "{message}");
+            assert!(
+                message.contains(&f.to.templates_dir().display().to_string()),
+                "{message}"
+            );
+            if !native {
+                assert!(
+                    message.contains(
+                        &f.to
+                            .default_prefix_root()
+                            .join("game")
+                            .display()
+                            .to_string()
+                    ),
+                    "{message}"
+                );
+            }
+            assert!(message.contains("move them aside and retry"), "{message}");
+            assert!(!f.to.environment_config("game").exists());
+        }
     }
 }
