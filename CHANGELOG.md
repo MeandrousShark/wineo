@@ -3,6 +3,11 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.20.2 - 2026-10-01
+
+- Global settings in `wineo-gui` drops its **Back** button and no longer
+  closes on Esc, like the other sidebar sections.
+
 ## 0.20.1 - 2026-10-01
 
 - `wineo-gui`'s sidebar groups Trash and Checkup below Library and pins
