@@ -3,6 +3,20 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.20.0 - 2026-10-01
+
+- Remove, trash, and validate from `wineo-gui`
+  ([0039](docs/plans/0039-gui-trash-and-validate.md)). A sidebar holds
+  Library, Trash, and Checkup.
+- Remove an environment from its panel, with or without its prefix, and
+  Undo from the toast. See [Removing](docs/gui.md#removing).
+- The [Trash](docs/gui.md#trash) page restores, deletes forever, empties,
+  and prunes old entries, and recovers interrupted removals.
+- Check one environment for problems from its panel, or everything from the
+  [Checkup](docs/gui.md#checkup) page, and apply fixes with live progress.
+- Trash removal's wine wait can be canceled, and validate fixes log
+  winetricks output.
+
 ## 0.19.1 - 2026-09-30
 
 - `wineo-gui` shrinks art bigger than it's shown once and keeps the copy in

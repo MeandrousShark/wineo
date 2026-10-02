@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0039: GUI removal, trash, and validate
 
@@ -373,7 +373,8 @@ A remove, restore, prune, recovery, or batch of fixes is a running change.
 Implementation landed on 2026-10-01 (through 69b045f); the workspace tests
 pass (1,777). Maintainer acceptance in a real window, using throwaway
 environments or a `WINEO_PORTABLE_DIR` folder, run with
-`cargo run --release -p wineo-gui`:
+`cargo run --release -p wineo-gui`. The maintainer confirmed all nine items
+on 2026-10-01:
 
 1. Remove a Wine game with and without its prefix, then Undo one of them.
 2. Restore one from Trash, and try restoring over a name that's been
