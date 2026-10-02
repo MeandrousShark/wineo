@@ -181,7 +181,8 @@ and **Cancel**, like `wineo download`. A canceled download leaves nothing
 behind; one canceled after it finished installing stays installed.
 
 Downloads and deletes keep running when you switch sections, with a spinner
-next to **Downloads**, and closing the window waits for them. The list
+next to **Downloads**. Closing the window cancels a download and waits for a
+delete to finish. The list
 reloads when the page opens and after its own changes; **Refresh** reloads
 it after a game exits or a change from the CLI.
 
