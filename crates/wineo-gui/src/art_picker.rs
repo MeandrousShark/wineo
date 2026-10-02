@@ -20,7 +20,6 @@ use crate::keys::{self, Direction};
 use crate::theme::Palette;
 
 const PAGE_SIZE: usize = 18;
-const COLUMNS: usize = 6;
 const PAGE_WIDTH: f32 = 1120.0;
 const THUMBNAIL_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -243,7 +242,7 @@ impl Picker {
                         self.error = None;
                         self.images = images;
                         self.rebuild_indices();
-                        self.visible_count = self.filtered_indices.len().min(PAGE_SIZE);
+                        self.visible_count = self.filtered_indices.len().min(page_size(self.kind));
                         self.thumbnail_tasks(0, self.visible_count, paths, decodes)
                     }
                     Err(error) => {
@@ -258,7 +257,8 @@ impl Picker {
                     return Task::none();
                 }
                 let old_count = self.visible_count;
-                self.visible_count = (old_count + PAGE_SIZE).min(self.filtered_indices.len());
+                self.visible_count =
+                    (old_count + page_size(self.kind)).min(self.filtered_indices.len());
                 self.thumbnail_tasks(old_count, self.visible_count, paths, decodes)
             }
             Event::Thumbnail(sequence, url, result) => {
@@ -288,17 +288,19 @@ impl Picker {
             }
             Event::Move(direction) => {
                 let count = self.filtered_indices.len();
-                let Some(index) = keys::move_index(self.selected, count, COLUMNS, direction) else {
+                let columns = columns(self.kind);
+                let page_size = page_size(self.kind);
+                let Some(index) = keys::move_index(self.selected, count, columns, direction) else {
                     return Task::none();
                 };
                 self.selected = Some(index);
                 let old_count = self.visible_count;
-                let next_count = ((index / PAGE_SIZE) + 1) * PAGE_SIZE;
+                let next_count = ((index / page_size) + 1) * page_size;
                 self.visible_count = self.visible_count.max(next_count.min(count));
                 let thumbnails =
                     self.thumbnail_tasks(old_count, self.visible_count, paths, decodes);
                 let row_height = tile_size(self.kind).1 as f32 + 48.0;
-                let top = (index / COLUMNS) as f32 * row_height;
+                let top = (index / columns) as f32 * row_height;
                 let bottom = top + row_height;
                 let offset = if top < self.scroll_offset {
                     Some(top)
@@ -522,10 +524,11 @@ impl Picker {
     fn grid_view(&self, palette: Palette) -> Element<'_, Event> {
         let indices = &self.filtered_indices;
         let visible = &indices[..self.visible_count.min(indices.len())];
+        let columns = columns(self.kind);
         let mut grid = column![].spacing(10).width(Fill);
-        for (row_index, chunk) in visible.chunks(COLUMNS).enumerate() {
+        for (row_index, chunk) in visible.chunks(columns).enumerate() {
             let tiles = chunk.iter().enumerate().map(|(column_index, image_index)| {
-                let index = row_index * COLUMNS + column_index;
+                let index = row_index * columns + column_index;
                 self.tile(
                     index,
                     *image_index,
@@ -537,7 +540,7 @@ impl Picker {
                 .spacing(10)
                 .align_y(Center)
                 .width(Fill);
-            for _ in chunk.len()..COLUMNS {
+            for _ in chunk.len()..columns {
                 tiles = tiles.push(iced::widget::Space::new().width(Length::FillPortion(1)));
             }
             grid = grid.push(tiles);
@@ -866,13 +869,32 @@ fn is_best_match(image_index: usize, filtered: &[usize]) -> bool {
     filtered.first() == Some(&image_index)
 }
 
-fn tile_size(kind: Kind) -> (u32, u32) {
+fn columns(kind: Kind) -> usize {
     match kind {
-        Kind::Icon => (116, 116),
-        Kind::Grid => (112, 168),
-        Kind::Hero => (148, 84),
-        Kind::Logo => (148, 72),
+        Kind::Hero => 3,
+        Kind::Logo => 4,
+        Kind::Grid => 5,
+        Kind::Icon => 6,
     }
+}
+
+fn page_size(kind: Kind) -> usize {
+    let columns = columns(kind);
+    PAGE_SIZE.div_ceil(columns) * columns
+}
+
+fn tile_size(kind: Kind) -> (u32, u32) {
+    let columns = columns(kind) as f32;
+    // Account for page padding, scroll container padding, and gaps between tiles.
+    let width = (PAGE_WIDTH - 48.0 - 4.0 - (columns - 1.0) * 10.0) / columns;
+    let aspect = match kind {
+        Kind::Grid => 2.0 / 3.0,
+        Kind::Hero => 3.1,
+        Kind::Logo => 2.0,
+        // Icon thumbnails decode at 128px, so a taller box would only upscale them.
+        Kind::Icon => return (width.round() as u32, 116),
+    };
+    (width.round() as u32, (width / aspect).round() as u32)
 }
 
 fn badge<'a>(label: &'a str, color: Color, palette: Palette) -> Element<'a, Event> {
@@ -955,6 +977,68 @@ mod tests {
             width: Some(600),
             height: Some(900),
             ..Image::default()
+        }
+    }
+
+    #[test]
+    fn kind_layouts_use_larger_previews_and_complete_pages() {
+        for (kind, expected_columns, expected_page_size, expected_size) in [
+            (Kind::Hero, 3, 18, (349, 113)),
+            (Kind::Logo, 4, 20, (260, 130)),
+            (Kind::Grid, 5, 20, (206, 308)),
+            (Kind::Icon, 6, 18, (170, 116)),
+        ] {
+            assert_eq!(columns(kind), expected_columns);
+            assert_eq!(page_size(kind), expected_page_size);
+            assert_eq!(tile_size(kind), expected_size);
+            assert_eq!(page_size(kind) % columns(kind), 0);
+        }
+    }
+
+    #[test]
+    fn listing_and_load_more_use_complete_rows_for_each_kind() {
+        let (_root, paths) = paths();
+        let decodes = Arc::new(tokio::sync::Semaphore::new(2));
+        for kind in [Kind::Hero, Kind::Logo, Kind::Grid, Kind::Icon] {
+            let mut picker = Picker::new(kind, 0);
+            let page_size = page_size(kind);
+            let count = page_size * 2 + 1;
+            let images = (1..=count as u64).map(item).collect();
+            let _ = picker.update(&paths, 123, Event::Listed(0, Ok(images)), decodes.clone());
+            assert_eq!(picker.visible_count, page_size);
+            assert_eq!(picker.pending_thumbnails.len(), page_size);
+
+            let _ = picker.update(&paths, 123, Event::LoadMore, decodes.clone());
+            assert_eq!(picker.visible_count, page_size * 2);
+            assert_eq!(picker.pending_thumbnails.len(), page_size * 2);
+
+            let _ = picker.update(&paths, 123, Event::LoadMore, decodes.clone());
+            assert_eq!(picker.visible_count, count);
+            assert_eq!(picker.pending_thumbnails.len(), count);
+        }
+    }
+
+    #[test]
+    fn keyboard_moves_by_kind_columns_and_reveals_complete_pages() {
+        let (_root, paths) = paths();
+        let decodes = Arc::new(tokio::sync::Semaphore::new(2));
+        for kind in [Kind::Hero, Kind::Logo, Kind::Grid, Kind::Icon] {
+            let mut picker = Picker::new(kind, 0);
+            let page_size = page_size(kind);
+            let images = (1..=(page_size * 3) as u64).map(item).collect();
+            let _ = picker.update(&paths, 123, Event::Listed(0, Ok(images)), decodes.clone());
+            picker.selected = Some(0);
+
+            let _ = picker.update(&paths, 123, Event::Move(Direction::Down), decodes.clone());
+            assert_eq!(picker.selected, Some(columns(kind)));
+            let _ = picker.update(&paths, 123, Event::Move(Direction::Up), decodes.clone());
+            assert_eq!(picker.selected, Some(0));
+
+            picker.selected = Some(page_size - columns(kind));
+            let _ = picker.update(&paths, 123, Event::Move(Direction::Down), decodes.clone());
+            assert_eq!(picker.selected, Some(page_size));
+            assert_eq!(picker.visible_count, page_size * 2);
+            assert_eq!(picker.pending_thumbnails.len(), page_size * 2);
         }
     }
 
@@ -1120,7 +1204,7 @@ mod tests {
         let mut picker = Picker::new(Kind::Grid, 5);
         picker.images = (1..=25).map(item).collect();
         picker.rebuild_indices();
-        picker.visible_count = PAGE_SIZE;
+        picker.visible_count = page_size(picker.kind);
         let sequence = picker.list_sequence();
         let _ = picker.update(
             &paths,
@@ -1280,7 +1364,7 @@ mod tests {
         images[1].thumb = Some(String::new());
         let decodes = Arc::new(tokio::sync::Semaphore::new(2));
         let _ = picker.update(&paths, 123, Event::Listed(0, Ok(images)), decodes.clone());
-        assert_eq!(picker.pending_thumbnails.len(), PAGE_SIZE);
+        assert_eq!(picker.pending_thumbnails.len(), page_size(picker.kind));
         assert!(
             picker
                 .pending_thumbnails
@@ -1299,14 +1383,14 @@ mod tests {
         assert!(
             !picker
                 .pending_thumbnails
-                .contains("https://cdn.example/19.png")
+                .contains("https://cdn.example/21.png")
         );
         let _ = picker.update(&paths, 123, Event::LoadMore, decodes);
         assert_eq!(picker.pending_thumbnails.len(), 24);
         assert!(
             picker
                 .pending_thumbnails
-                .contains("https://cdn.example/19.png")
+                .contains("https://cdn.example/21.png")
         );
         assert_eq!(picker.list_sequence(), 0);
     }

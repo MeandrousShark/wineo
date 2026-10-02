@@ -688,8 +688,8 @@ fn picker_keyboard_moves_and_use_targets_the_selected_image() {
     for (direction, id) in [
         (crate::keys::Direction::Right, 1),
         (crate::keys::Direction::Right, 2),
-        (crate::keys::Direction::Down, 8),
-        (crate::keys::Direction::Left, 7),
+        (crate::keys::Direction::Down, 7),
+        (crate::keys::Direction::Left, 6),
         (crate::keys::Direction::Up, 1),
     ] {
         let _ = page.update(
