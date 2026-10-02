@@ -1,6 +1,6 @@
 # Agent Guidelines
 
-For how work flows (plans, roles, landing, acceptance, releases), see `docs/workflow.md`.
+The primary session reads `docs/workflow.md` at the start of each session.
 
 ## Code boundaries
 
