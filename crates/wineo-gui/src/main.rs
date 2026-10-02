@@ -1365,6 +1365,49 @@ mod tests {
     }
 
     #[test]
+    fn overlays_preserve_library_scroll_state() {
+        use iced::advanced::widget::{Tree, tree};
+
+        fn scroll_state(widget: &Tree, tag: tree::Tag) -> Option<*const ()> {
+            if widget.tag == tag
+                && let tree::State::Some(state) = &widget.state
+            {
+                return Some(std::ptr::from_ref(state.as_ref()).cast());
+            }
+            widget
+                .children
+                .iter()
+                .find_map(|child| scroll_state(child, tag))
+        }
+
+        let mut app = app();
+        app.cards = vec![card("game", State::Inactive, 0)];
+        let scroll: iced::Element<'_, Message> = scrollable(iced::widget::Space::new()).into();
+        let tag = scroll.as_widget().tag();
+        let mut tree = Tree::new(app.view().as_widget());
+        // The offset lives in iced's private scrollable state, not App::scroll_offset.
+        let state = scroll_state(&tree, tag).unwrap();
+
+        let _ = app.update(Message::Context("game".into()));
+        tree.diff(app.view().as_widget());
+        assert_eq!(scroll_state(&tree, tag), Some(state));
+        let _ = app.update(Message::CloseMenu);
+        tree.diff(app.view().as_widget());
+        assert_eq!(scroll_state(&tree, tag), Some(state));
+
+        app.flow = Some(flow::Page::choose(app.paths.clone()));
+        tree.diff(app.view().as_widget());
+        assert_eq!(scroll_state(&tree, tag), Some(state));
+        app.close_prompt = true;
+        tree.diff(app.view().as_widget());
+        assert_eq!(scroll_state(&tree, tag), Some(state));
+        app.flow = None;
+        app.close_prompt = false;
+        tree.diff(app.view().as_widget());
+        assert_eq!(scroll_state(&tree, tag), Some(state));
+    }
+
+    #[test]
     fn late_art_and_add_results_use_current_key_availability() {
         for (initial, available, deliver_results_after) in [
             (false, true, false),

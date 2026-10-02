@@ -130,64 +130,51 @@ impl App {
     }
 
     fn sidebar_view(&self) -> Element<'_, Message> {
-        let mut page: Element<'_, Message> = row![self.sidebar(), self.page_view()]
-            .width(Fill)
-            .height(Fill)
-            .into();
+        // Keep the page at a stable tree path so overlays preserve scroll and focus state.
+        let mut page = stack![
+            row![self.sidebar(), self.page_view()]
+                .width(Fill)
+                .height(Fill)
+        ];
         if self.toast.is_some() {
-            page = stack![
-                page,
+            page = page.push(
                 container(self.toast_view())
                     .padding(16)
                     .align_bottom(Fill)
-                    .center_x(Fill)
-            ]
-            .into();
+                    .center_x(Fill),
+            );
         }
         if self.removal.is_some() {
-            page = stack![
-                page,
-                iced::widget::opaque(
-                    mouse_area(container(self.remove_view()).center(Fill).style(|_| {
-                        container::Style::default().background(Color::BLACK.scale_alpha(0.55))
-                    }))
-                    .on_scroll(|_| Message::OverlayInput)
-                )
-            ]
-            .into();
+            page = page.push(iced::widget::opaque(
+                mouse_area(container(self.remove_view()).center(Fill).style(|_| {
+                    container::Style::default().background(Color::BLACK.scale_alpha(0.55))
+                }))
+                .on_scroll(|_| Message::OverlayInput),
+            ));
         }
         if self.trash_confirm_open() {
-            page = stack![
-                page,
-                iced::widget::opaque(
-                    mouse_area(
-                        container(self.trash_confirm_view())
-                            .center(Fill)
-                            .style(|_| {
-                                container::Style::default()
-                                    .background(Color::BLACK.scale_alpha(0.55))
-                            })
-                    )
-                    .on_scroll(|_| Message::OverlayInput)
+            page = page.push(iced::widget::opaque(
+                mouse_area(
+                    container(self.trash_confirm_view())
+                        .center(Fill)
+                        .style(|_| {
+                            container::Style::default().background(Color::BLACK.scale_alpha(0.55))
+                        }),
                 )
-            ]
-            .into();
+                .on_scroll(|_| Message::OverlayInput),
+            ));
         }
         if self.downloads_confirm_open() {
-            page =
-                stack![
-                    page,
-                    iced::widget::opaque(
-                        mouse_area(container(self.downloads_confirm_view()).center(Fill).style(
-                            |_| {
-                                container::Style::default()
-                                    .background(Color::BLACK.scale_alpha(0.55))
-                            }
-                        ))
-                        .on_scroll(|_| Message::OverlayInput)
-                    )
-                ]
-                .into();
+            page = page.push(iced::widget::opaque(
+                mouse_area(
+                    container(self.downloads_confirm_view())
+                        .center(Fill)
+                        .style(|_| {
+                            container::Style::default().background(Color::BLACK.scale_alpha(0.55))
+                        }),
+                )
+                .on_scroll(|_| Message::OverlayInput),
+            ));
         }
         if let Some(flow) = &self.flow {
             let palette = self.palette;
@@ -215,16 +202,12 @@ impl App {
                     .background(palette.background)
                     .border(border::rounded(12).width(1).color(palette.border))
             });
-            page = stack![
-                page,
-                iced::widget::opaque(
-                    mouse_area(container(dialog).center(Fill).style(|_| {
-                        container::Style::default().background(Color::BLACK.scale_alpha(0.55))
-                    }))
-                    .on_scroll(|_| Message::OverlayInput)
-                )
-            ]
-            .into();
+            page = page.push(iced::widget::opaque(
+                mouse_area(container(dialog).center(Fill).style(|_| {
+                    container::Style::default().background(Color::BLACK.scale_alpha(0.55))
+                }))
+                .on_scroll(|_| Message::OverlayInput),
+            ));
         }
         if self.close_prompt {
             let message = if self.closing {
@@ -254,18 +237,17 @@ impl App {
                         .background(palette.surface)
                         .border(border::rounded(8).width(1).color(palette.border))
                 });
-            return stack![
-                page,
-                iced::widget::opaque(
+            return page
+                .push(iced::widget::opaque(
                     container(prompt)
                         .center(Fill)
                         .width(Fill)
                         .height(Fill)
-                        .style(|_| container::Style::default()
-                            .background(Color::BLACK.scale_alpha(0.6)))
-                ),
-            ]
-            .into();
+                        .style(|_| {
+                            container::Style::default().background(Color::BLACK.scale_alpha(0.6))
+                        }),
+                ))
+                .into();
         }
         if let Some(name) = &self.action_menu {
             let mut position = menu_position(self.action_menu_position, self.window_size);
@@ -307,24 +289,26 @@ impl App {
                     .background(palette.surface)
                     .border(border::rounded(6).width(1).color(palette.border))
             });
-            return stack![
-                page,
-                mouse_area(Space::new().width(Fill).height(Fill))
-                    .on_press(Message::CloseMenu)
-                    .on_right_press(Message::CloseMenu),
-                container(menu)
-                    .padding(iced::Padding {
-                        top: position.y,
-                        left: position.x,
-                        right: 0.0,
-                        bottom: 0.0
-                    })
-                    .width(Fill)
-                    .height(Fill)
-            ]
-            .into();
+            return page
+                .push(
+                    mouse_area(Space::new().width(Fill).height(Fill))
+                        .on_press(Message::CloseMenu)
+                        .on_right_press(Message::CloseMenu),
+                )
+                .push(
+                    container(menu)
+                        .padding(iced::Padding {
+                            top: position.y,
+                            left: position.x,
+                            right: 0.0,
+                            bottom: 0.0,
+                        })
+                        .width(Fill)
+                        .height(Fill),
+                )
+                .into();
         }
-        page
+        page.into()
     }
 
     fn page_view(&self) -> Element<'_, Message> {
