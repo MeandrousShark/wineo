@@ -227,7 +227,11 @@ impl App {
         let Some(target) = self.chosen_target(card).map(str::to_owned) else {
             return Task::none();
         };
-        if !play_enabled(card, self.operation.is_some(), Some(&target)) {
+        if !play_enabled(
+            card,
+            self.operation.is_some() || self.tool_blocks_launch(&card.name),
+            Some(&target),
+        ) {
             return Task::none();
         }
         let name = card.name.clone();
@@ -259,7 +263,7 @@ impl App {
         if !cleanup && !stop_enabled(card, self.operation.is_some()) {
             return Task::none();
         }
-        if self.operation.is_some() {
+        if self.operation.is_some() || self.tool_prefix_busy(&card.name) {
             return Task::none();
         }
         let name = card.name.clone();
@@ -463,7 +467,7 @@ impl App {
         if logo_image.is_none() {
             body = body.push(heading(&card.name, palette));
         }
-        let operation_busy = self.operation.is_some();
+        let operation_busy = self.operation.is_some() || self.tool_blocks_launch(&card.name);
         let mut actions = row![].spacing(8).align_y(Center);
         if card.error.is_none() {
             let play = action_button(

@@ -63,6 +63,43 @@ pub(crate) fn apply(generation: u64, paths: Paths, fixes: Vec<Fix>, token: Token
     Task::batch([Task::run(receiver, Message::Checkup), work])
 }
 
+pub(crate) fn recover_snapshot(generation: u64, paths: Paths, fix: Fix) -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let result = validate::apply_single(
+                    &paths,
+                    &fix,
+                    &Token::new(),
+                    EnsureOutput::Stderr,
+                    |_| {},
+                    |_, _| unreachable!("snapshot recovery does not download builds"),
+                );
+                let outcome = match result {
+                    Ok(notes) => Outcome {
+                        applied: vec![fix],
+                        warnings: notes
+                            .into_iter()
+                            .map(|note| match note {
+                                Note::Warning(message) => message,
+                            })
+                            .collect(),
+                        ..Outcome::default()
+                    },
+                    Err(error) => Outcome {
+                        failed: vec![(fix, paths.contract_text(&format!("{error:#}")))],
+                        ..Outcome::default()
+                    },
+                };
+                Ok::<_, String>(outcome)
+            })
+            .await
+            .map_err(|error| error.to_string())?
+        },
+        move |result| Message::Checkup(Event::Finished(generation, result)),
+    )
+}
+
 pub(crate) fn run_fixes(
     fixes: &[Fix],
     token: &Token,

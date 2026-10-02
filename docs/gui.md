@@ -239,12 +239,82 @@ Closing the window cancels it, and canceled downloads change nothing.
 
 ## Running changes
 
-Only one remove, restore, prune, recovery, or batch of fixes runs at a time.
+Only one filesystem change runs at a time, including snapshots and portable
+copies alongside removal, trash, downloads, and Checkup fixes.
 While one runs, the others are unavailable and say what's busy. Games still
 start and pages still open. Switching sections doesn't stop it, and its
 result is waiting when you come back. Closing the window offers
 **Keep working** or **Cancel and close**; the latter cancels what can be
 canceled and waits for the rest.
+
+Program runs and winetricks use per-environment workers. They block changes
+to their own environment and other registrations sharing its prefix, while
+unrelated environments stay usable. Switching pages keeps their workers,
+output, and results. Closing cancels every active worker and waits for cleanup.
+Once a snapshot swap or portable publication starts, the app says
+**Finishing changes...** and waits; those changes have no Force stop.
+
+## Snapshots
+
+Open **Snapshots** in the sidebar (Ctrl+5), or choose **Snapshots...** from a
+Wine environment's Actions menu. Pick an environment, enter a label, then
+review **Create snapshot...**. Snapshots require reflinks and exclude external
+files, art, and playtime. The page lists labels and creation times in label
+order, with Restore, Delete, and Refresh.
+
+Restore reviews the saved and current runner, prefix, and config. Expand
+**Show config changes** to read both exact config texts. Restore replaces the
+prefix and config, preserving art and playtime. The result retains any old
+subvolume path that needs manual removal and offers **Check for problems**.
+Desktop entries reconcile on the next run or through Checkup.
+
+An interrupted restore shows **Roll back restore**, even when the ordinary
+environment report cannot load. Checkup offers the same fix with its own
+confirmation. Batch fixing skips rollback; it only runs when explicitly
+chosen by itself. Malformed markers show an error. See [Snapshots](snapshots.md).
+
+## Copy to a portable folder
+
+Choose **Copy to portable folder...** from Actions, type a destination or
+browse for one, then Review and Copy. Wine reviews include the prefix,
+runner/layout, targets, snapshots, art, playtime, config/templates policy,
+external links, and source paths that may need manual changes. Native reviews
+copy the registration, art, and playtime; program files stay where they are.
+
+Copies can use full space when reflinks aren't available. Future snapshot
+create/restore still needs reflinks. Desktop entries are disabled in the
+destination. Collisions and changed reviews require a fresh review; partial
+publication errors retain the paths to move aside before retrying.
+
+The result names the destination and the app keeps the current library. Use
+**Copy to another folder...** to start another copy. A portable session says
+**Copy from the standard library.** See [Portable folders](portable.md).
+
+## Run program and winetricks
+
+Wine Actions offers **Run program...** and **Winetricks...**, including in
+portable sessions. Native environments don't show these actions.
+
+Run program accepts a Wine name such as `winecfg`, a Windows path, or a Unix
+path that is absolute or begins with `~/`. Browse supplies an absolute path.
+Each argument chip is one exact argument, including spaces, and the preview
+shows argv. Temporary KEY/VALUE overrides apply only to this run. No shell is
+involved, and bare names never resolve against the GUI's working directory.
+
+Exec can run beside a tracked application. It builds a missing prefix and
+reconciles components and desktop entries, but doesn't install declared
+winetricks verbs, apply target wrappers, register a target, or count playtime.
+Output and the exit result stay on the page. Cancel stops only the process
+group wineo started; programs handed off to Wine may remain running. If the
+GUI crashes, the program keeps running and the GUI's locks are released.
+
+Winetricks shows declared verbs as Installed or Missing. **Install missing**
+builds a missing prefix and installs declarations without opening the picker.
+**Edit in Settings** changes declarations. One-off verbs and Additional
+arguments run without changing them; **Open winetricks** opens its own window.
+An installer window may open. Cancel and Force stop settle the exclusive run,
+and the installed record refreshes even after failure or cancellation.
+Completed verbs stay installed; removing a declaration doesn't uninstall it.
 
 ## Add, import, and clone
 
@@ -409,7 +479,7 @@ the saved key. See [The SteamGridDB key](art.md#the-steamgriddb-key).
 | Ctrl+N | Open Add (Library only) |
 | Delete | Remove the selected environment, asking first (on the details) |
 | Ctrl+Z | Undo a removal while its bar shows |
-| Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+4 | Library, Trash, Checkup, Downloads |
+| Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+4, Ctrl+5 | Library, Trash, Checkup, Downloads, Snapshots |
 | Ctrl+, | Global settings |
 | Down (in the search) | Back to the cards |
 
@@ -447,5 +517,4 @@ it changes.
 
 ## Not yet
 
-- Snapshots, portable copies, exec, and winetricks come next, in plan 0041.
 - Gamepad navigation.

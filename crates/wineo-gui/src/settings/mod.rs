@@ -465,6 +465,7 @@ pub(crate) struct Page {
     /// while one of those ran can't land on top of it with stale text.
     check_sequence: u64,
     pub(crate) saving: bool,
+    pub(crate) work_refusal: Option<String>,
     pub(crate) changed_on_disk: bool,
     pub(crate) leave_prompt: bool,
     /// A pick list's menu is open, so Escape belongs to it.
@@ -528,6 +529,7 @@ impl Page {
             checking: false,
             check_sequence: 0,
             saving: false,
+            work_refusal: None,
             changed_on_disk: false,
             leave_prompt: false,
             menu_open: false,
@@ -634,6 +636,9 @@ impl Page {
     }
     /// Why Save is off even though there are changes.
     pub(crate) fn problem(&self) -> Option<String> {
+        if let Some(reason) = &self.work_refusal {
+            return Some(reason.clone());
+        }
         if let View::Global(editor) = &self.view {
             return editor.form.problem();
         }
@@ -1838,6 +1843,8 @@ impl App {
             return Task::none();
         };
         self.leave_art();
+        self.tool_page = None;
+        self.portable_page = None;
         self.trash_page.cancel_review();
         self.downloads_page.cancel_review();
         self.section = crate::sidebar::Section::Library;
@@ -1849,6 +1856,8 @@ impl App {
     }
     pub(crate) fn open_global_settings(&mut self) -> Task<Message> {
         self.leave_art();
+        self.tool_page = None;
+        self.portable_page = None;
         self.trash_page.cancel_review();
         self.downloads_page.cancel_review();
         self.section = crate::sidebar::Section::Library;
@@ -1877,6 +1886,7 @@ impl App {
         task
     }
     pub(crate) fn settings_update(&mut self, event: Event) -> Task<Message> {
+        self.update_settings_work_refusal();
         if let Some((generation, sequence)) = event.steamgriddb_token() {
             let same_generation = self
                 .settings
@@ -1988,6 +1998,7 @@ impl App {
         step.task
     }
     pub(crate) fn settings_tick(&mut self) -> Task<Message> {
+        self.update_settings_work_refusal();
         match &mut self.settings {
             Some(page) => page.tick(&self.paths),
             None => Task::none(),
@@ -4016,6 +4027,7 @@ mod tests {
                 crate::sidebar::Section::Trash => "2",
                 crate::sidebar::Section::Checkup => "3",
                 crate::sidebar::Section::Downloads => "4",
+                crate::sidebar::Section::Snapshots => "5",
                 crate::sidebar::Section::Settings => ",",
             };
             let (mut messages, status) =

@@ -15,6 +15,7 @@ pub(crate) enum Section {
     Trash,
     Checkup,
     Downloads,
+    Snapshots,
     /// A destination only: opening it shows the global settings page over
     /// `Library`, so `App::section` never holds it.
     Settings,
@@ -27,6 +28,7 @@ impl Section {
             Self::Trash => "Trash",
             Self::Checkup => "Checkup",
             Self::Downloads => "Downloads",
+            Self::Snapshots => "Snapshots",
             Self::Settings => "Settings",
         }
     }
@@ -72,6 +74,7 @@ pub(crate) fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Section> {
         Key::Character("2") => Some(Section::Trash),
         Key::Character("3") => Some(Section::Checkup),
         Key::Character("4") => Some(Section::Downloads),
+        Key::Character("5") => Some(Section::Snapshots),
         Key::Character(",") => Some(Section::Settings),
         _ => None,
     }
@@ -131,6 +134,8 @@ impl App {
 
     pub(crate) fn switch_section(&mut self, section: Section) -> Task<Message> {
         self.leave_art();
+        self.tool_page = None;
+        self.portable_page = None;
         if self.section == Section::Trash && section != Section::Trash {
             self.trash_page.cancel_review();
         }
@@ -151,6 +156,7 @@ impl App {
                 Section::Library => self.load_visible_art(),
                 Section::Trash => self.reload_trash_page(),
                 Section::Downloads => self.reload_downloads_page(),
+                Section::Snapshots => self.open_snapshots(None),
                 Section::Checkup if opening_checkup => crate::checkup::update(
                     self,
                     crate::checkup::Event::Open(crate::checkup::Scope::Global),
@@ -236,6 +242,7 @@ impl App {
                 self.sidebar_row(Section::Trash, blocked),
                 self.sidebar_row(Section::Checkup, blocked),
                 self.sidebar_row(Section::Downloads, blocked),
+                self.sidebar_row(Section::Snapshots, blocked),
                 divider(),
                 self.sidebar_row(Section::Settings, blocked),
             ]

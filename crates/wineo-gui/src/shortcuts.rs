@@ -4,7 +4,7 @@ use iced::advanced::{
 };
 use iced::{Element, Event, Length, Rectangle, Size, Vector};
 
-/// Handles Ctrl+1/2/3/4, Ctrl+Comma, and the active Undo shortcut before any child sees them.
+/// Handles Ctrl+1/2/3/4/5, Ctrl+Comma, and the active Undo shortcut before any child sees them.
 /// A focused text_input inserts the digit and captures the key regardless of
 /// Ctrl, and the app's key subscription skips captured events.
 pub(crate) fn capture_with_undo<'a, Message, Theme, Renderer>(

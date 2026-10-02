@@ -11,7 +11,7 @@ use crate::wheel;
 use crate::{App, CARD_WIDTH, GAP, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
 
 // Reserve enough height to keep the last action inside the window.
-const ACTION_MENU_HEIGHT: f32 = 348.0;
+const ACTION_MENU_HEIGHT: f32 = 500.0;
 
 impl App {
     pub(crate) fn grid(&self) -> Element<'_, Message> {
@@ -136,6 +136,23 @@ impl App {
                 .width(Fill)
                 .height(Fill)
         ];
+        if let Some((message, _)) = &self.feature_notice {
+            let palette = self.palette;
+            page = page.push(
+                container(
+                    container(text(message).color(palette.foreground))
+                        .padding(12)
+                        .style(move |_| {
+                            container::Style::default()
+                                .background(palette.surface)
+                                .border(border::rounded(8).width(1).color(palette.border))
+                        }),
+                )
+                .padding(16)
+                .align_bottom(Fill)
+                .center_x(Fill),
+            );
+        }
         if self.toast.is_some() {
             page = page.push(
                 container(self.toast_view())
@@ -211,17 +228,30 @@ impl App {
         }
         if self.close_prompt {
             let message = if self.closing {
-                "Canceling and waiting for cleanup..."
+                if self.feature_finishing() {
+                    "Finishing changes..."
+                } else {
+                    "Canceling and waiting for cleanup..."
+                }
             } else {
                 "An operation is still running. Cancel it and close wineo?"
             };
             let controls = if self.closing
-                && (self.change.is_some() || self.art_busy())
+                && (self.change.is_some() || self.art_busy() || self.filesystem_busy())
                 && !self.checkup_force_available()
             {
                 row![text("Waiting for the change to finish...")]
-            } else if self.closing {
+            } else if self.closing
+                && (self
+                    .tool_pages
+                    .values()
+                    .any(crate::tools_page::Page::force_available)
+                    || self.operation.is_some()
+                    || self.flow.as_ref().is_some_and(crate::flow::Page::busy))
+            {
                 row![button("Force stop").on_press(Message::ForceCloseWork)]
+            } else if self.closing {
+                row![text("Waiting for cleanup...")]
             } else {
                 row![
                     button("Keep working").on_press(Message::KeepWorking),
@@ -262,13 +292,28 @@ impl App {
                         .wrapping(iced::widget::text::Wrapping::None),
                     button("Settings").on_press(Message::ContextSettings(name.clone())),
                     button("Art...").on_press(Message::ContextArt(name.clone())),
+                    self.wine_actions(name).then(|| button("Snapshots...")
+                        .on_press(Message::SnapshotsEnvironment(name.clone()))),
+                    button("Copy to portable folder...")
+                        .on_press(Message::CopyPortable(name.clone())),
+                    self.wine_actions(name)
+                        .then(|| button("Run program...").on_press(Message::OpenTool(
+                            name.clone(),
+                            crate::tools_page::Kind::Exec
+                        ))),
+                    self.wine_actions(name)
+                        .then(|| button("Winetricks...").on_press(Message::OpenTool(
+                            name.clone(),
+                            crate::tools_page::Kind::Winetricks
+                        ))),
                     button("Check for problems").on_press(Message::Checkup(
                         crate::checkup::Event::Open(crate::checkup::Scope::Environment(
                             name.clone()
                         ))
                     )),
                     button("Clone").on_press_maybe(
-                        (!self.foreground_busy()).then(|| Message::CloneEnvironment(name.clone()))
+                        (!self.management_busy() && self.remove_reason(name).is_none())
+                            .then(|| Message::CloneEnvironment(name.clone()))
                     ),
                     button("Remove...").on_press_maybe(
                         self.remove_reason(name)
@@ -313,6 +358,44 @@ impl App {
 
     fn page_view(&self) -> Element<'_, Message> {
         let palette = self.palette;
+        if let Some((name, kind)) = &self.tool_page
+            && let Some(page) = self.tool_pages.get(&(name.clone(), *kind))
+        {
+            let name = name.clone();
+            let kind = *kind;
+            let reason = if page.busy() {
+                None
+            } else {
+                self.tool_start_reason(&name, kind)
+            };
+            let blocked = reason.is_some();
+            let content: Element<'_, crate::tools_page::Event> = column![
+                reason.map(|reason| text(reason).color(palette.warning)),
+                page.view(palette, blocked),
+            ]
+            .into();
+            return content.map(move |event| Message::Tool(name.clone(), kind, event));
+        }
+        if let Some(name) = &self.portable_page
+            && let Some(page) = self.portable_pages.get(name)
+        {
+            let name = name.clone();
+            return page
+                .view(
+                    palette,
+                    self.management_busy() || self.remove_reason(&name).is_some(),
+                )
+                .map(move |event| Message::Portable(name.clone(), event));
+        }
+        if self.section == crate::sidebar::Section::Snapshots
+            && let Some(page) = &self.snapshots_page
+        {
+            let blocked = self.management_busy()
+                || page
+                    .selected_name()
+                    .is_some_and(|name| self.prefix_change_reason(name).is_some());
+            return page.view(palette, blocked).map(Message::Snapshots);
+        }
         if let Some(name) = &self.art_page
             && let Some(page) = self.art_pages.get(name)
         {
@@ -378,8 +461,10 @@ impl App {
                 container(
                     column![
                         text("Your library is empty").size(22),
-                        button("Add something")
-                            .on_press_maybe((!self.foreground_busy()).then_some(Message::Add)),
+                        button("Add something").on_press_maybe(
+                            (!self.management_busy() && self.operation.is_none())
+                                .then_some(Message::Add)
+                        ),
                     ]
                     .spacing(12),
                 )
@@ -492,7 +577,10 @@ impl App {
                     .color(palette.foreground),
                 search,
                 button("Add")
-                    .on_press_maybe((!self.foreground_busy()).then_some(Message::Add))
+                    .on_press_maybe(
+                        (!self.management_busy() && self.operation.is_none())
+                            .then_some(Message::Add)
+                    )
                     .padding([6, 12])
                     .style(move |_, status| crate::chips::secondary(palette, status)),
             ]

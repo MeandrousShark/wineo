@@ -71,6 +71,9 @@ impl App {
         if self.art_page.is_some() {
             return self.art_key(&key, modifiers, captured);
         }
+        if self.feature_page_open() {
+            return self.feature_key(&key, modifiers, captured);
+        }
         if self.section == crate::sidebar::Section::Library {
             self.search_focused = search_focused;
         }

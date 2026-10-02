@@ -149,6 +149,7 @@ pub(crate) struct Results {
     outcome: Option<Outcome>,
     clear_outcome_on_accept: bool,
     fixed: usize,
+    recovery_confirm: Option<Fix>,
 }
 
 impl Results {
@@ -189,6 +190,7 @@ pub(crate) struct Change {
     install: Option<(String, Token)>,
     problem_fixes: Vec<Fix>,
     affects_downloads: bool,
+    noncancellable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -200,6 +202,9 @@ pub(crate) enum Event {
     Checked(Scope, u64, Result<Report, String>),
     Toggle(Scope, Fix, bool),
     Fix(Scope),
+    ReviewRecovery(Scope, Fix),
+    ConfirmRecovery(Scope),
+    DismissRecovery(Scope),
     Back(Scope),
     Cancel,
     Progress(u64, String),
@@ -310,6 +315,13 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if app.management_busy() || app.close_prompt {
                 return Task::none();
             }
+            if app
+                .checkups
+                .get(&scope)
+                .is_some_and(|results| app.checkup_tool_conflict(results))
+            {
+                return Task::none();
+            }
             let Some(results) = app.checkups.get_mut(&scope) else {
                 return Task::none();
             };
@@ -346,8 +358,87 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                             | Fix::RecoverTrash { .. }
                     )
                 }),
+                noncancellable: false,
             }));
             checkup_work::apply(app.change_generation, app.paths.clone(), fixes, token)
+        }
+        Event::ReviewRecovery(scope, fix) => {
+            if app.management_busy()
+                || app.close_prompt
+                || !matches!(fix, Fix::RecoverSnapshot { .. })
+            {
+                return Task::none();
+            }
+            if let Fix::RecoverSnapshot { environment } = &fix
+                && app.tool_prefix_busy(environment)
+            {
+                return Task::none();
+            }
+            if let Some(results) = app.checkups.get_mut(&scope)
+                && !results.checking
+                && results.report.as_ref().is_some_and(|report| {
+                    report
+                        .problems
+                        .iter()
+                        .any(|problem| problem.fix.as_ref() == Some(&fix))
+                })
+            {
+                results.recovery_confirm = Some(fix);
+            }
+            Task::none()
+        }
+        Event::DismissRecovery(scope) => {
+            if let Some(results) = app.checkups.get_mut(&scope) {
+                results.recovery_confirm = None;
+            }
+            Task::none()
+        }
+        Event::ConfirmRecovery(scope) => {
+            if app.management_busy() || app.close_prompt {
+                return Task::none();
+            }
+            if app
+                .checkups
+                .get(&scope)
+                .and_then(|results| results.recovery_confirm.as_ref())
+                .is_some_and(|fix| match fix {
+                    Fix::RecoverSnapshot { environment } => app.tool_prefix_busy(environment),
+                    _ => true,
+                })
+            {
+                return Task::none();
+            }
+            let Some(results) = app.checkups.get_mut(&scope) else {
+                return Task::none();
+            };
+            let Some(fix @ Fix::RecoverSnapshot { .. }) = results.recovery_confirm.take() else {
+                return Task::none();
+            };
+            if results.checking
+                || !results.report.as_ref().is_some_and(|report| {
+                    report
+                        .problems
+                        .iter()
+                        .any(|problem| problem.fix.as_ref() == Some(&fix))
+                })
+            {
+                return Task::none();
+            }
+            app.check_generation = app.check_generation.wrapping_add(1);
+            results.generation = app.check_generation;
+            results.outcome = None;
+            let token = Token::new();
+            app.change_generation = app.change_generation.wrapping_add(1);
+            app.change = Some(RunningChange::Checkup(Change {
+                scope,
+                token,
+                status: "Rolling back restore...".into(),
+                install: None,
+                problem_fixes: vec![fix.clone()],
+                affects_downloads: false,
+                noncancellable: true,
+            }));
+            checkup_work::recover_snapshot(app.change_generation, app.paths.clone(), fix)
         }
         Event::Back(scope) => {
             app.close_log();
@@ -357,6 +448,12 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             unfocus()
         }
         Event::Cancel => {
+            if app
+                .checkup_change()
+                .is_some_and(|change| change.noncancellable)
+            {
+                return Task::none();
+            }
             let force = app
                 .checkup_change()
                 .is_some_and(|change| change.token.is_canceled());
@@ -492,6 +589,22 @@ impl App {
         checkup_work::check(scope, results.generation, self.paths.clone())
     }
 
+    pub(crate) fn refresh_feature_checkups(&mut self) -> Task<Message> {
+        let mut scopes: Vec<_> = self
+            .checkups
+            .iter()
+            .filter(|(scope, results)| match scope {
+                Scope::Global => self.section == crate::sidebar::Section::Checkup,
+                Scope::Environment(_) => results.showing,
+            })
+            .map(|(scope, _)| scope.clone())
+            .collect();
+        if self.section == crate::sidebar::Section::Checkup && !scopes.contains(&Scope::Global) {
+            scopes.push(Scope::Global);
+        }
+        Task::batch(scopes.into_iter().map(|scope| self.check(scope, false)))
+    }
+
     pub(crate) fn close_checkup(&mut self) {
         for results in self.checkups.values_mut() {
             results.showing = false;
@@ -507,6 +620,9 @@ impl App {
 
     pub(crate) fn cancel_checkup(&self, force: bool) {
         if let Some(change) = self.checkup_change() {
+            if change.noncancellable {
+                return;
+            }
             if force {
                 change.token.force();
             } else {
@@ -517,7 +633,7 @@ impl App {
 
     pub(crate) fn checkup_force_available(&self) -> bool {
         self.checkup_change()
-            .is_some_and(|change| change.install.is_some())
+            .is_some_and(|change| !change.noncancellable && change.install.is_some())
     }
 
     pub(crate) fn checkup_scope(&self) -> Option<Scope> {
@@ -580,7 +696,26 @@ impl App {
     }
 
     fn checkup_can_fix(&self, results: &Results) -> bool {
-        !results.checking && !self.management_busy() && !results.selected().is_empty()
+        !results.checking
+            && !self.management_busy()
+            && !self.checkup_tool_conflict(results)
+            && !results.selected().is_empty()
+    }
+
+    fn checkup_tool_conflict(&self, results: &Results) -> bool {
+        let selected = results.selected();
+        results.report.as_ref().is_some_and(|report| {
+            report.problems.iter().any(|problem| {
+                problem
+                    .fix
+                    .as_ref()
+                    .is_some_and(|fix| selected.contains(fix))
+                    && problem
+                        .environment
+                        .as_deref()
+                        .is_some_and(|name| self.tool_prefix_busy(name))
+            })
+        })
     }
 
     fn checkup_controls(&self, scope: &Scope) -> Vec<String> {
@@ -614,7 +749,15 @@ impl App {
         if *scope != Scope::Global {
             ids.push(scope.id("back"));
         }
-        if running {
+        if results.recovery_confirm.is_some() {
+            ids.push(scope.id("recover-cancel"));
+            ids.push(scope.id("recover-confirm"));
+        }
+        if running
+            && !self
+                .checkup_change()
+                .is_some_and(|change| change.noncancellable)
+        {
             ids.push(scope.id("cancel"));
             if self
                 .checkup_change()
@@ -694,6 +837,21 @@ impl App {
                     body = body
                         .push(row![text(marker).color(color), text(&problem.message)].spacing(8));
                     if let Some(fix) = &problem.fix {
+                        if let Fix::RecoverSnapshot { environment } = fix {
+                            let allowed = !running
+                                && !self.management_busy()
+                                && !self.tool_prefix_busy(environment);
+                            body = body.push(control(
+                                "Roll back restore".into(),
+                                scope.id(&format!("fix-{index}")),
+                                allowed,
+                                Event::ReviewRecovery(scope.clone(), fix.clone()),
+                            ));
+                            if let Some(reason) = self.tool_reason(environment) {
+                                body = body.push(text(reason).size(12).color(palette.muted));
+                            }
+                            continue;
+                        }
                         let checked = results.checked.contains(fix);
                         let event = Event::Toggle(scope.clone(), fix.clone(), !checked);
                         let toggle_scope = scope.clone();
@@ -718,6 +876,14 @@ impl App {
             }
         }
         let count = results.selected().len();
+        if let Some(Fix::RecoverSnapshot { environment }) = &results.recovery_confirm {
+            body = body.push(text(format!("Roll back the interrupted restore for {environment}?")))
+                .push(text("This restores the old prefix and config. The rollback must finish before closing.").color(palette.warning))
+                .push(row![
+                    control("Cancel".into(), scope.id("recover-cancel"), true, Event::DismissRecovery(scope.clone())),
+                    control("Roll back restore".into(), scope.id("recover-confirm"), !self.management_busy() && !self.tool_prefix_busy(environment), Event::ConfirmRecovery(scope.clone())),
+                ].spacing(8));
+        }
         let mut controls = row![
             control(
                 format!("Fix {}", plural(count, "problem", "problems")),
@@ -773,7 +939,7 @@ impl App {
             }
             .into(),
             scope.id("cancel"),
-            true,
+            !change.noncancellable,
             Event::Cancel,
         )]
         .spacing(8);
@@ -947,6 +1113,36 @@ mod tests {
         let card = app.cards.iter_mut().find(|card| card.name == name).unwrap();
         card.targets = vec!["game".into()];
         card.default_target = Some("game".into());
+    }
+
+    #[test]
+    fn snapshot_recovery_requires_separate_confirmation_and_cannot_be_canceled() {
+        let (_root, mut app) = fixture();
+        open(&mut app);
+        let fix = Fix::RecoverSnapshot {
+            environment: "game".into(),
+        };
+        loaded(
+            &mut app,
+            Report {
+                problems: vec![problem(Code::RestoreInterrupted, Some(fix.clone()))],
+                ..Report::default()
+            },
+        );
+        assert!(app.checkups[&scope()].selected().is_empty());
+        send(&mut app, Event::Fix(scope()));
+        assert!(app.change.is_none());
+        send(&mut app, Event::ReviewRecovery(scope(), fix));
+        assert!(app.checkups[&scope()].recovery_confirm.is_some());
+        assert!(app.change.is_none());
+        send(&mut app, Event::ConfirmRecovery(scope()));
+        assert!(
+            app.checkup_change()
+                .is_some_and(|change| change.noncancellable)
+        );
+        send(&mut app, Event::Cancel);
+        assert!(!app.checkup_change().unwrap().token.is_canceled());
+        assert!(!app.checkup_force_available());
     }
 
     #[test]

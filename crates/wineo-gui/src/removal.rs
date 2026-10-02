@@ -292,8 +292,39 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
 
 impl App {
     pub(crate) fn remove_reason(&self, name: &str) -> Option<String> {
+        if self.restore_pending(name) {
+            return Some("Roll back restore first.".into());
+        }
+        self.prefix_change_reason(name)
+    }
+
+    pub(crate) fn prefix_change_reason(&self, name: &str) -> Option<String> {
+        if self.filesystem_busy() {
+            return Some("Busy: changing files.".into());
+        }
+        if let Some(reason) = self.tool_reason(name) {
+            return Some(reason);
+        }
         if let Some(change) = &self.change {
             return Some(change.reason());
+        }
+        if let Some(other) = self.cards.iter().find(|card| {
+            card.name != name
+                && self.same_prefix(name, &card.name)
+                && (card.lost || card.unresolved || card.state == State::Running || card.busy)
+        }) {
+            return Some(if other.lost || other.unresolved {
+                "Stop it first. Use Clean up in the panel.".into()
+            } else {
+                "Stop it first".into()
+            });
+        }
+        if self
+            .operation
+            .as_ref()
+            .is_some_and(|operation| self.same_prefix(name, &operation.name))
+        {
+            return Some("Stop it first".into());
         }
         let card = self.cards.iter().find(|card| card.name == name)?;
         if card.lost || card.unresolved {

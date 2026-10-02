@@ -33,7 +33,9 @@ wineo stop hades
 - **Artwork.** Store icons, posters, heroes, and logos per environment, from
   your own files or SteamGridDB.
 - **Desktop app.** Browse, launch, create, import, and clone environments
-  with guided reviews, file pickers, and optional artwork selection.
+  with guided reviews, file pickers, and optional artwork selection. Manage
+  [snapshots](docs/gui.md#snapshots), [portable copies](docs/gui.md#copy-to-a-portable-folder),
+  and [program runs and winetricks](docs/gui.md#run-program-and-winetricks).
 - **Scripting friendly.** `--json` output for `status` and `list`, and live
   shell completion for environment and target names.
 

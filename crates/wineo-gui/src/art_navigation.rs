@@ -24,6 +24,8 @@ impl App {
             self.close_missing_art(&name);
             return Task::none();
         };
+        self.tool_page = None;
+        self.portable_page = None;
         if self
             .art_pages
             .get(&name)
@@ -122,6 +124,20 @@ impl App {
         mut generation: u64,
         event: art_page::Event,
     ) -> Task<Message> {
+        if (self.management_busy() || self.tool_prefix_busy(&name))
+            && matches!(
+                event,
+                art_page::Event::UsePath
+                    | art_page::Event::Remove(_)
+                    | art_page::Event::SaveGame
+                    | art_page::Event::Picker(
+                        _,
+                        crate::art_picker::Event::Use | crate::art_picker::Event::UseSelected(_)
+                    )
+            )
+        {
+            return Task::none();
+        }
         let completion = write_completion(&event);
         let use_sequence = match &event {
             art_page::Event::Used(sequence, ..) | art_page::Event::UseProgress(sequence, ..) => {

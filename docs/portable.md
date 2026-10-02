@@ -101,6 +101,13 @@ environment and snapshots, art, and playtime, but not trash history. See
 
 ## Copying an environment in
 
+The [desktop app](gui.md#copy-to-a-portable-folder) offers **Copy to portable
+folder...** from an environment's Actions menu. It reviews Wine and native
+copies, then asks you to Copy. The selected destination overrides any
+`WINEO_PORTABLE_DIR` value, and success keeps the current library open. Copying
+is unavailable when the GUI itself is using a portable root. Native copies
+bring the registration, art, and playtime; their program files stay external.
+
 ```sh
 wineo portable copy hades --to ~/usb/wineo
 ```

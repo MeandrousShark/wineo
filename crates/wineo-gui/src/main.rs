@@ -16,14 +16,18 @@ mod library;
 mod logview;
 mod panel;
 mod picker;
+mod portable_page;
 mod removal;
 mod remove_work;
 mod settings;
 mod shortcuts;
 mod sidebar;
 mod size;
+mod snapshots_page;
 mod spinner;
 mod theme;
+mod tools_navigation;
+mod tools_page;
 mod trash_page;
 mod trash_work;
 mod wheel;
@@ -113,6 +117,12 @@ pub(crate) struct App {
     pending_art_writes: HashSet<(String, u64, u64, art_page::EnvironmentIdentity)>,
     pending_art_cancels: HashMap<(String, u64, u64, art_page::EnvironmentIdentity), Token>,
     art_generation: u64,
+    snapshots_page: Option<snapshots_page::Page>,
+    portable_page: Option<String>,
+    portable_pages: HashMap<String, portable_page::Page>,
+    tool_page: Option<(String, tools_page::Kind)>,
+    tool_pages: HashMap<(String, tools_page::Kind), tools_page::Page>,
+    tool_prefixes: HashMap<(String, tools_page::Kind), PathBuf>,
     section: sidebar::Section,
     pending_section: Option<sidebar::Section>,
     pending_checkup_environment: Option<String>,
@@ -130,6 +140,7 @@ pub(crate) struct App {
     remove_generation: u64,
     change: Option<removal::Change>,
     toast: Option<removal::Toast>,
+    feature_notice: Option<(String, Instant)>,
     change_generation: u64,
     library_generation: u64,
     trash_generation: u64,
@@ -209,6 +220,12 @@ pub(crate) enum Message {
     OpenArt,
     ContextArt(String),
     ArtPage(String, u64, art_page::Event),
+    SnapshotsEnvironment(String),
+    Snapshots(snapshots_page::Event),
+    CopyPortable(String),
+    Portable(String, portable_page::Event),
+    OpenTool(String, tools_page::Kind),
+    Tool(String, tools_page::Kind, tools_page::Event),
     Add,
     CloneEnvironment(String),
     Context(String),
@@ -295,6 +312,12 @@ impl App {
             pending_art_writes: HashSet::new(),
             pending_art_cancels: HashMap::new(),
             art_generation: 0,
+            snapshots_page: None,
+            portable_page: None,
+            portable_pages: HashMap::new(),
+            tool_page: None,
+            tool_pages: HashMap::new(),
+            tool_prefixes: HashMap::new(),
             section: sidebar::Section::Library,
             pending_section: None,
             pending_checkup_environment: None,
@@ -312,6 +335,7 @@ impl App {
             remove_generation: 0,
             change: None,
             toast: None,
+            feature_notice: None,
             change_generation: 0,
             library_generation: 0,
             trash_generation: 0,
@@ -371,14 +395,17 @@ impl App {
     }
 
     fn management_busy(&self) -> bool {
-        self.change.is_some()
+        self.filesystem_busy()
+            || self.change.is_some()
             || self.art_busy()
             || self.flow.as_ref().is_some_and(flow::Page::busy)
             || self.settings.as_ref().is_some_and(|page| page.saving)
     }
 
     fn spinning(&self) -> bool {
-        self.operation.is_some()
+        self.filesystem_busy()
+            || self.tools_busy()
+            || self.operation.is_some()
             || self.art_busy()
             || self.checkups.values().any(|results| results.checking)
             || self.change.is_some()
@@ -436,7 +463,7 @@ impl App {
             }),
             spinner,
             idle,
-            if self.toast.is_some() {
+            if self.toast.is_some() || self.feature_notice.is_some() {
                 iced::time::every(Duration::from_millis(100)).map(Message::ToastTick)
             } else {
                 Subscription::none()
@@ -444,11 +471,20 @@ impl App {
         ])
     }
     fn update(&mut self, message: Message) -> Task<Message> {
+        if self
+            .feature_notice
+            .as_ref()
+            .is_some_and(|(_, until)| Instant::now() >= *until)
+        {
+            self.feature_notice = None;
+        }
         if (self.flow.is_some()
             || self.removal.is_some()
             || self.trash_confirm_open()
             || self.downloads_confirm_open()
-            || self.art_page.is_some())
+            || self.art_page.is_some()
+            || self.tool_page.is_some()
+            || self.portable_page.is_some())
             && matches!(
                 message,
                 Message::SearchChanged(_)
@@ -483,6 +519,12 @@ impl App {
             return Task::none();
         }
         let task = match message {
+            Message::SnapshotsEnvironment(name) => self.open_snapshots(Some(name)),
+            Message::Snapshots(event) => self.snapshots_update(event),
+            Message::CopyPortable(name) => self.open_portable(name),
+            Message::Portable(name, event) => self.portable_update(name, event),
+            Message::OpenTool(name, kind) => self.open_tool(name, kind),
+            Message::Tool(name, kind, event) => self.tool_update(name, kind, event),
             Message::Checkup(event) => checkup::update(self, event),
             Message::Trash(event) => trash_page::update(self, event),
             Message::Downloads(event) => downloads_page::update(self, event),
@@ -873,6 +915,8 @@ impl App {
                     self.settings_key(&key, modifiers, status == iced::event::Status::Captured)
                 } else if self.art_page.is_some() {
                     self.art_key(&key, modifiers, status == iced::event::Status::Captured)
+                } else if self.feature_page_open() {
+                    self.feature_key(&key, modifiers, status == iced::event::Status::Captured)
                 } else if self.section == sidebar::Section::Downloads {
                     downloads_page::key(
                         self,
@@ -925,7 +969,8 @@ impl App {
             Message::ContextArt(name) => self.open_art(name),
             Message::ArtPage(name, generation, event) => self.art_update(name, generation, event),
             Message::Add => {
-                if self.foreground_busy()
+                if self.management_busy()
+                    || self.operation.is_some()
                     || self.settings.is_some()
                     || self.art_page.is_some()
                     || self.flow.is_some()
@@ -942,7 +987,9 @@ impl App {
                 )
             }
             Message::CloneEnvironment(name) => {
-                if self.foreground_busy()
+                if self.management_busy()
+                    || self.operation.is_some()
+                    || self.remove_reason(&name).is_some()
                     || self.settings.is_some()
                     || self.art_page.is_some()
                     || self.flow.is_some()
@@ -1003,6 +1050,7 @@ impl App {
                 let force = matches!(event, Message::ForceCloseWork);
                 self.closing = true;
                 self.cancel_management();
+                self.cancel_features(force);
                 for page in self.art_pages.values() {
                     page.cancel_thumbnails();
                 }
@@ -1044,7 +1092,9 @@ impl App {
         }
     }
     fn foreground_busy(&self) -> bool {
-        self.change.is_some()
+        self.filesystem_busy()
+            || self.tools_busy()
+            || self.change.is_some()
             || self.art_busy()
             || self.operation.is_some()
             || self.flow.as_ref().is_some_and(flow::Page::busy)
@@ -1064,7 +1114,7 @@ impl App {
             .update_with_key_availability(event, self.steamgriddb_available)
             .map(move |event| Message::Flow(generation, event));
         if self.closing && !page.busy() {
-            return task.chain(iced::exit());
+            return task;
         }
         if choose_back {
             self.flow = None;
@@ -1100,7 +1150,11 @@ impl App {
         result: Result<Vec<Card>, String>,
     ) -> Task<Message> {
         if self.closing {
-            return iced::exit();
+            return if self.foreground_busy() {
+                Task::none()
+            } else {
+                iced::exit()
+            };
         }
         match result {
             Ok(cards) => self.merge(cards),
@@ -1362,6 +1416,320 @@ mod tests {
             Paths::from_lookup(|key| (key == "HOME").then(|| "/tmp/wineo-gui-tests".into()))
                 .unwrap();
         App::boot(paths).0
+    }
+
+    fn tool_app() -> App {
+        let mut app = app();
+        app.cards = ["notes", "alias", "editor"]
+            .into_iter()
+            .map(|name| {
+                let mut card = card(name, State::Inactive, 0);
+                card.prefix = Some(PathBuf::from(if name == "editor" {
+                    "/tmp/editor-prefix"
+                } else {
+                    "/tmp/notes-prefix"
+                }));
+                card
+            })
+            .collect();
+        let _ = app.update(Message::OpenTool(
+            "notes".into(),
+            tools_page::Kind::Winetricks,
+        ));
+        let _ = app.update(Message::Tool(
+            "notes".into(),
+            tools_page::Kind::Winetricks,
+            tools_page::Event::OpenWinetricks,
+        ));
+        app
+    }
+
+    #[test]
+    fn tools_block_shared_prefix_changes_but_leave_other_environments_usable() {
+        let mut app = tool_app();
+        assert!(app.tools_busy());
+        assert!(!app.management_busy());
+        assert!(app.remove_reason("notes").is_some());
+        assert!(app.remove_reason("alias").is_some());
+        assert!(app.remove_reason("editor").is_none());
+        assert!(app.tool_blocks_launch("alias"));
+        assert!(!app.tool_blocks_launch("editor"));
+        app.cards[0].prefix = Some("/tmp/replaced-prefix".into());
+        assert!(app.tool_prefix_busy("alias"));
+        let _ = app.update(Message::Section(sidebar::Section::Library));
+        let _ = app.update(Message::CloneEnvironment("editor".into()));
+        assert!(app.flow.is_some());
+        assert!(app.tools_busy());
+    }
+
+    #[test]
+    fn hidden_tool_messages_keep_worker_but_cannot_navigate_or_start_work() {
+        let mut app = tool_app();
+        let _ = app.update(Message::Section(sidebar::Section::Library));
+        let _ = app.update(Message::Tool(
+            "notes".into(),
+            tools_page::Kind::Winetricks,
+            tools_page::Event::Settings,
+        ));
+        assert!(app.settings.is_none());
+        assert!(app.tools_busy());
+        let _ = app.update(Message::Tool(
+            "notes".into(),
+            tools_page::Kind::Winetricks,
+            tools_page::Event::Finished(999, Ok(Some(0))),
+        ));
+        assert!(app.tools_busy());
+        let _ = app.update(Message::Tool(
+            "notes".into(),
+            tools_page::Kind::Winetricks,
+            tools_page::Event::Finished(1, Ok(Some(0))),
+        ));
+        assert!(!app.tools_busy());
+        assert!(app.tool_page.is_none());
+        let _ = app.update(Message::OpenTool(
+            "notes".into(),
+            tools_page::Kind::Winetricks,
+        ));
+        assert!(!app.tools_busy());
+        assert_eq!(app.tool_pages.len(), 1);
+    }
+
+    #[test]
+    fn closing_waits_for_all_tools_after_leaving_their_pages() {
+        let mut app = tool_app();
+        let _ = app.update(Message::OpenTool(
+            "editor".into(),
+            tools_page::Kind::Winetricks,
+        ));
+        let _ = app.update(Message::Tool(
+            "editor".into(),
+            tools_page::Kind::Winetricks,
+            tools_page::Event::OpenWinetricks,
+        ));
+        let _ = app.update(Message::Section(sidebar::Section::Downloads));
+        let _ = app.update(Message::Window(window::Event::CloseRequested));
+        assert!(app.close_prompt);
+        let _ = app.update(Message::CancelAndClose);
+        assert!(app.closing && app.foreground_busy());
+        assert!(
+            app.tool_pages
+                .values()
+                .all(tools_page::Page::force_available)
+        );
+        let _ = app.update(Message::Tool(
+            "notes".into(),
+            tools_page::Kind::Winetricks,
+            tools_page::Event::Finished(1, Ok(Some(0))),
+        ));
+        assert!(app.foreground_busy());
+        let _ = app.update(Message::Tool(
+            "editor".into(),
+            tools_page::Kind::Winetricks,
+            tools_page::Event::Finished(1, Ok(Some(0))),
+        ));
+        assert!(!app.foreground_busy());
+    }
+
+    #[test]
+    fn portable_review_uses_the_slot_and_survives_sidebar_navigation() {
+        let mut app = app();
+        let _ = app.update(Message::CopyPortable("native".into()));
+        let _ = app.update(Message::Portable(
+            "native".into(),
+            portable_page::Event::SourceLoaded(Ok(true)),
+        ));
+        let _ = app.update(Message::Portable(
+            "native".into(),
+            portable_page::Event::Folder("/tmp/portable-review".into()),
+        ));
+        let _ = app.update(Message::Portable(
+            "native".into(),
+            portable_page::Event::Review,
+        ));
+        assert!(app.filesystem_busy() && app.management_busy());
+        let _ = app.update(Message::Section(sidebar::Section::Checkup));
+        assert!(app.portable_page.is_none());
+        assert!(app.filesystem_busy());
+        let _ = app.update(Message::CopyPortable("second".into()));
+        let _ = app.update(Message::Portable(
+            "second".into(),
+            portable_page::Event::SourceLoaded(Ok(true)),
+        ));
+        let _ = app.update(Message::Portable(
+            "second".into(),
+            portable_page::Event::Folder("/tmp/second-copy".into()),
+        ));
+        let _ = app.update(Message::Portable(
+            "second".into(),
+            portable_page::Event::Review,
+        ));
+        assert!(!app.portable_pages["second"].busy());
+        assert!(app.portable_pages["native"].busy());
+    }
+
+    #[test]
+    fn snapshot_shortcut_preserves_downloads_shortcut_and_page_results() {
+        assert_eq!(
+            sidebar::shortcut(
+                &keyboard::Key::Character("4".into()),
+                keyboard::Modifiers::CTRL
+            ),
+            Some(sidebar::Section::Downloads)
+        );
+        assert_eq!(
+            sidebar::shortcut(
+                &keyboard::Key::Character("5".into()),
+                keyboard::Modifiers::CTRL
+            ),
+            Some(sidebar::Section::Snapshots)
+        );
+        let mut app = app();
+        let _ = app.update(Message::SnapshotsEnvironment("notes".into()));
+        assert_eq!(app.section, sidebar::Section::Snapshots);
+        let _ = app.update(Message::Section(sidebar::Section::Library));
+        let _ = app.update(Message::Section(sidebar::Section::Snapshots));
+        assert_eq!(
+            app.snapshots_page.as_ref().unwrap().selected_name(),
+            Some("notes")
+        );
+    }
+
+    #[test]
+    fn cached_winetricks_page_refreshes_declarations_on_reopen() {
+        let mut app = app();
+        let mut item = card("notes", State::Inactive, 0);
+        item.prefix = Some("/tmp/notes-prefix".into());
+        app.cards.push(item);
+        let _ = app.update(Message::OpenTool(
+            "notes".into(),
+            tools_page::Kind::Winetricks,
+        ));
+        let _ = app.update(Message::Section(sidebar::Section::Library));
+        let task = app.update(Message::OpenTool(
+            "notes".into(),
+            tools_page::Kind::Winetricks,
+        ));
+        assert!(task.units() > 0);
+        assert_eq!(app.tool_pages.len(), 1);
+        assert!(!app.tools_busy());
+    }
+
+    #[test]
+    fn winetricks_refuses_running_shared_prefix_but_exec_can_coexist() {
+        let mut app = app();
+        app.cards = ["notes", "alias"]
+            .into_iter()
+            .map(|name| {
+                let mut card = card(
+                    name,
+                    if name == "alias" {
+                        State::Running
+                    } else {
+                        State::Inactive
+                    },
+                    0,
+                );
+                card.prefix = Some("/tmp/shared-prefix".into());
+                card
+            })
+            .collect();
+        assert!(
+            app.tool_start_reason("notes", tools_page::Kind::Winetricks)
+                .is_some()
+        );
+        assert!(
+            app.tool_start_reason("notes", tools_page::Kind::Exec)
+                .is_none()
+        );
+        assert!(app.remove_reason("notes").is_some());
+        let _ = app.update(Message::OpenTool(
+            "notes".into(),
+            tools_page::Kind::Winetricks,
+        ));
+        let _ = app.update(Message::Tool(
+            "notes".into(),
+            tools_page::Kind::Winetricks,
+            tools_page::Event::OpenWinetricks,
+        ));
+        assert!(!app.tools_busy());
+    }
+
+    #[test]
+    fn restore_markers_block_ordinary_changes_without_disabling_recovery() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        let marker = paths.restore_marker("notes");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(marker, "invalid marker").unwrap();
+        let app = App::boot(paths).0;
+        assert_eq!(
+            app.remove_reason("notes").as_deref(),
+            Some("Roll back restore first.")
+        );
+        assert!(
+            app.tool_start_reason("notes", tools_page::Kind::Exec)
+                .is_some()
+        );
+        assert!(
+            app.tool_start_reason("notes", tools_page::Kind::Winetricks)
+                .is_some()
+        );
+        assert!(app.prefix_change_reason("notes").is_none());
+        let marker = app.paths.restore_marker("notes");
+        std::fs::remove_file(&marker).unwrap();
+        std::os::unix::fs::symlink(root.path().join("missing-marker"), marker).unwrap();
+        assert!(app.restore_pending("notes"));
+        assert!(app.remove_reason("notes").is_some());
+        assert!(
+            app.tool_start_reason("notes", tools_page::Kind::Exec)
+                .is_some()
+        );
+        assert!(app.prefix_change_reason("notes").is_none());
+    }
+
+    #[test]
+    fn portable_success_notifies_destination_and_enter_returns_to_library() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        std::fs::create_dir_all(paths.environments_dir()).unwrap();
+        std::fs::write(paths.environment_config("native"), "kind = 'native'\n").unwrap();
+        let folder = root.path().join("portable");
+        let destination = Paths::select(
+            |key| (key == "HOME").then(|| root.path().as_os_str().to_owned()),
+            Some(&folder),
+        )
+        .unwrap();
+        let review = wineo_core::portable::inspect_native(&paths, &destination, "native").unwrap();
+        let mut app = App::boot(paths).0;
+        let _ = app.update(Message::CopyPortable("native".into()));
+        for event in [
+            portable_page::Event::SourceLoaded(Ok(true)),
+            portable_page::Event::Folder(folder.display().to_string()),
+            portable_page::Event::Review,
+            portable_page::Event::ReviewLoaded(
+                1,
+                Ok(Box::new(portable_page::Review::Native(Box::new(review)))),
+            ),
+            portable_page::Event::Copy,
+            portable_page::Event::CopyFinished(2, Ok(())),
+        ] {
+            let _ = app.update(Message::Portable("native".into(), event));
+        }
+        assert_eq!(
+            app.feature_notice.as_ref().unwrap().0,
+            format!("Copied native to {}.", folder.display())
+        );
+        let _ = app.feature_key(
+            &keyboard::Key::Named(keyboard::key::Named::Enter),
+            keyboard::Modifiers::empty(),
+            false,
+        );
+        assert!(app.portable_page.is_none());
+        assert!(!app.filesystem_busy());
     }
 
     #[test]

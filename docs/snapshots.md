@@ -14,6 +14,12 @@ Environment names and labels are required and case sensitive. Labels follow
 the environment naming rules. `list` shows labels in stable order with their
 creation times. A label can only be used once; delete it before reusing it.
 
+In the [desktop app](gui.md#snapshots), open Snapshots with Ctrl+5 or an
+environment's **Snapshots...** action. Create and Restore show frozen reviews;
+Delete asks for confirmation and cannot be undone through Trash. Inspection
+and copying can be canceled; publication and the restore swap finish before
+the window closes. Results retain warnings and manual cleanup paths.
+
 Wineo stores each snapshot beside the configured prefix, under
 `<prefix parent>/.wineo-snapshots/<environment>/<label>/`. It contains the
 whole configured prefix root, a copy of the config text, and a manifest. This
@@ -40,6 +46,11 @@ until recovery. Roll back the interrupted restore with:
 ```sh
 wineo snapshot recover Zomboid
 ```
+
+The desktop Snapshots page and Checkup also offer a separately confirmed
+**Roll back restore** action. Neither Checkup's batch action nor
+`wineo validate --fix` rolls back an interrupted snapshot restore. Malformed
+markers remain errors and are never guessed around.
 
 If the old prefix was a Btrfs subvolume, restore leaves it at the path printed
 by Wineo. Remove that subvolume manually when it is no longer needed.
