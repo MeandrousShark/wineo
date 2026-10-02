@@ -75,6 +75,9 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
 - UI copy and errors are terse: one short sentence, like "Invalid input:
   spaces not allowed." wineo is for regular software as well as games, so
   generic copy stays neutral ("Add something").
+- Terse isn't cryptic. Key hints are short verb phrases, like "Press Enter to
+  create it, Esc to go back, Ctrl+C to cancel.", never bare fragments like
+  "Enter create it".
 - Ask before opening GUI windows for smoke tests; they may be mid-game or
   working over SSH with no display. Never run a bare full-screen `grim`.
   Capture only the app window, or use a headless or nested compositor. A
