@@ -42,39 +42,45 @@ fn png(root: &Path) -> PathBuf {
 #[test]
 fn game_label_uses_name_or_saved_id_and_handles_no_pick() {
     let (_root, _paths, mut page) = fixture();
-    assert_eq!(page.game_label(), "Not picked");
+    assert_eq!(page.game_label(false), "Not picked");
     page.game_id = Some(123);
-    assert_eq!(page.game_label(), "123");
-    page.key_available = false;
-    assert_eq!(page.game_label(), "123");
+    assert_eq!(page.game_label(false), "123");
     page.game = Some(Game {
         id: 123,
         name: "Hades".into(),
         year: Some(2020),
     });
-    assert_eq!(page.game_label(), "123");
-    page.key_available = true;
-    assert_eq!(page.game_label(), "Hades (2020)");
+    assert_eq!(page.game_label(false), "123");
+    assert_eq!(page.game_label(true), "Hades (2020)");
     page.game_id = Some(456);
-    assert_eq!(page.game_label(), "456");
+    assert_eq!(page.game_label(true), "456");
+}
+
+#[test]
+fn change_action_uses_app_key_availability() {
+    let (_root, paths, mut page) = fixture();
+    let _ = page.update(&paths, Event::Change, decodes());
+    assert!(page.change.is_none());
+    let _ = page.update_with_key_availability(&paths, Event::Change, decodes(), true);
+    assert!(page.change.is_some());
 }
 
 #[test]
 fn failed_lookup_keeps_id_and_can_retry_on_next_load() {
     let (_root, paths, mut page) = fixture();
     page.game_id = Some(123);
-    page.key_available = true;
-    let _ = page.lookup_game(&paths);
+    let _ = page.lookup_game(&paths, true);
     let first = page.lookup_sequence;
     assert_eq!(page.looked_up, Some(123));
-    let _ = page.update(
+    let _ = page.update_with_key_availability(
         &paths,
         Event::GameLoaded(first, 123, Err("offline".into())),
         decodes(),
+        true,
     );
-    assert_eq!(page.game_label(), "123");
+    assert_eq!(page.game_label(true), "123");
     assert_eq!(page.looked_up, None);
-    let _ = page.lookup_game(&paths);
+    let _ = page.lookup_game(&paths, true);
     assert!(page.lookup_sequence > first);
 }
 
@@ -82,8 +88,7 @@ fn failed_lookup_keeps_id_and_can_retry_on_next_load() {
 fn stale_game_lookup_cannot_replace_a_saved_match() {
     let (_root, paths, mut page) = fixture();
     page.game_id = Some(123);
-    page.key_available = true;
-    let _ = page.lookup_game(&paths);
+    let _ = page.lookup_game(&paths, true);
     let old = page.lookup_sequence;
     page.lookup_sequence += 1;
     page.game = Some(Game {
@@ -91,7 +96,7 @@ fn stale_game_lookup_cannot_replace_a_saved_match() {
         name: "Picked".into(),
         year: None,
     });
-    let _ = page.update(
+    let _ = page.update_with_key_availability(
         &paths,
         Event::GameLoaded(
             old,
@@ -103,8 +108,9 @@ fn stale_game_lookup_cannot_replace_a_saved_match() {
             })),
         ),
         decodes(),
+        true,
     );
-    assert_eq!(page.game_label(), "Picked");
+    assert_eq!(page.game_label(true), "Picked");
 }
 
 #[test]
@@ -282,15 +288,14 @@ fn missing_key_disables_change_and_find() {
 #[test]
 fn changed_game_saves_and_uses_its_name_immediately() {
     let (_root, paths, mut page) = fixture();
-    page.key_available = true;
     let game = Game {
         id: 77,
         name: "Celeste".into(),
         year: Some(2018),
     };
-    let _ = page.update(&paths, Event::Change, decodes());
+    let _ = page.update_with_key_availability(&paths, Event::Change, decodes(), true);
     page.change.as_mut().unwrap().selected = Some(Match(game.clone()));
-    let _ = page.update(&paths, Event::SaveGame, decodes());
+    let _ = page.update_with_key_availability(&paths, Event::SaveGame, decodes(), true);
     assert!(page.busy());
     art::save_game(&paths, "game", game.id).unwrap();
     let step = page.update(
@@ -300,7 +305,7 @@ fn changed_game_saves_and_uses_its_name_immediately() {
     );
     assert!(step.changed);
     assert!(!page.busy());
-    assert_eq!(page.game_label(), "Celeste (2018)");
+    assert_eq!(page.game_label(true), "Celeste (2018)");
     assert_eq!(art::saved_game(&paths, "game").unwrap(), Some(77));
 }
 
@@ -342,8 +347,7 @@ fn reload_picks_up_art_changed_outside_the_page() {
 fn late_lookup_and_preview_results_are_discarded_after_leaving() {
     let (root, paths, mut page) = fixture();
     page.game_id = Some(123);
-    page.key_available = true;
-    let _ = page.lookup_game(&paths);
+    let _ = page.lookup_game(&paths, true);
     let lookup_sequence = page.lookup_sequence;
     page.leave();
     let _ = page.update(
@@ -359,7 +363,7 @@ fn late_lookup_and_preview_results_are_discarded_after_leaving() {
         ),
         decodes(),
     );
-    assert_eq!(page.game_label(), "123");
+    assert_eq!(page.game_label(true), "123");
 
     let source = png(root.path());
     art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
@@ -595,8 +599,7 @@ fn picker_use_icon_reconciles_desktop_entries() {
 #[test]
 fn find_without_a_game_routes_through_change_then_opens_picker() {
     let (_root, paths, mut page) = fixture();
-    page.key_available = true;
-    let _ = page.update(&paths, Event::Find(Kind::Hero), decodes());
+    let _ = page.update_with_key_availability(&paths, Event::Find(Kind::Hero), decodes(), true);
     assert!(page.picker.is_none());
     assert!(page.change.is_some());
     assert_eq!(page.pending_find, Some(Kind::Hero));
@@ -606,12 +609,13 @@ fn find_without_a_game_routes_through_change_then_opens_picker() {
         year: None,
     };
     page.change.as_mut().unwrap().selected = Some(Match(game.clone()));
-    let _ = page.update(&paths, Event::SaveGame, decodes());
+    let _ = page.update_with_key_availability(&paths, Event::SaveGame, decodes(), true);
     art::save_game(&paths, "game", game.id).unwrap();
-    let _ = page.update(
+    let _ = page.update_with_key_availability(
         &paths,
         Event::GameSaved(page.write_sequence, game, Ok(())),
         decodes(),
+        true,
     );
     assert!(page.change.is_none());
     assert_eq!(page.picker.as_ref().unwrap().kind, Kind::Hero);
@@ -621,9 +625,8 @@ fn find_without_a_game_routes_through_change_then_opens_picker() {
 #[test]
 fn leaving_picker_retains_download_and_ignores_late_listing() {
     let (_root, paths, mut page) = fixture();
-    page.key_available = true;
     page.game_id = Some(9);
-    let _ = page.update(&paths, Event::Find(Kind::Grid), decodes());
+    let _ = page.update_with_key_availability(&paths, Event::Find(Kind::Grid), decodes(), true);
     let visit = page.picker_sequence;
     page.writing = true;
     let token = Token::new();
@@ -658,9 +661,8 @@ fn leaving_picker_retains_download_and_ignores_late_listing() {
 }
 
 fn load_picker(page: &mut Page, paths: &Paths) -> u64 {
-    page.key_available = true;
     page.game_id = Some(9);
-    let _ = page.update(paths, Event::Find(Kind::Grid), decodes());
+    let _ = page.update_with_key_availability(paths, Event::Find(Kind::Grid), decodes(), true);
     let visit = page.picker_sequence;
     let sequence = page.picker.as_ref().unwrap().list_sequence();
     let images = (1..=24)
@@ -844,7 +846,12 @@ fn reopening_another_kind_abandons_queued_thumbnails() {
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         assert!(old_tasks.iter().all(|task| !task.is_finished()));
 
-        let _ = page.update(&paths, Event::Find(Kind::Hero), decodes.clone());
+        let _ = page.update_with_key_availability(
+            &paths,
+            Event::Find(Kind::Hero),
+            decodes.clone(),
+            true,
+        );
         assert!(old_token.is_canceled());
         assert_eq!(page.picker.as_ref().unwrap().kind, Kind::Hero);
         let new_token = page.picker.as_ref().unwrap().thumbnail_token();

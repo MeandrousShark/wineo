@@ -201,10 +201,16 @@ impl App {
                     ));
                 }
                 let decodes = self.decodes.clone();
+                let key_available = self.steamgriddb_available;
                 let (step, identity, write_sequence, started_write, token) = {
                     let page = self.art_pages.get_mut(&name).unwrap();
                     let was_writing = page.writing;
-                    let step = page.update(&self.paths, event, decodes);
+                    let step = page.update_with_key_availability(
+                        &self.paths,
+                        event,
+                        decodes,
+                        key_available,
+                    );
                     (
                         step,
                         page.identity,
@@ -624,7 +630,7 @@ mod tests {
         let page = &app.art_pages["game"];
         assert_ne!(page.generation, old_generation);
         assert_ne!(page.identity, old_identity);
-        assert_eq!(page.game_label(), "Not picked");
+        assert_eq!(page.game_label(app.steamgriddb_available), "Not picked");
     }
 
     #[test]
@@ -698,8 +704,8 @@ mod tests {
         let _ = app.update(Message::ContextArt("game".into()));
         let generation = app.art_pages["game"].generation;
         let load_sequence = app.art_pages["game"].load_sequence;
-        let mut snapshot = art_page::load_snapshot(&app.paths, "game").unwrap();
-        snapshot.key_available = true;
+        let snapshot = art_page::load_snapshot(&app.paths, "game").unwrap();
+        let _ = app.update(Message::SteamGridDbKeyPresenceLoaded(1, true));
         let _ = app.update(Message::ArtPage(
             "game".into(),
             generation,
@@ -739,16 +745,19 @@ mod tests {
             ),
         ));
 
-        assert_eq!(app.art_pages["game"].game_label(), "77");
+        assert_eq!(
+            app.art_pages["game"].game_label(app.steamgriddb_available),
+            "77"
+        );
         assert!(!app.art_pages["game"].has_preview(&(None, Kind::Grid)));
     }
 
     fn start_picker_use(app: &mut App) -> (u64, u64, wineo_core::cancel::Token) {
+        let _ = app.update(Message::SteamGridDbKeyPresenceLoaded(1, true));
         let _ = app.open_art("game".into());
         let generation = app.art_pages["game"].generation;
         art::save_game(&app.paths, "game", 9).unwrap();
-        let mut snapshot = art_page::load_snapshot(&app.paths, "game").unwrap();
-        snapshot.key_available = true;
+        let snapshot = art_page::load_snapshot(&app.paths, "game").unwrap();
         let sequence = app.art_pages["game"].load_sequence;
         let _ = app.art_update(
             "game".into(),

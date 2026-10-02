@@ -371,6 +371,11 @@ impl Page {
         self.stage == Stage::Working
     }
 
+    #[cfg(test)]
+    pub(crate) fn art_fetching(&self) -> bool {
+        self.art.is_fetching()
+    }
+
     pub(crate) fn cancel(&mut self, force: bool) {
         if let Some(token) = &self.token {
             if force {
@@ -692,6 +697,14 @@ impl Page {
     }
 
     pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
+        self.update_with_key_availability(event, false)
+    }
+
+    pub(crate) fn update_with_key_availability(
+        &mut self,
+        event: Event,
+        key_available: bool,
+    ) -> Task<Event> {
         if self.leave_prompt && !matches!(event, Event::KeepEditing | Event::Discard) {
             return Task::none();
         }
@@ -1078,7 +1091,10 @@ impl Page {
             Event::OpenSettings if self.stage == Stage::Finished => self.leave(true),
             Event::ToLibrary if self.stage == Stage::Finished => self.leave(false),
             Event::Art(event) if matches!(self.stage, Stage::Details | Stage::Review) => {
-                return self.art.update(event).map(Event::Art);
+                return self
+                    .art
+                    .update_with_key_availability(event, key_available)
+                    .map(Event::Art);
             }
             Event::Options(result) => match result {
                 Ok(options) => {
@@ -1309,7 +1325,11 @@ impl Page {
         form.into()
     }
 
-    pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
+    pub(crate) fn view_with_key_availability(
+        &self,
+        palette: Palette,
+        key_available: bool,
+    ) -> Element<'_, Event> {
         let heading = text(match self.stage {
             Stage::Details => "New environment",
             Stage::Review => "Review new environment",
@@ -1331,7 +1351,7 @@ impl Page {
                     responsive(move |size| {
                         let poster = self.art.poster(palette).map(Event::Art);
                         let icon = self.art.icon(palette).map(Event::Art);
-                        let controls = self.art.controls(palette).map(Event::Art);
+                        let controls = self.art.controls(palette, key_available).map(Event::Art);
                         let navigation = row![
                             button("Back").on_press(Event::Back),
                             button("Next").on_press(Event::Next)

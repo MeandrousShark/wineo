@@ -1,7 +1,7 @@
 pub(crate) mod artwork;
 mod clone;
 mod heroic;
-mod new;
+pub(crate) mod new;
 mod prefix;
 
 use iced::widget::{button, column, container, text};
@@ -52,6 +52,14 @@ impl Page {
     }
 
     pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
+        self.update_with_key_availability(event, false)
+    }
+
+    pub(crate) fn update_with_key_availability(
+        &mut self,
+        event: Event,
+        key_available: bool,
+    ) -> Task<Event> {
         match (self, event) {
             (page @ Self::Choose(_), Event::New) => {
                 let Self::Choose(paths) = page else {
@@ -78,16 +86,16 @@ impl Page {
                 task.map(|event| Event::HeroicMessage(Box::new(event)))
             }
             (Self::New(page), Event::Create(event)) => page
-                .update(*event)
+                .update_with_key_availability(*event, key_available)
                 .map(|event| Event::Create(Box::new(event))),
             (Self::Prefix(page), Event::Import(event)) => page
-                .update(*event)
+                .update_with_key_availability(*event, key_available)
                 .map(|event| Event::Import(Box::new(event))),
             (Self::Clone(page), Event::Copy(event)) => page
                 .update(*event)
                 .map(|event| Event::Copy(Box::new(event))),
             (Self::Heroic(page), Event::HeroicMessage(event)) => page
-                .update(*event)
+                .update_with_key_availability(*event, key_available)
                 .map(|event| Event::HeroicMessage(Box::new(event))),
             (page, Event::Back) => page.back(),
             _ => Task::none(),
@@ -99,19 +107,30 @@ impl Page {
         matches!(self, Self::Heroic(page) if page.waiting())
     }
 
+    #[cfg(test)]
+    pub(crate) fn art_fetching(&self) -> bool {
+        matches!(self, Self::New(page) if page.art_fetching())
+    }
+
     /// `width` is the dialog's width, for pages that lay out by it, and
     /// `spin` is the spinner's angle.
-    pub(crate) fn view(&self, palette: Palette, width: f32, spin: f32) -> Element<'_, Event> {
+    pub(crate) fn view_with_key_availability(
+        &self,
+        palette: Palette,
+        width: f32,
+        spin: f32,
+        key_available: bool,
+    ) -> Element<'_, Event> {
         match self {
             Self::New(page) => page
-                .view(palette)
+                .view_with_key_availability(palette, key_available)
                 .map(|event| Event::Create(Box::new(event))),
             Self::Prefix(page) => page
-                .view(palette)
+                .view_with_key_availability(palette, key_available)
                 .map(|event| Event::Import(Box::new(event))),
             Self::Clone(page) => page.view(palette).map(|event| Event::Copy(Box::new(event))),
             Self::Heroic(page) => page
-                .view(palette, width, spin)
+                .view_with_key_availability(palette, width, spin, key_available)
                 .map(|event| Event::HeroicMessage(Box::new(event))),
             Self::Choose(_) => container(
                 column![

@@ -6,6 +6,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
+use std::{fmt, fmt::Formatter};
 
 use anyhow::{anyhow, bail};
 use serde_json::Value;
@@ -67,10 +68,20 @@ pub enum KeySource {
     File,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Key {
     pub value: String,
     pub source: KeySource,
+}
+
+impl fmt::Debug for Key {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Key")
+            .field("value", &"<redacted>")
+            .field("source", &self.source)
+            .finish()
+    }
 }
 
 /// The plain text key file, always on this machine, never in a portable folder.
@@ -803,6 +814,19 @@ mod tests {
 
     fn found(paths: &Paths, env: &[(&str, &str)], keyring: &dyn Keyring) -> Option<Key> {
         find_key(paths, vars(env), keyring).unwrap()
+    }
+
+    #[test]
+    fn key_debug_redacts_the_value() {
+        let key = Key {
+            value: "private-key-value".to_owned(),
+            source: KeySource::Keyring,
+        };
+
+        let debug = format!("{key:?}");
+        assert!(!debug.contains(&key.value));
+        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("Keyring"));
     }
 
     #[test]

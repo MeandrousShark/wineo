@@ -144,7 +144,11 @@ impl Page {
         (page, Task::batch([load, art]))
     }
 
-    pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
+    pub(crate) fn update_with_key_availability(
+        &mut self,
+        event: Event,
+        key_available: bool,
+    ) -> Task<Event> {
         match event {
             Event::Source(value) => {
                 self.generation = self.generation.wrapping_add(1);
@@ -378,14 +382,21 @@ impl Page {
                 self.cancel(true);
                 Task::none()
             }
-            Event::Art(event) => self.art.update(event).map(Event::Art),
+            Event::Art(event) => self
+                .art
+                .update_with_key_availability(event, key_available)
+                .map(Event::Art),
         }
     }
 
-    pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
+    pub(crate) fn view_with_key_availability(
+        &self,
+        palette: Palette,
+        key_available: bool,
+    ) -> Element<'_, Event> {
         let body = match self.step {
-            Step::Details => self.details(palette),
-            Step::Review => self.review_view(palette),
+            Step::Details => self.details(palette, key_available),
+            Step::Review => self.review_view(palette, key_available),
             Step::Working => column![
                 text(self.status.as_str()).color(palette.muted),
                 self.token.as_ref().map(|token| {
@@ -531,7 +542,7 @@ impl Page {
         }
     }
 
-    fn details(&self, palette: Palette) -> Element<'_, Event> {
+    fn details(&self, palette: Palette, key_available: bool) -> Element<'_, Event> {
         let runner_options: Vec<String> = self
             .runners
             .iter()
@@ -626,7 +637,7 @@ impl Page {
                     .spacing(8),
                 );
         }
-        fields = fields.push(self.art.view(palette).map(Event::Art));
+        fields = fields.push(self.art.view(palette, key_available).map(Event::Art));
         fields = fields.push(
             row![
                 button(text("Back"))
@@ -643,7 +654,7 @@ impl Page {
         fields.into()
     }
 
-    fn review_view(&self, palette: Palette) -> Element<'_, Event> {
+    fn review_view(&self, palette: Palette, key_available: bool) -> Element<'_, Event> {
         let Some(review) = &self.review else {
             return text("Preparing review...").into();
         };
@@ -696,7 +707,7 @@ impl Page {
                 }
             }
         }
-        content = content.push(self.art.view(palette).map(Event::Art));
+        content = content.push(self.art.view(palette, key_available).map(Event::Art));
         if self.recovery_path.is_some() {
             content = content.push(text("A complete copy was retained. Review it with Use in place to register that folder.").size(13).color(palette.warning));
         }

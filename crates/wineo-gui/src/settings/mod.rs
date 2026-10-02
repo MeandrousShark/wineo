@@ -4,6 +4,7 @@ mod form;
 mod global;
 mod load;
 mod runner_picker;
+mod steamgriddb;
 mod view;
 
 use iced::Task;
@@ -58,6 +59,14 @@ pub(crate) enum Event {
     GlobalField(global::Field, String),
     GlobalArt(ArtFetch),
     GlobalArtKind(wineo_core::art::Kind, bool),
+    SteamGridDbKeySetOpen,
+    SteamGridDbKeySetCancel,
+    SteamGridDbKeyText(steamgriddb::Secret),
+    SteamGridDbKeySet,
+    SteamGridDbKeyRemove,
+    SteamGridDbKeyStatusLoaded(u64, u64, Result<steamgriddb::Status, String>),
+    SteamGridDbKeySaved(u64, u64, Option<u64>, Result<steamgriddb::Saved, String>),
+    SteamGridDbKeyRemoved(u64, u64, Option<u64>, Result<steamgriddb::Removed, String>),
     /// An edit on one target's card.
     Target(String, TargetEdit),
     /// Opens or closes a target's card, which only changes the view.
@@ -125,6 +134,40 @@ pub(crate) enum TargetEdit {
 }
 
 impl Event {
+    fn steamgriddb_token(&self) -> Option<(u64, u64)> {
+        match self {
+            Event::SteamGridDbKeyStatusLoaded(generation, sequence, _)
+            | Event::SteamGridDbKeySaved(generation, sequence, _, _)
+            | Event::SteamGridDbKeyRemoved(generation, sequence, _, _) => {
+                Some((*generation, *sequence))
+            }
+            _ => None,
+        }
+    }
+
+    fn rebind_steamgriddb(&self, generation: u64) -> Option<Self> {
+        match self {
+            Event::SteamGridDbKeyStatusLoaded(_, sequence, result) => Some(
+                Event::SteamGridDbKeyStatusLoaded(generation, *sequence, result.clone()),
+            ),
+            Event::SteamGridDbKeySaved(_, sequence, session, result) => Some(
+                Event::SteamGridDbKeySaved(generation, *sequence, *session, result.clone()),
+            ),
+            Event::SteamGridDbKeyRemoved(_, sequence, session, result) => Some(
+                Event::SteamGridDbKeyRemoved(generation, *sequence, *session, result.clone()),
+            ),
+            _ => None,
+        }
+    }
+
+    fn steamgriddb_input_session(&self) -> Option<u64> {
+        match self {
+            Event::SteamGridDbKeySaved(_, _, session, _)
+            | Event::SteamGridDbKeyRemoved(_, _, session, _) => *session,
+            _ => None,
+        }
+    }
+
     /// Whether this changes the draft, as opposed to moving the page along.
     fn edits(&self) -> bool {
         matches!(
@@ -433,6 +476,12 @@ pub(crate) struct Page {
     resolve_sequence: u64,
     /// Bumped by every scan, so an earlier prefix's result cannot replace it.
     scan_sequence: u64,
+    steamgriddb_sequence: u64,
+    steamgriddb_input_session_sequence: u64,
+    steamgriddb_input_session: Option<u64>,
+    steamgriddb_input_session_touched: bool,
+    steamgriddb_busy_sequence: Option<u64>,
+    steamgriddb: steamgriddb::Settings,
     /// The add target form as it was sent to be checked.
     resolving: Option<NewTarget>,
     pub(crate) open_add_after_load: bool,
@@ -486,6 +535,12 @@ impl Page {
             error: None,
             resolve_sequence: 0,
             scan_sequence: 0,
+            steamgriddb_sequence: 0,
+            steamgriddb_input_session_sequence: 0,
+            steamgriddb_input_session: None,
+            steamgriddb_input_session_touched: false,
+            steamgriddb_busy_sequence: None,
+            steamgriddb: steamgriddb::Settings::default(),
             resolving: None,
             open_add_after_load: false,
         }
@@ -529,6 +584,27 @@ impl Page {
     fn drop_checks(&mut self) {
         self.check_sequence = self.check_sequence.wrapping_add(1);
         self.checking = false;
+    }
+    fn bump_steamgriddb_sequence(&mut self) -> u64 {
+        self.steamgriddb_sequence = self
+            .steamgriddb_sequence
+            .checked_add(1)
+            .expect("SteamGridDB sequence exhausted");
+        self.steamgriddb_sequence
+    }
+    fn bump_steamgriddb_input_session(&mut self) -> u64 {
+        self.steamgriddb_input_session_sequence = self
+            .steamgriddb_input_session_sequence
+            .checked_add(1)
+            .expect("SteamGridDB input session sequence exhausted");
+        self.steamgriddb_input_session_sequence
+    }
+    fn refresh_steamgriddb(&mut self, paths: &Paths) -> Task<Message> {
+        if !self.global || !matches!(self.view, View::Global(_)) {
+            return Task::none();
+        }
+        let sequence = self.bump_steamgriddb_sequence();
+        steamgriddb::status_task(paths.clone(), self.generation, sequence)
     }
     pub(crate) fn is_dirty(&self) -> bool {
         match &self.view {
@@ -1095,6 +1171,177 @@ impl Page {
                 }
                 Step::none()
             }
+            Event::SteamGridDbKeySetOpen => {
+                if self.global
+                    && !self.locked()
+                    && !self.loading()
+                    && self.steamgriddb.busy.is_none()
+                {
+                    self.steamgriddb.input_open = true;
+                    self.steamgriddb.input = steamgriddb::Secret::default();
+                    self.steamgriddb_input_session = Some(self.bump_steamgriddb_input_session());
+                    self.steamgriddb_input_session_touched = true;
+                    self.steamgriddb.error = None;
+                    self.steamgriddb.result = None;
+                }
+                Step::none()
+            }
+            Event::SteamGridDbKeySetCancel => {
+                if self.global && self.steamgriddb.busy.is_none() {
+                    self.steamgriddb.input_open = false;
+                    self.steamgriddb.input = steamgriddb::Secret::default();
+                    self.steamgriddb_input_session = None;
+                    self.steamgriddb_input_session_touched = true;
+                    self.steamgriddb.error = None;
+                }
+                Step::none()
+            }
+            Event::SteamGridDbKeyText(value) => {
+                if self.global && self.steamgriddb.input_open && self.steamgriddb.busy.is_none() {
+                    self.steamgriddb.input = value;
+                    self.steamgriddb.error = None;
+                }
+                Step::none()
+            }
+            Event::SteamGridDbKeySet => {
+                if !self.global
+                    || self.locked()
+                    || self.loading()
+                    || self.steamgriddb.busy.is_some()
+                    || self.steamgriddb.input.as_str().trim().is_empty()
+                {
+                    return Step::none();
+                }
+                self.steamgriddb.busy = Some(steamgriddb::Busy::Saving);
+                self.steamgriddb.error = None;
+                self.steamgriddb.result = None;
+                let input_session = self.steamgriddb_input_session;
+                let key = std::mem::take(&mut self.steamgriddb.input);
+                let sequence = self.bump_steamgriddb_sequence();
+                self.steamgriddb_busy_sequence = Some(sequence);
+                Step::task(steamgriddb::save_task(
+                    paths.clone(),
+                    self.generation,
+                    sequence,
+                    input_session,
+                    key,
+                ))
+            }
+            Event::SteamGridDbKeyRemove => {
+                if !self.global
+                    || self.locked()
+                    || self.loading()
+                    || self.steamgriddb.busy.is_some()
+                {
+                    return Step::none();
+                }
+                self.steamgriddb.busy = Some(steamgriddb::Busy::Removing);
+                self.steamgriddb.error = None;
+                self.steamgriddb.result = None;
+                let input_session = self.steamgriddb_input_session;
+                let sequence = self.bump_steamgriddb_sequence();
+                self.steamgriddb_busy_sequence = Some(sequence);
+                Step::task(steamgriddb::remove_task(
+                    paths.clone(),
+                    self.generation,
+                    sequence,
+                    input_session,
+                ))
+            }
+            Event::SteamGridDbKeyStatusLoaded(generation, sequence, result) => {
+                if generation != self.generation {
+                    return Step::none();
+                }
+                if !self.global {
+                    return Step::none();
+                }
+                let available = match result {
+                    Ok(status) => {
+                        let available = status.available();
+                        self.steamgriddb.warning = status.warning(paths);
+                        self.steamgriddb.status = Some(status);
+                        self.steamgriddb.status_error = None;
+                        available
+                    }
+                    Err(error) => {
+                        self.steamgriddb.status_error = Some(error);
+                        false
+                    }
+                };
+                Step::task(Task::done(Message::SteamGridDbKeyChangedAt(
+                    sequence, available,
+                )))
+            }
+            Event::SteamGridDbKeySaved(generation, sequence, input_session, result) => {
+                if generation != self.generation {
+                    return Step::none();
+                }
+                if !self.global {
+                    return Step::none();
+                }
+                if self.steamgriddb_busy_sequence == Some(sequence) {
+                    self.steamgriddb.busy = None;
+                    self.steamgriddb_busy_sequence = None;
+                }
+                match result {
+                    Ok(saved) => {
+                        self.steamgriddb.warning = saved.warning;
+                        self.steamgriddb.result = saved.result;
+                        if input_session.is_some()
+                            && input_session == self.steamgriddb_input_session
+                        {
+                            self.steamgriddb.error = None;
+                            self.steamgriddb.input_open = false;
+                            self.steamgriddb.input = steamgriddb::Secret::default();
+                            self.steamgriddb_input_session = None;
+                        }
+                        Step::task(self.refresh_steamgriddb(paths))
+                    }
+                    Err(error) => {
+                        self.steamgriddb.error = Some(error);
+                        if input_session.is_some()
+                            && input_session == self.steamgriddb_input_session
+                        {
+                            self.steamgriddb.input_open = true;
+                            self.steamgriddb.input = steamgriddb::Secret::default();
+                            self.steamgriddb_input_session =
+                                Some(self.bump_steamgriddb_input_session());
+                        }
+                        Step::task(self.refresh_steamgriddb(paths))
+                    }
+                }
+            }
+            Event::SteamGridDbKeyRemoved(generation, sequence, input_session, result) => {
+                if generation != self.generation {
+                    return Step::none();
+                }
+                if !self.global {
+                    return Step::none();
+                }
+                if self.steamgriddb_busy_sequence == Some(sequence) {
+                    self.steamgriddb.busy = None;
+                    self.steamgriddb_busy_sequence = None;
+                }
+                match result {
+                    Ok(removed) => {
+                        self.steamgriddb.warning = None;
+                        self.steamgriddb.result = Some(removed.result);
+                        if input_session.is_some()
+                            && input_session == self.steamgriddb_input_session
+                        {
+                            self.steamgriddb.error = None;
+                            self.steamgriddb.input_open = false;
+                            self.steamgriddb.input = steamgriddb::Secret::default();
+                            self.steamgriddb_input_session = None;
+                        }
+                        Step::task(self.refresh_steamgriddb(paths))
+                    }
+                    Err(error) => {
+                        self.steamgriddb.error = Some(error);
+                        Step::task(self.refresh_steamgriddb(paths))
+                    }
+                }
+            }
             Event::Prefix(value) => {
                 self.edited();
                 if let Some(draft) = self.draft() {
@@ -1273,6 +1520,9 @@ impl Page {
                 if let Some(pending) = self.pending.take() {
                     let after_save = pending.after_save;
                     self.land(pending, snapshot);
+                    if self.global && matches!(self.view, View::Global(_)) {
+                        return Step::task(self.refresh_steamgriddb(paths));
+                    }
                     if self.open_add_after_load && self.editor().is_some() {
                         self.open_add_after_load = false;
                         return self.handle(paths, Event::AddOpen(true));
@@ -1579,6 +1829,10 @@ fn refused(current: Option<&Current>, choice: &RunnerChoice) -> bool {
 }
 
 impl App {
+    fn track_steamgriddb(&mut self, generation: u64, sequence: u64) {
+        self.steamgriddb_pending.insert((generation, sequence));
+    }
+
     pub(crate) fn open_settings(&mut self) -> Task<Message> {
         let Some(name) = self.selected.clone() else {
             return Task::none();
@@ -1600,15 +1854,121 @@ impl App {
         self.section = crate::sidebar::Section::Library;
         self.settings_generation = self.settings_generation.wrapping_add(1);
         let mut page = Page::new_global(self.settings_generation);
-        let task = page.reload(&self.paths, Mode::Replace);
+        page.steamgriddb_sequence = self.steamgriddb_sequence;
+        page.steamgriddb_input_session_sequence = self.steamgriddb_input_session_sequence;
+        let mut task = page.reload(&self.paths, Mode::Replace);
+        if let Some(event) = self.steamgriddb_late_result.take() {
+            if !page.steamgriddb_input_session_touched
+                && let Some(session) = event.steamgriddb_input_session()
+            {
+                page.steamgriddb_input_session = Some(session);
+                page.steamgriddb_input_session_touched = true;
+            }
+            if let Some(event) = event.rebind_steamgriddb(page.generation) {
+                let step = page.update(&self.paths, event);
+                task = Task::batch([task, step.task]);
+            }
+        }
+        self.steamgriddb_sequence = self.steamgriddb_sequence.max(page.steamgriddb_sequence);
+        self.steamgriddb_input_session_sequence = self
+            .steamgriddb_input_session_sequence
+            .max(page.steamgriddb_input_session_sequence);
         self.settings = Some(page);
         task
     }
     pub(crate) fn settings_update(&mut self, event: Event) -> Task<Message> {
-        let Some(page) = &mut self.settings else {
-            return Task::none();
+        if let Some((generation, sequence)) = event.steamgriddb_token() {
+            let same_generation = self
+                .settings
+                .as_ref()
+                .is_some_and(|page| page.generation == generation);
+            let status_result = matches!(event, Event::SteamGridDbKeyStatusLoaded(..));
+            if !same_generation && !self.steamgriddb_pending.remove(&(generation, sequence)) {
+                return Task::none();
+            }
+            if same_generation {
+                self.steamgriddb_pending.remove(&(generation, sequence));
+            }
+            if status_result {
+                if sequence <= self.steamgriddb_completed_sequence {
+                    return Task::none();
+                }
+                self.steamgriddb_completed_sequence = sequence;
+            } else {
+                self.steamgriddb_completed_sequence =
+                    self.steamgriddb_completed_sequence.max(sequence);
+            }
+            if self
+                .steamgriddb_late_result
+                .as_ref()
+                .and_then(Event::steamgriddb_token)
+                .is_some_and(|(_, late_sequence)| late_sequence < sequence)
+            {
+                self.steamgriddb_late_result = None;
+            }
+            if !same_generation {
+                if let Some(page) = self.settings.as_mut().filter(|page| page.is_global()) {
+                    if !page.steamgriddb_input_session_touched
+                        && let Some(session) = event.steamgriddb_input_session()
+                    {
+                        page.steamgriddb_input_session = Some(session);
+                        page.steamgriddb_input_session_touched = true;
+                    }
+                    if let Some(rebound) = event.rebind_steamgriddb(page.generation) {
+                        let previous_sequence = page.steamgriddb_sequence;
+                        let step = page.update(&self.paths, rebound);
+                        let page_generation = page.generation;
+                        let current_sequence = page.steamgriddb_sequence;
+                        self.steamgriddb_sequence = self.steamgriddb_sequence.max(current_sequence);
+                        self.steamgriddb_input_session_sequence = self
+                            .steamgriddb_input_session_sequence
+                            .max(page.steamgriddb_input_session_sequence);
+                        if current_sequence != previous_sequence {
+                            self.track_steamgriddb(page_generation, current_sequence);
+                        }
+                        return step.task;
+                    }
+                }
+                self.steamgriddb_late_result = Some(event.clone());
+                if status_result {
+                    let available = match &event {
+                        Event::SteamGridDbKeyStatusLoaded(_, _, Ok(status)) => status.available(),
+                        Event::SteamGridDbKeyStatusLoaded(_, _, Err(_)) => false,
+                        _ => unreachable!("status result was checked above"),
+                    };
+                    return Task::done(Message::SteamGridDbKeyChangedAt(sequence, available));
+                }
+                self.steamgriddb_sequence = self
+                    .steamgriddb_sequence
+                    .checked_add(1)
+                    .expect("SteamGridDB sequence exhausted");
+                return key_presence_task(self.paths.clone(), self.steamgriddb_sequence);
+            }
+        }
+        let (step, generation, previous_sequence, current_sequence, leave_prompt) = {
+            let Some(page) = &mut self.settings else {
+                return Task::none();
+            };
+            let previous_sequence = page.steamgriddb_sequence;
+            let generation = page.generation;
+            let step = page.update(&self.paths, event);
+            (
+                step,
+                generation,
+                previous_sequence,
+                page.steamgriddb_sequence,
+                page.leave_prompt,
+            )
         };
-        let step = page.update(&self.paths, event);
+        if current_sequence != previous_sequence {
+            self.steamgriddb_sequence = self.steamgriddb_sequence.max(current_sequence);
+            self.track_steamgriddb(generation, current_sequence);
+        }
+        if let Some(page) = &self.settings {
+            self.steamgriddb_input_session_sequence = self
+                .steamgriddb_input_session_sequence
+                .max(page.steamgriddb_input_session_sequence);
+        }
         if step.close {
             self.settings = None;
             if let Some(name) = self.pending_checkup_environment.take() {
@@ -1621,7 +1981,7 @@ impl App {
             if let Some(section) = self.pending_section.take() {
                 return Task::batch([step.task, self.switch_section(section)]);
             }
-        } else if !page.leave_prompt {
+        } else if !leave_prompt {
             self.pending_section = None;
             self.pending_checkup_environment = None;
         }
@@ -1672,6 +2032,10 @@ impl App {
     }
 }
 
+pub(crate) fn key_presence_task(paths: Paths, sequence: u64) -> Task<Message> {
+    steamgriddb::key_presence_task(paths, sequence)
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
@@ -1696,6 +2060,145 @@ mod tests {
             View::Global(editor) => editor,
             _ => panic!("global form expected"),
         }
+    }
+
+    #[test]
+    fn steamgriddb_key_work_does_not_block_unrelated_saves() {
+        let (_root, paths) = setup();
+        let mut page = global_page(&paths);
+        let _ = page.update(&paths, Event::GlobalSwitch(Switch::Gamemode, true));
+        assert!(page.is_dirty());
+
+        for event in [
+            Event::SteamGridDbKeySetOpen,
+            Event::SteamGridDbKeyText(steamgriddb::Secret::new("private-value".to_owned())),
+            Event::SteamGridDbKeySet,
+        ] {
+            assert!(!event.edits());
+            let _ = page.update(&paths, event);
+        }
+        assert!(!page.navigation_blocked());
+        assert!(page.can_save());
+        assert!(page.steamgriddb.input.as_str().is_empty());
+        let _ = page.update(&paths, Event::Save);
+        assert!(page.saving);
+        let input_session = page.steamgriddb_input_session;
+        let sequence = page.steamgriddb_sequence;
+        let _ = page.update(
+            &paths,
+            Event::SteamGridDbKeySaved(
+                page.generation,
+                sequence,
+                input_session,
+                Err("SteamGridDB rejected the key".to_owned()),
+            ),
+        );
+
+        assert!(page.is_dirty());
+        assert_eq!(page.changes(), 1);
+        assert!(!page.leave_prompt);
+        assert!(page.navigation_blocked());
+        assert!(page.steamgriddb.input_open);
+        assert!(page.steamgriddb.input.as_str().is_empty());
+        assert_eq!(
+            page.steamgriddb.error.as_deref(),
+            Some("SteamGridDB rejected the key")
+        );
+    }
+
+    #[test]
+    fn steamgriddb_key_save_and_remove_results_stay_outside_the_save_bar() {
+        let (_root, paths) = setup();
+        let mut page = global_page(&paths);
+        let _ = page.update(&paths, Event::SteamGridDbKeySetOpen);
+        let _ = page.update(
+            &paths,
+            Event::SteamGridDbKeyText(steamgriddb::Secret::new("private-value".to_owned())),
+        );
+        let _ = page.update(&paths, Event::SteamGridDbKeySet);
+        let input_session = page.steamgriddb_input_session;
+        let sequence = page.steamgriddb_sequence;
+        let _ = page.update(
+            &paths,
+            Event::SteamGridDbKeySaved(
+                page.generation,
+                sequence,
+                input_session,
+                Ok(steamgriddb::Saved {
+                    status: steamgriddb::Status {
+                        source: Some(wineo_core::steamgriddb::KeySource::Keyring),
+                        override_note: false,
+                    },
+                    warning: None,
+                    result: Some("Saved the SteamGridDB key to the keyring".to_owned()),
+                }),
+            ),
+        );
+        let status_sequence = page.steamgriddb_sequence;
+        let _ = page.update(
+            &paths,
+            Event::SteamGridDbKeyStatusLoaded(
+                page.generation,
+                status_sequence,
+                Ok(steamgriddb::Status {
+                    source: Some(wineo_core::steamgriddb::KeySource::Keyring),
+                    override_note: false,
+                }),
+            ),
+        );
+        assert!(!page.is_dirty());
+        assert_eq!(page.changes(), 0);
+        assert!(!page.leave_prompt);
+        assert_eq!(
+            page.steamgriddb.status.as_ref().unwrap().label(&paths),
+            "Saved in the keyring"
+        );
+
+        let _ = page.update(&paths, Event::SteamGridDbKeyRemove);
+        let input_session = page.steamgriddb_input_session;
+        let sequence = page.steamgriddb_sequence;
+        let _ = page.update(
+            &paths,
+            Event::SteamGridDbKeyRemoved(
+                page.generation,
+                sequence,
+                input_session,
+                Ok(steamgriddb::Removed {
+                    status: steamgriddb::Status {
+                        source: None,
+                        override_note: false,
+                    },
+                    result: "Removed the SteamGridDB key".to_owned(),
+                }),
+            ),
+        );
+        assert!(!page.is_dirty());
+        assert!(!page.leave_prompt);
+        assert_eq!(
+            page.steamgriddb.result.as_deref(),
+            Some("Removed the SteamGridDB key")
+        );
+    }
+
+    #[test]
+    fn steamgriddb_work_does_not_block_reverting_unrelated_edits() {
+        let (_root, paths) = setup();
+        let mut page = global_page(&paths);
+        let _ = page.update(&paths, Event::GlobalSwitch(Switch::Gamemode, true));
+        let _ = page.update(&paths, Event::SteamGridDbKeySetOpen);
+        let _ = page.update(
+            &paths,
+            Event::SteamGridDbKeyText(steamgriddb::Secret::new("private-value".to_owned())),
+        );
+        let _ = page.update(&paths, Event::SteamGridDbKeySet);
+
+        assert!(page.is_dirty());
+        assert_eq!(page.steamgriddb.busy, Some(steamgriddb::Busy::Saving));
+        let _ = page.update(&paths, Event::Revert);
+
+        assert!(!page.is_dirty());
+        assert_eq!(page.steamgriddb.busy, Some(steamgriddb::Busy::Saving));
+        assert!(!page.navigation_blocked());
     }
 
     #[test]
@@ -3046,6 +3549,357 @@ mod tests {
             load::snapshot(paths, "game"),
         )));
         app
+    }
+
+    fn open_global_app(paths: &Paths) -> App {
+        let mut app = App::boot(paths.clone()).0;
+        let _ = app.open_global_settings();
+        let generation = app.settings.as_ref().unwrap().generation;
+        let _ = app.update(Message::Settings(Event::Loaded(
+            generation,
+            load::snapshot_global(paths),
+        )));
+        app
+    }
+
+    #[test]
+    fn key_save_result_lands_after_leaving_and_returning_to_global_settings() {
+        use crate::sidebar::Section;
+
+        let (_root, paths) = setup();
+        let mut app = open_global_app(&paths);
+        let generation = app.settings.as_ref().unwrap().generation;
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeySetOpen));
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeyText(
+            steamgriddb::Secret::new("private-value".to_owned()),
+        )));
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeySet));
+        let input_session = app.settings.as_ref().unwrap().steamgriddb_input_session;
+        let sequence = app.settings.as_ref().unwrap().steamgriddb_sequence;
+
+        let _ = app.update(Message::Section(Section::Trash));
+        assert!(app.settings.is_none());
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeySaved(
+            generation,
+            sequence,
+            input_session,
+            Ok(steamgriddb::Saved {
+                status: steamgriddb::Status {
+                    source: Some(wineo_core::steamgriddb::KeySource::Keyring),
+                    override_note: false,
+                },
+                warning: None,
+                result: Some("Saved the SteamGridDB key to the keyring".to_owned()),
+            }),
+        )));
+        assert!(app.steamgriddb_late_result.is_some());
+
+        let _ = app.update(Message::Section(Section::Settings));
+
+        let generation = app.settings.as_ref().unwrap().generation;
+        let _ = app.update(Message::Settings(Event::Loaded(
+            generation,
+            load::snapshot_global(&paths),
+        )));
+        let sequence = app.settings.as_ref().unwrap().steamgriddb_sequence;
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeyStatusLoaded(
+            generation,
+            sequence,
+            Ok(steamgriddb::Status {
+                source: Some(wineo_core::steamgriddb::KeySource::Keyring),
+                override_note: false,
+            }),
+        )));
+
+        let page = app.settings.as_ref().unwrap();
+        assert!(page.is_global());
+        assert_eq!(
+            page.steamgriddb.result.as_deref(),
+            Some("Saved the SteamGridDB key to the keyring")
+        );
+        assert_eq!(
+            page.steamgriddb.status.as_ref().unwrap().source,
+            Some(wineo_core::steamgriddb::KeySource::Keyring)
+        );
+        assert!(app.steamgriddb_late_result.is_none());
+    }
+
+    #[test]
+    fn failed_key_save_result_returns_with_an_empty_input_and_error() {
+        use crate::sidebar::Section;
+
+        let (_root, paths) = setup();
+        let mut app = open_global_app(&paths);
+        let generation = app.settings.as_ref().unwrap().generation;
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeySetOpen));
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeyText(
+            steamgriddb::Secret::new("private-value".to_owned()),
+        )));
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeySet));
+        let input_session = app.settings.as_ref().unwrap().steamgriddb_input_session;
+        let sequence = app.settings.as_ref().unwrap().steamgriddb_sequence;
+
+        let _ = app.update(Message::Section(Section::Trash));
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeySaved(
+            generation,
+            sequence,
+            input_session,
+            Err("SteamGridDB rejected the key".to_owned()),
+        )));
+        let _ = app.update(Message::Section(Section::Settings));
+
+        let settings = &app.settings.as_ref().unwrap().steamgriddb;
+        assert!(settings.input_open);
+        assert!(settings.input.as_str().is_empty());
+        assert_eq!(
+            settings.error.as_deref(),
+            Some("SteamGridDB rejected the key")
+        );
+    }
+
+    #[test]
+    fn completed_save_drops_an_older_status_result() {
+        use crate::sidebar::Section;
+
+        let (_root, paths) = setup();
+        let config = paths.environment_config("game");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
+
+        let mut app = open_global_app(&paths);
+        let old_generation = app.settings.as_ref().unwrap().generation;
+        let old_status_sequence = app.settings.as_ref().unwrap().steamgriddb_sequence;
+        let identity = crate::art_page::EnvironmentIdentity::read(&paths, "game").unwrap();
+        app.art_pages.insert(
+            "game".to_owned(),
+            crate::art_page::Page::new("game".to_owned(), 1, identity),
+        );
+        let _ = app.update(Message::Section(Section::Trash));
+        let _ = app.update(Message::Section(Section::Settings));
+        let generation = app.settings.as_ref().unwrap().generation;
+        let _ = app.update(Message::Settings(Event::Loaded(
+            generation,
+            load::snapshot_global(&paths),
+        )));
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeySetOpen));
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeyText(
+            steamgriddb::Secret::new("private-value".to_owned()),
+        )));
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeySet));
+        let input_session = app.settings.as_ref().unwrap().steamgriddb_input_session;
+        let sequence = app.settings.as_ref().unwrap().steamgriddb_sequence;
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeySaved(
+            generation,
+            sequence,
+            input_session,
+            Ok(steamgriddb::Saved {
+                status: steamgriddb::Status {
+                    source: None,
+                    override_note: false,
+                },
+                warning: None,
+                result: Some("Saved the SteamGridDB key".to_owned()),
+            }),
+        )));
+
+        let refreshed_sequence = app.settings.as_ref().unwrap().steamgriddb_sequence;
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeyStatusLoaded(
+            generation,
+            refreshed_sequence,
+            Ok(steamgriddb::Status {
+                source: Some(wineo_core::steamgriddb::KeySource::Keyring),
+                override_note: false,
+            }),
+        )));
+        let _ = app.update(Message::SteamGridDbKeyChangedAt(refreshed_sequence, true));
+
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeyStatusLoaded(
+            old_generation,
+            old_status_sequence,
+            Ok(steamgriddb::Status {
+                source: None,
+                override_note: false,
+            }),
+        )));
+
+        assert_eq!(
+            app.settings
+                .as_ref()
+                .unwrap()
+                .steamgriddb
+                .status
+                .as_ref()
+                .unwrap()
+                .source,
+            Some(wineo_core::steamgriddb::KeySource::Keyring)
+        );
+        assert!(app.steamgriddb_available);
+    }
+
+    #[test]
+    fn newest_pending_status_can_land_after_reopening_settings() {
+        use crate::sidebar::Section;
+
+        let (_root, paths) = setup();
+        let mut app = open_global_app(&paths);
+        let old_generation = app.settings.as_ref().unwrap().generation;
+        let sequence = app.settings.as_ref().unwrap().steamgriddb_sequence;
+
+        let _ = app.update(Message::Section(Section::Trash));
+        let _ = app.update(Message::Section(Section::Settings));
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeyStatusLoaded(
+            old_generation,
+            sequence,
+            Ok(steamgriddb::Status {
+                source: None,
+                override_note: false,
+            }),
+        )));
+
+        let page = app.settings.as_ref().unwrap();
+        assert_ne!(page.generation, old_generation);
+        assert_eq!(page.steamgriddb.status.as_ref().unwrap().source, None);
+    }
+
+    #[test]
+    fn old_key_operation_results_leave_a_new_input_session_untouched() {
+        use crate::sidebar::Section;
+
+        for remove in [false, true] {
+            let (_root, paths) = setup();
+            let mut app = open_global_app(&paths);
+            let old_generation = app.settings.as_ref().unwrap().generation;
+            let _ = app.update(Message::Settings(Event::SteamGridDbKeySetOpen));
+            let _ = app.update(Message::Settings(Event::SteamGridDbKeyText(
+                steamgriddb::Secret::new("old-input".to_owned()),
+            )));
+            let old_input_session = app.settings.as_ref().unwrap().steamgriddb_input_session;
+            let operation = if remove {
+                Event::SteamGridDbKeyRemove
+            } else {
+                Event::SteamGridDbKeySet
+            };
+            let _ = app.update(Message::Settings(operation));
+            let old_sequence = app.settings.as_ref().unwrap().steamgriddb_sequence;
+
+            let _ = app.update(Message::Section(Section::Trash));
+            let _ = app.update(Message::Section(Section::Settings));
+            let new_generation = app.settings.as_ref().unwrap().generation;
+            let _ = app.update(Message::Settings(Event::Loaded(
+                new_generation,
+                load::snapshot_global(&paths),
+            )));
+            let _ = app.update(Message::Settings(Event::SteamGridDbKeySetOpen));
+            let _ = app.update(Message::Settings(Event::SteamGridDbKeyText(
+                steamgriddb::Secret::new("new-input".to_owned()),
+            )));
+            let new_input_session = app.settings.as_ref().unwrap().steamgriddb_input_session;
+
+            let result = if remove {
+                Event::SteamGridDbKeyRemoved(
+                    old_generation,
+                    old_sequence,
+                    old_input_session,
+                    Ok(steamgriddb::Removed {
+                        status: steamgriddb::Status {
+                            source: None,
+                            override_note: false,
+                        },
+                        result: "Old remove completed".to_owned(),
+                    }),
+                )
+            } else {
+                Event::SteamGridDbKeySaved(
+                    old_generation,
+                    old_sequence,
+                    old_input_session,
+                    Ok(steamgriddb::Saved {
+                        status: steamgriddb::Status {
+                            source: Some(wineo_core::steamgriddb::KeySource::Keyring),
+                            override_note: false,
+                        },
+                        warning: None,
+                        result: Some("Old save completed".to_owned()),
+                    }),
+                )
+            };
+            let _ = app.update(Message::Settings(result));
+
+            let settings = &app.settings.as_ref().unwrap().steamgriddb;
+            assert!(settings.input_open);
+            assert_eq!(settings.input.as_str(), "new-input");
+            assert_eq!(
+                app.settings.as_ref().unwrap().steamgriddb_input_session,
+                new_input_session
+            );
+            assert_eq!(
+                settings.result.as_deref(),
+                Some(if remove {
+                    "Old remove completed"
+                } else {
+                    "Old save completed"
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn key_work_allows_saving_unrelated_global_edits() {
+        let (_root, paths) = setup();
+        let mut app = open_global_app(&paths);
+        let generation = app.settings.as_ref().unwrap().generation;
+        let _ = app.update(Message::Settings(Event::GlobalSwitch(
+            Switch::Gamemode,
+            true,
+        )));
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeySetOpen));
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeyText(
+            steamgriddb::Secret::new("private-value".to_owned()),
+        )));
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeySet));
+        let input_session = app.settings.as_ref().unwrap().steamgriddb_input_session;
+        let sequence = app.settings.as_ref().unwrap().steamgriddb_sequence;
+        assert!(app.settings.as_ref().unwrap().can_save());
+
+        let _ = app.update(Message::Settings(Event::Save));
+
+        assert!(app.settings.as_ref().unwrap().saving);
+        assert!(!app.settings.as_ref().unwrap().can_save());
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeySaved(
+            generation,
+            sequence,
+            input_session,
+            Ok(steamgriddb::Saved {
+                status: steamgriddb::Status {
+                    source: Some(wineo_core::steamgriddb::KeySource::Keyring),
+                    override_note: false,
+                },
+                warning: None,
+                result: None,
+            }),
+        )));
+        let status_sequence = app.settings.as_ref().unwrap().steamgriddb_sequence;
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeyStatusLoaded(
+            generation,
+            status_sequence,
+            Ok(steamgriddb::Status {
+                source: Some(wineo_core::steamgriddb::KeySource::Keyring),
+                override_note: false,
+            }),
+        )));
+        assert!(app.settings.as_ref().unwrap().saving);
+        assert!(app.settings.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            app.settings
+                .as_ref()
+                .unwrap()
+                .steamgriddb
+                .status
+                .as_ref()
+                .unwrap()
+                .source,
+            Some(wineo_core::steamgriddb::KeySource::Keyring)
+        );
     }
 
     #[test]

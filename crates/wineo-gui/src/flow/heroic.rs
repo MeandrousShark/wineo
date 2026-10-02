@@ -28,8 +28,6 @@ use wineo_core::heroic_import::{
 use wineo_core::import;
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
-use wineo_core::secret_service::SecretServiceKeyring;
-use wineo_core::steamgriddb;
 
 use super::{Action, artwork};
 use crate::chips::Chips;
@@ -75,8 +73,7 @@ pub(crate) struct Prepared {
 pub(crate) struct BatchOptions {
     runner: String,
     runners: Vec<String>,
-    art_available: bool,
-    art_note: String,
+    art_fetch_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -573,20 +570,24 @@ impl Page {
                 tokio::task::spawn_blocking(move || {
                     let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
                     let runners = Runners::new(&paths, &global).map_err(|e| e.to_string())?;
-                    let runner = runners.newest_proton().map_err(|e| e.to_string())?
-                        .map(|runner| runner.selection().to_owned()).unwrap_or_default();
-                    let names = runners.list().map_err(|e| e.to_string())?.runners.into_iter()
-                        .map(|runner| runner.selection().to_owned()).collect();
-                    let (art_available, art_note) = if global.art.fetch.kinds().is_empty() {
-                        (false, "Automatic artwork is disabled in Global Settings".to_owned())
-                    } else {
-                        match steamgriddb::find_key(&paths, |key| std::env::var_os(key), &SecretServiceKeyring::steamgriddb()) {
-                            Ok(Some(_)) => (true, String::new()),
-                            Ok(None) => (false, "SteamGridDB needs a configured key. Manual artwork is available in single-game import.".to_owned()),
-                            Err(error) => (false, format!("SteamGridDB key unavailable: {error}")),
-                        }
-                    };
-                    Ok(BatchOptions { runner, runners: names, art_available, art_note })
+                    let runner = runners
+                        .newest_proton()
+                        .map_err(|e| e.to_string())?
+                        .map(|runner| runner.selection().to_owned())
+                        .unwrap_or_default();
+                    let names = runners
+                        .list()
+                        .map_err(|e| e.to_string())?
+                        .runners
+                        .into_iter()
+                        .map(|runner| runner.selection().to_owned())
+                        .collect();
+                    let art_fetch_enabled = !global.art.fetch.kinds().is_empty();
+                    Ok(BatchOptions {
+                        runner,
+                        runners: names,
+                        art_fetch_enabled,
+                    })
                 })
                 .await
                 .map_err(|e| e.to_string())?
@@ -1057,6 +1058,14 @@ impl Page {
     }
 
     pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
+        self.update_with_key_availability(event, false)
+    }
+
+    pub(crate) fn update_with_key_availability(
+        &mut self,
+        event: Event,
+        key_available: bool,
+    ) -> Task<Event> {
         match event {
             Event::Back => self.back(),
             Event::Discard => {
@@ -1474,6 +1483,13 @@ impl Page {
                 Task::none()
             }
             Event::FetchBatchArt(value) => {
+                let enabled = self
+                    .batch_options
+                    .as_ref()
+                    .is_some_and(|options| options.art_fetch_enabled);
+                if value && (!enabled || !key_available) {
+                    return Task::none();
+                }
                 self.draft.fetch_batch_art = value;
                 Task::none()
             }
@@ -1667,7 +1683,7 @@ impl Page {
             }
             Event::Art(generation, event) if generation == self.art_generation => self
                 .art
-                .update(event)
+                .update_with_key_availability(event, key_available)
                 .map(move |event| Event::Art(generation, event)),
             Event::OpenSettings => {
                 if let Some(registered) = &self.registered {
@@ -1730,7 +1746,13 @@ impl Page {
             .into()
     }
 
-    pub(crate) fn view(&self, palette: Palette, width: f32, spin: f32) -> Element<'_, Event> {
+    pub(crate) fn view_with_key_availability(
+        &self,
+        palette: Palette,
+        width: f32,
+        spin: f32,
+        key_available: bool,
+    ) -> Element<'_, Event> {
         let mut body = column![].spacing(14).width(Fill);
         let title = match self.step {
             Step::Sources => "Import from Heroic".to_owned(),
@@ -1831,14 +1853,22 @@ impl Page {
                             .on_toggle(Event::Desktop),
                     );
                     if let Some(options) = &self.batch_options {
-                        if options.art_available {
+                        if options.art_fetch_enabled && key_available {
                             body = body.push(
                                 checkbox(self.draft.fetch_batch_art)
                                     .label("Fetch art using the top SteamGridDB match")
                                     .on_toggle(Event::FetchBatchArt),
                             );
+                        } else if !options.art_fetch_enabled {
+                            body = body.push(
+                                text("Automatic artwork is disabled in Global Settings")
+                                    .color(palette.muted),
+                            );
                         } else {
-                            body = body.push(text(&options.art_note).color(palette.muted));
+                            body = body.push(
+                                text("SteamGridDB needs a configured key. Manual artwork is available in single-game import.")
+                                    .color(palette.muted),
+                            );
                         }
                     }
                 } else {
@@ -1953,7 +1983,7 @@ impl Page {
                     let art_generation = self.art_generation;
                     body = body.push(
                         self.art
-                            .view(palette)
+                            .view(palette, key_available)
                             .map(move |event| Event::Art(art_generation, event)),
                     );
                 }

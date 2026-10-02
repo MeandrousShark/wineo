@@ -100,6 +100,13 @@ pub(crate) struct App {
     spinner_start: Instant,
     settings: Option<settings::Page>,
     settings_generation: u64,
+    steamgriddb_sequence: u64,
+    steamgriddb_completed_sequence: u64,
+    steamgriddb_availability_sequence: u64,
+    steamgriddb_available: bool,
+    steamgriddb_input_session_sequence: u64,
+    steamgriddb_pending: HashSet<(u64, u64)>,
+    steamgriddb_late_result: Option<settings::Event>,
     art_page: Option<String>,
     art_pages: HashMap<String, art_page::Page>,
     pending_art_writes: HashSet<(String, u64, u64, art_page::EnvironmentIdentity)>,
@@ -196,6 +203,8 @@ pub(crate) enum Message {
     SearchFocusChanged(bool),
     OpenSettings,
     Settings(settings::Event),
+    SteamGridDbKeyChangedAt(u64, bool),
+    SteamGridDbKeyPresenceLoaded(u64, bool),
     OpenArt,
     ContextArt(String),
     ArtPage(String, u64, art_page::Event),
@@ -273,6 +282,13 @@ impl App {
             spinner_start: Instant::now(),
             settings: None,
             settings_generation: 0,
+            steamgriddb_sequence: 1,
+            steamgriddb_completed_sequence: 0,
+            steamgriddb_availability_sequence: 0,
+            steamgriddb_available: false,
+            steamgriddb_input_session_sequence: 0,
+            steamgriddb_pending: HashSet::new(),
+            steamgriddb_late_result: None,
             art_page: None,
             art_pages: HashMap::new(),
             pending_art_writes: HashSet::new(),
@@ -310,12 +326,14 @@ impl App {
             let _ = tokio::task::spawn_blocking(move || artwork::prune(&cache)).await;
         })
         .discard();
+        let key_presence = settings::key_presence_task(app.paths.clone(), app.steamgriddb_sequence);
         (
             app,
             Task::batch([
                 load,
                 badge,
                 prune,
+                key_presence,
                 iced::system::theme().map(Message::ThemeChanged),
             ]),
         )
@@ -366,6 +384,28 @@ impl App {
             || (self.section == sidebar::Section::Trash && self.trash_page.reviewing)
             || self.settings.as_ref().is_some_and(|page| page.saving)
             || self.flow.as_ref().is_some_and(flow::Page::spinning)
+    }
+
+    fn set_steamgriddb_availability(&mut self, sequence: u64, available: bool) -> Task<Message> {
+        if sequence <= self.steamgriddb_availability_sequence {
+            return Task::none();
+        }
+        self.steamgriddb_availability_sequence = sequence;
+        self.steamgriddb_sequence = self.steamgriddb_sequence.max(sequence);
+        if self.steamgriddb_available == available {
+            return Task::none();
+        }
+        self.steamgriddb_available = available;
+        if !available {
+            return Task::none();
+        }
+        let paths = self.paths.clone();
+        Task::batch(self.art_pages.iter_mut().map(|(name, page)| {
+            let name = name.clone();
+            let generation = page.generation;
+            page.lookup_game(&paths, true)
+                .map(move |event| Message::ArtPage(name.clone(), generation, event))
+        }))
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -863,6 +903,20 @@ impl App {
             }
             Message::OpenSettings => self.open_settings(),
             Message::Settings(event) => self.settings_update(event),
+            Message::SteamGridDbKeyChangedAt(sequence, available) => {
+                if sequence != self.steamgriddb_completed_sequence {
+                    return Task::none();
+                }
+                self.set_steamgriddb_availability(sequence, available)
+            }
+            Message::SteamGridDbKeyPresenceLoaded(sequence, available) => {
+                if sequence <= self.steamgriddb_completed_sequence {
+                    return Task::none();
+                }
+                self.steamgriddb_sequence = self.steamgriddb_sequence.max(sequence);
+                self.steamgriddb_completed_sequence = sequence;
+                self.set_steamgriddb_availability(sequence, available)
+            }
             Message::OpenArt => match self.selected.clone() {
                 Some(name) => self.open_art(name),
                 None => Task::none(),
@@ -1006,7 +1060,7 @@ impl App {
         let choose_back =
             matches!(page, flow::Page::Choose(_)) && matches!(event, flow::Event::Back);
         let task = page
-            .update(event)
+            .update_with_key_availability(event, self.steamgriddb_available)
             .map(move |event| Message::Flow(generation, event));
         if self.closing && !page.busy() {
             return task.chain(iced::exit());
@@ -1307,6 +1361,92 @@ mod tests {
             Paths::from_lookup(|key| (key == "HOME").then(|| "/tmp/wineo-gui-tests".into()))
                 .unwrap();
         App::boot(paths).0
+    }
+
+    #[test]
+    fn late_art_and_add_results_use_current_key_availability() {
+        for (initial, available, deliver_results_after) in [
+            (false, true, false),
+            (false, true, true),
+            (true, false, false),
+            (true, false, true),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let home = root.path().to_owned();
+            let paths =
+                Paths::from_lookup(move |key| (key == "HOME").then(|| home.as_os_str().to_owned()))
+                    .unwrap();
+            let config = paths.environment_config("game");
+            std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+            std::fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
+
+            let mut app = App::boot(paths.clone()).0;
+            let _ = app.update(Message::SteamGridDbKeyPresenceLoaded(1, initial));
+            let identity = art_page::EnvironmentIdentity::read(&paths, "game").unwrap();
+            app.art_page = Some("game".to_owned());
+            app.art_pages.insert(
+                "game".to_owned(),
+                art_page::Page::new("game".to_owned(), 7, identity),
+            );
+            let snapshot = art_page::load_snapshot(&paths, "game").unwrap();
+            app.flow_generation = 1;
+            app.flow = Some(flow::Page::choose(paths.clone()));
+            let _ = app.flow_update(1, flow::Event::New);
+            let configured = || {
+                flow::Event::Create(Box::new(flow::new::Event::Art(
+                    flow::artwork::Event::Configured(1, Ok(wineo_core::config::ArtFetch::Icon)),
+                )))
+            };
+            let loaded = || {
+                Message::ArtPage(
+                    "game".to_owned(),
+                    7,
+                    art_page::Event::Loaded(1, Ok(snapshot.clone())),
+                )
+            };
+
+            if !deliver_results_after {
+                let _ = app.update(loaded());
+                let _ = app.flow_update(1, configured());
+            }
+            app.steamgriddb_completed_sequence = 2;
+            let _ = app.update(Message::SteamGridDbKeyChangedAt(2, available));
+            if deliver_results_after {
+                let _ = app.update(loaded());
+                let _ = app.flow_update(1, configured());
+            }
+
+            assert_eq!(app.steamgriddb_available, available);
+            let _ = app.art_update(
+                "game".to_owned(),
+                7,
+                art_page::Event::Find(wineo_core::art::Kind::Grid),
+            );
+            assert_eq!(app.art_pages["game"].is_changing(), available);
+            if available {
+                let _ = app.art_update("game".to_owned(), 7, art_page::Event::CancelChange);
+            }
+            let _ = app.art_update("game".to_owned(), 7, art_page::Event::Change);
+            assert_eq!(app.art_pages["game"].is_changing(), available);
+            let _ = app.flow_update(
+                1,
+                flow::Event::Create(Box::new(flow::new::Event::Art(
+                    flow::artwork::Event::Fetch(true),
+                ))),
+            );
+            assert_eq!(app.flow.as_ref().unwrap().art_fetching(), available);
+
+            let _ = app.update(Message::SteamGridDbKeyChangedAt(1, !available));
+            assert_eq!(app.steamgriddb_available, available);
+        }
+    }
+
+    #[test]
+    fn steamgriddb_availability_never_regresses_to_an_older_sequence() {
+        let mut app = app();
+        let _ = app.update(Message::SteamGridDbKeyPresenceLoaded(3, true));
+        let _ = app.update(Message::SteamGridDbKeyPresenceLoaded(2, false));
+        assert!(app.steamgriddb_available);
     }
     fn art_file(path: &str, len: u64) -> ArtFile {
         ArtFile {

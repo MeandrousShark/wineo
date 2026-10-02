@@ -80,7 +80,14 @@ impl Page {
             View::Form(editor) => {
                 editor_view(&self.name, editor, self.locked(), self.resolving(), palette)
             }
-            View::Global(editor) => global_view(editor, paths, self.locked(), palette),
+            View::Global(editor) => global_view(
+                editor,
+                &self.steamgriddb,
+                paths,
+                self.locked(),
+                spinner,
+                palette,
+            ),
         };
         let scroll = scrollable(
             container(container(body).max_width(PAGE_WIDTH).width(Fill))
@@ -302,8 +309,10 @@ fn editor_view<'a>(
 
 fn global_view<'a>(
     editor: &'a global::Editor,
+    steamgriddb: &'a super::steamgriddb::Settings,
     paths: &Paths,
     locked: bool,
+    spinner: f32,
     palette: Palette,
 ) -> Element<'a, Message> {
     let draft = &editor.form.draft;
@@ -413,6 +422,11 @@ fn global_view<'a>(
         section("Runs", runs.into(), palette),
         section("Art to fetch", art.into(), palette),
         section(
+            "SteamGridDB",
+            steamgriddb_settings(steamgriddb, paths, spinner, palette),
+            palette,
+        ),
+        section(
             "Environment variables",
             env_rows(
                 &draft.env,
@@ -428,6 +442,134 @@ fn global_view<'a>(
     .spacing(24)
     .width(Fill)
     .into()
+}
+
+fn steamgriddb_settings<'a>(
+    settings: &'a super::steamgriddb::Settings,
+    paths: &Paths,
+    spinner: f32,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let status = settings
+        .status
+        .as_ref()
+        .map(|status| status.label(paths))
+        .unwrap_or_else(|| {
+            if settings.status_error.is_some() {
+                "Key status unavailable".to_owned()
+            } else {
+                "Checking...".to_owned()
+            }
+        });
+    let mut rows = column![setting_row(
+        "Key",
+        text(status).color(palette.foreground).into(),
+        None,
+        palette,
+    )]
+    .spacing(12);
+    if settings
+        .status
+        .as_ref()
+        .is_some_and(|status| status.override_note)
+    {
+        rows = rows.push(
+            text("WINEO_STEAMGRIDDB_KEY is set and overrides the saved key")
+                .size(13)
+                .color(palette.muted),
+        );
+    }
+    let warning = settings.warning.clone().or_else(|| {
+        settings
+            .status
+            .as_ref()
+            .and_then(|status| status.warning(paths))
+    });
+    if let Some(warning) = warning {
+        rows = rows.push(text(warning).size(13).color(palette.warning));
+    }
+    if let Some(error) = &settings.status_error {
+        rows = rows.push(text(error.clone()).size(13).color(palette.danger));
+    }
+    if let Some(result) = &settings.result {
+        rows = rows.push(text(result.clone()).size(13).color(palette.muted));
+    }
+    if let Some(error) = &settings.error {
+        rows = rows.push(text(error.clone()).size(13).color(palette.danger));
+    }
+    if let Some(busy) = settings.busy {
+        let label = match busy {
+            super::steamgriddb::Busy::Saving => "Checking and saving...",
+            super::steamgriddb::Busy::Removing => "Removing...",
+        };
+        rows = rows.push(
+            row![
+                crate::spinner::spinner(palette, spinner, 16.0),
+                text(label).size(13).color(palette.muted),
+            ]
+            .spacing(8)
+            .align_y(Center),
+        );
+    }
+    if settings.input_open {
+        let input = text_input("SteamGridDB API key", settings.input.as_str())
+            .secure(true)
+            .on_input_maybe(settings.busy.is_none().then_some(|value| {
+                send(Event::SteamGridDbKeyText(super::steamgriddb::Secret::new(
+                    value,
+                )))
+            }))
+            .width(Fill)
+            .padding([6, 10])
+            .style(move |_, status| input_style(palette, status));
+        rows = rows.push(
+            row![
+                input,
+                action_button(
+                    "Save",
+                    palette.primary,
+                    settings.busy.is_none() && !settings.input.as_str().trim().is_empty(),
+                    send(Event::SteamGridDbKeySet),
+                ),
+                button(text("Cancel").size(14))
+                    .on_press_maybe(
+                        settings
+                            .busy
+                            .is_none()
+                            .then(|| send(Event::SteamGridDbKeySetCancel)),
+                    )
+                    .height(32)
+                    .padding([6, 12])
+                    .style(move |_, status| secondary(palette, status)),
+            ]
+            .spacing(8)
+            .align_y(Center),
+        );
+    } else {
+        rows = rows.push(
+            row![
+                action_button(
+                    "Set key...",
+                    palette.primary,
+                    settings.busy.is_none(),
+                    send(Event::SteamGridDbKeySetOpen),
+                ),
+                button(text("Remove key").size(14))
+                    .on_press_maybe(
+                        settings
+                            .busy
+                            .is_none()
+                            .then(|| send(Event::SteamGridDbKeyRemove)),
+                    )
+                    .height(32)
+                    .padding([6, 12])
+                    .style(move |_, status| secondary(palette, status)),
+            ]
+            .spacing(8)
+            .align_y(Center),
+        );
+    }
+    rows.into()
 }
 
 fn indented(content: Element<'_, Message>) -> Element<'_, Message> {

@@ -119,7 +119,6 @@ pub(crate) struct Snapshot {
     targets: Vec<String>,
     game: Option<u64>,
     rows: BTreeMap<Spot, Option<Resolved>>,
-    pub(crate) key_available: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -168,7 +167,6 @@ pub(crate) struct Page {
     game: Option<Game>,
     looked_up: Option<u64>,
     pub(crate) lookup_sequence: u64,
-    key_available: bool,
     rows: BTreeMap<Spot, RowData>,
     row_errors: BTreeMap<Spot, String>,
     error: Option<String>,
@@ -216,7 +214,6 @@ impl Page {
             game: None,
             looked_up: None,
             lookup_sequence: 0,
-            key_available: false,
             rows: BTreeMap::new(),
             row_errors: BTreeMap::new(),
             error: None,
@@ -242,6 +239,11 @@ impl Page {
         self.writing
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_changing(&self) -> bool {
+        self.change.is_some()
+    }
+
     pub(crate) fn finish_abandoned_write(&mut self, sequence: u64) {
         if self.write_sequence == sequence {
             self.writing = false;
@@ -249,9 +251,9 @@ impl Page {
         }
     }
 
-    pub(crate) fn game_label(&self) -> String {
+    pub(crate) fn game_label(&self, key_available: bool) -> String {
         match (self.game_id, self.game.as_ref()) {
-            (Some(id), Some(game)) if self.key_available && game.id == id => {
+            (Some(id), Some(game)) if key_available && game.id == id => {
                 Match(game.clone()).to_string()
             }
             (Some(id), _) => id.to_string(),
@@ -338,11 +340,22 @@ impl Page {
         Task::batch(tasks)
     }
 
+    #[cfg(test)]
     pub(crate) fn update(
         &mut self,
         paths: &Paths,
         event: Event,
         decodes: Arc<tokio::sync::Semaphore>,
+    ) -> Step {
+        self.update_with_key_availability(paths, event, decodes, false)
+    }
+
+    pub(crate) fn update_with_key_availability(
+        &mut self,
+        paths: &Paths,
+        event: Event,
+        decodes: Arc<tokio::sync::Semaphore>,
+        key_available: bool,
     ) -> Step {
         match event {
             Event::Back => {
@@ -351,12 +364,12 @@ impl Page {
                 self.pending_find = None;
                 Step::none()
             }
-            Event::Find(kind) if !self.writing && self.key_available => {
+            Event::Find(kind) if !self.writing && key_available => {
                 if self.game_id.is_some() {
                     Step::task(self.open_picker(paths, kind))
                 } else {
                     self.pending_find = Some(kind);
-                    self.update(paths, Event::Change, decodes)
+                    self.update_with_key_availability(paths, Event::Change, decodes, key_available)
                 }
             }
             Event::Picker(visit, event)
@@ -441,7 +454,6 @@ impl Page {
                         {
                             self.showing = None;
                         }
-                        self.key_available = snapshot.key_available;
                         if self.game_id != snapshot.game {
                             self.close_picker();
                             self.game_id = snapshot.game;
@@ -465,7 +477,7 @@ impl Page {
                             })
                             .collect();
                         let preview = self.preview_tasks(paths, decodes);
-                        let game = self.lookup_game(paths);
+                        let game = self.lookup_game(paths, key_available);
                         Step::task(Task::batch([preview, game]))
                     }
                     Err(error) => {
@@ -593,7 +605,7 @@ impl Page {
                     Step::none()
                 }
             }
-            Event::Change if !self.writing && self.key_available => {
+            Event::Change if !self.writing && key_available => {
                 self.search_sequence = self.search_sequence.wrapping_add(1);
                 self.change = Some(Change {
                     search: self.name.clone(),
@@ -605,7 +617,7 @@ impl Page {
                 });
                 Step::none()
             }
-            Event::SearchText(value) => {
+            Event::SearchText(value) if key_available => {
                 if let Some(change) = &mut self.change {
                     self.search_sequence = self.search_sequence.wrapping_add(1);
                     change.sequence = self.search_sequence;
@@ -617,7 +629,7 @@ impl Page {
                 }
                 Step::none()
             }
-            Event::Search if self.key_available => {
+            Event::Search if key_available => {
                 let Some(change) = self.change.as_mut() else {
                     return Step::none();
                 };
@@ -656,13 +668,13 @@ impl Page {
                 }
                 Step::none()
             }
-            Event::PickGame(game) => {
+            Event::PickGame(game) if key_available => {
                 if let Some(change) = &mut self.change {
                     change.selected = Some(game);
                 }
                 Step::none()
             }
-            Event::SaveGame if !self.writing && self.key_available => {
+            Event::SaveGame if !self.writing && key_available => {
                 let Some(game) = self
                     .change
                     .as_ref()
@@ -843,8 +855,8 @@ impl Page {
         Step::task(Task::batch([Task::run(receiver, |event| event), work]))
     }
 
-    fn lookup_game(&mut self, paths: &Paths) -> Task<Event> {
-        let Some(id) = self.game_id.filter(|_| self.key_available) else {
+    pub(crate) fn lookup_game(&mut self, paths: &Paths, key_available: bool) -> Task<Event> {
+        let Some(id) = self.game_id.filter(|_| key_available) else {
             return Task::none();
         };
         if self.looked_up == Some(id) {
@@ -895,7 +907,11 @@ impl Page {
         ))
     }
 
-    pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
+    pub(crate) fn view_with_key_availability(
+        &self,
+        palette: Palette,
+        key_available: bool,
+    ) -> Element<'_, Event> {
         if let Some(picker) = &self.picker {
             let visit = self.picker_sequence;
             return picker
@@ -918,14 +934,14 @@ impl Page {
         .align_y(Center);
         header = header.push(iced::widget::Space::new().width(Fill));
         header = header.push(text("SteamGridDB game").size(12).color(palette.muted));
-        header = header.push(text(self.game_label()).size(14));
+        header = header.push(text(self.game_label(key_available)).size(14));
         header = header.push(
             button("Change")
-                .on_press_maybe((self.key_available && !self.writing).then_some(Event::Change))
+                .on_press_maybe((key_available && !self.writing).then_some(Event::Change))
                 .style(move |_, status| secondary(palette, status)),
         );
         let mut body = column![header].spacing(14);
-        if !self.key_available {
+        if !key_available {
             body = body.push(
                 row![
                     text("Add a SteamGridDB key in Settings to find artwork or change the game.")
@@ -945,12 +961,16 @@ impl Page {
         if self.loading && self.rows.is_empty() {
             body = body.push(text("Loading art...").color(palette.muted));
         }
-        if let Some(change) = &self.change {
+        if key_available && let Some(change) = &self.change {
             body = body.push(self.change_view(change, palette));
         } else {
             body = body.push(self.showing_view(palette));
             for (kind, title, location, width, height) in KIND_ROWS {
-                body = body.push(self.row_view(kind, title, location, width, height, palette));
+                body = body.push(self.row_view(
+                    (kind, title, location, width, height),
+                    palette,
+                    key_available,
+                ));
             }
             if let Some(kind) = self.path_kind {
                 body = body.push(self.path_view(kind, palette));
@@ -1011,13 +1031,11 @@ impl Page {
 
     fn row_view(
         &self,
-        kind: Kind,
-        title: &'static str,
-        location: &'static str,
-        width: u32,
-        height: u32,
+        row: (Kind, &'static str, &'static str, u32, u32),
         palette: Palette,
+        key_available: bool,
     ) -> Element<'_, Event> {
+        let (kind, title, location, width, height) = row;
         let spot = (self.showing.clone(), kind);
         let row_data = self.rows.get(&spot);
         let inherited = self.inherited(kind);
@@ -1093,7 +1111,7 @@ impl Page {
         }
         let actions = column![
             button("Find...")
-                .on_press_maybe((self.key_available && !self.writing).then_some(Event::Find(kind)))
+                .on_press_maybe((key_available && !self.writing).then_some(Event::Find(kind)))
                 .style(move |_, status| secondary(palette, status)),
             button("Browse...")
                 .on_press_maybe((!self.writing).then_some(Event::Browse(kind)))
@@ -1288,19 +1306,10 @@ pub(crate) fn load_snapshot(paths: &Paths, name: &str) -> Result<Snapshot, Strin
             rows.insert((target.map(str::to_owned), kind), resolved);
         }
     }
-    let key_available = steamgriddb::find_key(
-        paths,
-        |key| std::env::var_os(key),
-        &SecretServiceKeyring::steamgriddb(),
-    )
-    .ok()
-    .flatten()
-    .is_some();
     Ok(Snapshot {
         targets,
         game: config.game,
         rows,
-        key_available,
     })
 }
 

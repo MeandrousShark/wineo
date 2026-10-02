@@ -37,7 +37,7 @@ pub(crate) enum Event {
     Preview(Kind, u64, Result<image::Handle, String>),
     Clear(Kind),
     ManualEntry(bool),
-    Configured(u64, Result<(ArtFetch, bool), String>),
+    Configured(u64, Result<ArtFetch, String>),
     Fetch(bool),
     SearchText(String),
     Search,
@@ -97,7 +97,6 @@ pub(crate) struct Draft {
     remote: BTreeMap<Kind, Remote>,
     fetch: bool,
     kinds: Vec<Kind>,
-    key_available: bool,
     search: String,
     search_edited: bool,
     searching: bool,
@@ -133,6 +132,11 @@ impl Draft {
             || self.local.values().any(|local| !local.path.is_empty())
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_fetching(&self) -> bool {
+        self.fetch
+    }
+
     pub(crate) fn set_title(&mut self, title: &str) -> Task<Event> {
         if !self.search_edited && self.search != title {
             self.clear_fetched();
@@ -158,14 +162,7 @@ impl Draft {
                 tokio::task::spawn_blocking(move || {
                     let global =
                         GlobalConfig::load_or_default(&paths).map_err(|e| e.to_string())?;
-                    let available = steamgriddb::find_key(
-                        &paths,
-                        |key| std::env::var_os(key),
-                        &SecretServiceKeyring::steamgriddb(),
-                    )
-                    .map_err(|e| e.to_string())?
-                    .is_some();
-                    Ok((global.art.fetch, available))
+                    Ok(global.art.fetch)
                 })
                 .await
                 .unwrap_or_else(|e| Err(e.to_string()))
@@ -175,6 +172,14 @@ impl Draft {
     }
 
     pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
+        self.update_with_key_availability(event, false)
+    }
+
+    pub(crate) fn update_with_key_availability(
+        &mut self,
+        event: Event,
+        key_available: bool,
+    ) -> Task<Event> {
         match event {
             Event::Path(kind, value) => {
                 let paths = self.paths.clone();
@@ -238,10 +243,9 @@ impl Draft {
             Event::ManualEntry(open) => self.manual_entry = open,
             Event::Configured(sequence, result) if sequence == self.configuration_sequence => {
                 match result {
-                    Ok((kinds, available)) => {
+                    Ok(kinds) => {
                         self.kinds = kinds.kinds();
-                        self.key_available = available;
-                        if self.fetch && (!available || self.kinds.is_empty()) {
+                        if self.fetch && (!key_available || self.kinds.is_empty()) {
                             self.fetch = false;
                             self.clear_fetched();
                             return Task::none();
@@ -260,11 +264,11 @@ impl Draft {
                 }
             }
             Event::Fetch(fetch) => {
-                self.fetch = fetch && self.key_available && !self.kinds.is_empty();
+                self.fetch = fetch && key_available && !self.kinds.is_empty();
                 self.clear_fetched();
                 return self.start_fetches();
             }
-            Event::SearchText(value) => {
+            Event::SearchText(value) if key_available => {
                 self.clear_fetched();
                 self.search = value;
                 self.search_edited = true;
@@ -273,9 +277,7 @@ impl Draft {
                 self.selected = None;
                 self.matches.clear();
             }
-            Event::Search
-                if self.key_available && !self.searching && !self.search.trim().is_empty() =>
-            {
+            Event::Search if key_available && !self.searching && !self.search.trim().is_empty() => {
                 let Some(paths) = self.paths.clone() else {
                     return Task::none();
                 };
@@ -309,7 +311,7 @@ impl Draft {
                     Err(error) => self.error = Some(error),
                 }
             }
-            Event::Game(game) => {
+            Event::Game(game) if key_available => {
                 self.clear_fetched();
                 self.selected = Some(game);
                 return self.start_fetches();
@@ -559,7 +561,7 @@ impl Draft {
         }
     }
 
-    pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
+    pub(crate) fn view(&self, palette: Palette, key_available: bool) -> Element<'_, Event> {
         column![
             text("Artwork").size(19),
             text("Click a tile to choose an image. All four are optional.")
@@ -586,7 +588,7 @@ impl Draft {
                 .spacing(12),
             ]
             .spacing(10),
-            self.control_rows(palette),
+            self.control_rows(palette, key_available),
         ]
         .spacing(10)
         .into()
@@ -746,18 +748,18 @@ impl Draft {
     }
 
     /// File path entry and SteamGridDB controls, for layouts that place tiles themselves.
-    pub(crate) fn controls(&self, palette: Palette) -> Element<'_, Event> {
+    pub(crate) fn controls(&self, palette: Palette, key_available: bool) -> Element<'_, Event> {
         column![
             text("Click the banner, logo, poster, or icon to choose an image. All are optional.")
                 .size(12)
                 .color(palette.muted),
-            self.control_rows(palette),
+            self.control_rows(palette, key_available),
         ]
         .spacing(10)
         .into()
     }
 
-    fn control_rows(&self, palette: Palette) -> Column<'_, Event> {
+    fn control_rows(&self, palette: Palette, key_available: bool) -> Column<'_, Event> {
         let mut content = column![
             button(if self.manual_entry {
                 "Hide file paths"
@@ -784,7 +786,7 @@ impl Draft {
             }
         }
         if !self.kinds.is_empty() {
-            if self.key_available {
+            if key_available {
                 content = content.push(
                     checkbox(self.fetch)
                         .label("Fetch missing artwork from SteamGridDB")
@@ -1211,17 +1213,28 @@ mod tests {
     }
 
     #[test]
+    fn fetch_uses_supplied_availability_without_storing_key_presence() {
+        let mut draft = Draft::new();
+        draft.kinds = vec![Kind::Icon];
+        draft.remote.insert(Kind::Icon, Remote::default());
+        let _ = draft.update_with_key_availability(Event::Fetch(true), false);
+        assert!(!draft.fetch);
+        let _ = draft.update_with_key_availability(Event::Fetch(true), true);
+        assert!(draft.fetch);
+        assert!(draft.remote.is_empty());
+    }
+
+    #[test]
     fn fetch_handles_are_pruned_and_dropped_kinds_are_aborted() {
         let mut draft = Draft::new();
         draft.fetch = true;
-        draft.key_available = true;
         draft.kinds = vec![Kind::Icon, Kind::Hero];
         let (_, icon) = Task::<Event>::none().abortable();
         let (_, hero) = Task::<Event>::none().abortable();
         draft.fetch_handles.insert(Kind::Icon, icon.clone());
         draft.fetch_handles.insert(Kind::Hero, hero.clone());
         draft.configuration_sequence = 1;
-        let _ = draft.update(Event::Configured(1, Ok((ArtFetch::Icon, true))));
+        let _ = draft.update_with_key_availability(Event::Configured(1, Ok(ArtFetch::Icon)), true);
         assert!(hero.is_aborted());
         assert!(!icon.is_aborted());
         assert_eq!(
@@ -1237,8 +1250,7 @@ mod tests {
         let mut draft = Draft::new();
         draft.configuration_sequence = 1;
         let _ = draft.set_title("new title");
-        let _ = draft.update(Event::Configured(1, Ok((ArtFetch::default(), true))));
-        assert!(draft.key_available);
+        let _ = draft.update(Event::Configured(1, Ok(ArtFetch::default())));
         assert!(!draft.kinds.is_empty());
     }
 
@@ -1271,7 +1283,6 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mut draft = Draft::new();
         draft.paths = Some(paths(root.path()));
-        draft.key_available = true;
         draft.search = "game".to_owned();
         draft.selected = Some(Match(Game {
             id: 7,
@@ -1286,7 +1297,7 @@ mod tests {
             },
         );
         let sequence = draft.fetch_sequence;
-        let _ = draft.update(Event::Search);
+        let _ = draft.update_with_key_availability(Event::Search, true);
         assert!(draft.searching);
         assert_eq!(draft.fetch_sequence, sequence);
         let _ = draft.update(Event::Searched(draft.sequence, Err("offline".to_owned())));
@@ -1302,7 +1313,6 @@ mod tests {
         draft.paths = Some(paths(root.path()));
         draft.fetch = true;
         draft.kinds = vec![Kind::Icon];
-        draft.key_available = true;
         draft.selected = Some(Match(Game {
             id: 7,
             name: "game".to_owned(),
@@ -1323,7 +1333,7 @@ mod tests {
         );
         draft.configuration_sequence = 1;
         let sequence = draft.fetch_sequence;
-        let _ = draft.update(Event::Configured(1, Ok((ArtFetch::Icon, true))));
+        let _ = draft.update_with_key_availability(Event::Configured(1, Ok(ArtFetch::Icon)), true);
         assert_eq!(draft.remote.len(), 1);
         assert!(Arc::ptr_eq(
             draft.remote[&Kind::Icon].image.as_ref().unwrap(),
@@ -1333,10 +1343,10 @@ mod tests {
         assert_eq!(draft.fetch_sequence, sequence);
 
         draft.configuration_sequence = 2;
-        let _ = draft.update(Event::Configured(
-            2,
-            Ok((ArtFetch::Selected([true, true, false, false]), true)),
-        ));
+        let _ = draft.update_with_key_availability(
+            Event::Configured(2, Ok(ArtFetch::Selected([true, true, false, false]))),
+            true,
+        );
         assert_eq!(draft.remote.len(), 2);
         assert!(Arc::ptr_eq(
             draft.remote[&Kind::Icon].image.as_ref().unwrap(),
@@ -1453,7 +1463,8 @@ mod tests {
             }]),
         ));
         assert!(draft.matches.is_empty());
-        let _ = draft.update(Event::SearchText("Custom match".to_owned()));
+        let _ =
+            draft.update_with_key_availability(Event::SearchText("Custom match".to_owned()), true);
         let _ = draft.set_title("Third title");
         assert_eq!(draft.search, "Custom match");
     }
@@ -1499,11 +1510,14 @@ mod tests {
             },
         );
         let old_sequence = draft.fetch_sequence;
-        let _ = draft.update(Event::Game(Match(Game {
-            id: 2,
-            name: "New".into(),
-            year: None,
-        })));
+        let _ = draft.update_with_key_availability(
+            Event::Game(Match(Game {
+                id: 2,
+                name: "New".into(),
+                year: None,
+            })),
+            true,
+        );
         let image = Arc::new(art::Downloaded {
             asset: 1,
             bytes: vec![1],
