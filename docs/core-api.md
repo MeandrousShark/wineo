@@ -27,6 +27,9 @@ event enum. Events arrive on the worker thread, in order.
 | prefix creation | `prefix::PrefixEvent` |
 | environment creation | `create::CreateEvent` |
 | launch | `launch::LaunchEvent` |
+| frontend exec | `launch::ExecEvent` |
+| frontend snapshots | `snapshot::SnapshotEvent` |
+| frontend portable copies | `portable::CopyEvent` |
 | winetricks | `winetricks::WinetricksEvent` |
 | installers | `supervisor::Watched` |
 
@@ -141,13 +144,29 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
 - `launch::stop(paths, name, force) -> StopOutcome`: stops a run, or cleans up
   a lost run or an unresolved installer. The outcome carries the messages to
   show.
+- `launch::exec(paths, name, program, args, env, &token, events) -> ExitStatus`:
+  validates explicit paths, builds a missing prefix, reconciles, and runs an
+  arbitrary program. Shared launch and build locks last until the immediate
+  command exits. Output arrives as `ExecEvent::OutputLine`; nonzero and
+  canceled exits are statuses. Cancellation signals only its process group.
+  Wine handoffs may survive, and a frontend crash leaves the program running
+  while releasing locks. It doesn't record playtime or install declared verbs.
+  `Launch::exec` retains CLI cwd-relative resolution; frontend
+  `ExecResolution::ExplicitPaths` never consults the current directory.
 - `winetricks::ensure(...)`: installs the environment's missing declared
-  verbs. `winetricks::run_in(...)` runs any verbs.
+  verbs in an existing prefix. `ensure_in(...)` builds a missing prefix first,
+  then calls the locking `ensure`; its events are `EnsureEvent`.
+  `winetricks::run_in(...)` runs arbitrary arguments, or opens winetricks with
+  empty arguments. Both preserve declarations and enforce exclusive idle checks.
 - `validate::apply(paths, fix, &token, winetricks_output, winetricks_events,
   download) -> Vec<Note>`: applies one fix. Pass
   `EnsureOutput::Log(path)` to get the `LogStarted`, `Progress`, and
   `OutputLine` events a launch reports. `Stderr` prints winetricks output
   instead and skips those three.
+- `validate::apply_single(...)`: explicitly applies one fix, including
+  `Fix::RecoverSnapshot`. Snapshot rollback is non-cancellable, must be
+  confirmed on its own, and is excluded by `Report::fixes()` and refused by
+  batch-oriented `apply`.
 - `trash::remove_with(paths, name, include_prefix, &token, events) -> Entry`:
   moves an environment to the trash, like `wineo rm`. The token cancels the
   wait for wine to exit, which comes before anything is written, so a
@@ -163,6 +182,16 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   `portable::execute_reviewed`, `snapshot::create_reviewed`, and
   `snapshot::restore_reviewed`. Each takes an inspected review, `&token`, and
   a progress callback.
+- Frontend snapshots use `inspect_create_with` / `inspect_restore_with` for
+  cancellable tree checks, then `create_reviewed_with` / `restore_reviewed_with`.
+  `SnapshotEvent::Finishing` marks the start of non-cancellable publication or
+  swap. `inspect_recovery` validates a marker without rolling it back;
+  `recover` performs the rollback. Delete and recovery finish before close.
+- Frontend portable copies use `inspect_with` / `inspect_native_with`, then
+  `execute_reviewed_with` / `execute_native_with`. `CopyEvent::Progress` carries
+  checking/copy progress, including native art and templates. `Publishing`
+  marks the non-cancellable boundary. Late cancellation preserves success.
+  The older entry points remain available for CLI callers.
 - `Runner::wait_idle_for_copy(prefix, &token)`: waits for wineo-tracked Wine
   processes to exit before a GUI starts a prefix copy. Canceling this wait
   cancels only the waiter; it does not stop those processes.

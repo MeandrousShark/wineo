@@ -242,6 +242,40 @@ pub fn ensure(
     })
 }
 
+/// Builds a missing prefix, then installs the environment's missing declared
+/// verbs with the same locking and idle checks as `ensure`.
+pub fn ensure_in(
+    paths: &Paths,
+    name: &str,
+    overrides: &BTreeMap<String, String>,
+    token: &Token,
+    output: EnsureOutput<'_>,
+    mut events: impl FnMut(EnsureEvent),
+) -> anyhow::Result<()> {
+    let environment = Environment::load(paths, name)?;
+    if environment.config.winetricks.is_empty() {
+        return Ok(());
+    }
+    let global = GlobalConfig::load(paths)?;
+    {
+        let context = context(paths, global, environment)?;
+        if !context.runner.is_proton()
+            && !prefix::is_prefix(&context.runner.wine_prefix(&context.prefix))
+        {
+            check_available(&context.runner)?;
+        }
+        launch::ensure_prefix(
+            paths,
+            &context.global,
+            &context.environment,
+            &context.runner,
+            token,
+            |event| events(EnsureEvent::Launch(event)),
+        )?;
+    }
+    ensure(paths, name, overrides, token, output, events)
+}
+
 /// Runs arbitrary winetricks arguments in an environment.
 pub fn run_in(
     paths: &Paths,
