@@ -13,7 +13,7 @@ use crate::paths::{Paths, fnv1a, label};
 use crate::runner::Runner;
 use crate::runners::Runners;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Runner,

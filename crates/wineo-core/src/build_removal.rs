@@ -1,5 +1,6 @@
 //! References and removal shared by runners and downloaded components.
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -33,108 +34,192 @@ pub struct Removed {
 
 pub fn uses(paths: &Paths, build: &Lock) -> Result<Uses> {
     let global = GlobalConfig::load(paths)?;
+    let mut index = UsesIndex::read(paths, &global, &[build.kind()])?;
+    Ok(index.take(build.kind(), build.name()))
+}
+
+/// References for every installed build, with each config read and selection resolved once.
+pub fn uses_all(paths: &Paths) -> Result<HashMap<(Kind, String), Uses>> {
+    let global = GlobalConfig::load(paths)?;
     let runners = Runners::new(paths, &global)?;
-    let component = match build.kind() {
-        Kind::Runner => None,
-        Kind::Dxvk => Some(Builds::new(paths, &global, Component::Dxvk)?),
-        Kind::Vkd3d => Some(Builds::new(paths, &global, Component::Vkd3d)?),
-    };
-    let matches = |asked: &str| {
-        // An explicit reference counts even when its build is currently unusable.
-        asked == build.name()
-            || match &component {
-                None => runners
-                    .resolve(asked)
-                    .is_ok_and(|r| r.name() == build.name()),
-                Some(builds) => builds
-                    .resolve(asked)
-                    .is_ok_and(|b| b.name() == build.name()),
+    let mut installed: Vec<_> = runners
+        .list()?
+        .runners
+        .into_iter()
+        .map(|runner| (Kind::Runner, runner.name().to_owned()))
+        .collect();
+    for component in Component::ALL {
+        installed.extend(
+            Builds::new(paths, &global, component)?
+                .list()?
+                .builds
+                .into_iter()
+                .map(|build| (component.into(), build.name().to_owned())),
+        );
+    }
+    let kinds: Vec<_> = [Kind::Runner, Kind::Dxvk, Kind::Vkd3d]
+        .into_iter()
+        .filter(|kind| installed.iter().any(|(installed, _)| installed == kind))
+        .collect();
+    if kinds.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut index = UsesIndex::read(paths, &global, &kinds)?;
+    Ok(installed
+        .into_iter()
+        .map(|(kind, name)| {
+            let uses = index.take(kind, &name);
+            ((kind, name), uses)
+        })
+        .collect())
+}
+
+#[derive(Default)]
+struct UsesIndex {
+    labels: HashMap<(Kind, String), Vec<String>>,
+    errors: Vec<OverviewError>,
+}
+
+impl UsesIndex {
+    fn read(paths: &Paths, global: &GlobalConfig, kinds: &[Kind]) -> Result<Self> {
+        let runners = Runners::new(paths, global)?;
+        let mut components: HashMap<Kind, Builds> = HashMap::new();
+        for component in Component::ALL {
+            if kinds.contains(&component.into()) {
+                components.insert(component.into(), Builds::new(paths, global, component)?);
             }
-    };
-    let mut result = Uses::default();
-    for name in environment::names(paths)? {
-        match Environment::load(paths, &name) {
-            Ok(environment) => {
-                if let Some(wine) = environment.config.wine() {
-                    let asked = match build.kind() {
-                        Kind::Runner => Some(wine.runner.as_str()),
-                        Kind::Dxvk => wine.dxvk.as_deref(),
-                        Kind::Vkd3d => wine.vkd3d.as_deref(),
-                    };
-                    if let Some(asked) = asked.filter(|asked| matches(asked)) {
-                        result
-                            .labels
-                            .push(reference_label(&name, asked, build.name()));
+        }
+        let mut resolved = HashMap::new();
+        let mut result = Self::default();
+        let mut reference = |kind: Kind, subject: &str, asked: &str, selected: &str| {
+            let concrete =
+                resolved
+                    .entry((kind, selected.to_owned()))
+                    .or_insert_with(|| match kind {
+                        Kind::Runner => runners.resolve(selected).ok().map(|r| r.name().to_owned()),
+                        _ => components[&kind]
+                            .resolve(selected)
+                            .ok()
+                            .map(|b| b.name().to_owned()),
+                    });
+            // An explicit reference counts even when its build is currently unusable.
+            result
+                .labels
+                .entry((kind, selected.to_owned()))
+                .or_default()
+                .push(reference_label(subject, asked, selected));
+            if let Some(concrete) = concrete.as_deref().filter(|name| *name != selected) {
+                result
+                    .labels
+                    .entry((kind, concrete.to_owned()))
+                    .or_default()
+                    .push(reference_label(subject, asked, concrete));
+            }
+        };
+        for name in environment::names(paths)? {
+            match Environment::load(paths, &name) {
+                Ok(environment) => {
+                    if let Some(wine) = environment.config.wine() {
+                        for kind in kinds {
+                            let asked = match kind {
+                                Kind::Runner => Some(wine.runner.as_str()),
+                                Kind::Dxvk => wine.dxvk.as_deref(),
+                                Kind::Vkd3d => wine.vkd3d.as_deref(),
+                            };
+                            if let Some(asked) = asked {
+                                reference(*kind, &name, asked, asked);
+                            }
+                        }
                     }
                 }
-            }
-            Err(err) => result.errors.push(OverviewError {
-                name,
-                message: format!("{:#}", anyhow::Error::from(err)),
-            }),
-        }
-    }
-    let templates = Templates::new(paths);
-    for row in templates.list()? {
-        let template = match templates.resolve(&row.name) {
-            Ok(template) => template,
-            Err(err) => {
-                result.errors.push(OverviewError {
-                    name: format!("template {}", row.name),
+                Err(err) => result.errors.push(OverviewError {
+                    name,
                     message: format!("{:#}", anyhow::Error::from(err)),
-                });
-                continue;
+                }),
             }
-        };
-        let selected = match build.kind() {
-            Kind::Runner => template.runner_name(&runners, &global.defaults.runner)?,
-            Kind::Dxvk => template.dxvk.clone(),
-            Kind::Vkd3d => template.vkd3d.clone(),
-        };
-        if selected.as_deref().is_some_and(matches) {
-            let asked = match build.kind() {
-                Kind::Runner => template.runner.as_deref(),
-                Kind::Dxvk => template.dxvk.as_deref(),
-                Kind::Vkd3d => template.vkd3d.as_deref(),
-            }
-            .expect("a selected template build has a selection");
-            result.labels.push(reference_label(
-                &format!("template {}", row.name),
-                asked,
-                build.name(),
-            ));
         }
-    }
-    if build.kind() == Kind::Runner {
-        if matches(&global.defaults.runner) {
-            result.labels.push(reference_label(
+        let templates = Templates::new(paths);
+        let mut proton_selection = None;
+        for row in templates.list()? {
+            let template = match templates.resolve(&row.name) {
+                Ok(template) => template,
+                Err(err) => {
+                    result.errors.push(OverviewError {
+                        name: format!("template {}", row.name),
+                        message: format!("{:#}", anyhow::Error::from(err)),
+                    });
+                    continue;
+                }
+            };
+            for kind in kinds {
+                let asked = match kind {
+                    Kind::Runner => template.runner.as_deref(),
+                    Kind::Dxvk => template.dxvk.as_deref(),
+                    Kind::Vkd3d => template.vkd3d.as_deref(),
+                };
+                if let Some(asked) = asked {
+                    let selected =
+                        if *kind == Kind::Runner && asked == crate::templates::NEWEST_PROTON {
+                            if proton_selection.is_none() {
+                                proton_selection =
+                                    template.runner_name(&runners, &global.defaults.runner)?;
+                            }
+                            proton_selection
+                                .as_deref()
+                                .expect("proton selects a runner")
+                        } else {
+                            asked
+                        };
+                    reference(*kind, &format!("template {}", row.name), asked, selected);
+                }
+            }
+        }
+        if kinds.contains(&Kind::Runner) {
+            reference(
+                Kind::Runner,
                 "global default runner",
                 &global.defaults.runner,
-                build.name(),
-            ));
-        }
-        // Runtime records can outlive the environment's config.
-        for name in runtime_names(paths)? {
-            let status = Runtime::new(paths, &name).status()?;
-            if (status.state == State::Running || status.lost)
-                && status
-                    .run
-                    .as_ref()
-                    .and_then(|r| r.runner.as_ref())
-                    .is_some_and(|r| r.name() == build.name())
-            {
-                result.labels.push(format!("active run {name}"));
+                &global.defaults.runner,
+            );
+            // Runtime records can outlive the environment's config.
+            for name in runtime_names(paths)? {
+                let status = Runtime::new(paths, &name).status()?;
+                if (status.state == State::Running || status.lost)
+                    && let Some(runner) = status.run.as_ref().and_then(|r| r.runner.as_ref())
+                {
+                    result
+                        .labels
+                        .entry((Kind::Runner, runner.name().to_owned()))
+                        .or_default()
+                        .push(format!("active run {name}"));
+                }
+            }
+            for (name, kind, recorded) in crate::installer::unresolved_builds(paths)? {
+                if kind == Kind::Runner {
+                    result
+                        .labels
+                        .entry((kind, recorded))
+                        .or_default()
+                        .push(format!("installer {name}"));
+                }
             }
         }
-        for (name, kind, recorded) in crate::installer::unresolved_builds(paths)? {
-            if kind == build.kind() && recorded == build.name() {
-                result.labels.push(format!("installer {name}"));
-            }
+        for labels in result.labels.values_mut() {
+            labels.sort();
+            labels.dedup();
+        }
+        Ok(result)
+    }
+
+    fn take(&mut self, kind: Kind, name: &str) -> Uses {
+        Uses {
+            labels: self
+                .labels
+                .remove(&(kind, name.to_owned()))
+                .unwrap_or_default(),
+            errors: self.errors.clone(),
         }
     }
-    result.labels.sort();
-    result.labels.dedup();
-    Ok(result)
 }
 
 fn reference_label(subject: &str, asked: &str, concrete: &str) -> String {

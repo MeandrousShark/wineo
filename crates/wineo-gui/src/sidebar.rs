@@ -14,6 +14,7 @@ pub(crate) enum Section {
     Library,
     Trash,
     Checkup,
+    Downloads,
     /// A destination only: opening it shows the global settings page over
     /// `Library`, so `App::section` never holds it.
     Settings,
@@ -25,6 +26,7 @@ impl Section {
             Self::Library => "Library",
             Self::Trash => "Trash",
             Self::Checkup => "Checkup",
+            Self::Downloads => "Downloads",
             Self::Settings => "Settings",
         }
     }
@@ -69,6 +71,7 @@ pub(crate) fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Section> {
         Key::Character("1") => Some(Section::Library),
         Key::Character("2") => Some(Section::Trash),
         Key::Character("3") => Some(Section::Checkup),
+        Key::Character("4") => Some(Section::Downloads),
         Key::Character(",") => Some(Section::Settings),
         _ => None,
     }
@@ -92,6 +95,7 @@ impl App {
     fn sidebar_blocked(&self) -> bool {
         self.close_prompt
             || self.trash_confirm_open()
+            || self.downloads_confirm_open()
             || self.removal.is_some()
             || self.flow.is_some()
             || self
@@ -130,6 +134,9 @@ impl App {
         if self.section == Section::Trash && section != Section::Trash {
             self.trash_page.cancel_review();
         }
+        if self.section == Section::Downloads && section != Section::Downloads {
+            self.downloads_page.cancel_review();
+        }
         let opening_checkup = section == Section::Checkup && self.section != section;
         self.section = match section {
             Section::Settings => Section::Library,
@@ -143,6 +150,7 @@ impl App {
             match section {
                 Section::Library => self.load_visible_art(),
                 Section::Trash => self.reload_trash_page(),
+                Section::Downloads => self.reload_downloads_page(),
                 Section::Checkup if opening_checkup => crate::checkup::update(
                     self,
                     crate::checkup::Event::Open(crate::checkup::Scope::Global),
@@ -162,6 +170,11 @@ impl App {
             && self
                 .checkup_change()
                 .is_some_and(|change| change.scope == crate::checkup::Scope::Global)
+        {
+            label = label.push(crate::spinner::spinner(palette, self.spinner_angle, 12.0));
+        }
+        if section == Section::Downloads
+            && matches!(self.change, Some(crate::removal::Change::Downloads(_)))
         {
             label = label.push(crate::spinner::spinner(palette, self.spinner_angle, 12.0));
         }
@@ -222,6 +235,7 @@ impl App {
                 divider(),
                 self.sidebar_row(Section::Trash, blocked),
                 self.sidebar_row(Section::Checkup, blocked),
+                self.sidebar_row(Section::Downloads, blocked),
                 Space::new().height(Fill),
                 divider(),
                 self.sidebar_row(Section::Settings, blocked),
@@ -264,6 +278,7 @@ mod tests {
         for (digit, section) in [
             ("2", Section::Trash),
             ("3", Section::Checkup),
+            ("4", Section::Downloads),
             ("1", Section::Library),
         ] {
             let _ = app.update(Message::Section(section));
@@ -281,7 +296,7 @@ mod tests {
     #[test]
     fn captured_keys_and_extra_modifiers_do_not_switch_sections() {
         let (_root, mut app) = fixture();
-        for digit in ["1", "2", "3"] {
+        for digit in ["1", "2", "3", "4"] {
             let _ = app.update(Message::Key(
                 Key::Character(digit.into()),
                 Modifiers::CTRL,
@@ -365,7 +380,7 @@ mod tests {
                 let _ = app.update(Message::Flow(app.flow_generation, choice));
             }
             let kind = std::mem::discriminant(app.flow.as_ref().unwrap());
-            for digit in ["1", "2", "3"] {
+            for digit in ["1", "2", "3", "4"] {
                 key(&mut app, digit);
                 let _ = app.update(Message::KeyWithFocus(
                     Key::Character(digit.into()),
@@ -379,14 +394,14 @@ mod tests {
             }
         }
         app.flow = Some(crate::flow::Page::clone(app.paths.clone(), "game".into()).0);
-        for digit in ["1", "2", "3"] {
+        for digit in ["1", "2", "3", "4"] {
             key(&mut app, digit);
             let _ = app.update(Message::Section(Section::Checkup));
             assert_eq!(app.section, Section::Library);
         }
         app.flow = None;
         app.close_prompt = true;
-        for digit in ["1", "2", "3"] {
+        for digit in ["1", "2", "3", "4"] {
             key(&mut app, digit);
             let _ = app.update(Message::KeyWithFocus(
                 Key::Character(digit.into()),
@@ -496,7 +511,7 @@ mod tests {
             install_done: None,
             installing: false,
         });
-        for section in [Section::Trash, Section::Checkup] {
+        for section in [Section::Trash, Section::Checkup, Section::Downloads] {
             let _ = app.update(Message::Section(section));
             for key in [
                 Key::Named(iced::keyboard::key::Named::Escape),

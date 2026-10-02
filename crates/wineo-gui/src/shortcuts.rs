@@ -4,7 +4,7 @@ use iced::advanced::{
 };
 use iced::{Element, Event, Length, Rectangle, Size, Vector};
 
-/// Handles Ctrl+1/2/3, Ctrl+Comma, and the active Undo shortcut before any child sees them.
+/// Handles Ctrl+1/2/3/4, Ctrl+Comma, and the active Undo shortcut before any child sees them.
 /// A focused text_input inserts the digit and captures the key regardless of
 /// Ctrl, and the app's key subscription skips captured events.
 pub(crate) fn capture_with_undo<'a, Message, Theme, Renderer>(
@@ -318,7 +318,7 @@ pub(crate) mod tests {
         let (_root, mut app) = fixture();
         app.search = "game".into();
         app.flow = Some(crate::flow::Page::choose(app.paths.clone()));
-        for digit in ["1", "2", "3"] {
+        for digit in ["1", "2", "3", "4"] {
             let (messages, status) = input_messages("dialog", digit, Modifiers::CTRL);
             assert_eq!(status, Status::Captured);
             assert!(matches!(messages.as_slice(), [Message::Section(_)]));

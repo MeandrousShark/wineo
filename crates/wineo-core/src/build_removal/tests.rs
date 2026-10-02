@@ -638,3 +638,102 @@ fn sweep_ignores_symlinks_and_unrecognized_staging_names() {
     assert!(dir.join("bin/wine").exists());
     assert!(unknown.is_dir());
 }
+
+#[test]
+fn batch_uses_matches_single_build_checks_in_a_mixed_fixture() {
+    let f = Fixture::new();
+    f.runner("plain");
+    f.runner("unused");
+    f.proton("GE-Proton9-19");
+    f.proton("GE-Proton9-20");
+    f.proton("proton-cachyos-10.0-20260101-slr");
+    f.proton("proton-cachyos-11.0-20260201-slr");
+    for component in Component::ALL {
+        f.component(component, "1.0");
+        f.component(component, "2.0");
+    }
+    f.global("[defaults]\nrunner = 'GE-Proton-Latest'\n");
+    f.environment(
+        "alias",
+        "runner = 'GE-Proton-Latest'\ndxvk = 'latest'\nvkd3d = 'latest'",
+    );
+    f.environment(
+        "other-alias",
+        "runner = 'Proton-CachyOS-Latest'\ndxvk = '1.0'",
+    );
+    f.environment("direct", "runner = 'plain'\ndxvk = '2.0'\nvkd3d = '1.0'");
+    f.environment("broken", "runner = [invalid");
+    f.template("broken", "not valid TOML");
+    f.template("direct", "runner = 'GE-Proton9-19'\ndxvk = '1.0'\n");
+    f.template("alias", "runner = 'GE-Proton-Latest'\nvkd3d = 'latest'\n");
+    f.template("proton", "runner = 'proton'\n");
+
+    let runner = Runners::new(&f.paths, &GlobalConfig::default())
+        .unwrap()
+        .resolve("plain")
+        .unwrap();
+    let runtime = Runtime::new(&f.paths, "active");
+    let _held = runtime.try_lock().unwrap().unwrap();
+    let mut state = RunState::running(
+        RunMode::Detached,
+        "app".to_owned(),
+        std::process::id(),
+        None,
+        &Overrides::default(),
+    );
+    state.runner = Some(runner.clone());
+    runtime.write_state(&state).unwrap();
+    Runtime::new(&f.paths, "lost").write_state(&state).unwrap();
+    Runtime::new(&f.paths, "removed")
+        .write_operation(&OperationState {
+            operation: Operation::Install,
+            program: "setup.exe".to_owned(),
+            runner,
+            prefix: f.root.path().join("prefix"),
+            pid: None,
+            group: None,
+            boot_id: None,
+            leader_start: None,
+            started_at: jiff::Timestamp::now(),
+        })
+        .unwrap();
+
+    let batch = uses_all(&f.paths).unwrap();
+    assert_eq!(batch.len(), 10);
+    for ((kind, name), actual) in &batch {
+        let expected = f.uses(*kind, name);
+        assert_eq!(actual.labels, expected.labels, "{kind:?} / {name}");
+        assert_eq!(
+            actual
+                .errors
+                .iter()
+                .map(|e| (&e.name, &e.message))
+                .collect::<Vec<_>>(),
+            expected
+                .errors
+                .iter()
+                .map(|e| (&e.name, &e.message))
+                .collect::<Vec<_>>(),
+            "{kind:?} / {name}",
+        );
+        assert_eq!(actual.errors.len(), 2);
+    }
+    assert_eq!(
+        batch[&(Kind::Runner, "plain".to_owned())].labels,
+        [
+            "active run active",
+            "active run lost",
+            "direct",
+            "installer removed"
+        ]
+    );
+    assert!(
+        batch[&(Kind::Runner, "unused".to_owned())]
+            .labels
+            .is_empty()
+    );
+    assert_eq!(
+        batch[&(Kind::Dxvk, "2.0".to_owned())].labels,
+        ["alias (latest)", "direct", "template gaming (latest)"]
+    );
+}

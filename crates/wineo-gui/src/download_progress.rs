@@ -2,13 +2,13 @@ use std::time::{Duration, Instant};
 
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
-use wineo_core::download::{Client, Progress, Provider, Release};
+use wineo_core::download::{Client, Progress, Provider, Release, Transport};
 use wineo_core::paths::Paths;
 
 /// Throttles progress so a fast download doesn't flood the UI in the new, Heroic,
 /// and checkup flows. Backdating lets the first Downloading event through immediately.
-pub(crate) fn install(
-    client: &Client,
+pub(crate) fn install<T: Transport>(
+    client: &Client<T>,
     paths: &Paths,
     global: &GlobalConfig,
     release: &Release,

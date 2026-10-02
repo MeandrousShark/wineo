@@ -13,6 +13,7 @@ impl App {
             || self.flow.is_some()
             || self.removal.is_some()
             || self.trash_confirm_open()
+            || self.downloads_confirm_open()
             || self.close_prompt
             || self.closing
             || !self.cards.iter().any(|card| card.name == name)
@@ -33,6 +34,7 @@ impl App {
         self.leave_art();
         self.close_log();
         self.trash_page.cancel_review();
+        self.downloads_page.cancel_review();
         self.action_menu = None;
         self.hovered = None;
         self.search_focused = false;

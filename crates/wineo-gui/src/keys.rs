@@ -61,6 +61,7 @@ impl App {
             || self.flow.is_some()
             || self.removal.is_some()
             || self.trash_confirm_open()
+            || self.downloads_confirm_open()
         {
             return Task::none();
         }
@@ -84,6 +85,9 @@ impl App {
             },
         ) {
             return task;
+        }
+        if self.section == crate::sidebar::Section::Downloads {
+            return crate::downloads_page::key(self, &key, modifiers, captured);
         }
         if self.section != crate::sidebar::Section::Library {
             return Task::none();

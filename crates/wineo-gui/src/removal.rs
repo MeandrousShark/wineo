@@ -34,6 +34,7 @@ pub(crate) enum Change {
         name: String,
     },
     Trash(crate::trash_page::Change),
+    Downloads(crate::downloads_page::Change),
     Checkup(crate::checkup::Change),
 }
 
@@ -43,6 +44,7 @@ impl Change {
             Self::Remove { name, .. } => format!("Busy: removing {name}"),
             Self::Restore { name, .. } => format!("Busy: restoring {name}"),
             Self::Trash(change) => change.reason(),
+            Self::Downloads(change) => change.reason(),
             Self::Checkup(change) => format!("Busy: fixing {}", change.scope.label()),
         }
     }
@@ -316,6 +318,7 @@ impl App {
             || self.art_page.is_some()
             || self.close_prompt
             || self.trash_confirm_open()
+            || self.downloads_confirm_open()
             || self.management_busy()
             || self.remove_reason(&name).is_some()
         {
@@ -374,6 +377,11 @@ impl App {
 
     pub(crate) fn cancel_management(&self) {
         self.cancel_checkup(false);
+        if let Some(Change::Downloads(crate::downloads_page::Change::Download { token, .. })) =
+            &self.change
+        {
+            token.cancel();
+        }
         if let Some(Change::Remove {
             token,
             phase: None | Some(RemoveEvent::Waiting),
@@ -405,6 +413,10 @@ impl App {
         self.trash_refreshing = true;
         // Always queue fresh reads, even if a periodic read was already in flight.
         Task::batch([self.reload_library(), self.reload_trash_page()])
+    }
+
+    pub(crate) fn reload_after_uses_change(&mut self) -> Task<Message> {
+        Task::batch([self.reload_after_change(), self.reload_downloads_page()])
     }
 
     pub(crate) fn remove_finished(
@@ -442,12 +454,12 @@ impl App {
                             path,
                             dialog.measure.clone(),
                         );
-                        return Task::batch([measure, self.reload_after_change()]);
+                        return Task::batch([measure, self.reload_after_uses_change()]);
                     }
                 }
             }
         }
-        self.reload_after_change()
+        self.reload_after_uses_change()
     }
 
     pub(crate) fn undo_remove(&mut self) -> Task<Message> {
@@ -458,6 +470,7 @@ impl App {
             || self.art_page.is_some()
             || self.close_prompt
             || self.trash_confirm_open()
+            || self.downloads_confirm_open()
         {
             return Task::none();
         }
@@ -491,7 +504,7 @@ impl App {
                 }
             }
         }
-        self.reload_after_change()
+        self.reload_after_uses_change()
     }
 
     fn remove_controls(&self) -> Vec<&'static str> {
@@ -625,6 +638,7 @@ impl App {
         let palette = self.palette;
         let enabled = !self.management_busy()
             && !self.trash_confirm_open()
+            && !self.downloads_confirm_open()
             && self.flow.is_none()
             && self.removal.is_none()
             && self.settings.is_none()

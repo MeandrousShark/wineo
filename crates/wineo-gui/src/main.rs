@@ -6,6 +6,8 @@ mod checkup;
 mod checkup_work;
 mod chips;
 mod download_progress;
+mod downloads_page;
+mod downloads_work;
 mod flow;
 mod focus_button;
 mod grid;
@@ -124,6 +126,7 @@ pub(crate) struct App {
     library_generation: u64,
     trash_generation: u64,
     trash_page: trash_page::Page,
+    downloads_page: downloads_page::Page,
     checkups: HashMap<checkup::Scope, checkup::Results>,
     check_generation: u64,
 }
@@ -225,6 +228,7 @@ pub(crate) enum Message {
     ToastHover(bool),
     ToastFocus(bool, Instant),
     Trash(trash_page::Event),
+    Downloads(downloads_page::Event),
     Checkup(checkup::Event),
 }
 
@@ -295,6 +299,7 @@ impl App {
             library_generation: 0,
             trash_generation: 0,
             trash_page: trash_page::Page::default(),
+            downloads_page: downloads_page::Page::default(),
             checkups: HashMap::new(),
             check_generation: 0,
         };
@@ -401,6 +406,7 @@ impl App {
         if (self.flow.is_some()
             || self.removal.is_some()
             || self.trash_confirm_open()
+            || self.downloads_confirm_open()
             || self.art_page.is_some())
             && matches!(
                 message,
@@ -438,6 +444,7 @@ impl App {
         let task = match message {
             Message::Checkup(event) => checkup::update(self, event),
             Message::Trash(event) => trash_page::update(self, event),
+            Message::Downloads(event) => downloads_page::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
             | Message::RemoveSize(..)
@@ -751,6 +758,9 @@ impl App {
             Message::Key(key, modifiers, _) if self.removal.is_some() => {
                 removal::dialog_key(self, &key, modifiers)
             }
+            Message::Key(key, modifiers, _) if self.downloads_confirm_open() => {
+                downloads_page::key(self, &key, modifiers, false)
+            }
             Message::Key(key, modifiers, _) if self.trash_confirm_open() => {
                 trash_page::key(self, &key, modifiers)
             }
@@ -822,6 +832,13 @@ impl App {
                     self.settings_key(&key, modifiers, status == iced::event::Status::Captured)
                 } else if self.art_page.is_some() {
                     self.art_key(&key, modifiers, status == iced::event::Status::Captured)
+                } else if self.section == sidebar::Section::Downloads {
+                    downloads_page::key(
+                        self,
+                        &key,
+                        modifiers,
+                        status == iced::event::Status::Captured,
+                    )
                 } else if modifiers.control()
                     && matches!(key.as_ref(), keyboard::Key::Character("n" | "N"))
                 {

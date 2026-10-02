@@ -274,7 +274,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                     app.trash_page.row_errors.insert(id, error);
                 }
             }
-            app.reload_after_change()
+            app.reload_after_uses_change()
         }
         Event::Recovered(generation, result) if generation == app.change_generation => {
             if !matches!(
@@ -293,7 +293,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                     app.trash_page.recovery_errors.insert(id, error);
                 }
             }
-            app.reload_after_change()
+            app.reload_after_uses_change()
         }
         Event::Review(selection) if app.trash_action_allowed() => {
             if let Selection::Id(id) = &selection

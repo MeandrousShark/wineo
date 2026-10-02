@@ -188,6 +188,7 @@ pub(crate) struct Change {
     status: String,
     install: Option<(String, Token)>,
     problem_fixes: Vec<Fix>,
+    affects_downloads: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -251,6 +252,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if app.flow.is_some()
                 || app.removal.is_some()
                 || app.trash_confirm_open()
+                || app.downloads_confirm_open()
                 || app.settings.is_some()
                 || app.close_prompt
                 || !app.cards.iter().any(|card| card.name == name)
@@ -334,6 +336,16 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 status: "Fixing...".into(),
                 install: None,
                 problem_fixes,
+                affects_downloads: fixes.iter().any(|fix| {
+                    matches!(
+                        fix,
+                        Fix::Download { .. }
+                            | Fix::CleanUpLostRun { .. }
+                            | Fix::CleanUpInstaller { .. }
+                            | Fix::RemoveStateDir { .. }
+                            | Fix::RecoverTrash { .. }
+                    )
+                }),
             }));
             checkup_work::apply(app.change_generation, app.paths.clone(), fixes, token)
         }
@@ -393,7 +405,12 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 .map(|(scope, _)| scope.clone())
                 .collect();
             let checks = Task::batch(scopes.into_iter().map(|scope| app.check(scope, false)));
-            Task::batch([checks, app.reload_after_change()])
+            let reload = if change.affects_downloads {
+                app.reload_after_uses_change()
+            } else {
+                app.reload_after_change()
+            };
+            Task::batch([checks, reload])
         }
         event => {
             let generation = match &event {
@@ -537,6 +554,7 @@ impl App {
             && self.flow.is_none()
             && self.removal.is_none()
             && !self.trash_confirm_open()
+            && !self.downloads_confirm_open()
             && !self.close_prompt)
             .then_some(scope)
     }
@@ -1079,10 +1097,11 @@ mod tests {
     fn completion_rechecks_and_reloads_both_with_persistent_partial_results() {
         let (_root, mut app) = fixture();
         let generation = start(&mut app);
-        let (library, trash, check) = (
+        let (library, trash, check, downloads) = (
             app.library_generation,
             app.trash_generation,
             app.checkups[&scope()].generation,
+            crate::downloads_page::tests::generation(&app),
         );
         let outcome = Outcome {
             applied: vec![download()],
@@ -1096,6 +1115,7 @@ mod tests {
         assert!(app.checkups[&scope()].checking);
         assert!(app.checkups[&scope()].generation > check);
         assert!(app.library_generation > library && app.trash_generation > trash);
+        assert!(crate::downloads_page::tests::generation(&app) > downloads);
         loaded(&mut app, Report::default());
         let previous = lines(&app);
         assert_eq!(
@@ -1119,6 +1139,43 @@ mod tests {
         assert_eq!(lines(&app), previous);
         loaded(&mut app, Report::default());
         assert!(app.checkups[&scope()].outcome.is_none());
+    }
+
+    #[test]
+    fn unrelated_fix_does_not_reload_downloads_after_switching_pages() {
+        let (_root, mut app) = fixture();
+        open(&mut app);
+        let fix = Fix::RemoveStatsLog {
+            environment: "old".into(),
+        };
+        loaded(
+            &mut app,
+            Report {
+                problems: vec![problem(Code::StatsStray, Some(fix.clone()))],
+                ..Report::default()
+            },
+        );
+        assert_eq!(
+            app.checkups[&scope()].selected().as_slice(),
+            std::slice::from_ref(&fix)
+        );
+        send(&mut app, Event::Fix(scope()));
+        let _ = app.update(Message::Section(crate::sidebar::Section::Downloads));
+        let generation = app.change_generation;
+        let downloads = crate::downloads_page::tests::generation(&app);
+
+        send(
+            &mut app,
+            Event::Finished(
+                generation,
+                Ok(Outcome {
+                    applied: vec![fix],
+                    ..Outcome::default()
+                }),
+            ),
+        );
+
+        assert_eq!(crate::downloads_page::tests::generation(&app), downloads);
     }
 
     #[test]

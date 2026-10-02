@@ -1585,6 +1585,7 @@ impl App {
         };
         self.leave_art();
         self.trash_page.cancel_review();
+        self.downloads_page.cancel_review();
         self.section = crate::sidebar::Section::Library;
         self.settings_generation = self.settings_generation.wrapping_add(1);
         let mut page = Page::new(name, self.settings_generation);
@@ -1595,6 +1596,7 @@ impl App {
     pub(crate) fn open_global_settings(&mut self) -> Task<Message> {
         self.leave_art();
         self.trash_page.cancel_review();
+        self.downloads_page.cancel_review();
         self.section = crate::sidebar::Section::Library;
         self.settings_generation = self.settings_generation.wrapping_add(1);
         let mut page = Page::new_global(self.settings_generation);
@@ -3159,6 +3161,7 @@ mod tests {
                 crate::sidebar::Section::Library => "1",
                 crate::sidebar::Section::Trash => "2",
                 crate::sidebar::Section::Checkup => "3",
+                crate::sidebar::Section::Downloads => "4",
                 crate::sidebar::Section::Settings => ",",
             };
             let (mut messages, status) =
@@ -3178,7 +3181,12 @@ mod tests {
         write(&paths, GAME);
         for global in [false, true] {
             for keyboard in [false, true] {
-                for section in [Section::Library, Section::Trash, Section::Checkup] {
+                for section in [
+                    Section::Library,
+                    Section::Trash,
+                    Section::Checkup,
+                    Section::Downloads,
+                ] {
                     let mut app = sidebar_app(&paths, global);
                     let _ = app.update(sidebar_request(section, keyboard));
                     assert!(app.settings.is_none());
@@ -3341,7 +3349,12 @@ mod tests {
         use crate::sidebar::Section;
         let (_root, paths) = setup();
         write(&paths, GAME);
-        for section in [Section::Library, Section::Trash, Section::Checkup] {
+        for section in [
+            Section::Library,
+            Section::Trash,
+            Section::Checkup,
+            Section::Downloads,
+        ] {
             for keyboard in [false, true] {
                 let mut app = App::boot(paths.clone()).0;
                 let _ = app.update(Message::Section(section));

@@ -120,6 +120,7 @@ impl App {
             (self.toast.is_some()
                 && self.removal.is_none()
                 && !self.trash_confirm_open()
+                && !self.downloads_confirm_open()
                 && self.flow.is_none()
                 && self.settings.is_none()
                 && self.art_page.is_none()
@@ -171,6 +172,22 @@ impl App {
                 )
             ]
             .into();
+        }
+        if self.downloads_confirm_open() {
+            page =
+                stack![
+                    page,
+                    iced::widget::opaque(
+                        mouse_area(container(self.downloads_confirm_view()).center(Fill).style(
+                            |_| {
+                                container::Style::default()
+                                    .background(Color::BLACK.scale_alpha(0.55))
+                            }
+                        ))
+                        .on_scroll(|_| Message::OverlayInput)
+                    )
+                ]
+                .into();
         }
         if let Some(flow) = &self.flow {
             let palette = self.palette;
@@ -329,6 +346,13 @@ impl App {
             page = page.push(
                 container(text(change.reason()).size(12).color(palette.muted)).padding([4, 16]),
             );
+        }
+        if self.section == crate::sidebar::Section::Downloads {
+            return container(page.push(self.downloads_view()))
+                .width(Fill)
+                .height(Fill)
+                .style(move |_| container::Style::default().background(palette.background))
+                .into();
         }
         if self.section == crate::sidebar::Section::Trash {
             return container(page.push(self.trash_view()))
