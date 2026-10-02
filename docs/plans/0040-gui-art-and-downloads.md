@@ -117,10 +117,11 @@ From the 2026-10-01 planning conversation:
     so it can still race a delete; Checkup reports the missing build
     afterwards.
 - A shared `uses(paths, build)` lists what keeps a build: environment
-  configs that name it, environments whose alias (`proton`,
-  `GE-Proton-Latest`, `Proton-CachyOS-Latest`, `latest`) resolves to it
-  today, templates that name it, the global default runner, and active runs
-  using it.
+  configs that name it, environments whose alias (`GE-Proton-Latest`,
+  `Proton-CachyOS-Latest`, or `latest` for DXVK and vkd3d) resolves to it
+  today, templates that name it or whose `proton` picks it as the newest
+  Proton today, the global default runner, active runs using it, and
+  runners kept by unresolved installer records.
 - Remove refuses while anything uses it, with an error that names them:
   "GE-Proton9-20 is used by hades and celeste."
 - CLI: `wineo runners remove NAME`, `wineo dxvk remove NAME`, and
