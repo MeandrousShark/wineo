@@ -22,6 +22,12 @@ and "Stop it first". Key hints use full verb phrases.
   Checkup's fix-everything action skip it.
 - On 2026-10-02 the maintainer approved the plan with every recommended
   answer below: 1A, 2A, 3A, 4A, 5A, 6A, 7A, and 8B. Step 4 is dropped.
+- Exec lifecycle under 5A (2026-10-02): Cancel stops only the process
+  wineo started, as its own process group. Programs it hands off to Wine
+  keep running, and the result says "Other programs may still be running in
+  the prefix." when the run exits. Locks last until that process exits. If
+  the GUI dies, the program keeps running and the locks are released with
+  the GUI's process. Closing offers **Keep working** or **Cancel and close**.
 
 ## Existing foundation
 
