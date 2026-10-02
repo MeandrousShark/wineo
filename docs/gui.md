@@ -12,8 +12,8 @@ importing, and cloning environments.
 [Plan 0039](plans/0039-gui-trash-and-validate.md) added removal, the trash,
 and checking for problems.
 
-A sidebar on the left has **Library** at the top, **Trash** and
-**Checkup** below it, and **Settings** pinned at the bottom. Add opens from
+A sidebar on the left has **Library** at the top, **Trash**, **Checkup**,
+and **Downloads** below it, and **Settings** pinned at the bottom. Add opens from
 the Library.
 
 ## Starting it
@@ -160,6 +160,30 @@ the Library. Fixes, progress, and Cancel work as in the panel, and
 interrupted trash work can be recovered here too. The summary of the last
 batch stays until you press **Check again** or fix more, even if the batch
 finished while you were on another page.
+
+## Downloads
+
+**Downloads** lists the installed runners, DXVK builds, and vkd3d-proton
+builds, each with what uses it: "used by hades, celeste (GE-Proton-Latest)"
+or "unused". The uses are the same ones `wineo runners remove` checks; see
+[Remove a runner or graphics component](downloads-and-imports.md#remove-a-runner-or-graphics-component).
+Directories that aren't usable builds are listed under **Not usable** with
+the reason.
+
+**Delete** shows only on unused builds. It asks first with how much space
+it frees, and refuses on the row if something started using the build in
+the meantime. A config that can't be read is skipped with a warning naming
+the file, the same as the CLI.
+
+**Download...** picks a provider and a release, newest stable first, with
+**Load more** for older ones, then **Install** downloads it with progress
+and **Cancel**, like `wineo download`. A canceled download leaves nothing
+behind; one canceled after it finished installing stays installed.
+
+Downloads and deletes keep running when you switch sections, with a spinner
+next to **Downloads**, and closing the window waits for them. The list
+reloads when the page opens and after its own changes; **Refresh** reloads
+it after a game exits or a change from the CLI.
 
 ## Art
 
@@ -373,7 +397,7 @@ Hover the selected runner to see its full name.
 | Ctrl+N | Open Add (Library only) |
 | Delete | Remove the selected environment, asking first (on the details) |
 | Ctrl+Z | Undo a removal while its bar shows |
-| Ctrl+1, Ctrl+2, Ctrl+3 | Library, Trash, Checkup |
+| Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+4 | Library, Trash, Checkup, Downloads |
 | Ctrl+, | Global settings |
 | Down (in the search) | Back to the cards |
 
