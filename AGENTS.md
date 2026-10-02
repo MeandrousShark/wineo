@@ -1,5 +1,7 @@
 # Agent Guidelines
 
+For how work flows (plans, roles, landing, acceptance, releases), see `docs/workflow.md`.
+
 ## Code boundaries
 
 - `crates/wineo-core` owns environment/config/process logic; `crates/wineo-cli` owns clap commands and interactive UI, and its binary is `wineo`; `crates/wineo-gui` owns the iced desktop app, calls core directly, and its binary is `wineo-gui`.
