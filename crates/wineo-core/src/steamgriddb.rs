@@ -281,6 +281,20 @@ impl<'a> Api<'a> {
         Ok(self.data(url.as_str())?.iter().filter_map(game).collect())
     }
 
+    /// Looks up one game by its SteamGridDB ID.
+    pub fn game(&self, id: u64) -> anyhow::Result<Option<Game>> {
+        let url = format!("{API}/games/id/{id}");
+        let response = self.transport.request(&url, Some(self.key))?;
+        match response.status {
+            200 => Ok(Self::parse_answer(response.body)?
+                .get("data")
+                .and_then(game)),
+            404 => Ok(None),
+            401 | 403 => bail!("SteamGridDB rejected the key"),
+            status => bail!("SteamGridDB answered with status {status}"),
+        }
+    }
+
     /// The URL of one page of a game's images of `kind`, with or without the
     /// hard filters.
     pub fn images_url(game: u64, kind: Kind, page: u32, filters: Filters) -> String {
@@ -391,7 +405,15 @@ impl<'a> Api<'a> {
             401 | 403 => bail!("SteamGridDB rejected the key"),
             status => bail!("SteamGridDB answered with status {status}"),
         }
-        let answer: Value = serde_json::from_reader(response.body)
+        let answer = Self::parse_answer(response.body)?;
+        Ok(match answer.get("data") {
+            Some(Value::Array(data)) => data.clone(),
+            _ => Vec::new(),
+        })
+    }
+
+    fn parse_answer(body: impl Read) -> anyhow::Result<Value> {
+        let answer: Value = serde_json::from_reader(body)
             .map_err(|err| anyhow!("SteamGridDB sent an unreadable answer: {err}"))?;
         if answer.get("success").and_then(Value::as_bool) == Some(false) {
             let errors: Vec<&str> = answer
@@ -401,10 +423,7 @@ impl<'a> Api<'a> {
                 .unwrap_or_default();
             bail!("SteamGridDB refused the request: {}", errors.join(", "));
         }
-        Ok(match answer.get("data") {
-            Some(Value::Array(data)) => data.clone(),
-            _ => Vec::new(),
-        })
+        Ok(answer)
     }
 }
 
@@ -1004,6 +1023,51 @@ mod tests {
             ]
         );
         assert_eq!(api.seen.borrow()[0].1.as_deref(), Some("k"));
+    }
+
+    #[test]
+    fn game_looks_up_a_game_by_id() {
+        let api = FakeApi::default();
+        api.json(
+            format!("{API}/games/id/1"),
+            json!({
+                "id": 1,
+                "name": "Hades II",
+                "release_date": 1_714_521_600,
+                "verified": true
+            }),
+        );
+
+        assert_eq!(
+            Api::new(&api, "k").game(1).unwrap(),
+            Some(Game {
+                id: 1,
+                name: "Hades II".into(),
+                year: Some(2024),
+            })
+        );
+        assert_eq!(api.urls(), [format!("{API}/games/id/1")]);
+        assert_eq!(api.seen.borrow()[0].1.as_deref(), Some("k"));
+    }
+
+    #[test]
+    fn game_returns_none_when_the_id_is_not_found() {
+        let api = FakeApi::default();
+        api.answer(format!("{API}/games/id/404"), 404, || Box::new(io::empty()));
+        assert_eq!(Api::new(&api, "k").game(404).unwrap(), None);
+
+        let api = FakeApi::default();
+        api.json(format!("{API}/games/id/404"), Value::Null);
+        assert_eq!(Api::new(&api, "k").game(404).unwrap(), None);
+    }
+
+    #[test]
+    fn game_reports_a_rejected_key() {
+        let api = FakeApi::default();
+        api.answer(format!("{API}/games/id/1"), 401, || Box::new(io::empty()));
+
+        let err = Api::new(&api, "k").game(1).unwrap_err();
+        assert_eq!(err.to_string(), "SteamGridDB rejected the key");
     }
 
     #[test]
