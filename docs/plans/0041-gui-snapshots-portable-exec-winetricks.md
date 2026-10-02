@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0041: GUI snapshots, portable copies, exec, and winetricks
 
@@ -20,6 +20,8 @@ and "Stop it first". Key hints use full verb phrases.
 - On 2026-10-02: rolling back an interrupted restore only happens when asked
   for by itself. It is never part of a batch, so `wineo validate --fix` and
   Checkup's fix-everything action skip it.
+- On 2026-10-02 the maintainer approved the plan with every recommended
+  answer below: 1A, 2A, 3A, 4A, 5A, 6A, 7A, and 8B. Step 4 is dropped.
 
 ## Existing foundation
 
@@ -94,8 +96,8 @@ and "Stop it first". Key hints use full verb phrases.
 
 ## Open questions
 
-Everything below is a proposal, not a settled decision. Amend this section
-with the maintainer's choices before approval. Each pair shows the same task.
+Settled with the recommended answers (see above). The other options stay for
+the record. Each pair shows the same task.
 
 ### 1. Where do snapshots live?
 
