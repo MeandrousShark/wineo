@@ -313,6 +313,64 @@ vkd3d-proton
 - An acceptance checklist goes at the end once implementation lands, as in
   0039.
 
+## Decisions during implementation
+
+Made by the primary session on 2026-10-02 while the maintainer was away,
+within the approved design:
+
+- Build locks are best-effort on recovery paths (installer cleanup, trash
+  restore, snapshot rollback): when a config can't be read, or the
+  environment is native, those proceed unlocked rather than failing.
+- Lock helpers take the build the caller already resolved and never reload
+  config. Runner copies lock the source at the caller; the destination keeps
+  `InstallLock`.
+- `installer::unresolved_builds` counts runners only, since DXVK and
+  vkd3d-proton are copied into the prefix at install time.
+- `uses()` follows current resolution; there's no environment `proton`
+  alias. A run whose DXVK or vkd3d setting changed mid-run is refused by its
+  held lock with a generic in-use message rather than a named use.
+- Removal proceeds past unreadable configs with a warning per file, and
+  every removal first sweeps leftover staging from interrupted ones.
+- Art writes from the GUI carry the environment's identity (its config
+  file's device and inode), checked under the art lock before staging. An
+  atomic external config rewrite therefore closes an open Art page, which
+  fails safe.
+- The picker keeps the `image` crate's GIF decoder for animated first
+  frames; the whole picker branch added 148 KiB to the release binary.
+  Decoded thumbnails share a 64 MiB LRU.
+- SteamGridDB key availability is one app-level state with a sequence
+  number; the Art page, picker, and Add flow read it instead of looking the
+  key up themselves.
+- The Downloads page computes uses for every build in one pass
+  (`uses_all`), and doesn't refresh on its own when a game exits;
+  **Refresh** covers that.
+
+## Acceptance checklist
+
+Implementation landed on 2026-10-02 (through 8bf6f3b); the workspace tests
+pass (1,950). Maintainer acceptance in a real window, using throwaway
+environments or a `WINEO_PORTABLE_DIR` folder, run with
+`cargo run --release -p wineo-gui`:
+
+1. Open **Art** from the panel and both menus. Browse a PNG and an SVG,
+   Remove one, and check the card, panel, and desktop entry follow.
+2. Switch **Showing** to a target, set an override, then **Use environment
+   art**.
+3. **Change** the SteamGridDB game, then **Find...** each kind. Check the
+   first thumbnail is what `wineo art fetch --replace --only KIND` picks,
+   try **Load more** and each filter, and **Use** one, canceling another
+   partway.
+4. Leave the Art page during a **Use** and come back; close the window
+   during one.
+5. In global settings, set a key, try an invalid one, remove it, and check
+   **Find...** turns off and on. Try it with the keyring locked or absent.
+6. On **Downloads**, download a runner and a DXVK build, cancel one partway,
+   and delete an unused build. Try deleting a build an environment uses, and
+   one only reached through `GE-Proton-Latest`.
+7. `wineo runners remove`, `wineo dxvk remove`, and `wineo vkd3d remove` on
+   a terminal, with `--yes`, and piped without it.
+8. Start a game, then try deleting its runner from Downloads and the CLI.
+
 ## Scope limits
 
 - No library-wide art page or bulk fetch. `wineo art fetch` per environment
