@@ -12,9 +12,9 @@ importing, and cloning environments.
 [Plan 0039](plans/0039-gui-trash-and-validate.md) added removal, the trash,
 and checking for problems.
 
-A sidebar on the left has **Library** at the top, **Trash**, **Checkup**,
-and **Downloads** below it, and **Settings** pinned at the bottom. Add opens from
-the Library.
+A sidebar on the left has **Library** at the top. **Trash**, **Checkup**, and
+**Downloads** sit at the bottom, above a divider and **Settings**. Add opens
+from the Library.
 
 ## Starting it
 

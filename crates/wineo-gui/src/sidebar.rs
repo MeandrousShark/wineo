@@ -232,11 +232,10 @@ impl App {
         container(
             column![
                 self.sidebar_row(Section::Library, blocked),
-                divider(),
+                Space::new().height(Fill),
                 self.sidebar_row(Section::Trash, blocked),
                 self.sidebar_row(Section::Checkup, blocked),
                 self.sidebar_row(Section::Downloads, blocked),
-                Space::new().height(Fill),
                 divider(),
                 self.sidebar_row(Section::Settings, blocked),
             ]
