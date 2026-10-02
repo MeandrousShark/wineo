@@ -495,6 +495,9 @@ impl Page {
         page.global = true;
         page
     }
+    pub(crate) fn is_global(&self) -> bool {
+        self.global
+    }
     pub(crate) fn resolving(&self) -> bool {
         self.resolving.is_some()
     }
@@ -3151,6 +3154,7 @@ mod tests {
                 crate::sidebar::Section::Library => "1",
                 crate::sidebar::Section::Trash => "2",
                 crate::sidebar::Section::Checkup => "3",
+                crate::sidebar::Section::Settings => ",",
             };
             let (mut messages, status) =
                 crate::shortcuts::tests::input_messages("settings field", digit, Modifiers::CTRL);
@@ -3306,6 +3310,107 @@ mod tests {
             assert_eq!(app.section, Section::Library);
             assert_eq!(app.pending_section, None);
         }
+    }
+
+    #[test]
+    fn settings_row_is_selected_only_for_global_settings() {
+        use crate::sidebar::Section;
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let app = App::boot(paths.clone()).0;
+        assert!(app.section_selected(Section::Library));
+        assert!(!app.section_selected(Section::Settings));
+
+        let app = sidebar_app(&paths, true);
+        assert!(app.section_selected(Section::Settings));
+        assert!(!app.section_selected(Section::Library));
+        assert!(!app.section_selected(Section::Trash));
+
+        let app = sidebar_app(&paths, false);
+        assert!(app.section_selected(Section::Library));
+        assert!(!app.section_selected(Section::Settings));
+    }
+
+    #[test]
+    fn control_comma_and_the_row_open_global_settings_from_any_section() {
+        use crate::sidebar::Section;
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        for section in [Section::Library, Section::Trash, Section::Checkup] {
+            for keyboard in [false, true] {
+                let mut app = App::boot(paths.clone()).0;
+                let _ = app.update(Message::Section(section));
+                let _ = app.update(sidebar_request(Section::Settings, keyboard));
+                assert!(app.global_settings_open());
+                assert_eq!(app.section, Section::Library);
+                assert!(app.section_selected(Section::Settings));
+            }
+        }
+        let mut app = App::boot(paths.clone()).0;
+        crate::shortcuts::tests::press(&mut app, ",", Modifiers::CTRL);
+        assert!(app.global_settings_open());
+    }
+
+    #[test]
+    fn opening_settings_again_keeps_global_edits_and_its_page() {
+        use crate::sidebar::Section;
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut app = sidebar_app(&paths, true);
+        let _ = app.update(Message::Settings(Event::GlobalSwitch(
+            Switch::Gamemode,
+            true,
+        )));
+        let generation = app.settings.as_ref().unwrap().generation;
+        for keyboard in [false, true] {
+            let _ = app.update(sidebar_request(Section::Settings, keyboard));
+            let page = app.settings.as_ref().unwrap();
+            assert!(page.is_dirty() && !page.leave_prompt);
+            assert_eq!(page.generation, generation);
+            assert_eq!(app.pending_section, None);
+        }
+    }
+
+    #[test]
+    fn environment_settings_with_edits_prompt_before_opening_global_settings() {
+        use crate::sidebar::Section;
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        for keyboard in [false, true] {
+            let mut app = sidebar_app(&paths, false);
+            let _ = app.update(Message::Settings(Event::Switch(Switch::Wayland, true)));
+            let _ = app.update(sidebar_request(Section::Settings, keyboard));
+            let page = app.settings.as_ref().unwrap();
+            assert!(page.is_dirty() && page.leave_prompt && !page.is_global());
+            assert_eq!(app.pending_section, Some(Section::Settings));
+            assert!(app.section_selected(Section::Library));
+
+            let _ = app.update(Message::Settings(Event::KeepEditing));
+            assert!(!app.settings.as_ref().unwrap().is_global());
+            assert_eq!(app.pending_section, None);
+
+            let _ = app.update(sidebar_request(Section::Settings, keyboard));
+            let _ = app.update(Message::Settings(Event::Discard));
+            assert!(app.global_settings_open());
+            assert_eq!(app.pending_section, None);
+            assert!(app.section_selected(Section::Settings));
+        }
+        let mut app = sidebar_app(&paths, false);
+        let _ = app.update(Message::Section(Section::Settings));
+        assert!(app.global_settings_open());
+    }
+
+    #[test]
+    fn settings_row_waits_for_a_save_or_open_menu() {
+        use crate::sidebar::Section;
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut app = sidebar_app(&paths, false);
+        let _ = app.update(Message::Settings(Event::MenuOpened));
+        let _ = app.update(sidebar_request(Section::Settings, true));
+        let _ = app.update(Message::Section(Section::Settings));
+        assert!(!app.global_settings_open());
+        assert_eq!(app.pending_section, None);
     }
 
     fn target(page: &mut Page, paths: &Paths, name: &str, edit: TargetEdit) {

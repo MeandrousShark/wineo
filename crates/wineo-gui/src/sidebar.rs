@@ -14,6 +14,9 @@ pub(crate) enum Section {
     Library,
     Trash,
     Checkup,
+    /// A destination only: opening it shows the global settings page over
+    /// `Library`, so `App::section` never holds it.
+    Settings,
 }
 
 impl Section {
@@ -22,6 +25,7 @@ impl Section {
             Self::Library => "Library",
             Self::Trash => "Trash",
             Self::Checkup => "Checkup",
+            Self::Settings => "Settings",
         }
     }
 }
@@ -65,6 +69,7 @@ pub(crate) fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Section> {
         Key::Character("1") => Some(Section::Library),
         Key::Character("2") => Some(Section::Trash),
         Key::Character("3") => Some(Section::Checkup),
+        Key::Character(",") => Some(Section::Settings),
         _ => None,
     }
 }
@@ -99,6 +104,10 @@ impl App {
         if self.sidebar_blocked() {
             return Task::none();
         }
+        // Reopening would reload the page and discard its edits.
+        if section == Section::Settings && self.global_settings_open() {
+            return Task::none();
+        }
         if self.settings.is_some() {
             let task = self.settings_update(crate::settings::Event::Back);
             if let Some(page) = &self.settings {
@@ -112,12 +121,19 @@ impl App {
         self.switch_section(section)
     }
 
+    pub(crate) fn global_settings_open(&self) -> bool {
+        self.settings.as_ref().is_some_and(|page| page.is_global())
+    }
+
     pub(crate) fn switch_section(&mut self, section: Section) -> Task<Message> {
         if self.section == Section::Trash && section != Section::Trash {
             self.trash_page.cancel_review();
         }
         let opening_checkup = section == Section::Checkup && self.section != section;
-        self.section = section;
+        self.section = match section {
+            Section::Settings => Section::Library,
+            section => section,
+        };
         self.action_menu = None;
         self.hovered = None;
         self.search_focused = false;
@@ -131,60 +147,91 @@ impl App {
                     crate::checkup::Event::Open(crate::checkup::Scope::Global),
                 ),
                 Section::Checkup => Task::none(),
+                Section::Settings => self.open_global_settings(),
             },
         ])
+    }
+
+    fn sidebar_row(&self, section: Section, blocked: bool) -> Element<'_, Message> {
+        let palette = self.palette;
+        let mut label = row![text(section.label()).size(14), Space::new().width(Fill)]
+            .spacing(6)
+            .align_y(Center);
+        if section == Section::Checkup
+            && self
+                .checkup_change()
+                .is_some_and(|change| change.scope == crate::checkup::Scope::Global)
+        {
+            label = label.push(crate::spinner::spinner(palette, self.spinner_angle, 12.0));
+        }
+        if section == Section::Trash {
+            if matches!(self.change, Some(crate::removal::Change::Trash(_))) {
+                label = label.push(crate::spinner::spinner(palette, self.spinner_angle, 12.0));
+            }
+            if let Some(count) = self.trash_badge.count {
+                label = label.push(text(count).size(12).color(palette.muted));
+            }
+            if self.trash_badge.warning {
+                label = label.push(container(Space::new()).width(8).height(8).style(move |_| {
+                    container::Style::default()
+                        .background(palette.warning)
+                        .border(border::rounded(4))
+                }));
+            }
+        }
+        let selected = self.section_selected(section);
+        button(label)
+            .on_press_maybe((!blocked).then_some(Message::Section(section)))
+            .width(Fill)
+            .padding([10, 8])
+            .style(move |_, status| {
+                let mut style = crate::chips::secondary(palette, status);
+                if selected {
+                    style.background = Some(palette.primary.scale_alpha(0.15).into());
+                }
+                style
+            })
+            .into()
+    }
+
+    /// Global settings stand in for Library while open, but per-environment
+    /// settings belong to the Library panel and keep it highlighted.
+    pub(crate) fn section_selected(&self, section: Section) -> bool {
+        match section {
+            Section::Settings => self.global_settings_open(),
+            Section::Library => self.section == section && !self.global_settings_open(),
+            _ => self.section == section,
+        }
     }
 
     pub(crate) fn sidebar(&self) -> Element<'_, Message> {
         let palette = self.palette;
         let blocked = self.sidebar_blocked();
-        let rows = [Section::Library, Section::Trash, Section::Checkup].map(|section| {
-            let mut label = row![text(section.label()).size(14), Space::new().width(Fill)]
-                .spacing(6)
-                .align_y(Center);
-            if section == Section::Checkup
-                && self
-                    .checkup_change()
-                    .is_some_and(|change| change.scope == crate::checkup::Scope::Global)
-            {
-                label = label.push(crate::spinner::spinner(palette, self.spinner_angle, 12.0));
-            }
-            if section == Section::Trash {
-                if matches!(self.change, Some(crate::removal::Change::Trash(_))) {
-                    label = label.push(crate::spinner::spinner(palette, self.spinner_angle, 12.0));
-                }
-                if let Some(count) = self.trash_badge.count {
-                    label = label.push(text(count).size(12).color(palette.muted));
-                }
-                if self.trash_badge.warning {
-                    label =
-                        label.push(container(Space::new()).width(8).height(8).style(move |_| {
-                            container::Style::default()
-                                .background(palette.warning)
-                                .border(border::rounded(4))
-                        }));
-                }
-            }
-            let selected = self.section == section;
-            button(label)
-                .on_press_maybe((!blocked).then_some(Message::Section(section)))
+        let divider = move || {
+            container(Space::new())
                 .width(Fill)
-                .padding([10, 8])
-                .style(move |_, status| {
-                    let mut style = crate::chips::secondary(palette, status);
-                    if selected {
-                        style.background = Some(palette.primary.scale_alpha(0.15).into());
-                    }
-                    style
+                .height(1)
+                .style(move |_| {
+                    container::Style::default().background(palette.muted.scale_alpha(0.35))
                 })
-                .into()
-        });
-        container(column(rows).spacing(6))
-            .width(WIDTH)
-            .height(Fill)
-            .padding(8)
-            .style(move |_| container::Style::default().background(palette.surface))
-            .into()
+        };
+        container(
+            column![
+                self.sidebar_row(Section::Library, blocked),
+                divider(),
+                self.sidebar_row(Section::Trash, blocked),
+                self.sidebar_row(Section::Checkup, blocked),
+                Space::new().height(Fill),
+                divider(),
+                self.sidebar_row(Section::Settings, blocked),
+            ]
+            .spacing(6),
+        )
+        .width(WIDTH)
+        .height(Fill)
+        .padding(8)
+        .style(move |_| container::Style::default().background(palette.surface))
+        .into()
     }
 }
 
@@ -254,6 +301,52 @@ mod tests {
         ] {
             assert_eq!(shortcut(&Key::Character("2".into()), modifiers), None);
         }
+    }
+
+    #[test]
+    fn control_comma_ignores_captured_keys_and_extra_modifiers() {
+        let (_root, mut app) = fixture();
+        assert_eq!(
+            shortcut(&Key::Character(",".into()), Modifiers::CTRL),
+            Some(Section::Settings)
+        );
+        let _ = app.update(Message::Key(
+            Key::Character(",".into()),
+            Modifiers::CTRL,
+            Status::Captured,
+        ));
+        let _ = app.update(Message::KeyWithFocus(
+            Key::Character(",".into()),
+            Modifiers::CTRL,
+            Status::Captured,
+            true,
+        ));
+        assert!(app.settings.is_none());
+        for modifiers in [
+            Modifiers::empty(),
+            Modifiers::CTRL | Modifiers::ALT,
+            Modifiers::CTRL | Modifiers::SHIFT,
+            Modifiers::CTRL | Modifiers::LOGO,
+        ] {
+            assert_eq!(shortcut(&Key::Character(",".into()), modifiers), None);
+            app.search = "game".into();
+            crate::shortcuts::tests::press(&mut app, ",", modifiers);
+            assert!(app.settings.is_none());
+        }
+    }
+
+    #[test]
+    fn overlays_and_close_prompt_block_the_settings_row_and_shortcut() {
+        let (_root, mut app) = fixture();
+        let _ = app.update(Message::Add);
+        key(&mut app, ",");
+        let _ = app.update(Message::Section(Section::Settings));
+        assert!(app.settings.is_none());
+        app.flow = None;
+        app.close_prompt = true;
+        key(&mut app, ",");
+        let _ = app.update(Message::Section(Section::Settings));
+        assert!(app.settings.is_none());
     }
 
     #[test]

@@ -809,7 +809,7 @@ fn stale_list_reads_are_dropped() {
 fn review_completed_after_leaving_trash_is_dropped_even_on_return() {
     for destination in [
         Message::Section(sidebar::Section::Library),
-        Message::OpenGlobalSettings,
+        Message::Section(crate::sidebar::Section::Settings),
         Message::OpenSettings,
     ] {
         review_after_leaving_is_dropped(destination);

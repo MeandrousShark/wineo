@@ -776,7 +776,7 @@ mod tests {
     fn settings_keep_control_z_and_block_undo() {
         let (_root, mut app) = fixture(false);
         removed(&mut app);
-        let _ = app.update(Message::OpenGlobalSettings);
+        let _ = app.update(Message::Section(crate::sidebar::Section::Settings));
         assert!(app.settings.is_some());
         let _ = app.update(Message::Key(
             Key::Character("z".into()),

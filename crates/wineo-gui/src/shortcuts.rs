@@ -4,7 +4,7 @@ use iced::advanced::{
 };
 use iced::{Element, Event, Length, Rectangle, Size, Vector};
 
-/// Handles Ctrl+1/2/3 and the active Undo shortcut before any child sees them.
+/// Handles Ctrl+1/2/3, Ctrl+Comma, and the active Undo shortcut before any child sees them.
 /// A focused text_input inserts the digit and captures the key regardless of
 /// Ctrl, and the app's key subscription skips captured events.
 pub(crate) fn capture_with_undo<'a, Message, Theme, Renderer>(
@@ -269,6 +269,26 @@ pub(crate) mod tests {
         press(&mut app, "2", Modifiers::CTRL);
         assert_eq!(app.section, Section::Trash);
         assert_eq!(app.search, "game");
+    }
+
+    #[test]
+    fn control_comma_opens_settings_before_a_focused_input_but_extra_modifiers_type() {
+        let (messages, status) = input_messages("game", ",", Modifiers::CTRL);
+        assert_eq!(status, Status::Captured);
+        assert!(matches!(
+            messages.as_slice(),
+            [Message::Section(Section::Settings)]
+        ));
+        for modifiers in [
+            Modifiers::CTRL | Modifiers::SHIFT,
+            Modifiers::CTRL | Modifiers::ALT,
+        ] {
+            let (messages, _) = input_messages("game", ",", modifiers);
+            assert!(matches!(
+                messages.as_slice(),
+                [Message::SearchChanged(value)] if value == "game,"
+            ));
+        }
     }
 
     #[test]

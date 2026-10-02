@@ -391,15 +391,7 @@ impl App {
         let palette = self.palette;
         if self.section != crate::sidebar::Section::Library {
             return container(
-                row![
-                    text("wineo").size(18).color(palette.foreground),
-                    Space::new().width(Fill),
-                    button(text("⚙").size(19))
-                        .on_press(Message::OpenGlobalSettings)
-                        .padding([4, 10])
-                        .style(move |_, status| crate::chips::secondary(palette, status)),
-                ]
-                .align_y(Center),
+                row![text("wineo").size(18).color(palette.foreground)].align_y(Center),
             )
             .padding([8, 16])
             .width(Fill)
@@ -476,11 +468,6 @@ impl App {
                 button("Add")
                     .on_press_maybe((!self.foreground_busy()).then_some(Message::Add))
                     .padding([6, 12])
-                    .style(move |_, status| crate::chips::secondary(palette, status)),
-                Space::new().width(Fill),
-                button(text("⚙").size(19))
-                    .on_press(Message::OpenGlobalSettings)
-                    .padding([4, 10])
                     .style(move |_, status| crate::chips::secondary(palette, status)),
             ]
             .spacing(16)

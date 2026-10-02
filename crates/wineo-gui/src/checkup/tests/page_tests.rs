@@ -427,7 +427,7 @@ fn visibility_keyboard_and_ids_are_scoped_and_page_escape_keeps_results() {
     app.action_menu = None;
     let _ = app.update(Message::Section(Section::Trash));
     assert!(!app.checkup_visible() && app.checkup_key_scope().is_none());
-    let _ = app.update(Message::OpenGlobalSettings);
+    let _ = app.update(Message::Section(crate::sidebar::Section::Settings));
     assert!(app.settings.is_some() && app.checkup_key_scope().is_none());
 }
 
@@ -543,7 +543,7 @@ fn tab_still_reaches_undo_with_hidden_panel_results_or_settings() {
             assert!(undo.is_focused());
         }
     }
-    let _ = app.update(Message::OpenGlobalSettings);
+    let _ = app.update(Message::Section(crate::sidebar::Section::Settings));
     assert!(app.settings.is_some() && app.checkup_key_scope().is_none());
     assert!(
         app.update(Message::Key(

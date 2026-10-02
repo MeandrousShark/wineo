@@ -183,7 +183,6 @@ pub(crate) enum Message {
     ),
     SearchFocusChanged(bool),
     OpenSettings,
-    OpenGlobalSettings,
     Settings(settings::Event),
     Add,
     CloneEnvironment(String),
@@ -396,7 +395,6 @@ impl App {
                     | Message::Context(_)
                     | Message::ContextSettings(_)
                     | Message::OpenSettings
-                    | Message::OpenGlobalSettings
                     | Message::KeyWithFocus(..)
                     | Message::Scrolled(_)
                     | Message::Hover(_)
@@ -816,7 +814,6 @@ impl App {
                 Task::none()
             }
             Message::OpenSettings => self.open_settings(),
-            Message::OpenGlobalSettings => self.open_global_settings(),
             Message::Settings(event) => self.settings_update(event),
             Message::Add => {
                 if self.foreground_busy()
@@ -1296,7 +1293,7 @@ mod tests {
         let _ = app.update(Message::Add);
         let _ = app.update(Message::SearchChanged("hidden".into()));
         let _ = app.update(Message::Select("other".into()));
-        let _ = app.update(Message::OpenGlobalSettings);
+        let _ = app.update(Message::Section(crate::sidebar::Section::Settings));
         let _ = app.update(Message::Play);
         assert_eq!(app.search, "original");
         assert!(app.selected.is_none());
