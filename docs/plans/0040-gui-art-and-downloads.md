@@ -26,8 +26,9 @@ From the 2026-10-01 planning conversation:
   snapshots, portable copies, exec, and winetricks.
 - The SteamGridDB picker shows many results, not just the top hit.
 - Art lives on a per-environment **Art** page opened from the panel, like
-  Settings. The exact layout gets confirmed in a real window during step 3,
-  since the ASCII mockup didn't settle it.
+  Settings. Each kind is a row card, picked from an HTML mockup over a
+  columns layout because it's easier to read and says where each kind
+  appears.
 - The picker is one kind at a time: a thumbnail grid ranked best first,
   **Load more** for paging, a **Filters** toggle for the images ranking
   leaves out, and a details line with **Use** for the selected image.
@@ -93,30 +94,43 @@ detail actions and card menus. It replaces the library like an
 environment's settings page, with **Back**, and keeps Library highlighted.
 
 ```
-[< Back]  Hades art            SteamGridDB game: Hades (2020) [Change]
-                               Showing: [Environment v]
+[< Back]  Hades art              SteamGridDB game  Hades (2020) [Change]
+Showing [Environment] [Target: modded]
 
- Icon        Grid          Hero                     Logo
-+------+   +--------+   +-----------------------+   +----------+
-| img  |   |  img   |   |         img           |   |   img    |
-+------+   |        |   +-----------------------+   +----------+
-           +--------+
-SteamGridDB  Manual       SteamGridDB               none
-[Find...]  [Find...]     [Find...]                 [Find...]
-[Browse...] [Browse...]  [Browse...]               [Browse...]
-[Remove]   [Remove]      [Remove]
++----------------------------------------------------------------------+
+|     +-----+       Icon                       [Find...] [Browse...]  |
+|     | img |       SteamGridDB 36952, 256x256  [Remove]               |
+|     +-----+       App menu, desktop entry, and the card without grid |
++----------------------------------------------------------------------+
+|    +-------+      Grid                       [Find...] [Browse...]  |
+|    |  img  |      Manual, 600x900             [Remove]               |
+|    +-------+      The library card                                   |
++----------------------------------------------------------------------+
+| +-------------+   Hero                       [Find...] [Browse...]  |
+| |     img     |   SteamGridDB 81220, 1920x620 [Remove]               |
+| +-------------+   The top of the detail panel                        |
++----------------------------------------------------------------------+
+|   [ checker ]     Logo                       [Find...] [Browse...]  |
+|                   None                                               |
+|                   Over the hero, in the panel corner                 |
++----------------------------------------------------------------------+
 ```
 
-- Each kind shows its art, where it came from (SteamGridDB, Manual, or
-  none), **Find...** for the picker, **Browse...** for a local file through
-  the portal chooser from 0038, and **Remove**.
+- Each kind is a row card: the art on the left at its own shape, then the
+  kind, where its art came from (SteamGridDB with the asset ID, Manual, or
+  None) with its size, and a line saying where it appears, then
+  **Find...** for the picker, **Browse...** for a local file through the
+  portal chooser from 0038, and **Remove**. The page scrolls when the
+  window is short.
+- A transparent logo shows over a checker so its edges are visible.
 - The game line shows the saved SteamGridDB game. **Change** opens the same
   search and match list as 0038's Add flow and saves the pick with
   `save_game`. With no saved game, **Find...** asks for the game first.
-- **Showing** picks the environment or one of its targets. A target shows
+- **Showing** picks the environment or one of its targets, as a segmented
+  control when there are a few and a pick list past that. A target shows
   its overrides, with inherited kinds dimmed and labeled "From the
-  environment". Remove on a target override falls back to the environment's
-  art.
+  environment". On a target override, Remove reads **Use environment
+  art** and falls back to it.
 - Changes apply right away, since there's nothing to batch: no save bar.
   Each one updates the card, panel, and art cache, and reconciles desktop
   entries after an icon change.
@@ -213,8 +227,7 @@ vkd3d-proton
 2. **Core and CLI build removal.** `uses`, `remove` for runners and
    components, the three CLI commands, and docs.
 3. **Art page.** Panel and menu entries, kinds with Browse and Remove, the
-   target picker, and the game line. Maintainer looks at the layout in a
-   real window before step 4.
+   target picker, and the game line.
 4. **Picker.** Thumbnail grid, paging, filters, Use, and the missing-key
    state.
 5. **Key in global settings.**
