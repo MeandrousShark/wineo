@@ -386,6 +386,17 @@ Hover the selected runner to see its full name.
 - **Art to fetch:** independent Icon, Grid, Hero, and Logo switches for
   `new` and `import`. Turn all four off to disable automatic fetching.
 - **Environment variables** for every launch.
+- **SteamGridDB:** where the API key comes from: "From
+  WINEO_STEAMGRIDDB_KEY", "Saved in the keyring", "Saved in a plain text
+  file" with its path, or "No key". The key itself is never shown.
+
+**Set key...** takes the key in a masked field, checks it with SteamGridDB,
+and saves it like `wineo art key`: to the keyring, or to a plain text file
+with a warning when there's no keyring. **Remove key** deletes the saved
+key. Both apply right away, outside the Save bar, and don't count as
+edits. You can leave the page while one runs, and its result shows when you
+come back. With `WINEO_STEAMGRIDDB_KEY` set, the section says it overrides
+the saved key. See [The SteamGridDB key](art.md#the-steamgriddb-key).
 
 ## Keyboard
 
