@@ -17,7 +17,7 @@ use toml_edit::{DocumentMut, Item, Table, Value};
 
 use crate::cancel::Token;
 use crate::config;
-use crate::environment::Environment;
+use crate::environment::{Environment, EnvironmentIdentity};
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
 use crate::name;
@@ -337,12 +337,24 @@ pub fn set_manual(
     target: Option<&str>,
     kind: Kind,
     file: &Path,
+    expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Stored> {
     let original = file
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    set_manual_as(paths, env, target, kind, file, &original)
+    check_spot(paths, env, target)?;
+    let bytes = read_art(file)?;
+    store_manual(
+        paths,
+        env,
+        target,
+        kind,
+        &bytes,
+        &original,
+        file,
+        expected_identity,
+    )
 }
 
 /// Like `set_manual`, but records `original` as the source's name instead of
@@ -357,7 +369,7 @@ pub fn set_manual_as(
 ) -> Result<Stored> {
     check_spot(paths, env, target)?;
     let bytes = read_art(file)?;
-    store_manual(paths, env, target, kind, &bytes, original, file)
+    store_manual(paths, env, target, kind, &bytes, original, file, None)
 }
 
 /// Like `set_manual`, for an image already in memory. `original` is the file
@@ -382,9 +394,11 @@ pub fn set_manual_bytes(
         bytes,
         original,
         Path::new(original),
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn store_manual(
     paths: &Paths,
     env: &str,
@@ -393,6 +407,7 @@ fn store_manual(
     bytes: &[u8],
     original: &str,
     file: &Path,
+    expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Stored> {
     let format = detect(bytes)
         .filter(|format| kind.accepts(*format))
@@ -403,6 +418,7 @@ fn store_manual(
 
     let art_dir = paths.art_dir(env);
     let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    check_environment_identity(paths, env, expected_identity)?;
     // Checked again under the lock, so art never outlives a concurrent `rm`.
     Environment::ensure_exists(paths, env)?;
     let mut art = ArtFile::open(&art_dir)?;
@@ -437,6 +453,19 @@ fn store_manual(
     })
 }
 
+fn check_environment_identity(
+    paths: &Paths,
+    env: &str,
+    expected_identity: Option<EnvironmentIdentity>,
+) -> Result<()> {
+    if expected_identity
+        .is_some_and(|expected| EnvironmentIdentity::read(paths, env) != Some(expected))
+    {
+        return Err(Error::ArtEnvironmentChanged(env.to_owned()));
+    }
+    Ok(())
+}
+
 /// A SteamGridDB image, downloaded and identified.
 #[derive(Debug)]
 pub struct Downloaded {
@@ -458,9 +487,10 @@ pub(crate) fn publish_fetched(
     image: &Downloaded,
     replace: bool,
 ) -> Result<Option<Stored>> {
-    publish_fetched_with_cancel(paths, env, target, kind, image, replace, None)
+    publish_fetched_with_cancel(paths, env, target, kind, image, replace, None, None)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn publish_fetched_with_cancel(
     paths: &Paths,
     env: &str,
@@ -469,6 +499,7 @@ pub(crate) fn publish_fetched_with_cancel(
     image: &Downloaded,
     replace: bool,
     cancel: Option<&Token>,
+    expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Option<Stored>> {
     let Downloaded {
         asset,
@@ -481,6 +512,7 @@ pub(crate) fn publish_fetched_with_cancel(
     if cancel.is_some_and(Token::is_canceled) {
         return Err(Error::Canceled("download"));
     }
+    check_environment_identity(paths, env, expected_identity)?;
     check_spot(paths, env, target)?;
     let mut art = ArtFile::open(&art_dir)?;
     let dir = spot_dir(&art_dir, target);
@@ -1864,6 +1896,53 @@ manual = \"logo.png\"
     }
 
     #[test]
+    fn manual_art_rechecks_identity_after_waiting_for_art_lock() {
+        let (root, paths) = store();
+        let prior = source(root.path(), "prior.png", PNG);
+        set_manual(&paths, "hades", None, Kind::Grid, &prior, None).unwrap();
+        let identity = EnvironmentIdentity::read(&paths, "hades").unwrap();
+        let replacement = source(root.path(), "replacement.jpg", JPEG);
+        let art_dir = paths.art_dir("hades");
+        let saved_art = fs::read(art_dir.join("grid.png")).unwrap();
+        let saved_record = fs::read(art_dir.join(ART_FILE)).unwrap();
+        let held = Locks::new(&paths).config(&art_dir.join(ART_FILE)).unwrap();
+        let (started, ready) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn({
+            let paths = paths.clone();
+            move || {
+                started.send(()).unwrap();
+                set_manual(
+                    &paths,
+                    "hades",
+                    None,
+                    Kind::Grid,
+                    &replacement,
+                    Some(identity),
+                )
+            }
+        });
+        ready
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let config = paths.environment_config("hades");
+        let next = config.with_extension("replacement");
+        fs::write(&next, fs::read(&config).unwrap()).unwrap();
+        fs::rename(next, config).unwrap();
+        drop(held);
+
+        let err = worker.join().unwrap().unwrap_err();
+        assert_ne!(EnvironmentIdentity::read(&paths, "hades"), Some(identity));
+        assert!(matches!(
+            err,
+            Error::ArtEnvironmentChanged(name) if name == "hades"
+        ));
+        assert_eq!(fs::read(art_dir.join("grid.png")).unwrap(), saved_art);
+        assert_eq!(fs::read(art_dir.join(ART_FILE)).unwrap(), saved_record);
+        assert!(!art_dir.join("grid.jpg").exists());
+    }
+
+    #[test]
     fn set_as_records_the_given_name() {
         let (root, paths) = store();
         let file = source(root.path(), "0123abcd", WEBP);
@@ -1880,7 +1959,7 @@ manual = \"logo.png\"
     fn set_keeps_the_bytes_and_records_the_original_name() {
         let (root, paths) = store();
         let file = source(root.path(), "My Poster.webp", WEBP);
-        let stored = set_manual(&paths, "hades", None, Kind::Grid, &file).unwrap();
+        let stored = set_manual(&paths, "hades", None, Kind::Grid, &file, None).unwrap();
         let art = paths.art_dir("hades");
         assert_eq!(stored.path, art.join("grid.webp"));
         assert_eq!(stored.format, Format::Webp);
@@ -1913,7 +1992,7 @@ manual = \"logo.png\"
             (&svg, Kind::Logo),
             (&webp, Kind::Icon),
         ] {
-            let err = set_manual(&paths, "hades", None, kind, file).unwrap_err();
+            let err = set_manual(&paths, "hades", None, kind, file, None).unwrap_err();
             assert!(matches!(err, Error::ArtFormat { .. }), "{err}");
         }
         let err = set_manual(
@@ -1922,6 +2001,7 @@ manual = \"logo.png\"
             None,
             Kind::Grid,
             &source(root.path(), "x.ico", &icon),
+            None,
         )
         .unwrap_err();
         assert_eq!(
@@ -1935,17 +2015,17 @@ manual = \"logo.png\"
         let mut big = PNG.to_vec();
         big.resize(MAX_BYTES as usize + 1, 0);
         let big = source(root.path(), "big.png", &big);
-        let err = set_manual(&paths, "hades", None, Kind::Hero, &big).unwrap_err();
+        let err = set_manual(&paths, "hades", None, Kind::Hero, &big, None).unwrap_err();
         assert!(matches!(err, Error::ArtTooLarge(_)), "{err}");
         let mut limit = PNG.to_vec();
         limit.resize(MAX_BYTES as usize, 0);
         let limit = source(root.path(), "limit.png", &limit);
-        set_manual(&paths, "hades", None, Kind::Hero, &limit).unwrap();
+        set_manual(&paths, "hades", None, Kind::Hero, &limit, None).unwrap();
 
         let ok = source(root.path(), "ok.png", PNG);
-        let err = set_manual(&paths, "hades", Some("nope"), Kind::Icon, &ok).unwrap_err();
+        let err = set_manual(&paths, "hades", Some("nope"), Kind::Icon, &ok, None).unwrap_err();
         assert!(matches!(err, Error::UnknownTarget { .. }), "{err}");
-        let err = set_manual(&paths, "nope", None, Kind::Icon, &ok).unwrap_err();
+        let err = set_manual(&paths, "nope", None, Kind::Icon, &ok, None).unwrap_err();
         assert!(matches!(err, Error::UnknownEnvironment(_)), "{err}");
         let art = paths.art_dir("hades");
         assert!(!art.join("icon.png").exists());
@@ -1958,10 +2038,10 @@ manual = \"logo.png\"
         let art = paths.art_dir("hades");
         let unrecorded = touch(&art, "icon.svg");
         let first = source(root.path(), "a.png", PNG);
-        let stored = set_manual(&paths, "hades", None, Kind::Icon, &first).unwrap();
+        let stored = set_manual(&paths, "hades", None, Kind::Icon, &first, None).unwrap();
         assert_eq!(stored.removed, vec![unrecorded.clone()]);
         let second = source(root.path(), "b.ico", &ico());
-        let stored = set_manual(&paths, "hades", None, Kind::Icon, &second).unwrap();
+        let stored = set_manual(&paths, "hades", None, Kind::Icon, &second, None).unwrap();
         assert_eq!(stored.path, art.join("icon.ico"));
         assert_eq!(stored.removed, vec![art.join("icon.png")]);
         let names: Vec<_> = fs::read_dir(&art)
@@ -1977,9 +2057,9 @@ manual = \"logo.png\"
         let (root, paths) = store();
         let art = paths.art_dir("hades");
         let env_icon = source(root.path(), "env.png", PNG);
-        set_manual(&paths, "hades", None, Kind::Icon, &env_icon).unwrap();
+        set_manual(&paths, "hades", None, Kind::Icon, &env_icon, None).unwrap();
         let svg = source(root.path(), "server.svg", b"<svg/>");
-        let stored = set_manual(&paths, "hades", Some("server"), Kind::Icon, &svg).unwrap();
+        let stored = set_manual(&paths, "hades", Some("server"), Kind::Icon, &svg, None).unwrap();
         assert_eq!(stored.path, art.join("server/icon.svg"));
         let listing = list(&paths, "hades").unwrap();
         assert_eq!(listing.targets.len(), 1);
@@ -2068,7 +2148,7 @@ manual = \"b.png\"
         let (root, paths) = store();
         assert!(!remove_all(&paths, "hades").unwrap());
         let file = source(root.path(), "a.png", PNG);
-        set_manual(&paths, "hades", Some("server"), Kind::Icon, &file).unwrap();
+        set_manual(&paths, "hades", Some("server"), Kind::Icon, &file, None).unwrap();
         assert!(remove_all(&paths, "hades").unwrap());
         assert!(!paths.art_dir("hades").exists());
     }
@@ -2077,8 +2157,8 @@ manual = \"b.png\"
     fn staged_art_is_copied_and_never_replaces_anything() {
         let (root, paths) = store();
         let file = source(root.path(), "a.png", PNG);
-        set_manual(&paths, "hades", Some("server"), Kind::Icon, &file).unwrap();
-        set_manual(&paths, "hades", None, Kind::Grid, &file).unwrap();
+        set_manual(&paths, "hades", Some("server"), Kind::Icon, &file, None).unwrap();
+        set_manual(&paths, "hades", None, Kind::Grid, &file, None).unwrap();
         let locks = Locks::new(&paths);
         let source_dir = paths.art_dir("hades");
         let copy = paths.art_dir("copy");
@@ -2110,9 +2190,9 @@ manual = \"b.png\"
     fn a_removed_targets_art_is_cleaned_up() {
         let (root, paths) = store();
         let file = source(root.path(), "a.png", PNG);
-        set_manual(&paths, "hades", None, Kind::Icon, &file).unwrap();
-        set_manual(&paths, "hades", Some("server"), Kind::Icon, &file).unwrap();
-        set_manual(&paths, "hades", Some("server"), Kind::Logo, &file).unwrap();
+        set_manual(&paths, "hades", None, Kind::Icon, &file, None).unwrap();
+        set_manual(&paths, "hades", Some("server"), Kind::Icon, &file, None).unwrap();
+        set_manual(&paths, "hades", Some("server"), Kind::Logo, &file, None).unwrap();
         let art = paths.art_dir("hades");
         touch(&target_dir(&art, "server"), "notes.txt");
 

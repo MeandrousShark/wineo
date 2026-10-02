@@ -87,6 +87,9 @@ pub enum Error {
     #[error("environment `{0}` does not exist")]
     UnknownEnvironment(String),
 
+    #[error("environment `{0}` changed before artwork could be written")]
+    ArtEnvironmentChanged(String),
+
     #[error("environment `{0}` already exists")]
     EnvironmentExists(String),
 

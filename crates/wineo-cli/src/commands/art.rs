@@ -92,7 +92,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     match args.command {
         Command::Set { spot, kind, file } => {
             let (env, target) = split(&spot);
-            art::set_manual(paths, env, target, kind, &file)?;
+            art::set_manual(paths, env, target, kind, &file, None)?;
             println!("Set {kind} for {spot}");
             if kind == Kind::Icon {
                 apply_desktop(paths, env)?;

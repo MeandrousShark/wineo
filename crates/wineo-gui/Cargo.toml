@@ -15,9 +15,9 @@ sha2.workspace = true
 tempfile.workspace = true
 jiff.workspace = true
 iced = { version = "0.14", features = ["image-without-codecs", "svg", "tokio", "advanced"] }
-image = { workspace = true, features = ["webp"] }
+image = { workspace = true, features = ["webp", "gif"] }
 resvg = "0.45"
-tokio = { version = "1", features = ["rt", "sync"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 ashpd = { version = "0.12.3", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]

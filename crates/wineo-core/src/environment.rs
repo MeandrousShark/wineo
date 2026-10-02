@@ -30,6 +30,24 @@ pub struct Environment {
     pub config: EnvironmentConfig,
 }
 
+/// The config file identity used to distinguish a replaced environment with
+/// the same name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EnvironmentIdentity {
+    device: u64,
+    inode: u64,
+}
+
+impl EnvironmentIdentity {
+    pub fn read(paths: &Paths, name: &str) -> Option<Self> {
+        let metadata = fs::metadata(paths.environment_config(name)).ok()?;
+        Some(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HeroicIdSnapshot {
     text: String,

@@ -4,6 +4,7 @@ use anyhow::{Result, bail};
 
 use crate::art::{self, Downloaded, Kind, Source, Stored, detect, find, spot_dir};
 use crate::cancel::Token;
+use crate::environment::EnvironmentIdentity;
 use crate::error::Error;
 use crate::paths::Paths;
 use crate::steamgriddb::{Api, Filters, Image, rank};
@@ -83,6 +84,7 @@ pub fn use_image(
     image: &Image,
     progress: impl FnMut(u64, Option<u64>),
     cancel: &Token,
+    expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Fetched> {
     art::check_spot(paths, env, target)?;
     let bytes = api.download_with_progress(&image.url, progress, cancel)?;
@@ -104,6 +106,7 @@ pub fn use_image(
         },
         Mode::Replace,
         Some(cancel),
+        expected_identity,
     )
 }
 
@@ -153,9 +156,10 @@ pub fn publish(
     image: &Downloaded,
     mode: Mode,
 ) -> Result<Fetched> {
-    publish_with_cancel(paths, env, target, kind, image, mode, None)
+    publish_with_cancel(paths, env, target, kind, image, mode, None, None)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn publish_with_cancel(
     paths: &Paths,
     env: &str,
@@ -164,6 +168,7 @@ fn publish_with_cancel(
     image: &Downloaded,
     mode: Mode,
     cancel: Option<&Token>,
+    expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Fetched> {
     art::check_spot(paths, env, target)?;
     if mode == Mode::Fill
@@ -180,8 +185,21 @@ fn publish_with_cancel(
             image,
             mode != Mode::Fill,
             Some(cancel),
+            expected_identity,
         )?,
-        None => art::publish_fetched(paths, env, target, kind, image, mode != Mode::Fill)?,
+        None => match expected_identity {
+            Some(expected_identity) => art::publish_fetched_with_cancel(
+                paths,
+                env,
+                target,
+                kind,
+                image,
+                mode != Mode::Fill,
+                None,
+                Some(expected_identity),
+            )?,
+            None => art::publish_fetched(paths, env, target, kind, image, mode != Mode::Fill)?,
+        },
     };
     Ok(match published {
         Some(stored) => Fetched::Stored {
@@ -297,6 +315,13 @@ mod tests {
         path
     }
 
+    fn replace_environment(paths: &Paths) {
+        let config = paths.environment_config("hades");
+        let replacement = config.with_extension("replacement");
+        fs::write(&replacement, fs::read(&config).unwrap()).unwrap();
+        fs::rename(replacement, config).unwrap();
+    }
+
     #[test]
     fn fetch_stores_the_best_image_and_records_it() {
         let (_root, paths) = setup();
@@ -384,6 +409,7 @@ mod tests {
             &image,
             |received, total| progress.push((received, total)),
             &Token::new(),
+            None,
         )
         .unwrap();
         assert!(matches!(fetched, Fetched::Stored { asset: 42, .. }));
@@ -393,6 +419,104 @@ mod tests {
             fs::read(paths.art_dir("hades").join("grid.png")).unwrap(),
             PNG
         );
+    }
+
+    #[test]
+    fn use_image_rejects_replacement_after_final_progress() {
+        let (_root, paths) = setup();
+        let api = FakeApi::default();
+        let image = Image {
+            id: 70,
+            url: "https://cdn.example/replacement.jpg".into(),
+            ..Image::default()
+        };
+        api.bytes(&image.url, JPEG);
+        let identity = EnvironmentIdentity::read(&paths, "hades").unwrap();
+        let source = manual(&paths, "source.png", PNG);
+        art::set_manual(&paths, "hades", None, Kind::Grid, &source, None).unwrap();
+        let art_dir = paths.art_dir("hades");
+        let saved_art = fs::read(art_dir.join("grid.png")).unwrap();
+        let saved_record = fs::read(art_dir.join(art::ART_FILE)).unwrap();
+        let mut completed = false;
+
+        let err = use_image(
+            &paths,
+            "hades",
+            None,
+            Kind::Grid,
+            &Api::new(&api, "k"),
+            &image,
+            |received, total| {
+                if Some(received) == total {
+                    replace_environment(&paths);
+                    completed = true;
+                }
+            },
+            &Token::new(),
+            Some(identity),
+        )
+        .unwrap_err();
+
+        assert!(completed);
+        assert_ne!(EnvironmentIdentity::read(&paths, "hades"), Some(identity));
+        assert!(matches!(
+            err.downcast_ref::<Error>(),
+            Some(Error::ArtEnvironmentChanged(name)) if name == "hades"
+        ));
+        assert_eq!(fs::read(art_dir.join("grid.png")).unwrap(), saved_art);
+        assert_eq!(fs::read(art_dir.join(art::ART_FILE)).unwrap(), saved_record);
+        assert!(!art_dir.join("grid.jpg").exists());
+    }
+
+    #[test]
+    fn use_image_rechecks_identity_after_waiting_for_art_lock() {
+        let (_root, paths) = setup();
+        let image = Image {
+            id: 71,
+            url: "https://cdn.example/locked.jpg".into(),
+            ..Image::default()
+        };
+        let identity = EnvironmentIdentity::read(&paths, "hades").unwrap();
+        let source = manual(&paths, "source.png", PNG);
+        art::set_manual(&paths, "hades", None, Kind::Grid, &source, None).unwrap();
+        let art_dir = paths.art_dir("hades");
+        let saved_art = fs::read(art_dir.join("grid.png")).unwrap();
+        let saved_record = fs::read(art_dir.join(art::ART_FILE)).unwrap();
+        let held = crate::operation::Locks::new(&paths)
+            .config(&art_dir.join(art::ART_FILE))
+            .unwrap();
+        let (progress, seen) = std::sync::mpsc::channel();
+        let worker = thread::spawn({
+            let paths = paths.clone();
+            move || {
+                let api = FakeApi::default();
+                api.bytes(&image.url, JPEG);
+                use_image(
+                    &paths,
+                    "hades",
+                    None,
+                    Kind::Grid,
+                    &Api::new(&api, "k"),
+                    &image,
+                    |_, _| progress.send(()).unwrap(),
+                    &Token::new(),
+                    Some(identity),
+                )
+            }
+        });
+        seen.recv_timeout(Duration::from_secs(2)).unwrap();
+        thread::sleep(Duration::from_millis(30));
+        replace_environment(&paths);
+        drop(held);
+
+        let err = worker.join().unwrap().unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<Error>(),
+            Some(Error::ArtEnvironmentChanged(name)) if name == "hades"
+        ));
+        assert_eq!(fs::read(art_dir.join("grid.png")).unwrap(), saved_art);
+        assert_eq!(fs::read(art_dir.join(art::ART_FILE)).unwrap(), saved_record);
+        assert!(!art_dir.join("grid.jpg").exists());
     }
 
     #[test]
@@ -418,6 +542,7 @@ mod tests {
             &image,
             |_, _| cancel.cancel(),
             &cancel,
+            None,
         )
         .unwrap_err();
         assert!(matches!(
@@ -463,6 +588,7 @@ mod tests {
             &replacement,
             Mode::Replace,
             Some(&cancel),
+            None,
         )
         .unwrap_err();
         release.join().unwrap();
@@ -511,6 +637,7 @@ mod tests {
             &image,
             |_, _| {},
             &Token::new(),
+            None,
         )
         .unwrap_err();
         assert_eq!(
@@ -544,7 +671,7 @@ mod tests {
         let file = paths.art_dir("hades").join("a.png");
         fs::write(&file, PNG).unwrap();
         fs::remove_file(&unrecorded).unwrap();
-        crate::art::set_manual(&paths, "hades", None, Kind::Logo, &file).unwrap();
+        crate::art::set_manual(&paths, "hades", None, Kind::Logo, &file, None).unwrap();
         assert_eq!(
             fetch(&paths, &api, None, Kind::Logo, Mode::Fill).unwrap(),
             Fetched::Skipped {

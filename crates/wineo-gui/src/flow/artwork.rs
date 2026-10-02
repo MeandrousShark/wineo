@@ -496,7 +496,7 @@ impl Draft {
                     Some(prefilled) => {
                         art::set_manual_as(paths, name, None, *kind, &path, &prefilled.original)
                     }
-                    None => art::set_manual(paths, name, None, *kind, &path),
+                    None => art::set_manual(paths, name, None, *kind, &path, None),
                 }
                 .map_err(|e| e.to_string())
             });

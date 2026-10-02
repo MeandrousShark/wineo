@@ -1,28 +1,29 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use iced::widget::{
     button, column, container, image, pick_list, row, scrollable, stack, text, text_input,
 };
 use iced::{Center, ContentFit, Element, Fill, Task, border};
 use wineo_core::art::{self, Kind, Origin, Resolved, Source};
+use wineo_core::cancel::Token;
 use wineo_core::config::{self, GlobalConfig};
-use wineo_core::desktop;
 use wineo_core::download::Https;
 use wineo_core::environment::Environment;
+pub(crate) use wineo_core::environment::EnvironmentIdentity;
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game};
+use wineo_core::{art_fetch, desktop};
 
-use crate::artwork;
 use crate::chips::secondary;
 use crate::flow::artwork::{self as flow_artwork, Match};
 use crate::theme::Palette;
 use crate::wheel;
+use crate::{art_picker, artwork};
 
 const PAGE_WIDTH: f32 = 860.0;
 const KIND_ROWS: [(Kind, &str, &str, u32, u32); 4] = [
@@ -40,25 +41,14 @@ const KIND_ROWS: [(Kind, &str, &str, u32, u32); 4] = [
 
 type Spot = (Option<String>, Kind);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct EnvironmentIdentity {
-    device: u64,
-    inode: u64,
-}
-
-impl EnvironmentIdentity {
-    pub(crate) fn read(paths: &Paths, name: &str) -> Option<Self> {
-        let metadata = fs::metadata(paths.environment_config(name)).ok()?;
-        Some(Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-        })
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
     Back,
+    Find(Kind),
+    Picker(u64, art_picker::Event),
+    UseProgress(u64, u64, Option<u64>),
+    Used(u64, u64, Spot, WriteOutcome),
+    CancelUse,
     Settings,
     Showing(Showing),
     Browse(Kind),
@@ -162,6 +152,12 @@ impl Step {
     }
 }
 
+struct Download {
+    spot: Spot,
+    token: Token,
+    status: String,
+}
+
 pub(crate) struct Page {
     pub(crate) name: String,
     pub(crate) generation: u64,
@@ -183,13 +179,33 @@ pub(crate) struct Page {
     path_kind: Option<Kind>,
     path: String,
     change: Option<Change>,
+    pending_find: Option<Kind>,
+    picker: Option<art_picker::Picker>,
+    picker_sequence: u64,
+    thumbnails: Arc<Mutex<art_picker::ThumbnailCache>>,
+    download: Option<Download>,
     search_sequence: u64,
     pub(crate) write_sequence: u64,
     pub(crate) writing: bool,
 }
 
 impl Page {
+    #[cfg(test)]
     pub(crate) fn new(name: String, generation: u64, identity: EnvironmentIdentity) -> Self {
+        Self::with_thumbnail_cache(
+            name,
+            generation,
+            identity,
+            Arc::new(Mutex::new(art_picker::ThumbnailCache::default())),
+        )
+    }
+
+    pub(crate) fn with_thumbnail_cache(
+        name: String,
+        generation: u64,
+        identity: EnvironmentIdentity,
+        thumbnails: Arc<Mutex<art_picker::ThumbnailCache>>,
+    ) -> Self {
         Self {
             name,
             generation,
@@ -211,6 +227,11 @@ impl Page {
             path_kind: None,
             path: String::new(),
             change: None,
+            pending_find: None,
+            picker: None,
+            picker_sequence: 0,
+            thumbnails,
+            download: None,
             search_sequence: 0,
             write_sequence: 0,
             writing: false,
@@ -224,6 +245,7 @@ impl Page {
     pub(crate) fn finish_abandoned_write(&mut self, sequence: u64) {
         if self.write_sequence == sequence {
             self.writing = false;
+            self.download = None;
         }
     }
 
@@ -248,6 +270,8 @@ impl Page {
         self.path.clear();
         self.search_sequence = self.search_sequence.wrapping_add(1);
         self.change = None;
+        self.pending_find = None;
+        self.close_picker();
     }
 
     pub(crate) fn load(
@@ -321,7 +345,89 @@ impl Page {
         decodes: Arc<tokio::sync::Semaphore>,
     ) -> Step {
         match event {
-            Event::Back | Event::Settings => Step::none(),
+            Event::Back => {
+                self.close_picker();
+                self.change = None;
+                self.pending_find = None;
+                Step::none()
+            }
+            Event::Find(kind) if !self.writing && self.key_available => {
+                if self.game_id.is_some() {
+                    Step::task(self.open_picker(paths, kind))
+                } else {
+                    self.pending_find = Some(kind);
+                    self.update(paths, Event::Change, decodes)
+                }
+            }
+            Event::Picker(visit, event)
+                if visit == self.picker_sequence && self.picker.is_some() =>
+            {
+                match event {
+                    art_picker::Event::Back => {
+                        self.close_picker();
+                        Step::none()
+                    }
+                    art_picker::Event::Use => self.begin_use(paths),
+                    art_picker::Event::UseSelected(index) => {
+                        self.picker.as_mut().unwrap().select(index);
+                        self.begin_use(paths)
+                    }
+                    art_picker::Event::Cancel => {
+                        self.cancel_use();
+                        Step::none()
+                    }
+                    event => {
+                        let task = self.picker.as_mut().unwrap().update(
+                            paths,
+                            self.game_id.unwrap(),
+                            event,
+                            decodes,
+                        );
+                        Step::task(task.map(move |event| Event::Picker(visit, event)))
+                    }
+                }
+            }
+            Event::CancelUse => {
+                self.cancel_use();
+                Step::none()
+            }
+            Event::UseProgress(sequence, received, total)
+                if self.writing && sequence == self.write_sequence =>
+            {
+                if let Some(download) = &mut self.download {
+                    download.status = match total {
+                        Some(total) => format!("Downloading: {received} / {total} bytes"),
+                        None => format!("Downloading: {received} bytes"),
+                    };
+                }
+                Step::none()
+            }
+            Event::Used(sequence, visit, spot, result)
+                if self.writing && sequence == self.write_sequence =>
+            {
+                self.writing = false;
+                self.download = None;
+                if let Some(error) = result.error {
+                    self.row_errors.insert(spot, error.clone());
+                    if visit == self.picker_sequence
+                        && let Some(picker) = &mut self.picker
+                    {
+                        picker.error = Some(error);
+                    }
+                }
+                if result.changed {
+                    if visit == self.picker_sequence {
+                        self.close_picker();
+                    }
+                    Step {
+                        task: self.load(paths, decodes),
+                        changed: true,
+                    }
+                } else {
+                    Step::none()
+                }
+            }
+            Event::Settings => Step::none(),
             Event::Loaded(sequence, result) if sequence == self.load_sequence => {
                 self.loading = false;
                 match result {
@@ -337,6 +443,7 @@ impl Page {
                         }
                         self.key_available = snapshot.key_available;
                         if self.game_id != snapshot.game {
+                            self.close_picker();
                             self.game_id = snapshot.game;
                             self.game = None;
                             self.looked_up = None;
@@ -599,9 +706,14 @@ impl Page {
                         self.lookup_sequence = self.lookup_sequence.wrapping_add(1);
                         self.game = Some(game);
                         self.change = None;
-                        let task = self.load(paths, decodes);
+                        let load = self.load(paths, decodes);
+                        let picker = self
+                            .pending_find
+                            .take()
+                            .map(|kind| self.open_picker(paths, kind))
+                            .unwrap_or_else(Task::none);
                         Step {
-                            task,
+                            task: Task::batch([load, picker]),
                             changed: true,
                         }
                     }
@@ -615,10 +727,120 @@ impl Page {
             }
             Event::CancelChange if !self.writing => {
                 self.change = None;
+                self.pending_find = None;
                 Step::none()
             }
             _ => Step::none(),
         }
+    }
+
+    pub(crate) fn has_overlay(&self) -> bool {
+        self.picker.is_some() || self.change.is_some()
+    }
+
+    pub(crate) fn picker_event(&self, event: art_picker::Event) -> Option<Event> {
+        self.picker
+            .as_ref()
+            .map(|_| Event::Picker(self.picker_sequence, event))
+    }
+
+    pub(crate) fn use_token(&self) -> Option<Token> {
+        self.download
+            .as_ref()
+            .map(|download| download.token.clone())
+    }
+
+    fn cancel_use(&self) {
+        if let Some(download) = &self.download {
+            download.token.cancel();
+        }
+    }
+
+    fn close_picker(&mut self) {
+        if let Some(picker) = self.picker.take() {
+            picker.cancel_thumbnails();
+        }
+        self.picker_sequence = self.picker_sequence.wrapping_add(1);
+    }
+
+    pub(crate) fn cancel_thumbnails(&self) {
+        if let Some(picker) = &self.picker {
+            picker.cancel_thumbnails();
+        }
+    }
+
+    fn open_picker(&mut self, paths: &Paths, kind: Kind) -> Task<Event> {
+        self.close_picker();
+        self.path_kind = None;
+        let visit = self.picker_sequence;
+        let mut picker = art_picker::Picker::with_cache(kind, 0, self.thumbnails.clone());
+        let task = picker.load(paths, self.game_id.unwrap());
+        self.picker = Some(picker);
+        task.map(move |event| Event::Picker(visit, event))
+    }
+
+    fn begin_use(&mut self, paths: &Paths) -> Step {
+        if self.writing {
+            return Step::none();
+        }
+        let Some(picker) = &self.picker else {
+            return Step::none();
+        };
+        let Some(image) = picker.selected().cloned() else {
+            return Step::none();
+        };
+        let spot = (self.showing.clone(), picker.kind);
+        self.writing = true;
+        self.write_sequence = self.write_sequence.wrapping_add(1);
+        self.load_sequence = self.load_sequence.wrapping_add(1);
+        let sequence = self.write_sequence;
+        let visit = self.picker_sequence;
+        let token = Token::new();
+        self.download = Some(Download {
+            spot: spot.clone(),
+            token: token.clone(),
+            status: "Downloading...".into(),
+        });
+        self.row_errors.remove(&spot);
+        self.picker.as_mut().unwrap().error = None;
+        let paths = paths.clone();
+        let name = self.name.clone();
+        let identity = self.identity;
+        let event_spot = spot.clone();
+        let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+        let work = Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let result = (|| {
+                        let key = steamgriddb::require_key(
+                            &paths,
+                            |key| std::env::var_os(key),
+                            &SecretServiceKeyring::steamgriddb(),
+                        )
+                        .map_err(|error| error.to_string())?;
+                        let https = Https::new().map_err(|error| error.to_string())?;
+                        Ok::<_, String>(use_image_for(
+                            &paths,
+                            &name,
+                            identity,
+                            &spot,
+                            &Api::new(&https, &key.value),
+                            &image,
+                            |received, total| {
+                                let _ = sender
+                                    .unbounded_send(Event::UseProgress(sequence, received, total));
+                            },
+                            &token,
+                        ))
+                    })();
+                    result.unwrap_or_else(WriteOutcome::failed)
+                })
+                .await
+                .unwrap_or_else(|error| WriteOutcome::failed(error.to_string()))
+            },
+            move |result| Event::Used(sequence, visit, event_spot, result),
+        );
+        Step::task(Task::batch([Task::run(receiver, |event| event), work]))
     }
 
     fn lookup_game(&mut self, paths: &Paths) -> Task<Event> {
@@ -674,6 +896,18 @@ impl Page {
     }
 
     pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
+        if let Some(picker) = &self.picker {
+            let visit = self.picker_sequence;
+            return picker
+                .view(
+                    palette,
+                    &format!("{} art for {}", picker.kind, self.name),
+                    self.download
+                        .as_ref()
+                        .map(|download| download.status.as_str()),
+                )
+                .map(move |event| Event::Picker(visit, event));
+        }
         let mut header = row![
             button("< Back")
                 .on_press(Event::Back)
@@ -844,9 +1078,22 @@ impl Page {
         {
             details = details.push(text(error).size(12).color(palette.danger));
         }
+        if let Some(download) = &self.download
+            && download.spot == spot
+        {
+            details = details.push(
+                row![
+                    text(&download.status).size(12),
+                    button("Cancel")
+                        .on_press(Event::CancelUse)
+                        .style(move |_, status| secondary(palette, status)),
+                ]
+                .spacing(8),
+            );
+        }
         let actions = column![
             button("Find...")
-                .on_press_maybe(None::<Event>)
+                .on_press_maybe((self.key_available && !self.writing).then_some(Event::Find(kind)))
                 .style(move |_, status| secondary(palette, status)),
             button("Browse...")
                 .on_press_maybe((!self.writing).then_some(Event::Browse(kind)))
@@ -1097,6 +1344,11 @@ fn lookup_game(paths: &Paths, id: u64) -> Result<Option<Game>, String> {
 }
 
 #[cfg(test)]
+pub(crate) fn canceled_use_outcome() -> WriteOutcome {
+    WriteOutcome::failed("download canceled".into())
+}
+
+#[cfg(test)]
 pub(crate) fn write_art(
     paths: &Paths,
     name: &str,
@@ -1124,7 +1376,7 @@ fn write_art_for(
             if EnvironmentIdentity::read(paths, name) != Some(identity) {
                 return Err("environment changed before artwork could be written".into());
             }
-            art::set_manual(paths, name, spot.0.as_deref(), spot.1, path)
+            art::set_manual(paths, name, spot.0.as_deref(), spot.1, path, Some(identity))
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         }),
@@ -1148,6 +1400,51 @@ fn write_art_for(
         } else {
             Some("environment changed before desktop entries could be reconciled".into())
         }
+    } else {
+        None
+    };
+    WriteOutcome {
+        changed: true,
+        error,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn use_image_for(
+    paths: &Paths,
+    name: &str,
+    identity: EnvironmentIdentity,
+    spot: &Spot,
+    api: &Api,
+    image: &steamgriddb::Image,
+    mut progress: impl FnMut(u64, Option<u64>),
+    token: &Token,
+) -> WriteOutcome {
+    if EnvironmentIdentity::read(paths, name) != Some(identity) {
+        return WriteOutcome::failed("environment changed before artwork could be written".into());
+    }
+    let result = art_fetch::use_image(
+        paths,
+        name,
+        spot.0.as_deref(),
+        spot.1,
+        api,
+        image,
+        |received, total| {
+            if EnvironmentIdentity::read(paths, name) != Some(identity) {
+                token.cancel();
+            }
+            progress(received, total);
+        },
+        token,
+        Some(identity),
+    );
+    if let Err(error) = result {
+        return WriteOutcome::failed(error.to_string());
+    }
+    let error = if spot.1 == Kind::Icon && EnvironmentIdentity::read(paths, name) == Some(identity)
+    {
+        reconcile_desktop(paths, name).err()
     } else {
         None
     };

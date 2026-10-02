@@ -1,7 +1,7 @@
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 
-use crate::{App, Message, art_page, sidebar};
+use crate::{App, Message, art_page, art_picker, keys::Direction, sidebar};
 
 impl App {
     pub(crate) fn art_busy(&self) -> bool {
@@ -50,7 +50,12 @@ impl App {
             self.art_generation = self.art_generation.wrapping_add(1);
             self.art_pages.insert(
                 name.clone(),
-                art_page::Page::new(name.clone(), self.art_generation, identity),
+                art_page::Page::with_thumbnail_cache(
+                    name.clone(),
+                    self.art_generation,
+                    identity,
+                    self.thumbnails.clone(),
+                ),
             );
         }
         let page = self.art_pages.get_mut(&name).unwrap();
@@ -112,30 +117,79 @@ impl App {
     pub(crate) fn art_update(
         &mut self,
         name: String,
-        generation: u64,
+        mut generation: u64,
         event: art_page::Event,
     ) -> Task<Message> {
         let completion = write_completion(&event);
-        let Some(page) = self.art_pages.get(&name) else {
-            return self.drop_stale_art_event(&name, generation, completion);
+        let use_sequence = match &event {
+            art_page::Event::Used(sequence, ..) | art_page::Event::UseProgress(sequence, ..) => {
+                Some(*sequence)
+            }
+            _ => None,
         };
-        if page.generation != generation || self.art_page.as_deref() != Some(&name) {
-            return self.drop_stale_art_event(&name, generation, completion);
+        let pending_use = use_sequence.and_then(|sequence| {
+            self.pending_art_cancels
+                .keys()
+                .find(|(pending_name, pending_generation, pending_sequence, _)| {
+                    pending_name == &name
+                        && *pending_generation == generation
+                        && *pending_sequence == sequence
+                })
+                .cloned()
+        });
+        if let Some(pending) = &pending_use
+            && let Some(page) = self.art_pages.get(&name)
+            && page.identity == pending.3
+            && page.write_sequence == pending.2
+        {
+            generation = page.generation;
+        }
+        if completion.is_some()
+            && let Some(pending) = &pending_use
+        {
+            self.pending_art_cancels.remove(pending);
+        }
+        let Some(page) = self.art_pages.get(&name) else {
+            return self.drop_stale_art_event(
+                &name,
+                pending_use.as_ref().map_or(generation, |pending| pending.1),
+                completion,
+            );
+        };
+        if page.generation != generation
+            || (self.art_page.as_deref() != Some(&name) && pending_use.is_none())
+        {
+            return self.drop_stale_art_event(
+                &name,
+                pending_use.as_ref().map_or(generation, |pending| pending.1),
+                completion,
+            );
         }
         if art_page::EnvironmentIdentity::read(&self.paths, &name) != Some(page.identity) {
             self.close_missing_art(&name);
-            return self.drop_stale_art_event(&name, generation, completion);
+            return self.drop_stale_art_event(
+                &name,
+                pending_use.as_ref().map_or(generation, |pending| pending.1),
+                completion,
+            );
         }
         match event {
-            art_page::Event::Back if self.art_page.as_ref() == Some(&name) => {
+            art_page::Event::Back
+                if self.art_page.as_ref() == Some(&name) && !page.has_overlay() =>
+            {
                 self.leave_art();
                 Task::batch([self.load_visible_art(), self.load_panel_art()])
             }
             art_page::Event::Settings if self.art_page.as_ref() == Some(&name) => {
                 self.navigate_section(sidebar::Section::Settings)
             }
-            art_page::Event::Back | art_page::Event::Settings => Task::none(),
+            art_page::Event::Settings => Task::none(),
             event => {
+                if let Some(pending) = &pending_use
+                    && completion.is_some()
+                {
+                    self.pending_art_writes.remove(pending);
+                }
                 if let Some((sequence, _, _)) = completion {
                     self.pending_art_writes.remove(&(
                         name.clone(),
@@ -145,7 +199,7 @@ impl App {
                     ));
                 }
                 let decodes = self.decodes.clone();
-                let (step, identity, write_sequence, started_write) = {
+                let (step, identity, write_sequence, started_write, token) = {
                     let page = self.art_pages.get_mut(&name).unwrap();
                     let was_writing = page.writing;
                     let step = page.update(&self.paths, event, decodes);
@@ -154,9 +208,14 @@ impl App {
                         page.identity,
                         page.write_sequence,
                         !was_writing && page.writing,
+                        page.use_token(),
                     )
                 };
                 if started_write {
+                    if let Some(token) = token {
+                        self.pending_art_cancels
+                            .insert((name.clone(), generation, write_sequence, identity), token);
+                    }
                     self.pending_art_writes.insert((
                         name.clone(),
                         generation,
@@ -230,6 +289,24 @@ impl App {
         modifiers: Modifiers,
         captured: bool,
     ) -> Task<Message> {
+        if !captured && modifiers.is_empty() {
+            let picker_event = match key.as_ref() {
+                Key::Named(Named::ArrowLeft) => Some(art_picker::Event::Move(Direction::Left)),
+                Key::Named(Named::ArrowRight) => Some(art_picker::Event::Move(Direction::Right)),
+                Key::Named(Named::ArrowUp) => Some(art_picker::Event::Move(Direction::Up)),
+                Key::Named(Named::ArrowDown) => Some(art_picker::Event::Move(Direction::Down)),
+                Key::Named(Named::Enter) => Some(art_picker::Event::Use),
+                _ => None,
+            };
+            if let Some(name) = self.art_page.clone()
+                && let Some(event) = picker_event
+            {
+                let page = &self.art_pages[&name];
+                if let Some(event) = page.picker_event(event) {
+                    return self.art_update(name, page.generation, event);
+                }
+            }
+        }
         match key.as_ref() {
             Key::Named(Named::Escape) if !captured => {
                 let Some(name) = self.art_page.clone() else {
@@ -249,7 +326,10 @@ impl App {
 
 fn write_completion(event: &art_page::Event) -> Option<(u64, bool, bool)> {
     match event {
-        art_page::Event::Wrote(sequence, _, result) => Some((*sequence, result.changed(), true)),
+        art_page::Event::Wrote(sequence, _, result)
+        | art_page::Event::Used(sequence, _, _, result) => {
+            Some((*sequence, result.changed(), true))
+        }
         art_page::Event::GameSaved(sequence, _, result) => Some((*sequence, result.is_ok(), false)),
         _ => None,
     }
@@ -423,7 +503,7 @@ mod tests {
         let (root, mut app) = fixture();
         let source = root.path().join("grid.png");
         ::image::RgbImage::new(2, 3).save(&source).unwrap();
-        art::set_manual(&app.paths, "game", None, Kind::Grid, &source).unwrap();
+        art::set_manual(&app.paths, "game", None, Kind::Grid, &source, None).unwrap();
         app.merge(crate::library::load_library(&app.paths).unwrap());
         let old = app
             .cards
@@ -552,7 +632,7 @@ mod tests {
         let generation = app.art_pages["game"].generation;
         let source = root.path().join("grid.png");
         ::image::RgbImage::new(10, 15).save(&source).unwrap();
-        art::set_manual(&app.paths, "game", None, Kind::Grid, &source).unwrap();
+        art::set_manual(&app.paths, "game", None, Kind::Grid, &source, None).unwrap();
         fs::write(
             app.paths.environment_config("game"),
             "schema_version = 1\nkind = 'native'\n[targets.fresh]\nexe = 'notepad'\n",
@@ -610,7 +690,7 @@ mod tests {
         let (root, mut app) = fixture();
         let source = root.path().join("grid.png");
         ::image::RgbImage::new(10, 15).save(&source).unwrap();
-        art::set_manual(&app.paths, "game", None, Kind::Grid, &source).unwrap();
+        art::set_manual(&app.paths, "game", None, Kind::Grid, &source, None).unwrap();
         art::save_game(&app.paths, "game", 77).unwrap();
 
         let _ = app.update(Message::ContextArt("game".into()));
@@ -659,5 +739,118 @@ mod tests {
 
         assert_eq!(app.art_pages["game"].game_label(), "77");
         assert!(!app.art_pages["game"].has_preview(&(None, Kind::Grid)));
+    }
+
+    fn start_picker_use(app: &mut App) -> (u64, u64, wineo_core::cancel::Token) {
+        let _ = app.open_art("game".into());
+        let generation = app.art_pages["game"].generation;
+        art::save_game(&app.paths, "game", 9).unwrap();
+        let mut snapshot = art_page::load_snapshot(&app.paths, "game").unwrap();
+        snapshot.key_available = true;
+        let sequence = app.art_pages["game"].load_sequence;
+        let _ = app.art_update(
+            "game".into(),
+            generation,
+            art_page::Event::Loaded(sequence, Ok(snapshot)),
+        );
+        let _ = app.art_update("game".into(), generation, art_page::Event::Find(Kind::Grid));
+        let event = app.art_pages["game"]
+            .picker_event(art_picker::Event::Listed(
+                1,
+                Ok(vec![wineo_core::steamgriddb::Image {
+                    id: 914,
+                    url: "https://cdn.example/chosen.png".into(),
+                    width: Some(600),
+                    height: Some(900),
+                    ..Default::default()
+                }]),
+            ))
+            .unwrap();
+        let visit = match &event {
+            art_page::Event::Picker(visit, _) => *visit,
+            _ => unreachable!(),
+        };
+        let _ = app.art_update("game".into(), generation, event);
+        let event = app.art_pages["game"]
+            .picker_event(art_picker::Event::Select(0))
+            .unwrap();
+        let _ = app.art_update("game".into(), generation, event);
+        let _ = app.art_key(&Key::Named(Named::Enter), Modifiers::empty(), false);
+        assert!(app.art_busy());
+        let token = app.pending_art_cancels.values().next().unwrap().clone();
+        (generation, visit, token)
+    }
+
+    #[test]
+    fn picker_escape_returns_to_art_before_leaving_art_and_use_keeps_running() {
+        let (_root, mut app) = fixture();
+        let (_, _, token) = start_picker_use(&mut app);
+        let _ = app.art_key(&Key::Named(Named::Escape), Modifiers::empty(), false);
+        assert_eq!(app.art_page.as_deref(), Some("game"));
+        assert!(!app.art_pages["game"].has_overlay());
+        assert!(app.art_busy());
+        assert!(!token.is_canceled());
+        let _ = app.art_key(&Key::Named(Named::Escape), Modifiers::empty(), false);
+        assert!(app.art_page.is_none());
+        assert!(app.art_busy());
+        assert!(!token.is_canceled());
+    }
+
+    #[test]
+    fn picker_use_completion_after_reopening_refreshes_card_and_active_art() {
+        let (root, mut app) = fixture();
+        let (generation, visit, token) = start_picker_use(&mut app);
+        let _ = app.update(Message::Section(sidebar::Section::Trash));
+        let _ = app.open_art("game".into());
+        let reopened = app.art_pages["game"].generation;
+        assert_ne!(generation, reopened);
+        let _ = app.art_update(
+            "game".into(),
+            generation,
+            art_page::Event::UseProgress(1, 7, Some(20)),
+        );
+        assert!(!token.is_canceled());
+        let source = root.path().join("grid.png");
+        ::image::RgbImage::new(2, 3).save(&source).unwrap();
+        let outcome = art_page::write_art(&app.paths, "game", &(None, Kind::Grid), Some(&source));
+        let previous = app.library_generation;
+        let _ = app.art_update(
+            "game".into(),
+            generation,
+            art_page::Event::Used(1, visit, (None, Kind::Grid), outcome),
+        );
+        assert!(!app.art_busy());
+        assert!(app.pending_art_cancels.is_empty());
+        assert_ne!(app.library_generation, previous);
+        assert_eq!(app.art_pages["game"].generation, reopened);
+        assert!(app.art_pages["game"].loading);
+    }
+
+    #[test]
+    fn closing_during_picker_use_cancels_and_waits_even_after_leaving() {
+        let (root, mut app) = fixture();
+        let source = root.path().join("grid.png");
+        ::image::RgbImage::new(2, 3).save(&source).unwrap();
+        art::set_manual(&app.paths, "game", None, Kind::Grid, &source, None).unwrap();
+        let before = fs::read(app.paths.art_dir("game").join("grid.png")).unwrap();
+        let (generation, visit, token) = start_picker_use(&mut app);
+        let _ = app.update(Message::Section(sidebar::Section::Trash));
+        let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+        assert!(app.close_prompt && !app.closing);
+        let _ = app.update(Message::CancelAndClose);
+        assert!(token.is_canceled());
+        assert!(app.closing && app.foreground_busy());
+        let outcome = art_page::canceled_use_outcome();
+        let _ = app.art_update(
+            "game".into(),
+            generation,
+            art_page::Event::Used(1, visit, (None, Kind::Grid), outcome),
+        );
+        assert!(!app.foreground_busy());
+        assert!(app.pending_art_cancels.is_empty());
+        assert_eq!(
+            fs::read(app.paths.art_dir("game").join("grid.png")).unwrap(),
+            before
+        );
     }
 }

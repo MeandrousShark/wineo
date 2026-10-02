@@ -1,5 +1,6 @@
 mod art_navigation;
 mod art_page;
+mod art_picker;
 mod artwork;
 mod checkup;
 mod checkup_work;
@@ -28,7 +29,7 @@ mod worker;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iced::widget::{image, scrollable};
@@ -70,6 +71,7 @@ pub(crate) struct App {
     /// Caps concurrent art decodes, since a huge source costs far more memory
     /// than its thumbnail.
     decodes: Arc<tokio::sync::Semaphore>,
+    thumbnails: Arc<Mutex<art_picker::ThumbnailCache>>,
     failed_images: HashSet<ArtKey>,
     current_art: HashMap<PathBuf, ArtIdentity>,
     error: Option<String>,
@@ -99,6 +101,7 @@ pub(crate) struct App {
     art_page: Option<String>,
     art_pages: HashMap<String, art_page::Page>,
     pending_art_writes: HashSet<(String, u64, u64, art_page::EnvironmentIdentity)>,
+    pending_art_cancels: HashMap<(String, u64, u64, art_page::EnvironmentIdentity), Token>,
     art_generation: u64,
     section: sidebar::Section,
     pending_section: Option<sidebar::Section>,
@@ -241,6 +244,7 @@ impl App {
             images: HashMap::new(),
             loading: HashSet::new(),
             decodes: Arc::new(tokio::sync::Semaphore::new(MAX_DECODES)),
+            thumbnails: Arc::new(Mutex::new(art_picker::ThumbnailCache::default())),
             failed_images: HashSet::new(),
             current_art: HashMap::new(),
             error: None,
@@ -268,6 +272,7 @@ impl App {
             art_page: None,
             art_pages: HashMap::new(),
             pending_art_writes: HashSet::new(),
+            pending_art_cancels: HashMap::new(),
             art_generation: 0,
             section: sidebar::Section::Library,
             pending_section: None,
@@ -719,6 +724,9 @@ impl App {
                     self.close_prompt = true;
                     Task::none()
                 } else {
+                    for page in self.art_pages.values() {
+                        page.cancel_thumbnails();
+                    }
                     self.cancel_remove_dialog();
                     iced::exit()
                 }
@@ -923,6 +931,12 @@ impl App {
                 let force = matches!(event, Message::ForceCloseWork);
                 self.closing = true;
                 self.cancel_management();
+                for page in self.art_pages.values() {
+                    page.cancel_thumbnails();
+                }
+                for token in self.pending_art_cancels.values() {
+                    token.cancel();
+                }
                 self.cancel_checkup(force);
                 if let Some(page) = &mut self.flow {
                     page.cancel(force);

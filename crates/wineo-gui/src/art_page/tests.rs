@@ -332,7 +332,7 @@ fn reload_picks_up_art_changed_outside_the_page() {
     assert!(!page.has_override(Kind::Grid));
 
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source).unwrap();
+    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
     snapshot(&mut page, &paths);
 
     assert!(page.has_override(Kind::Grid));
@@ -362,7 +362,7 @@ fn late_lookup_and_preview_results_are_discarded_after_leaving() {
     assert_eq!(page.game_label(), "123");
 
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source).unwrap();
+    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
     snapshot(&mut page, &paths);
     let sequence = page.load_sequence;
     let spot = (None, Kind::Grid);
@@ -432,4 +432,525 @@ fn a_queued_write_refuses_a_same_name_environment_replacement() {
         .unwrap()
         .is_none()
     );
+}
+
+struct ImageApi {
+    bytes: Vec<u8>,
+    urls: std::cell::RefCell<Vec<String>>,
+}
+
+impl wineo_core::download::Transport for ImageApi {
+    fn get(&self, _url: &str) -> anyhow::Result<Box<dyn std::io::Read>> {
+        anyhow::bail!("unexpected plain request")
+    }
+
+    fn request(
+        &self,
+        url: &str,
+        bearer: Option<&str>,
+    ) -> anyhow::Result<wineo_core::download::Response> {
+        assert!(bearer.is_none());
+        self.urls.borrow_mut().push(url.into());
+        Ok(wineo_core::download::Response {
+            status: 200,
+            body: Box::new(std::io::Cursor::new(self.bytes.clone())),
+        })
+    }
+}
+
+fn chosen_image() -> steamgriddb::Image {
+    steamgriddb::Image {
+        id: 914,
+        url: "https://cdn.example/chosen.png".into(),
+        thumb: Some("https://cdn.example/thumbnail.png".into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn picker_use_publishes_exact_image_and_refreshes_the_kind() {
+    let (root, paths, mut page) = fixture();
+    let source = png(root.path());
+    let transport = ImageApi {
+        bytes: fs::read(&source).unwrap(),
+        urls: Default::default(),
+    };
+    let image = chosen_image();
+    let spot = (Some("alt".into()), Kind::Grid);
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page.identity,
+        &spot,
+        &Api::new(&transport, "key"),
+        &image,
+        |_, _| {},
+        &Token::new(),
+    );
+    assert!(outcome.changed(), "{outcome:?}");
+    assert_eq!(*transport.urls.borrow(), vec![image.url]);
+    page.writing = true;
+    page.write_sequence = 4;
+    let step = page.update(
+        &paths,
+        Event::Used(4, page.picker_sequence, spot.clone(), outcome),
+        decodes(),
+    );
+    assert!(step.changed);
+    assert!(!page.busy());
+    snapshot(&mut page, &paths);
+    assert_eq!(
+        page.rows[&spot].resolved.as_ref().unwrap().source,
+        Some(Source::SteamGridDb(914))
+    );
+}
+
+#[test]
+fn picker_cancel_keeps_prior_art_and_refused_format_keeps_cores_message() {
+    let (root, paths, page) = fixture();
+    let source = png(root.path());
+    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    let before = fs::read(paths.art_dir("game").join("grid.png")).unwrap();
+    let image = chosen_image();
+    let transport = ImageApi {
+        bytes: before.clone(),
+        urls: Default::default(),
+    };
+    let token = Token::new();
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page.identity,
+        &(None, Kind::Grid),
+        &Api::new(&transport, "key"),
+        &image,
+        |_, _| token.cancel(),
+        &token,
+    );
+    assert!(!outcome.changed());
+    assert!(outcome.error.unwrap().contains("cancel"));
+    assert_eq!(
+        fs::read(paths.art_dir("game").join("grid.png")).unwrap(),
+        before
+    );
+    let transport = ImageApi {
+        bytes: b"not an image".to_vec(),
+        urls: Default::default(),
+    };
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page.identity,
+        &(None, Kind::Grid),
+        &Api::new(&transport, "key"),
+        &image,
+        |_, _| {},
+        &Token::new(),
+    );
+    assert!(!outcome.changed());
+    assert!(outcome.error.unwrap().starts_with("asset 914 is not a "));
+    assert_eq!(
+        fs::read(paths.art_dir("game").join("grid.png")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn picker_use_icon_reconciles_desktop_entries() {
+    let (root, paths, page) = fixture();
+    fs::write(
+        paths.environment_config("game"),
+        "schema_version = 1\nkind = 'native'\n[targets.alt]\nexe = 'notepad'\ndesktop = true\n",
+    )
+    .unwrap();
+    assert_eq!(
+        EnvironmentIdentity::read(&paths, "game"),
+        Some(page.identity)
+    );
+    let source = png(root.path());
+    let transport = ImageApi {
+        bytes: fs::read(&source).unwrap(),
+        urls: Default::default(),
+    };
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page.identity,
+        &(None, Kind::Icon),
+        &Api::new(&transport, "key"),
+        &chosen_image(),
+        |_, _| {},
+        &Token::new(),
+    );
+    assert!(outcome.changed(), "{outcome:?}");
+    assert!(outcome.error.is_none(), "{outcome:?}");
+    assert!(
+        paths
+            .applications_dir()
+            .join("wineo-game-alt.desktop")
+            .exists()
+    );
+}
+
+#[test]
+fn find_without_a_game_routes_through_change_then_opens_picker() {
+    let (_root, paths, mut page) = fixture();
+    page.key_available = true;
+    let _ = page.update(&paths, Event::Find(Kind::Hero), decodes());
+    assert!(page.picker.is_none());
+    assert!(page.change.is_some());
+    assert_eq!(page.pending_find, Some(Kind::Hero));
+    let game = Game {
+        id: 9,
+        name: "Hades".into(),
+        year: None,
+    };
+    page.change.as_mut().unwrap().selected = Some(Match(game.clone()));
+    let _ = page.update(&paths, Event::SaveGame, decodes());
+    art::save_game(&paths, "game", game.id).unwrap();
+    let _ = page.update(
+        &paths,
+        Event::GameSaved(page.write_sequence, game, Ok(())),
+        decodes(),
+    );
+    assert!(page.change.is_none());
+    assert_eq!(page.picker.as_ref().unwrap().kind, Kind::Hero);
+    assert_eq!(page.pending_find, None);
+}
+
+#[test]
+fn leaving_picker_retains_download_and_ignores_late_listing() {
+    let (_root, paths, mut page) = fixture();
+    page.key_available = true;
+    page.game_id = Some(9);
+    let _ = page.update(&paths, Event::Find(Kind::Grid), decodes());
+    let visit = page.picker_sequence;
+    page.writing = true;
+    let token = Token::new();
+    page.download = Some(Download {
+        spot: (None, Kind::Grid),
+        token: token.clone(),
+        status: "Downloading...".into(),
+    });
+    let _ = page.update(
+        &paths,
+        Event::Picker(visit, art_picker::Event::Back),
+        decodes(),
+    );
+    assert!(page.picker.is_none());
+    assert!(page.busy());
+    assert!(!token.is_canceled());
+    page.leave();
+    assert!(page.busy());
+    assert!(!token.is_canceled());
+    let _ = page.update(
+        &paths,
+        Event::Picker(
+            visit,
+            art_picker::Event::Listed(1, Ok(vec![chosen_image()])),
+        ),
+        decodes(),
+    );
+    assert!(page.picker.is_none());
+    let _ = page.update(&paths, Event::CancelUse, decodes());
+    assert!(token.is_canceled());
+    assert!(page.busy());
+}
+
+fn load_picker(page: &mut Page, paths: &Paths) -> u64 {
+    page.key_available = true;
+    page.game_id = Some(9);
+    let _ = page.update(paths, Event::Find(Kind::Grid), decodes());
+    let visit = page.picker_sequence;
+    let sequence = page.picker.as_ref().unwrap().list_sequence();
+    let images = (1..=24)
+        .map(|id| steamgriddb::Image {
+            id,
+            width: Some(600),
+            height: Some(900),
+            ..chosen_image()
+        })
+        .collect();
+    let _ = page.update(
+        paths,
+        Event::Picker(visit, art_picker::Event::Listed(sequence, Ok(images))),
+        decodes(),
+    );
+    visit
+}
+
+#[test]
+fn picker_keyboard_moves_and_use_targets_the_selected_image() {
+    let (_root, paths, mut page) = fixture();
+    let visit = load_picker(&mut page, &paths);
+    for (direction, id) in [
+        (crate::keys::Direction::Right, 1),
+        (crate::keys::Direction::Right, 2),
+        (crate::keys::Direction::Down, 8),
+        (crate::keys::Direction::Left, 7),
+        (crate::keys::Direction::Up, 1),
+    ] {
+        let _ = page.update(
+            &paths,
+            Event::Picker(visit, art_picker::Event::Move(direction)),
+            decodes(),
+        );
+        assert_eq!(page.picker.as_ref().unwrap().selected().unwrap().id, id);
+    }
+    let _ = page.update(
+        &paths,
+        Event::Picker(visit, art_picker::Event::UseSelected(7)),
+        decodes(),
+    );
+    assert!(page.busy());
+    assert_eq!(page.picker.as_ref().unwrap().selected().unwrap().id, 8);
+    let outcome = WriteOutcome::failed("asset 8 is not a PNG or JPEG image".into());
+    let _ = page.update(
+        &paths,
+        Event::Used(page.write_sequence, visit, (None, Kind::Grid), outcome),
+        decodes(),
+    );
+    assert_eq!(
+        page.picker.as_ref().unwrap().error.as_deref(),
+        Some("asset 8 is not a PNG or JPEG image")
+    );
+    assert!(!page.busy());
+}
+
+#[test]
+fn picker_session_cache_survives_back_and_next_visit_resets_filters() {
+    let (_root, paths, mut page) = fixture();
+    let visit = load_picker(&mut page, &paths);
+    let url = "https://cdn.example/cached.png";
+    page.thumbnails.lock().unwrap().insert(
+        Kind::Grid,
+        url.into(),
+        image::Handle::from_rgba(1, 1, vec![0; 4]),
+    );
+    let _ = page.update(
+        &paths,
+        Event::Picker(
+            visit,
+            art_picker::Event::Filter(art_picker::Filter::Animated, true),
+        ),
+        decodes(),
+    );
+    let _ = page.update(&paths, Event::Back, decodes());
+    let next_visit = load_picker(&mut page, &paths);
+    assert_ne!(visit, next_visit);
+    assert!(page.thumbnails.lock().unwrap().contains(Kind::Grid, url));
+    assert_eq!(page.picker.as_ref().unwrap().list_sequence(), 1);
+}
+
+#[test]
+fn reload_after_saved_game_changes_discards_the_old_picker() {
+    let (_root, paths, mut page) = fixture();
+    let visit = load_picker(&mut page, &paths);
+    snapshot(&mut page, &paths);
+    assert!(page.picker.is_none());
+    let _ = page.update(
+        &paths,
+        Event::Picker(
+            visit,
+            art_picker::Event::Filter(art_picker::Filter::Animated, true),
+        ),
+        decodes(),
+    );
+    assert!(page.picker.is_none());
+    assert!(!page.busy());
+}
+
+#[test]
+fn picker_use_refuses_replacement_in_the_last_progress_callback() {
+    let (root, paths, page) = fixture();
+    let source = png(root.path());
+    let bytes = fs::read(&source).unwrap();
+    let transport = ImageApi {
+        bytes: bytes.clone(),
+        urls: Default::default(),
+    };
+    let replacement = root.path().join("replacement.png");
+    ::image::RgbaImage::from_pixel(8, 12, ::image::Rgba([0, 0, 255, 255]))
+        .save(&replacement)
+        .unwrap();
+    let mut replaced = false;
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page.identity,
+        &(None, Kind::Grid),
+        &Api::new(&transport, "key"),
+        &chosen_image(),
+        |received, _| {
+            if received == bytes.len() as u64 && !replaced {
+                fs::rename(
+                    paths.environment_config("game"),
+                    root.path().join("old-game.toml"),
+                )
+                .unwrap();
+                Environment::create_native(&paths, &GlobalConfig::default(), "game", None, false)
+                    .unwrap();
+                art::set_manual(&paths, "game", None, Kind::Grid, &replacement, None).unwrap();
+                replaced = true;
+            }
+        },
+        &Token::new(),
+    );
+    assert!(replaced);
+    assert!(!outcome.changed());
+    assert!(outcome.error.unwrap().contains("environment"));
+    assert_eq!(
+        fs::read(paths.art_dir("game").join("grid.png")).unwrap(),
+        fs::read(replacement).unwrap()
+    );
+    assert_eq!(
+        art::ArtConfig::load(&paths.art_dir("game"))
+            .unwrap()
+            .record(None, Kind::Grid)
+            .unwrap()
+            .source,
+        Source::Manual("replacement.png".into())
+    );
+}
+
+#[test]
+fn reopening_another_kind_abandons_queued_thumbnails() {
+    let (root, paths, mut page) = fixture();
+    let visit = load_picker(&mut page, &paths);
+    let old_token = page.picker.as_ref().unwrap().thumbnail_token();
+    let bytes = fs::read(png(root.path())).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let decodes = Arc::new(tokio::sync::Semaphore::new(1));
+        let held = decodes.clone().acquire_owned().await.unwrap();
+        let mut old_tasks = Vec::new();
+        for _ in 0..3 {
+            let (sent, fetched) = tokio::sync::oneshot::channel();
+            let bytes = bytes.clone();
+            old_tasks.push(tokio::spawn(art_picker::thumbnail_work(
+                move || {
+                    sent.send(()).unwrap();
+                    Ok(bytes)
+                },
+                Kind::Grid,
+                decodes.clone(),
+                old_token.clone(),
+            )));
+            fetched.await.unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(old_tasks.iter().all(|task| !task.is_finished()));
+
+        let _ = page.update(&paths, Event::Find(Kind::Hero), decodes.clone());
+        assert!(old_token.is_canceled());
+        assert_eq!(page.picker.as_ref().unwrap().kind, Kind::Hero);
+        let new_token = page.picker.as_ref().unwrap().thumbnail_token();
+        let (sent, fetched) = tokio::sync::oneshot::channel();
+        let current = tokio::spawn(art_picker::thumbnail_work(
+            move || {
+                sent.send(()).unwrap();
+                Ok(bytes)
+            },
+            Kind::Hero,
+            decodes.clone(),
+            new_token,
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(2), fetched)
+            .await
+            .unwrap()
+            .unwrap();
+        for task in old_tasks {
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), task)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert_eq!(decodes.available_permits(), 0);
+        assert!(!current.is_finished());
+        drop(held);
+        let handle = tokio::time::timeout(std::time::Duration::from_secs(2), current)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(decodes.available_permits(), 1);
+
+        let _ = page.update(
+            &paths,
+            Event::Picker(
+                visit,
+                art_picker::Event::Thumbnail(1, "old".into(), Some(Ok(handle))),
+            ),
+            decodes,
+        );
+        assert!(!page.thumbnails.lock().unwrap().contains(Kind::Hero, "old"));
+        assert!(!page.thumbnails.lock().unwrap().contains(Kind::Grid, "old"));
+    });
+    let token = page.picker.as_ref().unwrap().thumbnail_token();
+    page.leave();
+    assert!(token.is_canceled());
+}
+
+#[test]
+fn browse_write_rechecks_identity_after_art_lock_contention() {
+    let (root, paths, page) = fixture();
+    let source = png(root.path());
+    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    let art_dir = paths.art_dir("game");
+    let held = wineo_core::operation::Locks::new(&paths)
+        .config(&art_dir.join(art::ART_FILE))
+        .unwrap();
+    let (started, ready) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn({
+        let paths = paths.clone();
+        move || {
+            started.send(()).unwrap();
+            write_art_for(
+                &paths,
+                "game",
+                page.identity,
+                &(None, Kind::Grid),
+                Some(&source),
+            )
+        }
+    });
+    ready
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    assert!(!worker.is_finished());
+    let config = paths.environment_config("game");
+    let replacement = config.with_extension("replacement");
+    fs::write(&replacement, fs::read(&config).unwrap()).unwrap();
+    fs::rename(replacement, config).unwrap();
+    ::image::RgbaImage::from_pixel(8, 12, ::image::Rgba([0, 0, 255, 255]))
+        .save(art_dir.join("grid.png"))
+        .unwrap();
+    let saved_art = fs::read(art_dir.join("grid.png")).unwrap();
+    let saved_record = fs::read(art_dir.join(art::ART_FILE)).unwrap();
+    let mut saved_files: Vec<_> = fs::read_dir(&art_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    saved_files.sort();
+    drop(held);
+
+    let outcome = worker.join().unwrap();
+    assert!(!outcome.changed());
+    assert!(outcome.error.unwrap().contains("changed"));
+    assert_eq!(fs::read(art_dir.join("grid.png")).unwrap(), saved_art);
+    assert_eq!(fs::read(art_dir.join(art::ART_FILE)).unwrap(), saved_record);
+    let mut files: Vec<_> = fs::read_dir(&art_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    files.sort();
+    assert_eq!(files, saved_files);
 }
