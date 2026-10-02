@@ -3,6 +3,23 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.21.0 - 2026-10-02
+
+- Art and downloads in `wineo-gui`
+  ([0040](docs/plans/0040-gui-art-and-downloads.md)).
+- An environment's [Art](docs/gui.md#art) page sets each kind from a file,
+  removes it, or picks from SteamGridDB's ranked results in a thumbnail
+  picker, sized per art kind. Global settings manages the SteamGridDB key.
+- The [Downloads](docs/gui.md#downloads) page lists installed runners, DXVK,
+  and vkd3d-proton builds with the environments using each, downloads new
+  releases with progress, and deletes unused builds.
+- `wineo runners remove`, `wineo dxvk remove`, and `wineo vkd3d remove`
+  delete unused builds, and builds are locked while in use. See
+  [Remove a runner or graphics component](docs/downloads-and-imports.md#remove-a-runner-or-graphics-component).
+- The sidebar pins Trash, Checkup, and Downloads to the bottom, above
+  Settings.
+- Opening a menu or dialog no longer resets the library's scroll position.
+
 ## 0.20.2 - 2026-10-01
 
 - Global settings in `wineo-gui` drops its **Back** button and no longer

@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0040: GUI art and downloads
 
@@ -350,7 +350,8 @@ within the approved design:
 Implementation landed on 2026-10-02 (through 8bf6f3b); the workspace tests
 pass (1,950). Maintainer acceptance in a real window, using throwaway
 environments or a `WINEO_PORTABLE_DIR` folder, run with
-`cargo run --release -p wineo-gui`:
+`cargo run --release -p wineo-gui`. The maintainer confirmed all eight items
+on 2026-10-02:
 
 1. Open **Art** from the panel and both menus. Browse a PNG and an SVG,
    Remove one, and check the card, panel, and desktop entry follow.
