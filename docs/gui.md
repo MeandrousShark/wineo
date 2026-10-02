@@ -80,10 +80,12 @@ Games keep running after you close the app, the same as games started with
 If wineo lost track of a run, for example after a crash, the error has a
 **Clean up** button that does what `wineo stop` does.
 
-**Settings** opens the environment's settings page.
+**Settings** opens the environment's settings page, and **Art** opens its
+[Art](#art) page.
 
 The detail actions menu and each card's right-click menu also offer
-**Settings**, **Clone**, **Check for problems**, and **Remove...**. Cloning
+**Settings**, **Art...**, **Clone**, **Check for problems**, and
+**Remove...**. Cloning
 has a review page; Wine clones copy the prefix and art, while native clones
 share the game files. Both keep external game paths, disable desktop
 entries, clear the Heroic id, and reset playtime.
@@ -158,6 +160,57 @@ the Library. Fixes, progress, and Cancel work as in the panel, and
 interrupted trash work can be recovered here too. The summary of the last
 batch stays until you press **Check again** or fix more, even if the batch
 finished while you were on another page.
+
+## Art
+
+**Art** in the panel, or **Art...** in the menus, opens an environment's art
+page. It replaces the library like a settings page, and **Back** or Esc
+returns.
+
+Each kind has a row: the art at its own shape, where it came from
+(SteamGridDB with its asset ID, Manual, or None) and its size, and where it
+appears:
+
+| Kind | Appears |
+|---|---|
+| Icon | App menu and desktop entry |
+| Grid | The library card |
+| Hero | The top of the detail panel |
+| Logo | Over the hero, in the panel corner |
+
+- **Browse...** picks a local file, through the desktop's file chooser or a
+  typed path when there isn't one. Its contents decide the format, like
+  `wineo art set`.
+- **Find...** opens the SteamGridDB picker.
+- **Remove** deletes that kind's art, like `wineo art rm`.
+
+Changes apply right away. The card, panel, and desktop entry update to
+match.
+
+The header shows the SteamGridDB game the art comes from, looked up by its
+saved ID, and **Change** searches for a different one, like `wineo art fetch
+--search`. Without a key, it shows the ID, and **Find...** and **Change**
+are off, with a **Settings** button to add one.
+
+**Showing** switches between the environment and its targets. On a target,
+kinds it inherits are dimmed and say "From the environment". **Browse...**
+and **Find...** set an override for that target, and **Remove** on an
+override reads **Use environment art**.
+
+### Finding art on SteamGridDB
+
+The picker shows every image SteamGridDB has for that kind, as thumbnails
+ranked best first. The first is marked **Best match**, and it's the one
+`wineo art fetch` would pick. **Load more** shows more rows.
+
+**Filters** reveals switches for **Animated**, **NSFW**, **Humor**, and, for
+grids, **Other sizes**: images the ranked fetch leaves out. They're off
+each time the picker opens. Images they add are tagged.
+
+Click a thumbnail to see its ID, author, size, style, and score. **Use**, a
+double click, or Enter downloads that image and replaces the kind's art,
+with progress and **Cancel**. Leaving the page doesn't stop the download.
+Closing the window cancels it, and canceled downloads change nothing.
 
 ## Running changes
 
@@ -324,6 +377,14 @@ Hover the selected runner to see its full name.
 | Ctrl+, | Global settings |
 | Down (in the search) | Back to the cards |
 
+In the SteamGridDB picker:
+
+| Key | Does |
+|---|---|
+| Arrow keys | Move between thumbnails |
+| Enter | Use the selected image |
+| Esc | Back to the Art page |
+
 On a settings page:
 
 | Key | Does |
@@ -350,6 +411,5 @@ it changes.
 
 ## Not yet
 
-- Snapshots, portable copies, general art and download management, and
-  running programs come next.
+- Snapshots, portable copies, exec, and winetricks come next, in plan 0041.
 - Gamepad navigation.

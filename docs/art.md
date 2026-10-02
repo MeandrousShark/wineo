@@ -12,8 +12,9 @@ wineo art list hades
 wineo art rm hades grid
 ```
 
-Wineo stores and manages art here. Showing posters or heroes in a GUI is
-later work.
+The desktop app shows this art in the library and the detail panel, and its
+[Art page](gui.md#art) sets, removes, and picks it from SteamGridDB's
+results.
 
 ## The store
 
