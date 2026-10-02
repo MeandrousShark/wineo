@@ -497,6 +497,8 @@ pub struct Claim {
     pub name: String,
     pub locks: Locks,
     pub config: PathBuf,
+    #[serde(default)]
+    pub builds: Vec<crate::build_lock::Lock>,
 }
 
 /// How handing a run to a new supervisor went.
@@ -624,6 +626,12 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         .claim
         .locks
         .acquire(Operation::Launch, &spec.claim.name, &held)?;
+    let _build_guards = spec
+        .claim
+        .builds
+        .iter()
+        .map(crate::build_lock::Lock::shared)
+        .collect::<Result<Vec<_>>>()?;
     // The spec was prepared before the lock, so it can be stale by now.
     if !spec.claim.config.is_file() {
         return Err(Error::UnknownEnvironment(spec.claim.name.clone()));
@@ -828,6 +836,7 @@ mod tests {
                 name: "app".to_owned(),
                 locks: Locks::at(PathBuf::from("/state/wineo/.locks")),
                 config: PathBuf::from("/config/wineo/environments/app.toml"),
+                builds: Vec::new(),
             },
             runtime_dir: PathBuf::from("/state/wineo/app"),
             stats_log: PathBuf::from("/data/wineo/stats/app.jsonl"),
@@ -854,6 +863,7 @@ mod tests {
                 wayland: crate::launch::Wayland::On,
                 gameid: Some("umu-hades".to_owned()),
                 store: Some("gog".to_owned()),
+                build_guards: Vec::new(),
             },
             overrides: Overrides {
                 target: None,

@@ -579,6 +579,28 @@ fn inspect_clone(
     destination: &str,
     token: &Token,
 ) -> Result<Review, anyhow::Error> {
+    inspect_clone_with_wait(
+        paths,
+        source,
+        name,
+        destination,
+        token,
+        |runner, prefix, token| runner.wait_idle_for_copy(prefix, token),
+    )
+}
+
+fn inspect_clone_with_wait(
+    paths: &Paths,
+    source: &str,
+    name: &str,
+    destination: &str,
+    token: &Token,
+    wait: impl FnOnce(
+        &wineo_core::runner::Runner,
+        &std::path::Path,
+        &Token,
+    ) -> wineo_core::error::Result<()>,
+) -> anyhow::Result<Review> {
     let environment = Environment::load(paths, source)?;
     let Some(wine) = environment.config.wine() else {
         return Ok(Review::Native(Box::new(clone::inspect_native(
@@ -586,9 +608,10 @@ fn inspect_clone(
         )?)));
     };
     let global = GlobalConfig::load(paths)?;
-    let runner = Runners::new(paths, &global)?.resolve(&wine.runner)?;
+    let (runner, _build_guard) =
+        Runners::new(paths, &global)?.resolve_locked(paths, &wine.runner)?;
     let prefix = environment.prefix(paths)?;
-    runner.wait_idle_for_copy(&prefix, token)?;
+    wait(&runner, &prefix, token)?;
     if token.is_canceled() {
         anyhow::bail!("clone canceled while waiting for the source to become idle");
     }
@@ -754,6 +777,33 @@ mod tests {
         )
         .unwrap();
         prefix
+    }
+
+    #[test]
+    fn wine_review_holds_the_runner_guard_while_waiting() {
+        use wineo_core::build_lock::{self, Kind};
+
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        fake_runner(&paths);
+        wine_source(&paths, root.path());
+        inspect_clone_with_wait(
+            &paths,
+            "origin",
+            "copy",
+            "",
+            &Token::new(),
+            |runner, prefix, token| {
+                assert!(build_lock::try_exclusive(&paths, Kind::Runner, "fake-wine")?.is_none());
+                runner.wait_idle_for_copy(prefix, token)
+            },
+        )
+        .unwrap();
+        assert!(
+            build_lock::try_exclusive(&paths, Kind::Runner, "fake-wine")
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

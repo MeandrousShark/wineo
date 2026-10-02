@@ -8,6 +8,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use rustix::fs::{RenameFlags, renameat_with};
 use serde::{Deserialize, Serialize};
 
+use crate::build_lock;
 use crate::cancel::Token;
 use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::environment::{self, Environment};
@@ -357,9 +358,17 @@ pub fn restore_reviewed(
     let result = (|| -> Result<()> {
         exchange(&reviewed.prefix, &staging_path)?;
         sync_dir(parent)?;
-        write_config_atomic(
+        with_config_build_locks(
+            paths,
+            global,
             &paths.environment_config(&reviewed.name),
             &reviewed.saved_config,
+            || {
+                write_config_atomic(
+                    &paths.environment_config(&reviewed.name),
+                    &reviewed.saved_config,
+                )
+            },
         )?;
         Ok(())
     })();
@@ -680,14 +689,49 @@ fn rollback_locked(paths: &Paths, marker_path: &Path, marker: &RestoreMarker) ->
     } else if import::fingerprint(&marker.prefix)? != marker.old_fingerprint {
         bail!("original prefix changed at {}", marker.prefix.display(),);
     }
-    write_config_atomic(
-        &paths.environment_config(&marker.environment),
-        &marker.old_config,
-    )?;
+    let config_path = paths.environment_config(&marker.environment);
+    // Build discovery must not leave the exchanged prefix awaiting recovery.
+    let _guards = EnvironmentConfig::parse(&config_path, &marker.old_config)
+        .ok()
+        .and_then(|config| {
+            let wine = config.wine()?;
+            let global = GlobalConfig::load(paths).ok()?;
+            build_lock::config(
+                paths,
+                &global,
+                Some(&wine.runner),
+                wine.dxvk.as_deref(),
+                wine.vkd3d.as_deref(),
+            )
+            .ok()
+        })
+        .unwrap_or_default();
+    write_config_atomic(&config_path, &marker.old_config)?;
     fs::remove_file(marker_path)?;
     sync_dir(marker_path.parent().unwrap())?;
     remove_tree(&marker.staging)?;
     Ok(())
+}
+
+fn with_config_build_locks<T>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    config_path: &Path,
+    contents: &str,
+    publish: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let config = EnvironmentConfig::parse(config_path, contents)?;
+    let _guards = match config.wine() {
+        Some(wine) => build_lock::config(
+            paths,
+            global,
+            Some(&wine.runner),
+            wine.dxvk.as_deref(),
+            wine.vkd3d.as_deref(),
+        )?,
+        None => Vec::new(),
+    };
+    publish()
 }
 
 fn directory_identity(path: &Path) -> Result<DirectoryIdentity> {
@@ -762,6 +806,41 @@ mod tests {
     use std::os::unix::fs::{MetadataExt, symlink};
 
     use super::*;
+
+    #[test]
+    fn restore_publishes_config_while_all_named_builds_are_locked() {
+        let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        let config_path = paths.environment_config("game");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        let config = "prefix = '/tmp/prefix'\nrunner = 'build'\narch = 'win64'\ndxvk = '2.0'\nvkd3d = '3.0'\n";
+        let global = GlobalConfig::default();
+
+        with_config_build_locks(&paths, &global, &config_path, config, || {
+            for (kind, name) in [
+                (build_lock::Kind::Runner, "build"),
+                (build_lock::Kind::Dxvk, "2.0"),
+                (build_lock::Kind::Vkd3d, "3.0"),
+            ] {
+                assert!(build_lock::try_exclusive(&paths, kind, name)?.is_none());
+            }
+            write_config_atomic(&config_path, config)
+        })
+        .unwrap();
+
+        for (kind, name) in [
+            (build_lock::Kind::Runner, "build"),
+            (build_lock::Kind::Dxvk, "2.0"),
+            (build_lock::Kind::Vkd3d, "3.0"),
+        ] {
+            assert!(
+                build_lock::try_exclusive(&paths, kind, name)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
 
     fn fixture(proton: bool) -> (tempfile::TempDir, Paths, PathBuf, String) {
         let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
@@ -1134,6 +1213,52 @@ mod tests {
         assert!(restore.snapshot.exists());
         assert!(!stage.exists());
         assert!(!marker_path.exists());
+    }
+
+    #[test]
+    fn rollback_with_malformed_global_config_restores_config_and_clears_marker() {
+        let (_root, paths, prefix, config) = fixture(false);
+        let old_config = config.replace("runner = 'wine'", "runner = 'build'");
+        let original = directory_identity(&prefix).unwrap();
+        let stage = tempfile::Builder::new()
+            .prefix(".wineo-restore-")
+            .tempdir_in(prefix.parent().unwrap())
+            .unwrap()
+            .keep();
+        let marker = RestoreMarker {
+            version: VERSION,
+            environment: "game".to_owned(),
+            prefix: prefix.clone(),
+            staging: stage.clone(),
+            old_directory: original,
+            old_fingerprint: import::fingerprint(&prefix).unwrap(),
+            old_config: old_config.clone(),
+        };
+        let marker_path = marker_path(&paths, "game");
+        write_marker(&marker_path, &marker).unwrap();
+        exchange(&prefix, &stage).unwrap();
+        fs::write(paths.global_config(), "invalid = [TOML").unwrap();
+
+        recover(&paths, "game").unwrap();
+
+        assert_eq!(directory_identity(&prefix).unwrap(), original);
+        assert_eq!(
+            fs::read_to_string(prefix.join("drive_c/game.exe")).unwrap(),
+            "before"
+        );
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("game")).unwrap(),
+            old_config
+        );
+        assert!(!stage.exists());
+        assert!(!marker_path.exists());
+        assert!(fs::read_dir(paths.build_locks_dir()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("build-")
+        }));
     }
 
     #[test]

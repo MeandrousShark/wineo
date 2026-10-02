@@ -7,6 +7,7 @@ use anyhow::bail;
 use toml_edit::DocumentMut;
 
 use crate::art::TargetCleanup;
+use crate::build_lock;
 use crate::config::{self, EnvironmentConfig, GlobalConfig, WINE_ONLY_KEYS, native_key_message};
 use crate::desktop;
 use crate::edit::{self, Scope};
@@ -104,10 +105,20 @@ pub fn apply(
     let mut applied = Applied::default();
     // Checked under the lock, so a typo never gets written and the runner
     // cannot be removed between the check and the write.
-    if let ConfigFile::Environment(name) = file {
+    let _build_guards = if let ConfigFile::Environment(name) = file {
         let global = GlobalConfig::load_or_default(paths)?;
+        let build_guards = build_lock::config(
+            paths,
+            &global,
+            new_setting(pairs, "runner"),
+            new_setting(pairs, "dxvk"),
+            new_setting(pairs, "vkd3d"),
+        )?;
         applied.components = check(paths, &global, name, pairs, unset)?;
-    }
+        build_guards
+    } else {
+        Vec::new()
+    };
     if let Err(err) = write_and_follow(paths, file, pairs, unset, guard.is_some(), &mut applied) {
         applied.failed = Some(err);
     }
@@ -151,7 +162,14 @@ pub fn check(
     check_native(paths, global, name, pairs, unset)?;
     let runner = check_runner(paths, global, name, pairs)?;
     check_desktop(paths, name, pairs, unset)?;
-    apply_components(paths, global, name, runner.as_ref(), pairs, unset)
+    apply_components(
+        paths,
+        global,
+        name,
+        runner.as_ref().map(|(runner, _guard)| runner),
+        pairs,
+        unset,
+    )
 }
 
 /// Settings that decide what the next launch runs, and against what. They all
@@ -334,6 +352,13 @@ fn unquote(raw: &str) -> &str {
         .unwrap_or(raw)
 }
 
+fn new_setting<'a>(set: &[(&str, &'a str)], key: &str) -> Option<&'a str> {
+    set.iter()
+        .rev()
+        .find(|(candidate, _)| *candidate == key)
+        .map(|(_, raw)| unquote(raw))
+}
+
 /// Settings only a Proton environment has anything to do with.
 const PROTON_ONLY: [&str; 2] = ["gameid", "store"];
 
@@ -344,26 +369,28 @@ fn check_runner(
     global: &GlobalConfig,
     name: &str,
     pairs: &[(&str, &str)],
-) -> anyhow::Result<Option<Runner>> {
+) -> anyhow::Result<Option<(Runner, Option<build_lock::Guard>)>> {
     let changed = changed_runner(pairs);
     let runners = Runners::new(paths, global)?;
-    let current = Environment::load(paths, name)
-        .ok()
-        .and_then(|environment| runners.resolve(&environment.wine().ok()?.runner).ok());
+    let current = Environment::load(paths, name).ok().and_then(|environment| {
+        runners
+            .resolve_locked(paths, &environment.wine().ok()?.runner)
+            .ok()
+    });
 
     let runner = match changed {
         Some(changed) => {
-            let new = runners.resolve(changed)?;
+            let new = runners.resolve_locked(paths, changed)?;
             // A wine prefix has no `pfx/`, and a Proton one keeps nothing where
             // a plain wine looks for it, so crossing kinds is worse than not
             // migrating.
             if let Some(current) = &current
-                && current.is_proton() != new.is_proton()
+                && current.0.is_proton() != new.0.is_proton()
             {
                 bail!(CheckError::RunnerKindMismatch {
-                    current: current.name().to_owned(),
+                    current: current.0.name().to_owned(),
                     changed: changed.to_owned(),
-                    kind: new.kind_name().to_owned(),
+                    kind: new.0.kind_name().to_owned(),
                 });
             }
             new
@@ -377,14 +404,14 @@ fn check_runner(
     };
     let proton_only = pairs.iter().any(|(key, _)| PROTON_ONLY.contains(key));
 
-    if proton_only && !runner.is_proton() {
+    if proton_only && !runner.0.is_proton() {
         let key = pairs
             .iter()
             .find_map(|(key, _)| PROTON_ONLY.contains(key).then_some(*key))
             .expect("checked above");
         bail!(
             "`{key}` only means something to Proton, and `{name}` runs on {}",
-            runner.name()
+            runner.0.name()
         );
     }
     Ok(Some(runner))
@@ -403,6 +430,18 @@ pub fn update(
     file: ConfigFile,
     set: &[(&str, &str)],
     unset: &[&str],
+) -> Result<Vec<String>> {
+    update_with_writer(paths, file, set, unset, |path, contents| {
+        write_atomic(path, contents)
+    })
+}
+
+fn update_with_writer(
+    paths: &Paths,
+    file: ConfigFile,
+    set: &[(&str, &str)],
+    unset: &[&str],
+    write: impl FnOnce(&std::path::Path, &str) -> Result<()>,
 ) -> Result<Vec<String>> {
     let (scope, path) = config_path(paths, file)?;
     // Read under the lock, so a change or a removal that lands in the meantime
@@ -481,14 +520,13 @@ pub fn update(
         config::stamp_schema(&mut doc);
         updated = doc.to_string();
     }
-    match scope {
-        Scope::Global => {
-            GlobalConfig::parse(&path, &updated)?;
-        }
+    let (global, environment) = match scope {
+        Scope::Global => (Some(GlobalConfig::parse(&path, &updated)?), None),
         Scope::Environment => {
-            EnvironmentConfig::parse(&path, &updated)?;
+            let environment = EnvironmentConfig::parse(&path, &updated)?;
+            (None, Some(environment))
         }
-    }
+    };
     let cleanup = match file {
         ConfigFile::Environment(env) => {
             let targets_after = target_names(&doc);
@@ -502,12 +540,58 @@ pub fn update(
         ConfigFile::Global => None,
     };
     if changed {
-        write_atomic(&path, &updated)?;
+        let wine = environment.as_ref().and_then(EnvironmentConfig::wine);
+        let runner = match scope {
+            Scope::Global if set.iter().any(|(key, _)| *key == "defaults.runner") => global
+                .as_ref()
+                .map(|global| global.defaults.runner.as_str()),
+            Scope::Environment if set.iter().any(|(key, _)| *key == "runner") => {
+                wine.map(|wine| wine.runner.as_str())
+            }
+            _ => None,
+        };
+        let dxvk = set
+            .iter()
+            .any(|(key, _)| *key == "dxvk")
+            .then(|| wine.and_then(|wine| wine.dxvk.as_deref()))
+            .flatten();
+        let vkd3d = set
+            .iter()
+            .any(|(key, _)| *key == "vkd3d")
+            .then(|| wine.and_then(|wine| wine.vkd3d.as_deref()))
+            .flatten();
+        if runner.is_some() || dxvk.is_some() || vkd3d.is_some() {
+            let loaded_global;
+            let global = match &global {
+                Some(global) => global,
+                None => {
+                    loaded_global = GlobalConfig::load_or_default(paths)?;
+                    &loaded_global
+                }
+            };
+            write_with_build_locks(paths, global, runner, dxvk, vkd3d, || {
+                write(&path, &updated)
+            })?;
+        } else {
+            write(&path, &updated)?;
+        }
     }
     if let Some(cleanup) = cleanup {
         cleanup.finish()?;
     }
     Ok(missing)
+}
+
+fn write_with_build_locks(
+    paths: &Paths,
+    global: &GlobalConfig,
+    runner: Option<&str>,
+    dxvk: Option<&str>,
+    vkd3d: Option<&str>,
+    write: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let _guards = build_lock::config(paths, global, runner, dxvk, vkd3d)?;
+    write()
 }
 
 fn target_names(doc: &DocumentMut) -> BTreeSet<String> {
@@ -544,6 +628,74 @@ mod tests {
         })
         .unwrap();
         (root, paths)
+    }
+
+    #[test]
+    fn setting_a_runner_waits_for_its_build_lock_before_writing() {
+        let (_root, paths) = setup();
+        write_env(&paths, NOTEPAD);
+        update_with_writer(
+            &paths,
+            ConfigFile::Environment("notepad"),
+            &[("runner", "build")],
+            &[],
+            |path, contents| {
+                assert!(
+                    build_lock::try_exclusive(&paths, build_lock::Kind::Runner, "build")?.is_none()
+                );
+                assert_eq!(fs::read_to_string(path).unwrap(), NOTEPAD);
+                write_atomic(path, contents)
+            },
+        )
+        .unwrap();
+        assert!(
+            build_lock::try_exclusive(&paths, build_lock::Kind::Runner, "build")
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            Environment::load(&paths, "notepad")
+                .unwrap()
+                .wine()
+                .unwrap()
+                .runner,
+            "build"
+        );
+    }
+
+    #[test]
+    fn a_config_write_keeps_the_selected_build_locked() {
+        let (_root, paths) = setup();
+        let path = paths.global_config();
+        write_with_build_locks(
+            &paths,
+            &GlobalConfig::default(),
+            Some("build"),
+            Some("2.0"),
+            Some("3.0"),
+            || {
+                for (kind, name) in [
+                    (build_lock::Kind::Runner, "build"),
+                    (build_lock::Kind::Dxvk, "2.0"),
+                    (build_lock::Kind::Vkd3d, "3.0"),
+                ] {
+                    assert!(build_lock::try_exclusive(&paths, kind, name)?.is_none());
+                }
+                write_atomic(&path, "[defaults]\nrunner = 'build'\n")
+            },
+        )
+        .unwrap();
+        for (kind, name) in [
+            (build_lock::Kind::Runner, "build"),
+            (build_lock::Kind::Dxvk, "2.0"),
+            (build_lock::Kind::Vkd3d, "3.0"),
+        ] {
+            assert!(
+                build_lock::try_exclusive(&paths, kind, name)
+                    .unwrap()
+                    .is_some()
+            );
+        }
     }
 
     const NOTEPAD: &str =

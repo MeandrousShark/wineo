@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, Value, value};
 
+use crate::build_lock;
 use crate::cancel::Token;
 use crate::config::{self, Arch, EnvironmentConfig, GlobalConfig, WineConfig};
 use crate::edit;
@@ -144,6 +145,7 @@ impl Environment {
         if path.exists() {
             return Err(Error::EnvironmentExists(new.name.clone()));
         }
+        let _runner_guard = build_lock::runner(paths, runner)?;
         let dir = new.prefix_dir(paths, global)?;
         let prefix_value = paths.store_prefix(&dir)?;
 
@@ -186,6 +188,17 @@ impl Environment {
             template.apply(&mut doc);
         }
         let _guard = Locks::new(paths).config(&path)?;
+        let _build_guards = build_lock::config(
+            paths,
+            global,
+            Some(runner.selection()),
+            new.template
+                .as_ref()
+                .and_then(|template| template.dxvk.as_deref()),
+            new.template
+                .as_ref()
+                .and_then(|template| template.vkd3d.as_deref()),
+        )?;
         write_new(&path, &doc.to_string())?;
         Self::load(paths, &new.name)
     }
@@ -306,8 +319,8 @@ impl Environment {
         if !quiet {
             return Ok(());
         }
-        let Ok(runner) =
-            Runners::new(paths, global).and_then(|runners| runners.resolve(&wine.runner))
+        let Ok((runner, _runner_guard)) = Runners::new(paths, global)
+            .and_then(|runners| runners.resolve_locked(paths, &wine.runner))
         else {
             return Ok(());
         };
@@ -331,6 +344,7 @@ impl Environment {
     ) -> Result<bool> {
         let dir = self.prefix(paths)?;
         let root = global.prefix_root(paths)?;
+        let _runner_guard = build_lock::runner(paths, runner)?;
         let plan = || prefix::build_plan(paths, &root, runner, &dir, empty_confirmed);
         if plan()? == BuildPlan::Ready {
             return Ok(false);

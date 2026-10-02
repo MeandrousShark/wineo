@@ -23,6 +23,23 @@ pub struct RunnerCopy {
     pub source: PathBuf,
 }
 
+impl RunnerCopy {
+    pub fn lock_source(
+        &self,
+        paths: &Paths,
+        global: &GlobalConfig,
+    ) -> crate::Result<Option<crate::build_lock::Guard>> {
+        let runners = Runners::new(paths, global)?;
+        let source = crate::paths::resolve(&self.source);
+        for runner in runners.list()?.runners {
+            if crate::paths::resolve(&runners.root().join(runner.name())) == source {
+                return crate::build_lock::runner(paths, &runner);
+            }
+        }
+        Ok(None)
+    }
+}
+
 /// What to do about a game's runner.
 #[derive(Debug, Clone)]
 pub enum RunnerSuggestion {

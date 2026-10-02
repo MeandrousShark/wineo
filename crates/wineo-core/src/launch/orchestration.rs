@@ -81,6 +81,14 @@ pub fn runner(
     Ok(Runners::new(paths, global)?.resolve(&environment.wine()?.runner)?)
 }
 
+pub fn runner_locked(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+) -> anyhow::Result<(Runner, Option<crate::build_lock::Guard>)> {
+    Ok(Runners::new(paths, global)?.resolve_locked(paths, &environment.wine()?.runner)?)
+}
+
 pub fn prepare_target(
     paths: &Paths,
     global: &GlobalConfig,
@@ -97,7 +105,7 @@ pub fn prepare_target(
             overrides,
         )?);
     }
-    let runner = runner(paths, global, environment)?;
+    let (runner, _build_guard) = runner_locked(paths, global, environment)?;
     Launch::check_target(paths, global, environment, &runner, overrides)?;
     if !environment.config.winetricks.is_empty()
         && !Runtime::new(paths, &environment.name).is_running()?
@@ -161,7 +169,16 @@ pub fn reconcile(
         }
         return Ok(());
     };
-    let wanted = Wanted::from_config(&environment.config);
+    let mut wanted = Wanted::from_config(&environment.config);
+    // Keep component aliases on the builds this launch already locked.
+    for guard in &launch.build_guards {
+        let lock = guard.lock();
+        match lock.kind() {
+            crate::build_lock::Kind::Runner => {}
+            crate::build_lock::Kind::Dxvk => wanted.dxvk = Some(lock.name().to_owned()),
+            crate::build_lock::Kind::Vkd3d => wanted.vkd3d = Some(lock.name().to_owned()),
+        }
+    }
     let changes = install::reconcile(paths, global, &environment.name, runner, prefix, &wanted)?;
     if !changes.is_empty() {
         events(LaunchEvent::Components(changes));
@@ -258,6 +275,11 @@ pub fn start(
             name: name.to_owned(),
             locks: Locks::new(paths),
             config: environment.path.clone(),
+            builds: launch
+                .build_guards
+                .iter()
+                .map(|guard| guard.lock().clone())
+                .collect(),
         },
         runtime_dir: runtime.dir().to_owned(),
         stats_log: paths.stats_log(name),
@@ -285,6 +307,64 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+
+    #[test]
+    fn reconcile_uses_the_component_build_locked_by_the_launch() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        let runner_bin = paths.default_runner_root().join("fake/bin");
+        fs::create_dir_all(&runner_bin).unwrap();
+        for name in ["wine", "wineserver"] {
+            let path = runner_bin.join(name);
+            fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let prefix = paths.default_prefix_root().join("app");
+        fs::create_dir_all(prefix.join("drive_c")).unwrap();
+        fs::write(prefix.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+        let install_dxvk = |name: &str| {
+            for arch in ["x64", "x32"] {
+                let dir = paths.default_dxvk_root().join(name).join(arch);
+                fs::create_dir_all(&dir).unwrap();
+                fs::write(dir.join("dxgi.dll"), name).unwrap();
+            }
+        };
+        install_dxvk("1.0");
+        let path = paths.environment_config("app");
+        let environment = Environment {
+            name: "app".to_owned(),
+            path: path.clone(),
+            config: crate::config::EnvironmentConfig::parse(
+                &path,
+                &format!(
+                    "prefix = '{}'\nrunner = 'fake'\narch = 'win64'\ndxvk = 'latest'\n[targets.app]\nexe = 'app'\n",
+                    prefix.display()
+                ),
+            )
+            .unwrap(),
+        };
+        let global = GlobalConfig::default();
+        let launch = Launch::target(&paths, &global, &environment, &Overrides::default()).unwrap();
+        install_dxvk("2.0");
+        reconcile(&paths, &global, &environment, &launch, |_| {}).unwrap();
+        assert_eq!(
+            install::installed(
+                launch.host.runner().unwrap(),
+                &prefix,
+                crate::components::Component::Dxvk
+            )
+            .unwrap()
+            .as_deref(),
+            Some("1.0")
+        );
+        assert!(
+            crate::build_lock::try_exclusive(&paths, crate::build_lock::Kind::Dxvk, "1.0")
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn detached_start_reports_supervisor_outcomes_and_event_order() {

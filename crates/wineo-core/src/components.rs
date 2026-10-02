@@ -194,6 +194,40 @@ impl Builds {
         }
     }
 
+    pub fn resolve_locked(
+        &self,
+        paths: &Paths,
+        name: &str,
+    ) -> Result<(Build, crate::build_lock::Guard)> {
+        self.lock_resolved(paths, name, self.resolve(name)?)
+    }
+
+    pub(crate) fn lock_resolved(
+        &self,
+        paths: &Paths,
+        name: &str,
+        mut build: Build,
+    ) -> Result<(Build, crate::build_lock::Guard)> {
+        for attempt in 0..2 {
+            let guard = crate::build_lock::shared(paths, self.component.into(), build.name())?;
+            if build.dir().is_dir() {
+                return Ok((build, guard));
+            }
+            drop(guard);
+            if attempt == 0 && name == LATEST {
+                build = self.resolve(name)?;
+            } else {
+                return Err(Error::UnknownBuild {
+                    component: self.component.as_str(),
+                    name: build.name().to_owned(),
+                    installed: self.installed()?,
+                    root: self.root.clone(),
+                });
+            }
+        }
+        unreachable!("the second missing build returns an error")
+    }
+
     /// The newest installed build, by the version numbers in its name.
     pub fn latest(&self) -> Result<Build> {
         self.list()?
@@ -319,6 +353,29 @@ mod tests {
         }
         if dirs.is_empty() {
             fs::create_dir_all(&dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn latest_re_resolves_after_the_selected_build_disappears() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        for component in Component::ALL {
+            let (wide, narrow) = component.arch_dirs();
+            install(root.path(), component, "1.0", &[wide, narrow]);
+            install(root.path(), component, "2.0", &[wide, narrow]);
+            let builds = builds(root.path(), component);
+            let selected = builds.resolve(LATEST).unwrap();
+            fs::remove_dir_all(selected.dir()).unwrap();
+            let (build, _guard) = builds.lock_resolved(&paths, LATEST, selected).unwrap();
+            assert_eq!(build.name(), "1.0");
+            assert!(
+                crate::build_lock::try_exclusive(&paths, component.into(), "1.0")
+                    .unwrap()
+                    .is_none()
+            );
         }
     }
 

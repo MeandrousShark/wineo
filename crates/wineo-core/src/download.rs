@@ -364,6 +364,16 @@ impl<T: Transport> Client<T> {
         check_cancel(cancelled)?;
         let destination = destination_identity(&release.destination(paths, global)?)?;
         let _lock = InstallLock::acquire(&destination)?;
+        let kind = match release.provider {
+            Provider::GeProton | Provider::ProtonCachyos => crate::build_lock::Kind::Runner,
+            Provider::Dxvk => crate::build_lock::Kind::Dxvk,
+            Provider::Vkd3d => crate::build_lock::Kind::Vkd3d,
+        };
+        let name = destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("invalid build destination"))?;
+        let _build_guard = crate::build_lock::shared(paths, kind, name)?;
         remove_abandoned_stages(&destination)?;
         let expected = self.expected_digests(release)?;
         check_cancel(cancelled)?;

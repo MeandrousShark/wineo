@@ -17,6 +17,50 @@ const APP: &str = "[targets.app]\nexe = \"app\"\n";
 const NOISY: &str = "[targets.noisy]\nexe = \"noisy\"\n";
 
 #[test]
+fn detached_launch_holds_build_locks_until_the_run_ends() {
+    use wineo_core::build_lock::{Kind, try_exclusive};
+    use wineo_core::paths::Paths;
+
+    let f = Fixture::new();
+    f.install_runner("wine-tkg");
+    f.install_build("dxvk", "2.0", &["x64", "x32"]);
+    f.install_build("vkd3d", "2.0", &["x64", "x86"]);
+    f.environment("app", APP);
+    assert_success(&f.run(&[
+        "set",
+        "app",
+        "runner=wine-tkg",
+        "dxvk=latest",
+        "vkd3d=latest",
+    ]));
+    let paths = Paths::from_lookup(|key| match key {
+        "XDG_STATE_HOME" => Some(f.root.path().join("state").into_os_string()),
+        other => std::env::var_os(other),
+    })
+    .unwrap();
+    assert_success(&f.run(&["start", "app"]));
+    for (kind, name) in [
+        (Kind::Runner, "wine-tkg"),
+        (Kind::Dxvk, "2.0"),
+        (Kind::Vkd3d, "2.0"),
+    ] {
+        let start = Instant::now();
+        assert!(try_exclusive(&paths, kind, name).unwrap().is_none());
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+    assert_success(&f.run(&["stop", "app"]));
+    wait_for("the supervisor to release its build locks", || {
+        [
+            (Kind::Runner, "wine-tkg"),
+            (Kind::Dxvk, "2.0"),
+            (Kind::Vkd3d, "2.0"),
+        ]
+        .into_iter()
+        .all(|(kind, name)| try_exclusive(&paths, kind, name).unwrap().is_some())
+    });
+}
+
+#[test]
 #[ignore = "runs real Wine and winetricks"]
 fn declarative_winetricks_runs_once_against_real_wine() {
     let f = Fixture::real();
@@ -2549,6 +2593,23 @@ fn an_installer_whose_prefix_cannot_be_confirmed_idle_is_left_unresolved() {
     let failed = f.run(&["stop", "game"]);
     assert!(!failed.status.success());
     assert!(f.installer_recorded("game"));
+    f.install_runner("fake");
+    assert_success(&f.run(&["stop", "game"]));
+    assert!(!f.installer_recorded("game"));
+}
+
+#[test]
+fn a_broken_environment_config_does_not_block_installer_cleanup() {
+    let f = Fixture::new();
+    f.install_runner("fake");
+    let output = f
+        .new_with_installer("game", &["--runner", "fake"], "break-wineserver")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(f.installer_recorded("game"));
+
+    f.environment("game", "invalid = [TOML");
     f.install_runner("fake");
     assert_success(&f.run(&["stop", "game"]));
     assert!(!f.installer_recorded("game"));

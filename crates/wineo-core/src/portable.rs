@@ -7,6 +7,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use toml_edit::{DocumentMut, Value};
 
 use crate::art::StagedArt;
+use crate::build_lock;
 use crate::cancel::Token;
 use crate::clone::{self, ConfigReview};
 use crate::config::{self, EnvironmentConfig, GlobalConfig};
@@ -20,6 +21,7 @@ use crate::runners::Runners;
 use crate::runtime::Runtime;
 use crate::snapshot;
 use crate::stats;
+use crate::templates::{NEWEST_PROTON, Templates};
 
 pub use crate::import::Cancelled as Canceled;
 
@@ -89,15 +91,14 @@ pub fn inspect(
         .wine()
         .ok_or_else(|| anyhow!(Error::NoPrefix(name.to_owned())))?;
     let configured_root = from.config_path(&wine.prefix).map_err(|err| anyhow!(err))?;
-    let runner = if import::root_layout_ambiguous(&configured_root) {
-        Some(
-            Runners::new(from, global)
-                .map_err(|err| anyhow!(err))?
-                .resolve(&wine.runner)
-                .map_err(|err| anyhow!(err))?,
-        )
+    let (runner, _runner_guard) = if import::root_layout_ambiguous(&configured_root) {
+        let (runner, guard) = Runners::new(from, global)
+            .map_err(|err| anyhow!(err))?
+            .resolve_locked(from, &wine.runner)
+            .map_err(|err| anyhow!(err))?;
+        (Some(runner), guard)
     } else {
-        None
+        (None, None)
     };
     let prefix = import::inspect_root(&configured_root, runner.as_ref(), wine.arch)?;
     if paths::resolve(&configured_root) != prefix.source_root {
@@ -391,6 +392,9 @@ pub fn execute_reviewed(
                     .parent()
                     .expect("templates have a parent"),
             )?;
+            let destination_global = destination_global(to, reviewed.global_text.as_deref())?;
+            let _template_guards =
+                template_build_guards(to, &destination_global, &staged_templates)?;
             publish(&staged_templates, &to.templates_dir())?;
             published.push(to.templates_dir());
         }
@@ -401,12 +405,13 @@ pub fn execute_reviewed(
         if let Some(text) = &reviewed.global_text {
             let path = to.global_config();
             let _guard = locks.config(&path).map_err(|err| anyhow!(err))?;
-            write_once(&path, text)?;
+            write_global_once(to, text)?;
             published.push(path);
         }
         let config_path = to.environment_config(name);
         let _guard = locks.config(&config_path).map_err(|err| anyhow!(err))?;
-        import::write_config_once(&config_path, &reviewed.config_text)
+        let destination_global = destination_global(to, reviewed.global_text.as_deref())?;
+        write_environment_once(to, &destination_global, name, &reviewed.config_text)
     })();
     result.map_err(|err| recovery(&published, err))?;
     progress(ImportProgress::Finished {
@@ -608,6 +613,8 @@ pub fn execute_native(
             if reviewed.templates_fingerprint != Some(import::fingerprint(&from.templates_dir())?) {
                 bail!("templates changed while they were being copied; try again");
             }
+            let destination_global = destination_global(to, reviewed.global_text.as_deref())?;
+            let _template_guards = template_build_guards(to, &destination_global, &staged)?;
             publish(&staged, &to.templates_dir())?;
             published.push(to.templates_dir());
         }
@@ -618,12 +625,13 @@ pub fn execute_native(
         if let Some(text) = &reviewed.global_text {
             let path = to.global_config();
             let _guard = locks.config(&path).map_err(|err| anyhow!(err))?;
-            write_once(&path, text)?;
+            write_global_once(to, text)?;
             published.push(path);
         }
         let config_path = to.environment_config(name);
         let _guard = locks.config(&config_path).map_err(|err| anyhow!(err))?;
-        import::write_config_once(&config_path, &reviewed.config_text)
+        let destination_global = destination_global(to, reviewed.global_text.as_deref())?;
+        write_environment_once(to, &destination_global, name, &reviewed.config_text)
     })();
     result.map_err(|err| {
         if published.is_empty() {
@@ -639,6 +647,73 @@ pub fn execute_native(
         )
     })?;
     Environment::load(to, name).map_err(|err| anyhow!(err))
+}
+
+fn destination_global(to: &Paths, copied: Option<&str>) -> Result<GlobalConfig> {
+    match copied {
+        Some(text) => GlobalConfig::parse(&to.global_config(), text).map_err(Into::into),
+        None => Ok(GlobalConfig::load_or_default(to).unwrap_or_default()),
+    }
+}
+
+fn template_build_guards(
+    to: &Paths,
+    global: &GlobalConfig,
+    dir: &Path,
+) -> Result<Vec<build_lock::Guard>> {
+    let templates = Templates::at(dir.to_owned());
+    let mut guards = Vec::new();
+    for row in templates.list()?.into_iter().filter(|row| !row.built_in) {
+        let Ok(template) = templates.resolve(&row.name) else {
+            continue;
+        };
+        let runner = if template.runner.as_deref() == Some(NEWEST_PROTON) {
+            Runners::new(to, global).ok().and_then(|runners| {
+                template
+                    .runner_name(&runners, &global.defaults.runner)
+                    .ok()
+                    .flatten()
+            })
+        } else {
+            template.runner.clone()
+        };
+        guards.extend(build_lock::config(
+            to,
+            global,
+            runner.as_deref(),
+            template.dxvk.as_deref(),
+            template.vkd3d.as_deref(),
+        )?);
+    }
+    Ok(guards)
+}
+
+fn write_global_once(paths: &Paths, text: &str) -> Result<()> {
+    let path = paths.global_config();
+    let global = GlobalConfig::parse(&path, text)?;
+    let _guards = build_lock::config(paths, &global, Some(&global.defaults.runner), None, None)?;
+    write_once(&path, text)
+}
+
+fn write_environment_once(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    text: &str,
+) -> Result<()> {
+    let path = paths.environment_config(name);
+    let config = EnvironmentConfig::parse(&path, text)?;
+    let _guards = match config.wine() {
+        Some(wine) => build_lock::config(
+            paths,
+            global,
+            Some(&wine.runner),
+            wine.dxvk.as_deref(),
+            wine.vkd3d.as_deref(),
+        )?,
+        None => Vec::new(),
+    };
+    import::write_config_once(&path, text)
 }
 
 /// The source global config for a portable folder: its prefix root follows

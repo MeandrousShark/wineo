@@ -12,6 +12,7 @@ use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
 
+use crate::build_lock;
 use crate::components::{Build, Builds, Component};
 use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::error::{Error, IoContext, Result};
@@ -145,6 +146,7 @@ pub fn reconcile(
     prefix: &Path,
     wanted: &Wanted,
 ) -> Result<Vec<Change>> {
+    let _runner_guard = build_lock::runner(paths, runner)?;
     check(name, runner, wanted)?;
     // A prefix that already has what the config asks for is left alone, and
     // the build it came from need not still be extracted: the DLLs were
@@ -159,9 +161,13 @@ pub fn reconcile(
     for component in Component::ALL {
         // Resolved first, so a name that is not installed fails before
         // anything in the prefix is touched.
-        let target = match wanted.get(component) {
-            Some(asked) => Some(Builds::new(paths, global, component)?.resolve(asked)?),
-            None => None,
+        let (target, _build_guard) = match wanted.get(component) {
+            Some(asked) => {
+                let (build, guard) =
+                    Builds::new(paths, global, component)?.resolve_locked(paths, asked)?;
+                (Some(build), Some(guard))
+            }
+            None => (None, None),
         };
         let current = manifest.get(component).map(|entry| entry.build.clone());
         match (current, target) {
@@ -233,7 +239,7 @@ pub fn check_available(
     check(name, runner, wanted)?;
     for component in Component::ALL {
         if let Some(asked) = wanted.get(component) {
-            Builds::new(paths, global, component)?.resolve(asked)?;
+            Builds::new(paths, global, component)?.resolve_locked(paths, asked)?;
         }
     }
     Ok(())

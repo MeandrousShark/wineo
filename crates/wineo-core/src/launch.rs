@@ -21,7 +21,7 @@ mod orchestration;
 mod stop;
 pub use orchestration::{
     LaunchEvent, PreparedLaunch, StartOutcome, ensure_prefix, install_winetricks, prepare,
-    prepare_target, reconcile, runner, start,
+    prepare_target, reconcile, runner, runner_locked, start,
 };
 pub(crate) use stop::{
     LostRunOutcome, busy_with, clean_up_installer, clean_up_lost_run, stop_timeout,
@@ -254,6 +254,8 @@ pub struct Launch {
     pub gameid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<String>,
+    #[serde(skip)]
+    pub build_guards: Vec<crate::build_lock::Guard>,
 }
 
 impl Launch {
@@ -287,7 +289,14 @@ impl Launch {
         let Kind::Wine(wine) = &environment.config.kind else {
             return native_target(paths, global, environment, name, target, overrides, find);
         };
-        let (runner, prefix) = open(paths, global, environment)?;
+        let (runner, prefix, mut build_guards) = open(paths, global, environment)?;
+        build_guards.extend(crate::build_lock::config(
+            paths,
+            global,
+            None,
+            environment.wine()?.dxvk.as_deref(),
+            environment.wine()?.vkd3d.as_deref(),
+        )?);
         // Windows paths and drive_c live in the wine prefix, which is `pfx/`
         // under a Proton environment's configured one.
         let wine_prefix = runner.wine_prefix(&prefix);
@@ -331,6 +340,7 @@ impl Launch {
             env: merge_env(&runner, global, environment, &overrides.env)?,
             gameid: runner.is_proton().then(|| wine.gameid.clone()).flatten(),
             store: runner.is_proton().then(|| wine.store.clone()).flatten(),
+            build_guards,
             host: Host::Wine { runner, prefix },
             target: Some(name.to_owned()),
             args,
@@ -401,7 +411,14 @@ impl Launch {
         args: &[String],
         env: &BTreeMap<String, String>,
     ) -> Result<Self> {
-        let (runner, prefix) = open(paths, global, environment)?;
+        let (runner, prefix, mut build_guards) = open(paths, global, environment)?;
+        build_guards.extend(crate::build_lock::config(
+            paths,
+            global,
+            None,
+            environment.wine()?.dxvk.as_deref(),
+            environment.wine()?.vkd3d.as_deref(),
+        )?);
         let wine_prefix = runner.wine_prefix(&prefix);
         let program = resolve_program(paths, &wine_prefix, program, true)?;
         let cwd = program.default_cwd(&wine_prefix);
@@ -419,6 +436,7 @@ impl Launch {
             wayland: Wayland::Off,
             gameid: None,
             store: None,
+            build_guards,
         })
     }
 
@@ -586,15 +604,15 @@ fn open(
     paths: &Paths,
     global: &GlobalConfig,
     environment: &Environment,
-) -> Result<(Runner, PathBuf)> {
+) -> Result<(Runner, PathBuf, Vec<crate::build_lock::Guard>)> {
     let wine = environment.wine()?;
     let prefix = crate::paths::resolve(&environment.prefix(paths)?);
-    let runner = Runners::new(paths, global)?.resolve(&wine.runner)?;
+    let (runner, guard) = Runners::new(paths, global)?.resolve_locked(paths, &wine.runner)?;
     // Wine would silently create a fresh prefix here otherwise.
     if !prefix::is_prefix(&runner.wine_prefix(&prefix)) {
         return Err(Error::MissingPrefix(prefix));
     }
-    Ok((runner, prefix))
+    Ok((runner, prefix, guard.into_iter().collect()))
 }
 
 /// A native target: its exe run directly, with no prefix and no runner.
@@ -633,6 +651,7 @@ fn native_target(
         wayland: Wayland::Off,
         gameid: None,
         store: None,
+        build_guards: Vec::new(),
     })
 }
 
@@ -968,7 +987,7 @@ mod tests {
         global.defaults.runner_root = Some("~/runners".to_owned());
 
         let configured_prefix = environment.prefix(&f.paths).unwrap();
-        let (_, launch_prefix) = open(&f.paths, &global, &environment).unwrap();
+        let (_, launch_prefix, _guards) = open(&f.paths, &global, &environment).unwrap();
         assert_eq!(configured_prefix, alias);
         assert_eq!(launch_prefix, f.prefix.canonicalize().unwrap());
     }
@@ -1520,6 +1539,7 @@ mod tests {
             wayland: Wayland::Off,
             gameid: None,
             store: None,
+            build_guards: Vec::new(),
         };
         let wine = Runner::fake("wine")
             .wine_path()

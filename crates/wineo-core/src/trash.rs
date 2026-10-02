@@ -21,6 +21,7 @@ use rustix::fs::{RenameFlags, renameat_with};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::build_lock;
 use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::desktop;
 use crate::environment::{self, Environment};
@@ -1845,6 +1846,15 @@ fn complete_entry(paths: &Paths, manifest: &Manifest) -> Result<()> {
 }
 
 fn restore_locked(paths: &Paths, manifest: &mut Manifest, rollback: bool) -> Result<()> {
+    restore_locked_with(paths, manifest, rollback, || Ok(()))
+}
+
+fn restore_locked_with(
+    paths: &Paths,
+    manifest: &mut Manifest,
+    rollback: bool,
+    published: impl FnOnce() -> Result<()>,
+) -> Result<()> {
     let config = paths.environment_config(&manifest.name);
     if !rollback && manifest.phase == Phase::Trashed {
         if identity(&config)?.is_some() {
@@ -1897,12 +1907,21 @@ fn restore_locked(paths: &Paths, manifest: &mut Manifest, rollback: bool) -> Res
         }
         require(&prefix, expected)?;
     }
-    for index in (0..manifest.payloads.len()).rev() {
-        if manifest.payloads[index].step == Step::Returned {
-            continue;
+    // Recovery must finish even when build discovery is unavailable.
+    let restored_config = return_config(paths, manifest).ok().flatten();
+    let global = restored_config
+        .as_ref()
+        .and_then(EnvironmentConfig::wine)
+        .and_then(|_| GlobalConfig::load(paths).ok());
+    with_environment_build_locks(paths, global.as_ref(), restored_config.as_ref(), || {
+        for index in (0..manifest.payloads.len()).rev() {
+            if manifest.payloads[index].step == Step::Returned {
+                continue;
+            }
+            return_payload(paths, manifest, index, rollback)?;
         }
-        return_payload(paths, manifest, index, rollback)?;
-    }
+        published()
+    })?;
     // Registration and payload restoration have completed. A shortcut failure
     // is reported, but it must not undo or block the returned environment.
     let desktop_error = reconcile(paths, &manifest.name).err();
@@ -1914,6 +1933,57 @@ fn restore_locked(paths: &Paths, manifest: &mut Manifest, rollback: bool) -> Res
         );
     }
     Ok(())
+}
+
+fn return_config(paths: &Paths, manifest: &Manifest) -> Result<Option<EnvironmentConfig>> {
+    let payload = manifest
+        .payloads
+        .iter()
+        .find(|payload| payload.kind == Kind::Config)
+        .ok_or_else(|| anyhow!("trash entry has no config payload"))?;
+    let original = resolved(paths, &payload.original)?;
+    let retained = resolved(paths, &payload.retained)?;
+    let mut original_identities = vec![payload.identity, retained_identity(payload)];
+    if let Some(returned) = payload.returned_identity {
+        original_identities.push(returned);
+    }
+    let candidates = [
+        (&original, original_identities),
+        (&retained, vec![retained_identity(payload)]),
+    ];
+    for (path, identities) in candidates {
+        let Some(found) = identity(path)? else {
+            continue;
+        };
+        if !identities.contains(&found) || digest(path)? != payload.digest {
+            continue;
+        }
+        // Hand-edited configs must remain restorable even when they cannot be parsed.
+        return Ok(String::from_utf8(fs::read(path)?)
+            .ok()
+            .and_then(|text| EnvironmentConfig::parse(&original, &text).ok()));
+    }
+    bail!("config payload unavailable in trash entry {}", manifest.id)
+}
+
+fn with_environment_build_locks<T>(
+    paths: &Paths,
+    global: Option<&GlobalConfig>,
+    config: Option<&EnvironmentConfig>,
+    publish: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let _guards = match (global, config.and_then(EnvironmentConfig::wine)) {
+        (Some(global), Some(wine)) => build_lock::config(
+            paths,
+            global,
+            Some(&wine.runner),
+            wine.dxvk.as_deref(),
+            wine.vkd3d.as_deref(),
+        )
+        .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    publish()
 }
 
 pub fn restore(paths: &Paths, id: &str) -> Result<()> {
@@ -2170,6 +2240,173 @@ mod tests {
                 ),
             );
             prefix
+        }
+    }
+
+    #[test]
+    fn native_restore_with_malformed_global_config_completes() {
+        let f = Fixture::new();
+        let text = "kind = 'native'\n";
+        f.config("game", text);
+        let entry = remove(&f.paths, "game", false).unwrap();
+        fs::write(f.paths.global_config(), "invalid = [TOML").unwrap();
+
+        restore(&f.paths, &entry.id).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(f.paths.environment_config("game")).unwrap(),
+            text
+        );
+        assert!(list(&f.paths).unwrap().is_empty());
+        assert!(pending_entries(&f.paths).unwrap().is_empty());
+        assert!(
+            fs::read_dir(f.paths.build_locks_dir())
+                .unwrap()
+                .all(|entry| {
+                    !entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("build-")
+                })
+        );
+    }
+
+    #[test]
+    fn wine_restore_with_malformed_global_config_completes() {
+        let f = Fixture::new();
+        let prefix = f.wine("game");
+        let text = format!(
+            "prefix = '{}'\nrunner = 'build'\narch = 'win64'\ndxvk = '2.0'\nvkd3d = '3.0'\n",
+            prefix.display()
+        );
+        f.config("game", &text);
+        let entry = remove(&f.paths, "game", true).unwrap();
+        fs::write(f.paths.global_config(), "invalid = [TOML").unwrap();
+
+        locked(&f.paths, &entry.id, |manifest| {
+            restore_locked_with(&f.paths, manifest, false, || {
+                for (kind, name) in [
+                    (build_lock::Kind::Runner, "build"),
+                    (build_lock::Kind::Dxvk, "2.0"),
+                    (build_lock::Kind::Vkd3d, "3.0"),
+                ] {
+                    assert!(build_lock::try_exclusive(&f.paths, kind, name)?.is_some());
+                }
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(f.paths.environment_config("game")).unwrap(),
+            text
+        );
+        assert!(prefix.join("system.reg").exists());
+        assert!(list(&f.paths).unwrap().is_empty());
+        assert!(pending_entries(&f.paths).unwrap().is_empty());
+    }
+
+    #[test]
+    fn restore_publishes_config_while_all_named_builds_are_locked() {
+        let f = Fixture::new();
+        let path = f.paths.environment_config("game");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let text = "prefix = '/tmp/prefix'\nrunner = 'build'\narch = 'win64'\ndxvk = '2.0'\nvkd3d = '3.0'\n";
+        let config = EnvironmentConfig::parse(&path, text).unwrap();
+        let global = GlobalConfig::default();
+
+        with_environment_build_locks(&f.paths, Some(&global), Some(&config), || {
+            for (kind, name) in [
+                (build_lock::Kind::Runner, "build"),
+                (build_lock::Kind::Dxvk, "2.0"),
+                (build_lock::Kind::Vkd3d, "3.0"),
+            ] {
+                assert!(build_lock::try_exclusive(&f.paths, kind, name)?.is_none());
+            }
+            fs::write(&path, text)?;
+            Ok(())
+        })
+        .unwrap();
+
+        for (kind, name) in [
+            (build_lock::Kind::Runner, "build"),
+            (build_lock::Kind::Dxvk, "2.0"),
+            (build_lock::Kind::Vkd3d, "3.0"),
+        ] {
+            assert!(
+                build_lock::try_exclusive(&f.paths, kind, name)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn restore_holds_build_locks_through_payload_publication() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let f = Fixture::new();
+        let prefix = f.wine("game");
+        let text = format!(
+            "prefix = '{}'\nrunner = 'build'\narch = 'win64'\ndxvk = '2.0'\nvkd3d = '3.0'\n",
+            prefix.display()
+        );
+        f.config("game", &text);
+        let bin = f.paths.default_runner_root().join("build/bin");
+        fs::create_dir_all(&bin).unwrap();
+        for program in ["wine", "wineserver"] {
+            std::os::unix::fs::symlink("/bin/true", bin.join(program)).unwrap();
+        }
+        let entry = remove(&f.paths, "game", true).unwrap();
+        assert!(!prefix.exists());
+        assert!(!f.paths.environment_config("game").exists());
+        let (published_tx, published_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let paths = f.paths.clone();
+        let id = entry.id.clone();
+        let worker = std::thread::spawn(move || {
+            locked(&paths, &id, |manifest| {
+                restore_locked_with(&paths, manifest, false, || {
+                    published_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                    Ok(())
+                })
+            })
+        });
+        published_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            fs::read_to_string(f.paths.environment_config("game")).unwrap(),
+            text
+        );
+        assert!(prefix.join("system.reg").exists());
+        assert!(entry_dir(&f.paths, &entry.id).unwrap().exists());
+        for (kind, name) in [
+            (build_lock::Kind::Runner, "build"),
+            (build_lock::Kind::Dxvk, "2.0"),
+            (build_lock::Kind::Vkd3d, "3.0"),
+        ] {
+            assert!(
+                build_lock::try_exclusive(&f.paths, kind, name)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        release_tx.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        assert!(list(&f.paths).unwrap().is_empty());
+        assert!(pending_entries(&f.paths).unwrap().is_empty());
+        for (kind, name) in [
+            (build_lock::Kind::Runner, "build"),
+            (build_lock::Kind::Dxvk, "2.0"),
+            (build_lock::Kind::Vkd3d, "3.0"),
+        ] {
+            assert!(
+                build_lock::try_exclusive(&f.paths, kind, name)
+                    .unwrap()
+                    .is_some()
+            );
         }
     }
 

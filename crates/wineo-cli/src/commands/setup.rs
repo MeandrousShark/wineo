@@ -164,14 +164,14 @@ fn offer_build<I: Input, W: Write>(
 ) -> anyhow::Result<Option<PathBuf>> {
     let name = &environment.name;
     let dir = environment.prefix(paths)?;
-    let checked = launch::runner(paths, global, environment).and_then(|runner| {
+    let checked = launch::runner_locked(paths, global, environment).and_then(|(runner, guard)| {
         let root = global.prefix_root(paths)?;
         let plan = prefix::build_plan(paths, &root, &runner, &dir, true)?;
-        Ok((runner, plan))
+        Ok((runner, guard, plan))
     });
-    let runner = match checked {
-        Ok((_, BuildPlan::Ready)) => return Ok(prefix::wine_prefix_in(&dir)),
-        Ok((runner, BuildPlan::Build)) => runner,
+    let (runner, _build_guard) = match checked {
+        Ok((_, _, BuildPlan::Ready)) => return Ok(prefix::wine_prefix_in(&dir)),
+        Ok((runner, guard, BuildPlan::Build)) => (runner, guard),
         Err(err) => {
             prompt.say(format!("{err:#}"))?;
             return Ok(None);

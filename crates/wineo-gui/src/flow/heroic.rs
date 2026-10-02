@@ -3074,6 +3074,9 @@ fn install_prerequisite(
     match operation {
         Prerequisite::CopyRunner(copy) => {
             let root = global.runner_root(paths).map_err(|e| e.to_string())?;
+            let _source_guard = copy
+                .lock_source(paths, &global)
+                .map_err(|e| e.to_string())?;
             let mut files = CopyProgress::default();
             let receipt = import::copy_runner_reviewed(
                 &copy.inspection,

@@ -90,6 +90,50 @@ impl Runners {
         }
     }
 
+    pub fn resolve_locked(
+        &self,
+        paths: &Paths,
+        name: &str,
+    ) -> Result<(Runner, Option<crate::build_lock::Guard>)> {
+        self.lock_resolved(paths, name, self.resolve(name)?)
+    }
+
+    pub(crate) fn lock_resolved(
+        &self,
+        paths: &Paths,
+        name: &str,
+        mut runner: Runner,
+    ) -> Result<(Runner, Option<crate::build_lock::Guard>)> {
+        if runner.name() == Runner::SYSTEM {
+            return Ok((runner, None));
+        }
+        let runners = Self::at(
+            runner
+                .directory()
+                .and_then(Path::parent)
+                .unwrap_or(&self.root)
+                .to_owned(),
+        );
+        for attempt in 0..2 {
+            let guard =
+                crate::build_lock::shared(paths, crate::build_lock::Kind::Runner, runner.name())?;
+            if runner.directory().is_some_and(Path::is_dir) {
+                return Ok((runner, Some(guard)));
+            }
+            drop(guard);
+            if attempt == 0 && crate::runner_alias::is_alias(name) {
+                runner = runners.resolve(name)?;
+            } else {
+                return Err(Error::UnknownRunner {
+                    name: runner.name().to_owned(),
+                    installed: runners.installed()?,
+                    root: runners.root.clone(),
+                });
+            }
+        }
+        unreachable!("the second missing build returns an error")
+    }
+
     /// Everything in the runners root, sorted by name. A missing root just
     /// means nothing is installed yet.
     pub fn list(&self) -> Result<Listing> {
@@ -223,7 +267,7 @@ fn check(dir: &Path) -> std::result::Result<Runner, Skipped> {
     if proton.exists() {
         return if crate::runner::is_executable(&proton) {
             fs::canonicalize(dir)
-                .map(|dir| Runner::proton(name, dir))
+                .map(|root| Runner::proton(name, root).with_directory(dir))
                 .map_err(|_| Skipped::NotExecutable)
         } else {
             Err(Skipped::NotExecutable)
@@ -243,7 +287,7 @@ fn check(dir: &Path) -> std::result::Result<Runner, Skipped> {
     }
     let wine = fs::canonicalize(wine).map_err(|_| Skipped::NotExecutable)?;
     let wineserver = fs::canonicalize(wineserver).map_err(|_| Skipped::NotExecutable)?;
-    Ok(Runner::wine_build(name, wine, wineserver))
+    Ok(Runner::wine_build(name, wine, wineserver).with_directory(dir))
 }
 
 #[cfg(test)]
@@ -560,6 +604,49 @@ mod tests {
             installed.resolve("Proton-CachyOS-Latest").unwrap().name(),
             "proton-cachyos-12.0-20260921-slr-x86_64"
         );
+    }
+
+    #[test]
+    fn alias_re_resolves_when_the_selected_build_disappears_before_locking() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        proton_build(root.path(), "GE-Proton9-20", "GE-Proton9-20");
+        proton_build(root.path(), "GE-Proton10-1", "GE-Proton10-1");
+        let runners = runners(root.path());
+        let selected = runners.resolve("GE-Proton-Latest").unwrap();
+        assert_eq!(selected.name(), "GE-Proton10-1");
+        fs::remove_dir_all(root.path().join("runners/GE-Proton10-1")).unwrap();
+        let (runner, _guard) = runners
+            .lock_resolved(&paths, "GE-Proton-Latest", selected)
+            .unwrap();
+        assert_eq!(runner.name(), "GE-Proton9-20");
+        assert!(
+            crate::build_lock::try_exclusive(
+                &paths,
+                crate::build_lock::Kind::Runner,
+                runner.name(),
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_missing_concrete_build_after_resolution_uses_the_existing_error() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        wine_build(root.path(), "wine-tkg");
+        let runners = runners(root.path());
+        let selected = runners.resolve("wine-tkg").unwrap();
+        fs::remove_dir_all(root.path().join("runners/wine-tkg")).unwrap();
+        assert!(matches!(
+            runners.lock_resolved(&paths, "wine-tkg", selected),
+            Err(Error::UnknownRunner { .. })
+        ));
     }
 
     #[test]

@@ -99,8 +99,18 @@ pub fn apply(paths: &Paths, name: &str, held: bool) -> Result<Vec<Change>> {
     let runner = may_run_wine
         .then(|| Runners::new(paths, &global).ok())
         .flatten()
-        .and_then(|runners| runners.resolve(&environment.wine().ok()?.runner).ok());
-    reconcile(paths, &global, &environment, runner.as_ref(), &prefix)
+        .and_then(|runners| {
+            runners
+                .resolve_locked(paths, &environment.wine().ok()?.runner)
+                .ok()
+        });
+    reconcile(
+        paths,
+        &global,
+        &environment,
+        runner.as_ref().map(|(runner, _)| runner),
+        &prefix,
+    )
 }
 
 /// An entry on disk that wineo wrote.
@@ -793,6 +803,7 @@ fn extract_icon(
     target: &str,
     exe: &str,
 ) -> Option<()> {
+    let _build_guard = crate::build_lock::runner(paths, runner).ok()?;
     let wine_prefix = runner.wine_prefix(prefix);
     let shortcut = shortcut_for(&wine_prefix, exe)?;
     let scratch = Scratch::new(paths).ok()?;

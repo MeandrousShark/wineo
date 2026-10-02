@@ -38,7 +38,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, &args.name)?;
     let env = args.env.into_iter().collect();
-    let runner = launch::runner(paths, &global, &environment)?;
+    let (runner, _build_guard) = launch::runner_locked(paths, &global, &environment)?;
     Launch::check_exec(paths, &global, &environment, &runner, &args.program, &env)?;
     let cancellation = Cancellation::new()?;
     match launch::ensure_prefix(

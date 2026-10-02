@@ -40,13 +40,24 @@ pub enum Killed {
 }
 
 /// The wine build an environment runs with.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Runner {
     name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     selection: Option<String>,
     kind: Kind,
+    // Resolution context is not part of persisted runner identity.
+    #[serde(skip)]
+    directory: Option<PathBuf>,
 }
+
+impl PartialEq for Runner {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.selection == other.selection && self.kind == other.kind
+    }
+}
+
+impl Eq for Runner {}
 
 /// Proton is driven entirely through umu, so it shares no executables with a
 /// plain wine build rather than being another way to reach the same ones.
@@ -58,6 +69,18 @@ enum Kind {
 }
 
 impl Runner {
+    pub(crate) fn with_directory(mut self, directory: &Path) -> Self {
+        self.directory = Some(directory.to_owned());
+        self
+    }
+
+    pub(crate) fn directory(&self) -> Option<&Path> {
+        self.directory.as_deref().or_else(|| match &self.kind {
+            Kind::Proton { root } => Some(root.as_path()),
+            Kind::Wine { wine, .. } => wine.parent(),
+        })
+    }
+
     pub fn selection(&self) -> &str {
         self.selection.as_deref().unwrap_or(&self.name)
     }
@@ -76,6 +99,7 @@ impl Runner {
         Ok(Self {
             name: Self::SYSTEM.to_owned(),
             selection: None,
+            directory: None,
             kind: Kind::Wine {
                 wine: find_in_path(&path, "wine").ok_or(Error::ProgramNotFound("wine"))?,
                 wineserver: find_in_path(&path, "wineserver")
@@ -89,6 +113,7 @@ impl Runner {
         Self {
             name,
             selection: None,
+            directory: None,
             kind: Kind::Wine { wine, wineserver },
         }
     }
@@ -99,6 +124,7 @@ impl Runner {
         Self {
             name,
             selection: None,
+            directory: None,
             kind: Kind::Proton { root },
         }
     }

@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use jiff::Timestamp;
 
+use crate::build_lock;
 use crate::cancel::Token;
 use crate::config::GlobalConfig;
 use crate::environment::Environment;
@@ -25,6 +26,7 @@ use crate::launch::{Host, Launch};
 use crate::operation::{Guard, Locks, Operation};
 use crate::paths::Paths;
 use crate::process;
+use crate::runners::Runners;
 use crate::runtime::{OperationState, Runtime};
 use crate::supervisor::{Notice, Settle, Supervisor, Watched};
 
@@ -62,6 +64,7 @@ pub enum Outcome {
 #[derive(Debug)]
 pub struct Installer {
     guard: Guard,
+    build_guard: Option<build_lock::Guard>,
     launch: Launch,
     runtime: Runtime,
     program: String,
@@ -133,6 +136,24 @@ impl Installer {
                 .ok_or_else(|| Error::NoPrefix(name.to_owned()))?;
             wine.runner = runner.name().to_owned();
         }
+        let (runner, build_guard) = if let Some(runner) = fixed_runner {
+            if crate::runner_alias::is_alias(runner.selection()) {
+                Runners::new(paths, global)?.lock_resolved(
+                    paths,
+                    runner.selection(),
+                    runner.clone(),
+                )?
+            } else {
+                (runner.clone(), build_lock::runner(paths, runner)?)
+            }
+        } else {
+            Runners::new(paths, global)?.resolve_locked(paths, &environment.wine()?.runner)?
+        };
+        environment
+            .config
+            .wine_mut()
+            .ok_or_else(|| Error::NoPrefix(name.to_owned()))?
+            .runner = runner.name().to_owned();
         let mut launch = launch(paths, global, &environment, program)?;
         let Host::Wine {
             runner: launch_runner,
@@ -141,9 +162,7 @@ impl Installer {
         else {
             return Err(Error::NoPrefix(name.to_owned()));
         };
-        if let Some(runner) = fixed_runner {
-            *launch_runner = runner.clone();
-        }
+        *launch_runner = runner;
         if locked
             .is_some_and(|locked| crate::paths::resolve(locked) != crate::paths::resolve(prefix))
         {
@@ -153,6 +172,7 @@ impl Installer {
         runtime.check_quiet(name)?;
         Ok(Self {
             guard,
+            build_guard,
             launch,
             runtime,
             program: program.to_owned(),
@@ -190,6 +210,7 @@ impl Installer {
     ) -> Result<Outcome> {
         let Self {
             guard,
+            build_guard,
             launch,
             runtime,
             program,
@@ -304,6 +325,7 @@ impl Installer {
         // Only now, once everything is known to have stopped or is recorded as
         // unresolved, can anything else have the prefix.
         drop(guard);
+        drop(build_guard);
         Ok(outcome)
     }
 }
@@ -358,6 +380,16 @@ pub fn clean_up(
     name: &str,
     timeout: Duration,
 ) -> Result<Option<Cleaned>> {
+    clean_up_with(paths, global, name, timeout, |_| Ok(()))
+}
+
+fn clean_up_with(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    timeout: Duration,
+    locked: impl FnOnce(&OperationState) -> Result<()>,
+) -> Result<Option<Cleaned>> {
     let runtime = Runtime::new(paths, name);
     let Some(target) = cleanup_target(paths, global, name, &runtime)? else {
         return Ok(None);
@@ -367,6 +399,26 @@ pub fn clean_up(
     let Some(target) = cleanup_target(paths, global, name, &runtime)? else {
         return Ok(None);
     };
+    let _runner_guard = if target.runner.name() == crate::runner::Runner::SYSTEM {
+        None
+    } else {
+        // Cleanup uses the recorded runner even after its build directory is gone.
+        build_lock::shared(paths, build_lock::Kind::Runner, target.runner.name()).ok()
+    };
+    // Build discovery must not prevent cleanup of the recorded operation.
+    let environment = Environment::load(paths, name).ok();
+    let wine = environment
+        .as_ref()
+        .and_then(|environment| environment.config.wine());
+    let _component_guards = build_lock::config(
+        paths,
+        global,
+        None,
+        wine.and_then(|wine| wine.dxvk.as_deref()),
+        wine.and_then(|wine| wine.vkd3d.as_deref()),
+    )
+    .unwrap_or_default();
+    locked(&target)?;
     let cleaned = match target.group_ownership() {
         process::GroupOwnership::Unknown => return Ok(Some(Cleaned::Unresolved)),
         process::GroupOwnership::Gone => {
@@ -394,6 +446,43 @@ pub fn clean_up(
     };
     runtime.clear_operation()?;
     Ok(Some(cleaned))
+}
+
+/// Recorded runners can remain in use after an installer watcher releases its guards.
+/// Components are copied into the prefix at install time, so leftover processes
+/// do not use their build directories.
+pub fn unresolved_builds(paths: &Paths) -> Result<Vec<(String, build_lock::Kind, String)>> {
+    let root = paths.runtime_dir("");
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err).context(|| format!("failed to read {}", root.display())),
+    };
+    let mut references = Vec::new();
+    for entry in entries {
+        let entry = entry.context(|| format!("failed to read {}", root.display()))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !crate::name::is_valid(&name) || !entry.path().is_dir() {
+            continue;
+        }
+        let Some(record) = Runtime::new(paths, &name).read_operation()? else {
+            continue;
+        };
+        if record.operation != Operation::Install {
+            continue;
+        }
+        if record.runner.name() != crate::runner::Runner::SYSTEM {
+            references.push((
+                name.clone(),
+                build_lock::Kind::Runner,
+                record.runner.name().to_owned(),
+            ));
+        }
+    }
+    references.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2)));
+    Ok(references)
 }
 
 /// How long `clean_up` waits, the way `wineo stop` runs it: the stop timeout,
@@ -470,6 +559,7 @@ mod tests {
             guard: locks
                 .acquire(Operation::Install, "hades", &[&prefix])
                 .unwrap(),
+            build_guard: None,
             launch: Launch {
                 host: Host::Wine {
                     runner: Runner::wine_build(
@@ -487,10 +577,88 @@ mod tests {
                 wayland: Default::default(),
                 gameid: None,
                 store: None,
+                build_guards: Vec::new(),
             },
             runtime: runtime(root),
             program: "setup.exe".to_owned(),
         }
+    }
+
+    #[test]
+    fn unresolved_cleanup_holds_recorded_runner_and_component_locks() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let global = GlobalConfig::default();
+        let dir = paths.default_runner_root().join("recorded/bin");
+        fs::create_dir_all(&dir).unwrap();
+        for program in ["wine", "wineserver"] {
+            std::os::unix::fs::symlink("/bin/true", dir.join(program)).unwrap();
+        }
+        let runner = Runners::new(&paths, &global)
+            .unwrap()
+            .resolve("recorded")
+            .unwrap();
+        fs::create_dir_all(paths.environments_dir()).unwrap();
+        fs::write(
+            paths.environment_config("hades"),
+            format!(
+                "prefix = {:?}\nrunner = 'different'\narch = 'win64'\ndxvk = '2.0'\nvkd3d = '3.0'\n",
+                root.path().join("prefix").display().to_string()
+            ),
+        )
+        .unwrap();
+        let record = OperationState {
+            operation: Operation::Install,
+            program: "setup.exe".to_owned(),
+            runner,
+            prefix: root.path().join("prefix"),
+            pid: None,
+            group: None,
+            boot_id: None,
+            leader_start: None,
+            started_at: Timestamp::now(),
+        };
+        Runtime::new(&paths, "hades")
+            .write_operation(&record)
+            .unwrap();
+        let references = unresolved_builds(&paths).unwrap();
+        assert_eq!(
+            references,
+            vec![(
+                "hades".to_owned(),
+                build_lock::Kind::Runner,
+                "recorded".to_owned()
+            )]
+        );
+        let cleaned = clean_up_with(&paths, &global, "hades", Duration::from_secs(1), |target| {
+            assert_eq!(target.runner.name(), "recorded");
+            for (kind, build) in [
+                (build_lock::Kind::Runner, "recorded"),
+                (build_lock::Kind::Dxvk, "2.0"),
+                (build_lock::Kind::Vkd3d, "3.0"),
+            ] {
+                assert!(build_lock::try_exclusive(&paths, kind, build)?.is_none());
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(cleaned, Some(Cleaned::Unresolved));
+        assert!(
+            build_lock::try_exclusive(&paths, build_lock::Kind::Runner, "recorded")
+                .unwrap()
+                .is_some()
+        );
+        fs::write(paths.environment_config("hades"), "invalid = [TOML").unwrap();
+        assert_eq!(unresolved_builds(&paths).unwrap(), references);
+        fs::remove_file(paths.environment_config("hades")).unwrap();
+        assert_eq!(
+            unresolved_builds(&paths).unwrap(),
+            vec![(
+                "hades".to_owned(),
+                build_lock::Kind::Runner,
+                "recorded".to_owned()
+            )]
+        );
     }
 
     #[test]

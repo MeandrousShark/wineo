@@ -7,6 +7,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use toml_edit::{DocumentMut, TableLike, Value};
 
 use crate::art::StagedArt;
+use crate::build_lock;
 use crate::cancel::Token;
 use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::download::{InstallLock, publish};
@@ -64,15 +65,14 @@ pub fn inspect(
     let configured_root = paths
         .config_path(&wine.prefix)
         .map_err(|err| anyhow!(err))?;
-    let runner = if import::root_layout_ambiguous(&configured_root) {
-        Some(
-            Runners::new(paths, global)
-                .map_err(|err| anyhow!(err))?
-                .resolve(&wine.runner)
-                .map_err(|err| anyhow!(err))?,
-        )
+    let (runner, _runner_guard) = if import::root_layout_ambiguous(&configured_root) {
+        let (runner, guard) = Runners::new(paths, global)
+            .map_err(|err| anyhow!(err))?
+            .resolve_locked(paths, &wine.runner)
+            .map_err(|err| anyhow!(err))?;
+        (Some(runner), guard)
     } else {
-        None
+        (None, None)
     };
     let prefix = import::inspect_root(&configured_root, runner.as_ref(), wine.arch)?;
     if paths::resolve(&configured_root) != prefix.source_root {
@@ -283,6 +283,18 @@ pub fn execute_reviewed(
             config_path.display()
         );
     }
+    let config = EnvironmentConfig::parse(&config_path, &reviewed.config_text)
+        .map_err(|err| anyhow!(err))?;
+    let wine = config
+        .wine()
+        .ok_or_else(|| anyhow!(Error::NoPrefix(reviewed.new_name.clone())))?;
+    let _build_guards = build_lock::config(
+        paths,
+        global,
+        Some(&wine.runner),
+        wine.dxvk.as_deref(),
+        wine.vkd3d.as_deref(),
+    )?;
     import::write_config_once(&config_path, &reviewed.config_text)
         .map_err(|err| anyhow!("{}; registration failed: {err}", recovery()))?;
     operation.relabel(Operation::Configure).map_err(|err| {

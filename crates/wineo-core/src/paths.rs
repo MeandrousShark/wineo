@@ -220,6 +220,11 @@ impl Paths {
         self.host_state.join(".locks")
     }
 
+    /// Builds can be selected from different roots, so their locks stay on the host.
+    pub fn build_locks_dir(&self) -> PathBuf {
+        self.host_state.join(".locks")
+    }
+
     /// Where an interrupted snapshot restore of `name` leaves its marker. A
     /// portable one sits beside the snapshots, so it moves with the folder.
     pub fn restore_marker(&self, name: &str) -> PathBuf {

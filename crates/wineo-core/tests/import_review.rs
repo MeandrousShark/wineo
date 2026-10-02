@@ -39,6 +39,57 @@ fn request(source: &Path) -> ImportRequest {
 }
 
 #[test]
+fn copying_a_managed_runner_holds_its_source_lock() {
+    use wineo_core::build_lock::{Kind, try_exclusive};
+    use wineo_core::heroic_import::RunnerCopy;
+    use wineo_core::runners::Runners;
+
+    let temp = tempfile::tempdir().unwrap();
+    let (paths, _) = setup(temp.path());
+    let runners = Runners::new(&paths, &GlobalConfig::default()).unwrap();
+    let runner = runners.resolve("test-wine").unwrap();
+    let source = runners.root().join(runner.name());
+    let copy = RunnerCopy {
+        inspection: wineo_core::import::inspect_runner_copy(&source).unwrap(),
+        name: "wine-copy".to_owned(),
+        source,
+    };
+    let guard = copy.lock_source(&paths, &GlobalConfig::default()).unwrap();
+    assert!(guard.is_some());
+    let mut copied = false;
+    let receipt = copy_runner(
+        &copy.source,
+        runners.root(),
+        "wine-copy",
+        &Token::new(),
+        |event| {
+            if matches!(event, ImportProgress::Copied { .. }) {
+                copied = true;
+                assert!(
+                    try_exclusive(&paths, Kind::Runner, runner.name())
+                        .unwrap()
+                        .is_none()
+                );
+                assert!(
+                    try_exclusive(&paths, Kind::Runner, "wine-copy")
+                        .unwrap()
+                        .is_some()
+                );
+            }
+        },
+    )
+    .unwrap();
+    assert!(copied);
+    assert!(receipt.path.join("bin/wine").is_file());
+    drop(guard);
+    assert!(
+        try_exclusive(&paths, Kind::Runner, runner.name())
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
 fn runner_receipt_symlink_does_not_overwrite_external_data() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("runner");

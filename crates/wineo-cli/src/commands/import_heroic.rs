@@ -1533,6 +1533,7 @@ fn copy_heroic_runner<I: Input, W: Write>(
         }
     };
     let cancellation = Cancellation::new()?;
+    let _source_guard = copy.lock_source(paths, global)?;
     let receipt = cancellation.published_result(import::copy_runner_reviewed(
         &copy.inspection,
         root,

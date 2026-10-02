@@ -16,6 +16,7 @@ use anyhow::{Context, bail};
 use rustix::io::Errno;
 use rustix::process::{Pid, Signal, kill_process_group};
 
+use crate::build_lock;
 use crate::cancel::Token;
 use crate::config::GlobalConfig;
 use crate::environment::Environment;
@@ -27,6 +28,7 @@ use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::prefix;
 use crate::runner::{self, Runner, with_menu_builder_disabled};
+use crate::runners::Runners;
 use crate::runtime::Runtime;
 
 const MANAGED: [&str; 3] = ["WINEPREFIX", "WINE", "WINESERVER"];
@@ -173,6 +175,7 @@ struct OperationContext {
     environment: Environment,
     runner: Runner,
     prefix: std::path::PathBuf,
+    _build_guard: Option<build_lock::Guard>,
 }
 
 fn context(
@@ -180,13 +183,15 @@ fn context(
     global: GlobalConfig,
     environment: Environment,
 ) -> anyhow::Result<OperationContext> {
-    let runner = launch::runner(paths, &global, &environment)?;
+    let (runner, build_guard) =
+        Runners::new(paths, &global)?.resolve_locked(paths, &environment.wine()?.runner)?;
     let prefix = environment.prefix(paths)?;
     Ok(OperationContext {
         global,
         environment,
         runner,
         prefix,
+        _build_guard: build_guard,
     })
 }
 

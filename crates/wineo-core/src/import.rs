@@ -19,6 +19,7 @@ use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 use toml_edit::{Array, DocumentMut, Item, Table, Value, value};
 
+use crate::build_lock;
 use crate::cancel::Token;
 use crate::config::{Arch, EnvironmentConfig, GlobalConfig, Target, validate_env_var};
 use crate::download::{InstallLock, publish};
@@ -318,9 +319,9 @@ pub fn execute_reviewed(
         bail!("--adopt cannot be combined with --dir");
     }
 
-    let runner = Runners::new(paths, global)
+    let (runner, _runner_guard) = Runners::new(paths, global)
         .map_err(|err| anyhow!(err))?
-        .resolve(&request.runner)
+        .resolve_locked(paths, &request.runner)
         .map_err(|err| anyhow!(err))?;
     let first = inspect_with(
         &request.source,
@@ -496,6 +497,18 @@ pub fn execute_reviewed(
         }
         return Err(Error::EnvironmentExists(request.name.clone()).into());
     }
+    let config =
+        EnvironmentConfig::parse(&config_path, &config_text).map_err(|err| anyhow!(err))?;
+    let wine = config
+        .wine()
+        .ok_or_else(|| anyhow!(Error::NoPrefix(request.name.clone())))?;
+    let _build_guards = build_lock::config(
+        paths,
+        global,
+        Some(&wine.runner),
+        wine.dxvk.as_deref(),
+        wine.vkd3d.as_deref(),
+    )?;
     if let Err(err) = write_config_once(&config_path, &config_text) {
         bail!(
             "prefix {} is ready but registration failed: {err}; retry this import with --adopt",

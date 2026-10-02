@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::bail;
 
+use crate::build_lock;
 use crate::cancel::Token;
 use crate::config::{Arch, GlobalConfig};
 use crate::desktop;
@@ -77,6 +78,7 @@ pub struct Created {
     pub created_prefix: bool,
     pub target: TargetOutcome,
     pub guard: Guard,
+    _build_guard: Option<build_lock::Guard>,
 }
 
 pub fn check_arch(runner: &Runner, arch: Option<Arch>) -> crate::Result<()> {
@@ -102,10 +104,22 @@ pub fn run(
     let arch = request
         .arch
         .or_else(|| template.as_ref().and_then(|template| template.arch));
-    let runner = match request.resolved_runner {
-        Some(runner) => runner,
+    let (runner, build_guard) = match request.resolved_runner {
+        Some(runner) => {
+            if crate::runner_alias::is_alias(runner.selection()) {
+                let selection = runner.selection().to_owned();
+                Runners::new(paths, &global)?.lock_resolved(paths, &selection, runner)?
+            } else {
+                let guard = build_lock::runner(paths, &runner)?;
+                (runner, guard)
+            }
+        }
         None => {
             let runners = Runners::new(paths, &global)?;
+            let template_proton = request.runner.is_none()
+                && template.as_ref().is_some_and(|template| {
+                    template.runner.as_deref() == Some(crate::templates::NEWEST_PROTON)
+                });
             let runner_name = match (&request.runner, &template) {
                 (Some(runner), _) => runner.clone(),
                 (None, Some(template)) => template
@@ -113,7 +127,18 @@ pub fn run(
                     .unwrap_or_else(|| global.defaults.runner.clone()),
                 (None, None) => global.defaults.runner.clone(),
             };
-            runners.resolve(&runner_name)?
+            match runners.resolve_locked(paths, &runner_name) {
+                Ok(resolved) => resolved,
+                Err(err @ (Error::UnknownRunner { .. } | Error::NotARunner { .. }))
+                    if template_proton =>
+                {
+                    let Some(retry) = runners.newest_proton()? else {
+                        return Err(err.into());
+                    };
+                    runners.resolve_locked(paths, retry.name())?
+                }
+                Err(err) => return Err(err.into()),
+            }
         }
     };
     check_arch(&runner, arch)?;
@@ -201,6 +226,7 @@ pub fn run(
             created_prefix,
             target,
             guard,
+            _build_guard: build_guard,
         });
     }
     let environment = if target == TargetOutcome::Added {
@@ -232,6 +258,7 @@ pub fn run(
         created_prefix,
         target,
         guard,
+        _build_guard: build_guard,
     })
 }
 
