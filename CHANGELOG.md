@@ -3,6 +3,12 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.20.1 - 2026-10-01
+
+- `wineo-gui`'s sidebar groups Trash and Checkup below Library and pins
+  **Settings** at the bottom, replacing the top bar's gear. Ctrl+, opens it.
+  See [Settings](docs/gui.md#settings).
+
 ## 0.20.0 - 2026-10-01
 
 - Remove, trash, and validate from `wineo-gui`
