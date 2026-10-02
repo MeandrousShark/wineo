@@ -37,6 +37,11 @@ From the 2026-10-01 planning conversation:
 - Downloads can delete installed builds. Deleting one that's in use is
   refused, naming what uses it, and the CLI gets the same operation so the
   two stay at parity.
+- A build an alias resolves to today counts as in use, so deleting the
+  newest GE-Proton is refused rather than quietly moving
+  `GE-Proton-Latest` to an older build.
+- The global default runner counts as a use too.
+- The picker's filters are off on every visit.
 
 ## Existing foundation
 
@@ -251,18 +256,6 @@ vkd3d-proton
   a canceled download leaving nothing behind.
 - An acceptance checklist goes at the end once implementation lands, as in
   0039.
-
-## Open questions
-
-1. **Deleting what an alias points at.** Deleting the newest GE-Proton
-   moves `GE-Proton-Latest` to the next one rather than breaking anything.
-   Proposed: still refuse, since it silently changes which runner those
-   environments use. Or allow it with a confirm that says which build they
-   move to?
-2. **Global default runner.** Proposed: count it as a use and refuse. Or
-   allow it, since only new environments are affected?
-3. **Filters reset.** Proposed: off on every visit. Or remember them for the
-   session?
 
 ## Scope limits
 
