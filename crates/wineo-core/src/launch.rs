@@ -17,8 +17,10 @@ use crate::runner::{self, Runner, with_menu_builder_disabled};
 use crate::runners::Runners;
 use crate::winpath;
 
+mod exec;
 mod orchestration;
 mod stop;
+pub use exec::{ExecEvent, exec};
 pub use orchestration::{
     LaunchEvent, PreparedLaunch, StartOutcome, ensure_prefix, install_winetricks, prepare,
     prepare_target, reconcile, runner, runner_locked, start,
@@ -48,6 +50,30 @@ pub struct Overrides {
     pub target: Option<String>,
     pub env: BTreeMap<String, String>,
     pub args: Vec<String>,
+}
+
+/// How exec interprets Unix program paths and bare Wine names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecResolution {
+    /// Terminal input can name files relative to the current directory.
+    CurrentDirectory,
+    /// Frontend input only accepts absolute or ~/ Unix paths. Bare names
+    /// are always looked up by Wine, regardless of files in the current directory.
+    ExplicitPaths,
+}
+
+impl ExecResolution {
+    fn check(self, program: &str) -> Result<()> {
+        if self == Self::ExplicitPaths
+            && !winpath::is_windows_path(program)
+            && is_path(program, false)
+            && !Path::new(program).is_absolute()
+            && !program.starts_with("~/")
+        {
+            return Err(Error::RelativeExe(program.to_owned()));
+        }
+        Ok(())
+    }
 }
 
 /// What a launch runs on.
@@ -396,7 +422,33 @@ impl Launch {
         program: &str,
         env: &BTreeMap<String, String>,
     ) -> Result<()> {
-        check_unix_program(paths, program, true)?;
+        Self::check_exec_with_resolution(
+            paths,
+            global,
+            environment,
+            runner,
+            program,
+            env,
+            ExecResolution::CurrentDirectory,
+        )
+    }
+
+    /// Checks exec input using the same resolution policy as command construction.
+    pub fn check_exec_with_resolution(
+        paths: &Paths,
+        global: &GlobalConfig,
+        environment: &Environment,
+        runner: &Runner,
+        program: &str,
+        env: &BTreeMap<String, String>,
+        resolution: ExecResolution,
+    ) -> Result<()> {
+        resolution.check(program)?;
+        check_unix_program(
+            paths,
+            program,
+            resolution == ExecResolution::CurrentDirectory,
+        )?;
         merge_env(runner, global, environment, env)?;
         Ok(())
     }
@@ -411,6 +463,28 @@ impl Launch {
         args: &[String],
         env: &BTreeMap<String, String>,
     ) -> Result<Self> {
+        Self::exec_with_resolution(
+            paths,
+            global,
+            environment,
+            program,
+            args,
+            env,
+            ExecResolution::CurrentDirectory,
+        )
+    }
+
+    /// Builds an exec command with an explicit program resolution policy.
+    pub fn exec_with_resolution(
+        paths: &Paths,
+        global: &GlobalConfig,
+        environment: &Environment,
+        program: &str,
+        args: &[String],
+        env: &BTreeMap<String, String>,
+        resolution: ExecResolution,
+    ) -> Result<Self> {
+        resolution.check(program)?;
         let (runner, prefix, mut build_guards) = open(paths, global, environment)?;
         build_guards.extend(crate::build_lock::config(
             paths,
@@ -420,7 +494,12 @@ impl Launch {
             environment.wine()?.vkd3d.as_deref(),
         )?);
         let wine_prefix = runner.wine_prefix(&prefix);
-        let program = resolve_program(paths, &wine_prefix, program, true)?;
+        let program = resolve_program(
+            paths,
+            &wine_prefix,
+            program,
+            resolution == ExecResolution::CurrentDirectory,
+        )?;
         let cwd = program.default_cwd(&wine_prefix);
         let mut wine_args = program.wine_args;
         wine_args.extend(args.iter().cloned());
