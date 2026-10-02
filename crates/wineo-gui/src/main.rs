@@ -21,6 +21,7 @@ mod remove_work;
 mod settings;
 mod shortcuts;
 mod sidebar;
+mod size;
 mod spinner;
 mod theme;
 mod trash_page;

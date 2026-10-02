@@ -49,26 +49,6 @@ impl Build {
     }
 }
 
-fn size_label(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        let rounded = (value * 10.0).round() / 10.0;
-        if rounded.fract() == 0.0 {
-            format!("{rounded:.0} {}", UNITS[unit])
-        } else {
-            format!("{rounded:.1} {}", UNITS[unit])
-        }
-    }
-}
-
 fn heading(kind: Kind) -> &'static str {
     match kind {
         Kind::Runner => "Runners",
@@ -288,7 +268,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                     app.downloads_page.notice = Some(format!(
                         "Deleted {}. {} freed.",
                         build.name,
-                        size_label(bytes)
+                        crate::size::format_bytes(bytes)
                     ));
                     app.downloads_page.warnings = warnings;
                 }
@@ -482,7 +462,7 @@ impl App {
         let palette = self.palette;
         let mut content = column![text(format!("Delete {}?", build.name)).size(22)].spacing(16);
         content = content.push(text(match size {
-            Some(bytes) => format!("This frees {}.", size_label(*bytes)),
+            Some(bytes) => format!("This frees {}.", crate::size::format_bytes(*bytes)),
             None => "Measuring size...".into(),
         }));
         content = content.push(

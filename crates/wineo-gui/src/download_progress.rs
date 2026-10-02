@@ -32,7 +32,11 @@ pub(crate) fn install<T: Transport>(
 pub(crate) fn download_line(provider: Provider, progress: Progress) -> String {
     match progress {
         Progress::Downloading { received, total } => {
-            format!("Downloading {provider}: {received} / {total} bytes")
+            format!(
+                "Downloading {provider}: {} of {}",
+                crate::size::format_bytes(received),
+                crate::size::format_bytes(total)
+            )
         }
         Progress::Verifying => format!("Verifying {provider}"),
         Progress::Extracting => format!("Extracting {provider}"),

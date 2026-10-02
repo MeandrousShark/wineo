@@ -268,7 +268,7 @@ fn delete_confirms_size_then_refreshes_and_preserves_skipped_file_warnings() {
             .iter()
             .any(|warning| warning.contains("broken.toml"))
     );
-    assert_eq!(size_label(1_288_490_189), "1.2 GiB");
+    assert_eq!(crate::size::format_bytes(1_288_490_189), "1.2 GiB");
 }
 
 #[test]

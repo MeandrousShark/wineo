@@ -409,8 +409,12 @@ impl Page {
             {
                 if let Some(download) = &mut self.download {
                     download.status = match total {
-                        Some(total) => format!("Downloading: {received} / {total} bytes"),
-                        None => format!("Downloading: {received} bytes"),
+                        Some(total) => format!(
+                            "Downloading {} of {}",
+                            crate::size::format_bytes(received),
+                            crate::size::format_bytes(total)
+                        ),
+                        None => format!("Downloading {}", crate::size::format_bytes(received)),
                     };
                 }
                 Step::none()

@@ -408,7 +408,7 @@ mod tests {
                     total: 12,
                 }
             ),
-            "Downloading dxvk: 4 / 12 bytes"
+            "Downloading dxvk: 4 B of 12 B"
         );
     }
 }

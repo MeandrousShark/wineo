@@ -543,7 +543,7 @@ impl App {
         if let Some(prefix) = &dialog.prefix {
             let size = match &dialog.size {
                 None => "measuring...".into(),
-                Some(Ok(bytes)) => size_label(*bytes),
+                Some(Ok(bytes)) => crate::size::format_bytes(*bytes),
                 Some(Err(error)) => format!("Size unavailable: {error}"),
             };
             content = content
@@ -664,18 +664,6 @@ impl App {
         .on_enter(Message::ToastHover(true))
         .on_exit(Message::ToastHover(false))
         .into()
-    }
-}
-
-fn size_label(bytes: u64) -> String {
-    if bytes >= 1_000_000_000 {
-        format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
-    } else if bytes >= 1_000_000 {
-        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
-    } else if bytes >= 1_000 {
-        format!("{:.1} KB", bytes as f64 / 1_000.0)
-    } else {
-        format!("{bytes} B")
     }
 }
 
