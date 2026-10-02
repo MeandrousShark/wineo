@@ -1638,7 +1638,7 @@ impl App {
         let Some(page) = &self.settings else {
             return Task::none();
         };
-        let (prompt, menu_open) = (page.leave_prompt, page.menu_open);
+        let (prompt, menu_open, global) = (page.leave_prompt, page.menu_open, page.is_global());
         match key.as_ref() {
             Key::Character(character)
                 if modifiers.control() && character.eq_ignore_ascii_case("s") =>
@@ -1656,6 +1656,9 @@ impl App {
             Key::Named(Named::Escape) if !captured && !menu_open => {
                 if prompt {
                     self.settings_update(Event::KeepEditing)
+                } else if global {
+                    // Like Trash and Checkup, a sidebar section isn't left with Escape.
+                    Task::none()
                 } else {
                     self.settings_update(Event::Back)
                 }
@@ -3069,7 +3072,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_key_reaches_settings_and_respects_a_focused_field() {
+    fn escape_leaves_environment_settings_but_not_global_settings() {
         let (_root, paths) = setup();
         write(&paths, GAME);
         for global in [false, true] {
@@ -3091,7 +3094,7 @@ mod tests {
                 Modifiers::empty(),
                 iced::event::Status::Ignored,
             ));
-            assert!(app.settings.is_none());
+            assert_eq!(app.settings.is_some(), global);
         }
     }
 

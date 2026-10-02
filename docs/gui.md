@@ -239,9 +239,9 @@ offers **Force stop** while waiting.
 
 ## Settings
 
-The panel's **Settings** button opens an environment's page, and
-**Settings** in the sidebar opens the global one. Both replace the library
-until you press **Back** or pick another sidebar section.
+The panel's **Settings** button opens an environment's page, which replaces
+the library until you press **Back**. **Settings** in the sidebar opens the
+global page, which stays open until you pick another sidebar section.
 
 Edits collect on the page, and the bar at the bottom counts them.
 **Save** writes them the way `wineo set` does, with the same checks, and
@@ -330,7 +330,7 @@ On a settings page:
 |---|---|
 | Ctrl+S | Save |
 | Tab, Shift+Tab | Move between text fields |
-| Esc | Leave the field, then the page, asking first if there are edits |
+| Esc | Leave the field, then an environment's page, asking first if there are edits |
 
 In an Add, import, or clone flow:
 

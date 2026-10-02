@@ -40,10 +40,13 @@ impl Page {
         palette: Palette,
         spinner: f32,
     ) -> Element<'_, Message> {
-        let back = button(text("< Back").size(14))
-            .on_press_maybe((!self.saving).then(|| send(Event::Back)))
-            .padding([6, 12])
-            .style(move |_, status| secondary(palette, status));
+        // Global settings is a sidebar section, so the sidebar is its way out.
+        let back = (!self.is_global()).then(|| {
+            button(text("< Back").size(14))
+                .on_press_maybe((!self.saving).then(|| send(Event::Back)))
+                .padding([6, 12])
+                .style(move |_, status| secondary(palette, status))
+        });
         let header = container(
             row![
                 back,
