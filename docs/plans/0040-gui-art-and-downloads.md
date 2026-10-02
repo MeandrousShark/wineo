@@ -71,16 +71,45 @@ From the 2026-10-01 planning conversation:
 
 - Parse `thumb`, `author.name`, `style`, `nsfw`, `humor`, and the animated
   type into `Image`. Missing fields stay `None` or false, as today.
-- Add `Api::images_page(game, kind, page, filters)` returning one page, so
-  the picker can load on demand instead of walking up to `MAX_PAGES` first.
-  `images` keeps its behavior for fetch.
+- The picker lists with the existing `Api::images`, which walks up to
+  `MAX_PAGES` like fetch does, then ranks the whole list with `rank`. That
+  keeps the first thumbnail equal to what `art fetch` would try first. The
+  listing is JSON only, so walking every page up front is cheap; only
+  thumbnails load lazily.
+- `Api::download` gains progress and cancel: a variant that reads in chunks,
+  reports bytes read against `Content-Length` when there is one, and checks
+  a `cancel::Token` between chunks. The 32 MiB cap stays. Fetch keeps using
+  the plain call.
+- `art_fetch::use_image(paths, env, target, kind, &Image, progress,
+  cancel)` downloads the chosen image's own URL, checks its format the way
+  `choose_for` does, and publishes it with `publish` in `Mode::Replace`.
+  It never lists again, so an image the picker shows can always be used.
+  Canceling before publish leaves the existing art untouched.
 
 ### Core and CLI: deleting a build
 
 - `runners::remove(paths, name)` and `components::remove(paths, component,
-  name)`, each taking the install lock and moving the directory out with
-  the same rename-then-delete pattern trash uses, so an interrupted delete
-  never leaves a half build that looks usable.
+  name)`, each moving the directory out with the same rename-then-delete
+  pattern trash uses, so an interrupted delete never leaves a half build
+  that looks usable.
+- **A build lock.** `InstallLock` only guards a download's destination,
+  and `operation::Locks` guards environments and prefixes, so neither stops
+  a launch or a `set runner=` from picking up a build mid-delete. Add a
+  per-build flock under `Paths::locks_dir`, keyed by component and build
+  name:
+  - Everything that uses a build takes it shared for as long as it uses it:
+    launch and its supervisor for the whole run, install, winetricks,
+    create, configure, and DXVK or vkd3d installs into a prefix. Alias
+    resolution picks the concrete build first, then locks it and checks it
+    still exists, resolving once more if it was just deleted.
+  - Config writes that set `runner`, `dxvk`, or `vkd3d` (`wineo set`, the
+    GUI settings save, new, import, clone, and template saves through
+    wineo) take the new build's lock shared while they write.
+  - Remove takes it exclusive without waiting, failing with the same "is
+    used by" error when it's held, then runs `uses` again under the lock
+    before moving anything. A hand edit to a config file can't be locked,
+    so it can still race a delete; Checkup reports the missing build
+    afterwards.
 - A shared `uses(paths, build)` lists what keeps a build: environment
   configs that name it, environments whose alias (`proton`,
   `GE-Proton-Latest`, `Proton-CachyOS-Latest`, `latest`) resolves to it
@@ -159,19 +188,24 @@ Opened by **Find...**, as a page over the Art page with **Back**.
 #3  by someone  600x900  official  score 12        [Use]
 ```
 
-- Results come in `rank` order from the ranked filters, so the first
-  thumbnail is what `art fetch` would pick.
+- The picker lists every page up front with the ranked filters and ranks
+  the whole list, so the first thumbnail is what `art fetch` tries first.
+  (Fetch skips an image whose file turns out not to be a storable format,
+  so the two differ only when that first file is unusable.)
 - **Filters** reveals switches for Animated, NSFW, Humor, and, for grids,
-  Other sizes. Turning any on reloads from `Filters::None` and keeps rank
-  order, hiding the kinds still switched off on the client side. They're
+  Other sizes. Turning any on lists again with `Filters::None`, ranks that
+  list, and hides the kinds still switched off on the client side. They're
   off on every visit.
-- Thumbnails come from `thumb` URLs, load a page at a time, decode through
-  the existing two-at-a-time limit, and are cached for the session only.
+- **Load more** shows the next rows of the already ranked list. Thumbnails
+  come from `thumb` URLs as their rows appear, decode through the existing
+  two-at-a-time limit, and are cached for the session only.
 - Clicking a thumbnail selects it and fills the details line. Double click
-  or **Use** downloads the full image through `fetch_kind` with
-  `Mode::Asset(id)`, with progress and cancel, then returns to the Art page.
-  A full image whose format the kind can't store fails on the details line
-  with core's message.
+  or **Use** runs `use_image` on that exact image, with progress and
+  **Cancel**, then returns to the Art page. A file whose format the kind
+  can't store fails on the details line with core's message.
+- A Use download is a running change. Leaving the picker or the Art page
+  keeps it going, with its status on the kind's row; closing the window
+  cancels it and waits, so no half file is published.
 - Animated images show their first frame in the grid, labeled
   "Animated". Whether the library can show one animated is a polish
   question, not this plan's.
@@ -227,33 +261,45 @@ vkd3d-proton
 
 ## Implementation sequence
 
-1. **Core images.** `Image` fields, `images_page`, and tests against the fake
-   API.
-2. **Core and CLI build removal.** `uses`, `remove` for runners and
+1. **Core images.** `Image` fields, the download with progress and cancel,
+   `use_image`, and tests against the fake API.
+2. **Core build lock.** The per-build lock, taken by launch, install,
+   winetricks, create, configure, component installs, and config writes,
+   with alias re-resolution.
+3. **Core and CLI build removal.** `uses`, `remove` for runners and
    components, the three CLI commands, and docs.
-3. **Art page.** Panel and menu entries, kinds with Browse and Remove, the
+4. **Art page.** Panel and menu entries, kinds with Browse and Remove, the
    target picker, and the game line.
-4. **Picker.** Thumbnail grid, paging, filters, Use, and the missing-key
+5. **Picker.** Thumbnail grid, paging, filters, Use, and the missing-key
    state.
-5. **Key in global settings.**
-6. **Downloads page.** Listing with uses, Download with releases and
+6. **Key in global settings.**
+7. **Downloads page.** Listing with uses, Download with releases and
    progress, Delete with its confirm, and the sidebar spinner.
-7. **Docs.** `gui.md`, `art.md`, `downloads-and-imports.md`, and the
+8. **Docs.** `gui.md`, `art.md`, `downloads-and-imports.md`, and the
    features backlog.
 
 ## Testing and acceptance
 
-- Core: image parsing with and without the new fields; `images_page` URLs;
-  `uses` for each kind of reference, including aliases that move after a
-  delete; remove refusing while in use, while running, and while another
-  install holds the lock; an interrupted remove leaves no usable half
-  build.
+- Core: image parsing with and without the new fields; download progress,
+  the size cap, and cancel mid-body; `use_image` publishing the exact image
+  without listing again, and leaving existing art alone when canceled;
+  `uses` for each kind of reference, including aliases; remove refusing
+  while in use, while running, and while another install holds the lock;
+  an interrupted remove leaves no usable half build.
+- Build lock races: a launch holding the shared lock makes remove fail
+  fast; a remove holding it makes a launch re-resolve its alias or fail
+  with the missing build; a `set runner=` that lands between remove's first
+  `uses` check and its lock is caught by the second check.
 - CLI: lifecycle tests for the three remove commands with the fake runners,
   including `--yes` and refusal output.
 - GUI: Art page actions update the card and cache; picker paging, filters,
   selection, and Use against the fake API; missing key states; key set,
-  invalid key, and remove; Downloads listing, delete confirm, refusal, and
-  a canceled download leaving nothing behind.
+  invalid key, and remove; Downloads listing, delete confirm, and refusal.
+- Downloads cancel: canceling before the install publishes leaves no build
+  and no staging directory; canceling after it published keeps the
+  completed build.
+- Leaving the picker, the Art page, or the window during a Use download,
+  and during a build download.
 - An acceptance checklist goes at the end once implementation lands, as in
   0039.
 
