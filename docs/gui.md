@@ -12,9 +12,9 @@ importing, and cloning environments.
 [Plan 0039](plans/0039-gui-trash-and-validate.md) added removal, the trash,
 and checking for problems.
 
-A sidebar on the left switches between **Library**, **Trash**, and
-**Checkup**. Add opens from the Library, and the settings gear is in the top
-bar everywhere.
+A sidebar on the left has **Library** at the top, **Trash** and
+**Checkup** below it, and **Settings** pinned at the bottom. Add opens from
+the Library.
 
 ## Starting it
 
@@ -239,9 +239,9 @@ offers **Force stop** while waiting.
 
 ## Settings
 
-The panel's **Settings** button opens an environment's page, and the gear
-in the top bar opens the global one. Both replace the library until you
-press **Back**.
+The panel's **Settings** button opens an environment's page, and
+**Settings** in the sidebar opens the global one. Both replace the library
+until you press **Back** or pick another sidebar section.
 
 Edits collect on the page, and the bar at the bottom counts them.
 **Save** writes them the way `wineo set` does, with the same checks, and
@@ -321,6 +321,7 @@ Hover the selected runner to see its full name.
 | Delete | Remove the selected environment, asking first (on the details) |
 | Ctrl+Z | Undo a removal while its bar shows |
 | Ctrl+1, Ctrl+2, Ctrl+3 | Library, Trash, Checkup |
+| Ctrl+, | Global settings |
 | Down (in the search) | Back to the cards |
 
 On a settings page:
