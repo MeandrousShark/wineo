@@ -15,6 +15,7 @@ use std::str::FromStr;
 use serde::Deserialize;
 use toml_edit::{DocumentMut, Item, Table, Value};
 
+use crate::cancel::Token;
 use crate::config;
 use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
@@ -457,6 +458,18 @@ pub(crate) fn publish_fetched(
     image: &Downloaded,
     replace: bool,
 ) -> Result<Option<Stored>> {
+    publish_fetched_with_cancel(paths, env, target, kind, image, replace, None)
+}
+
+pub(crate) fn publish_fetched_with_cancel(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    image: &Downloaded,
+    replace: bool,
+    cancel: Option<&Token>,
+) -> Result<Option<Stored>> {
     let Downloaded {
         asset,
         bytes,
@@ -465,6 +478,9 @@ pub(crate) fn publish_fetched(
     let (asset, format) = (*asset, *format);
     let art_dir = paths.art_dir(env);
     let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    if cancel.is_some_and(Token::is_canceled) {
+        return Err(Error::Canceled("download"));
+    }
     check_spot(paths, env, target)?;
     let mut art = ArtFile::open(&art_dir)?;
     let dir = spot_dir(&art_dir, target);

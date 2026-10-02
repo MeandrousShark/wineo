@@ -159,6 +159,15 @@ pub trait Transport {
         let _ = bearer;
         bail!("this transport can't make an API request to {url}")
     }
+
+    /// Keeps header metadata available without changing the response shape.
+    fn request_with_length(
+        &self,
+        url: &str,
+        bearer: Option<&str>,
+    ) -> Result<(Response, Option<u64>)> {
+        self.request(url, bearer).map(|response| (response, None))
+    }
 }
 pub struct Https(reqwest::blocking::Client);
 impl Https {
@@ -169,6 +178,15 @@ impl Https {
 }
 impl Transport for Https {
     fn request(&self, url: &str, bearer: Option<&str>) -> Result<Response> {
+        self.request_with_length(url, bearer)
+            .map(|(response, _)| response)
+    }
+
+    fn request_with_length(
+        &self,
+        url: &str,
+        bearer: Option<&str>,
+    ) -> Result<(Response, Option<u64>)> {
         ensure!(
             reqwest::Url::parse(url)?.scheme() == "https",
             "API URL must use HTTPS"
@@ -181,10 +199,14 @@ impl Transport for Https {
             .send()
             .map_err(|err| Error::Network(err.into()))
             .with_context(|| format!("request failed: {url}"))?;
-        Ok(Response {
-            status: response.status().as_u16(),
-            body: Box::new(response),
-        })
+        let content_length = response.content_length();
+        Ok((
+            Response {
+                status: response.status().as_u16(),
+                body: Box::new(response),
+            },
+            content_length,
+        ))
     }
 
     fn get(&self, url: &str) -> Result<Box<dyn Read>> {

@@ -11,6 +11,7 @@ use anyhow::{anyhow, bail};
 use serde_json::Value;
 
 use crate::art::{Format, Kind, MAX_BYTES};
+use crate::cancel::Token;
 use crate::download::Transport;
 use crate::error::{Error, IoContext, Result};
 use crate::paths::Paths;
@@ -229,6 +230,12 @@ pub struct Game {
 pub struct Image {
     pub id: u64,
     pub url: String,
+    pub thumb: Option<String>,
+    pub author: Option<String>,
+    pub style: Option<String>,
+    pub nsfw: bool,
+    pub humor: bool,
+    pub animated: bool,
     pub score: Option<i64>,
     pub official: bool,
     pub language: Option<String>,
@@ -318,20 +325,62 @@ impl<'a> Api<'a> {
     /// Downloads an image, abandoning it past the art size cap. The key is
     /// not sent, since images come from a CDN rather than the API.
     pub fn download(&self, url: &str) -> anyhow::Result<Vec<u8>> {
-        let response = self.transport.request(url, None)?;
+        self.download_with_progress(url, |_, _| {}, &Token::new())
+    }
+
+    /// Keeps fetch callers simple while allowing the picker to show progress.
+    pub fn download_with_progress(
+        &self,
+        url: &str,
+        mut progress: impl FnMut(u64, Option<u64>),
+        cancel: &Token,
+    ) -> anyhow::Result<Vec<u8>> {
+        Self::check_download_cancel(cancel)?;
+        let (response, total) = self.transport.request_with_length(url, None)?;
         if response.status != 200 {
             bail!("the download answered with status {}", response.status);
         }
-        let mut bytes = Vec::new();
-        response
-            .body
-            .take(MAX_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|err| anyhow!("failed to download {url}: {err}"))?;
-        if bytes.len() as u64 > MAX_BYTES {
+        if total.is_some_and(|length| length > MAX_BYTES) {
             bail!("{url} is larger than 32 MiB");
         }
+        let mut body = response.body;
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 64 * 1024];
+        loop {
+            Self::check_download_cancel(cancel)?;
+            let remaining = MAX_BYTES + 1 - bytes.len() as u64;
+            let count = loop {
+                match body
+                    .by_ref()
+                    .take(remaining.min(buffer.len() as u64))
+                    .read(&mut buffer)
+                {
+                    Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+                        Self::check_download_cancel(cancel)?;
+                    }
+                    result => {
+                        break result.map_err(|err| anyhow!("failed to download {url}: {err}"))?;
+                    }
+                }
+            };
+            if count == 0 {
+                Self::check_download_cancel(cancel)?;
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+            if bytes.len() as u64 > MAX_BYTES {
+                bail!("{url} is larger than 32 MiB");
+            }
+            progress(bytes.len() as u64, total);
+        }
         Ok(bytes)
+    }
+
+    fn check_download_cancel(cancel: &Token) -> anyhow::Result<()> {
+        if cancel.is_canceled() {
+            return Err(crate::error::Error::Canceled("download").into());
+        }
+        Ok(())
     }
 
     /// The `data` array of an API answer.
@@ -375,6 +424,7 @@ fn game(value: &Value) -> Option<Game> {
 fn image(value: &Value) -> Option<Image> {
     let url = value.get("url")?.as_str()?.to_owned();
     let text = |key| value.get(key).and_then(Value::as_str);
+    let style = text("style").map(str::to_owned);
     // Typed as a list by the official wrapper and sent as a string by the API.
     let official = match value.get("style") {
         Some(Value::String(style)) => style == "official",
@@ -395,6 +445,19 @@ fn image(value: &Value) -> Option<Image> {
     Some(Image {
         id: value.get("id")?.as_u64()?,
         score: value.get("score").and_then(Value::as_i64),
+        thumb: text("thumb").map(str::to_owned),
+        author: value
+            .get("author")
+            .and_then(|author| author.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        style,
+        nsfw: value.get("nsfw").and_then(Value::as_bool).unwrap_or(false),
+        humor: value.get("humor").and_then(Value::as_bool).unwrap_or(false),
+        animated: text("type").is_some_and(|kind| kind.eq_ignore_ascii_case("animated"))
+            || text("mime").is_some_and(|mime| {
+                mime.eq_ignore_ascii_case("image/gif") || mime.eq_ignore_ascii_case("image/apng")
+            }),
         official,
         language: text("language").map(str::to_ascii_lowercase),
         width: value.get("width").and_then(Value::as_u64),
@@ -542,10 +605,11 @@ pub(crate) mod fake {
     use crate::download::{Response, Transport};
 
     type Body = Rc<dyn Fn() -> Box<dyn Read>>;
+    type Answer = (u16, Option<u64>, Body);
 
     #[derive(Default)]
     pub struct FakeApi {
-        answers: RefCell<HashMap<String, (u16, Body)>>,
+        answers: RefCell<HashMap<String, Answer>>,
         pub seen: RefCell<Vec<(String, Option<String>)>>,
     }
 
@@ -556,9 +620,19 @@ pub(crate) mod fake {
             status: u16,
             body: impl Fn() -> Box<dyn Read> + 'static,
         ) {
+            self.answer_with_length(url, status, None, body);
+        }
+
+        pub fn answer_with_length(
+            &self,
+            url: impl Into<String>,
+            status: u16,
+            content_length: Option<u64>,
+            body: impl Fn() -> Box<dyn Read> + 'static,
+        ) {
             self.answers
                 .borrow_mut()
-                .insert(url.into(), (status, Rc::new(body)));
+                .insert(url.into(), (status, content_length, Rc::new(body)));
         }
 
         pub fn json(&self, url: impl Into<String>, data: Value) {
@@ -570,7 +644,17 @@ pub(crate) mod fake {
 
         pub fn bytes(&self, url: impl Into<String>, bytes: &[u8]) {
             let bytes = bytes.to_vec();
-            self.answer(url, 200, move || Box::new(io::Cursor::new(bytes.clone())));
+            let length = bytes.len() as u64;
+            self.answer_with_length(url, 200, Some(length), move || {
+                Box::new(io::Cursor::new(bytes.clone()))
+            });
+        }
+
+        pub fn bytes_with_length(&self, url: impl Into<String>, bytes: &[u8], length: u64) {
+            let bytes = bytes.to_vec();
+            self.answer_with_length(url, 200, Some(length), move || {
+                Box::new(io::Cursor::new(bytes.clone()))
+            });
         }
 
         pub fn urls(&self) -> Vec<String> {
@@ -588,17 +672,39 @@ pub(crate) mod fake {
         }
 
         fn request(&self, url: &str, bearer: Option<&str>) -> anyhow::Result<Response> {
+            self.answer_request(url, bearer)
+                .map(|(response, _)| response)
+        }
+
+        fn request_with_length(
+            &self,
+            url: &str,
+            bearer: Option<&str>,
+        ) -> anyhow::Result<(Response, Option<u64>)> {
+            self.answer_request(url, bearer)
+        }
+    }
+
+    impl FakeApi {
+        fn answer_request(
+            &self,
+            url: &str,
+            bearer: Option<&str>,
+        ) -> anyhow::Result<(Response, Option<u64>)> {
             self.seen
                 .borrow_mut()
                 .push((url.to_owned(), bearer.map(str::to_owned)));
             let answers = self.answers.borrow();
-            let (status, body) = answers
+            let (status, content_length, body) = answers
                 .get(url)
                 .ok_or_else(|| anyhow::anyhow!("unexpected request to {url}"))?;
-            Ok(Response {
-                status: *status,
-                body: body(),
-            })
+            Ok((
+                Response {
+                    status: *status,
+                    body: body(),
+                },
+                *content_length,
+            ))
         }
     }
 }
@@ -1021,7 +1127,7 @@ mod tests {
             Box::new(io::repeat(0).take(MAX_BYTES + 1))
         });
         let err = Api::new(&api, "k")
-            .download("https://cdn.example/big.png")
+            .download_with_progress("https://cdn.example/big.png", |_, _| {}, &Token::new())
             .unwrap_err();
         assert!(err.to_string().contains("larger than 32 MiB"), "{err}");
         api.answer(
@@ -1037,9 +1143,195 @@ mod tests {
     }
 
     #[test]
+    fn downloads_enforce_declared_and_actual_size_limits() {
+        let api = FakeApi::default();
+        api.bytes_with_length(
+            "https://cdn.example/declared-big.png",
+            b"small body",
+            MAX_BYTES + 1,
+        );
+        let err = Api::new(&api, "k")
+            .download("https://cdn.example/declared-big.png")
+            .unwrap_err();
+        assert!(err.to_string().contains("larger than 32 MiB"), "{err}");
+
+        api.answer_with_length("https://cdn.example/lying.png", 200, Some(1), || {
+            Box::new(io::repeat(0).take(MAX_BYTES + 1))
+        });
+        let err = Api::new(&api, "k")
+            .download("https://cdn.example/lying.png")
+            .unwrap_err();
+        assert!(err.to_string().contains("larger than 32 MiB"), "{err}");
+
+        api.answer_with_length(
+            "https://cdn.example/exact.png",
+            200,
+            Some(MAX_BYTES),
+            || Box::new(io::repeat(0).take(MAX_BYTES)),
+        );
+        let bytes = Api::new(&api, "k")
+            .download("https://cdn.example/exact.png")
+            .unwrap();
+        assert_eq!(bytes.len() as u64, MAX_BYTES);
+    }
+
+    struct ReadCounter(std::rc::Rc<std::cell::Cell<usize>>);
+
+    impl Read for ReadCounter {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            self.0.set(self.0.get() + 1);
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn canceled_before_the_first_chunk_does_not_read_the_body() {
+        let api = FakeApi::default();
+        let token = Token::new();
+        let read_count = std::rc::Rc::new(std::cell::Cell::new(0));
+        let answer_token = token.clone();
+        let answer_count = read_count.clone();
+        api.answer("https://cdn.example/early-cancel.png", 200, move || {
+            answer_token.cancel();
+            Box::new(ReadCounter(answer_count.clone()))
+        });
+        let err = Api::new(&api, "k")
+            .download_with_progress("https://cdn.example/early-cancel.png", |_, _| {}, &token)
+            .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<Error>(),
+            Some(Error::Canceled("download"))
+        ));
+        assert_eq!(read_count.get(), 0);
+    }
+
+    struct ShortReader {
+        body: io::Cursor<Vec<u8>>,
+        limit: usize,
+    }
+
+    impl Read for ShortReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let count = buffer.len().min(self.limit);
+            self.body.read(&mut buffer[..count])
+        }
+    }
+
+    struct InterruptedOnce {
+        body: io::Cursor<Vec<u8>>,
+        first_read: bool,
+    }
+
+    impl Read for InterruptedOnce {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.first_read {
+                self.first_read = false;
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            self.body.read(buffer)
+        }
+    }
+
+    struct CancelAtEof {
+        body: io::Cursor<Vec<u8>>,
+        token: Token,
+    }
+
+    impl Read for CancelAtEof {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.body.position() == self.body.get_ref().len() as u64 {
+                self.token.cancel();
+                return Ok(0);
+            }
+            self.body.read(buffer)
+        }
+    }
+
+    #[test]
+    fn interrupted_reads_are_retried() {
+        let api = FakeApi::default();
+        api.answer("https://cdn.example/interrupted.png", 200, || {
+            Box::new(InterruptedOnce {
+                body: io::Cursor::new(b"after interrupt".to_vec()),
+                first_read: true,
+            })
+        });
+        assert_eq!(
+            Api::new(&api, "k")
+                .download("https://cdn.example/interrupted.png")
+                .unwrap(),
+            b"after interrupt"
+        );
+    }
+
+    #[test]
+    fn cancellation_during_the_eof_read_is_reported() {
+        let api = FakeApi::default();
+        let token = Token::new();
+        let reader_token = token.clone();
+        api.answer("https://cdn.example/eof-cancel.png", 200, move || {
+            Box::new(CancelAtEof {
+                body: io::Cursor::new(b"image".to_vec()),
+                token: reader_token.clone(),
+            })
+        });
+        let err = Api::new(&api, "k")
+            .download_with_progress("https://cdn.example/eof-cancel.png", |_, _| {}, &token)
+            .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<Error>(),
+            Some(Error::Canceled("download"))
+        ));
+    }
+
+    #[test]
+    fn downloads_report_progress_and_cancel_between_chunks() {
+        let api = FakeApi::default();
+        api.bytes("https://cdn.example/progress.png", b"image bytes");
+        let mut progress = Vec::new();
+        assert_eq!(
+            Api::new(&api, "k")
+                .download_with_progress(
+                    "https://cdn.example/progress.png",
+                    |received, total| progress.push((received, total)),
+                    &Token::new(),
+                )
+                .unwrap(),
+            b"image bytes"
+        );
+        assert_eq!(progress, [(11, Some(11))]);
+
+        let token = Token::new();
+        api.answer("https://cdn.example/cancel.png", 200, || {
+            Box::new(ShortReader {
+                body: io::Cursor::new(b"first chunk, then more".to_vec()),
+                limit: 5,
+            })
+        });
+        let mut canceled_progress = Vec::new();
+        let error = Api::new(&api, "k")
+            .download_with_progress(
+                "https://cdn.example/cancel.png",
+                |received, total| {
+                    canceled_progress.push((received, total));
+                    token.cancel();
+                },
+                &token,
+            )
+            .unwrap_err();
+        assert_eq!(canceled_progress, [(5, None)]);
+        assert!(matches!(
+            error.downcast_ref::<crate::error::Error>(),
+            Some(crate::error::Error::Canceled("download"))
+        ));
+    }
+
+    #[test]
     fn image_fields_are_parsed_leniently() {
         let parsed = image(&json!({
             "id": 5, "url": "https://cdn.example/x.ICO?v=1", "style": ["official"],
+            "thumb": "https://cdn.example/x-thumb.png",
+            "author": {"name": "Ada"}, "nsfw": true, "humor": true, "type": "animated",
             "language": "DE", "width": 256, "height": 128, "score": -2, "mime": null,
         }))
         .unwrap();
@@ -1048,6 +1340,12 @@ mod tests {
             Image {
                 id: 5,
                 url: "https://cdn.example/x.ICO?v=1".into(),
+                thumb: Some("https://cdn.example/x-thumb.png".into()),
+                author: Some("Ada".into()),
+                style: None,
+                nsfw: true,
+                humor: true,
+                animated: true,
                 score: Some(-2),
                 official: true,
                 language: Some("de".into()),
@@ -1058,9 +1356,34 @@ mod tests {
         );
         let bare = image(&json!({ "id": 6, "url": "https://cdn.example/y", "mime": "image/webp", "style": "custom" })).unwrap();
         assert_eq!(
-            (bare.format, bare.official, bare.score),
-            (Some(Format::Webp), false, None)
+            (
+                bare.format,
+                bare.official,
+                bare.score,
+                bare.thumb,
+                bare.author,
+                bare.style,
+                bare.nsfw,
+                bare.humor,
+                bare.animated,
+            ),
+            (
+                Some(Format::Webp),
+                false,
+                None,
+                None,
+                None,
+                Some("custom".into()),
+                false,
+                false,
+                false,
+            )
         );
+        let animated_mime = image(&json!({
+            "id": 7, "url": "https://cdn.example/animated", "mime": "image/gif"
+        }))
+        .unwrap();
+        assert!(animated_mime.animated);
         assert!(image(&json!({ "id": "7", "url": "u" })).is_none());
         assert!(image(&json!({ "id": 7 })).is_none());
     }

@@ -3,8 +3,10 @@
 use anyhow::{Result, bail};
 
 use crate::art::{self, Downloaded, Kind, Source, Stored, detect, find, spot_dir};
+use crate::cancel::Token;
+use crate::error::Error;
 use crate::paths::Paths;
-use crate::steamgriddb::{Api, Filters, rank};
+use crate::steamgriddb::{Api, Filters, Image, rank};
 
 /// Which kinds a fetch may change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +72,41 @@ pub fn choose(api: &Api, game: u64, kind: Kind, language: &str) -> Result<Option
     }
 }
 
+/// Keeps existing art intact until the selected image is downloaded and validated.
+#[allow(clippy::too_many_arguments)]
+pub fn use_image(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    api: &Api,
+    image: &Image,
+    progress: impl FnMut(u64, Option<u64>),
+    cancel: &Token,
+) -> Result<Fetched> {
+    art::check_spot(paths, env, target)?;
+    let bytes = api.download_with_progress(&image.url, progress, cancel)?;
+    let Some(format) = detect(&bytes).filter(|format| kind.accepts(*format)) else {
+        bail!("asset {} is not a {} image", image.id, art::accepted(kind));
+    };
+    if cancel.is_canceled() {
+        return Err(Error::Canceled("download").into());
+    }
+    publish_with_cancel(
+        paths,
+        env,
+        target,
+        kind,
+        &Downloaded {
+            asset: image.id,
+            bytes,
+            format,
+        },
+        Mode::Replace,
+        Some(cancel),
+    )
+}
+
 enum Choice {
     Image(Downloaded),
     NoneFound,
@@ -116,23 +153,43 @@ pub fn publish(
     image: &Downloaded,
     mode: Mode,
 ) -> Result<Fetched> {
+    publish_with_cancel(paths, env, target, kind, image, mode, None)
+}
+
+fn publish_with_cancel(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    image: &Downloaded,
+    mode: Mode,
+    cancel: Option<&Token>,
+) -> Result<Fetched> {
     art::check_spot(paths, env, target)?;
     if mode == Mode::Fill
         && let Some(skipped) = existing(paths, env, target, kind)?
     {
         return Ok(skipped);
     }
-    Ok(
-        match art::publish_fetched(paths, env, target, kind, image, mode != Mode::Fill)? {
-            Some(stored) => Fetched::Stored {
-                asset: image.asset,
-                stored,
-            },
-            None => {
-                existing(paths, env, target, kind)?.unwrap_or(Fetched::Skipped { source: None })
-            }
+    let published = match cancel {
+        Some(cancel) => art::publish_fetched_with_cancel(
+            paths,
+            env,
+            target,
+            kind,
+            image,
+            mode != Mode::Fill,
+            Some(cancel),
+        )?,
+        None => art::publish_fetched(paths, env, target, kind, image, mode != Mode::Fill)?,
+    };
+    Ok(match published {
+        Some(stored) => Fetched::Stored {
+            asset: image.asset,
+            stored,
         },
-    )
+        None => existing(paths, env, target, kind)?.unwrap_or(Fetched::Skipped { source: None }),
+    })
 }
 
 /// The skip for a kind that already has art, if it has any.
@@ -154,6 +211,8 @@ mod tests {
     use std::fs;
     use std::io::{self, Read};
     use std::path::{Path, PathBuf};
+    use std::thread;
+    use std::time::Duration;
 
     use serde_json::json;
 
@@ -303,6 +362,171 @@ mod tests {
             Fetched::Skipped { source: None }
         );
         assert_eq!(fs::read(manual).unwrap(), PNG);
+    }
+
+    #[test]
+    fn use_image_publishes_the_selected_url_without_listing_again() {
+        let (_root, paths) = setup();
+        let api = FakeApi::default();
+        let image = Image {
+            id: 42,
+            url: "https://cdn.example/selected.png".into(),
+            ..Image::default()
+        };
+        api.bytes(&image.url, PNG);
+        let mut progress = Vec::new();
+        let fetched = use_image(
+            &paths,
+            "hades",
+            None,
+            Kind::Grid,
+            &Api::new(&api, "k"),
+            &image,
+            |received, total| progress.push((received, total)),
+            &Token::new(),
+        )
+        .unwrap();
+        assert!(matches!(fetched, Fetched::Stored { asset: 42, .. }));
+        assert_eq!(api.urls(), [image.url]);
+        assert_eq!(progress, [(PNG.len() as u64, Some(PNG.len() as u64))]);
+        assert_eq!(
+            fs::read(paths.art_dir("hades").join("grid.png")).unwrap(),
+            PNG
+        );
+    }
+
+    #[test]
+    fn canceled_use_image_leaves_prior_art_untouched() {
+        let (_root, paths) = setup();
+        let api = FakeApi::default();
+        let old = manual(&paths, "grid.png", b"prior artwork");
+        let image = Image {
+            id: 43,
+            url: "https://cdn.example/large.png".into(),
+            ..Image::default()
+        };
+        let mut bytes = vec![b'x'; 128 * 1024];
+        bytes[..PNG.len()].copy_from_slice(PNG);
+        api.bytes(&image.url, &bytes);
+        let cancel = Token::new();
+        let err = use_image(
+            &paths,
+            "hades",
+            None,
+            Kind::Grid,
+            &Api::new(&api, "k"),
+            &image,
+            |_, _| cancel.cancel(),
+            &cancel,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<Error>(),
+            Some(Error::Canceled("download"))
+        ));
+        assert_eq!(fs::read(old).unwrap(), b"prior artwork");
+    }
+
+    #[test]
+    fn cancellation_while_waiting_for_the_art_lock_preserves_art_and_record() {
+        let (_root, paths) = setup();
+        let prior = Downloaded {
+            asset: 45,
+            bytes: PNG.to_vec(),
+            format: Format::Png,
+        };
+        publish(&paths, "hades", None, Kind::Grid, &prior, Mode::Replace).unwrap();
+        let art_dir = paths.art_dir("hades");
+        let old_art = fs::read(art_dir.join("grid.png")).unwrap();
+        let old_config = fs::read(art_dir.join(art::ART_FILE)).unwrap();
+        let held = crate::operation::Locks::new(&paths)
+            .config(&art_dir.join(art::ART_FILE))
+            .unwrap();
+        let cancel = Token::new();
+        let thread_cancel = cancel.clone();
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            thread_cancel.cancel();
+            drop(held);
+        });
+
+        let replacement = Downloaded {
+            asset: 46,
+            bytes: JPEG.to_vec(),
+            format: Format::Jpeg,
+        };
+        let err = publish_with_cancel(
+            &paths,
+            "hades",
+            None,
+            Kind::Grid,
+            &replacement,
+            Mode::Replace,
+            Some(&cancel),
+        )
+        .unwrap_err();
+        release.join().unwrap();
+
+        assert!(matches!(
+            err.downcast_ref::<Error>(),
+            Some(Error::Canceled("download"))
+        ));
+        assert_eq!(fs::read(art_dir.join("grid.png")).unwrap(), old_art);
+        assert_eq!(fs::read(art_dir.join(art::ART_FILE)).unwrap(), old_config);
+        assert_eq!(
+            ArtConfig::load(&art_dir)
+                .unwrap()
+                .record(None, Kind::Grid)
+                .unwrap()
+                .source,
+            Source::SteamGridDb(45)
+        );
+    }
+
+    #[test]
+    fn use_image_refuses_an_unstorable_format_with_the_asset_error() {
+        let (_root, paths) = setup();
+        let api = FakeApi::default();
+        let prior = Downloaded {
+            asset: 47,
+            bytes: PNG.to_vec(),
+            format: Format::Png,
+        };
+        publish(&paths, "hades", None, Kind::Grid, &prior, Mode::Replace).unwrap();
+        let art_dir = paths.art_dir("hades");
+        let old_art = fs::read(art_dir.join("grid.png")).unwrap();
+        let old_config = fs::read(art_dir.join(art::ART_FILE)).unwrap();
+        let image = Image {
+            id: 44,
+            url: "https://cdn.example/not-an-image".into(),
+            ..Image::default()
+        };
+        api.bytes(&image.url, b"not an image");
+        let err = use_image(
+            &paths,
+            "hades",
+            None,
+            Kind::Grid,
+            &Api::new(&api, "k"),
+            &image,
+            |_, _| {},
+            &Token::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "asset 44 is not a PNG, SVG, JPEG, or WebP image"
+        );
+        assert_eq!(fs::read(art_dir.join("grid.png")).unwrap(), old_art);
+        assert_eq!(fs::read(art_dir.join(art::ART_FILE)).unwrap(), old_config);
+        assert_eq!(
+            ArtConfig::load(&art_dir)
+                .unwrap()
+                .record(None, Kind::Grid)
+                .unwrap()
+                .source,
+            Source::SteamGridDb(47)
+        );
     }
 
     #[test]
