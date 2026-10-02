@@ -40,6 +40,44 @@ Selecting a concrete runner name keeps it pinned. Aliases do not check for
 updates or fall back to another runner family. The two alias names are reserved;
 do not create directories or symlinks with those names in the runner root.
 
+## Remove a runner or graphics component
+
+```sh
+wineo runners remove GE-Proton9-20
+wineo dxvk remove 2.5.3
+wineo vkd3d remove 2.14 --yes
+```
+
+Deletes an installed build from its root. On a terminal it asks first with
+the build's size, `Remove runner GE-Proton9-20 (1.2 GiB)? [y/N]`, and prints
+`Removed runner GE-Proton9-20 (1.2 GiB freed)`. `--yes` skips the question.
+Without a terminal it needs `--yes`, and otherwise stops with `remove
+requires a terminal or --yes; nothing was removed`.
+
+A build that anything still uses is refused, naming the users:
+
+```
+GE-Proton9-20 is used by hades, celeste (GE-Proton-Latest), and template gaming (proton).
+```
+
+A use is an environment that names the build, one whose
+`GE-Proton-Latest`, `Proton-CachyOS-Latest`, or DXVK or vkd3d `latest`
+resolves to it today, a template that names it or whose `proton` picks it as
+the newest Proton, the global default runner, a running game or installer,
+or an installer whose leftovers haven't been cleaned up. Deleting the newest
+build behind an alias is refused rather than quietly moving those
+environments to an older one. A build that's being downloaded or is held by
+a running program is refused too. System Wine and runners outside the
+runner root can't be removed.
+
+A config that can't be read is skipped with one warning line naming the
+file, before the question, and the removal still happens. Fix the file and
+run `wineo validate` if it might have used the build.
+
+The build is renamed out of the way before it's deleted, so an interrupted
+removal never leaves a half build that lists as usable. The next removal in
+that root cleans up what's left.
+
 ## Import an existing prefix
 
 ```sh
