@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0040: GUI art and downloads
 
