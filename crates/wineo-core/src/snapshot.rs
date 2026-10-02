@@ -54,6 +54,14 @@ struct DirectoryIdentity {
     inode: u64,
 }
 
+/// Frontend progress, including the boundary after which cancellation is ignored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapshotEvent {
+    Progress(ImportProgress),
+    /// The staged data is ready. Publication or restore now finishes without cancellation.
+    Finishing,
+}
+
 #[derive(Debug, Clone)]
 pub struct SnapshotInfo {
     pub label: String,
@@ -121,9 +129,22 @@ pub fn inspect_create(
     name: &str,
     label: &str,
 ) -> Result<CreateInspection> {
+    inspect_create_with(paths, global, name, label, &Token::new(), |_| {})
+}
+
+/// Cancellable inspection with entry-count progress for each tree check.
+pub fn inspect_create_with(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    label: &str,
+    cancel: &Token,
+    mut progress: impl FnMut(ImportProgress),
+) -> Result<CreateInspection> {
+    import::check_cancelled(cancel)?;
     validate_label(label)?;
     let (env, config_text, prefix) = registered(paths, name)?;
-    let inspected = inspect_prefix(paths, global, &env, &prefix)?;
+    let inspected = inspect_prefix(paths, global, &env, &prefix, cancel, &mut progress)?;
     check_sharing(paths, name, &prefix)?;
     let snapshot = paths.snapshot_root(&prefix, name).join(label);
     import::reject_overlapping_paths(&prefix, &snapshot)?;
@@ -150,12 +171,43 @@ pub fn create_reviewed(
     cancel: &Token,
     mut progress: impl FnMut(ImportProgress),
 ) -> Result<SnapshotInfo> {
-    let current = inspect_create(paths, global, &reviewed.name, &reviewed.label)?;
+    create_reviewed_with(paths, global, reviewed, cancel, |event| {
+        if let SnapshotEvent::Progress(progress_event) = event
+            && !matches!(progress_event, ImportProgress::Checking { .. })
+        {
+            progress(progress_event);
+        }
+    })
+}
+
+/// Executes the frozen review with cancellable checks and an explicit finishing boundary.
+pub fn create_reviewed_with(
+    paths: &Paths,
+    global: &GlobalConfig,
+    reviewed: &CreateInspection,
+    cancel: &Token,
+    mut events: impl FnMut(SnapshotEvent),
+) -> Result<SnapshotInfo> {
+    let current = inspect_create_with(
+        paths,
+        global,
+        &reviewed.name,
+        &reviewed.label,
+        cancel,
+        |progress| events(SnapshotEvent::Progress(progress)),
+    )?;
     ensure_create_same(reviewed, &current)?;
     let locks = Locks::new(paths);
     let _operation = locks.acquire(Operation::Snapshot, &reviewed.name, &[&reviewed.prefix])?;
     let _config_lock = locks.config(&paths.environment_config(&reviewed.name))?;
-    let current = inspect_create(paths, global, &reviewed.name, &reviewed.label)?;
+    let current = inspect_create_with(
+        paths,
+        global,
+        &reviewed.name,
+        &reviewed.label,
+        cancel,
+        |progress| events(SnapshotEvent::Progress(progress)),
+    )?;
     ensure_create_same(reviewed, &current)?;
     Runtime::new(paths, &reviewed.name).check_quiet(&reviewed.name)?;
     import::check_cancelled(cancel)?;
@@ -174,10 +226,13 @@ pub fn create_reviewed(
         &reviewed.snapshot.join("prefix"),
         &import::Links::for_paths(paths),
         cancel,
-        &mut progress,
+        &mut |progress| events(SnapshotEvent::Progress(progress)),
     )?;
     import::check_cancelled(cancel)?;
-    if import::fingerprint(&reviewed.prefix)? != reviewed.fingerprint {
+    if import::fingerprint_with(&reviewed.prefix, cancel, |progress| {
+        events(SnapshotEvent::Progress(progress))
+    })? != reviewed.fingerprint
+    {
         bail!("prefix changed while creating snapshot; retry");
     }
     if fs::read_to_string(paths.environment_config(&reviewed.name))? != reviewed.config_text {
@@ -205,11 +260,13 @@ pub fn create_reviewed(
         &serde_json::to_vec_pretty(&manifest)?,
     )?;
     sync_dir(staging.path())?;
+    import::check_cancelled(cancel)?;
+    events(SnapshotEvent::Finishing);
     crate::download::publish(staging.path(), &reviewed.snapshot)?;
     sync_dir(parent)?;
-    progress(ImportProgress::Finished {
+    events(SnapshotEvent::Progress(ImportProgress::Finished {
         entries: reviewed.fingerprint.entries,
-    });
+    }));
     Ok(SnapshotInfo {
         label: reviewed.label.clone(),
         created_at: manifest.created_at,
@@ -253,10 +310,23 @@ pub fn inspect_restore(
     name: &str,
     label: &str,
 ) -> Result<RestoreInspection> {
+    inspect_restore_with(paths, global, name, label, &Token::new(), |_| {})
+}
+
+/// Cancellable inspection with entry-count progress for each tree check.
+pub fn inspect_restore_with(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    label: &str,
+    cancel: &Token,
+    mut progress: impl FnMut(ImportProgress),
+) -> Result<RestoreInspection> {
+    import::check_cancelled(cancel)?;
     validate_label(label)?;
     let (env, current_config, prefix) = registered(paths, name)?;
     check_sharing(paths, name, &prefix)?;
-    let current = inspect_prefix(paths, global, &env, &prefix)?;
+    let current = inspect_prefix(paths, global, &env, &prefix, cancel, &mut progress)?;
     let snapshot = paths.snapshot_root(&prefix, name).join(label);
     import::reject_overlapping_paths(&prefix, &snapshot)?;
     let manifest = read_manifest(paths, &snapshot, name, label, &prefix)?;
@@ -270,7 +340,7 @@ pub fn inspect_restore(
     }
     let snap_prefix = snapshot.join("prefix");
     import::validate_staged_prefix(&snap_prefix, &snap_prefix, manifest.layout)?;
-    let snapshot_fingerprint = import::fingerprint(&snap_prefix)?;
+    let snapshot_fingerprint = import::fingerprint_with(&snap_prefix, cancel, &mut progress)?;
     Ok(RestoreInspection {
         name: name.to_owned(),
         label: label.to_owned(),
@@ -293,12 +363,43 @@ pub fn restore_reviewed(
     cancel: &Token,
     mut progress: impl FnMut(ImportProgress),
 ) -> Result<RestoreOutcome> {
-    let current = inspect_restore(paths, global, &reviewed.name, &reviewed.label)?;
+    restore_reviewed_with(paths, global, reviewed, cancel, |event| {
+        if let SnapshotEvent::Progress(progress_event) = event
+            && !matches!(progress_event, ImportProgress::Checking { .. })
+        {
+            progress(progress_event);
+        }
+    })
+}
+
+/// Executes the frozen review with cancellable checks and an explicit finishing boundary.
+pub fn restore_reviewed_with(
+    paths: &Paths,
+    global: &GlobalConfig,
+    reviewed: &RestoreInspection,
+    cancel: &Token,
+    mut events: impl FnMut(SnapshotEvent),
+) -> Result<RestoreOutcome> {
+    let current = inspect_restore_with(
+        paths,
+        global,
+        &reviewed.name,
+        &reviewed.label,
+        cancel,
+        |progress| events(SnapshotEvent::Progress(progress)),
+    )?;
     ensure_restore_same(reviewed, &current)?;
     let locks = Locks::new(paths);
     let _operation = locks.acquire(Operation::Snapshot, &reviewed.name, &[&reviewed.prefix])?;
     let _config_lock = locks.config(&paths.environment_config(&reviewed.name))?;
-    let current = inspect_restore(paths, global, &reviewed.name, &reviewed.label)?;
+    let current = inspect_restore_with(
+        paths,
+        global,
+        &reviewed.name,
+        &reviewed.label,
+        cancel,
+        |progress| events(SnapshotEvent::Progress(progress)),
+    )?;
     ensure_restore_same(reviewed, &current)?;
     Runtime::new(paths, &reviewed.name).check_quiet(&reviewed.name)?;
     import::check_cancelled(cancel)?;
@@ -324,10 +425,17 @@ pub fn restore_reviewed(
         &reviewed.prefix,
         &links,
         cancel,
-        &mut progress,
+        &mut |progress| events(SnapshotEvent::Progress(progress)),
     )?;
     import::check_cancelled(cancel)?;
-    let final_inspection = inspect_restore(paths, global, &reviewed.name, &reviewed.label)?;
+    let final_inspection = inspect_restore_with(
+        paths,
+        global,
+        &reviewed.name,
+        &reviewed.label,
+        cancel,
+        |progress| events(SnapshotEvent::Progress(progress)),
+    )?;
     ensure_restore_same(reviewed, &final_inspection)?;
     import::validate_staged_prefix(&staging_path, &reviewed.prefix, reviewed.layout)?;
     let old_is_subvolume = is_btrfs_subvolume(&reviewed.prefix)?;
@@ -341,8 +449,11 @@ pub fn restore_reviewed(
         old_fingerprint: reviewed.current_fingerprint,
         old_config: reviewed.current_config.clone(),
     };
+    let stored = stored_marker(paths, &marker)?;
+    import::check_cancelled(cancel)?;
+    events(SnapshotEvent::Finishing);
     let staging_path = staging.keep();
-    if let Err(err) = write_marker(&marker_path, &stored_marker(paths, &marker)?) {
+    if let Err(err) = write_marker(&marker_path, &stored) {
         if fs::symlink_metadata(&marker_path).is_ok() {
             bail!(
                 "restore stopped while publishing recovery marker: {err}; staged prefix remains at {}; marker at {}; run `wineo snapshot recover {}`",
@@ -411,9 +522,9 @@ pub fn restore_reviewed(
         })?;
         None
     };
-    progress(ImportProgress::Finished {
+    events(SnapshotEvent::Progress(ImportProgress::Finished {
         entries: reviewed.snapshot_fingerprint.entries,
-    });
+    }));
     Ok(RestoreOutcome {
         retained_old_prefix,
     })
@@ -433,6 +544,16 @@ pub fn delete(paths: &Paths, name: &str, label: &str) -> Result<()> {
     read_manifest(paths, &snapshot, name, label, &prefix)?;
     remove_tree(&snapshot)?;
     Ok(())
+}
+
+/// Checks the marker's shape and saved config without attempting rollback.
+/// Recovery still checks runtime, locks, directory identity, and contents when applied.
+pub fn inspect_recovery(paths: &Paths, name: &str) -> Result<()> {
+    if !name::is_valid(name) || !paths.environment_config(name).is_file() {
+        bail!("unknown environment `{name}`");
+    }
+    let marker = read_marker(paths, &marker_path(paths, name), name)?;
+    validate_marker_config(paths, name, &marker)
 }
 
 pub fn recover(paths: &Paths, name: &str) -> Result<()> {
@@ -508,6 +629,8 @@ fn inspect_prefix(
     global: &GlobalConfig,
     env: &Environment,
     prefix: &Path,
+    cancel: &Token,
+    progress: impl FnMut(ImportProgress),
 ) -> Result<import::Inspection> {
     let wine = env.wine()?;
     let runner = if import::root_layout_ambiguous(prefix) {
@@ -515,7 +638,8 @@ fn inspect_prefix(
     } else {
         None
     };
-    let inspected = import::inspect_root(prefix, runner.as_ref(), wine.arch)?;
+    let inspected =
+        import::inspect_root_with(prefix, runner.as_ref(), wine.arch, cancel, progress)?;
     if inspected.source_root != prefix {
         bail!("configured prefix root changed during inspection");
     }
@@ -871,6 +995,318 @@ mod tests {
         fs::create_dir_all(paths.environments_dir()).unwrap();
         fs::write(paths.environment_config("game"), &config).unwrap();
         (root, paths, prefix, config)
+    }
+
+    fn reflinks_supported(prefix: &Path) -> bool {
+        let destination = prefix.join("reflink-probe");
+        let input = File::open(prefix.join("linked")).unwrap();
+        let output = File::create(&destination).unwrap();
+        let supported = rustix::fs::ioctl_ficlone(&output, &input).is_ok();
+        fs::remove_file(destination).unwrap();
+        supported
+    }
+
+    fn interrupted_marker(paths: &Paths, prefix: &Path, config: &str) -> RestoreMarker {
+        let staging = tempfile::Builder::new()
+            .prefix(".wineo-restore-")
+            .tempdir_in(prefix.parent().unwrap())
+            .unwrap()
+            .keep();
+        let marker = RestoreMarker {
+            version: VERSION,
+            environment: "game".to_owned(),
+            prefix: prefix.to_owned(),
+            staging,
+            old_directory: directory_identity(prefix).unwrap(),
+            old_fingerprint: import::fingerprint(prefix).unwrap(),
+            old_config: config.to_owned(),
+        };
+        write_marker(&marker_path(paths, "game"), &marker).unwrap();
+        marker
+    }
+
+    #[test]
+    fn create_inspection_and_revalidation_are_cancellable() {
+        let (_root, paths, prefix, config) = fixture(false);
+        let global = GlobalConfig::default();
+        let token = Token::new();
+        let error = inspect_create_with(&paths, &global, "game", "one", &token, |event| {
+            assert!(matches!(event, ImportProgress::Checking { entries } if entries > 0));
+            token.cancel();
+        })
+        .unwrap_err();
+        assert!(error.is::<Canceled>(), "{error}");
+        let supports_reflinks = reflinks_supported(&prefix);
+        let review = inspect_create(&paths, &global, "game", "one").unwrap();
+        for cancel_after_copy in [false, true] {
+            if cancel_after_copy && !supports_reflinks {
+                continue;
+            }
+            let token = Token::new();
+            let mut copied = false;
+            let error =
+                create_reviewed_with(&paths, &global, &review, &token, |event| match event {
+                    SnapshotEvent::Progress(ImportProgress::Copied { .. }) => copied = true,
+                    SnapshotEvent::Progress(ImportProgress::Checking { .. })
+                        if !cancel_after_copy || copied =>
+                    {
+                        token.cancel()
+                    }
+                    SnapshotEvent::Finishing => panic!("canceled before publication"),
+                    _ => {}
+                })
+                .unwrap_err();
+            assert!(error.is::<Canceled>(), "{error}");
+            assert!(!review.snapshot.exists());
+            assert_eq!(
+                fs::read_to_string(paths.environment_config("game")).unwrap(),
+                config
+            );
+            assert_eq!(
+                fs::read_to_string(prefix.join("drive_c/game.exe")).unwrap(),
+                "before"
+            );
+            if let Ok(entries) = fs::read_dir(review.snapshot.parent().unwrap()) {
+                assert_eq!(entries.count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn restore_checks_cancel_before_swap_and_keep_live_state() {
+        let (_root, paths, prefix, config) = fixture(false);
+        if !reflinks_supported(&prefix) {
+            return;
+        }
+        let global = GlobalConfig::default();
+        let create = inspect_create(&paths, &global, "game", "one").unwrap();
+        create_reviewed(&paths, &global, &create, &Token::new(), |_| {}).unwrap();
+        fs::write(prefix.join("drive_c/game.exe"), "later").unwrap();
+        let current_config = format!("# current edit\n{config}");
+        fs::write(paths.environment_config("game"), &current_config).unwrap();
+        let review = inspect_restore(&paths, &global, "game", "one").unwrap();
+        // The second check walks the saved tree, after the live tree.
+        let token = Token::new();
+        let mut checks = 0;
+        let error = inspect_restore_with(&paths, &global, "game", "one", &token, |_| {
+            checks += 1;
+            if checks == 2 {
+                token.cancel();
+            }
+        })
+        .unwrap_err();
+        assert!(error.is::<Canceled>(), "{error}");
+        assert_eq!(checks, 2);
+        for cancel_after_copy in [false, true] {
+            let token = Token::new();
+            let mut copied = false;
+            let error =
+                restore_reviewed_with(&paths, &global, &review, &token, |event| match event {
+                    SnapshotEvent::Progress(ImportProgress::Copied { .. }) => copied = true,
+                    SnapshotEvent::Progress(ImportProgress::Checking { .. })
+                        if !cancel_after_copy || copied =>
+                    {
+                        token.cancel()
+                    }
+                    SnapshotEvent::Finishing => panic!("canceled before swap"),
+                    _ => {}
+                })
+                .unwrap_err();
+            assert!(error.is::<Canceled>(), "{error}");
+            assert_eq!(
+                fs::read_to_string(paths.environment_config("game")).unwrap(),
+                current_config
+            );
+            assert_eq!(
+                fs::read_to_string(prefix.join("drive_c/game.exe")).unwrap(),
+                "later"
+            );
+            assert!(!marker_path(&paths, "game").exists());
+            assert!(
+                fs::read_dir(prefix.parent().unwrap())
+                    .unwrap()
+                    .all(|entry| {
+                        !entry
+                            .unwrap()
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".wineo-restore-")
+                    })
+            );
+        }
+    }
+
+    #[test]
+    fn late_cancel_at_finishing_preserves_create_and_restore_success() {
+        let (_root, paths, prefix, config) = fixture(false);
+        if !reflinks_supported(&prefix) {
+            return;
+        }
+        let global = GlobalConfig::default();
+        let create = inspect_create(&paths, &global, "game", "one").unwrap();
+        let token = Token::new();
+        let mut finishing = 0;
+        let mut finished = false;
+        create_reviewed_with(&paths, &global, &create, &token, |event| match event {
+            SnapshotEvent::Finishing => {
+                assert!(!create.snapshot.exists());
+                finishing += 1;
+                token.cancel();
+            }
+            SnapshotEvent::Progress(ImportProgress::Finished { .. }) => finished = true,
+            _ => {}
+        })
+        .unwrap();
+        assert_eq!(finishing, 1);
+        assert!(finished);
+        assert!(token.is_canceled());
+        fs::write(prefix.join("drive_c/game.exe"), "later").unwrap();
+        fs::write(
+            paths.environment_config("game"),
+            format!("# edit\n{config}"),
+        )
+        .unwrap();
+        let restore = inspect_restore(&paths, &global, "game", "one").unwrap();
+        let token = Token::new();
+        let mut finishing = 0;
+        let mut finished = false;
+        restore_reviewed_with(&paths, &global, &restore, &token, |event| match event {
+            SnapshotEvent::Finishing => {
+                assert!(!marker_path(&paths, "game").exists());
+                assert_eq!(
+                    fs::read_to_string(prefix.join("drive_c/game.exe")).unwrap(),
+                    "later"
+                );
+                finishing += 1;
+                token.cancel();
+            }
+            SnapshotEvent::Progress(ImportProgress::Finished { .. }) => finished = true,
+            _ => {}
+        })
+        .unwrap();
+        assert_eq!(finishing, 1);
+        assert!(finished);
+        assert!(token.is_canceled());
+        assert_eq!(
+            fs::read_to_string(prefix.join("drive_c/game.exe")).unwrap(),
+            "before"
+        );
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("game")).unwrap(),
+            config
+        );
+        assert!(!marker_path(&paths, "game").exists());
+    }
+
+    #[test]
+    fn explicit_validate_recovery_rolls_back_and_batch_paths_leave_marker_alone() {
+        let (_root, paths, prefix, config) = fixture(false);
+        let marker = interrupted_marker(&paths, &prefix, &config);
+        exchange(&prefix, &marker.staging).unwrap();
+        fs::write(prefix.join("new-file"), "new").unwrap();
+        fs::write(paths.environment_config("game"), "invalid = [").unwrap();
+        let report = crate::validate::check_environment(&paths, "game").unwrap();
+        let fix = report.problems[0].fix.as_ref().unwrap();
+        assert!(
+            matches!(fix, crate::validate::Fix::RecoverSnapshot { environment } if environment == "game")
+        );
+        assert!(report.fixes().is_empty());
+        assert!(
+            crate::validate::apply(
+                &paths,
+                fix,
+                &Token::new(),
+                crate::winetricks::EnsureOutput::Stderr,
+                |_| {},
+                |_, _| panic!("no download"),
+            )
+            .is_err()
+        );
+        assert!(marker_path(&paths, "game").exists());
+        // Recovery is non-cancellable, even for an already canceled token.
+        let token = Token::new();
+        token.cancel();
+        crate::validate::apply_single(
+            &paths,
+            fix,
+            &token,
+            crate::winetricks::EnsureOutput::Stderr,
+            |_| {},
+            |_, _| panic!("no download"),
+        )
+        .unwrap();
+        assert_eq!(directory_identity(&prefix).unwrap(), marker.old_directory);
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("game")).unwrap(),
+            config
+        );
+        assert_eq!(
+            fs::read_to_string(prefix.join("drive_c/game.exe")).unwrap(),
+            "before"
+        );
+        assert!(!prefix.join("new-file").exists());
+        assert!(!marker_path(&paths, "game").exists());
+        assert!(!marker.staging.exists());
+    }
+
+    #[test]
+    fn recovery_refuses_busy_changed_and_unidentified_originals() {
+        for refusal in [
+            "busy",
+            "changed-live",
+            "changed-staging",
+            "identity",
+            "config",
+        ] {
+            let (_root, paths, prefix, config) = fixture(false);
+            let mut marker = interrupted_marker(&paths, &prefix, &config);
+            let lock = if refusal == "busy" {
+                Some(
+                    Locks::new(&paths)
+                        .acquire(Operation::Snapshot, "game", &[&prefix])
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            match refusal {
+                "changed-live" => fs::write(prefix.join("linked"), "changed").unwrap(),
+                "changed-staging" => {
+                    exchange(&prefix, &marker.staging).unwrap();
+                    fs::write(marker.staging.join("linked"), "changed").unwrap();
+                }
+                "identity" => {
+                    marker.old_directory.inode = 0;
+                    fs::remove_file(marker_path(&paths, "game")).unwrap();
+                    write_marker(&marker_path(&paths, "game"), &marker).unwrap();
+                }
+                "config" => {
+                    marker.old_config =
+                        "prefix = '/different'\nrunner = 'wine'\narch = 'win64'\n".to_owned();
+                    fs::remove_file(marker_path(&paths, "game")).unwrap();
+                    write_marker(&marker_path(&paths, "game"), &marker).unwrap();
+                }
+                _ => {}
+            }
+            let before = directory_identity(&prefix).unwrap();
+            let err = recover(&paths, "game").unwrap_err();
+            let expected = match refusal {
+                "busy" => "busy",
+                "changed-live" | "changed-staging" => "original prefix changed",
+                "identity" => "cannot identify original prefix",
+                "config" => "different prefix",
+                _ => unreachable!(),
+            };
+            assert!(err.to_string().contains(expected), "{refusal}: {err}");
+            assert_eq!(directory_identity(&prefix).unwrap(), before);
+            assert_eq!(
+                fs::read_to_string(paths.environment_config("game")).unwrap(),
+                config
+            );
+            assert!(marker_path(&paths, "game").exists());
+            assert!(marker.staging.exists());
+            drop(lock);
+        }
     }
 
     #[test]

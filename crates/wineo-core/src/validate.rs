@@ -2,7 +2,8 @@
 //! and fixes the ones that are safe to fix.
 //!
 //! Checks only read, and nothing launches wine or runs a program. Fixes never
-//! edit an environment config. The winetricks fix installs into an idle
+//! edit an environment config, except explicit snapshot recovery, which restores
+//! the saved bytes. The winetricks fix installs into an idle
 //! prefix; art fixes only drop records whose file or target is gone.
 
 use std::collections::BTreeSet;
@@ -30,6 +31,7 @@ use crate::prefix::{self, BuildPlan};
 use crate::runner::{self, Runner};
 use crate::runners::Runners;
 use crate::runtime::Runtime;
+use crate::snapshot;
 use crate::templates::{Template, Templates};
 use crate::trash::{self, Phase};
 use crate::winetricks;
@@ -345,9 +347,18 @@ pub enum Fix {
     RecoverTrash {
         id: String,
     },
+    /// Rolls back an interrupted restore only through `apply_single`.
+    RecoverSnapshot {
+        environment: String,
+    },
 }
 
 impl Fix {
+    /// Whether this fix can be included in a batch.
+    pub fn is_batch_safe(&self) -> bool {
+        !matches!(self, Self::RecoverSnapshot { .. })
+    }
+
     /// What the fix does, in a few words.
     pub fn label(&self) -> String {
         match self {
@@ -393,6 +404,9 @@ impl Fix {
                 format!("Remove {environment}'s leftover play stats")
             }
             Fix::RecoverTrash { id } => format!("Recover interrupted trash entry {id}"),
+            Fix::RecoverSnapshot { environment } => {
+                format!("Roll back {environment}'s interrupted snapshot restore")
+            }
         }
     }
 }
@@ -481,13 +495,14 @@ impl Report {
         self.count(Level::Warning)
     }
 
-    /// Every distinct fix in problem order. Shared downloads are offered once.
+    /// Distinct batch-safe fixes in problem order. Shared downloads are offered once.
     pub fn fixes(&self) -> Vec<Fix> {
         let mut fixes = Vec::new();
         for fix in self
             .problems
             .iter()
             .filter_map(|problem| problem.fix.as_ref())
+            .filter(|fix| fix.is_batch_safe())
         {
             if !fixes.contains(fix) {
                 fixes.push(fix.clone());
@@ -734,13 +749,27 @@ fn check_one(paths: &Paths, global: &GlobalConfig, name: &str, report: &mut Repo
     let marker = paths.restore_marker(name);
     match fs::symlink_metadata(&marker) {
         Ok(_) => {
+            let (message, fix) = match snapshot::inspect_recovery(paths, name) {
+                Ok(()) => (
+                    format!(
+                        "a snapshot restore was interrupted. Recover it with `wineo snapshot recover {name}`"
+                    ),
+                    Some(Fix::RecoverSnapshot {
+                        environment: name.to_owned(),
+                    }),
+                ),
+                Err(err) => (
+                    format!(
+                        "a snapshot restore was interrupted. Recover it with `wineo snapshot recover {name}`. Invalid recovery marker: {err:#}"
+                    ),
+                    None,
+                ),
+            };
             report.push(Problem::new(
                 Code::RestoreInterrupted,
                 Some(name),
-                format!(
-                    "a snapshot restore was interrupted. Recover it with `wineo snapshot recover {name}`"
-                ),
-                None,
+                message,
+                fix,
             ));
             return Ok(());
         }
@@ -1317,9 +1346,33 @@ fn files_with_extension(dir: &Path, extension: &str) -> Result<Vec<(PathBuf, Str
     Ok(found)
 }
 
-/// Makes one fix. It takes the same lock its command would, so a fix for a
-/// busy environment fails with the usual busy error. Callers apply each fix
-/// on its own, so one failing doesn't stop the rest.
+/// Applies an explicitly chosen single fix, including non-cancellable snapshot recovery.
+/// Batch callers must use `Report::fixes` and `apply` instead.
+pub fn apply_single(
+    paths: &Paths,
+    fix: &Fix,
+    token: &crate::cancel::Token,
+    winetricks_output: winetricks::EnsureOutput<'_>,
+    winetricks_events: impl FnMut(winetricks::WinetricksEvent),
+    download: impl FnOnce(Component, Option<&str>) -> anyhow::Result<()>,
+) -> anyhow::Result<Vec<Note>> {
+    if let Fix::RecoverSnapshot { environment } = fix {
+        snapshot::recover(paths, environment)?;
+        return Ok(Vec::new());
+    }
+    apply(
+        paths,
+        fix,
+        token,
+        winetricks_output,
+        winetricks_events,
+        download,
+    )
+}
+
+/// Makes one batch-safe fix, taking the same locks its command would.
+/// Snapshot recovery is refused here; use `apply_single` for explicit rollback.
+/// Callers apply each fix on its own, so one failing doesn't stop the rest.
 ///
 /// `download` fetches a DXVK or vkd3d-proton build: the pinned version, or
 /// the newest release for None. Downloading shows progress and can be
@@ -1374,6 +1427,9 @@ pub fn apply(
         }
         Fix::RemoveStatsLog { environment } => remove_stats_log(paths, environment)?,
         Fix::RecoverTrash { id } => trash::recover(paths, id)?,
+        Fix::RecoverSnapshot { .. } => {
+            anyhow::bail!("snapshot recovery must be applied by itself with apply_single");
+        }
     }
     Ok(Vec::new())
 }
@@ -1969,6 +2025,43 @@ mod tests {
         let problem = f.only(Code::RestoreInterrupted);
         assert!(problem.message.contains("wineo snapshot recover game"));
         assert_eq!(problem.fix, None);
+    }
+
+    #[test]
+    fn a_well_formed_restore_marker_offers_only_explicit_recovery() {
+        use std::os::unix::fs::MetadataExt;
+
+        let f = Fixture::new();
+        f.wine("game", HEALTHY);
+        let prefix = f.prefix_dir("game");
+        let metadata = fs::metadata(&prefix).unwrap();
+        let marker = f.paths.restore_marker("game");
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        let saved_config = fs::read_to_string(f.paths.environment_config("game")).unwrap();
+        let contents = serde_json::json!({
+            "version": 1,
+            "environment": "game",
+            "prefix": prefix,
+            "staging": prefix.parent().unwrap().join(".wineo-restore-test"),
+            "old_directory": { "device": metadata.dev(), "inode": metadata.ino() },
+            "old_fingerprint": crate::import::fingerprint(&prefix).unwrap(),
+            "old_config": saved_config,
+        });
+        fs::write(&marker, serde_json::to_vec(&contents).unwrap()).unwrap();
+        let problem = f.only(Code::RestoreInterrupted);
+        let wanted = Fix::RecoverSnapshot {
+            environment: "game".to_owned(),
+        };
+        assert_eq!(problem.fix, Some(wanted.clone()));
+        assert_eq!(
+            wanted.label(),
+            "Roll back game's interrupted snapshot restore"
+        );
+        assert!(!wanted.is_batch_safe());
+        let report = check_environment(&f.paths, "game").unwrap();
+        assert!(report.fixes().is_empty());
+        assert!(apply(&f.paths, &wanted, no_download).is_err());
+        assert!(marker.exists());
     }
 
     #[test]

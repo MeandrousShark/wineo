@@ -198,9 +198,18 @@ pub(crate) fn inspect_root(
     runner: Option<&Runner>,
     arch: Arch,
 ) -> Result<Inspection> {
-    let cancel = Token::new();
-    let mut quiet = |_| {};
-    let mut check = Check::new(&cancel, &mut quiet);
+    inspect_root_with(source, runner, arch, &Token::new(), |_| {})
+}
+
+pub(crate) fn inspect_root_with(
+    source: &Path,
+    runner: Option<&Runner>,
+    arch: Arch,
+    cancel: &Token,
+    mut progress: impl FnMut(ImportProgress),
+) -> Result<Inspection> {
+    check_cancelled(cancel)?;
+    let mut check = Check::new(cancel, &mut progress);
     inspect_impl(
         source,
         runner,
@@ -796,11 +805,19 @@ fn scan(
 
 /// The content fingerprint snapshot, clone, and portable compare against.
 pub(crate) fn fingerprint(root: &Path) -> Result<SourceFingerprint> {
-    let cancel = Token::new();
+    fingerprint_with(root, &Token::new(), |_| {})
+}
+
+pub(crate) fn fingerprint_with(
+    root: &Path,
+    cancel: &Token,
+    mut progress: impl FnMut(ImportProgress),
+) -> Result<SourceFingerprint> {
+    check_cancelled(cancel)?;
     fingerprint_walk(
         root,
         FingerprintKind::Content,
-        &mut Check::new(&cancel, &mut |_| {}),
+        &mut Check::new(cancel, &mut progress),
         None,
     )
 }
@@ -816,7 +833,12 @@ fn fingerprint_walk(
     external: Option<&mut Vec<ExternalDependency>>,
 ) -> Result<SourceFingerprint> {
     match kind {
-        FingerprintKind::Content => hash_records(root, check, external, content_record),
+        FingerprintKind::Content => {
+            let cancel = check.cancel;
+            hash_records(root, check, external, |relative, path, metadata| {
+                content_record(relative, path, metadata, cancel)
+            })
+        }
         FingerprintKind::Metadata => hash_records(root, check, external, metadata_record),
     }
 }
@@ -833,14 +855,19 @@ type ContentRecord = (
 );
 
 // This tuple must hash exactly as before, since restore markers persist it.
-fn content_record(relative: String, path: &Path, metadata: &fs::Metadata) -> Result<ContentRecord> {
+fn content_record(
+    relative: String,
+    path: &Path,
+    metadata: &fs::Metadata,
+    cancel: &Token,
+) -> Result<ContentRecord> {
     let modified = metadata
         .modified()
         .ok()
         .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
         .map(|duration| (duration.as_secs(), duration.subsec_nanos()));
     let content = if metadata.file_type().is_file() {
-        Some(file_digest(path)?)
+        Some(file_digest(path, cancel)?)
     } else {
         None
     };
@@ -931,12 +958,13 @@ fn hash_records<R: Hash>(
     })
 }
 
-fn file_digest(path: &Path) -> Result<u64> {
+fn file_digest(path: &Path, cancel: &Token) -> Result<u64> {
     let mut file = File::open(path)
         .with_context(|| format!("failed to read {} for fingerprinting", path.display()))?;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     let mut buffer = [0; 128 * 1024];
     loop {
+        check_cancelled(cancel)?;
         let count = file
             .read(&mut buffer)
             .with_context(|| format!("failed to read {} for fingerprinting", path.display()))?;

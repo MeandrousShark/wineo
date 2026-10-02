@@ -143,7 +143,7 @@ fn apply_all(paths: &Paths, fixes: &[Fix]) -> (Vec<Fix>, Vec<Failed>) {
     let global = GlobalConfig::load_or_default(paths);
     let mut applied = Vec::new();
     let mut failed = Vec::new();
-    for fix in fixes {
+    for fix in fixes.iter().filter(|fix| fix.is_batch_safe()) {
         // Only winetricks honors the token here. A handler held across the
         // other fixes would swallow Ctrl+C instead of ending wineo.
         let cancellation = match fix {

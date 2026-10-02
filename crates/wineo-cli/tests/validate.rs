@@ -381,3 +381,59 @@ fn a_stray_stats_log_is_reported_and_removed_by_fix() {
     assert_success(&fixed);
     assert!(!f.stats_log("oldgame").exists());
 }
+
+#[test]
+fn batch_fix_leaves_a_well_formed_restore_marker_in_place() {
+    use std::os::unix::fs::MetadataExt;
+
+    let f = Fixture::new();
+    f.environment("game", "");
+    let paths = paths(&f);
+    let config = f.created_config("game");
+    let environment = wineo_core::environment::Environment::load(&paths, "game").unwrap();
+    let prefix = environment.prefix(&paths).unwrap();
+    fs::create_dir_all(&prefix).unwrap();
+    let metadata = fs::metadata(&prefix).unwrap();
+    let staging = tempfile::Builder::new()
+        .prefix(".wineo-restore-")
+        .tempdir_in(prefix.parent().unwrap())
+        .unwrap();
+    let marker = paths.restore_marker("game");
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    let contents = serde_json::to_vec(&serde_json::json!({
+        "version": 1,
+        "environment": "game",
+        "prefix": prefix,
+        "staging": staging.path(),
+        "old_directory": { "device": metadata.dev(), "inode": metadata.ino() },
+        "old_fingerprint": { "hash": 0, "entries": 1 },
+        "old_config": config,
+    }))
+    .unwrap();
+    fs::write(&marker, &contents).unwrap();
+    for json in [false, true] {
+        let args = if json {
+            vec!["validate", "--fix", "--json"]
+        } else {
+            vec!["validate", "--fix"]
+        };
+        let output = f.run(&args);
+        assert_eq!(output.status.code(), Some(1));
+        if json {
+            let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(result["fixed"], serde_json::json!([]));
+            assert_eq!(result["errors"], serde_json::json!([]));
+            assert_eq!(result["problems"][0]["code"], "restore_interrupted");
+            assert_eq!(
+                result["problems"][0]["fix"],
+                "Roll back game's interrupted snapshot restore"
+            );
+        } else {
+            assert!(stdout(&output).contains("wineo snapshot recover game"));
+        }
+        assert_eq!(fs::read(&marker).unwrap(), contents);
+        assert_eq!(f.created_config("game"), config);
+        assert!(prefix.exists());
+        assert!(staging.path().exists());
+    }
+}
