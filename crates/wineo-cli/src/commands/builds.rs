@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+use clap::Subcommand;
 use wineo_core::components::{Builds, Component};
 use wineo_core::config::GlobalConfig;
 use wineo_core::paths::Paths;
@@ -9,9 +10,45 @@ pub struct Args {
     /// Also list directories that aren't usable builds, and why
     #[arg(long)]
     all: bool,
+
+    #[command(subcommand)]
+    action: Option<Action>,
+}
+
+#[derive(Subcommand)]
+enum Action {
+    /// Remove an installed build
+    Remove(RemoveArgs),
+}
+
+#[derive(clap::Args)]
+struct RemoveArgs {
+    #[arg(value_name = "NAME", add = clap_complete::ArgValueCompleter::new(crate::completion::removable_build_names))]
+    name: String,
+
+    /// Confirm removal without a terminal
+    #[arg(long)]
+    yes: bool,
 }
 
 pub fn run(paths: &Paths, component: Component, args: Args) -> anyhow::Result<ExitCode> {
+    if let Some(Action::Remove(args)) = args.action {
+        let kind = format!("{} build", component.label());
+        return super::remove_build::run(
+            paths,
+            &args.name,
+            &kind,
+            component.into(),
+            args.yes,
+            |paths, name| {
+                wineo_core::components::size(paths, component, name).map_err(anyhow::Error::from)
+            },
+            |paths, name| {
+                wineo_core::components::remove(paths, component, name).map_err(anyhow::Error::from)
+            },
+        );
+    }
+
     let global = GlobalConfig::load(paths)?;
     let builds = Builds::new(paths, &global, component)?;
     let listing = builds.list()?;

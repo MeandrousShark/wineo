@@ -1,9 +1,13 @@
 use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::path::PathBuf;
 
 use clap_complete::CompletionCandidate;
+use wineo_core::components::{Builds, Component};
+use wineo_core::config::GlobalConfig;
 use wineo_core::environment::{self, Environment};
 use wineo_core::paths::Paths;
+use wineo_core::runners::Runners;
 use wineo_core::snapshot;
 use wineo_core::trash;
 
@@ -20,6 +24,75 @@ pub fn trash_ids(current: &OsStr) -> Vec<CompletionCandidate> {
         .into_iter()
         .filter(|entry| entry.id.starts_with(prefix))
         .map(|entry| CompletionCandidate::new(entry.id))
+        .collect()
+}
+
+pub fn removable_build_names(current: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(prefix) = current.to_str() else {
+        return Vec::new();
+    };
+    let (portable, words) = split_portable(words_before_current());
+    let Some((command, args)) = command_args(&words) else {
+        return Vec::new();
+    };
+    if !args.iter().any(|arg| arg == "remove") {
+        return Vec::new();
+    }
+    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
+        return Vec::new();
+    };
+    let names = match command {
+        "runners" => {
+            let Ok(global) = GlobalConfig::load(&paths) else {
+                return Vec::new();
+            };
+            let Ok(runners) = Runners::new(&paths, &global) else {
+                return Vec::new();
+            };
+            let Ok(listing) = runners.list() else {
+                return Vec::new();
+            };
+            listing
+                .runners
+                .into_iter()
+                .filter(|runner| {
+                    fs::symlink_metadata(runners.root().join(runner.name()))
+                        .is_ok_and(|metadata| metadata.file_type().is_dir())
+                })
+                .map(|runner| runner.name().to_owned())
+                .collect::<Vec<_>>()
+        }
+        "dxvk" | "vkd3d" => {
+            let component = if command == "dxvk" {
+                Component::Dxvk
+            } else {
+                Component::Vkd3d
+            };
+            let Ok(global) = GlobalConfig::load(&paths) else {
+                return Vec::new();
+            };
+            let Ok(builds) = Builds::new(&paths, &global, component) else {
+                return Vec::new();
+            };
+            let Ok(listing) = builds.list() else {
+                return Vec::new();
+            };
+            listing
+                .builds
+                .into_iter()
+                .filter(|build| {
+                    fs::symlink_metadata(builds.root().join(build.name()))
+                        .is_ok_and(|metadata| metadata.file_type().is_dir())
+                })
+                .map(|build| build.name().to_owned())
+                .collect::<Vec<_>>()
+        }
+        _ => return Vec::new(),
+    };
+    names
+        .into_iter()
+        .filter(|name| name.starts_with(prefix))
+        .map(CompletionCandidate::new)
         .collect()
 }
 

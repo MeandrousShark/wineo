@@ -110,6 +110,12 @@ pub enum Error {
     #[error("invalid runner name `{0}`: use letters, digits, `-`, `_`, and `.`")]
     InvalidRunnerName(String),
 
+    #[error("{name} is used by {users}.")]
+    BuildInUse { name: String, users: String },
+
+    #[error("{0} is not a managed build and cannot be removed")]
+    UnmanagedBuild(String),
+
     #[error(
         "runner `{name}` is not installed{}",
         if .installed.is_empty() {

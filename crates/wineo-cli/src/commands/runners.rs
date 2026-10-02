@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+use clap::Subcommand;
 use wineo_core::config::GlobalConfig;
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
@@ -10,6 +11,25 @@ pub struct Args {
     /// Also list directories that aren't usable as runners, and why
     #[arg(long)]
     all: bool,
+
+    #[command(subcommand)]
+    action: Option<Action>,
+}
+
+#[derive(Subcommand)]
+enum Action {
+    /// Remove an installed runner
+    Remove(RemoveArgs),
+}
+
+#[derive(clap::Args)]
+struct RemoveArgs {
+    #[arg(value_name = "NAME", add = clap_complete::ArgValueCompleter::new(crate::completion::removable_build_names))]
+    name: String,
+
+    /// Confirm removal without a terminal
+    #[arg(long)]
+    yes: bool,
 }
 
 /// One line: what it's called, what it is, what version, and where. Only the
@@ -22,6 +42,18 @@ struct Row {
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
+    if let Some(Action::Remove(args)) = args.action {
+        return super::remove_build::run(
+            paths,
+            &args.name,
+            "runner",
+            wineo_core::build_lock::Kind::Runner,
+            args.yes,
+            |paths, name| wineo_core::runners::size(paths, name).map_err(anyhow::Error::from),
+            |paths, name| wineo_core::runners::remove(paths, name).map_err(anyhow::Error::from),
+        );
+    }
+
     let global = GlobalConfig::load(paths)?;
     let runners = Runners::new(paths, &global)?;
     let listing = runners.list()?;

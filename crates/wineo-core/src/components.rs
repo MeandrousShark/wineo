@@ -335,6 +335,44 @@ fn version_key(name: &str) -> Vec<u64> {
     key
 }
 
+/// Size of a concrete managed build, in logical file bytes.
+pub fn size(paths: &Paths, component: Component, name: &str) -> Result<u64> {
+    let directory = removable_directory(paths, component, name)?;
+    let _guard = crate::build_lock::shared(paths, component.into(), name)?;
+    crate::build_removal::managed(&directory, name)?;
+    crate::build_removal::directory_size(&directory)
+}
+
+/// Removes an unused managed build and reports bytes and skipped configs.
+pub fn remove(
+    paths: &Paths,
+    component: Component,
+    name: &str,
+) -> Result<crate::build_removal::Removed> {
+    let directory = removable_directory(paths, component, name)?;
+    crate::build_removal::remove(
+        paths,
+        &crate::build_lock::Lock::new(paths, component.into(), name),
+        &directory,
+    )
+}
+
+fn removable_directory(paths: &Paths, component: Component, name: &str) -> Result<PathBuf> {
+    if name == LATEST {
+        return Err(Error::UnmanagedBuild(name.to_owned()));
+    }
+    let global = GlobalConfig::load(paths)?;
+    let builds = Builds::new(paths, &global, component)?;
+    crate::build_removal::sweep_best_effort(paths, component.into(), builds.root());
+    removable_directory_in(&builds, name)
+}
+
+fn removable_directory_in(builds: &Builds, name: &str) -> Result<PathBuf> {
+    let build = builds.resolve(name)?;
+    crate::build_removal::managed(build.dir(), name)?;
+    Ok(build.dir().to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -17,6 +17,7 @@ pub mod new;
 pub mod portable;
 pub mod programs;
 pub mod prune;
+mod remove_build;
 pub mod restart;
 pub mod restore;
 pub mod rm;

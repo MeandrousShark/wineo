@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 use std::process::Command;
 
@@ -88,6 +89,83 @@ fn list_tag_completion_is_sorted_deduplicated_and_skips_broken_configs() {
     assert_eq!(
         complete(root.path(), "fish", &["wineo", "list", "--tag", "ga"]),
         ["game"]
+    );
+}
+
+#[test]
+fn removal_completes_only_installed_build_names() {
+    let root = tempfile::tempdir().unwrap();
+    let runner_bin = root.path().join("data/wineo/runners/wine-tkg/bin");
+    fs::create_dir_all(&runner_bin).unwrap();
+    for name in ["wine", "wineserver"] {
+        let path = runner_bin.join(name);
+        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    symlink(
+        "wine-tkg",
+        root.path().join("data/wineo/runners/wine-linked"),
+    )
+    .unwrap();
+    for (component, name, dirs, marker) in [
+        ("dxvk", "dxvk-2.7", ["x64", "x32"], "dxgi.dll"),
+        ("vkd3d", "vkd3d-2.14", ["x64", "x86"], "d3d12.dll"),
+    ] {
+        for dir in dirs {
+            let path = root
+                .path()
+                .join("data/wineo")
+                .join(component)
+                .join(name)
+                .join(dir);
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join(marker), b"build").unwrap();
+        }
+        symlink(
+            name,
+            root.path()
+                .join("data/wineo")
+                .join(component)
+                .join(format!("{component}-linked")),
+        )
+        .unwrap();
+    }
+
+    assert_eq!(
+        complete(root.path(), "fish", &["wineo", "runners", "remove", "wine"],),
+        ["wine-tkg"]
+    );
+    assert_eq!(
+        complete(root.path(), "fish", &["wineo", "dxvk", "remove", "dxvk-"]),
+        ["dxvk-2.7"]
+    );
+    assert_eq!(
+        complete(root.path(), "fish", &["wineo", "vkd3d", "remove", "vkd3d-"],),
+        ["vkd3d-2.14"]
+    );
+    assert_eq!(
+        complete(
+            root.path(),
+            "fish",
+            &["wineo", "runners", "--all", "remove", "wine"],
+        ),
+        ["wine-tkg"]
+    );
+    assert_eq!(
+        complete(
+            root.path(),
+            "fish",
+            &["wineo", "dxvk", "--all", "remove", "dxvk-"],
+        ),
+        ["dxvk-2.7"]
+    );
+    assert_eq!(
+        complete(
+            root.path(),
+            "fish",
+            &["wineo", "vkd3d", "--all", "remove", "vkd3d-"],
+        ),
+        ["vkd3d-2.14"]
     );
 }
 

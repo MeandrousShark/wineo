@@ -290,6 +290,46 @@ fn check(dir: &Path) -> std::result::Result<Runner, Skipped> {
     Ok(Runner::wine_build(name, wine, wineserver).with_directory(dir))
 }
 
+/// Size of a concrete managed build, in logical file bytes.
+pub fn size(paths: &Paths, name: &str) -> Result<u64> {
+    let (directory, _guard) = removable(paths, name)?;
+    crate::build_removal::directory_size(&directory)
+}
+
+/// Removes an unused managed build and reports bytes and skipped configs.
+pub fn remove(paths: &Paths, name: &str) -> Result<crate::build_removal::Removed> {
+    let directory = removable_directory(paths, name)?;
+    crate::build_removal::remove(
+        paths,
+        &crate::build_lock::Lock::new(paths, crate::build_lock::Kind::Runner, name),
+        &directory,
+    )
+}
+
+fn removable_directory(paths: &Paths, name: &str) -> Result<PathBuf> {
+    if name == Runner::SYSTEM || crate::runner_alias::is_alias(name) {
+        return Err(Error::UnmanagedBuild(name.to_owned()));
+    }
+    let global = GlobalConfig::load(paths)?;
+    let runners = Runners::new(paths, &global)?;
+    crate::build_removal::sweep_best_effort(paths, crate::build_lock::Kind::Runner, runners.root());
+    removable_directory_in(&runners, name)
+}
+
+fn removable_directory_in(runners: &Runners, name: &str) -> Result<PathBuf> {
+    let runner = runners.resolve(name)?;
+    let directory = runners.root().join(runner.name());
+    crate::build_removal::managed(&directory, name)?;
+    Ok(directory)
+}
+
+fn removable(paths: &Paths, name: &str) -> Result<(PathBuf, crate::build_lock::Guard)> {
+    let directory = removable_directory(paths, name)?;
+    let guard = crate::build_lock::shared(paths, crate::build_lock::Kind::Runner, name)?;
+    crate::build_removal::managed(&directory, name)?;
+    Ok((directory, guard))
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;

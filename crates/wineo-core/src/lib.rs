@@ -2,6 +2,7 @@ pub mod art;
 pub mod art_fetch;
 pub mod art_icon;
 pub mod build_lock;
+pub mod build_removal;
 pub mod cancel;
 pub mod clone;
 pub mod components;
