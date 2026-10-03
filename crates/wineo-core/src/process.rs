@@ -345,9 +345,18 @@ fn open_group_members(group: u32) -> Result<Vec<(u32, u64, OwnedFd)>, ()> {
 }
 
 fn read_stat(pid: u32) -> ProcRead {
-    let text = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+    parse_stat_read(fs::read_to_string(format!("/proc/{pid}/stat")))
+}
+
+fn parse_stat_read(read: io::Result<String>) -> ProcRead {
+    let text = match read {
         Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return ProcRead::Gone,
+        Err(err)
+            if err.kind() == io::ErrorKind::NotFound
+                || err.raw_os_error() == Some(Errno::SRCH.raw_os_error()) =>
+        {
+            return ProcRead::Gone;
+        }
         Err(_) => return ProcRead::Unknown,
     };
     let Some(fields) = text
@@ -357,11 +366,21 @@ fn read_stat(pid: u32) -> ProcRead {
         return ProcRead::Unknown;
     };
     let fields: Vec<_> = fields.collect();
-    let parsed = fields
-        .first()
-        .and_then(|field| field.chars().next())
+    let state = fields.first().and_then(|field| field.chars().next());
+    let start_time = fields.get(19).and_then(|field| field.parse::<u64>().ok());
+    // A dead task can remain in /proc briefly with no process group.
+    if matches!(state, Some('X' | 'x'))
+        && fields
+            .get(2)
+            .and_then(|field| field.parse::<i32>().ok())
+            .is_some()
+        && start_time.is_some()
+    {
+        return ProcRead::Gone;
+    }
+    let parsed = state
         .zip(fields.get(2).and_then(|field| field.parse::<u32>().ok()))
-        .zip(fields.get(19).and_then(|field| field.parse::<u64>().ok()));
+        .zip(start_time);
     match parsed {
         Some(((state, group), start_time)) => ProcRead::Found(ProcStat {
             state,
@@ -390,6 +409,52 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn vanished_proc_stat_is_gone_but_unreadable_or_malformed_stat_is_unknown() {
+        for errno in [Errno::NOENT, Errno::SRCH] {
+            assert!(matches!(
+                parse_stat_read(Err(io::Error::from_raw_os_error(errno.raw_os_error()))),
+                ProcRead::Gone
+            ));
+        }
+        assert!(matches!(
+            parse_stat_read(Err(io::Error::from_raw_os_error(
+                Errno::ACCESS.raw_os_error()
+            ))),
+            ProcRead::Unknown
+        ));
+        assert!(matches!(
+            parse_stat_read(Ok("incomplete stat".to_owned())),
+            ProcRead::Unknown
+        ));
+    }
+
+    #[test]
+    fn dead_proc_stat_without_a_group_is_gone_but_a_zombie_keeps_its_identity() {
+        let dead = "55 (wineo) X 0 -1 -1 0 -1 4228108 869 488 0 0 0 0 0 0 20 0 0 0 13843914 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 17 7 0 0 0 0 0 0 0 0 0 0 0 0 9\n";
+        assert!(matches!(
+            parse_stat_read(Ok(dead.to_owned())),
+            ProcRead::Gone
+        ));
+        assert!(matches!(
+            parse_stat_read(Ok(dead.replacen(") X ", ") x ", 1))),
+            ProcRead::Gone
+        ));
+        let zombie = dead.replacen(") X 0 -1", ") Z 0 55", 1);
+        assert!(matches!(
+            parse_stat_read(Ok(zombie)),
+            ProcRead::Found(ProcStat {
+                state: 'Z',
+                group: 55,
+                start_time: 13843914,
+            })
+        ));
+        assert!(matches!(
+            parse_stat_read(Ok("55 (wineo) X 0 -1".to_owned())),
+            ProcRead::Unknown
+        ));
+    }
 
     fn process_group(command: &mut Command) -> &mut Command {
         command

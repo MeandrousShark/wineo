@@ -2694,8 +2694,9 @@ fn a_crashed_proton_installer_is_stopped_through_its_group() {
         "{}",
         stderr(&stopped)
     );
-    wait_for("umu's group to be gone", || {
-        !PathBuf::from(format!("/proc/{group}")).exists()
+    // The orphaned leader may remain a zombie until the system reaps it.
+    wait_for("umu's group to have no live members", || {
+        wineo_core::process::group_has_live_members(group) == Some(false)
     });
     assert!(!f.installer_recorded("hades"));
 }
