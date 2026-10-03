@@ -18,7 +18,9 @@ In the [desktop app](gui.md#snapshots), open Snapshots with Ctrl+5 or an
 environment's **Snapshots...** action. Create and Restore show frozen reviews;
 Delete asks for confirmation and cannot be undone through Trash. Inspection
 and copying can be canceled; publication and the restore swap finish before
-the window closes. Results retain warnings and manual cleanup paths.
+the window closes. Review details and results use selectable text with Copy
+and their own scroll areas, keeping confirmation buttons outside the report.
+Results retain warnings and manual cleanup paths.
 
 Wineo stores each snapshot beside the configured prefix, under
 `<prefix parent>/.wineo-snapshots/<environment>/<label>/`. It contains the

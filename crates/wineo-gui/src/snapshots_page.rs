@@ -14,7 +14,19 @@ use wineo_core::snapshot::{
     self, CreateInspection, RestoreInspection, SnapshotEvent, SnapshotInfo,
 };
 
+use crate::logview::{self, LogView};
 use crate::theme::Palette;
+
+const SNAPSHOT_LIST_HEIGHT: f32 = 180.0;
+const REPORT_HEIGHT: f32 = 220.0;
+const REPORT_ID: &str = "snapshot-report";
+const RESULT_ID: &str = "snapshot-result";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReportKind {
+    Review,
+    Result,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
@@ -28,6 +40,10 @@ pub(crate) enum Event {
     DeleteReview(String),
     RecoverReview,
     ShowConfig(bool),
+    ReportAction(ReportKind, iced::widget::text_editor::Action),
+    ReportScrolled(ReportKind, iced::widget::scrollable::Viewport),
+    CopyReport(ReportKind),
+    FollowReport(ReportKind),
     Confirm,
     Dismiss,
     Cancel,
@@ -127,10 +143,13 @@ pub(crate) struct Page {
     loaded: Option<Loaded>,
     label: String,
     review: Option<Review>,
+    review_report: String,
+    review_log: LogView,
     show_config: bool,
     status: Option<String>,
     error: Option<String>,
     result: Option<String>,
+    result_log: LogView,
     outcome: Option<Outcome>,
     action: Option<Action>,
     generation: u64,
@@ -150,10 +169,13 @@ impl Page {
             loaded: None,
             label: String::new(),
             review: None,
+            review_report: String::new(),
+            review_log: LogView::default(),
             show_config: false,
             status: None,
             error: None,
             result: None,
+            result_log: LogView::default(),
             outcome: None,
             action: None,
             generation: 0,
@@ -208,8 +230,7 @@ impl Page {
             return Task::none();
         }
         self.selected = Some(name);
-        self.review = None;
-        self.show_config = false;
+        self.clear_review();
         self.loaded = None;
         self.error = None;
         self.refresh_environments()
@@ -219,8 +240,7 @@ impl Page {
         match event {
             Event::Back => {
                 if self.review.is_some() && !self.working {
-                    self.review = None;
-                    self.show_config = false;
+                    self.clear_review();
                 } else {
                     self.action = Some(Action::Back);
                 }
@@ -235,13 +255,13 @@ impl Page {
             Event::Label(label) if !self.working => {
                 self.label = label;
                 self.error = None;
-                self.review = None;
+                self.clear_review();
                 Task::none()
             }
             Event::CreateReview if !self.working => self.inspect_create(),
             Event::RestoreReview(label) if !self.working => self.inspect_restore(label),
             Event::DeleteReview(label) if !self.working => {
-                self.review = Some(Review::Delete(label));
+                self.set_review(Review::Delete(label));
                 self.error = None;
                 Task::none()
             }
@@ -251,19 +271,55 @@ impl Page {
                     .as_ref()
                     .is_some_and(|loaded| matches!(loaded.recovery, Recovery::Ready))
                 {
-                    self.review = Some(Review::Recover);
+                    self.set_review(Review::Recover);
                     self.error = None;
                 }
                 Task::none()
             }
             Event::ShowConfig(show) => {
-                self.show_config = show;
+                if self.show_config != show {
+                    self.show_config = show;
+                    self.refresh_review_report();
+                }
+                Task::none()
+            }
+            Event::ReportAction(kind, action) => {
+                let source = self.report_text(kind).to_owned();
+                if self.report_log_mut(kind).perform(action, || source.clone()) {
+                    return logview::snap_to_end(report_id(kind));
+                }
+                Task::none()
+            }
+            Event::ReportScrolled(kind, viewport) => {
+                let source = self.report_text(kind).to_owned();
+                let bounds = viewport.absolute_offset();
+                let content = viewport.content_bounds();
+                let viewport_bounds = viewport.bounds();
+                if self.report_log_mut(kind).scrolled(
+                    bounds.y,
+                    viewport_bounds.height,
+                    content.height,
+                    || source.clone(),
+                ) {
+                    return logview::snap_to_end(report_id(kind));
+                }
+                Task::none()
+            }
+            Event::CopyReport(kind) => {
+                let report = self.report_text(kind).to_owned();
+                let copied = copied_report(self.report_log_mut(kind), &report);
+                iced::clipboard::write(copied)
+            }
+            Event::FollowReport(kind) => {
+                let source = self.report_text(kind).to_owned();
+                if self.report_log_mut(kind).follow(|| source.clone()) {
+                    return logview::snap_to_end(report_id(kind));
+                }
                 Task::none()
             }
             Event::Confirm if !self.working => self.execute_review(),
             Event::Dismiss if !self.working => {
-                self.review = None;
-                self.show_config = false;
+                self.clear_review();
                 Task::none()
             }
             Event::Cancel => {
@@ -310,7 +366,7 @@ impl Page {
                 self.end_work();
                 match result {
                     Ok(review) => {
-                        self.review = Some(review);
+                        self.set_review(review);
                         self.error = None;
                     }
                     Err(error) => self.error = Some(error),
@@ -321,10 +377,10 @@ impl Page {
                 if generation == self.generation && self.working =>
             {
                 self.end_work();
-                self.review = None;
+                self.clear_review();
                 match result {
                     Ok(outcome) => {
-                        self.result = Some(match &outcome {
+                        let result = match &outcome {
                             Outcome::Created(label) => format!("Created snapshot {label}."),
                             Outcome::Restored {
                                 label,
@@ -344,7 +400,8 @@ impl Page {
                             Outcome::Deleted(label) => format!("Deleted snapshot {label}."),
                             Outcome::Recovered => "Rolled back the interrupted restore.".into(),
                             Outcome::Failed => unreachable!(),
-                        });
+                        };
+                        self.set_result(result);
                         self.error = None;
                         self.outcome = Some(outcome);
                     }
@@ -404,6 +461,7 @@ impl Page {
         self.status = Some(status.into());
         self.error = None;
         self.result = None;
+        self.result_log = LogView::default();
         let token = Token::new();
         self.token = Some(token.clone());
         (self.generation, token)
@@ -416,6 +474,50 @@ impl Page {
         self.token = None;
     }
 
+    fn clear_review(&mut self) {
+        self.review = None;
+        self.review_report.clear();
+        self.review_log = LogView::default();
+        self.show_config = false;
+    }
+
+    fn set_review(&mut self, review: Review) {
+        self.review = Some(review);
+        self.show_config = false;
+        self.refresh_review_report();
+    }
+
+    fn refresh_review_report(&mut self) {
+        let Some(review) = &self.review else {
+            self.review_report.clear();
+            self.review_log = LogView::default();
+            return;
+        };
+        self.review_report = review_report(&self.paths, review, self.show_config);
+        self.review_log = LogView::default();
+        let _ = self.review_log.resync(&self.review_report);
+    }
+
+    fn set_result(&mut self, result: String) {
+        self.result = Some(result.clone());
+        self.result_log = LogView::default();
+        let _ = self.result_log.resync(&result);
+    }
+
+    fn report_text(&self, kind: ReportKind) -> &str {
+        match kind {
+            ReportKind::Review => &self.review_report,
+            ReportKind::Result => self.result.as_deref().unwrap_or_default(),
+        }
+    }
+
+    fn report_log_mut(&mut self, kind: ReportKind) -> &mut LogView {
+        match kind {
+            ReportKind::Review => &mut self.review_log,
+            ReportKind::Result => &mut self.result_log,
+        }
+    }
+
     fn inspect_create(&mut self) -> Task<Event> {
         let Some(name) = self.selected.clone() else {
             return Task::none();
@@ -425,7 +527,7 @@ impl Page {
             self.error = Some("Invalid snapshot label: use letters, numbers, - or _.".into());
             return Task::none();
         }
-        self.review = None;
+        self.clear_review();
         let (generation, token) = self.begin_work("Waiting for the prefix, then checking...", true);
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
@@ -462,7 +564,7 @@ impl Page {
         let Some(name) = self.selected.clone() else {
             return Task::none();
         };
-        self.review = None;
+        self.clear_review();
         let (generation, token) = self.begin_work("Waiting for the prefix, then checking...", true);
         let paths = self.paths.clone();
         let (sender, receiver) = unbounded();
@@ -567,6 +669,7 @@ impl Page {
 
     pub(crate) fn view(&self, palette: Palette, busy: bool) -> Element<'_, Event> {
         let enabled = !busy && !self.working;
+        let reviewing = self.review.is_some();
         let mut content = column![text("Snapshots").size(22)].spacing(14);
         content = content.push(
             row![
@@ -593,76 +696,87 @@ impl Page {
         {
             content = content.push(text(problem).color(palette.warning));
         }
-        if let Some(loaded) = &self.loaded {
-            match &loaded.recovery {
-                Recovery::Ready => {
-                    content = content
-                        .push(text("An interrupted restore needs recovery.").color(palette.warning))
-                        .push(
-                            button("Roll back restore")
-                                .on_press_maybe(enabled.then_some(Event::RecoverReview)),
-                        );
-                }
-                Recovery::Invalid(error) => {
-                    content = content.push(
-                        text(format!("Restore recovery marker: {error}")).color(palette.danger),
-                    )
-                }
-                Recovery::None => {}
-            }
-            match &loaded.snapshots {
-                Ok(snapshots) => {
-                    if snapshots.is_empty() {
-                        content = content.push(text("No snapshots yet."));
+        if !reviewing {
+            if let Some(loaded) = &self.loaded {
+                match &loaded.recovery {
+                    Recovery::Ready => {
+                        content = content
+                            .push(
+                                text("An interrupted restore needs recovery.")
+                                    .color(palette.warning),
+                            )
+                            .push(
+                                button("Roll back restore")
+                                    .on_press_maybe(enabled.then_some(Event::RecoverReview)),
+                            );
                     }
-                    for info in snapshots {
+                    Recovery::Invalid(error) => {
                         content = content.push(
-                            row![
-                                text(format!("{}   {}", info.label, info.created_at)).width(Fill),
-                                button("Restore").on_press_maybe(
-                                    enabled.then(|| Event::RestoreReview(info.label.clone()))
-                                ),
-                                button("Delete").on_press_maybe(
-                                    enabled.then(|| Event::DeleteReview(info.label.clone()))
-                                ),
-                            ]
-                            .spacing(8)
-                            .align_y(Center),
-                        );
+                            text(format!("Restore recovery marker: {error}")).color(palette.danger),
+                        )
+                    }
+                    Recovery::None => {}
+                }
+                match &loaded.snapshots {
+                    Ok(snapshots) => {
+                        if snapshots.is_empty() {
+                            content = content.push(text("No snapshots yet."));
+                        } else {
+                            let rows =
+                                snapshots.iter().fold(column![].spacing(8), |rows, info| {
+                                    rows.push(
+                                        row![
+                                            text(format!("{}   {}", info.label, info.created_at))
+                                                .width(Fill),
+                                            button("Restore").on_press_maybe(enabled.then(|| {
+                                                Event::RestoreReview(info.label.clone())
+                                            })),
+                                            button("Delete").on_press_maybe(enabled.then(|| {
+                                                Event::DeleteReview(info.label.clone())
+                                            })),
+                                        ]
+                                        .spacing(8)
+                                        .align_y(Center),
+                                    )
+                                });
+                            content = content.push(scrollable(rows).height(SNAPSHOT_LIST_HEIGHT));
+                        }
+                    }
+                    Err(error) => {
+                        content = content.push(
+                            text(format!("Could not list snapshots: {error}"))
+                                .color(palette.danger),
+                        )
                     }
                 }
-                Err(error) => {
-                    content = content.push(
-                        text(format!("Could not list snapshots: {error}")).color(palette.danger),
-                    )
-                }
             }
-        }
-        if self.loading {
-            content = content.push(text("Loading snapshots..."));
-        }
-        if !self.loading && self.selected.is_none() {
-            content = content.push(text("No Wine environments in this library."));
-        }
-        if self.selected.is_some()
-            && self
-                .loaded
-                .as_ref()
-                .is_some_and(|loaded| matches!(loaded.recovery, Recovery::None))
-        {
-            content = content.push(
-                row![
-                    text_input("Snapshot label", &self.label).on_input(Event::Label),
-                    button("Create snapshot...")
-                        .on_press_maybe(enabled.then_some(Event::CreateReview)),
-                ]
-                .spacing(8),
-            );
+            if self.loading {
+                content = content.push(text("Loading snapshots..."));
+            }
+            if !self.loading && self.selected.is_none() {
+                content = content.push(text("No Wine environments in this library."));
+            }
+            if self.selected.is_some()
+                && self
+                    .loaded
+                    .as_ref()
+                    .is_some_and(|loaded| matches!(loaded.recovery, Recovery::None))
+            {
+                content = content.push(
+                    row![
+                        text_input("Snapshot label", &self.label).on_input(Event::Label),
+                        button("Create snapshot...")
+                            .on_press_maybe(enabled.then_some(Event::CreateReview)),
+                    ]
+                    .spacing(8),
+                );
+            }
         }
         if let Some(review) = &self.review {
             content = content.push(review_view(
-                &self.paths,
                 review,
+                &self.review_report,
+                &self.review_log,
                 self.show_config,
                 palette,
                 enabled,
@@ -680,7 +794,14 @@ impl Page {
                 .push(button("Refresh").on_press_maybe(enabled.then_some(Event::Refresh)));
         }
         if let Some(result) = &self.result {
-            content = content.push(text(result).color(palette.success));
+            content = content.push(text("Result").size(16).color(palette.success));
+            content = content.push(report_panel(
+                &self.result_log,
+                result,
+                ReportKind::Result,
+                palette,
+                72.0,
+            ));
             if result.starts_with("Restored snapshot") {
                 content = content.push(button("Check for problems").on_press(Event::Checkup));
             }
@@ -767,8 +888,9 @@ fn layout_label(layout: ImportLayout) -> &'static str {
 }
 
 fn review_view<'a>(
-    paths: &Paths,
     review: &'a Review,
+    report: &'a str,
+    report_log: &'a LogView,
     show_config: bool,
     palette: Palette,
     enabled: bool,
@@ -778,43 +900,29 @@ fn review_view<'a>(
         Review::Create(review) => {
             content = content
                 .push(text(format!("Create snapshot {}?", review.label)).size(18))
-                .push(text(format!(
-                    "Prefix: {}",
-                    paths.contract_text(&review.prefix.display().to_string())
-                )))
-                .push(text(format!("Runner: {}", review.runner)))
-                .push(text(format!("Layout: {}", layout_label(review.layout))))
-                .push(text(format!(
-                    "Destination: {}",
-                    paths.contract_text(&review.snapshot.display().to_string())
-                )))
                 .push(
                     text("Snapshots need reflinks. External files aren't included.")
                         .color(palette.warning),
-                );
-            for link in &review.external_dependencies {
-                content = content.push(text(format!(
-                    "External link: {} -> {}",
-                    link.source.display(),
-                    link.target.display()
-                )));
-            }
+                )
+                .push(report_panel(
+                    report_log,
+                    report,
+                    ReportKind::Review,
+                    palette,
+                    REPORT_HEIGHT,
+                ));
         }
         Review::Restore(review) => {
             content = content.push(text(format!("Restore {} from {}?", review.name, review.label)).size(18))
-                .push(text(format!("Prefix: {}", paths.contract_text(&review.prefix.display().to_string()))))
-                .push(text(format!("Snapshot: {}", paths.contract_text(&review.snapshot.display().to_string()))))
-                .push(text(format!("Runner: {} -> {}", review.current_runner, review.saved_runner)))
-                .push(text(format!("Layout: {}", layout_label(review.layout))))
                 .push(text("The prefix and config will be replaced. External files, art, and playtime stay in place.").color(palette.warning))
-                .push(button(if show_config { "Hide config changes" } else { "Show config changes" }).on_press(Event::ShowConfig(!show_config)));
-            if show_config {
-                content = content
-                    .push(text("Current config:").size(14))
-                    .push(text(&review.current_config).size(13))
-                    .push(text("Saved config:").size(14))
-                    .push(text(&review.saved_config).size(13));
-            }
+                .push(button(if show_config { "Hide config changes" } else { "Show config changes" }).on_press(Event::ShowConfig(!show_config)))
+                .push(report_panel(
+                    report_log,
+                    report,
+                    ReportKind::Review,
+                    palette,
+                    REPORT_HEIGHT,
+                ));
         }
         Review::Delete(label) => {
             content = content
@@ -843,15 +951,133 @@ fn review_view<'a>(
     container(content).padding(12).width(Fill).into()
 }
 
+fn report_panel<'a>(
+    log: &'a LogView,
+    report: &str,
+    kind: ReportKind,
+    palette: Palette,
+    height: f32,
+) -> Element<'a, Event> {
+    column![
+        logview::controls(
+            log,
+            !report.is_empty(),
+            Event::CopyReport(kind),
+            Event::FollowReport(kind),
+        ),
+        logview::editor(
+            log,
+            palette,
+            height,
+            report_id(kind),
+            move |action| Event::ReportAction(kind, action),
+            move |viewport| Event::ReportScrolled(kind, viewport),
+        ),
+    ]
+    .spacing(6)
+    .into()
+}
+
+fn report_id(kind: ReportKind) -> &'static str {
+    match kind {
+        ReportKind::Review => REPORT_ID,
+        ReportKind::Result => RESULT_ID,
+    }
+}
+
+fn copied_report(log: &mut LogView, report: &str) -> String {
+    log.mark_copied();
+    report.to_owned()
+}
+
+fn review_report(paths: &Paths, review: &Review, show_config: bool) -> String {
+    match review {
+        Review::Create(review) => {
+            let mut report = format!(
+                "Prefix: {}\nRunner: {}\nLayout: {}\nDestination: {}\n",
+                paths.contract_text(&review.prefix.display().to_string()),
+                review.runner,
+                layout_label(review.layout),
+                paths.contract_text(&review.snapshot.display().to_string()),
+            );
+            if review.external_dependencies.is_empty() {
+                report.push_str("External links: none\n");
+            } else {
+                for link in &review.external_dependencies {
+                    report.push_str(&format!(
+                        "External link: {} -> {}\n",
+                        link.source.display(),
+                        link.target.display()
+                    ));
+                }
+            }
+            report
+        }
+        Review::Restore(review) => {
+            let mut report = format!(
+                "Prefix: {}\nSnapshot: {}\nRunner: {} -> {}\nLayout: {}\n",
+                paths.contract_text(&review.prefix.display().to_string()),
+                paths.contract_text(&review.snapshot.display().to_string()),
+                review.current_runner,
+                review.saved_runner,
+                layout_label(review.layout),
+            );
+            if show_config {
+                report.push_str("\nCurrent config:\n");
+                report.push_str(&review.current_config);
+                report.push_str("\n\nSaved config:\n");
+                report.push_str(&review.saved_config);
+                report.push('\n');
+            }
+            report
+        }
+        Review::Delete(_) | Review::Recover => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iced::widget::text_editor::{Action, Edit};
+    use std::sync::Arc;
 
     fn isolated_paths() -> (tempfile::TempDir, Paths) {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().as_os_str().to_owned();
         let paths = Paths::from_lookup(move |key| (key == "HOME").then(|| home.clone())).unwrap();
         (root, paths)
+    }
+
+    #[test]
+    fn large_review_report_stays_complete_read_only_and_bounded() {
+        let report = (0..5_000)
+            .map(|index| format!("entry {index}\n"))
+            .collect::<String>();
+        let mut log = LogView::default();
+        assert!(log.resync(&report));
+
+        assert_eq!(log.content().text(), report);
+        assert!(log.content().text().ends_with("entry 4999\n"));
+        assert!(!log.perform(
+            Action::Edit(Edit::Paste(Arc::new("changed".into()))),
+            || unreachable!(),
+        ));
+        assert_eq!(log.content().text(), report);
+        assert_eq!(copied_report(&mut log, &report), report);
+        assert!(log.copied());
+
+        let editor = logview::editor(
+            &log,
+            crate::theme::Palette::DARK,
+            REPORT_HEIGHT,
+            REPORT_ID,
+            |action| Event::ReportAction(ReportKind::Review, action),
+            |viewport| Event::ReportScrolled(ReportKind::Review, viewport),
+        );
+        assert_eq!(
+            editor.as_widget().size().height,
+            iced::Length::Fixed(REPORT_HEIGHT)
+        );
     }
 
     #[test]

@@ -262,6 +262,12 @@ review **Create snapshot...**. Snapshots require reflinks and exclude external
 files, art, and playtime. The page lists labels and creation times in label
 order, with Restore, Delete, and Refresh.
 
+Snapshot lists and review reports scroll inside bounded areas. During review,
+the list and create form are hidden so the confirmation buttons stay close to
+the report. Review details, expanded config text, and completion results are
+read-only and selectable; use Ctrl+C for a selection or **Copy** for the whole
+report.
+
 Restore reviews the saved and current runner, prefix, and config. Expand
 **Show config changes** to read both exact config texts. Restore replaces the
 prefix and config, preserving art and playtime. The result retains any old

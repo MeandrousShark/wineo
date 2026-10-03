@@ -505,6 +505,14 @@ Ignored real-program/window tests have not been run. GUI tests also cover
 navigation, stale replies, multiple-worker close, source/destination notices,
 repeat copies, and prefix conflicts. No GUI window was opened for smoke tests.
 
+## Acceptance fixes
+
+- On 2026-10-02, maintainer feedback identified long snapshot reports pushing
+  the Create button far down the page. Review details, expanded restore config,
+  and completion results now use bounded, selectable text displays with Copy.
+  The snapshot list has its own scroll area and is hidden during confirmation.
+  All report text remains available without changing the frozen review.
+
 ## Testing and acceptance
 
 - Core fixtures: Wine/Proton snapshot create/restore, exact legacy config
@@ -553,6 +561,9 @@ Stop external launchers before prefix operations.
   targets, prefix contents, art, and playtime, then inspect Restore. Expand
   both config texts and restore. Prefix/config return exactly; art, external
   files, and playtime stay. Check for problems handles stale desktop entries.
+- [ ] Review a snapshot with many external links and expand a large restore
+  config. The report scrolls inside its own panel, confirmation stays nearby,
+  and selection/Ctrl+C and Copy preserve the text. Copy the completion result.
 - [ ] Try a duplicate label, shared/running/locked prefix, and a filesystem
   without reflinks. Cancel inspection or a large copy before finishing. No
   live prefix/config changes occur. Delete asks for confirmation and Refresh
