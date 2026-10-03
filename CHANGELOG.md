@@ -3,6 +3,28 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.22.0 - 2026-10-02
+
+- Snapshots, portable copies, exec, and winetricks in `wineo-gui`
+  ([0041](docs/plans/0041-gui-snapshots-portable-exec-winetricks.md)).
+- The [Snapshots](docs/gui.md#snapshots) page creates, restores, deletes,
+  and recovers snapshots with frozen reviews and cancellable preparation.
+  Reports scroll inside selectable text panels with Copy controls.
+- [Portable copies](docs/gui.md#copy-to-a-portable-folder) support Wine,
+  Proton, and native environments, with destination reviews, progress, and
+  cancellation.
+- [Exec](docs/gui.md#run-program-and-winetricks) runs programs with exact
+  arguments and temporary environment variables, live output, cancellation,
+  and exit results.
+- [Winetricks](docs/gui.md#run-program-and-winetricks) installs missing
+  declared verbs or runs one-off commands, with live logs and Cancel or Force
+  stop. Install missing can build a missing prefix without opening the
+  external picker.
+- Snapshot rollback is a separately confirmed fix in Checkup. CLI
+  `wineo validate --fix` and GUI batch fixes leave it for explicit recovery.
+- Filesystem and tool operations survive navigation; closing waits for
+  active workers and lets publishing or restore swaps finish safely.
+
 ## 0.21.0 - 2026-10-02
 
 - Art and downloads in `wineo-gui`

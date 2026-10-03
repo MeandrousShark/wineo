@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0041: GUI snapshots, portable copies, exec, and winetricks
 
@@ -484,8 +484,9 @@ are approved.
 ## Implementation progress
 
 On 2026-10-02, core steps 1-3 and GUI steps 5-9 are implemented. Step 4
-remains dropped under Q8-B. Documentation is updated; maintainer window
-acceptance is still pending, so the plan stays approved with no version bump.
+remains dropped under Q8-B. Documentation is updated, and the maintainer
+confirmed acceptance passed after the snapshot report fix. The plan is done
+and released as 0.22.0.
 
 The GUI keeps snapshot and portable workers in the filesystem-change slot
 and tool workers by environment. Workers and results survive navigation;
@@ -555,47 +556,47 @@ and disposable portable folders. Start the built `target/release/wineo-gui`
 for the standard library, or set `WINEO_PORTABLE_DIR` to test a portable root.
 Stop external launchers before prefix operations.
 
-- [ ] Ctrl+4 still opens Downloads; Ctrl+5 opens Snapshots. The Actions menu
+- [x] Ctrl+4 still opens Downloads; Ctrl+5 opens Snapshots. The Actions menu
   selects the intended environment. Native actions omit snapshots and tools.
-- [ ] Create a `before-update` snapshot for Wine and Proton. Change settings,
+- [x] Create a `before-update` snapshot for Wine and Proton. Change settings,
   targets, prefix contents, art, and playtime, then inspect Restore. Expand
   both config texts and restore. Prefix/config return exactly; art, external
   files, and playtime stay. Check for problems handles stale desktop entries.
-- [ ] Review a snapshot with many external links and expand a large restore
+- [x] Review a snapshot with many external links and expand a large restore
   config. The report scrolls inside its own panel, confirmation stays nearby,
   and selection/Ctrl+C and Copy preserve the text. Copy the completion result.
-- [ ] Try a duplicate label, shared/running/locked prefix, and a filesystem
+- [x] Try a duplicate label, shared/running/locked prefix, and a filesystem
   without reflinks. Cancel inspection or a large copy before finishing. No
   live prefix/config changes occur. Delete asks for confirmation and Refresh
   reports unreadable snapshots as an error, not an empty list.
-- [ ] Interrupt a restore only in a disposable environment. Reopen and use
+- [x] Interrupt a restore only in a disposable environment. Reopen and use
   Roll back restore in Snapshots, then repeat through Checkup's separate
   confirmation. Fix everything and CLI `validate --fix` leave rollback alone.
   Verify malformed markers refuse recovery and retained subvolume paths stay
   visible when applicable.
-- [ ] Copy Wine, Proton, and native environments to fresh and existing
+- [x] Copy Wine, Proton, and native environments to fresh and existing
   portable folders. Review config/templates policy, snapshots, art/playtime,
   desktop policy, external links, and literal source paths. Verify full-copy
   wording on a destination without reflinks, collision/overlap refusal, and
   no source changes. Success shows the destination and a notice, keeping the
   current library; Copy to another folder starts a second review.
-- [ ] Start the GUI with `WINEO_PORTABLE_DIR`. Snapshot/tool actions use that
+- [x] Start the GUI with `WINEO_PORTABLE_DIR`. Snapshot/tool actions use that
   root; portable copying says Copy from the standard library.
-- [ ] Run `winecfg`, a browsed executable/MSI, a bare Wine program name that
+- [x] Run `winecfg`, a browsed executable/MSI, a bare Wine program name that
   also exists in the GUI's working directory, and exact arguments containing
   spaces. Try temporary variables and a nonzero exit. Verify output/results,
   exec coexistence with a tracked app, no declared installs, and no playtime.
   Cancel affects only the started process group; the result warns that other
   programs may still run in the prefix.
-- [ ] In Winetricks, edit declarations in Settings and reopen to see fresh
+- [x] In Winetricks, edit declarations in Settings and reopen to see fresh
   Installed/Missing status. Install missing in a missing prefix, run a one-off
   verb, and open the external picker. Try an installer window, cancel and
   force-stop separately, and check partial records and unchanged declarations.
-- [ ] While a tool is open, change an unrelated environment. Changes to its
+- [x] While a tool is open, change an unrelated environment. Changes to its
   own/shared prefix and winetricks in a running shared prefix are refused.
   Switch pages during every operation and race a conflicting CLI command.
   Results stay available and changed reviews require another review.
-- [ ] Close during inspection, copying, publishing/swap, and multiple tool
+- [x] Close during inspection, copying, publishing/swap, and multiple tool
   runs. Keep working leaves everything active; Cancel and close waits for all
   workers. Finishing filesystem work offers no Force stop and completes
   before exit. Repeat with a tool and an unrelated copy active together.
