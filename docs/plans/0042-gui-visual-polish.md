@@ -6,7 +6,9 @@ Status: draft
 
 Make the existing desktop app feel finished: give the detail actions a
 consistent shape and clear interaction states, add depth and motion to the
-detail panel, and make the new-environment review easy to scan.
+detail panel, make the new-environment review easy to scan, and carry the
+same visual treatment through Settings, Snapshots, Downloads, Checkup,
+and Trash.
 
 ## Settled by the maintainer
 
@@ -14,8 +16,11 @@ detail panel, and make the new-environment review easy to scan.
   to investigate the flaky crashed Proton installer test first.
 - The maintainer picked compact rounded rectangles for the visual previews
   and requested interactive HTML mockups before implementing in Wineo.
-- Panel motion and review layout await visual feedback; the plan is not
-  approved for implementation yet.
+- On 2026-10-02, the maintainer liked the previews and requested the same
+  design for Settings, Snapshots, Downloads, Checkup, and Trash. The expanded
+  previews use the Grouped direction as their starting point.
+- The expanded app preview awaits feedback; the plan is not approved for
+  implementation yet.
 
 ## Existing foundation
 
@@ -30,6 +35,9 @@ detail panel, and make the new-environment review easy to scan.
 - `flow/new.rs` renders the reviewed environment as a sequence of text rows,
   followed by prerequisite downloads and Create/Back. Core preparation and
   frozen reviews already own validation and creation decisions.
+- Settings already has grouped sections, unsaved edits, Save/Revert, and
+  conflict handling. Snapshots, Downloads, Checkup, and Trash own their
+  review, confirmation, progress, recovery, and result states separately.
 
 ## Choices to settle
 
@@ -84,6 +92,31 @@ Recommendation: A. Use spacing, labels, and muted secondary text for
 hierarchy. Keep warning and prerequisite controls prominent. Rearrange the
 existing review data without recomputing creation decisions in the view.
 
+## Management pages
+
+Apply the selected geometry, palette, surface depth, spacing, and focus
+treatment to the existing pages. The previews keep their current operations
+and use simulated data and actions.
+
+- **Settings:** grouped launch defaults, new-environment defaults, storage,
+  run limits, art switches, environment variables, and key source. Keep the
+  unsaved-edit count and Save/Revert visible. Apply the same treatment to
+  environment settings during implementation.
+- **Snapshots:** environment and label controls, a readable snapshot list,
+  bounded create/restore reviews, config comparison, deletion confirmation,
+  progress, and completion results.
+- **Downloads:** grouped runner and graphics-component lists with their
+  uses, unused-build deletion, release selection, and install progress.
+- **Checkup:** grouped problems and fix choices, check/fix progress, batch
+  results, and a concise healthy state.
+- **Trash:** removed entries, prefix inclusion and retained paths, recovery
+  notices, restore results, and the existing deletion confirmations.
+
+Show populated, empty, busy, and error examples where they apply. Keep long
+values readable and actions reachable at small window sizes. Presentation
+changes must preserve review validity, recovery rules, operation ownership,
+and results when navigating between pages.
+
 ## Implementation sequence
 
 1. **Settle the visual direction.** Record the maintainer's answers above.
@@ -98,7 +131,10 @@ existing review data without recomputing creation decisions in the view.
 4. **Review layout.** Group the existing reviewed fields and warnings,
    handle optional/native fields and long values, and keep Create/Back
    accessible without changing the frozen review or prerequisite flow.
-5. **Review, docs, and acceptance.** Independently review the interactions,
+5. **Management pages.** Apply the shared treatment to Settings, Snapshots,
+   Downloads, Checkup, and Trash. Preserve forms, confirmations, progress,
+   empty/error states, and ongoing work across navigation.
+6. **Review, docs, and acceptance.** Independently review the interactions,
    run the required checks, update `docs/gui.md` and the feature backlog,
    and prepare maintainer acceptance. Release only after acceptance.
 
@@ -119,10 +155,16 @@ existing review data without recomputing creation decisions in the view.
   registration with long paths and missing prerequisites.
 - Confirm the library keeps its scroll position, actions remain responsive,
   animation stops when idle, and no warning or review detail is lost.
+- Check Settings edits, Save/Revert, and conflicts; snapshot create/restore
+  reviews and config comparison; used/unused download rows and installation;
+  Checkup selection and results; and Trash restore, recovery, and deletion
+  confirmations. Verify populated, empty, busy, and error states in both
+  palettes, including long paths and a small window.
 
 ## Scope limits
 
 Theme customization, new library views, library names from desktop entries,
 mouse Back/Forward navigation, store integration, and runner discovery keep
 their own backlog entries. This plan does not change creation, launch, or
-process ownership policy, or redesign every management page.
+process ownership policy, add management operations, or redesign pages
+beyond the existing library, review, and five requested management pages.
