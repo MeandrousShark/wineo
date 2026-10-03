@@ -3,6 +3,15 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.22.1 - 2026-10-02
+
+- Process cleanup handles processes disappearing during a `/proc` scan,
+  including Linux's `ESRCH` and dead tasks with cleared group fields,
+  instead of treating them as inspection failures and leaving an installer
+  unresolved. Permission errors still refuse cleanup.
+- The crashed Proton installer test checks for no live group members,
+  allowing an orphaned zombie leader to wait for the system to reap it.
+
 ## 0.22.0 - 2026-10-02
 
 - Snapshots, portable copies, exec, and winetricks in `wineo-gui`
