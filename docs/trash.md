@@ -64,6 +64,12 @@ An interruption before metadata-copy staging ownership is recorded can leave
 an empty `.wineo-stage-*` directory. Recovery leaves unowned staging directories
 alone rather than risk deleting unrelated data.
 
+Trash records verify saved files and directories by device, inode, and creation
+time. A changed Linux mount ID does not invalidate an entry when those values
+still match. If creation time is unavailable, the mount ID must also match.
+Listing trash does not rewrite its manifests. Restore, prune, and recovery keep
+their identity, content, and current mount-boundary checks.
+
 Trash payloads stay on their existing filesystems; Wineo will not copy a large
 prefix across filesystems to trash it. Portable trash moves with its folder
 only on the same filesystem. Finish pending recovery and restore or prune

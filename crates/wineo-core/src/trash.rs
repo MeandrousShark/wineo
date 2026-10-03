@@ -97,6 +97,20 @@ struct Identity {
     birth: Option<(i64, u32)>,
 }
 
+impl Identity {
+    fn matches(self, current: Self) -> bool {
+        self.device == current.device
+            && self.inode == current.inode
+            && self.birth == current.birth
+            // Without birth time, a changed mount ID could hide inode reuse.
+            && (self.birth.is_some() || self.mount == current.mount)
+    }
+}
+
+fn matches_identity(current: Option<Identity>, saved: Identity) -> bool {
+    current.is_some_and(|current| saved.matches(current))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
@@ -291,11 +305,20 @@ fn identity(path: &Path) -> Result<Option<Identity>> {
 }
 
 fn require(path: &Path, expected: Identity) -> Result<()> {
-    if identity(path)? != Some(expected) {
+    if !matches_identity(identity(path)?, expected) {
         bail!(
             "identity changed or storage unavailable at {}",
             path.display()
         );
+    }
+    Ok(())
+}
+
+fn require_same_mount_as_parent(path: &Path) -> Result<()> {
+    let current = identity(path)?.ok_or_else(|| anyhow!("payload unavailable"))?;
+    let parent = identity(parent(path)?)?.ok_or_else(|| anyhow!("payload storage unavailable"))?;
+    if current.mount != parent.mount {
+        bail!("payload root is a separate mount at {}", path.display());
     }
     Ok(())
 }
@@ -407,7 +430,7 @@ fn markers(paths: &Paths) -> Result<Vec<(PathBuf, PendingMarker)>> {
 fn marker_matches(paths: &Paths, marker: &PendingMarker) -> Result<bool> {
     let (root, physical) = marker_root(paths)?;
     Ok(match (marker.portable_identity, physical) {
-        (Some(saved), Some(current)) => saved == current || marker.root == root,
+        (Some(saved), Some(current)) => saved.matches(current) || marker.root == root,
         (Some(_), None) => marker.root == root,
         (None, None) => paths.portable_root().is_none() && marker.root == root,
         _ => false,
@@ -451,7 +474,7 @@ fn relocated_marker_root(marker: &PendingMarker, candidate: &Path) -> Result<Opt
     };
     let resolved = paths::resolve(candidate);
     for ancestor in resolved.ancestors() {
-        if identity(ancestor)? == Some(saved) {
+        if matches_identity(identity(ancestor)?, saved) {
             return Ok(Some(ancestor.to_owned()));
         }
     }
@@ -583,7 +606,7 @@ fn read_manifest(paths: &Paths, id: &str) -> Result<Manifest> {
     if manifest.version != VERSION
         || manifest.id != id
         || !name::is_valid(&manifest.name)
-        || identity(&dir)? != Some(manifest.entry_identity)
+        || !matches_identity(identity(&dir)?, manifest.entry_identity)
         || manifest.removed_at.parse::<jiff::Timestamp>().is_err()
     {
         bail!(
@@ -656,27 +679,21 @@ fn read_manifest(paths: &Paths, id: &str) -> Result<Manifest> {
             }
         }
         if matches!(payload.kind, Kind::Prefix | Kind::Snapshots) {
-            let base = parent(&expected)?;
-            let allowed = if payload.kind == Kind::Prefix {
-                base.join(".wineo-trash").join(id).join("prefix")
+            let valid = if payload.kind == Kind::Prefix {
+                retained
+                    == parent(&expected)?
+                        .join(".wineo-trash")
+                        .join(id)
+                        .join("prefix")
             } else {
                 let snapshots_parent = parent(&expected)?;
                 let prefix = resolved(paths, manifest.prefix_reference.as_deref().unwrap())?;
                 let prefix_parent = parent(&prefix)?;
-                let prefix_storage = identity(prefix_parent)?
-                    .ok_or_else(|| anyhow!("prefix storage unavailable"))?;
-                let same = payload.source_parent.mount.is_some()
-                    && payload.source_parent.mount == prefix_storage.mount;
-                (if same {
-                    prefix_parent
-                } else {
-                    snapshots_parent
-                })
-                .join(".wineo-trash")
-                .join(id)
-                .join("snapshots")
+                [prefix_parent, snapshots_parent]
+                    .into_iter()
+                    .any(|base| retained == base.join(".wineo-trash").join(id).join("snapshots"))
             };
-            if retained != allowed {
+            if !valid {
                 bail!(
                     "trash manifest claims unrelated retained path: {}",
                     retained.display()
@@ -715,12 +732,16 @@ fn read_manifest(paths: &Paths, id: &str) -> Result<Manifest> {
         let retained = resolved(paths, &config.retained)?;
         let current = identity(&source)?;
         let saved = identity(&retained)?;
-        let bytes = if current == Some(config.identity) {
+        let bytes = if matches_identity(current, config.identity) {
             Some(fs::read(&source)?)
-        } else if saved == Some(retained_identity(config)) && digest(&retained)? == config.digest {
+        } else if matches_identity(saved, retained_identity(config))
+            && digest(&retained)? == config.digest
+        {
             Some(fs::read(&retained)?)
-        } else if config.returned_identity.is_some() && current == config.returned_identity
-            || saved.is_none() && current == Some(retained_identity(config))
+        } else if config
+            .returned_identity
+            .is_some_and(|returned| matches_identity(current, returned))
+            || saved.is_none() && matches_identity(current, retained_identity(config))
         {
             // A returned copy may still be partial. Recovery validates it
             // before changing either side; the config is only parsed once it
@@ -991,6 +1012,7 @@ fn discard_stage(paths: &Paths, stage: &Stage) -> Result<()> {
     let dir = stage_location(paths, stage)?;
     if identity(&dir)?.is_some() {
         require(&dir, stage.identity)?;
+        require_same_mount_as_parent(&dir)?;
         delete_owned(&dir)?;
     }
     Ok(())
@@ -1271,10 +1293,32 @@ fn move_out(paths: &Paths, manifest: &mut Manifest, index: usize) -> Result<()> 
     require(parent(&source)?, payload.source_parent)?;
     require(parent(&destination)?, payload.destination_parent)?;
     require(&source, payload.identity)?;
+    let source_parent =
+        identity(parent(&source)?)?.ok_or_else(|| anyhow!("source storage unavailable"))?;
+    let destination_parent =
+        identity(parent(&destination)?)?.ok_or_else(|| anyhow!("trash storage unavailable"))?;
+    if !payload.source_parent.matches(source_parent)
+        || !payload.destination_parent.matches(destination_parent)
+    {
+        bail!("payload storage changed while moving {}", source.display());
+    }
+    require_same_mount_as_parent(&source)?;
     if identity(&destination)?.is_some() {
         bail!("trash collision at {}", destination.display());
     }
-    let copy = payload.source_parent.mount != payload.destination_parent.mount;
+    let source_mount = source_parent.mount;
+    let destination_mount = destination_parent.mount;
+    if matches!(payload.kind, Kind::Prefix | Kind::Snapshots)
+        && (source_mount.is_none() || source_mount != destination_mount)
+    {
+        bail!(
+            "large payload cannot be moved on its filesystem: {}",
+            source.display()
+        );
+    }
+    let copy = source_mount != destination_mount;
+    manifest.payloads[index].source_parent.mount = source_mount;
+    manifest.payloads[index].destination_parent.mount = destination_mount;
     manifest.payloads[index].step = if copy { Step::Copying } else { Step::Moving };
     write_manifest(paths, manifest)?;
     if copy {
@@ -1627,6 +1671,7 @@ fn verified_retained(path: &Path, payload: &Payload) -> Result<()> {
     // same-mount rename keeps the subvolume inode. Only an actual metadata
     // copy receives a distinct recorded identity.
     require(path, retained_identity(payload))?;
+    require_same_mount_as_parent(path)?;
     if digest(path)? != payload.digest {
         bail!("retained payload changed at {}", path.display());
     }
@@ -1653,11 +1698,15 @@ fn return_payload(
         manifest.payloads[index].return_stage = None;
         write_manifest(paths, manifest)?;
     }
-    if rollback && source == Some(payload.identity) {
+    if rollback && matches_identity(source, payload.identity) {
+        require_same_mount_as_parent(&original)?;
         // Removal may have stopped before its move, or a copied metadata
         // payload may still exist on both sides. The source is authoritative.
         if let Some(remaining) = saved {
-            if payload.copied_identity.is_none() || Some(remaining) != payload.copied_identity {
+            if !payload
+                .copied_identity
+                .is_some_and(|copied| copied.matches(remaining))
+            {
                 bail!("retained copy changed at {}", retained.display());
             }
             verified_retained(&retained, &payload)?;
@@ -1667,9 +1716,10 @@ fn return_payload(
         return write_manifest(paths, manifest);
     }
     if let Some(returned) = payload.returned_identity
-        && source == Some(returned)
+        && matches_identity(source, returned)
     {
         require(&original, returned)?;
+        require_same_mount_as_parent(&original)?;
         if digest(&original)? != payload.digest {
             // A crash during the reserved copy left a partial result. Its
             // identity proves it is our staging, not a new collision.
@@ -1691,7 +1741,8 @@ fn return_payload(
         manifest.payloads[index].step = Step::Returned;
         return write_manifest(paths, manifest);
     }
-    if !rollback && source == Some(retained_identity(&payload)) && saved.is_none() {
+    if !rollback && matches_identity(source, retained_identity(&payload)) && saved.is_none() {
+        require_same_mount_as_parent(&original)?;
         manifest.payloads[index].step = Step::Returned;
         return write_manifest(paths, manifest);
     }
@@ -1713,9 +1764,19 @@ fn return_payload(
         );
     }
     verified_retained(&retained, &payload)?;
+    let source_mount = identity(parent(&original)?)?.and_then(|id| id.mount);
+    let destination_mount = identity(parent(&retained)?)?.and_then(|id| id.mount);
+    if matches!(payload.kind, Kind::Prefix | Kind::Snapshots)
+        && (source_mount.is_none() || source_mount != destination_mount)
+    {
+        bail!(
+            "large payload cannot be moved on its filesystem: {}",
+            retained.display()
+        );
+    }
     manifest.payloads[index].step = Step::Returning;
     write_manifest(paths, manifest)?;
-    if payload.destination_parent.mount == payload.source_parent.mount {
+    if destination_mount == source_mount {
         rename_owned(&retained, &original)?;
         require(&original, retained_identity(&payload))?;
     } else {
@@ -1955,7 +2016,7 @@ fn return_config(paths: &Paths, manifest: &Manifest) -> Result<Option<Environmen
         let Some(found) = identity(path)? else {
             continue;
         };
-        if !identities.contains(&found) || digest(path)? != payload.digest {
+        if !identities.iter().any(|saved| saved.matches(found)) || digest(path)? != payload.digest {
             continue;
         }
         // Hand-edited configs must remain restorable even when they cannot be parsed.
@@ -2093,7 +2154,8 @@ fn prune_locked(paths: &Paths, manifest: &mut Manifest) -> Result<()> {
         }
         let (_, retained) = verify_parents(paths, &payload)?;
         match identity(&retained)? {
-            Some(found) if found == retained_identity(&payload) => {
+            Some(found) if retained_identity(&payload).matches(found) => {
+                require_same_mount_as_parent(&retained)?;
                 manifest.payloads[index].step = Step::Deleting;
                 write_manifest(paths, manifest)?;
                 delete_owned(&retained)?;
@@ -2241,6 +2303,199 @@ mod tests {
             );
             prefix
         }
+    }
+
+    fn drift_identity(saved: &mut Identity) -> bool {
+        let (Some(mount), Some(_)) = (saved.mount, saved.birth) else {
+            return false;
+        };
+        saved.mount = Some(mount + 10_000);
+        true
+    }
+
+    fn drift_manifest(manifest: &mut Manifest) -> bool {
+        let mut supported = drift_identity(&mut manifest.entry_identity);
+        if let Some(identity) = &mut manifest.prefix_identity {
+            supported &= drift_identity(identity);
+        }
+        for payload in &mut manifest.payloads {
+            supported &= drift_identity(&mut payload.identity);
+            supported &= drift_identity(&mut payload.source_parent);
+            supported &= drift_identity(&mut payload.destination_parent);
+            for identity in [&mut payload.copied_identity, &mut payload.returned_identity]
+                .into_iter()
+                .flatten()
+            {
+                supported &= drift_identity(identity);
+            }
+            for stage in [&mut payload.out_stage, &mut payload.return_stage]
+                .into_iter()
+                .flatten()
+            {
+                supported &= drift_identity(&mut stage.identity);
+            }
+        }
+        supported
+    }
+
+    #[test]
+    fn mount_id_drift_preserves_read_only_listing_and_snapshot_restore() {
+        let f = Fixture::new();
+        let prefix = f.wine("game");
+        let snapshots = f.paths.snapshot_root(&prefix, "game");
+        fs::create_dir_all(&snapshots).unwrap();
+        fs::write(snapshots.join("saved"), "snapshot").unwrap();
+        let entry = remove(&f.paths, "game", true).unwrap();
+        let mut manifest = read_manifest(&f.paths, &entry.id).unwrap();
+        if !drift_manifest(&mut manifest) {
+            return;
+        }
+        write_manifest(&f.paths, &manifest).unwrap();
+        let file = entry_dir(&f.paths, &entry.id).unwrap().join(MANIFEST);
+        let before = fs::read(&file).unwrap();
+
+        assert_eq!(list(&f.paths).unwrap().len(), 1);
+        assert_eq!(fs::read(&file).unwrap(), before);
+        restore(&f.paths, &entry.id).unwrap();
+        assert!(prefix.join("system.reg").exists());
+        assert_eq!(fs::read(snapshots.join("saved")).unwrap(), b"snapshot");
+    }
+
+    #[test]
+    fn mount_id_drift_preserves_prune_ownership_checks() {
+        let f = Fixture::new();
+        f.config("game", "kind = 'native'\n");
+        let entry = remove(&f.paths, "game", false).unwrap();
+        let mut manifest = read_manifest(&f.paths, &entry.id).unwrap();
+        if !drift_manifest(&mut manifest) {
+            return;
+        }
+        write_manifest(&f.paths, &manifest).unwrap();
+
+        let review = review_prune(&f.paths, Selector::Id(&entry.id)).unwrap();
+        let outcomes = prune_reviewed(&f.paths, &review);
+        assert!(outcomes[0].1.is_ok(), "{:?}", outcomes[0].1);
+        assert!(list(&f.paths).unwrap().is_empty());
+    }
+
+    #[test]
+    fn mount_id_drift_without_birth_time_fails_closed() {
+        let saved = Identity {
+            device: 5,
+            inode: 9,
+            mount: Some(1),
+            birth: None,
+        };
+        assert!(!saved.matches(Identity {
+            mount: Some(2),
+            ..saved
+        }));
+        let with_birth = Identity {
+            birth: Some((1, 0)),
+            ..saved
+        };
+        assert!(with_birth.matches(Identity {
+            mount: Some(2),
+            ..with_birth
+        }));
+        assert!(!with_birth.matches(Identity {
+            inode: 10,
+            mount: Some(2),
+            ..with_birth
+        }));
+        assert!(!with_birth.matches(Identity {
+            birth: Some((2, 0)),
+            mount: Some(2),
+            ..with_birth
+        }));
+    }
+
+    #[test]
+    fn mount_id_drift_keeps_relocated_portable_marker_recoverable() {
+        let root = tempfile::tempdir().unwrap();
+        let from = root.path().join("from");
+        let to = root.path().join("to");
+        let home = root.path().to_owned();
+        let paths = Paths::select(
+            move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+            Some(&from),
+        )
+        .unwrap();
+        fs::create_dir_all(paths.environments_dir()).unwrap();
+        fs::write(paths.environment_config("game"), "kind = 'native'\n").unwrap();
+        let entry = remove(&paths, "game", false).unwrap();
+        let mut manifest = read_manifest(&paths, &entry.id).unwrap();
+        start_marker(&paths, &manifest, Intent::Restore).unwrap();
+        if !drift_manifest(&mut manifest) {
+            return;
+        }
+        write_manifest(&paths, &manifest).unwrap();
+        let (path, mut marker) = marker_for(&paths, &entry.id).unwrap().unwrap();
+        if !drift_identity(marker.portable_identity.as_mut().unwrap())
+            || !drift_identity(&mut marker.metadata_identity)
+            || !drift_manifest(&mut marker.manifest)
+        {
+            return;
+        }
+        publish_marker(&path, &marker).unwrap();
+        fs::rename(&from, &to).unwrap();
+        let home = root.path().to_owned();
+        let moved = Paths::select(
+            move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+            Some(&to),
+        )
+        .unwrap();
+
+        assert_eq!(pending_entries(&moved).unwrap().len(), 1);
+        recover(&moved, &entry.id).unwrap();
+        assert!(pending_entries(&moved).unwrap().is_empty());
+        restore(&moved, &entry.id).unwrap();
+        assert_eq!(
+            fs::read(moved.environment_config("game")).unwrap(),
+            b"kind = 'native'\n"
+        );
+    }
+
+    #[test]
+    fn mount_id_drift_recovers_a_recorded_copy_stage() {
+        let Some(config_root) = tempfile::tempdir_in("/dev/shm").ok() else {
+            return;
+        };
+        if fs::metadata(config_root.path()).unwrap().dev()
+            == fs::metadata(env!("CARGO_MANIFEST_DIR")).unwrap().dev()
+        {
+            return;
+        }
+        let f = Fixture::new();
+        let home = f._root.path().to_owned();
+        let config = config_root.path().to_owned();
+        let paths = Paths::from_lookup(move |key| match key {
+            "HOME" => Some(OsString::from(home.as_os_str())),
+            "XDG_CONFIG_HOME" => Some(OsString::from(config.as_os_str())),
+            _ => None,
+        })
+        .unwrap();
+        fs::create_dir_all(paths.environments_dir()).unwrap();
+        let source = paths.environment_config("game");
+        fs::write(&source, "kind = 'native'\n").unwrap();
+        set_trash_failpoint(Some("out.after_stage_write"));
+        assert!(remove(&paths, "game", false).is_err());
+        let (path, mut marker) = markers(&paths).unwrap().pop().unwrap();
+        let id = marker.manifest.id.clone();
+        let mut manifest = read_manifest(&paths, &id).unwrap();
+        assert!(manifest.payloads[0].out_stage.is_some());
+        if !drift_manifest(&mut manifest)
+            || !drift_identity(&mut marker.metadata_identity)
+            || !drift_manifest(&mut marker.manifest)
+        {
+            return;
+        }
+        write_manifest(&paths, &manifest).unwrap();
+        publish_marker(&path, &marker).unwrap();
+
+        recover(&paths, &id).unwrap();
+        assert_eq!(fs::read(source).unwrap(), b"kind = 'native'\n");
+        assert!(pending_entries(&paths).unwrap().is_empty());
     }
 
     #[test]

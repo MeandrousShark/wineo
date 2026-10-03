@@ -201,6 +201,23 @@ beyond the existing library, review, and five requested management pages.
   panel labels at their natural width. The original HTML preview is unchanged
   and saved under `docs/design/` beside the reusable style guide.
 
+## Fixes during acceptance
+
+- Investigated the installed app's "invalid or unsupported trash manifest"
+  error. Existing entries had matching device, inode, and creation time but
+  different current Linux mount IDs. Trash identity checks now accept that
+  change while retaining replacement detection and current mount-boundary
+  checks. The same error appeared in the isolated GUI fixture and should have
+  been investigated before implementation was handed over for acceptance.
+- Five regressions cover changed mount IDs in listing, snapshot restore,
+  prune, portable marker recovery, and copy-stage recovery, plus conservative
+  refusal when creation time is absent. Independent QA and all 43 Trash tests
+  passed. The full suite passed with 2,023 tests, 0 failures, and 16 ignored;
+  formatting and Clippy with warnings denied passed.
+- Release CLI and GUI builds passed. A read-only check with the new CLI listed
+  all four existing entries from the affected installation and verified that
+  their manifest bytes were unchanged.
+
 ## Maintainer acceptance
 
 Implementation is ready for acceptance. Keep this plan approved until the
