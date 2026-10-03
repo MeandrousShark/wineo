@@ -61,22 +61,7 @@ impl<'a, Message: Clone + 'a> Chips<'a, Message> {
 }
 
 pub(crate) fn secondary(palette: Palette, status: button::Status) -> button::Style {
-    let disabled = matches!(status, button::Status::Disabled);
-    button::Style {
-        background: Some(
-            if matches!(status, button::Status::Hovered) {
-                palette.border
-            } else {
-                palette.surface
-            }
-            .into(),
-        ),
-        text_color: palette
-            .foreground
-            .scale_alpha(if disabled { 0.4 } else { 1.0 }),
-        border: border::rounded(6).width(1).color(palette.border),
-        ..button::Style::default()
-    }
+    crate::ui::secondary_style(palette, status)
 }
 
 /// Plain text that reads as a link, for escape hatches that shouldn't
@@ -96,7 +81,7 @@ pub(crate) fn link(palette: Palette, status: button::Status) -> button::Style {
 pub(crate) fn input_style(palette: Palette, status: text_input::Status) -> text_input::Style {
     text_input::Style {
         background: palette.background.into(),
-        border: border::rounded(6).width(1).color(
+        border: border::rounded(crate::ui::CONTROL_RADIUS).width(1).color(
             if matches!(status, text_input::Status::Focused { .. }) {
                 palette.primary
             } else {

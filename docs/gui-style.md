@@ -1,0 +1,93 @@
+# GUI style guide
+
+This is Wineo's approved visual direction from
+[plan 0042](plans/0042-gui-visual-polish.md). Use it when extending the desktop
+app so new pages feel like part of the same application. The maintainer approved
+the Grouped HTML preview on 2026-10-03, with smaller posters for implementation.
+The [original HTML preview](design/0042-ui-polish-preview.html) is saved unchanged
+as a visual reference. Its Grouped variant is approved; the Cards alternative
+and oversized preview posters are not implementation requirements.
+
+## Layout and hierarchy
+
+- Keep the Library at the top of the sidebar and management destinations at
+  the bottom. Use a restrained tinted selection, readable text, and small
+  status badges.
+- Library posters are 160 x 240 px with a 2:3 aspect ratio and 16 px gaps.
+  Titles and compact state/playtime metadata sit beneath the art. Artwork
+  should support browsing without dominating the window.
+- Use a 420 px docked detail panel with a distinct surface, thin border, and
+  subtle shadow. Keep hero art bounded and actions easy to reach.
+- Page titles use 22 px semibold text. Section headings use 16 px semibold;
+  body and controls use 14 px; supporting labels use 12-13 px muted text.
+- Use 24 px outer page padding, 16 px inside grouped surfaces, and 8-12 px
+  between related controls. Related rows share one surface with subtle
+  separators rather than becoming individual cards.
+- Round grouped surfaces by 12 px and controls by 8 px. Use 1 px borders.
+  Avoid large empty areas, repeated framing, or decoration that competes with
+  the content.
+
+## Colors and controls
+
+`crates/wineo-gui/src/theme.rs` owns the semantic palette. Reuse its tokens;
+do not copy literal preview colors into page implementations.
+
+| Token | Dark | Light | Role |
+|---|---|---|---|
+| background | `#16171b` | `#f6f7f9` | Window and page backdrop |
+| surface | `#1f2126` | `#ffffff` | Grouped sections and panel |
+| border | `#2c2f36` | `#d9dde4` | Quiet separation |
+| foreground | `#e6e6e9` | `#20242b` | Main text |
+| muted | `#8b8f98` | `#59616d` | Supporting text |
+| primary | `#6d8cff` | `#3158ca` | Main action and focus |
+| success | `#3ecf6e` | `#198044` | Healthy and completed states |
+| warning | `#e5a34a` | `#a65d12` | Attention and recovery |
+| danger | `#e5534b` | `#b93431` | Stop, destructive actions, errors |
+
+Buttons are compact rounded rectangles, 32 px high with 8 px corners and
+consistent horizontal padding. Play, Stop, and Log share an 82 px width.
+Primary actions use a filled accent; secondary actions use a neutral surface
+and border. Destructive actions use danger only where their consequence calls
+for it. Keep text labels visible.
+
+Hover, press, disabled, and keyboard focus must be visibly distinct in both
+palettes. Use a clear focus outline without changing button geometry. Disabled
+controls keep readable labels and never accept input. Preserve existing action
+availability, focus order, shortcuts, and operation ownership.
+
+## Panel motion
+
+Opening and closing use a restrained slide from the right with a fade over
+about 160 ms. Reserve the full docked width while transitioning; do not reflow
+the library every frame. Animate only while a transition is active.
+
+Selecting another environment while open replaces content without replaying
+the entrance. Rapid reversals continue from the current position. Leaving the
+Library finishes motion immediately. Logical close and log cleanup happen
+immediately; a closing or invisible panel must not receive input.
+
+## Reviews and management pages
+
+New-environment reviews use one grouped summary with Application, Source,
+and Runtime sections as applicable. Render the frozen reviewed data directly.
+Warnings and missing prerequisites stay prominent below the summary. Long
+paths stay complete and wrap or scroll. Keep Back/Create outside the scrolling
+summary so they remain reachable in a short window.
+
+Settings uses grouped sections and a fixed Save/Revert footer with the edit
+count. Snapshots uses compact rows and bounded, complete reviews. Downloads
+groups builds by component and keeps uses and progress visible. Checkup groups
+issues and fix choices, with concise healthy and result states. Trash keeps
+prefix inclusion, retained paths, recovery notices, and confirmations readable.
+
+Keep populated, empty, busy, and error states consistent. Status includes text,
+not just color. Preserve confirmations, recovery rules, conflicts, and ongoing
+operations when navigating. Sample names and operations from the HTML mockup
+are examples; the actual application's existing data and behavior take priority.
+
+## Review checklist
+
+Check light and dark palettes, mouse and keyboard focus, long paths, and a
+small window. Preserve scroll position and stable widget-tree paths. Ensure
+footers stay reachable, grouped content scrolls, and animations stop when idle.
+New visual directions need maintainer approval before replacing these rules.

@@ -15,6 +15,7 @@ mod keys;
 mod library;
 mod logview;
 mod panel;
+mod panel_motion;
 mod picker;
 mod portable_page;
 mod removal;
@@ -30,6 +31,7 @@ mod tools_navigation;
 mod tools_page;
 mod trash_page;
 mod trash_work;
+mod ui;
 mod wheel;
 mod worker;
 
@@ -52,8 +54,8 @@ use crate::library::{ArtFile, ArtIdentity, Card, load_library};
 use crate::panel::{LOG_ID, LogBuffer, PanelError};
 use crate::theme::Palette;
 
-pub(crate) const CARD_WIDTH: f32 = 180.0;
-const CARD_ROW: f32 = 330.0;
+pub(crate) const CARD_WIDTH: f32 = 160.0;
+const CARD_ROW: f32 = 300.0;
 pub(crate) const GAP: f32 = 16.0;
 const SCROLL_ID: &str = "library";
 const SEARCH_ID: &str = "library-search";
@@ -70,6 +72,7 @@ pub(crate) struct App {
     cards: Vec<Card>,
     pub(crate) selected: Option<String>,
     panel_open: bool,
+    panel_motion: panel_motion::PanelMotion,
     pub(crate) target: Option<String>,
     card_click_target: Option<(String, Option<String>)>,
     pub(crate) hovered: Option<String>,
@@ -205,6 +208,7 @@ pub(crate) enum Message {
     Window(window::Event),
     ThemeChanged(iced::theme::Mode),
     SpinnerTick(Instant),
+    PanelTick(u64, Instant),
     Key(keyboard::Key, keyboard::Modifiers, iced::event::Status),
     KeyWithFocus(
         keyboard::Key,
@@ -269,6 +273,7 @@ impl App {
             cards: Vec::new(),
             selected: None,
             panel_open: false,
+            panel_motion: panel_motion::PanelMotion::default(),
             target: None,
             card_click_target: None,
             hovered: None,
@@ -448,6 +453,14 @@ impl App {
         } else {
             Subscription::none()
         };
+        let panel_motion = if !self.panel_hidden() && self.panel_motion.active() {
+            let generation = self.panel_motion.generation();
+            window::frames()
+                .with(generation)
+                .map(|(generation, now)| Message::PanelTick(generation, now))
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
             iced::time::every(Duration::from_secs(2)).map(|_| Message::Refresh),
             iced::system::theme_changes().map(Message::ThemeChanged),
@@ -462,6 +475,7 @@ impl App {
                 _ => None,
             }),
             spinner,
+            panel_motion,
             idle,
             if self.toast.is_some() || self.feature_notice.is_some() {
                 iced::time::every(Duration::from_millis(100)).map(Message::ToastTick)
@@ -471,6 +485,7 @@ impl App {
         ])
     }
     fn update(&mut self, message: Message) -> Task<Message> {
+        let panel_was_open = self.panel_open;
         if self
             .feature_notice
             .as_ref()
@@ -558,12 +573,16 @@ impl App {
                     self.close_panel();
                     Task::none()
                 } else {
+                    let was_open = self.panel_open;
                     self.close_log();
                     if self.selected.as_deref() != Some(&name) {
                         self.close_checkup();
                     }
                     self.selected = Some(name.clone());
                     self.panel_open = true;
+                    if !was_open {
+                        self.panel_motion.open(Instant::now());
+                    }
                     self.target = self
                         .cards
                         .iter()
@@ -783,7 +802,7 @@ impl App {
             }
             Message::Scrolled(viewport) => {
                 self.viewport_width =
-                    viewport.bounds().width + if self.panel_open { 420.0 } else { 0.0 };
+                    viewport.bounds().width + if self.panel_reserved() { 420.0 } else { 0.0 };
                 self.viewport_height = viewport.bounds().height;
                 let columns = self.columns();
                 let rows = self.filtered().len().div_ceil(columns);
@@ -829,6 +848,12 @@ impl App {
             Message::SpinnerTick(now) => {
                 if self.spinning() {
                     self.spinner_angle = spinner::angle(self.spinner_start, now);
+                }
+                Task::none()
+            }
+            Message::PanelTick(generation, now) => {
+                if self.section == sidebar::Section::Library {
+                    self.panel_motion.tick(generation, now);
                 }
                 Task::none()
             }
@@ -1078,6 +1103,19 @@ impl App {
                 }
             }
         };
+        if !panel_was_open && self.panel_open {
+            self.panel_motion.open(Instant::now());
+        }
+        if self.panel_motion.active() && self.panel_hidden() {
+            self.panel_motion.snap(self.panel_open);
+        }
+        let task = if panel_was_open && !self.panel_open {
+            task.chain(iced::advanced::widget::operate(
+                iced::advanced::widget::operation::focusable::unfocus(),
+            ))
+        } else {
+            task
+        };
         if self.closing && !self.foreground_busy() {
             task.chain(iced::exit())
         } else {
@@ -1176,7 +1214,11 @@ impl App {
             self.close_checkup();
         }
         self.selected = Some(name.clone());
+        let was_open = self.panel_open;
         self.panel_open = true;
+        if !was_open {
+            self.panel_motion.open(Instant::now());
+        }
         self.target = self
             .cards
             .iter()
@@ -1251,8 +1293,21 @@ impl App {
             .collect()
     }
     fn columns(&self) -> usize {
-        let width = self.viewport_width - if self.panel_open { 420.0 } else { 0.0 };
+        let width = self.viewport_width - if self.panel_reserved() { 420.0 } else { 0.0 };
         ((width - 32.0 + GAP) / (CARD_WIDTH + GAP)).floor().max(1.0) as usize
+    }
+    fn panel_reserved(&self) -> bool {
+        self.section == sidebar::Section::Library && self.panel_motion.reserved()
+    }
+    fn panel_hidden(&self) -> bool {
+        self.section != sidebar::Section::Library
+            || self.settings.is_some()
+            || self.art_page.is_some()
+            || self.tool_page.is_some()
+            || self.portable_page.is_some()
+            || self.flow.is_some()
+            || self.removal.is_some()
+            || self.close_prompt
     }
     fn load_visible_art(&mut self) -> Task<Message> {
         let columns = self.columns();
@@ -2111,6 +2166,103 @@ mod tests {
         assert!(app.operation.as_ref().is_some_and(|operation| {
             operation.name == "game" && operation.kind == OperationKind::Start
         }));
+    }
+
+    #[test]
+    fn closing_panel_cancels_log_before_motion_finishes() {
+        let mut app = app();
+        app.cards = vec![card("game", State::Inactive, 0)];
+        let _ = app.update(Message::Select("game".into()));
+        let opened = app.panel_motion.generation();
+        let _ = app.update(Message::PanelTick(
+            opened,
+            Instant::now() + Duration::from_millis(200),
+        ));
+        assert!(app.panel_motion.interactive());
+        let token = Token::new();
+        app.log_token = Some(token.clone());
+        app.log_view = true;
+
+        let _ = app.update(Message::ClosePanel);
+        assert!(!app.panel_open);
+        assert!(!app.log_view);
+        assert!(token.is_canceled());
+        assert!(app.panel_reserved());
+        assert!(!app.panel_motion.interactive());
+        let closing = app.panel_motion.generation();
+        let _ = app.update(Message::PanelTick(
+            closing,
+            Instant::now() + Duration::from_millis(200),
+        ));
+        assert!(!app.panel_reserved());
+    }
+
+    #[test]
+    fn changing_selection_does_not_replay_panel_entrance() {
+        let mut app = app();
+        app.cards = vec![
+            card("one", State::Inactive, 0),
+            card("two", State::Inactive, 0),
+        ];
+        let _ = app.update(Message::Select("one".into()));
+        let opened = app.panel_motion.generation();
+        let _ = app.update(Message::PanelTick(
+            opened,
+            Instant::now() + Duration::from_millis(200),
+        ));
+        let _ = app.update(Message::Select("two".into()));
+        assert_eq!(app.selected.as_deref(), Some("two"));
+        assert_eq!(app.panel_motion.generation(), opened);
+        assert!(app.panel_motion.interactive());
+    }
+
+    #[test]
+    fn leaving_library_finishes_motion_and_ignores_stale_tick() {
+        let mut app = app();
+        app.cards = vec![card("game", State::Inactive, 0)];
+        let _ = app.update(Message::Select("game".into()));
+        let stale = app.panel_motion.generation();
+        assert!(app.panel_motion.active());
+        let _ = app.update(Message::Section(sidebar::Section::Trash));
+        assert!(!app.panel_motion.active());
+        let _ = app.update(Message::PanelTick(
+            stale,
+            Instant::now() + Duration::from_secs(1),
+        ));
+        assert_eq!(app.panel_motion.progress(), 1.0);
+        let _ = app.update(Message::Section(sidebar::Section::Library));
+        assert!(app.panel_motion.interactive());
+    }
+
+    #[test]
+    fn checkup_from_a_closed_panel_starts_its_presentation() {
+        let mut app = app();
+        app.cards = vec![card("game", State::Inactive, 0)];
+        let _ = app.update(Message::Checkup(checkup::Event::Open(
+            checkup::Scope::Environment("game".into()),
+        )));
+        assert!(app.panel_open);
+        assert!(app.panel_reserved());
+        assert!(app.panel_motion.active());
+        let opened = app.panel_motion.generation();
+        let _ = app.update(Message::PanelTick(
+            opened,
+            Instant::now() + Duration::from_millis(200),
+        ));
+        assert!(app.panel_motion.interactive());
+    }
+
+    #[test]
+    fn opening_a_flow_finishes_hidden_panel_motion() {
+        let mut app = app();
+        app.cards = vec![card("game", State::Inactive, 0)];
+        let _ = app.update(Message::Select("game".into()));
+        assert!(app.panel_motion.active());
+        let _ = app.update(Message::Add);
+        assert!(app.flow.is_some());
+        assert!(app.panel_hidden());
+        assert!(!app.panel_motion.active());
+        assert_eq!(app.panel_motion.progress(), 1.0);
     }
 
     #[test]

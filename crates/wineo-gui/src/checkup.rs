@@ -2,12 +2,14 @@ use std::sync::Arc;
 
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{button, checkbox, column, row, scrollable, text};
-use iced::{Center, Element, Task};
+use iced::{Center, Element, Fill, Task};
 use wineo_core::cancel::Token;
 use wineo_core::validate::{Fix, Level, Problem, Report};
 use wineo_core::winetricks::WinetricksEvent;
 
 use crate::removal::Change as RunningChange;
+use crate::theme::Palette;
+use crate::ui::{secondary_button, section, section_heading};
 use crate::{App, Message, checkup_work, focus_button, spinner};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -792,7 +794,7 @@ impl App {
         let running = self
             .checkup_change()
             .is_some_and(|change| change.scope == scope);
-        let mut body = column![].spacing(10);
+        let mut body = column![].spacing(16);
         if let Some(outcome) = &results.outcome {
             for (line, level) in outcome.lines(results.fixed) {
                 body = body.push(text(line).color(match level {
@@ -812,21 +814,30 @@ impl App {
                 .align_y(Center),
             );
         } else if let Some(error) = &results.error {
-            body = body.push(text(error).color(palette.danger));
+            body = body.push(section(text(error).color(palette.danger), palette));
         } else if let Some(report) = &results.report {
-            body = body.push(text(scope_summary(report, &scope)));
+            body = body.push(section(
+                column![
+                    section_heading("Summary", palette),
+                    text(scope_summary(report, &scope))
+                ]
+                .spacing(8),
+                palette,
+            ));
             for (group_index, (group, problems)) in groups(report, &scope).into_iter().enumerate() {
+                let mut issue_rows = column![].spacing(8);
                 if scope == Scope::Global {
                     let heading = group.heading(&self.paths);
-                    body = if let Some(name) = group.environment() {
-                        body.push(control(
+                    issue_rows = if let Some(name) = group.environment() {
+                        issue_rows.push(control(
                             heading,
                             scope.id(&format!("heading-{group_index}")),
                             self.cards.iter().any(|card| card.name == name),
                             Event::Environment(name.to_owned()),
+                            palette,
                         ))
                     } else {
-                        body.push(text(heading))
+                        issue_rows.push(text(heading).size(16).color(palette.foreground))
                     };
                 }
                 for (index, problem) in problems {
@@ -834,21 +845,30 @@ impl App {
                         Level::Error => ("x", palette.danger),
                         Level::Warning => ("!", palette.warning),
                     };
-                    body = body
-                        .push(row![text(marker).color(color), text(&problem.message)].spacing(8));
+                    issue_rows = issue_rows.push(
+                        row![
+                            text(marker).color(color),
+                            text(&problem.message)
+                                .width(Fill)
+                                .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                        ]
+                        .spacing(8),
+                    );
                     if let Some(fix) = &problem.fix {
                         if let Fix::RecoverSnapshot { environment } = fix {
                             let allowed = !running
                                 && !self.management_busy()
                                 && !self.tool_prefix_busy(environment);
-                            body = body.push(control(
+                            issue_rows = issue_rows.push(control(
                                 "Roll back restore".into(),
                                 scope.id(&format!("fix-{index}")),
                                 allowed,
                                 Event::ReviewRecovery(scope.clone(), fix.clone()),
+                                palette,
                             ));
                             if let Some(reason) = self.tool_reason(environment) {
-                                body = body.push(text(reason).size(12).color(palette.muted));
+                                issue_rows =
+                                    issue_rows.push(text(reason).size(12).color(palette.muted));
                             }
                             continue;
                         }
@@ -856,7 +876,7 @@ impl App {
                         let event = Event::Toggle(scope.clone(), fix.clone(), !checked);
                         let toggle_scope = scope.clone();
                         let toggle_fix = fix.clone();
-                        body = body.push(focus_button::control(
+                        issue_rows = issue_rows.push(focus_button::control(
                             checkbox(checked)
                                 .label(fix.label())
                                 .on_toggle_maybe((!running).then_some(move |checked| {
@@ -873,29 +893,35 @@ impl App {
                         ));
                     }
                 }
+                body = body.push(section(issue_rows, palette));
             }
         }
         let count = results.selected().len();
         if let Some(Fix::RecoverSnapshot { environment }) = &results.recovery_confirm {
-            body = body.push(text(format!("Roll back the interrupted restore for {environment}?")))
-                .push(text("This restores the old prefix and config. The rollback must finish before closing.").color(palette.warning))
-                .push(row![
-                    control("Cancel".into(), scope.id("recover-cancel"), true, Event::DismissRecovery(scope.clone())),
-                    control("Roll back restore".into(), scope.id("recover-confirm"), !self.management_busy() && !self.tool_prefix_busy(environment), Event::ConfirmRecovery(scope.clone())),
-                ].spacing(8));
+            body = body.push(section(column![
+                section_heading("Recover interrupted restore", palette),
+                text(format!("Roll back the interrupted restore for {environment}?")),
+                text("This restores the old prefix and config. The rollback must finish before closing.").color(palette.warning),
+                row![
+                    control("Cancel".into(), scope.id("recover-cancel"), true, Event::DismissRecovery(scope.clone()), palette),
+                    control("Roll back restore".into(), scope.id("recover-confirm"), !self.management_busy() && !self.tool_prefix_busy(environment), Event::ConfirmRecovery(scope.clone()), palette),
+                ].spacing(8)
+            ].spacing(8), palette));
         }
         let mut controls = row![
             control(
                 format!("Fix {}", plural(count, "problem", "problems")),
                 scope.id("apply"),
                 self.checkup_can_fix(results),
-                Event::Fix(scope.clone())
+                Event::Fix(scope.clone()),
+                palette
             ),
             control(
                 "Check again".into(),
                 scope.id("check"),
                 true,
-                Event::Check(scope.clone())
+                Event::Check(scope.clone()),
+                palette
             ),
         ]
         .spacing(8);
@@ -905,11 +931,15 @@ impl App {
                 scope.id("back"),
                 true,
                 Event::Back(scope),
+                palette,
             ));
         }
-        body = body.push(controls);
+        body = body.push(section(controls, palette));
         if let Some(change) = &self.change {
-            body = body.push(text(change.reason()).size(12).color(palette.muted));
+            body = body.push(section(
+                text(change.reason()).size(12).color(palette.muted),
+                palette,
+            ));
         }
         scrollable(body).height(iced::Fill).into()
     }
@@ -941,14 +971,14 @@ impl App {
             scope.id("cancel"),
             !change.noncancellable,
             Event::Cancel,
+            palette,
         )]
         .spacing(8);
         if change.install.is_some() {
             let message = Message::Checkup(Event::OpenInstallLog(scope.clone()));
             controls = controls.push(focus_button::control(
-                button("Install log")
+                secondary_button("Install log", palette)
                     .on_press(message.clone())
-                    .padding([6, 12])
                     .into(),
                 true,
                 scope.id("log"),
@@ -960,17 +990,30 @@ impl App {
     }
 }
 
-fn control(label: String, id: String, enabled: bool, event: Event) -> Element<'static, Message> {
+fn control(
+    label: String,
+    id: String,
+    enabled: bool,
+    event: Event,
+    palette: Palette,
+) -> Element<'static, Message> {
     let message = Message::Checkup(event);
-    focus_button::control(
-        button(text(label))
-            .on_press_maybe(enabled.then_some(message.clone()))
-            .padding([6, 12])
-            .into(),
-        enabled,
-        id,
-        message,
-    )
+    let color = if id.ends_with("-apply") {
+        Some(palette.primary)
+    } else if label == "Roll back restore" {
+        Some(palette.warning)
+    } else {
+        None
+    };
+    let button = button(text(label))
+        .height(crate::ui::BUTTON_HEIGHT)
+        .padding([0, 12])
+        .on_press_maybe(enabled.then_some(message.clone()))
+        .style(move |_, status| match color {
+            Some(color) => crate::ui::accent_style(color, palette.foreground, status),
+            None => crate::ui::secondary_style(palette, status),
+        });
+    focus_button::control(button.into(), enabled, id, message)
 }
 
 fn plural(count: usize, one: &str, many: &str) -> String {

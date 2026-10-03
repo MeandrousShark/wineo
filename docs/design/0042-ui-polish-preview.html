@@ -1,0 +1,2871 @@
+<div id="wineo-ui-polish" aria-label="Shared Wineo preview settings">
+  <style>
+    #wineo-ui-polish {
+      color-scheme: light dark;
+      font: 13px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: light-dark(#20242b, #e6e6e9);
+    }
+
+    #wineo-ui-polish,
+    #wineo-ui-polish * {
+      box-sizing: border-box;
+    }
+
+    #wineo-ui-polish .wineo-window {
+      --wineo-bg: light-dark(#f6f7f9, #16171b);
+      --wineo-surface: light-dark(#ffffff, #1f2126);
+      --wineo-surface-raised: light-dark(#ffffff, #24262c);
+      --wineo-soft: light-dark(#eef0f4, #25272d);
+      --wineo-border: light-dark(#d9dde4, #2c2f36);
+      --wineo-text: light-dark(#20242b, #e6e6e9);
+      --wineo-muted: light-dark(#59616d, #8b8f98);
+      --wineo-primary: light-dark(#3158ca, #6d8cff);
+      --wineo-primary-ink: light-dark(#ffffff, #12182c);
+      --wineo-success: light-dark(#198044, #3ecf6e);
+      --wineo-warning: light-dark(#a65d12, #e5a34a);
+      --wineo-danger: light-dark(#b93431, #e5534b);
+      --wineo-shadow: light-dark(0 12px 32px rgb(27 34 49 / 11%), 0 14px 36px rgb(0 0 0 / 32%));
+      color-scheme: light dark;
+      color: var(--wineo-text);
+      background: var(--wineo-bg);
+      border: 1px solid var(--wineo-border);
+      border-radius: 14px;
+      box-shadow: var(--wineo-shadow);
+      display: grid;
+      grid-template-columns: 188px minmax(0, 1fr);
+      height: 708px;
+      min-width: 0;
+      overflow: hidden;
+      position: relative;
+      width: 100%;
+    }
+
+    #wineo-ui-polish .wineo-window[data-theme="light"] {
+      color-scheme: light;
+      --wineo-bg: #f6f7f9;
+      --wineo-surface: #ffffff;
+      --wineo-surface-raised: #ffffff;
+      --wineo-soft: #eef0f4;
+      --wineo-border: #d9dde4;
+      --wineo-text: #20242b;
+      --wineo-muted: #59616d;
+      --wineo-primary: #3158ca;
+      --wineo-success: #198044;
+      --wineo-warning: #a65d12;
+      --wineo-danger: #b93431;
+      --wineo-shadow: 0 12px 32px rgb(27 34 49 / 11%);
+    }
+
+    #wineo-ui-polish .wineo-window[data-theme="dark"] {
+      color-scheme: dark;
+      --wineo-bg: #16171b;
+      --wineo-surface: #1f2126;
+      --wineo-surface-raised: #24262c;
+      --wineo-soft: #25272d;
+      --wineo-border: #2c2f36;
+      --wineo-text: #e6e6e9;
+      --wineo-muted: #8b8f98;
+      --wineo-primary: #6d8cff;
+      --wineo-success: #3ecf6e;
+      --wineo-warning: #e5a34a;
+      --wineo-danger: #e5534b;
+      --wineo-shadow: 0 14px 36px rgb(0 0 0 / 32%);
+    }
+
+    #wineo-ui-polish .wineo-sidebar {
+      background: var(--wineo-surface);
+      border-right: 1px solid var(--wineo-border);
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      min-width: 0;
+      padding: 20px 12px 12px;
+    }
+
+    #wineo-ui-polish .wineo-brand {
+      align-items: center;
+      display: flex;
+      gap: 10px;
+      padding: 0 8px;
+    }
+
+    #wineo-ui-polish .wineo-mark {
+      align-items: center;
+      background: var(--wineo-primary);
+      border-radius: 9px;
+      color: var(--wineo-primary-ink);
+      display: inline-flex;
+      font-size: 15px;
+      font-weight: 700;
+      height: 30px;
+      justify-content: center;
+      letter-spacing: -1px;
+      width: 30px;
+    }
+
+    #wineo-ui-polish .wineo-brand-name {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+
+    #wineo-ui-polish .wineo-nav {
+      display: grid;
+      gap: 4px;
+    }
+
+    #wineo-ui-polish .wineo-nav-bottom {
+      margin-top: auto;
+    }
+
+    #wineo-ui-polish button,
+    #wineo-ui-polish input,
+    #wineo-ui-polish select {
+      color: inherit;
+      font: inherit;
+    }
+
+    #wineo-ui-polish .wineo-nav-item,
+    #wineo-ui-polish .wineo-action,
+    #wineo-ui-polish .wineo-inline-action,
+    #wineo-ui-polish .wineo-add-button,
+    #wineo-ui-polish .wineo-primary-action,
+    #wineo-ui-polish .wineo-close,
+    #wineo-ui-polish .wineo-back,
+    #wineo-ui-polish .wineo-log-back {
+      align-items: center;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      display: inline-flex;
+      gap: 8px;
+      justify-content: center;
+      min-height: 32px;
+      padding: 0 10px;
+      text-align: left;
+      transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 90ms ease;
+    }
+
+    #wineo-ui-polish .wineo-nav-item {
+      background: transparent;
+      color: var(--wineo-muted);
+      justify-content: flex-start;
+      width: 100%;
+    }
+
+    #wineo-ui-polish .wineo-nav-item[aria-current="page"] {
+      background: color-mix(in srgb, var(--wineo-primary) 12%, transparent);
+      color: var(--wineo-primary);
+      font-weight: 500;
+    }
+
+    #wineo-ui-polish .wineo-nav-item:hover,
+    #wineo-ui-polish .wineo-action:hover,
+    #wineo-ui-polish .wineo-inline-action:hover,
+    #wineo-ui-polish .wineo-back:hover,
+    #wineo-ui-polish .wineo-log-back:hover {
+      background: var(--wineo-soft);
+      color: var(--wineo-text);
+    }
+
+    #wineo-ui-polish .wineo-add-button,
+    #wineo-ui-polish .wineo-primary-action {
+      background: var(--wineo-primary);
+      color: var(--wineo-primary-ink);
+      font-weight: 500;
+    }
+
+    #wineo-ui-polish .wineo-add-button:hover,
+    #wineo-ui-polish .wineo-primary-action:hover {
+      filter: brightness(1.08);
+    }
+
+    #wineo-ui-polish .wineo-nav-item:active,
+    #wineo-ui-polish .wineo-action:active,
+    #wineo-ui-polish .wineo-inline-action:active,
+    #wineo-ui-polish .wineo-add-button:active,
+    #wineo-ui-polish .wineo-primary-action:active,
+    #wineo-ui-polish .wineo-close:active,
+    #wineo-ui-polish .wineo-back:active,
+    #wineo-ui-polish .wineo-log-back:active {
+      transform: translateY(1px);
+    }
+
+    #wineo-ui-polish button:focus-visible,
+    #wineo-ui-polish input:focus-visible,
+    #wineo-ui-polish select:focus-visible {
+      outline: 2px solid var(--wineo-primary);
+      outline-offset: 2px;
+    }
+
+    #wineo-ui-polish button:disabled {
+      cursor: not-allowed;
+      filter: saturate(0.45);
+      opacity: 0.58;
+      transform: none;
+    }
+
+    #wineo-ui-polish .wineo-icon {
+      align-items: center;
+      display: inline-flex;
+      flex: 0 0 16px;
+      height: 16px;
+      justify-content: center;
+      width: 16px;
+    }
+
+    #wineo-ui-polish .wineo-icon i {
+      display: inline-flex;
+      height: 16px;
+      width: 16px;
+    }
+
+    #wineo-ui-polish .wineo-main {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      min-width: 0;
+      overflow: hidden;
+      position: relative;
+    }
+
+    #wineo-ui-polish .wineo-toolbar {
+      align-items: center;
+      background: var(--wineo-bg);
+      border-bottom: 1px solid var(--wineo-border);
+      display: flex;
+      gap: 16px;
+      justify-content: space-between;
+      min-height: 68px;
+      padding: 12px 22px;
+    }
+
+    #wineo-ui-polish .wineo-toolbar-title {
+      min-width: 0;
+    }
+
+    #wineo-ui-polish .wineo-toolbar h1 {
+      font-size: 19px;
+      font-weight: 600;
+      letter-spacing: -0.35px;
+      line-height: 1.25;
+      margin: 0;
+    }
+
+    #wineo-ui-polish .wineo-toolbar p {
+      color: var(--wineo-muted);
+      font-size: 12px;
+      margin: 3px 0 0;
+    }
+
+    #wineo-ui-polish .wineo-toolbar-actions {
+      align-items: center;
+      display: flex;
+      flex: 0 0 auto;
+      gap: 8px;
+    }
+
+    #wineo-ui-polish .wineo-search {
+      align-items: center;
+      background: var(--wineo-surface);
+      border: 1px solid var(--wineo-border);
+      border-radius: 8px;
+      color: var(--wineo-muted);
+      display: flex;
+      gap: 7px;
+      height: 32px;
+      max-width: 210px;
+      min-width: 150px;
+      padding: 0 9px;
+    }
+
+    #wineo-ui-polish .wineo-search input {
+      background: transparent;
+      border: 0;
+      min-width: 0;
+      outline: 0;
+      width: 100%;
+    }
+
+    #wineo-ui-polish .wineo-search input::placeholder {
+      color: var(--wineo-muted);
+      opacity: 0.9;
+    }
+
+    #wineo-ui-polish .wineo-content {
+      min-height: 0;
+      overflow: auto;
+      overflow-x: hidden;
+      padding: 20px 22px 24px;
+      position: relative;
+      scrollbar-color: var(--wineo-border) transparent;
+      scrollbar-width: thin;
+    }
+
+    #wineo-ui-polish .wineo-content[data-panel-open="true"] {
+      padding-right: 442px;
+    }
+
+    #wineo-ui-polish .wineo-library-view,
+    #wineo-ui-polish .wineo-review-view,
+    #wineo-ui-polish .wineo-created-view {
+      min-width: 0;
+    }
+
+    #wineo-ui-polish .wineo-library-heading {
+      align-items: baseline;
+      display: flex;
+      gap: 9px;
+      margin: 0 0 14px;
+    }
+
+    #wineo-ui-polish .wineo-library-heading h2,
+    #wineo-ui-polish .wineo-section-title,
+    #wineo-ui-polish .wineo-panel-section-title {
+      font-size: 13px;
+      font-weight: 600;
+      margin: 0;
+    }
+
+    #wineo-ui-polish .wineo-library-heading span {
+      color: var(--wineo-muted);
+      font-size: 12px;
+    }
+
+    #wineo-ui-polish .wineo-game-grid {
+      display: grid;
+      gap: 13px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    #wineo-ui-polish .wineo-game-card {
+      background: transparent;
+      border: 1px solid var(--wineo-border);
+      border-radius: 10px;
+      min-width: 0;
+      overflow: hidden;
+      padding: 0;
+      text-align: left;
+      transition: border-color 120ms ease, background-color 120ms ease, transform 100ms ease;
+    }
+
+    #wineo-ui-polish button.wineo-game-card:hover {
+      background: var(--wineo-surface);
+      border-color: color-mix(in srgb, var(--wineo-primary) 56%, var(--wineo-border));
+      transform: translateY(-1px);
+    }
+
+    #wineo-ui-polish button.wineo-game-card[aria-pressed="true"] {
+      border-color: var(--wineo-primary);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--wineo-primary) 28%, transparent);
+    }
+
+    #wineo-ui-polish .wineo-art {
+      aspect-ratio: 2 / 3;
+      background-color: var(--wineo-soft);
+      display: block;
+      overflow: hidden;
+      position: relative;
+      width: 100%;
+    }
+
+    #wineo-ui-polish .wineo-art::before,
+    #wineo-ui-polish .wineo-art::after {
+      content: "";
+      position: absolute;
+    }
+
+    #wineo-ui-polish .wineo-art-hades {
+      background:
+        radial-gradient(ellipse at 74% 34%, rgb(255 202 111 / 94%) 0 5%, transparent 6%),
+        radial-gradient(ellipse at 68% 48%, rgb(230 83 75 / 78%) 0 17%, transparent 18%),
+        linear-gradient(135deg, #361b25 0%, #7b2b32 42%, #e0773e 100%);
+    }
+
+    #wineo-ui-polish .wineo-art-hades::before {
+      background: linear-gradient(150deg, #f3bc75, #cc4e3a 68%, #421e2a);
+      border-radius: 48% 52% 8% 8%;
+      bottom: -20%;
+      height: 86%;
+      left: 48%;
+      transform: rotate(15deg);
+      width: 30%;
+    }
+
+    #wineo-ui-polish .wineo-art-hades::after {
+      border: 2px solid rgb(255 224 175 / 58%);
+      border-radius: 50%;
+      height: 60%;
+      left: 61%;
+      top: 13%;
+      transform: rotate(-18deg);
+      width: 13%;
+    }
+
+    #wineo-ui-polish .wineo-art-hollow {
+      background: radial-gradient(ellipse at 50% 38%, #79859c 0 5%, transparent 6%), linear-gradient(145deg, #192632, #43536d 52%, #12171d);
+    }
+
+    #wineo-ui-polish .wineo-art-hollow::before {
+      background: #e5e7e9;
+      border-radius: 45% 45% 35% 35%;
+      bottom: -13%;
+      height: 76%;
+      left: 43%;
+      width: 16%;
+    }
+
+    #wineo-ui-polish .wineo-art-hollow::after {
+      border: 2px solid #e5e7e9;
+      border-bottom-color: transparent;
+      border-radius: 50% 50% 0 0;
+      height: 32%;
+      left: 34%;
+      top: 18%;
+      width: 34%;
+    }
+
+    #wineo-ui-polish .wineo-art-dead-cells {
+      background: linear-gradient(135deg, #214b48, #1c282e 54%, #11191d);
+    }
+
+    #wineo-ui-polish .wineo-art-dead-cells::before {
+      background: linear-gradient(165deg, #c0e36e, #72b65b 62%, #356e57);
+      border-radius: 42% 58% 46% 54%;
+      height: 72%;
+      left: 42%;
+      top: 18%;
+      transform: rotate(-18deg);
+      width: 16%;
+    }
+
+    #wineo-ui-polish .wineo-art-dead-cells::after {
+      border: 2px solid rgb(230 243 181 / 82%);
+      border-radius: 50%;
+      height: 58%;
+      left: 60%;
+      top: 22%;
+      width: 12%;
+    }
+
+    #wineo-ui-polish .wineo-game-info {
+      align-items: flex-start;
+      display: flex;
+      gap: 10px;
+      justify-content: space-between;
+      min-width: 0;
+      padding: 9px 10px 10px;
+    }
+
+    #wineo-ui-polish .wineo-game-info-copy {
+      min-width: 0;
+    }
+
+    #wineo-ui-polish .wineo-game-name {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #wineo-ui-polish .wineo-game-meta,
+    #wineo-ui-polish .wineo-game-hours {
+      color: var(--wineo-muted);
+      display: block;
+      font-size: 11px;
+      margin-top: 2px;
+    }
+
+    #wineo-ui-polish .wineo-status {
+      align-items: center;
+      background: var(--wineo-soft);
+      border-radius: 6px;
+      color: var(--wineo-muted);
+      display: inline-flex;
+      flex: 0 0 auto;
+      font-size: 11px;
+      gap: 6px;
+      line-height: 20px;
+      min-height: 20px;
+      padding: 0 7px;
+      white-space: nowrap;
+    }
+
+    #wineo-ui-polish .wineo-status::before {
+      background: currentColor;
+      border-radius: 50%;
+      content: "";
+      height: 6px;
+      width: 6px;
+    }
+
+    #wineo-ui-polish .wineo-status[data-tone="success"] {
+      background: color-mix(in srgb, var(--wineo-success) 12%, var(--wineo-surface));
+      color: var(--wineo-success);
+    }
+
+    #wineo-ui-polish .wineo-status[data-tone="warning"] {
+      background: color-mix(in srgb, var(--wineo-warning) 13%, var(--wineo-surface));
+      color: var(--wineo-warning);
+    }
+
+    #wineo-ui-polish .wineo-status[data-tone="danger"] {
+      background: color-mix(in srgb, var(--wineo-danger) 12%, var(--wineo-surface));
+      color: var(--wineo-danger);
+    }
+
+    #wineo-ui-polish .wineo-detail-panel {
+      background: var(--wineo-surface);
+      border-left: 1px solid var(--wineo-border);
+      bottom: 0;
+      box-shadow: -12px 0 26px rgb(0 0 0 / 9%);
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      overflow: hidden;
+      position: absolute;
+      right: 0;
+      top: 0;
+      transition: transform var(--wineo-motion, 280ms) cubic-bezier(0.22, 1, 0.36, 1), opacity var(--wineo-motion, 280ms) ease, visibility var(--wineo-motion, 280ms) ease;
+      visibility: visible;
+      width: 420px;
+      z-index: 2;
+    }
+
+    #wineo-ui-polish .variant-grouped .wineo-detail-panel[aria-hidden="true"] {
+      opacity: 0;
+      transform: translateX(22px);
+      visibility: hidden;
+    }
+
+    #wineo-ui-polish .variant-cards .wineo-detail-panel[aria-hidden="true"] {
+      opacity: 0;
+      transform: translateX(0);
+      visibility: hidden;
+    }
+
+    #wineo-ui-polish .wineo-panel-header {
+      align-items: center;
+      border-bottom: 1px solid var(--wineo-border);
+      display: flex;
+      justify-content: space-between;
+      min-height: 48px;
+      padding: 8px 14px 8px 18px;
+    }
+
+    #wineo-ui-polish .wineo-panel-header strong {
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    #wineo-ui-polish .wineo-close {
+      background: transparent;
+      color: var(--wineo-muted);
+      padding: 0;
+      width: 32px;
+    }
+
+    #wineo-ui-polish .wineo-close:hover {
+      background: var(--wineo-soft);
+      color: var(--wineo-text);
+    }
+
+    #wineo-ui-polish .wineo-panel-scroll {
+      min-height: 0;
+      overflow: auto;
+      padding: 16px 18px 20px;
+      scrollbar-color: var(--wineo-border) transparent;
+      scrollbar-width: thin;
+    }
+
+    #wineo-ui-polish .wineo-panel-hero {
+      display: block;
+      margin-bottom: 14px;
+      min-width: 0;
+    }
+
+    #wineo-ui-polish .wineo-panel-art {
+      border: 1px solid var(--wineo-border);
+      border-radius: 9px;
+      display: block;
+      height: 126px;
+      overflow: hidden;
+      width: 100%;
+    }
+
+    #wineo-ui-polish .wineo-art-logo {
+      bottom: 9px;
+      color: #fff7e8;
+      font-size: 23px;
+      font-weight: 700;
+      left: 13px;
+      letter-spacing: 2px;
+      line-height: 1;
+      position: absolute;
+      text-shadow: 0 2px 7px rgb(0 0 0 / 55%);
+      z-index: 1;
+    }
+
+    #wineo-ui-polish .wineo-panel-hero-copy {
+      padding: 10px 1px 0;
+    }
+
+    #wineo-ui-polish .wineo-panel-game-title {
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -0.35px;
+      margin: 0 0 2px;
+    }
+
+    #wineo-ui-polish .wineo-muted {
+      color: var(--wineo-muted);
+    }
+
+    #wineo-ui-polish .wineo-caption {
+      color: var(--wineo-muted);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    #wineo-ui-polish .wineo-panel-runrow {
+      align-items: center;
+      border-bottom: 1px solid var(--wineo-border);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 0 0 15px;
+    }
+
+    #wineo-ui-polish .wineo-play-button,
+    #wineo-ui-polish .wineo-stop-button,
+    #wineo-ui-polish .wineo-log-button {
+      align-items: center;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      display: inline-flex;
+      flex: 0 0 82px;
+      gap: 7px;
+      height: 32px;
+      justify-content: center;
+      padding: 0 11px;
+      transition: background-color 120ms ease, border-color 120ms ease, filter 120ms ease, transform 90ms ease;
+      width: 82px;
+    }
+
+    #wineo-ui-polish .wineo-play-button {
+      background: var(--wineo-primary);
+      color: var(--wineo-primary-ink);
+      font-weight: 500;
+      min-width: 82px;
+    }
+
+    #wineo-ui-polish .wineo-stop-button,
+    #wineo-ui-polish .wineo-log-button {
+      background: transparent;
+      border-color: var(--wineo-border);
+      color: var(--wineo-text);
+    }
+
+    #wineo-ui-polish .wineo-play-button:hover {
+      filter: brightness(1.08);
+    }
+
+    #wineo-ui-polish .wineo-stop-button:hover,
+    #wineo-ui-polish .wineo-log-button:hover {
+      background: var(--wineo-soft);
+    }
+
+    #wineo-ui-polish .wineo-play-button:active,
+    #wineo-ui-polish .wineo-stop-button:active,
+    #wineo-ui-polish .wineo-log-button:active {
+      transform: translateY(1px);
+    }
+
+    #wineo-ui-polish .wineo-play-button:disabled {
+      filter: none;
+    }
+
+    #wineo-ui-polish .wineo-stat-grid {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin: 14px 0 18px;
+    }
+
+    #wineo-ui-polish .wineo-stat {
+      background: var(--wineo-soft);
+      border-radius: 8px;
+      min-width: 0;
+      padding: 9px 10px;
+    }
+
+    #wineo-ui-polish .wineo-stat-label {
+      color: var(--wineo-muted);
+      display: block;
+      font-size: 11px;
+      margin-bottom: 2px;
+    }
+
+    #wineo-ui-polish .wineo-stat-value {
+      display: block;
+      font-size: 12px;
+      font-weight: 500;
+      overflow-wrap: anywhere;
+    }
+
+    #wineo-ui-polish .wineo-panel-section {
+      border-top: 1px solid var(--wineo-border);
+      padding: 14px 0 12px;
+    }
+
+    #wineo-ui-polish .wineo-panel-section-title {
+      margin-bottom: 9px;
+    }
+
+    #wineo-ui-polish .wineo-panel-row {
+      align-items: baseline;
+      display: flex;
+      gap: 12px;
+      justify-content: space-between;
+      margin: 7px 0;
+      min-width: 0;
+    }
+
+    #wineo-ui-polish .wineo-panel-row dt {
+      color: var(--wineo-muted);
+      flex: 0 0 auto;
+    }
+
+    #wineo-ui-polish .wineo-panel-row dd {
+      margin: 0;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      text-align: right;
+    }
+
+    #wineo-ui-polish .wineo-field-label {
+      color: var(--wineo-muted);
+      display: block;
+      font-size: 11px;
+      margin-bottom: 5px;
+    }
+
+    #wineo-ui-polish .wineo-field-control {
+      background: var(--wineo-surface);
+      border: 1px solid var(--wineo-border);
+      border-radius: 8px;
+      color: var(--wineo-text);
+      font-size: 12px;
+      height: 32px;
+      max-width: 100%;
+      padding: 0 9px;
+      width: 100%;
+    }
+
+    #wineo-ui-polish .wineo-target-field {
+      margin: 9px 0 2px;
+    }
+
+    #wineo-ui-polish .wineo-tertiary-row {
+      border-top: 1px solid var(--wineo-border);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding-top: 10px;
+    }
+
+    #wineo-ui-polish .wineo-action,
+    #wineo-ui-polish .wineo-inline-action {
+      background: transparent;
+      color: var(--wineo-muted);
+      font-size: 12px;
+      min-height: 30px;
+      padding: 0 8px;
+    }
+
+    #wineo-ui-polish .wineo-panel-status {
+      color: var(--wineo-muted);
+      font-size: 11px;
+      margin: 9px 0 0;
+      min-height: 15px;
+    }
+
+    #wineo-ui-polish .wineo-log-view h2 {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 0 0 5px;
+    }
+
+    #wineo-ui-polish .wineo-log-lines {
+      background: var(--wineo-bg);
+      border: 1px solid var(--wineo-border);
+      border-radius: 8px;
+      font: 11px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 14px 0;
+      overflow-wrap: anywhere;
+      padding: 11px 12px;
+    }
+
+    #wineo-ui-polish .wineo-log-line {
+      display: block;
+    }
+
+    #wineo-ui-polish .wineo-review-view,
+    #wineo-ui-polish .wineo-created-view {
+      margin: 0 auto;
+      max-width: 750px;
+    }
+
+    #wineo-ui-polish .wineo-content[data-screen="review"] {
+      overflow: hidden;
+    }
+
+    #wineo-ui-polish .wineo-review-view {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    #wineo-ui-polish .wineo-review-topline {
+      align-items: center;
+      display: flex;
+      flex-shrink: 0;
+      gap: 12px;
+      margin-bottom: 15px;
+    }
+
+    #wineo-ui-polish .wineo-back {
+      background: transparent;
+      color: var(--wineo-muted);
+      flex: 0 0 auto;
+      padding: 0 8px;
+    }
+
+    #wineo-ui-polish .wineo-review-heading h2,
+    #wineo-ui-polish .wineo-created-heading h2 {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.4px;
+      margin: 0;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    #wineo-ui-polish .wineo-review-heading p,
+    #wineo-ui-polish .wineo-created-heading p {
+      color: var(--wineo-muted);
+      font-size: 12px;
+      margin: 3px 0 0;
+    }
+
+    #wineo-ui-polish .wineo-review-surface {
+      background: var(--wineo-surface);
+      border: 1px solid var(--wineo-border);
+      border-radius: 10px;
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 17px 18px 16px;
+    }
+
+    #wineo-ui-polish .variant-cards .wineo-review-surface {
+      background: transparent;
+      border: 0;
+      padding: 0;
+    }
+
+    #wineo-ui-polish .wineo-review-section {
+      margin-bottom: 17px;
+    }
+
+    #wineo-ui-polish .variant-cards .wineo-review-section {
+      background: var(--wineo-surface);
+      border: 1px solid var(--wineo-border);
+      border-radius: 10px;
+      margin-bottom: 10px;
+      padding: 13px 15px 14px;
+    }
+
+    #wineo-ui-polish .wineo-review-section:last-of-type {
+      margin-bottom: 14px;
+    }
+
+    #wineo-ui-polish .wineo-section-title {
+      margin-bottom: 12px;
+    }
+
+    #wineo-ui-polish .wineo-form-grid {
+      display: grid;
+      gap: 12px 14px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    #wineo-ui-polish .wineo-form-field {
+      min-width: 0;
+    }
+
+    #wineo-ui-polish .wineo-review-value {
+      background: var(--wineo-bg);
+      border: 1px solid var(--wineo-border);
+      border-radius: 8px;
+      line-height: 1.4;
+      min-height: 34px;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      padding: 7px 10px;
+      white-space: normal;
+    }
+
+    #wineo-ui-polish .wineo-prerequisite-actions {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 7px;
+    }
+
+    #wineo-ui-polish .wineo-form-field.wide {
+      grid-column: 1 / -1;
+    }
+
+    #wineo-ui-polish .wineo-form-control {
+      background: var(--wineo-bg);
+      border: 1px solid var(--wineo-border);
+      border-radius: 8px;
+      color: var(--wineo-text);
+      height: 34px;
+      min-width: 0;
+      padding: 0 10px;
+      width: 100%;
+    }
+
+    #wineo-ui-polish .wineo-form-control[readonly] {
+      color: var(--wineo-muted);
+    }
+
+    #wineo-ui-polish .wineo-form-hint {
+      color: var(--wineo-muted);
+      font-size: 11px;
+      margin: 5px 0 0;
+      overflow-wrap: anywhere;
+    }
+
+    #wineo-ui-polish .wineo-notice {
+      border-radius: 8px;
+      font-size: 12px;
+      line-height: 1.45;
+      margin: 8px 0 0;
+      padding: 9px 11px;
+    }
+
+    #wineo-ui-polish .wineo-notice-warning {
+      background: color-mix(in srgb, var(--wineo-warning) 11%, var(--wineo-surface));
+      border: 1px solid color-mix(in srgb, var(--wineo-warning) 24%, var(--wineo-border));
+      color: var(--wineo-text);
+    }
+
+    #wineo-ui-polish .wineo-notice-error {
+      background: color-mix(in srgb, var(--wineo-danger) 10%, var(--wineo-surface));
+      border: 1px solid color-mix(in srgb, var(--wineo-danger) 25%, var(--wineo-border));
+      color: var(--wineo-text);
+    }
+
+    #wineo-ui-polish .wineo-notice-title {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 1px;
+    }
+
+    #wineo-ui-polish .wineo-review-actions {
+      align-items: center;
+      background: var(--wineo-bg);
+      display: flex;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+      margin-top: 14px;
+      padding: 10px 0;
+    }
+
+    #wineo-ui-polish .wineo-created-surface {
+      background: var(--wineo-surface);
+      border: 1px solid var(--wineo-border);
+      border-radius: 10px;
+      margin-top: 16px;
+      padding: 20px;
+    }
+
+    #wineo-ui-polish .wineo-created-heading {
+      align-items: flex-start;
+      display: flex;
+      gap: 12px;
+    }
+
+    #wineo-ui-polish .wineo-created-icon {
+      align-items: center;
+      background: color-mix(in srgb, var(--wineo-success) 13%, var(--wineo-surface));
+      border-radius: 8px;
+      color: var(--wineo-success);
+      display: inline-flex;
+      flex: 0 0 34px;
+      height: 34px;
+      justify-content: center;
+      width: 34px;
+    }
+
+    #wineo-ui-polish .wineo-created-note {
+      background: var(--wineo-soft);
+      border-radius: 8px;
+      color: var(--wineo-muted);
+      font-size: 12px;
+      margin: 18px 0;
+      padding: 10px 12px;
+    }
+
+    #wineo-ui-polish [hidden] {
+      display: none !important;
+    }
+
+    #wineo-ui-polish .variant-cards .wineo-detail-panel {
+      box-shadow: 0 0 22px rgb(0 0 0 / 11%);
+      transition: opacity var(--wineo-cards-motion, 120ms) ease, visibility var(--wineo-cards-motion, 120ms) ease;
+    }
+
+    @media (max-width: 900px) {
+      #wineo-ui-polish .wineo-window {
+        grid-template-columns: 68px minmax(0, 1fr);
+      }
+
+      #wineo-ui-polish .wineo-sidebar {
+        align-items: center;
+        padding-left: 8px;
+        padding-right: 8px;
+      }
+
+      #wineo-ui-polish .wineo-brand {
+        padding: 0;
+      }
+
+      #wineo-ui-polish .wineo-brand-name,
+      #wineo-ui-polish .wineo-nav-label {
+        display: none;
+      }
+
+      #wineo-ui-polish .wineo-nav {
+        width: 100%;
+      }
+
+      #wineo-ui-polish .wineo-nav-item {
+        justify-content: center;
+        padding: 0;
+      }
+
+      #wineo-ui-polish .wineo-content[data-panel-open="true"] {
+        padding-right: 20px;
+      }
+
+      #wineo-ui-polish .wineo-detail-panel {
+        width: min(420px, calc(100% - 8px));
+      }
+    }
+
+    @media (max-width: 620px) {
+      #wineo-ui-polish .wineo-window {
+        border-radius: 10px;
+        grid-template-columns: 52px minmax(0, 1fr);
+        height: 990px;
+      }
+
+      #wineo-ui-polish .wineo-sidebar {
+        gap: 15px;
+        padding: 12px 5px 8px;
+      }
+
+      #wineo-ui-polish .wineo-mark {
+        height: 28px;
+        width: 28px;
+      }
+
+      #wineo-ui-polish .wineo-nav-item {
+        min-height: 36px;
+      }
+
+      #wineo-ui-polish .wineo-toolbar {
+        align-items: flex-start;
+        flex-wrap: wrap;
+        gap: 10px;
+        min-height: 100px;
+        padding: 12px 12px 10px;
+      }
+
+      #wineo-ui-polish .wineo-toolbar-actions {
+        justify-content: space-between;
+        width: 100%;
+      }
+
+      #wineo-ui-polish .wineo-search {
+        flex: 1 1 auto;
+        max-width: none;
+        min-width: 0;
+      }
+
+      #wineo-ui-polish .wineo-content {
+        padding: 15px 12px 20px;
+      }
+
+      #wineo-ui-polish .wineo-content[data-panel-open="true"] {
+        padding-right: 12px;
+      }
+
+      #wineo-ui-polish .wineo-detail-panel {
+        border-left: 1px solid var(--wineo-border);
+        right: 0;
+        width: calc(100% - 4px);
+      }
+
+      #wineo-ui-polish .wineo-game-grid {
+        gap: 9px;
+      }
+
+      #wineo-ui-polish .wineo-game-info {
+        display: block;
+        padding: 8px;
+      }
+
+      #wineo-ui-polish .wineo-game-info .wineo-status {
+        margin-top: 5px;
+      }
+
+      #wineo-ui-polish .wineo-form-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      #wineo-ui-polish .wineo-form-field.wide {
+        grid-column: auto;
+      }
+
+      #wineo-ui-polish .wineo-review-topline {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      #wineo-ui-polish .wineo-review-heading {
+        min-width: 0;
+        width: 100%;
+      }
+
+      #wineo-ui-polish .wineo-review-heading h2,
+      #wineo-ui-polish .wineo-created-heading h2 {
+        font-size: 18px;
+      }
+    }
+
+    @media (pointer: coarse) {
+      #wineo-ui-polish .wineo-nav-item,
+      #wineo-ui-polish .wineo-action,
+      #wineo-ui-polish .wineo-inline-action,
+      #wineo-ui-polish .wineo-add-button,
+      #wineo-ui-polish .wineo-primary-action,
+      #wineo-ui-polish .wineo-close,
+      #wineo-ui-polish .wineo-back,
+      #wineo-ui-polish .wineo-log-back,
+      #wineo-ui-polish .wineo-play-button,
+      #wineo-ui-polish .wineo-stop-button,
+      #wineo-ui-polish .wineo-log-button {
+        min-height: 44px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #wineo-ui-polish *,
+      #wineo-ui-polish *::before,
+      #wineo-ui-polish *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    #wineo-ui-polish .wineo-management-page {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      margin: 0 auto;
+      max-width: 780px;
+      min-height: 0;
+      min-width: 0;
+      width: 100%;
+    }
+
+    #wineo-ui-polish .wineo-management-page button {
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+
+    #wineo-ui-polish .wineo-management-page[hidden] {
+      display: none;
+    }
+
+    #wineo-ui-polish .wineo-management-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      overflow-x: hidden;
+      scrollbar-color: var(--wineo-border) transparent;
+      scrollbar-width: thin;
+    }
+
+    #wineo-ui-polish .wineo-management-heading {
+      flex: 0 0 auto;
+    }
+
+    #wineo-ui-polish .wineo-management-heading {
+      align-items: flex-end;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 16px;
+      justify-content: space-between;
+      margin: 0 0 15px;
+      min-width: 0;
+    }
+
+    #wineo-ui-polish .wineo-management-heading h2 {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.25px;
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
+    #wineo-ui-polish .wineo-management-heading p {
+      color: var(--wineo-muted);
+      font-size: 12px;
+      margin: 3px 0 0;
+    }
+
+    #wineo-ui-polish .wineo-management-sections {
+      display: grid;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    #wineo-ui-polish .wineo-management-section {
+      border-top: 1px solid var(--wineo-border);
+      min-width: 0;
+      padding: 13px 0 14px;
+    }
+
+    #wineo-ui-polish .wineo-management-section:first-child {
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    #wineo-ui-polish .variant-cards .wineo-management-section {
+      background: var(--wineo-surface);
+      border: 1px solid var(--wineo-border);
+      border-radius: 10px;
+      padding: 13px 15px 14px;
+    }
+
+    #wineo-ui-polish .wineo-management-section h3 {
+      font-size: 13px;
+      font-weight: 600;
+      margin: 0 0 10px;
+    }
+
+    #wineo-ui-polish .wineo-managed-grid {
+      display: grid;
+      gap: 11px 14px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      min-width: 0;
+    }
+
+    #wineo-ui-polish .wineo-managed-field {
+      min-width: 0;
+    }
+
+    #wineo-ui-polish .wineo-managed-field.wide {
+      grid-column: 1 / -1;
+    }
+
+    #wineo-ui-polish .wineo-managed-field .wineo-form-control {
+      height: 34px;
+      min-width: 0;
+    }
+
+    #wineo-ui-polish .wineo-managed-row {
+      align-items: center;
+      border-top: 1px solid var(--wineo-border);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      justify-content: space-between;
+      min-width: 0;
+      padding: 9px 0;
+    }
+
+    #wineo-ui-polish .wineo-managed-row:first-of-type {
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    #wineo-ui-polish .wineo-managed-row-copy {
+      flex: 1 1 190px;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    #wineo-ui-polish .wineo-managed-row-copy strong {
+      display: block;
+      font-size: 12px;
+      font-weight: 500;
+      overflow-wrap: anywhere;
+    }
+
+    #wineo-ui-polish .wineo-managed-row-copy span {
+      color: var(--wineo-muted);
+      display: block;
+      font-size: 11px;
+      margin-top: 2px;
+      overflow-wrap: anywhere;
+    }
+
+    #wineo-ui-polish .wineo-managed-actions,
+    #wineo-ui-polish .wineo-management-toolbar,
+    #wineo-ui-polish .wineo-management-footer {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+
+    #wineo-ui-polish .wineo-management-toolbar {
+      justify-content: space-between;
+      margin: 0 0 12px;
+    }
+
+    #wineo-ui-polish .wineo-management-footer {
+      background: var(--wineo-surface);
+      border-top: 1px solid var(--wineo-border);
+      flex-shrink: 0;
+      justify-content: flex-end;
+      margin-top: 14px;
+      padding: 10px 12px;
+    }
+
+    #wineo-ui-polish .wineo-content[data-screen="settings"] {
+      overflow: hidden;
+    }
+
+    #wineo-ui-polish .wineo-content[data-screen="settings"] .wineo-management-pages {
+      height: 100%;
+    }
+
+    #wineo-ui-polish .wineo-management-page[data-page="settings"] {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    #wineo-ui-polish .wineo-management-page[data-page="settings"] .wineo-management-heading {
+      flex-shrink: 0;
+    }
+
+    #wineo-ui-polish .wineo-management-page[data-page="settings"] .wineo-management-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding-right: 6px;
+    }
+
+    #wineo-ui-polish .wineo-management-footer .wineo-management-feedback {
+      flex: 1 1 180px;
+      margin: 0;
+    }
+
+    #wineo-ui-polish .wineo-management-footer .wineo-primary-action,
+    #wineo-ui-polish .wineo-management-toolbar .wineo-primary-action {
+      min-width: 82px;
+    }
+
+    #wineo-ui-polish .wineo-managed-note,
+    #wineo-ui-polish .wineo-management-feedback {
+      color: var(--wineo-muted);
+      font-size: 12px;
+      line-height: 1.45;
+      margin: 8px 0 0;
+      overflow-wrap: anywhere;
+    }
+
+    #wineo-ui-polish .wineo-management-feedback:empty {
+      display: none;
+    }
+
+    #wineo-ui-polish .wineo-managed-check {
+      align-items: center;
+      display: flex;
+      gap: 8px;
+      min-height: 34px;
+      overflow-wrap: anywhere;
+    }
+
+    #wineo-ui-polish .wineo-managed-check input {
+      accent-color: var(--wineo-primary);
+      flex: 0 0 auto;
+      height: 16px;
+      margin: 0;
+      width: 16px;
+    }
+
+    #wineo-ui-polish .wineo-management-confirmation,
+    #wineo-ui-polish .wineo-management-state {
+      background: var(--wineo-surface);
+      border: 1px solid var(--wineo-border);
+      border-radius: 10px;
+      margin-top: 12px;
+      min-width: 0;
+      padding: 14px;
+    }
+
+    #wineo-ui-polish .wineo-management-confirmation h3,
+    #wineo-ui-polish .wineo-management-state h3 {
+      font-size: 14px;
+      margin: 0 0 4px;
+    }
+
+    #wineo-ui-polish .wineo-management-confirmation p,
+    #wineo-ui-polish .wineo-management-state p {
+      color: var(--wineo-muted);
+      font-size: 12px;
+      margin: 0 0 11px;
+      overflow-wrap: anywhere;
+    }
+
+    #wineo-ui-polish .wineo-confirmation-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      justify-content: flex-end;
+    }
+
+    #wineo-ui-polish [data-action="snapshot-confirm-delete"],
+    #wineo-ui-polish [data-action="package-confirm-delete"],
+    #wineo-ui-polish [data-action="trash-confirm-delete"],
+    #wineo-ui-polish [data-action="trash-confirm-prune"],
+    #wineo-ui-polish [data-action="trash-confirm-empty"] {
+      background: var(--wineo-danger);
+    }
+
+    #wineo-ui-polish .wineo-management-state {
+      margin-top: 2px;
+      padding: 20px;
+    }
+
+    #wineo-ui-polish .wineo-management-progress {
+      accent-color: var(--wineo-primary);
+      display: block;
+      height: 8px;
+      margin: 12px 0 5px;
+      width: 100%;
+    }
+
+    #wineo-ui-polish .wineo-snapshot-report {
+      background: var(--wineo-bg);
+      border: 1px solid var(--wineo-border);
+      border-radius: 8px;
+      max-height: 250px;
+      overflow: auto;
+      padding: 11px;
+    }
+
+    #wineo-ui-polish .wineo-snapshot-report pre {
+      font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 0;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+
+    #wineo-ui-polish .wineo-config-diff {
+      background: var(--wineo-soft);
+      border-radius: 8px;
+      margin-top: 10px;
+      padding: 9px 10px;
+    }
+
+    #wineo-ui-polish .wineo-config-diff pre {
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+
+    #wineo-ui-polish .wineo-trash-prefix {
+      align-items: center;
+      background: var(--wineo-soft);
+      border-radius: 6px;
+      color: var(--wineo-muted);
+      display: inline-flex;
+      font-size: 11px;
+      margin-top: 4px;
+      min-height: 20px;
+      padding: 0 7px;
+    }
+
+    #wineo-ui-polish .wineo-managed-row-copy .wineo-trash-prefix {
+      display: inline-flex;
+      max-width: 100%;
+      width: fit-content;
+    }
+
+    #wineo-ui-polish .wineo-build-uses {
+      color: var(--wineo-muted);
+      font-size: 11px;
+      margin-top: 3px;
+      overflow-wrap: anywhere;
+    }
+
+    @media (max-width: 620px) {
+      #wineo-ui-polish .wineo-managed-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      #wineo-ui-polish .wineo-managed-field.wide {
+        grid-column: auto;
+      }
+
+      #wineo-ui-polish .wineo-managed-row {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      #wineo-ui-polish .wineo-managed-row-copy {
+        flex: none;
+        width: 100%;
+      }
+
+      #wineo-ui-polish .wineo-managed-actions {
+        width: 100%;
+      }
+
+      #wineo-ui-polish .wineo-management-heading {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
+  </style>
+
+  <div id="wineo-ui-polish-carousel" class="viz-carousel" aria-label="Wineo interface designs">
+    <section class="variant-grouped" data-variant="Grouped" aria-label="Grouped Wineo interface">
+      <div class="wineo-window" data-theme="system">
+        <aside class="wineo-sidebar" aria-label="Wineo navigation">
+          <div class="wineo-brand">
+            <span class="wineo-mark" aria-hidden="true">W</span>
+            <span class="wineo-brand-name">wineo</span>
+          </div>
+          <nav class="wineo-nav" aria-label="Main navigation">
+            <button class="wineo-nav-item" type="button" data-nav="library" aria-label="Library" aria-current="page"><span class="wineo-icon"><i data-lucide="library" aria-hidden="true"></i></span><span class="wineo-nav-label">Library</span></button>
+          </nav>
+          <nav class="wineo-nav wineo-nav-bottom" aria-label="Tools and settings">
+            <button class="wineo-nav-item" type="button" data-nav="trash" aria-label="Trash"><span class="wineo-icon"><i data-lucide="trash-2" aria-hidden="true"></i></span><span class="wineo-nav-label">Trash</span></button>
+            <button class="wineo-nav-item" type="button" data-nav="checkup" aria-label="Checkup"><span class="wineo-icon"><i data-lucide="activity" aria-hidden="true"></i></span><span class="wineo-nav-label">Checkup</span></button>
+            <button class="wineo-nav-item" type="button" data-nav="downloads" aria-label="Downloads"><span class="wineo-icon"><i data-lucide="download" aria-hidden="true"></i></span><span class="wineo-nav-label">Downloads</span></button>
+            <button class="wineo-nav-item" type="button" data-nav="snapshots" aria-label="Snapshots"><span class="wineo-icon"><i data-lucide="camera" aria-hidden="true"></i></span><span class="wineo-nav-label">Snapshots</span></button>
+            <button class="wineo-nav-item" type="button" data-nav="settings" aria-label="Settings"><span class="wineo-icon"><i data-lucide="settings-2" aria-hidden="true"></i></span><span class="wineo-nav-label">Settings</span></button>
+          </nav>
+        </aside>
+        <main class="wineo-main">
+          <header class="wineo-toolbar">
+            <div class="wineo-toolbar-title">
+              <div data-toolbar-library>
+                <h1>Library</h1>
+              </div>
+              <div data-toolbar-review hidden>
+                <h1>Review new environment</h1>
+                <p>Review the detected application before creating it.</p>
+              </div>
+              <div data-toolbar-created hidden>
+                <h1>Environment preview</h1>
+                <p>Local preview only</p>
+              </div>
+              <div data-toolbar-managed hidden>
+                <h1 data-managed-heading>Settings</h1>
+                <p data-managed-subtitle>Wineo defaults</p>
+              </div>
+            </div>
+            <div class="wineo-toolbar-actions">
+              <label class="wineo-search" data-library-search>
+                <span class="wineo-icon"><i data-lucide="search" aria-hidden="true"></i></span>
+                <input type="search" aria-label="Search library" placeholder="Search environments">
+              </label>
+              <button class="wineo-add-button" type="button" data-add-environment><span class="wineo-icon"><i data-lucide="plus" aria-hidden="true"></i></span><span>Add</span></button>
+              <button class="wineo-back" type="button" data-toolbar-back hidden><span class="wineo-icon"><i data-lucide="arrow-left" aria-hidden="true"></i></span><span>Back</span></button>
+            </div>
+          </header>
+          <div class="wineo-content" data-panel-open="true">
+            <section class="wineo-library-view" data-screen="library" aria-label="Library environments">
+              <div class="wineo-game-grid">
+                <button class="wineo-game-card" type="button" data-game="hades" aria-pressed="true" aria-label="Open Hades environment details">
+                  <span class="wineo-art wineo-art-hades" aria-hidden="true"></span>
+                  <span class="wineo-game-info"><span class="wineo-game-info-copy"><span class="wineo-game-name">hades</span><span class="wineo-game-meta">Windows · GE-Proton9-20</span><span class="wineo-game-hours">12.8 hours played</span></span><span class="wineo-status" data-library-status data-tone="">Ready</span></span>
+                </button>
+                <div class="wineo-game-card">
+                  <span class="wineo-art wineo-art-hollow" aria-hidden="true"></span>
+                  <span class="wineo-game-info"><span class="wineo-game-info-copy"><span class="wineo-game-name">hollow-knight</span><span class="wineo-game-meta">Windows · Wine-GE</span><span class="wineo-game-hours">38.1 hours played</span></span><span class="wineo-status" data-library-status data-tone="">Ready</span></span>
+                </div>
+                <div class="wineo-game-card">
+                  <span class="wineo-art wineo-art-dead-cells" aria-hidden="true"></span>
+                  <span class="wineo-game-info"><span class="wineo-game-info-copy"><span class="wineo-game-name">dead-cells</span><span class="wineo-game-meta">Windows · GE-Proton9-18</span><span class="wineo-game-hours">6.4 hours played</span></span><span class="wineo-status" data-library-status data-tone="">Ready</span></span>
+                </div>
+              </div>
+            </section>
+            <section class="wineo-review-view" data-screen="review" aria-label="Review new environment" hidden>
+              <div class="wineo-review-topline">
+                <button class="wineo-back" type="button" data-review-back><span class="wineo-icon"><i data-lucide="arrow-left" aria-hidden="true"></i></span><span>Library</span></button>
+                <div class="wineo-review-heading"><h2>Review new environment</h2><p>Confirm the detected application and starting point.</p></div>
+              </div>
+              <div class="wineo-review-surface">
+                <section class="wineo-review-section" aria-labelledby="grouped-app-heading">
+                  <h3 id="grouped-app-heading" class="wineo-section-title">Application</h3>
+                  <div class="wineo-form-grid">
+                    <div class="wineo-form-field"><span class="wineo-field-label">Name</span><div class="wineo-review-value" data-review-title>Hades</div></div>
+                    <div class="wineo-form-field"><span class="wineo-field-label">Environment</span><div class="wineo-review-value" data-review-name>hades</div></div>
+                    <div class="wineo-form-field"><span class="wineo-field-label">Type</span><div class="wineo-review-value" data-review-platform>Windows</div></div>
+                    <div class="wineo-form-field"><span class="wineo-field-label">Starting point</span><div class="wineo-review-value" data-review-starting-point>Existing install</div></div>
+                    <div class="wineo-form-field wide"><span class="wineo-field-label">Program</span><div class="wineo-review-value wineo-review-path" data-review-path>/mnt/games/SteamLibrary/steamapps/common/Hades/Hades.exe</div><span class="wineo-form-hint">Wineo found an executable in this install directory.</span></div>
+                    <div class="wineo-form-field" data-native-architecture hidden><span class="wineo-field-label">Architecture</span><div class="wineo-review-value" data-review-native-arch>x86_64</div></div>
+                  </div>
+                </section>
+                <section class="wineo-review-section" aria-labelledby="grouped-runtime-heading" data-runtime-section>
+                  <h3 id="grouped-runtime-heading" class="wineo-section-title">Wine runtime</h3>
+                  <div class="wineo-form-grid">
+                    <div class="wineo-form-field"><span class="wineo-field-label">Runner</span><div class="wineo-review-value" data-review-runner>GE-Proton-Latest</div><span class="wineo-form-hint" data-runner-resolution>Resolves to GE-Proton9-20</span></div>
+                    <div class="wineo-form-field"><span class="wineo-field-label">Architecture</span><div class="wineo-review-value" data-review-arch>win64</div></div>
+                    <div class="wineo-form-field wide"><span class="wineo-field-label">Prefix</span><div class="wineo-review-value wineo-review-path" data-review-prefix>/home/michael/.local/share/wineo/prefixes/hades</div></div>
+                  </div>
+                </section>
+                <div class="wineo-notice wineo-notice-warning" data-existing-prefix><span class="wineo-notice-title">Compatible existing prefix</span>This compatible existing prefix will be registered in place.</div>
+                <div class="wineo-notice wineo-notice-warning" data-proton-notice><span class="wineo-notice-title">Proton runner components</span>This Proton runner bundles DXVK and vkd3d-proton, so the template's component picks will be omitted.</div>
+                <div class="wineo-notice wineo-notice-error" data-prerequisite-notice role="alert" hidden><span class="wineo-notice-title" data-prerequisite-title>Missing DXVK 2.7</span><span data-prerequisite-copy>Download it before creating this environment?</span><div class="wineo-prerequisite-actions"><button class="wineo-back" type="button" data-download-dxvk>Download DXVK</button><span class="wineo-caption" data-download-status aria-live="polite"></span></div></div>
+              </div>
+              <div class="wineo-review-actions">
+                <button class="wineo-back" type="button" data-review-back-secondary>Back</button>
+                <button class="wineo-primary-action" type="button" data-create-preview>Create environment</button>
+              </div>
+            </section>
+            <section class="wineo-created-view" data-screen="created" aria-label="Environment created preview" hidden>
+              <div class="wineo-created-surface" role="status" aria-live="polite">
+                <div class="wineo-created-heading"><span class="wineo-created-icon"><span class="wineo-icon"><i data-lucide="check" aria-hidden="true"></i></span></span><div><h2>Environment preview is ready</h2><p>Preview created for <span data-created-name>hades</span>.</p></div></div>
+                <div class="wineo-created-note">Preview only. No files were written and no environment was created.</div>
+                <div class="wineo-review-actions"><button class="wineo-back" type="button" data-created-back>Back to review</button><button class="wineo-primary-action" type="button" data-created-library>Return to Library</button></div>
+              </div>
+            </section>
+            <aside class="wineo-detail-panel" data-detail-panel aria-label="Hades environment details" aria-hidden="false">
+              <div class="wineo-panel-header"><strong data-panel-heading>Environment details</strong><button class="wineo-close" type="button" data-close-panel aria-label="Close details"><span class="wineo-icon"><i data-lucide="x" aria-hidden="true"></i></span></button></div>
+              <div class="wineo-panel-scroll" data-panel-details>
+                <div class="wineo-panel-hero">
+                  <div class="wineo-panel-art wineo-art wineo-art-hades" data-detail-art aria-hidden="true"><span class="wineo-art-logo" data-detail-logo>HADES</span></div>
+                  <div class="wineo-panel-hero-copy"><h2 class="wineo-panel-game-title" data-detail-title>Hades</h2><div class="wineo-caption" data-detail-meta>hades</div><div class="wineo-caption" data-detail-runner-caption>Windows environment · GE-Proton9-20</div></div>
+                </div>
+                <div class="wineo-panel-runrow">
+                  <button class="wineo-play-button" type="button" data-play><span class="wineo-icon"><i data-lucide="play" aria-hidden="true"></i></span><span data-play-label>Play</span></button>
+                  <button class="wineo-stop-button" type="button" data-stop disabled><span class="wineo-icon"><i data-lucide="square" aria-hidden="true"></i></span><span>Stop</span></button>
+                  <button class="wineo-log-button" type="button" data-open-log><span class="wineo-icon"><i data-lucide="scroll-text" aria-hidden="true"></i></span><span>Log</span></button>
+                  <span class="wineo-status" data-run-status data-tone="" aria-live="polite">Ready</span>
+                </div>
+                <div class="wineo-stat-grid">
+                  <div class="wineo-stat"><span class="wineo-stat-label">Play time</span><span class="wineo-stat-value" data-detail-playtime>12h 48m</span></div>
+                  <div class="wineo-stat"><span class="wineo-stat-label">Last played</span><span class="wineo-stat-value" data-detail-lastplayed>Yesterday, 9:42 PM</span></div>
+                </div>
+                <section class="wineo-panel-section" aria-label="Launch target">
+                  <h3 class="wineo-panel-section-title">Launch target</h3>
+                  <label class="wineo-target-field"><span class="wineo-field-label">Target</span><select class="wineo-field-control" data-target-select aria-label="Launch target"><option value="application">Hades (application)</option><option value="winecfg">Configuration (winecfg)</option></select></label>
+                  <dl><div class="wineo-panel-row"><dt>Runner</dt><dd data-detail-runner>GE-Proton9-20</dd></div></dl>
+                </section>
+                <section class="wineo-panel-section" aria-label="Environment settings">
+                  <h3 class="wineo-panel-section-title">Environment</h3>
+                  <dl><div class="wineo-panel-row"><dt>Prefix</dt><dd data-detail-prefix>/home/michael/.local/share/wineo/prefixes/hades</dd></div><div class="wineo-panel-row"><dt>Architecture</dt><dd data-detail-arch>win64</dd></div></dl>
+                  <div class="wineo-tertiary-row"><button class="wineo-action" type="button" data-configure><span class="wineo-icon"><i data-lucide="settings-2" aria-hidden="true"></i></span>Settings</button><button class="wineo-action" type="button" data-artwork><span class="wineo-icon"><i data-lucide="image" aria-hidden="true"></i></span>Art</button><button class="wineo-action" type="button" data-open-folder><span class="wineo-icon"><i data-lucide="ellipsis" aria-hidden="true"></i></span>Actions</button></div>
+                  <p class="wineo-panel-status" data-panel-message aria-live="polite"></p>
+                </section>
+              </div>
+              <div class="wineo-panel-scroll wineo-log-view" data-panel-log hidden>
+                <button class="wineo-log-back" type="button" data-log-back><span class="wineo-icon"><i data-lucide="arrow-left" aria-hidden="true"></i></span><span>Details</span></button>
+                <h2>Recent run log</h2>
+                <p class="wineo-caption">Local preview for <span data-log-title>Hades</span> · today at 9:42 PM</p>
+                <div class="wineo-log-lines" aria-label="Example Hades run log">
+                  <span class="wineo-log-line">21:42:08  environment: <span data-log-name>hades</span></span>
+                  <span class="wineo-log-line">21:42:08  runner: <span data-log-runner>GE-Proton9-20</span></span>
+                  <span class="wineo-log-line">21:42:08  prefix: <span data-log-prefix>/home/michael/.local/share/wineo/prefixes/hades</span></span>
+                  <span class="wineo-log-line">21:42:09  target: <span data-log-target>Hades (application)</span></span>
+                  <span class="wineo-log-line">21:42:10  process started: <span data-log-executable>Hades.exe</span></span>
+                  <span class="wineo-log-line">21:42:14  Vulkan device: AMD Radeon RX 7900 XTX</span>
+                  <span class="wineo-log-line">21:42:15  window ready</span>
+                </div>
+                <p class="wineo-caption">Log entries are sample content and are not read from the system.</p>
+              </div>
+            </aside>
+          </div>
+        </main>
+      </div>
+    </section>
+
+    <section class="variant-cards" data-variant="Cards" aria-label="Cards Wineo interface" hidden>
+      <div class="wineo-window" data-theme="system">
+        <aside class="wineo-sidebar" aria-label="Wineo navigation">
+          <div class="wineo-brand">
+            <span class="wineo-mark" aria-hidden="true">W</span>
+            <span class="wineo-brand-name">wineo</span>
+          </div>
+          <nav class="wineo-nav" aria-label="Main navigation">
+            <button class="wineo-nav-item" type="button" data-nav="library" aria-label="Library" aria-current="page"><span class="wineo-icon"><i data-lucide="library" aria-hidden="true"></i></span><span class="wineo-nav-label">Library</span></button>
+          </nav>
+          <nav class="wineo-nav wineo-nav-bottom" aria-label="Tools and settings">
+            <button class="wineo-nav-item" type="button" data-nav="trash" aria-label="Trash"><span class="wineo-icon"><i data-lucide="trash-2" aria-hidden="true"></i></span><span class="wineo-nav-label">Trash</span></button>
+            <button class="wineo-nav-item" type="button" data-nav="checkup" aria-label="Checkup"><span class="wineo-icon"><i data-lucide="activity" aria-hidden="true"></i></span><span class="wineo-nav-label">Checkup</span></button>
+            <button class="wineo-nav-item" type="button" data-nav="downloads" aria-label="Downloads"><span class="wineo-icon"><i data-lucide="download" aria-hidden="true"></i></span><span class="wineo-nav-label">Downloads</span></button>
+            <button class="wineo-nav-item" type="button" data-nav="snapshots" aria-label="Snapshots"><span class="wineo-icon"><i data-lucide="camera" aria-hidden="true"></i></span><span class="wineo-nav-label">Snapshots</span></button>
+            <button class="wineo-nav-item" type="button" data-nav="settings" aria-label="Settings"><span class="wineo-icon"><i data-lucide="settings-2" aria-hidden="true"></i></span><span class="wineo-nav-label">Settings</span></button>
+          </nav>
+        </aside>
+        <main class="wineo-main">
+          <header class="wineo-toolbar">
+            <div class="wineo-toolbar-title">
+              <div data-toolbar-library>
+                <h1>Library</h1>
+              </div>
+              <div data-toolbar-review hidden>
+                <h1>Review new environment</h1>
+                <p>Review the detected application before creating it.</p>
+              </div>
+              <div data-toolbar-created hidden>
+                <h1>Environment preview</h1>
+                <p>Local preview only</p>
+              </div>
+              <div data-toolbar-managed hidden>
+                <h1 data-managed-heading>Settings</h1>
+                <p data-managed-subtitle>Wineo defaults</p>
+              </div>
+            </div>
+            <div class="wineo-toolbar-actions">
+              <label class="wineo-search" data-library-search>
+                <span class="wineo-icon"><i data-lucide="search" aria-hidden="true"></i></span>
+                <input type="search" aria-label="Search library" placeholder="Search environments">
+              </label>
+              <button class="wineo-add-button" type="button" data-add-environment><span class="wineo-icon"><i data-lucide="plus" aria-hidden="true"></i></span><span>Add</span></button>
+              <button class="wineo-back" type="button" data-toolbar-back hidden><span class="wineo-icon"><i data-lucide="arrow-left" aria-hidden="true"></i></span><span>Back</span></button>
+            </div>
+          </header>
+          <div class="wineo-content" data-panel-open="true">
+            <section class="wineo-library-view" data-screen="library" aria-label="Library environments">
+              <div class="wineo-game-grid">
+                <button class="wineo-game-card" type="button" data-game="hades" aria-pressed="true" aria-label="Open Hades environment details">
+                  <span class="wineo-art wineo-art-hades" aria-hidden="true"></span>
+                  <span class="wineo-game-info"><span class="wineo-game-info-copy"><span class="wineo-game-name">hades</span><span class="wineo-game-meta">Windows · GE-Proton9-20</span><span class="wineo-game-hours">12.8 hours played</span></span><span class="wineo-status" data-library-status data-tone="">Ready</span></span>
+                </button>
+                <div class="wineo-game-card">
+                  <span class="wineo-art wineo-art-hollow" aria-hidden="true"></span>
+                  <span class="wineo-game-info"><span class="wineo-game-info-copy"><span class="wineo-game-name">hollow-knight</span><span class="wineo-game-meta">Windows · Wine-GE</span><span class="wineo-game-hours">38.1 hours played</span></span><span class="wineo-status" data-library-status data-tone="">Ready</span></span>
+                </div>
+                <div class="wineo-game-card">
+                  <span class="wineo-art wineo-art-dead-cells" aria-hidden="true"></span>
+                  <span class="wineo-game-info"><span class="wineo-game-info-copy"><span class="wineo-game-name">dead-cells</span><span class="wineo-game-meta">Windows · GE-Proton9-18</span><span class="wineo-game-hours">6.4 hours played</span></span><span class="wineo-status" data-library-status data-tone="">Ready</span></span>
+                </div>
+              </div>
+            </section>
+            <section class="wineo-review-view" data-screen="review" aria-label="Review new environment" hidden>
+              <div class="wineo-review-topline">
+                <button class="wineo-back" type="button" data-review-back><span class="wineo-icon"><i data-lucide="arrow-left" aria-hidden="true"></i></span><span>Library</span></button>
+                <div class="wineo-review-heading"><h2>Review new environment</h2><p>Confirm the detected application and starting point.</p></div>
+              </div>
+              <div class="wineo-review-surface">
+                <section class="wineo-review-section" aria-labelledby="cards-app-heading">
+                  <h3 id="cards-app-heading" class="wineo-section-title">Application</h3>
+                  <div class="wineo-form-grid">
+                    <div class="wineo-form-field"><span class="wineo-field-label">Name</span><div class="wineo-review-value" data-review-title>Hades</div></div>
+                    <div class="wineo-form-field"><span class="wineo-field-label">Environment</span><div class="wineo-review-value" data-review-name>hades</div></div>
+                    <div class="wineo-form-field"><span class="wineo-field-label">Type</span><div class="wineo-review-value" data-review-platform>Windows</div></div>
+                    <div class="wineo-form-field"><span class="wineo-field-label">Starting point</span><div class="wineo-review-value" data-review-starting-point>Existing install</div></div>
+                    <div class="wineo-form-field wide"><span class="wineo-field-label">Program</span><div class="wineo-review-value wineo-review-path" data-review-path>/mnt/games/SteamLibrary/steamapps/common/Hades/Hades.exe</div><span class="wineo-form-hint">Wineo found an executable in this install directory.</span></div>
+                    <div class="wineo-form-field" data-native-architecture hidden><span class="wineo-field-label">Architecture</span><div class="wineo-review-value" data-review-native-arch>x86_64</div></div>
+                  </div>
+                </section>
+                <section class="wineo-review-section" aria-labelledby="cards-runtime-heading" data-runtime-section>
+                  <h3 id="cards-runtime-heading" class="wineo-section-title">Wine runtime</h3>
+                  <div class="wineo-form-grid">
+                    <div class="wineo-form-field"><span class="wineo-field-label">Runner</span><div class="wineo-review-value" data-review-runner>GE-Proton-Latest</div><span class="wineo-form-hint" data-runner-resolution>Resolves to GE-Proton9-20</span></div>
+                    <div class="wineo-form-field"><span class="wineo-field-label">Architecture</span><div class="wineo-review-value" data-review-arch>win64</div></div>
+                    <div class="wineo-form-field wide"><span class="wineo-field-label">Prefix</span><div class="wineo-review-value wineo-review-path" data-review-prefix>/home/michael/.local/share/wineo/prefixes/hades</div></div>
+                  </div>
+                </section>
+                <div class="wineo-notice wineo-notice-warning" data-existing-prefix><span class="wineo-notice-title">Compatible existing prefix</span>This compatible existing prefix will be registered in place.</div>
+                <div class="wineo-notice wineo-notice-warning" data-proton-notice><span class="wineo-notice-title">Proton runner components</span>This Proton runner bundles DXVK and vkd3d-proton, so the template's component picks will be omitted.</div>
+                <div class="wineo-notice wineo-notice-error" data-prerequisite-notice role="alert" hidden><span class="wineo-notice-title" data-prerequisite-title>Missing DXVK 2.7</span><span data-prerequisite-copy>Download it before creating this environment?</span><div class="wineo-prerequisite-actions"><button class="wineo-back" type="button" data-download-dxvk>Download DXVK</button><span class="wineo-caption" data-download-status aria-live="polite"></span></div></div>
+              </div>
+              <div class="wineo-review-actions">
+                <button class="wineo-back" type="button" data-review-back-secondary>Back</button>
+                <button class="wineo-primary-action" type="button" data-create-preview>Create environment</button>
+              </div>
+            </section>
+            <section class="wineo-created-view" data-screen="created" aria-label="Environment created preview" hidden>
+              <div class="wineo-created-surface" role="status" aria-live="polite">
+                <div class="wineo-created-heading"><span class="wineo-created-icon"><span class="wineo-icon"><i data-lucide="check" aria-hidden="true"></i></span></span><div><h2>Environment preview is ready</h2><p>Preview created for <span data-created-name>hades</span>.</p></div></div>
+                <div class="wineo-created-note">Preview only. No files were written and no environment was created.</div>
+                <div class="wineo-review-actions"><button class="wineo-back" type="button" data-created-back>Back to review</button><button class="wineo-primary-action" type="button" data-created-library>Return to Library</button></div>
+              </div>
+            </section>
+            <aside class="wineo-detail-panel" data-detail-panel aria-label="Hades environment details" aria-hidden="false">
+              <div class="wineo-panel-header"><strong data-panel-heading>Environment details</strong><button class="wineo-close" type="button" data-close-panel aria-label="Close details"><span class="wineo-icon"><i data-lucide="x" aria-hidden="true"></i></span></button></div>
+              <div class="wineo-panel-scroll" data-panel-details>
+                <div class="wineo-panel-hero">
+                  <div class="wineo-panel-art wineo-art wineo-art-hades" data-detail-art aria-hidden="true"><span class="wineo-art-logo" data-detail-logo>HADES</span></div>
+                  <div class="wineo-panel-hero-copy"><h2 class="wineo-panel-game-title" data-detail-title>Hades</h2><div class="wineo-caption" data-detail-meta>hades</div><div class="wineo-caption" data-detail-runner-caption>Windows environment · GE-Proton9-20</div></div>
+                </div>
+                <div class="wineo-panel-runrow">
+                  <button class="wineo-play-button" type="button" data-play><span class="wineo-icon"><i data-lucide="play" aria-hidden="true"></i></span><span data-play-label>Play</span></button>
+                  <button class="wineo-stop-button" type="button" data-stop disabled><span class="wineo-icon"><i data-lucide="square" aria-hidden="true"></i></span><span>Stop</span></button>
+                  <button class="wineo-log-button" type="button" data-open-log><span class="wineo-icon"><i data-lucide="scroll-text" aria-hidden="true"></i></span><span>Log</span></button>
+                  <span class="wineo-status" data-run-status data-tone="" aria-live="polite">Ready</span>
+                </div>
+                <div class="wineo-stat-grid">
+                  <div class="wineo-stat"><span class="wineo-stat-label">Play time</span><span class="wineo-stat-value" data-detail-playtime>12h 48m</span></div>
+                  <div class="wineo-stat"><span class="wineo-stat-label">Last played</span><span class="wineo-stat-value" data-detail-lastplayed>Yesterday, 9:42 PM</span></div>
+                </div>
+                <section class="wineo-panel-section" aria-label="Launch target">
+                  <h3 class="wineo-panel-section-title">Launch target</h3>
+                  <label class="wineo-target-field"><span class="wineo-field-label">Target</span><select class="wineo-field-control" data-target-select aria-label="Launch target"><option value="application">Hades (application)</option><option value="winecfg">Configuration (winecfg)</option></select></label>
+                  <dl><div class="wineo-panel-row"><dt>Runner</dt><dd data-detail-runner>GE-Proton9-20</dd></div></dl>
+                </section>
+                <section class="wineo-panel-section" aria-label="Environment settings">
+                  <h3 class="wineo-panel-section-title">Environment</h3>
+                  <dl><div class="wineo-panel-row"><dt>Prefix</dt><dd data-detail-prefix>/home/michael/.local/share/wineo/prefixes/hades</dd></div><div class="wineo-panel-row"><dt>Architecture</dt><dd data-detail-arch>win64</dd></div></dl>
+                  <div class="wineo-tertiary-row"><button class="wineo-action" type="button" data-configure><span class="wineo-icon"><i data-lucide="settings-2" aria-hidden="true"></i></span>Settings</button><button class="wineo-action" type="button" data-artwork><span class="wineo-icon"><i data-lucide="image" aria-hidden="true"></i></span>Art</button><button class="wineo-action" type="button" data-open-folder><span class="wineo-icon"><i data-lucide="ellipsis" aria-hidden="true"></i></span>Actions</button></div>
+                  <p class="wineo-panel-status" data-panel-message aria-live="polite"></p>
+                </section>
+              </div>
+              <div class="wineo-panel-scroll wineo-log-view" data-panel-log hidden>
+                <button class="wineo-log-back" type="button" data-log-back><span class="wineo-icon"><i data-lucide="arrow-left" aria-hidden="true"></i></span><span>Details</span></button>
+                <h2>Recent run log</h2>
+                <p class="wineo-caption">Local preview for <span data-log-title>Hades</span> · today at 9:42 PM</p>
+                <div class="wineo-log-lines" aria-label="Example Hades run log">
+                  <span class="wineo-log-line">21:42:08  environment: <span data-log-name>hades</span></span>
+                  <span class="wineo-log-line">21:42:08  runner: <span data-log-runner>GE-Proton9-20</span></span>
+                  <span class="wineo-log-line">21:42:08  prefix: <span data-log-prefix>/home/michael/.local/share/wineo/prefixes/hades</span></span>
+                  <span class="wineo-log-line">21:42:09  target: <span data-log-target>Hades (application)</span></span>
+                  <span class="wineo-log-line">21:42:10  process started: <span data-log-executable>Hades.exe</span></span>
+                  <span class="wineo-log-line">21:42:14  Vulkan device: AMD Radeon RX 7900 XTX</span>
+                  <span class="wineo-log-line">21:42:15  window ready</span>
+                </div>
+                <p class="wineo-caption">Log entries are sample content and are not read from the system.</p>
+              </div>
+            </aside>
+          </div>
+        </main>
+      </div>
+    </section>
+  </div>
+
+  <template id="wineo-management-pages-template">
+    <div class="wineo-management-pages" data-management-pages>
+      <section class="wineo-management-page" data-page="settings" data-screen="settings" aria-label="Global settings" hidden>
+        <div class="wineo-management-heading"><div><h2>Global settings</h2><p>Defaults used when launching or creating environments.</p></div><span class="wineo-status" data-settings-dirty>Saved</span></div>
+        <div class="wineo-management-state" data-page-demo-state hidden aria-live="polite"><h3 data-page-state-title></h3><p data-page-state-copy></p><div class="wineo-confirmation-actions"><button class="wineo-primary-action" type="button" data-page-state-retry hidden>Try again</button></div></div>
+        <div class="wineo-management-scroll" data-page-content>
+          <div class="wineo-management-sections">
+            <section class="wineo-management-section"><h3>Launch defaults</h3><div class="wineo-managed-grid">
+              <label class="wineo-managed-check"><input type="checkbox" data-setting="gamemode"><span>Enable GameMode</span></label>
+              <label class="wineo-managed-check"><input type="checkbox" data-setting="mangohud"><span>Enable MangoHud</span></label>
+              <label class="wineo-managed-check wide"><input type="checkbox" data-setting="wayland"><span>Prefer Wayland when available</span></label>
+              <label class="wineo-managed-field"><span class="wineo-field-label">Default runner</span><select class="wineo-field-control" data-setting="runner"><option>GE-Proton-Latest</option><option>Wine-GE</option><option>wine-tkg</option><option>System Wine</option></select></label>
+              <label class="wineo-managed-field"><span class="wineo-field-label">Architecture</span><select class="wineo-field-control" data-setting="architecture"><option value="win64">win64</option><option value="win32">win32</option></select></label>
+            </div></section>
+            <section class="wineo-management-section"><h3>Storage roots</h3><div class="wineo-managed-grid">
+              <label class="wineo-managed-field wide"><span class="wineo-field-label">Prefixes</span><input class="wineo-field-control" type="text" data-setting="prefixRoot" autocomplete="off"></label>
+              <label class="wineo-managed-field wide"><span class="wineo-field-label">Runners</span><input class="wineo-field-control" type="text" data-setting="runnerRoot" autocomplete="off"></label>
+              <label class="wineo-managed-field"><span class="wineo-field-label">DXVK</span><input class="wineo-field-control" type="text" data-setting="dxvkRoot" autocomplete="off"></label>
+              <label class="wineo-managed-field"><span class="wineo-field-label">vkd3d-proton</span><input class="wineo-field-control" type="text" data-setting="vkd3dRoot" autocomplete="off"></label>
+            </div></section>
+            <section class="wineo-management-section"><h3>Process limits</h3><div class="wineo-managed-grid">
+              <label class="wineo-managed-field"><span class="wineo-field-label">Stop timeout (seconds)</span><input class="wineo-field-control" type="number" min="1" max="60" data-setting="stopTimeout"></label>
+              <label class="wineo-managed-field"><span class="wineo-field-label">Log size (MiB)</span><input class="wineo-field-control" type="number" min="1" max="100" data-setting="logSize"></label>
+            </div></section>
+            <section class="wineo-management-section"><h3>Artwork lookup</h3><p class="wineo-managed-note">Shared lookups for new and imported environments.</p><div class="wineo-managed-grid">
+              <label class="wineo-managed-check"><input type="checkbox" data-setting="artIcon"><span>Icon</span></label><label class="wineo-managed-check"><input type="checkbox" data-setting="artGrid"><span>Grid</span></label><label class="wineo-managed-check"><input type="checkbox" data-setting="artHero"><span>Hero</span></label><label class="wineo-managed-check"><input type="checkbox" data-setting="artLogo"><span>Logo</span></label>
+            </div></section>
+            <section class="wineo-management-section"><h3>Environment variables</h3><div class="wineo-managed-grid">
+              <label class="wineo-managed-field"><span class="wineo-field-label">Name</span><input class="wineo-field-control" type="text" data-setting="envName0" autocomplete="off"></label><label class="wineo-managed-field"><span class="wineo-field-label">Value</span><input class="wineo-field-control" type="text" data-setting="envValue0" autocomplete="off"></label>
+              <label class="wineo-managed-field"><span class="wineo-field-label">Name</span><input class="wineo-field-control" type="text" data-setting="envName1" autocomplete="off"></label><label class="wineo-managed-field"><span class="wineo-field-label">Value</span><input class="wineo-field-control" type="text" data-setting="envValue1" autocomplete="off"></label>
+            </div><p class="wineo-managed-note">Applied to launched environments in this preview.</p></section>
+            <section class="wineo-management-section"><h3>SteamGridDB key</h3><div class="wineo-managed-row"><div class="wineo-managed-row-copy"><strong data-api-key-source>No key configured</strong><span>The key value is never shown in Wineo.</span></div><div class="wineo-managed-actions"><button class="wineo-back" type="button" data-action="api-key-set">Set key</button><button class="wineo-back" type="button" data-action="api-key-remove" disabled>Remove key</button></div></div><p class="wineo-management-feedback" data-api-key-feedback aria-live="polite"></p></section>
+          </div>
+        </div>
+        <div class="wineo-management-footer"><span class="wineo-management-feedback" data-settings-feedback aria-live="polite"></span><button class="wineo-back" type="button" data-action="settings-revert" disabled>Revert</button><button class="wineo-primary-action" type="button" data-action="settings-save" disabled>Save <span data-settings-count></span></button></div>
+      </section>
+
+      <section class="wineo-management-page" data-page="snapshots" data-screen="snapshots" aria-label="Snapshots" hidden>
+        <div class="wineo-management-heading"><div><h2>Environment snapshots</h2><p>Save and restore prefix state with a clear review.</p></div><button class="wineo-back" type="button" data-action="snapshots-refresh">Refresh</button></div>
+        <div class="wineo-management-state" data-page-demo-state hidden aria-live="polite"><h3 data-page-state-title></h3><p data-page-state-copy></p><div class="wineo-confirmation-actions"><button class="wineo-primary-action" type="button" data-page-state-retry hidden>Try again</button></div></div>
+        <div class="wineo-management-scroll" data-page-content>
+          <section class="wineo-management-section"><h3>Create snapshot</h3><div class="wineo-management-toolbar"><label class="wineo-managed-field"><span class="wineo-field-label">Environment</span><select class="wineo-field-control" data-snapshot-environment><option value="hades">hades</option><option value="hollow-knight">hollow-knight</option><option value="dead-cells">dead-cells</option></select></label><label class="wineo-managed-field"><span class="wineo-field-label">Label</span><input class="wineo-field-control" type="text" data-snapshot-label value="Before graphics update" maxlength="72"></label><button class="wineo-primary-action" type="button" data-action="snapshot-review-create">Review create</button></div><p class="wineo-management-feedback" data-snapshot-feedback aria-live="polite"></p>
+            <div class="wineo-management-confirmation" data-snapshot-create-review hidden><h3>Create snapshot?</h3><p data-snapshot-create-copy></p><div class="wineo-confirmation-actions"><button class="wineo-back" type="button" data-action="snapshot-cancel-create">Back</button><button class="wineo-primary-action" type="button" data-action="snapshot-confirm-create">Create snapshot</button></div></div>
+          </section>
+          <section class="wineo-management-section"><h3>Saved snapshots</h3>
+            <div class="wineo-managed-row" data-snapshot-row="hades-before-update"><div class="wineo-managed-row-copy"><strong>Before graphics update</strong><span>hades · Today, 9:18 AM · 42.6 GiB</span></div><div class="wineo-managed-actions"><button class="wineo-back" type="button" data-action="snapshot-review-restore" data-snapshot-id="hades-before-update">Restore</button><button class="wineo-back" type="button" data-action="snapshot-review-delete" data-snapshot-id="hades-before-update">Delete</button></div></div>
+            <div class="wineo-managed-row" data-snapshot-row="hades-clean"><div class="wineo-managed-row-copy"><strong>Clean prefix</strong><span>hades · Yesterday, 8:42 PM · 41.9 GiB</span></div><div class="wineo-managed-actions"><button class="wineo-back" type="button" data-action="snapshot-review-restore" data-snapshot-id="hades-clean">Restore</button><button class="wineo-back" type="button" data-action="snapshot-review-delete" data-snapshot-id="hades-clean">Delete</button></div></div>
+            <div class="wineo-managed-row" data-snapshot-row="knight-first-run"><div class="wineo-managed-row-copy"><strong>First launch</strong><span>hollow-knight · Sep 28, 6:05 PM · 8.2 GiB</span></div><div class="wineo-managed-actions"><button class="wineo-back" type="button" data-action="snapshot-review-restore" data-snapshot-id="knight-first-run">Restore</button><button class="wineo-back" type="button" data-action="snapshot-review-delete" data-snapshot-id="knight-first-run">Delete</button></div></div>
+            <div class="wineo-managed-row" data-snapshot-row="new-snapshot" hidden><div class="wineo-managed-row-copy"><strong data-snapshot-new-label></strong><span data-snapshot-new-meta></span></div><div class="wineo-managed-actions"><button class="wineo-back" type="button" data-action="snapshot-review-restore" data-snapshot-id="new-snapshot">Restore</button><button class="wineo-back" type="button" data-action="snapshot-review-delete" data-snapshot-id="new-snapshot">Delete</button></div></div>
+            <div class="wineo-management-confirmation" data-snapshot-restore-review hidden><h3>Review restore</h3><p data-snapshot-restore-copy></p><div class="wineo-config-diff"><p class="wineo-managed-note">The selected snapshot restores the prefix and Wineo configuration together.</p><details><summary>Show configuration changes</summary><pre>default runner: Wine-GE to GE-Proton9-20<br>WINEDEBUG: -all to unset<br>architecture: win64</pre></details></div><div class="wineo-confirmation-actions"><button class="wineo-back" type="button" data-action="snapshot-cancel-review">Cancel</button><button class="wineo-primary-action" type="button" data-action="snapshot-confirm-restore">Restore snapshot</button></div></div>
+            <div class="wineo-management-confirmation" data-snapshot-delete-review hidden><h3>Delete snapshot?</h3><p data-snapshot-delete-copy></p><div class="wineo-confirmation-actions"><button class="wineo-back" type="button" data-action="snapshot-cancel-review">Cancel</button><button class="wineo-primary-action" type="button" data-action="snapshot-confirm-delete">Delete snapshot</button></div></div>
+            <div class="wineo-snapshot-report" data-snapshot-result hidden role="status"><pre data-snapshot-result-copy></pre></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="wineo-management-page" data-page="downloads" data-screen="downloads" aria-label="Downloads" hidden>
+        <div class="wineo-management-heading"><div><h2>Runtime downloads</h2><p>Installed components, current uses, and available releases.</p></div><button class="wineo-back" type="button" data-action="downloads-refresh">Refresh</button></div>
+        <div class="wineo-management-state" data-page-demo-state hidden aria-live="polite"><h3 data-page-state-title></h3><p data-page-state-copy></p><div class="wineo-confirmation-actions"><button class="wineo-primary-action" type="button" data-page-state-retry hidden>Try again</button></div></div>
+        <div class="wineo-management-scroll" data-page-content>
+          <section class="wineo-management-section"><h3>Installed</h3>
+            <div class="wineo-managed-row" data-package-row="ge-proton-920"><div class="wineo-managed-row-copy"><strong>GE-Proton9-20 <span class="wineo-status">Runner</span></strong><span>Uses: hades, celeste · 1.8 GiB</span></div><span class="wineo-status" data-tone="success">Usable</span></div>
+            <div class="wineo-managed-row" data-package-row="ge-proton-832"><div class="wineo-managed-row-copy"><strong>GE-Proton8-32 <span class="wineo-status">Runner</span></strong><span>Unused · 1.6 GiB</span></div><div class="wineo-managed-actions"><span class="wineo-status">Unused</span><button class="wineo-back" type="button" data-action="package-review-delete" data-package-id="ge-proton-832">Remove</button></div></div>
+            <div class="wineo-managed-row" data-package-row="dxvk-27"><div class="wineo-managed-row-copy"><strong>DXVK 2.7</strong><span>Uses: hades · 86 MiB</span></div><span class="wineo-status" data-tone="success">Usable</span></div>
+            <div class="wineo-managed-row" data-package-row="dxvk-26"><div class="wineo-managed-row-copy"><strong>DXVK 2.6</strong><span>Unused · 81 MiB</span></div><div class="wineo-managed-actions"><span class="wineo-status">Unused</span><button class="wineo-back" type="button" data-action="package-review-delete" data-package-id="dxvk-26">Remove</button></div></div>
+            <div class="wineo-managed-row" data-package-row="vkd3d-214"><div class="wineo-managed-row-copy"><strong>vkd3d-proton 2.14</strong><span>Uses: hades · 24 MiB</span></div><span class="wineo-status" data-tone="success">Usable</span></div>
+            <div class="wineo-managed-row" data-package-row="vkd3d-213"><div class="wineo-managed-row-copy"><strong>vkd3d-proton 2.13</strong><span>Unused · 23 MiB</span></div><div class="wineo-managed-actions"><span class="wineo-status">Unused</span><button class="wineo-back" type="button" data-action="package-review-delete" data-package-id="vkd3d-213">Remove</button></div></div>
+            <div class="wineo-management-confirmation" data-package-delete-review hidden><h3>Remove unused component?</h3><p data-package-delete-copy></p><div class="wineo-confirmation-actions"><button class="wineo-back" type="button" data-action="package-cancel-delete">Cancel</button><button class="wineo-primary-action" type="button" data-action="package-confirm-delete">Remove component</button></div></div>
+          </section>
+          <section class="wineo-management-section"><h3>Not usable</h3><div class="wineo-managed-row"><div class="wineo-managed-row-copy"><strong>Wine-GE-8-26</strong><span>Runner files are incomplete. Reinstall this release to use it.</span></div><span class="wineo-status" data-tone="warning">Needs attention</span></div><div class="wineo-managed-row"><div class="wineo-managed-row-copy"><strong>DXVK 2.5</strong><span>Architecture directories are missing.</span></div><span class="wineo-status" data-tone="warning">Needs attention</span></div></section>
+          <section class="wineo-management-section"><h3>Install a release</h3><div class="wineo-managed-grid">
+            <label class="wineo-managed-field"><span class="wineo-field-label">Provider</span><select class="wineo-field-control" data-download-provider><option>GE-Proton</option><option>Wine-GE</option><option>DXVK</option><option>vkd3d-proton</option></select></label>
+            <label class="wineo-managed-field"><span class="wineo-field-label">Release</span><select class="wineo-field-control" data-download-release><option data-provider="GE-Proton" value="GE-Proton9-21">GE-Proton9-21 · latest stable</option><option data-provider="GE-Proton" value="GE-Proton9-20">GE-Proton9-20</option><option data-provider="GE-Proton" data-older-release hidden value="GE-Proton9-19">GE-Proton9-19</option><option data-provider="Wine-GE" hidden value="Wine-GE-8-26">Wine-GE-8-26 · latest stable</option><option data-provider="Wine-GE" data-older-release hidden value="Wine-GE-8-25">Wine-GE-8-25</option><option data-provider="DXVK" hidden value="DXVK 2.7">DXVK 2.7 · latest stable</option><option data-provider="DXVK" hidden value="DXVK 2.6">DXVK 2.6</option><option data-provider="DXVK" data-older-release hidden value="DXVK 2.5">DXVK 2.5</option><option data-provider="vkd3d-proton" hidden value="vkd3d-proton 2.14">vkd3d-proton 2.14 · latest stable</option><option data-provider="vkd3d-proton" hidden value="vkd3d-proton 2.13">vkd3d-proton 2.13</option><option data-provider="vkd3d-proton" data-older-release hidden value="vkd3d-proton 2.12">vkd3d-proton 2.12</option></select></label>
+            <div class="wineo-managed-field"><span class="wineo-field-label">More releases</span><button class="wineo-back" type="button" data-action="downloads-more">Load more</button></div>
+            <div class="wineo-managed-field"><span class="wineo-field-label">Install preview</span><button class="wineo-primary-action" type="button" data-action="download-install">Install</button></div>
+          </div><div class="wineo-management-confirmation" data-download-job hidden role="status"><h3 data-download-job-title>Preparing install preview</h3><p data-download-job-copy></p><progress class="wineo-management-progress" data-download-progress max="100" value="0"></progress><div class="wineo-confirmation-actions"><button class="wineo-back" type="button" data-action="download-cancel">Cancel</button></div></div><p class="wineo-management-feedback" data-download-feedback aria-live="polite"></p></section>
+        </div>
+      </section>
+
+      <section class="wineo-management-page" data-page="checkup" data-screen="checkup" aria-label="Checkup" hidden>
+        <div class="wineo-management-heading"><div><h2>Wineo checkup</h2><p>Review detected issues and choose which fixes to apply.</p></div><button class="wineo-back" type="button" data-action="checkup-again">Check again</button></div>
+        <div class="wineo-management-state" data-page-demo-state hidden aria-live="polite"><h3 data-page-state-title></h3><p data-page-state-copy></p><div class="wineo-confirmation-actions"><button class="wineo-primary-action" type="button" data-page-state-retry hidden>Try again</button></div></div>
+        <div class="wineo-management-scroll" data-page-content>
+          <div data-checkup-results>
+            <section class="wineo-management-section" data-checkup-issue="runner"><h3>hades</h3><div class="wineo-managed-row"><div class="wineo-managed-row-copy"><strong>Recorded icon is missing</strong><span>art: icon.png is recorded but missing.</span></div><span class="wineo-status" data-tone="warning">Warning</span></div><label class="wineo-managed-check"><input type="checkbox" data-fix-choice="runner" checked><span>Drop hades's missing icon record</span></label></section>
+            <section class="wineo-management-section" data-checkup-issue="snapshot"><h3>hollow-knight</h3><div class="wineo-managed-row"><div class="wineo-managed-row-copy"><strong>Desktop entries are out of date</strong><span>The desktop entries differ from this environment's configuration.</span></div><span class="wineo-status" data-tone="warning">Warning</span></div><label class="wineo-managed-check"><input type="checkbox" data-fix-choice="snapshot" checked><span>Rewrite hollow-knight's desktop entries</span></label></section>
+            <section class="wineo-management-section" data-checkup-issue="leftover"><h3>Leftovers</h3><div class="wineo-managed-row"><div class="wineo-managed-row-copy"><strong>oldgame has leftover runtime state</strong><span>The state directory has no environment.</span></div><span class="wineo-status" data-tone="warning">Warning</span></div><label class="wineo-managed-check"><input type="checkbox" data-fix-choice="leftover"><span>Remove oldgame's leftover state</span></label></section>
+            <div class="wineo-management-footer"><span class="wineo-management-feedback" data-checkup-feedback aria-live="polite"></span><button class="wineo-primary-action" type="button" data-action="checkup-fix">Fix selected</button></div>
+          </div>
+          <section class="wineo-management-confirmation" data-checkup-healthy hidden role="status"><h3>Everything looks healthy</h3><p>Wineo configuration, environments, and runtime files passed the latest check.</p><button class="wineo-back" type="button" data-action="checkup-again">Check again</button></section>
+        </div>
+      </section>
+
+      <section class="wineo-management-page" data-page="trash" data-screen="trash" aria-label="Trash" hidden>
+        <div class="wineo-management-heading"><div><h2>Trash</h2><p>Removed environments remain here until restored or deleted.</p></div><span class="wineo-status">Newest first</span></div>
+        <div class="wineo-management-state" data-page-demo-state hidden aria-live="polite"><h3 data-page-state-title></h3><p data-page-state-copy></p><div class="wineo-confirmation-actions"><button class="wineo-primary-action" type="button" data-page-state-retry hidden>Try again</button></div></div>
+        <div class="wineo-management-scroll" data-page-content>
+          <section class="wineo-management-section"><div class="wineo-management-toolbar"><h3>Removed environments</h3><label class="wineo-managed-field"><span class="wineo-field-label">Age</span><select class="wineo-field-control" data-trash-age><option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option></select></label></div>
+            <div class="wineo-managed-row" data-trash-row="hades-removed"><div class="wineo-managed-row-copy"><strong>hades-removed</strong><span>Removed today at 9:12 AM · Windows · GE-Proton9-20</span><span class="wineo-trash-prefix" data-prefix-status="included">Prefix included</span></div><div class="wineo-managed-actions"><button class="wineo-back" type="button" data-action="trash-restore" data-trash-id="hades-removed">Restore</button><button class="wineo-back" type="button" data-action="trash-review-delete" data-trash-id="hades-removed">Delete forever</button></div></div>
+            <div class="wineo-managed-row" data-trash-row="old-shortcut"><div class="wineo-managed-row-copy"><strong>old-shortcut</strong><span>Removed 42 days ago · Windows · Wine-GE</span><span class="wineo-trash-prefix" data-prefix-status="excluded">Prefix was left in place</span></div><div class="wineo-managed-actions"><button class="wineo-back" type="button" data-action="trash-restore" data-trash-id="old-shortcut">Restore</button><button class="wineo-back" type="button" data-action="trash-review-delete" data-trash-id="old-shortcut">Delete forever</button></div></div>
+            <div class="wineo-management-confirmation" data-trash-delete-review hidden><h3>Delete forever?</h3><p data-trash-delete-copy></p><div class="wineo-confirmation-actions"><button class="wineo-back" type="button" data-action="trash-cancel">Cancel</button><button class="wineo-primary-action" type="button" data-action="trash-confirm-delete">Delete forever</button></div></div>
+            <div class="wineo-management-confirmation" data-trash-prune-review hidden><h3>Prune old entries?</h3><p data-trash-prune-copy></p><div class="wineo-confirmation-actions"><button class="wineo-back" type="button" data-action="trash-cancel">Cancel</button><button class="wineo-primary-action" type="button" data-action="trash-confirm-prune">Prune entries</button></div></div>
+            <div class="wineo-management-confirmation" data-trash-empty-review hidden><h3>Empty trash?</h3><p data-trash-empty-copy></p><div class="wineo-confirmation-actions"><button class="wineo-back" type="button" data-action="trash-cancel">Cancel</button><button class="wineo-primary-action" type="button" data-action="trash-confirm-empty">Empty trash</button></div></div>
+            <p class="wineo-management-feedback" data-trash-feedback aria-live="polite"></p>
+            <div class="wineo-management-toolbar"><button class="wineo-back" type="button" data-action="trash-review-prune">Prune older than selected age</button><button class="wineo-back" type="button" data-action="trash-review-empty">Empty trash</button></div>
+          </section>
+        </div>
+      </section>
+    </div>
+  </template>
+
+  <script>
+    (() => {
+      const root = document.getElementById("wineo-ui-polish");
+      if (!root) return;
+      root.querySelectorAll("button").forEach((button) => button.classList.add("cursor-interaction"));
+
+      const hostApi = globalThis.openai;
+      const initialWidgetState = hostApi && hostApi.widgetState && hostApi.widgetState.privateContent;
+      const variants = Array.from(root.querySelectorAll(".viz-carousel > [data-variant]"));
+      const managementTemplate = root.querySelector("#wineo-management-pages-template");
+      variants.forEach((variant) => {
+        const content = variant.querySelector(".wineo-content");
+        if (content && managementTemplate) content.append(managementTemplate.content.cloneNode(true));
+      });
+      root.querySelectorAll("button").forEach((button) => button.classList.add("cursor-interaction"));
+      const defaultSettings = {
+        gamemode: true,
+        mangohud: false,
+        wayland: false,
+        runner: "GE-Proton-Latest",
+        architecture: "win64",
+        prefixRoot: "/home/michael/.local/share/wineo/prefixes",
+        runnerRoot: "/home/michael/.local/share/wineo/runners",
+        dxvkRoot: "/home/michael/.local/share/wineo/dxvk",
+        vkd3dRoot: "/home/michael/.local/share/wineo/vkd3d-proton",
+        stopTimeout: "8",
+        logSize: "10",
+        artIcon: true,
+        artGrid: true,
+        artHero: true,
+        artLogo: false,
+        envName0: "MANGOHUD",
+        envValue0: "1",
+        envName1: "WINEDEBUG",
+        envValue1: "-all"
+      };
+      const defaultSnapshots = [
+        { id: "hades-before-update", label: "before-graphics-update", environment: "hades", time: "Today, 9:18 AM", size: "42.6 GiB" },
+        { id: "hades-clean", label: "clean-prefix", environment: "hades", time: "Yesterday, 8:42 PM", size: "41.9 GiB" },
+        { id: "knight-first-run", label: "first-launch", environment: "hollow-knight", time: "Sep 28, 6:05 PM", size: "8.2 GiB" }
+      ];
+      const state = {
+        theme: "system",
+        runState: "inactive",
+        animationMs: 160,
+        reviewScenario: "windows",
+        screen: "library",
+        panelOpen: true,
+        panelView: "details",
+        target: "application",
+        selectedGame: "hades",
+        dxvkAvailable: false,
+        panelMessage: "",
+        pageState: "normal",
+        settingsDraft: { ...defaultSettings },
+        settingsSaved: { ...defaultSettings },
+        settingsFeedback: "",
+        apiKeyFeedback: "",
+        snapshotLabel: "before-next-update",
+        snapshotEnvironment: "hades",
+        snapshots: defaultSnapshots.map((snapshot) => ({ ...snapshot })),
+        removedSnapshots: [],
+        newSnapshot: null,
+        snapshotReview: null,
+        apiKeySource: "No key",
+        snapshotFeedback: "",
+        packageRemoved: [],
+        pendingPackageDelete: "",
+        downloadProvider: "GE-Proton",
+        downloadRelease: "GE-Proton9-21",
+        downloadMore: false,
+        downloadJob: null,
+        downloadFeedback: "",
+        checkupHealthy: false,
+        checkupChecking: false,
+        checkupIssues: { runner: true, snapshot: true, leftover: true },
+        checkupFixes: { runner: true, snapshot: true, leftover: false },
+        checkupFeedback: "",
+        trashRemaining: ["hades-removed", "old-shortcut"],
+        trashAge: "30",
+        trashDialog: null,
+        trashFeedback: ""
+      };
+
+      function copy(value) {
+        return JSON.parse(JSON.stringify(value));
+      }
+
+      function applySavedState(saved) {
+        if (!saved || typeof saved !== "object") return;
+        if (["system", "light", "dark"].includes(saved.theme)) state.theme = saved.theme;
+        if (["inactive", "running", "busy", "error"].includes(saved.runState)) state.runState = saved.runState;
+        if (Number.isFinite(saved.animationMs)) state.animationMs = Math.max(0, Math.min(600, saved.animationMs));
+        if (["windows", "native", "missing-prerequisite", "long-paths"].includes(saved.reviewScenario)) state.reviewScenario = saved.reviewScenario;
+        if (["library", "review", "created", "settings", "snapshots", "downloads", "checkup", "trash"].includes(saved.screen)) state.screen = saved.screen;
+        if (typeof saved.panelOpen === "boolean") state.panelOpen = saved.panelOpen;
+        if (["details", "log"].includes(saved.panelView)) state.panelView = saved.panelView;
+        if (["application", "winecfg"].includes(saved.target)) state.target = saved.target;
+        if (typeof saved.dxvkAvailable === "boolean") state.dxvkAvailable = saved.dxvkAvailable;
+        if (["normal", "empty", "busy", "error"].includes(saved.pageState)) state.pageState = saved.pageState;
+        ["settingsDraft", "settingsSaved"].forEach((key) => {
+          if (!saved[key] || typeof saved[key] !== "object") return;
+          Object.keys(defaultSettings).forEach((setting) => {
+            if (typeof saved[key][setting] === typeof defaultSettings[setting]) state[key][setting] = saved[key][setting];
+          });
+        });
+        if (typeof saved.snapshotLabel === "string") state.snapshotLabel = saved.snapshotLabel.slice(0, 72);
+        if (["hades", "hollow-knight", "dead-cells"].includes(saved.snapshotEnvironment)) state.snapshotEnvironment = saved.snapshotEnvironment;
+        if (Array.isArray(saved.snapshots)) state.snapshots = saved.snapshots.filter((snapshot) => snapshot && typeof snapshot.id === "string" && typeof snapshot.label === "string").map((snapshot) => ({ id: snapshot.id, label: snapshot.label.slice(0, 72), environment: String(snapshot.environment || "hades"), time: String(snapshot.time || "Saved just now"), size: String(snapshot.size || "Preview") }));
+        if (Array.isArray(saved.removedSnapshots)) state.removedSnapshots = saved.removedSnapshots.filter((id) => typeof id === "string");
+        if (saved.newSnapshot && typeof saved.newSnapshot.label === "string") state.newSnapshot = { id: "new-snapshot", label: saved.newSnapshot.label.slice(0, 72), environment: String(saved.newSnapshot.environment || "hades"), time: "Saved just now", size: "Preview" };
+        if (Array.isArray(saved.packageRemoved)) state.packageRemoved = saved.packageRemoved.filter((id) => typeof id === "string");
+        if (["GE-Proton", "Wine-GE", "DXVK", "vkd3d-proton"].includes(saved.downloadProvider)) state.downloadProvider = saved.downloadProvider;
+        if (["GE-Proton9-21", "GE-Proton9-20", "GE-Proton9-19", "Wine-GE-8-26", "Wine-GE-8-25", "DXVK 2.7", "DXVK 2.6", "DXVK 2.5", "vkd3d-proton 2.14", "vkd3d-proton 2.13", "vkd3d-proton 2.12"].includes(saved.downloadRelease)) state.downloadRelease = saved.downloadRelease;
+        state.downloadMore = saved.downloadMore === true;
+        if (typeof saved.checkupHealthy === "boolean") state.checkupHealthy = saved.checkupHealthy;
+        if (saved.checkupFixes && typeof saved.checkupFixes === "object") Object.keys(state.checkupFixes).forEach((key) => { if (typeof saved.checkupFixes[key] === "boolean") state.checkupFixes[key] = saved.checkupFixes[key]; });
+        if (saved.checkupIssues && typeof saved.checkupIssues === "object") Object.keys(state.checkupIssues).forEach((key) => { if (typeof saved.checkupIssues[key] === "boolean") state.checkupIssues[key] = saved.checkupIssues[key]; });
+        if (["No key", "System keyring (preview)"].includes(saved.apiKeySource)) state.apiKeySource = saved.apiKeySource;
+        if (Array.isArray(saved.trashRemaining)) state.trashRemaining = saved.trashRemaining.filter((id) => ["hades-removed", "old-shortcut"].includes(id));
+        if (["30", "60", "90"].includes(saved.trashAge)) state.trashAge = saved.trashAge;
+      }
+
+      applySavedState(initialWidgetState);
+
+      function saveState() {
+        const api = globalThis.openai;
+        if (!api || typeof api.setWidgetState !== "function") return;
+        const snapshot = {
+          theme: state.theme,
+          runState: state.runState,
+          animationMs: state.animationMs,
+          reviewScenario: state.reviewScenario,
+          screen: state.screen,
+          panelOpen: state.panelOpen,
+          panelView: state.panelView,
+          target: state.target,
+          dxvkAvailable: state.dxvkAvailable,
+          pageState: state.pageState,
+          settingsDraft: copy(state.settingsDraft),
+          settingsSaved: copy(state.settingsSaved),
+          snapshotLabel: state.snapshotLabel,
+          snapshotEnvironment: state.snapshotEnvironment,
+          snapshots: copy(state.snapshots),
+          removedSnapshots: copy(state.removedSnapshots),
+          newSnapshot: state.newSnapshot ? copy(state.newSnapshot) : null,
+          packageRemoved: copy(state.packageRemoved),
+          downloadProvider: state.downloadProvider,
+          downloadRelease: state.downloadRelease,
+          downloadMore: state.downloadMore,
+          checkupHealthy: state.checkupHealthy,
+          checkupFixes: copy(state.checkupFixes),
+          checkupIssues: copy(state.checkupIssues),
+          apiKeySource: state.apiKeySource,
+          trashRemaining: copy(state.trashRemaining),
+          trashAge: state.trashAge
+        };
+        try {
+          Promise.resolve(api.setWidgetState({
+            modelContent: { reviewScenario: state.reviewScenario },
+            privateContent: snapshot
+          })).catch(() => {});
+        } catch (_) {}
+      }
+
+      function scenarioData() {
+        if (state.reviewScenario === "native") {
+          return {
+            title: "Celeste",
+            name: "celeste",
+            platform: "Linux native",
+            startingPoint: "Native Linux install",
+            path: "/home/michael/Games/Celeste/Celeste.x86_64",
+            runner: "",
+            runnerText: "",
+            architecture: "x86_64",
+            prefix: "",
+            prefixVisible: false,
+            protonVisible: false,
+            prerequisiteVisible: false,
+            runtimeVisible: false
+          };
+        }
+        if (state.reviewScenario === "long-paths") {
+          return {
+            title: "Hades",
+            name: "hades-archive",
+            platform: "Windows",
+            startingPoint: "Existing install",
+            path: "/run/media/michael/Archive/Library/Games/Steam/steamapps/common/Hades/Content/Win64/Hades.exe",
+            runner: "GE-Proton-Latest",
+            runnerText: "Resolves to GE-Proton9-20",
+            architecture: "win64",
+            prefix: "/home/michael/.local/share/wineo/prefixes/favorites/roguelikes/steam/hades-production",
+            prefixVisible: true,
+            protonVisible: true,
+            prerequisiteVisible: false,
+            runtimeVisible: true
+          };
+        }
+        const missingPrerequisite = state.reviewScenario === "missing-prerequisite";
+        return {
+          title: "Hades",
+          name: "hades",
+          platform: "Windows",
+          startingPoint: "Existing install",
+          path: "/mnt/games/SteamLibrary/steamapps/common/Hades/Hades.exe",
+          runner: missingPrerequisite ? "wine-tkg" : "GE-Proton-Latest",
+          runnerText: missingPrerequisite ? "Selected runner: wine-tkg" : "Resolves to GE-Proton9-20",
+          architecture: "win64",
+          prefix: "/home/michael/.local/share/wineo/prefixes/hades",
+          prefixVisible: true,
+          protonVisible: !missingPrerequisite,
+          prerequisiteVisible: missingPrerequisite,
+          runtimeVisible: true
+        };
+      }
+
+      function setTone(element, tone) {
+        if (!element) return;
+        if (tone) element.dataset.tone = tone;
+        else delete element.dataset.tone;
+      }
+
+      function renderRunState(variant) {
+        const play = variant.querySelector("[data-play]");
+        const playLabel = variant.querySelector("[data-play-label]");
+        const stop = variant.querySelector("[data-stop]");
+        const runStatus = variant.querySelector("[data-run-status]");
+        const libraryStatus = variant.querySelector("[data-library-status]");
+        const byState = {
+          inactive: { status: "Ready", tone: "", disabled: false },
+          running: { status: "Running", tone: "success", disabled: true },
+          busy: { status: "Starting", tone: "warning", disabled: true },
+          error: { status: "Launch failed", tone: "danger", disabled: false }
+        }[state.runState];
+        if (playLabel) playLabel.textContent = "Play";
+        if (play) play.disabled = byState.disabled;
+        if (stop) stop.disabled = state.runState !== "running";
+        if (runStatus) {
+          runStatus.textContent = byState.status;
+          setTone(runStatus, byState.tone);
+        }
+        if (libraryStatus) {
+          libraryStatus.textContent = byState.status;
+          setTone(libraryStatus, byState.tone);
+        }
+      }
+
+      function renderReview(variant, data) {
+        const values = {
+          "[data-review-title]": data.title,
+          "[data-review-name]": data.name,
+          "[data-review-platform]": data.platform,
+          "[data-review-starting-point]": data.startingPoint,
+          "[data-review-path]": data.path,
+          "[data-review-runner]": data.runner,
+          "[data-review-arch]": data.architecture,
+          "[data-review-prefix]": data.prefix,
+          "[data-review-native-arch]": data.architecture
+        };
+        Object.entries(values).forEach(([selector, value]) => {
+          const element = variant.querySelector(selector);
+          if (element) element.textContent = value;
+        });
+        const runnerText = variant.querySelector("[data-runner-resolution]");
+        if (runnerText) runnerText.textContent = data.runnerText;
+        const runtime = variant.querySelector("[data-runtime-section]");
+        const nativeArchitecture = variant.querySelector("[data-native-architecture]");
+        if (runtime) runtime.hidden = !data.runtimeVisible;
+        if (nativeArchitecture) nativeArchitecture.hidden = data.runtimeVisible;
+        const prefixNotice = variant.querySelector("[data-existing-prefix]");
+        const protonNotice = variant.querySelector("[data-proton-notice]");
+        const prerequisite = variant.querySelector("[data-prerequisite-notice]");
+        const create = variant.querySelector("[data-create-preview]");
+        if (prefixNotice) prefixNotice.hidden = !data.prefixVisible;
+        if (protonNotice) protonNotice.hidden = !data.protonVisible;
+        if (prerequisite) prerequisite.hidden = !data.prerequisiteVisible;
+        if (create) create.disabled = data.prerequisiteVisible && !state.dxvkAvailable;
+        const prerequisiteTitle = variant.querySelector("[data-prerequisite-title]");
+        const prerequisiteCopy = variant.querySelector("[data-prerequisite-copy]");
+        const download = variant.querySelector("[data-download-dxvk]");
+        const downloadStatus = variant.querySelector("[data-download-status]");
+        if (prerequisiteTitle) prerequisiteTitle.textContent = state.dxvkAvailable ? "DXVK 2.7 is ready in this preview" : "Missing DXVK 2.7";
+        if (prerequisiteCopy) prerequisiteCopy.textContent = state.dxvkAvailable ? "The prerequisite is marked available for this local preview." : "Download it before creating this environment?";
+        if (download) {
+          download.textContent = state.dxvkAvailable ? "Ready" : "Download DXVK";
+          download.disabled = state.dxvkAvailable;
+        }
+        if (downloadStatus) downloadStatus.textContent = state.dxvkAvailable ? "Preview only. No file was fetched." : "";
+        const createdName = variant.querySelector("[data-created-name]");
+        if (createdName) createdName.textContent = data.name;
+      }
+
+      function snapshotFor(id) {
+        if (id === "new-snapshot") return state.newSnapshot;
+        return state.snapshots.find((snapshot) => snapshot.id === id);
+      }
+
+      function isSettingsDirty() {
+        return JSON.stringify(state.settingsDraft) !== JSON.stringify(state.settingsSaved);
+      }
+
+      function renderManagement(variant) {
+        const managementScreens = ["settings", "snapshots", "downloads", "checkup", "trash"];
+        const management = managementScreens.includes(state.screen);
+        const titles = {
+          settings: ["Settings", "Wineo defaults"],
+          snapshots: ["Snapshots", "Prefix restore points"],
+          downloads: ["Downloads", "Runners and graphics components"],
+          checkup: ["Checkup", "Configuration and environment health"],
+          trash: ["Trash", "Removed environments"]
+        };
+        const toolbar = variant.querySelector("[data-toolbar-managed]");
+        if (toolbar) {
+          toolbar.hidden = !management;
+          const [title, subtitle] = titles[state.screen] || ["", ""];
+          toolbar.querySelector("[data-managed-heading]").textContent = title;
+          toolbar.querySelector("[data-managed-subtitle]").textContent = subtitle;
+        }
+        variant.querySelectorAll("[data-page]").forEach((page) => page.hidden = page.dataset.page !== state.screen);
+        variant.querySelectorAll("[data-nav]").forEach((button) => {
+          if (button.dataset.nav === state.screen) button.setAttribute("aria-current", "page");
+          else button.removeAttribute("aria-current");
+        });
+        const pages = variant.querySelector("[data-management-pages]");
+        if (pages) pages.hidden = !management;
+        if (!management) return;
+
+        const page = variant.querySelector(`[data-page="${state.screen}"]`);
+        if (!page) return;
+        const demoState = page.querySelector("[data-page-demo-state]");
+        const content = page.querySelector("[data-page-content]");
+        const emptyText = {
+          settings: ["Using built-in defaults", "No custom defaults have been saved."],
+          snapshots: ["No snapshots yet", "No snapshots are saved for this environment."],
+          downloads: ["No installed builds", "No runners or graphics components are installed."],
+          checkup: ["No problems found", "Configuration, environments, and runtime state passed the check."],
+          trash: ["Trash is empty", "No removed environments are waiting here."]
+        }[state.screen];
+        const stateText = {
+          empty: emptyText,
+          busy: ["Working…", "Loading this page."],
+          error: ["Could not load this page", "Try again to reload the page."]
+        }[state.pageState];
+        if (demoState) {
+          demoState.hidden = state.pageState === "normal";
+          const heading = demoState.querySelector("[data-page-state-title]");
+          const copyText = demoState.querySelector("[data-page-state-copy]");
+          const retry = demoState.querySelector("[data-page-state-retry]");
+          if (heading && stateText) heading.textContent = stateText[0];
+          if (copyText && stateText) copyText.textContent = stateText[1];
+          if (retry) retry.hidden = state.pageState !== "error";
+        }
+        if (content) content.hidden = state.pageState !== "normal";
+
+        page.querySelectorAll("[data-setting]").forEach((control) => {
+          const value = state.settingsDraft[control.dataset.setting];
+          if (control.type === "checkbox") control.checked = Boolean(value);
+          else if (control.value !== String(value)) control.value = String(value);
+        });
+        if (state.screen === "settings") {
+          const dirty = isSettingsDirty();
+          const status = page.querySelector("[data-settings-dirty]");
+          const count = Object.keys(defaultSettings).filter((key) => state.settingsDraft[key] !== state.settingsSaved[key]).length;
+          const save = page.querySelector('[data-action="settings-save"]');
+          const revert = page.querySelector('[data-action="settings-revert"]');
+          if (status) status.textContent = dirty ? `${count} unsaved ${count === 1 ? "change" : "changes"}` : "Saved";
+          const countText = page.querySelector("[data-settings-count]");
+          if (countText) countText.textContent = dirty ? `(${count})` : "";
+          if (save) save.disabled = !dirty || state.pageState !== "normal";
+          if (revert) revert.disabled = !dirty || state.pageState !== "normal";
+          const feedback = page.querySelector("[data-settings-feedback]");
+          if (feedback) feedback.textContent = state.settingsFeedback;
+        }
+        if (state.screen === "snapshots") {
+          const label = page.querySelector("[data-snapshot-label]");
+          const environment = page.querySelector("[data-snapshot-environment]");
+          if (label && label.value !== state.snapshotLabel) label.value = state.snapshotLabel;
+          if (environment && environment.value !== state.snapshotEnvironment) environment.value = state.snapshotEnvironment;
+          page.querySelectorAll("[data-snapshot-row]").forEach((row) => {
+            const id = row.dataset.snapshotRow;
+            const record = id === "new-snapshot" ? state.newSnapshot : snapshotFor(id);
+            row.hidden = !record || state.removedSnapshots.includes(id) || record.environment !== state.snapshotEnvironment;
+            if (record) row.querySelector("strong").textContent = record.label;
+          });
+          if (state.newSnapshot) {
+            const newLabel = page.querySelector("[data-snapshot-new-label]");
+            const newMeta = page.querySelector("[data-snapshot-new-meta]");
+            if (newLabel) newLabel.textContent = state.newSnapshot.label;
+            if (newMeta) newMeta.textContent = `${state.newSnapshot.environment} · ${state.newSnapshot.time} · ${state.newSnapshot.size}`;
+          }
+          const createReview = page.querySelector("[data-snapshot-create-review]");
+          const restoreReview = page.querySelector("[data-snapshot-restore-review]");
+          const deleteReview = page.querySelector("[data-snapshot-delete-review]");
+          if (createReview) createReview.hidden = state.snapshotReview?.kind !== "create";
+          if (restoreReview) restoreReview.hidden = state.snapshotReview?.kind !== "restore";
+          if (deleteReview) deleteReview.hidden = state.snapshotReview?.kind !== "delete";
+          const createCopy = page.querySelector("[data-snapshot-create-copy]");
+          if (createCopy) createCopy.textContent = `Create “${state.snapshotLabel.trim() || "Untitled snapshot"}” for ${state.snapshotEnvironment}. This preview does not write files.`;
+          const reviewRecord = state.snapshotReview && snapshotFor(state.snapshotReview.id);
+          const restoreCopy = page.querySelector("[data-snapshot-restore-copy]");
+          const deleteCopy = page.querySelector("[data-snapshot-delete-copy]");
+          if (restoreCopy) restoreCopy.textContent = reviewRecord ? `Restore “${reviewRecord.label}” for ${reviewRecord.environment}? This restores the selected prefix and Wineo configuration.` : "Choose a saved snapshot to restore.";
+          if (deleteCopy) deleteCopy.textContent = reviewRecord ? `Permanently delete “${reviewRecord.label}” (${reviewRecord.size}). This preview only updates the list.` : "Choose a saved snapshot to delete.";
+          const report = page.querySelector("[data-snapshot-result]");
+          const reportText = page.querySelector("[data-snapshot-result-copy]");
+          if (report) report.hidden = !state.snapshotFeedback.startsWith("Restored ");
+          if (reportText) reportText.textContent = state.snapshotFeedback;
+          const feedback = page.querySelector("[data-snapshot-feedback]");
+          if (feedback) feedback.textContent = state.snapshotFeedback.startsWith("Restored ") ? "" : state.snapshotFeedback;
+          const refresh = page.querySelector('[data-action="snapshots-refresh"]');
+          if (refresh) refresh.disabled = false;
+        }
+        if (state.screen === "downloads") {
+          const provider = page.querySelector("[data-download-provider]");
+          const release = page.querySelector("[data-download-release]");
+          if (provider && provider.value !== state.downloadProvider) provider.value = state.downloadProvider;
+          if (release) {
+            release.querySelectorAll("option[data-provider]").forEach((option) => {
+              option.hidden = option.dataset.provider !== state.downloadProvider || (option.hasAttribute("data-older-release") && !state.downloadMore);
+              option.disabled = option.hidden;
+            });
+            if (release.value !== state.downloadRelease) release.value = state.downloadRelease;
+          }
+          page.querySelectorAll("[data-package-row]").forEach((row) => row.hidden = state.packageRemoved.includes(row.dataset.packageRow));
+          const review = page.querySelector("[data-package-delete-review]");
+          if (review) review.hidden = !state.pendingPackageDelete;
+          const packageNames = { "ge-proton-832": ["GE-Proton8-32", "1.6 GiB"], "dxvk-26": ["DXVK 2.6", "81 MiB"], "vkd3d-213": ["vkd3d-proton 2.13", "23 MiB"] };
+          const pending = packageNames[state.pendingPackageDelete];
+          const copyText = page.querySelector("[data-package-delete-copy]");
+          if (copyText) copyText.textContent = pending ? `Remove unused ${pending[0]} and free ${pending[1]} in this preview?` : "Choose an unused component to remove.";
+          const job = page.querySelector("[data-download-job]");
+          if (job) job.hidden = !state.downloadJob;
+          if (state.downloadJob) {
+            const jobTitle = page.querySelector("[data-download-job-title]");
+            const jobCopy = page.querySelector("[data-download-job-copy]");
+            const progress = page.querySelector("[data-download-progress]");
+            const cancel = page.querySelector('[data-action="download-cancel"]');
+            if (jobTitle) jobTitle.textContent = state.downloadJob.complete ? "Install preview complete" : state.downloadJob.cancelled ? "Install preview canceled" : "Installing preview";
+            if (jobCopy) jobCopy.textContent = `${state.downloadJob.provider} · ${state.downloadJob.release}. No files were fetched or installed.`;
+            if (progress) progress.value = state.downloadJob.progress;
+            if (cancel) cancel.disabled = state.downloadJob.complete || state.downloadJob.cancelled;
+          }
+          const feedback = page.querySelector("[data-download-feedback]");
+          if (feedback) feedback.textContent = state.downloadFeedback;
+          const install = page.querySelector('[data-action="download-install"]');
+          if (install) install.disabled = Boolean(state.downloadJob && !state.downloadJob.complete && !state.downloadJob.cancelled);
+        }
+        if (state.screen === "checkup") {
+          const results = page.querySelector("[data-checkup-results]");
+          const healthy = page.querySelector("[data-checkup-healthy]");
+          if (results) results.hidden = state.checkupHealthy;
+          if (healthy) healthy.hidden = !state.checkupHealthy;
+          page.querySelectorAll("[data-checkup-issue]").forEach((section) => { section.hidden = !state.checkupIssues[section.dataset.checkupIssue]; });
+          page.querySelectorAll("[data-fix-choice]").forEach((checkbox) => { checkbox.checked = state.checkupFixes[checkbox.dataset.fixChoice]; });
+          const feedback = page.querySelector("[data-checkup-feedback]");
+          if (feedback) feedback.textContent = state.checkupChecking ? "Checking configuration and environments…" : state.checkupFeedback;
+          const againButtons = page.querySelectorAll('[data-action="checkup-again"]');
+          againButtons.forEach((button) => { button.disabled = state.checkupChecking; });
+        }
+        if (state.screen === "settings") {
+          const source = page.querySelector("[data-api-key-source]");
+          const remove = page.querySelector('[data-action="api-key-remove"]');
+          const feedback = page.querySelector("[data-api-key-feedback]");
+          if (source) source.textContent = state.apiKeySource === "No key" ? "No key configured" : state.apiKeySource;
+          if (remove) remove.disabled = state.apiKeySource === "No key";
+          if (feedback) feedback.textContent = state.apiKeyFeedback || "";
+        }
+        if (state.screen === "trash") {
+          page.querySelectorAll("[data-trash-row]").forEach((row) => { row.hidden = !state.trashRemaining.includes(row.dataset.trashRow); });
+          const age = page.querySelector("[data-trash-age]");
+          if (age && age.value !== state.trashAge) age.value = state.trashAge;
+          const dialog = state.trashDialog;
+          const deleteReview = page.querySelector("[data-trash-delete-review]");
+          const pruneReview = page.querySelector("[data-trash-prune-review]");
+          const emptyReview = page.querySelector("[data-trash-empty-review]");
+          if (deleteReview) deleteReview.hidden = dialog?.kind !== "delete";
+          if (pruneReview) pruneReview.hidden = dialog?.kind !== "prune";
+          if (emptyReview) emptyReview.hidden = dialog?.kind !== "empty";
+          const rowNames = { "hades-removed": "hades-removed (prefix included)", "old-shortcut": "old-shortcut (prefix left in place)" };
+          const deleteCopy = page.querySelector("[data-trash-delete-copy]");
+          const pruneCopy = page.querySelector("[data-trash-prune-copy]");
+          const emptyCopy = page.querySelector("[data-trash-empty-copy]");
+          if (deleteCopy) deleteCopy.textContent = dialog?.kind === "delete" ? `Delete ${rowNames[dialog.id] || dialog.id} forever?` : "Choose a removed environment.";
+          if (pruneCopy) pruneCopy.textContent = dialog?.kind === "prune" ? `Delete ${dialog.ids.length} entries at least ${state.trashAge} days old: ${dialog.ids.map((id) => rowNames[id]).join(", ") || "none"}.` : "Choose an age threshold.";
+          if (emptyCopy) emptyCopy.textContent = `Permanently delete all ${state.trashRemaining.length} remaining entries? Prefixes marked as included are included in this preview's deletion review.`;
+          const feedback = page.querySelector("[data-trash-feedback]");
+          if (feedback) feedback.textContent = state.trashFeedback;
+        }
+      }
+
+      function renderVariant(variant) {
+        const windowElement = variant.querySelector(".wineo-window");
+        const library = variant.querySelector('[data-screen="library"]');
+        const review = variant.querySelector('[data-screen="review"]');
+        const created = variant.querySelector('[data-screen="created"]');
+        const panel = variant.querySelector("[data-detail-panel]");
+        const panelOpen = state.screen === "library" && state.panelOpen;
+        const details = variant.querySelector("[data-panel-details]");
+        const log = variant.querySelector("[data-panel-log]");
+        const search = variant.querySelector("[data-library-search]");
+        const addButton = variant.querySelector("[data-add-environment]");
+        const toolbarBack = variant.querySelector("[data-toolbar-back]");
+        if (windowElement) {
+          windowElement.dataset.theme = state.theme;
+          windowElement.style.setProperty("--wineo-motion", `${state.animationMs}ms`);
+          windowElement.style.setProperty("--wineo-cards-motion", `${Math.round(state.animationMs * 0.75)}ms`);
+        }
+        if (library) library.hidden = state.screen !== "library";
+        if (review) review.hidden = state.screen !== "review";
+        if (created) created.hidden = state.screen !== "created";
+        variant.querySelectorAll("[data-toolbar-library]").forEach((element) => element.hidden = state.screen !== "library");
+        variant.querySelectorAll("[data-toolbar-review]").forEach((element) => element.hidden = state.screen !== "review");
+        variant.querySelectorAll("[data-toolbar-created]").forEach((element) => element.hidden = state.screen !== "created");
+        if (search) search.hidden = state.screen !== "library";
+        if (addButton) addButton.hidden = state.screen !== "library";
+        if (toolbarBack) toolbarBack.hidden = !["review", "created"].includes(state.screen);
+        if (panel) {
+          panel.hidden = state.screen !== "library";
+          panel.setAttribute("aria-hidden", String(!panelOpen));
+          panel.inert = !panelOpen;
+          panel.querySelector("[data-panel-details]").hidden = state.panelView === "log";
+          panel.querySelector("[data-panel-log]").hidden = state.panelView !== "log";
+        }
+        const content = variant.querySelector(".wineo-content");
+        if (content) {
+          content.dataset.panelOpen = String(panelOpen);
+          content.dataset.screen = state.screen;
+        }
+        variant.querySelectorAll("[data-game]").forEach((card) => {
+          card.setAttribute("aria-pressed", String(card.dataset.game === state.selectedGame));
+        });
+        const target = variant.querySelector("[data-target-select]");
+        if (target) target.value = state.target;
+        const logTarget = variant.querySelector("[data-log-target]");
+        if (logTarget && target && target.selectedOptions[0]) logTarget.textContent = target.selectedOptions[0].textContent;
+        const searchInput = variant.querySelector('[data-library-search] input');
+        if (searchInput) {
+          const query = searchInput.value.trim().toLowerCase();
+          variant.querySelectorAll(".wineo-game-card").forEach((card) => {
+            card.hidden = query !== "" && !card.textContent.toLowerCase().includes(query);
+          });
+        }
+        const message = variant.querySelector("[data-panel-message]");
+        if (message) message.textContent = state.panelMessage;
+        renderRunState(variant);
+        renderReview(variant, scenarioData());
+        renderManagement(variant);
+      }
+
+      function renderAll(persist = false) {
+        Object.assign(sharedSettings, {
+          theme: state.theme,
+          runState: state.runState,
+          animationMs: state.animationMs,
+          reviewScenario: state.reviewScenario,
+          pageState: state.pageState
+        });
+        variants.forEach(renderVariant);
+        if (persist) saveState();
+      }
+
+      function goToScreen(screen) {
+        state.screen = screen;
+        state.panelOpen = false;
+        state.panelView = "details";
+        state.panelMessage = "";
+        renderAll(true);
+      }
+
+      let downloadTimer = null;
+      let checkupTimer = null;
+
+      function handleManagementAction(variant, button) {
+        const action = button.dataset.action;
+        if (action === "page-state-retry") {
+          state.pageState = "normal";
+        } else if (action === "settings-save") {
+          state.settingsSaved = copy(state.settingsDraft);
+          state.settingsFeedback = "Global defaults saved in this preview.";
+        } else if (action === "settings-revert") {
+          state.settingsDraft = copy(state.settingsSaved);
+          state.settingsFeedback = "Unsaved changes reverted.";
+        } else if (action === "api-key-set") {
+          state.apiKeyFeedback = "Set key preview: Wineo would open a secure key prompt. No key was entered or saved.";
+        } else if (action === "api-key-remove") {
+          state.apiKeySource = "No key";
+          state.apiKeyFeedback = "Key removal shown in this preview. No secret was stored.";
+        } else if (action === "snapshot-review-create") {
+          const label = state.snapshotLabel.trim();
+          const existing = [...state.snapshots, state.newSnapshot].filter(Boolean).some((snapshot) => snapshot.environment === state.snapshotEnvironment && snapshot.label === label && !state.removedSnapshots.includes(snapshot.id));
+          if (!/^[A-Za-z0-9_-]+$/.test(label)) state.snapshotFeedback = "Use letters, digits, dashes, or underscores for the label.";
+          else if (existing) state.snapshotFeedback = "This snapshot label already exists.";
+          else {
+            state.snapshotReview = { kind: "create" };
+            state.snapshotFeedback = "";
+          }
+        } else if (action === "snapshot-cancel-create" || action === "snapshot-cancel-review") {
+          state.snapshotReview = null;
+        } else if (action === "snapshot-confirm-create") {
+          state.newSnapshot = { id: "new-snapshot", label: state.snapshotLabel.trim(), environment: state.snapshotEnvironment, time: "Just now", size: "Preview" };
+          state.removedSnapshots = state.removedSnapshots.filter((id) => id !== "new-snapshot");
+          state.snapshotReview = null;
+          state.snapshotFeedback = `Created “${state.newSnapshot.label}” in the local preview.`;
+        } else if (action === "snapshot-review-restore" || action === "snapshot-review-delete") {
+          state.snapshotReview = { kind: action === "snapshot-review-restore" ? "restore" : "delete", id: button.dataset.snapshotId };
+          state.snapshotFeedback = "";
+        } else if (action === "snapshot-confirm-restore") {
+          const snapshot = snapshotFor(state.snapshotReview?.id);
+          if (snapshot) state.snapshotFeedback = `Restored ${snapshot.label} for ${snapshot.environment} in the preview, including prefix and Wineo configuration.`;
+          state.snapshotReview = null;
+        } else if (action === "snapshot-confirm-delete") {
+          const id = state.snapshotReview?.id;
+          const snapshot = snapshotFor(id);
+          if (snapshot) {
+            if (id === "new-snapshot") state.newSnapshot = null;
+            else if (!state.removedSnapshots.includes(id)) state.removedSnapshots.push(id);
+            state.snapshotFeedback = `Deleted “${snapshot.label}” in the local preview.`;
+          }
+          state.snapshotReview = null;
+        } else if (action === "snapshots-refresh") {
+          state.snapshotFeedback = "Snapshot list refreshed in this preview.";
+        } else if (action === "downloads-refresh") {
+          state.downloadFeedback = "Installed component list refreshed in this preview.";
+        } else if (action === "downloads-more") {
+          state.downloadMore = true;
+          state.downloadFeedback = "More release choices are available in this preview.";
+        } else if (action === "package-review-delete") {
+          state.pendingPackageDelete = button.dataset.packageId;
+        } else if (action === "package-cancel-delete") {
+          state.pendingPackageDelete = "";
+        } else if (action === "package-confirm-delete") {
+          if (state.pendingPackageDelete && !state.packageRemoved.includes(state.pendingPackageDelete)) state.packageRemoved.push(state.pendingPackageDelete);
+          state.downloadFeedback = "Unused component removed from the local preview.";
+          state.pendingPackageDelete = "";
+        } else if (action === "download-install") {
+          if (state.downloadJob && !state.downloadJob.complete && !state.downloadJob.cancelled) return;
+          state.downloadJob = { provider: state.downloadProvider, release: state.downloadRelease, progress: 0, complete: false, cancelled: false };
+          state.downloadFeedback = "";
+          if (downloadTimer) clearInterval(downloadTimer);
+          downloadTimer = setInterval(() => {
+            if (!state.downloadJob || state.downloadJob.cancelled) {
+              clearInterval(downloadTimer);
+              downloadTimer = null;
+              return;
+            }
+            state.downloadJob.progress = Math.min(100, state.downloadJob.progress + 20);
+            if (state.downloadJob.progress === 100) {
+              state.downloadJob.complete = true;
+              clearInterval(downloadTimer);
+              downloadTimer = null;
+              state.downloadFeedback = "Install preview complete. No files were fetched or installed.";
+            }
+            renderAll();
+          }, 280);
+        } else if (action === "download-cancel") {
+          if (downloadTimer) clearInterval(downloadTimer);
+          downloadTimer = null;
+          if (state.downloadJob) state.downloadJob.cancelled = true;
+          state.downloadFeedback = "Install preview canceled. No files were fetched.";
+        } else if (action === "checkup-again") {
+          if (checkupTimer) clearTimeout(checkupTimer);
+          state.checkupHealthy = false;
+          state.checkupChecking = true;
+          state.checkupFeedback = "";
+          checkupTimer = setTimeout(() => {
+            state.checkupChecking = false;
+            const remaining = Object.values(state.checkupIssues).filter(Boolean).length;
+            state.checkupFeedback = remaining ? `Check complete: ${remaining} ${remaining === 1 ? "issue remains" : "issues remain"}.` : "Check complete: everything looks healthy.";
+            if (!remaining) state.checkupHealthy = true;
+            checkupTimer = null;
+            renderAll(true);
+          }, 520);
+        } else if (action === "checkup-fix") {
+          const selected = Object.keys(state.checkupFixes).filter((key) => state.checkupFixes[key] && state.checkupIssues[key]);
+          if (!selected.length) state.checkupFeedback = "Select at least one unresolved fix to continue.";
+          else {
+            selected.forEach((key) => {
+              state.checkupIssues[key] = false;
+              state.checkupFixes[key] = false;
+            });
+            const remaining = Object.values(state.checkupIssues).filter(Boolean).length;
+            state.checkupHealthy = remaining === 0;
+            state.checkupFeedback = state.checkupHealthy ? `Applied ${selected.length} fixes. Everything looks healthy.` : `Applied ${selected.length} ${selected.length === 1 ? "fix" : "fixes"}. ${remaining} ${remaining === 1 ? "issue remains" : "issues remain"}.`;
+          }
+        } else if (action === "trash-restore") {
+          const id = button.dataset.trashId;
+          state.trashRemaining = state.trashRemaining.filter((entry) => entry !== id);
+          state.trashFeedback = `Restore preview complete. ${id} would return to Library.`;
+        } else if (action === "trash-review-delete") {
+          state.trashDialog = { kind: "delete", id: button.dataset.trashId };
+        } else if (action === "trash-review-prune") {
+          const ages = { "hades-removed": 0, "old-shortcut": 42 };
+          const ids = state.trashRemaining.filter((id) => ages[id] >= Number(state.trashAge));
+          state.trashDialog = { kind: "prune", ids };
+        } else if (action === "trash-review-empty") {
+          state.trashDialog = { kind: "empty", ids: [...state.trashRemaining] };
+        } else if (action === "trash-cancel") {
+          state.trashDialog = null;
+        } else if (action === "trash-confirm-delete") {
+          const id = state.trashDialog?.id;
+          if (id) state.trashRemaining = state.trashRemaining.filter((entry) => entry !== id);
+          state.trashFeedback = `${id || "Entry"} permanently deleted in this preview.`;
+          state.trashDialog = null;
+        } else if (action === "trash-confirm-prune" || action === "trash-confirm-empty") {
+          const ids = state.trashDialog?.ids || [];
+          state.trashRemaining = state.trashRemaining.filter((entry) => !ids.includes(entry));
+          state.trashFeedback = ids.length ? `Removed ${ids.length} ${ids.length === 1 ? "entry" : "entries"} in this preview.` : "No matching entries to remove.";
+          state.trashDialog = null;
+        }
+        renderAll(true);
+      }
+
+      variants.forEach((variant) => {
+        variant.querySelectorAll("[data-nav]").forEach((button) => {
+          button.addEventListener("click", () => goToScreen(button.dataset.nav));
+        });
+        variant.addEventListener("click", (event) => {
+          const button = event.target.closest("[data-action], [data-page-state-retry]");
+          if (!button || !variant.contains(button)) return;
+          if (button.hasAttribute("data-page-state-retry")) button.dataset.action = "page-state-retry";
+          handleManagementAction(variant, button);
+          const confirmAction = {
+            "snapshot-review-create": "snapshot-confirm-create",
+            "snapshot-review-restore": "snapshot-confirm-restore",
+            "snapshot-review-delete": "snapshot-confirm-delete",
+            "package-review-delete": "package-confirm-delete",
+            "trash-review-delete": "trash-confirm-delete",
+            "trash-review-prune": "trash-confirm-prune",
+            "trash-review-empty": "trash-confirm-empty"
+          }[button.dataset.action];
+          if (confirmAction) variant.querySelector(`[data-action="${confirmAction}"]`)?.focus();
+        });
+        variant.addEventListener("input", (event) => {
+          const control = event.target;
+          if (!control.matches("[data-setting]")) return;
+          state.settingsDraft[control.dataset.setting] = control.type === "checkbox" ? control.checked : control.value;
+          state.settingsFeedback = "";
+          renderAll(true);
+        });
+        variant.addEventListener("change", (event) => {
+          const control = event.target;
+          if (control.matches("[data-setting]")) {
+            state.settingsDraft[control.dataset.setting] = control.type === "checkbox" ? control.checked : control.value;
+            state.settingsFeedback = "";
+          } else if (control.matches("[data-snapshot-label]")) state.snapshotLabel = control.value;
+          else if (control.matches("[data-snapshot-environment]")) state.snapshotEnvironment = control.value;
+          else if (control.matches("[data-download-provider]")) {
+            state.downloadProvider = control.value;
+            state.downloadRelease = { "GE-Proton": "GE-Proton9-21", "Wine-GE": "Wine-GE-8-26", "DXVK": "DXVK 2.7", "vkd3d-proton": "vkd3d-proton 2.14" }[control.value];
+          }
+          else if (control.matches("[data-download-release]")) state.downloadRelease = control.value;
+          else if (control.matches("[data-fix-choice]")) state.checkupFixes[control.dataset.fixChoice] = control.checked;
+          else if (control.matches("[data-trash-age]")) state.trashAge = control.value;
+          else return;
+          renderAll(true);
+        });
+        variant.querySelectorAll("[data-game]").forEach((card) => {
+          card.addEventListener("click", () => {
+            state.selectedGame = card.dataset.game;
+            state.panelOpen = true;
+            state.panelView = "details";
+            renderAll(true);
+          });
+        });
+        variant.querySelector("[data-close-panel]")?.addEventListener("click", () => {
+          state.panelOpen = false;
+          renderAll(true);
+          variant.querySelector('[data-game="hades"]')?.focus();
+        });
+        variant.querySelector("[data-add-environment]")?.addEventListener("click", () => {
+          goToScreen("review");
+          variant.querySelector("[data-review-back]")?.focus();
+        });
+        variant.querySelector("[data-toolbar-back]")?.addEventListener("click", () => goToScreen("library"));
+        variant.querySelectorAll("[data-review-back], [data-review-back-secondary]").forEach((button) => {
+          button.addEventListener("click", () => goToScreen("library"));
+        });
+        variant.querySelector("[data-create-preview]")?.addEventListener("click", () => {
+          goToScreen("created");
+          variant.querySelector("[data-created-back]")?.focus();
+        });
+        variant.querySelector("[data-download-dxvk]")?.addEventListener("click", () => {
+          if (state.reviewScenario !== "missing-prerequisite") return;
+          state.dxvkAvailable = true;
+          renderAll(true);
+        });
+        variant.querySelector("[data-created-back]")?.addEventListener("click", () => goToScreen("review"));
+        variant.querySelector("[data-created-library]")?.addEventListener("click", () => goToScreen("library"));
+        variant.querySelector("[data-play]")?.addEventListener("click", () => {
+          state.runState = "running";
+          state.panelMessage = "Hades started in the selected preview target.";
+          renderAll(true);
+        });
+        variant.querySelector("[data-stop]")?.addEventListener("click", () => {
+          state.runState = "inactive";
+          state.panelMessage = "Hades stopped.";
+          renderAll(true);
+        });
+        variant.querySelector("[data-open-log]")?.addEventListener("click", () => {
+          state.panelView = "log";
+          renderAll(true);
+        });
+        variant.querySelector("[data-log-back]")?.addEventListener("click", () => {
+          state.panelView = "details";
+          renderAll(true);
+        });
+        variant.querySelector("[data-configure]")?.addEventListener("click", () => {
+          state.panelMessage = "Environment settings are shown in this preview.";
+          renderAll();
+        });
+        variant.querySelector("[data-artwork]")?.addEventListener("click", () => {
+          state.panelMessage = "Art options are shown in this preview.";
+          renderAll();
+        });
+        variant.querySelector("[data-open-folder]")?.addEventListener("click", () => {
+          state.panelMessage = "Additional Hades actions are shown in this preview.";
+          renderAll();
+        });
+        variant.querySelector("[data-target-select]")?.addEventListener("change", (event) => {
+          state.target = event.currentTarget.value;
+          renderAll(true);
+        });
+        variant.querySelector('[data-library-search] input')?.addEventListener("input", (event) => {
+          const query = event.currentTarget.value.trim().toLowerCase();
+          variant.querySelectorAll(".wineo-game-card").forEach((card) => {
+            card.hidden = query !== "" && !card.textContent.toLowerCase().includes(query);
+          });
+        });
+      });
+
+      root.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && state.panelOpen && state.screen === "library") {
+          state.panelOpen = false;
+          renderAll(true);
+          root.querySelector('.viz-carousel > [data-variant]:not([hidden]) [data-game="hades"]')?.focus();
+        }
+      });
+
+      const sharedSettings = {
+        theme: state.theme,
+        runState: state.runState,
+        animationMs: state.animationMs,
+        reviewScenario: state.reviewScenario,
+        pageState: state.pageState
+      };
+      function renderTweaks() {
+        if (state.reviewScenario !== sharedSettings.reviewScenario) state.dxvkAvailable = false;
+        state.theme = sharedSettings.theme;
+        state.runState = sharedSettings.runState;
+        state.animationMs = sharedSettings.animationMs;
+        state.reviewScenario = sharedSettings.reviewScenario;
+        state.pageState = sharedSettings.pageState;
+        renderAll(true);
+      }
+
+      if (typeof globalThis.Tweak === "function") {
+        const tweak = new globalThis.Tweak({ container: root, onChange: renderTweaks });
+        tweak.addSelect(sharedSettings, "theme", { label: "Appearance", options: ["system", "light", "dark"], reference: "wineo.theme" });
+        tweak.addSelect(sharedSettings, "runState", { label: "Sample run state", options: ["inactive", "running", "busy", "error"], reference: "wineo.runState" });
+        tweak.addSlider(sharedSettings, "animationMs", { label: "Panel animation", min: 0, max: 600, step: 20, unit: "ms", reference: "wineo.animationMs" });
+        tweak.addSelect(sharedSettings, "pageState", { label: "Page state", options: ["normal", "empty", "busy", "error"], reference: "wineo.pageState" });
+        tweak.addSelect(sharedSettings, "reviewScenario", { label: "Review scenario", options: [
+          { label: "Windows", value: "windows" },
+          { label: "Native Linux", value: "native" },
+          { label: "Missing prerequisite", value: "missing-prerequisite" },
+          { label: "Long paths", value: "long-paths" }
+        ], reference: "wineo.reviewScenario" });
+      }
+
+      if (typeof globalThis.addEventListener === "function") {
+        globalThis.addEventListener("openai:set_globals", (event) => {
+          const updated = event && event.detail && event.detail.globals && event.detail.globals.widgetState;
+          if (!updated) return;
+          applySavedState(updated.privateContent);
+          Object.assign(sharedSettings, {
+            theme: state.theme,
+            runState: state.runState,
+            animationMs: state.animationMs,
+            reviewScenario: state.reviewScenario,
+            pageState: state.pageState
+          });
+          renderAll();
+        });
+      }
+
+      if (globalThis.lucide && typeof globalThis.lucide.createIcons === "function") {
+        try { globalThis.lucide.createIcons({ attrs: { width: 16, height: 16 } }); } catch (_) {}
+      }
+
+      renderAll();
+    })();
+  </script>
+</div>

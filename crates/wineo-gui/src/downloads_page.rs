@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
 use iced::keyboard::{Key, Modifiers, key::Named};
-use iced::widget::{Space, button, column, container, pick_list, row, scrollable, text};
-use iced::{Center, Element, Fill, Task, border};
+use iced::widget::{Space, column, container, pick_list, row, scrollable, text};
+use iced::{Center, Element, Fill, Task};
 use wineo_core::build_lock::Kind;
 use wineo_core::cancel::Token;
 use wineo_core::download::{Provider, Release};
 
+use crate::ui::{accent_button, page_title, secondary_button, section, section_heading};
 use crate::{App, Message, downloads_work, focus_button, removal, sidebar, spinner};
 
 const CANCEL_ID: &str = "downloads-cancel";
@@ -460,7 +461,8 @@ impl App {
     pub(crate) fn downloads_confirm_view(&self) -> Element<'_, Message> {
         let (build, size) = self.downloads_page.review.as_ref().unwrap();
         let palette = self.palette;
-        let mut content = column![text(format!("Delete {}?", build.name)).size(22)].spacing(16);
+        let mut content = column![page_title("Delete download", palette)].spacing(16);
+        content = content.push(text(format!("Delete {}?", build.name)));
         content = content.push(text(match size {
             Some(bytes) => format!("This frees {}.", crate::size::format_bytes(*bytes)),
             None => "Measuring size...".into(),
@@ -469,15 +471,20 @@ impl App {
             row![
                 Space::new().width(Fill),
                 focus_button::control(
-                    button("Cancel").on_press(message(Event::Dismiss)).into(),
+                    secondary_button("Cancel", palette)
+                        .on_press(message(Event::Dismiss))
+                        .into(),
                     true,
                     CANCEL_ID,
                     message(Event::Dismiss)
                 ),
                 focus_button::control(
-                    button("Delete")
-                        .on_press_maybe(size.is_some().then_some(message(Event::Confirm)))
-                        .into(),
+                    accent_button(
+                        "Delete",
+                        palette.danger,
+                        size.is_some(),
+                        message(Event::Confirm),
+                    ),
                     size.is_some(),
                     CONFIRM_ID,
                     message(Event::Confirm)
@@ -488,11 +495,7 @@ impl App {
         container(content)
             .padding(24)
             .width((self.window_size.width - 40.0).clamp(280.0, 600.0))
-            .style(move |_| {
-                container::Style::default()
-                    .background(palette.surface)
-                    .border(border::rounded(8).width(1).color(palette.border))
-            })
+            .style(move |_| crate::ui::section_style(palette))
             .into()
     }
 
@@ -502,33 +505,43 @@ impl App {
         let enabled = self.downloads_action_allowed();
         let mut content = column![
             row![
-                text("Downloads").size(22).width(Fill),
-                button("Refresh").on_press_maybe(enabled.then_some(message(Event::Refresh))),
-                button("Download...").on_press_maybe(enabled.then_some(message(Event::Choose))),
+                page_title("Downloads", palette).width(Fill),
+                secondary_button("Refresh", palette)
+                    .on_press_maybe(enabled.then_some(message(Event::Refresh))),
+                accent_button(
+                    "Download...",
+                    palette.primary,
+                    enabled,
+                    message(Event::Choose)
+                ),
             ]
             .spacing(12)
             .align_y(Center)
         ]
         .spacing(16);
+        let mut feedback = column![].spacing(8);
         if page.loading {
-            content = content.push(text("Loading builds..."));
+            feedback = feedback.push(text("Loading builds...").color(palette.muted));
         }
         if let Some(error) = &page.error {
-            content = content.push(text(error).color(palette.danger));
+            feedback = feedback.push(text(error).color(palette.danger));
         }
         if let Some(notice) = &page.notice {
-            content = content.push(text(notice));
+            feedback = feedback.push(text(notice).color(palette.foreground));
         }
         if let Some(status) = &page.status {
-            content = content.push(
+            feedback = feedback.push(
                 row![
                     spinner::spinner(palette, self.spinner_angle, 16.0),
                     text(status).width(Fill),
-                    button("Cancel").on_press(message(Event::Cancel))
+                    secondary_button("Cancel", palette).on_press(message(Event::Cancel))
                 ]
                 .spacing(12)
                 .align_y(Center),
             );
+        }
+        if page.loading || page.error.is_some() || page.notice.is_some() || page.status.is_some() {
+            content = content.push(section(feedback, palette));
         }
         if page.choosing {
             let tags = page
@@ -536,8 +549,9 @@ impl App {
                 .iter()
                 .map(|release| release.tag.clone())
                 .collect::<Vec<_>>();
-            content = content.push(
+            content = content.push(section(
                 column![
+                    section_heading("Choose a download", palette),
                     row![
                         text("Provider"),
                         pick_list(Provider::ALL, page.provider, |provider| message(
@@ -550,24 +564,35 @@ impl App {
                         text("Release"),
                         pick_list(tags, page.selected.clone(), |tag| message(Event::Select(
                             tag
-                        ))),
-                        button("Load more").on_press_maybe(
-                            (enabled && page.has_more && !page.listing)
-                                .then_some(message(Event::More))
-                        ),
-                        button("Install").on_press_maybe(
-                            (enabled && page.selected.is_some() && !page.listing)
-                                .then_some(message(Event::Install))
-                        ),
-                        button("Back").on_press_maybe(enabled.then_some(message(Event::Dismiss))),
+                        )))
                     ]
                     .spacing(12)
                     .align_y(Center),
+                    row![
+                        secondary_button("Load more", palette).on_press_maybe(
+                            (enabled && page.has_more && !page.listing)
+                                .then_some(message(Event::More)),
+                        ),
+                        accent_button(
+                            "Install",
+                            palette.primary,
+                            enabled && page.selected.is_some() && !page.listing,
+                            message(Event::Install),
+                        ),
+                    ]
+                    .spacing(12)
+                    .align_y(Center),
+                    secondary_button("Back", palette)
+                        .on_press_maybe(enabled.then_some(message(Event::Dismiss))),
                 ]
                 .spacing(12),
-            );
+                palette,
+            ));
             if page.listing {
-                content = content.push(text("Loading releases..."));
+                content = content.push(section(
+                    text("Loading releases...").color(palette.muted),
+                    palette,
+                ));
             }
         }
         match &page.snapshot {
@@ -576,59 +601,81 @@ impl App {
                 warnings.extend(page.warnings.clone());
                 warnings.sort();
                 warnings.dedup();
-                for warning in warnings {
-                    content = content.push(text(warning).color(palette.warning));
+                if !warnings.is_empty() {
+                    let notices = warnings.into_iter().fold(
+                        column![section_heading("Warnings", palette)].spacing(8),
+                        |rows, warning| rows.push(text(warning).color(palette.warning)),
+                    );
+                    content = content.push(section(notices, palette));
                 }
                 for kind in [Kind::Runner, Kind::Dxvk, Kind::Vkd3d] {
-                    content = content.push(text(heading(kind)).size(18));
                     let builds = snapshot
                         .builds
                         .iter()
                         .filter(|build| build.kind == kind)
                         .collect::<Vec<_>>();
+                    let mut rows = column![section_heading(heading(kind), palette)].spacing(8);
                     if builds.is_empty() {
-                        content = content.push(text("None installed").color(palette.muted));
+                        rows = rows.push(text("None installed").color(palette.muted));
                     }
-                    for build in builds {
+                    for (index, build) in builds.into_iter().enumerate() {
                         let mut line = row![
-                            text(&build.name),
-                            text(build.uses_label()).color(palette.muted).width(Fill)
+                            column![
+                                text(&build.name).color(palette.foreground),
+                                text(build.uses_label()).size(13).color(palette.muted)
+                            ]
+                            .width(Fill),
                         ]
-                        .spacing(12)
                         .align_y(Center);
                         if build.unused() {
-                            line = line.push(button("Delete").on_press_maybe(
+                            line = line.push(secondary_button("Delete", palette).on_press_maybe(
                                 enabled.then(|| message(Event::Review(build.id()))),
                             ));
                         }
-                        content = content.push(line);
+                        if index > 0 {
+                            rows = rows.push(crate::ui::separator(palette));
+                        }
+                        rows = rows.push(line);
                         if let Some(error) =
                             page.row_errors.get(&build.id()).or(build.error.as_ref())
                         {
-                            content = content.push(text(error).color(palette.danger));
+                            rows = rows.push(text(error).color(palette.danger));
                         }
                     }
+                    content = content.push(section(rows, palette));
                 }
                 if !snapshot.skipped.is_empty() {
-                    content = content.push(text("Not usable").size(18));
-                    for skipped in &snapshot.skipped {
-                        content = content.push(text(skipped).color(palette.muted));
-                    }
+                    let skipped = snapshot.skipped.iter().fold(
+                        column![section_heading("Not usable", palette)].spacing(8),
+                        |rows, item| rows.push(text(item).color(palette.muted)),
+                    );
+                    content = content.push(section(skipped, palette));
                 }
             }
             Some(Err(error)) => {
-                content = content
-                    .push(text(error).color(palette.danger))
-                    .push(button("Try again").on_press(message(Event::Refresh)));
+                content = content.push(section(
+                    column![
+                        text(error).color(palette.danger),
+                        secondary_button("Try again", palette).on_press(message(Event::Refresh))
+                    ]
+                    .spacing(8),
+                    palette,
+                ));
             }
             None => {}
         }
-        for (label, error) in page.feedback() {
-            content = content.push(text(label).color(if error {
-                palette.danger
-            } else {
-                palette.foreground
-            }));
+        let notices = page.feedback();
+        if !notices.is_empty() {
+            let notices = notices
+                .into_iter()
+                .fold(column![].spacing(8), |rows, (label, error)| {
+                    rows.push(text(label).color(if error {
+                        palette.danger
+                    } else {
+                        palette.foreground
+                    }))
+                });
+            content = content.push(section(notices, palette));
         }
         scrollable(container(content).padding(24).width(Fill))
             .height(Fill)

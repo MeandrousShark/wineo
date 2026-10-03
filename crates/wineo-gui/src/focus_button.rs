@@ -261,7 +261,7 @@ where
             renderer.fill_quad(
                 renderer::Quad {
                     bounds: layout.bounds().expand(2.0),
-                    border: iced::border::rounded(6)
+                    border: iced::border::rounded(crate::ui::CONTROL_RADIUS + 2.0)
                         .width(2)
                         .color(theme.palette().primary),
                     shadow: iced::Shadow::default(),

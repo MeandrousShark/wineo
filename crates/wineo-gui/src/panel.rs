@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use iced::widget::{
     Space, button, column, container, image, pick_list, row, scrollable, stack, text, text_editor,
 };
-use iced::{Center, Color, ContentFit, Element, Fill, Font, Task, border, font};
+use iced::{Center, Color, ContentFit, Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::error::Error;
 use wineo_core::launch::LaunchEvent;
@@ -11,15 +11,27 @@ use wineo_core::runtime::State;
 use wineo_core::winetricks::WinetricksEvent;
 
 use crate::artwork;
+use crate::focus_button;
 use crate::library::Card;
 use crate::logview::{self, LogView};
 use crate::theme::Palette;
+use crate::ui;
 use crate::worker::LogSource;
 use crate::{App, Message, Operation, OperationKind, worker};
 
 const PANEL_WIDTH: f32 = 420.0;
+const PANEL_ACTION_WIDTH: f32 = 82.0;
 pub(crate) const LOG_ID: &str = "panel-log";
 const LOG_LINES: usize = 2000;
+const PANEL_PLAY_ID: &str = "panel-play";
+const PANEL_STOP_ID: &str = "panel-stop";
+const PANEL_LOG_ID: &str = "panel-log";
+const PANEL_SETTINGS_ID: &str = "panel-settings";
+const PANEL_ART_ID: &str = "panel-art";
+const PANEL_ACTIONS_ID: &str = "panel-actions";
+const PANEL_CANCEL_ID: &str = "panel-cancel";
+const PANEL_FORCE_STOP_ID: &str = "panel-force-stop";
+const PANEL_CLEANUP_ID: &str = "panel-cleanup";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PanelError {
@@ -212,6 +224,7 @@ impl App {
         self.close_log();
         self.close_checkup();
         self.panel_open = false;
+        self.panel_motion.close(std::time::Instant::now());
         self.target = None;
         self.panel_error = None;
         self.panel_note = None;
@@ -383,6 +396,7 @@ impl App {
     }
     pub(crate) fn panel<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
         let palette = self.palette;
+        let hero_height = 220;
         let target = self.chosen_target(card);
         let art = target.and_then(|target| card.panel_art.get(target));
         let hero = art.and_then(|art| art.hero.as_ref());
@@ -392,16 +406,16 @@ impl App {
         let hero: Element<'_, Message> = match hero_image {
             Some(handle) => image(handle.clone())
                 .width(Fill)
-                .height(220)
+                .height(hero_height)
                 .content_fit(ContentFit::Cover)
                 .into(),
             None => container(Space::new())
                 .width(Fill)
-                .height(220)
+                .height(hero_height)
                 .style(move |_| container::Style::default().background(palette.surface))
                 .into(),
         };
-        let banner = container(hero).width(Fill).height(220).clip(true);
+        let banner = container(hero).width(Fill).height(hero_height).clip(true);
         let close = button(text("x").size(16).color(Color::WHITE).center())
             .width(28)
             .height(28)
@@ -451,49 +465,67 @@ impl App {
             banner_layers = banner_layers.push(
                 container(logo_overlay)
                     .width(Fill)
-                    .height(220)
+                    .height(hero_height)
                     .align_bottom(Fill),
             );
         }
         banner_layers = banner_layers.push(
             container(close)
                 .width(Fill)
-                .height(220)
+                .height(hero_height)
                 .align_right(Fill)
                 .align_top(Fill)
                 .padding(12),
         );
         let mut body = column![banner_layers].spacing(0).width(Fill);
         if logo_image.is_none() {
-            body = body.push(heading(&card.name, palette));
+            body = body.push(
+                container(ui::page_title(&card.name, palette))
+                    .width(Fill)
+                    .padding([12, 16]),
+            );
         }
         let operation_busy = self.operation.is_some() || self.tool_blocks_launch(&card.name);
         let mut actions = row![].spacing(8).align_y(Center);
+        let mut target_picker: Option<Element<'_, Message>> = None;
         if card.error.is_none() {
-            let play = action_button(
+            let enabled = play_enabled(card, operation_busy, target);
+            let play = panel_action_button(
                 "Play",
                 palette.primary,
-                play_enabled(card, operation_busy, target),
+                enabled,
                 Message::Play,
+                PANEL_PLAY_ID,
             );
             actions = actions.push(play);
             if card.targets.len() > 1 {
-                actions = actions.push(
+                target_picker = Some(
                     pick_list(
                         card.targets.clone(),
                         self.target.clone(),
                         Message::TargetPicked,
                     )
-                    .width(Fill),
+                    .width(Fill)
+                    .into(),
                 );
             }
         }
-        actions = actions.push(action_button(
+        let enabled = stop_enabled(card, operation_busy);
+        actions = actions.push(panel_action_button(
             "Stop",
             palette.danger,
-            stop_enabled(card, operation_busy),
+            enabled,
             Message::Stop,
+            PANEL_STOP_ID,
         ));
+        if self.log_source(card).is_some() {
+            actions = actions.push(panel_log_button(
+                "Log",
+                palette,
+                PANEL_LOG_ID,
+                Message::OpenLog,
+            ));
+        }
         let mut inner = column![].spacing(8).width(Fill);
         if self.panel_log_visible() {
             inner = inner.push(self.log_content());
@@ -512,22 +544,30 @@ impl App {
             }
         }
         if !self.panel_log_visible() && !self.checkup_visible() {
+            if let Some(target_picker) = target_picker {
+                inner = inner.push(target_picker);
+            }
+            inner = inner.push(ui::separator(palette));
             inner = inner.push(actions);
             let mut extra = row![].spacing(8);
-            if self.log_source(card).is_some() {
-                extra = extra.push(button("Log").on_press(Message::OpenLog).padding([6, 12]));
-            }
-            extra = extra.push(
-                button("Settings")
-                    .on_press(Message::OpenSettings)
-                    .padding([6, 12]),
-            );
-            extra = extra.push(button("Art").on_press(Message::OpenArt).padding([6, 12]));
-            extra = extra.push(
-                button("Actions")
-                    .on_press(Message::Context(card.name.clone()))
-                    .padding([6, 12]),
-            );
+            extra = extra.push(panel_secondary_button(
+                "Settings",
+                palette,
+                PANEL_SETTINGS_ID,
+                Message::OpenSettings,
+            ));
+            extra = extra.push(panel_secondary_button(
+                "Art",
+                palette,
+                PANEL_ART_ID,
+                Message::OpenArt,
+            ));
+            extra = extra.push(panel_secondary_button(
+                "Actions",
+                palette,
+                PANEL_ACTIONS_ID,
+                Message::Context(card.name.clone()),
+            ));
             inner = inner.push(extra);
         }
         inner =
@@ -547,11 +587,17 @@ impl App {
                 } else {
                     "Cancel"
                 };
-                inner = inner.push(
-                    button(label)
-                        .on_press(Message::CancelStart)
-                        .padding([6, 12]),
-                );
+                let id = if operation.cancelled {
+                    PANEL_FORCE_STOP_ID
+                } else {
+                    PANEL_CANCEL_ID
+                };
+                inner = inner.push(panel_secondary_button(
+                    label,
+                    palette,
+                    id,
+                    Message::CancelStart,
+                ));
             }
         }
         if let Some(note) = &self.panel_note {
@@ -560,14 +606,24 @@ impl App {
         if let Some((notice, cleanup)) = busy_notice(card, operation_busy) {
             inner = inner.push(text(notice).size(12).color(palette.muted));
             if cleanup {
-                inner = inner.push(button("Clean up").on_press(Message::CleanUp));
+                inner = inner.push(panel_secondary_button(
+                    "Clean up",
+                    palette,
+                    PANEL_CLEANUP_ID,
+                    Message::CleanUp,
+                ));
             }
         }
         if let Some(error) = &self.panel_error {
             let mut box_content =
                 column![text(&error.text).size(14).color(palette.danger)].spacing(8);
             if error.cleanup && !card.unresolved && card.busy_holder.is_none() && !operation_busy {
-                box_content = box_content.push(button("Clean up").on_press(Message::CleanUp));
+                box_content = box_content.push(panel_secondary_button(
+                    "Clean up",
+                    palette,
+                    PANEL_CLEANUP_ID,
+                    Message::CleanUp,
+                ));
             }
             inner = inner.push(
                 container(box_content)
@@ -580,7 +636,11 @@ impl App {
                     }),
             );
         }
-        body = body.push(container(inner).padding(16).width(Fill).height(Fill));
+        if self.panel_log_visible() || self.checkup_visible() {
+            body = body.push(ui::section(inner, palette).height(Fill));
+        } else {
+            body = body.push(scrollable(ui::section(inner, palette)).height(Fill));
+        }
         container(body)
             .width(PANEL_WIDTH)
             .height(Fill)
@@ -588,24 +648,56 @@ impl App {
                 container::Style::default()
                     .background(palette.background)
                     .border(border::rounded(0).width(1).color(palette.border))
+                    .shadow(iced::Shadow {
+                        color: Color::BLACK.scale_alpha(0.16),
+                        offset: iced::Vector::new(-6.0, 0.0),
+                        blur_radius: 16.0,
+                    })
             })
             .into()
     }
 }
 
-fn heading<'a>(name: &'a str, palette: Palette) -> Element<'a, Message> {
-    container(
-        text(name)
-            .size(20)
-            .font(Font {
-                weight: font::Weight::Semibold,
-                ..Font::DEFAULT
-            })
-            .color(palette.foreground),
-    )
-    .width(Fill)
-    .padding([12, 16])
-    .into()
+fn panel_action_button(
+    label: &'static str,
+    color: Color,
+    enabled: bool,
+    message: Message,
+    id: &'static str,
+) -> Element<'static, Message> {
+    let content = ui::accent_control(label, color, enabled, message.clone())
+        .width(PANEL_ACTION_WIDTH)
+        .into();
+    focus_button::control(content, enabled, id, message)
+}
+
+fn panel_secondary_button(
+    label: &'static str,
+    palette: Palette,
+    id: &'static str,
+    message: Message,
+) -> Element<'static, Message> {
+    let content = ui::secondary_button(label, palette)
+        .on_press(message.clone())
+        .into();
+    focus_button::control(content, true, id, message)
+}
+
+fn panel_log_button(
+    label: &'static str,
+    palette: Palette,
+    id: &'static str,
+    message: Message,
+) -> Element<'static, Message> {
+    let content = ui::secondary_button(label, palette)
+        .width(if label == "Log" {
+            iced::Length::Fixed(PANEL_ACTION_WIDTH)
+        } else {
+            iced::Length::Shrink
+        })
+        .on_press(message.clone())
+        .into();
+    focus_button::control(content, true, id, message)
 }
 
 fn detail_row(label: &str, value: &str, palette: Palette) -> Element<'static, Message> {
@@ -637,29 +729,7 @@ pub(crate) fn action_button(
     enabled: bool,
     message: Message,
 ) -> Element<'static, Message> {
-    button(
-        text(label)
-            .size(14)
-            .color(Color::WHITE.scale_alpha(if enabled { 1.0 } else { 0.4 }))
-            .center(),
-    )
-    .height(32)
-    .padding([0, 16])
-    .on_press_maybe(enabled.then_some(message))
-    .style(move |_, status| button::Style {
-        background: Some(
-            color
-                .scale_alpha(if matches!(status, button::Status::Disabled) {
-                    0.4
-                } else {
-                    1.0
-                })
-                .into(),
-        ),
-        border: border::rounded(6),
-        ..button::Style::default()
-    })
-    .into()
+    ui::accent_button(label, color, enabled, message)
 }
 
 #[cfg(test)]

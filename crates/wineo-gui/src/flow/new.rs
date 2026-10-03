@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use iced::futures::channel::mpsc::unbounded;
 use iced::widget::{
-    button, checkbox, column, container, pick_list, radio, responsive, row, scrollable, text,
-    text_input,
+    Space, button, checkbox, column, container, pick_list, radio, responsive, row, scrollable,
+    text, text_input,
 };
 use iced::{Center, Element, Fill, Shrink, Task};
 use wineo_core::cancel::Token;
@@ -34,6 +34,7 @@ use super::{Action, artwork};
 use crate::logview::{self, LogView};
 use crate::picker;
 use crate::theme::Palette;
+use crate::ui;
 
 const LOG_ID: &str = "install-log";
 const LOG_CAP: usize = 128 * 1024;
@@ -1330,16 +1331,18 @@ impl Page {
         palette: Palette,
         key_available: bool,
     ) -> Element<'_, Event> {
-        let heading = text(match self.stage {
-            Stage::Details => "New environment",
-            Stage::Review => "Review new environment",
-            Stage::Working if self.downloading.is_some() => "Downloading prerequisite",
-            Stage::Working => "Creating environment",
-            Stage::Target => "Choose game target",
-            Stage::Finished => "Environment created",
-        })
-        .size(24)
-        .color(palette.foreground);
+        let mut review_footer: Option<Element<'_, Event>> = None;
+        let heading = ui::page_title(
+            match self.stage {
+                Stage::Details => "New environment",
+                Stage::Review => "Review new environment",
+                Stage::Working if self.downloading.is_some() => "Downloading prerequisite",
+                Stage::Working => "Creating environment",
+                Stage::Target => "Choose game target",
+                Stage::Finished => "Environment created",
+            },
+            palette,
+        );
         let mut body = column![heading].spacing(10).width(Fill);
         match self.stage {
             Stage::Details => {
@@ -1387,93 +1390,123 @@ impl Page {
             }
             Stage::Review => {
                 if let Some(review) = &self.review {
+                    let mut application = vec![("Environment", self.draft.environment_name())];
                     if let Some(title) = self.draft.target_title() {
-                        body = body.push(text(format!("Name: {title}")));
+                        application.insert(0, ("Name", title));
                     }
-                    body = body.push(text(format!(
-                        "Environment: {}",
-                        self.draft.environment_name()
-                    )));
-                    body = body.push(text(format!("Type: {}", self.draft.kind)));
-                    body = body.push(text(format!("Starting point: {}", self.draft.source)));
+                    let mut source = vec![
+                        ("Type", self.draft.kind.to_string()),
+                        ("Starting point", self.draft.source.to_string()),
+                    ];
                     if !self.draft.path.is_empty() {
-                        body = body.push(text(format!("Program: {}", self.draft.path)));
+                        source.push(("Program", self.draft.path.clone()));
                     }
+                    let mut runtime = Vec::new();
                     if let Some(runner) = &review.runner {
-                        body = body.push(text(format!(
-                            "Runner: {} ({})",
-                            runner.selection(),
-                            runner.name()
-                        )));
+                        runtime.push((
+                            "Runner",
+                            format!("{} ({})", runner.selection(), runner.name()),
+                        ));
+                    } else if let Some(Prerequisite::Runner(name)) = &review.prerequisite {
+                        runtime.push(("Runner", format!("{name} (not installed)")));
                     }
                     if self.draft.kind == Kind::Windows {
-                        body = body.push(text(format!("Architecture: {}", review.arch)));
+                        runtime.push(("Architecture", review.arch.to_string()));
                     }
                     if let Some(prefix) = &review.prefix {
-                        body = body.push(text(format!("Prefix: {}", prefix.display())));
-                        if review.adopted {
-                            body = body.push(
-                                text(
-                                    "This compatible existing prefix will be registered in place.",
-                                )
+                        runtime.push(("Prefix", prefix.display().to_string()));
+                    }
+                    let mut groups = vec![("Application", application), ("Source", source)];
+                    if self.draft.kind == Kind::Windows {
+                        groups.push(("Runtime", runtime));
+                    }
+                    body = body.push(review_summary(groups, palette));
+
+                    let mut notes = column![ui::section_heading("Review notes", palette)]
+                        .spacing(8)
+                        .width(Fill);
+                    let mut has_notes = false;
+                    if review.adopted {
+                        notes = notes.push(
+                            text("This compatible existing prefix will be registered in place.")
                                 .color(palette.warning),
-                            );
-                        }
+                        );
+                        has_notes = true;
                     }
                     if review.omitted_components {
-                        body = body.push(text("This Proton runner bundles DXVK and vkd3d-proton, so the template's component picks will be omitted.").color(palette.warning));
+                        if has_notes {
+                            notes = notes.push(ui::separator(palette));
+                        }
+                        notes = notes.push(text("This Proton runner bundles DXVK and vkd3d-proton, so the template's component picks will be omitted.").color(palette.warning));
+                        has_notes = true;
                     }
                     if let Some(prerequisite) = &review.prerequisite {
+                        if has_notes {
+                            notes = notes.push(ui::separator(palette));
+                        }
                         match prerequisite {
                             Prerequisite::Runner(name) => {
-                                body = body.push(text(format!("Runner {name} is unavailable. Choose a provider to download its latest release:")).color(palette.warning));
-                                let mut providers = row![].spacing(8);
+                                notes = notes.push(text(format!("Runner {name} is unavailable. Choose a provider to download its latest release:")).color(palette.warning));
+                                let mut providers = column![].spacing(8).width(Fill);
                                 if name != "Proton-CachyOS-Latest" {
                                     providers = providers.push(
-                                        button("Download GE-Proton")
+                                        ui::secondary_button("Download GE-Proton", palette)
                                             .on_press(Event::Download(Provider::GeProton)),
                                     );
                                 }
                                 if name != "GE-Proton-Latest" {
-                                    providers =
-                                        providers
-                                            .push(button("Download Proton-CachyOS").on_press(
-                                                Event::Download(Provider::ProtonCachyos),
-                                            ));
+                                    providers = providers.push(
+                                        ui::secondary_button("Download Proton-CachyOS", palette)
+                                            .on_press(Event::Download(Provider::ProtonCachyos)),
+                                    );
                                 }
-                                body = body.push(providers);
+                                notes = notes.push(providers);
                             }
                             Prerequisite::Component { provider, version } => {
                                 let description = version.as_ref().map_or_else(
                                     || "latest release".to_owned(),
                                     |name| format!("exact build {name}"),
                                 );
-                                body = body.push(text(format!("Missing {provider} {description}. Download it before creating this environment?")).color(palette.warning));
-                                body = body.push(
-                                    button(text(format!("Download {provider}")))
+                                notes = notes.push(text(format!("Missing {provider} {description}. Download it before creating this environment?")).color(palette.warning));
+                                let label = match provider {
+                                    Provider::Dxvk => "Download DXVK",
+                                    Provider::Vkd3d => "Download vkd3d",
+                                    Provider::GeProton => "Download GE-Proton",
+                                    Provider::ProtonCachyos => "Download Proton-CachyOS",
+                                };
+                                notes = notes.push(
+                                    ui::secondary_button(label, palette)
                                         .on_press(Event::Download(*provider)),
                                 );
                             }
                         }
+                        has_notes = true;
+                    }
+                    if has_notes {
+                        body = body.push(ui::section(notes, palette));
                     }
                 }
-                body = body.push(
+                let can_create = self
+                    .review
+                    .as_ref()
+                    .is_some_and(|review| review.prerequisite.is_none());
+                review_footer = Some(
                     row![
-                        button("Back").on_press(Event::Back),
-                        button("Create").on_press_maybe(self.review.as_ref().and_then(|review| {
-                            review.prerequisite.is_none().then_some(Event::Create)
-                        }))
+                        Space::new().width(Fill),
+                        ui::secondary_button("Back", palette).on_press(Event::Back),
+                        ui::accent_button("Create", palette.primary, can_create, Event::Create),
                     ]
-                    .spacing(8),
+                    .spacing(8)
+                    .into(),
                 );
             }
             Stage::Working => {
                 body = body.push(text(&self.status));
                 // Force stop only makes sense after a cancel, like the other flows.
                 body = body.push(if self.token.as_ref().is_some_and(Token::is_canceled) {
-                    button("Force stop").on_press(Event::Force)
+                    ui::secondary_button("Force stop", palette).on_press(Event::Force)
                 } else {
-                    button("Cancel").on_press(Event::Cancel)
+                    ui::secondary_button("Cancel", palette).on_press(Event::Cancel)
                 });
                 if !self.log.is_empty() {
                     body = body.push(logview::controls(
@@ -1598,14 +1631,62 @@ impl Page {
         } else {
             760
         };
-        container(
-            scrollable(container(body).max_width(max_width).width(Fill).padding(24)).height(Fill),
-        )
-        .width(Fill)
-        .height(Fill)
-        .align_x(Center)
-        .into()
+        let scroll =
+            scrollable(container(body).max_width(max_width).width(Fill).padding(24)).height(Fill);
+        let content: Element<'_, Event> = if let Some(footer) = review_footer {
+            column![
+                scroll,
+                container(footer)
+                    .max_width(max_width)
+                    .width(Fill)
+                    .padding([8, 24])
+            ]
+            .spacing(0)
+            .width(Fill)
+            .height(Fill)
+            .into()
+        } else {
+            scroll.into()
+        };
+        container(content)
+            .width(Fill)
+            .height(Fill)
+            .align_x(Center)
+            .into()
     }
+}
+
+fn review_summary(
+    groups: Vec<(&'static str, Vec<(&'static str, String)>)>,
+    palette: Palette,
+) -> Element<'static, Event> {
+    let mut content = column![].spacing(8).width(Fill);
+    for (group_index, (title, fields)) in groups.into_iter().enumerate() {
+        if group_index > 0 {
+            content = content.push(ui::separator(palette));
+        }
+        content = content.push(ui::section_heading(title, palette));
+        for (field_index, (label, value)) in fields.into_iter().enumerate() {
+            if field_index > 0 {
+                content = content.push(ui::separator(palette));
+            }
+            content = content.push(review_field(label, value, palette));
+        }
+    }
+    ui::section(content, palette).into()
+}
+
+fn review_field(label: &'static str, value: String, palette: Palette) -> Element<'static, Event> {
+    column![
+        text(label).size(12).color(palette.muted),
+        text(value)
+            .size(14)
+            .color(palette.foreground)
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+    ]
+    .spacing(2)
+    .width(Fill)
+    .into()
 }
 
 fn template_effects(template: &Template, draft: &Draft) -> Vec<String> {

@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
 use iced::keyboard::{Key, Modifiers, key::Named};
-use iced::widget::{Space, button, column, container, row, scrollable, text, text_input, tooltip};
+use iced::widget::{Space, column, container, row, scrollable, text, text_input, tooltip};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::paths::Paths;
 use wineo_core::trash::{Entry, PendingEntry, Phase, PruneReview};
 
+use crate::ui::{accent_button, page_title, secondary_button, section, section_heading};
 use crate::{App, Message, focus_button, removal, sidebar, spinner, trash_work};
 
 const CANCEL_ID: &str = "trash-cancel";
@@ -474,16 +475,18 @@ impl App {
     pub(crate) fn trash_view(&self) -> Element<'_, Message> {
         let palette = self.palette;
         let page = &self.trash_page;
-        let mut content = column![text("Trash").size(22)].spacing(16);
+        let mut content = column![page_title("Trash", palette)].spacing(16);
         match &page.snapshot {
             Some(Err(error)) => {
                 content = self.trash_feedback(content);
                 return scrollable(
-                    container(
-                        content
-                            .push(text(error).color(palette.danger))
-                            .push(button("Check again").on_press(message(Event::CheckAgain))),
-                    )
+                    container(section(
+                        content.push(text(error).color(palette.danger)).push(
+                            secondary_button("Check again", palette)
+                                .on_press(message(Event::CheckAgain)),
+                        ),
+                        palette,
+                    ))
                     .padding(24)
                     .width(Fill),
                 )
@@ -491,9 +494,12 @@ impl App {
                 .into();
             }
             None => {
-                return container(content.push(text("Loading trash...")))
-                    .padding(24)
-                    .into();
+                return container(content.push(section(
+                    text("Loading trash...").color(palette.muted),
+                    palette,
+                )))
+                .padding(24)
+                .into();
             }
             Some(Ok(_)) => {}
         }
@@ -504,34 +510,42 @@ impl App {
             _ => None,
         };
         if !snapshot.pending.is_empty() {
-            let mut banner =
-                column![text("Interrupted trash operations need recovery.")].spacing(8);
+            let mut recovery = column![
+                section_heading("Interrupted operations", palette),
+                text("These trash operations need recovery.").color(palette.warning),
+            ]
+            .spacing(8);
             for entry in &snapshot.pending {
                 let mut line = row![
                     text(format!("{} ({})", entry.name, entry.id)).width(Fill),
-                    button("Recover")
-                        .on_press_maybe(enabled.then(|| message(Event::Recover(entry.id.clone()))))
+                    accent_button(
+                        "Recover",
+                        palette.warning,
+                        enabled,
+                        message(Event::Recover(entry.id.clone())),
+                    )
                 ]
                 .spacing(12)
                 .align_y(Center);
                 if change.is_some_and(|change| change.affects(&entry.id)) {
                     line = line.push(spinner::spinner(palette, self.spinner_angle, 16.0));
                 }
-                banner = banner.push(line);
+                recovery = recovery.push(line);
                 if let Some(error) = page.recovery_errors.get(&entry.id) {
-                    banner = banner.push(text(error).color(palette.danger));
+                    recovery = recovery.push(text(error).color(palette.danger));
                 }
             }
-            content = content.push(container(banner).padding(12).style(move |_| {
-                container::Style::default()
-                    .border(border::rounded(6).width(1).color(palette.warning))
-            }));
+            content = content.push(section(recovery, palette));
         }
+        let mut entries = column![section_heading("Removed environments", palette)].spacing(8);
         if snapshot.entries.is_empty() {
-            content = content.push(text("The trash is empty."));
+            entries = entries.push(text("The trash is empty.").color(palette.muted));
         }
         let now = jiff::Timestamp::now();
-        for entry in &snapshot.entries {
+        for (index, entry) in snapshot.entries.iter().enumerate() {
+            if index > 0 {
+                entries = entries.push(crate::ui::separator(palette));
+            }
             let active = enabled && page.row_enabled(&entry.id);
             let mut label = row![text(entry_label(entry, now)).width(Fill)]
                 .spacing(8)
@@ -547,55 +561,67 @@ impl App {
                 )
                 .style(move |_| container::Style::default()
                     .background(palette.surface)
-                    .border(border::rounded(4).width(1).color(palette.border)))
+                    .border(border::rounded(8).width(1).color(palette.border)))
                 .gap(6),
                 row![
-                    button("Restore")
+                    secondary_button("Restore", palette)
                         .on_press_maybe(active.then(|| message(Event::Restore(entry.id.clone())))),
-                    button("Delete forever").on_press_maybe(
-                        active.then(|| message(Event::Review(Selection::Id(entry.id.clone()))))
+                    accent_button(
+                        "Delete forever",
+                        palette.danger,
+                        active,
+                        message(Event::Review(Selection::Id(entry.id.clone()))),
                     )
                 ]
                 .spacing(8)
             ]
             .spacing(8);
+            if let Some(note) = prefix_note(&self.paths, entry) {
+                entry_view = entry_view.push(
+                    text(note)
+                        .size(13)
+                        .color(palette.muted)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                );
+            }
             if let Some(error) = page.row_errors.get(&entry.id) {
                 entry_view = entry_view.push(text(error).color(palette.danger));
             }
-            content = content.push(container(entry_view).padding(12).width(Fill).style(
-                move |_| {
-                    container::Style::default()
-                        .border(border::rounded(6).width(1).color(palette.border))
-                },
-            ));
+            entries = entries.push(entry_view);
         }
+        content = content.push(section(entries, palette));
         let days = text_input("30", &page.days)
             .width(80)
             .on_input_maybe(enabled.then_some(|days| message(Event::Days(days))));
-        content = content
-            .push(
-                row![
-                    text("Delete entries older than"),
-                    days,
-                    text("days"),
-                    button("Delete").on_press_maybe(enabled.then(|| message(Event::ReviewOlder)))
-                ]
-                .spacing(8)
-                .align_y(Center),
-            )
-            .push(
-                button("Empty trash")
-                    .on_press_maybe(enabled.then(|| message(Event::Review(Selection::All)))),
-            );
+        let cleanup = column![
+            section_heading("Cleanup", palette),
+            text("Delete entries older than"),
+            row![days, text("days")].spacing(8).align_y(Center),
+            accent_button(
+                "Delete",
+                palette.danger,
+                enabled,
+                message(Event::ReviewOlder)
+            ),
+            accent_button(
+                "Empty trash",
+                palette.danger,
+                enabled,
+                message(Event::Review(Selection::All)),
+            ),
+        ]
+        .spacing(12);
+        content = content.push(section(cleanup, palette));
         if page.reviewing {
-            content = content.push(
+            content = content.push(section(
                 row![
                     spinner::spinner(palette, self.spinner_angle, 16.0),
-                    text("Reviewing trash entries...")
+                    text("Reviewing trash entries...").color(palette.muted)
                 ]
                 .spacing(8)
                 .align_y(Center),
-            );
+                palette,
+            ));
         }
         content = self.trash_feedback(content);
         scrollable(container(content).padding(24).width(Fill))
@@ -620,8 +646,11 @@ impl App {
     pub(crate) fn trash_confirm_view(&self) -> Element<'_, Message> {
         let palette = self.palette;
         let review = self.trash_page.review.as_ref().unwrap();
-        let mut selection =
-            column![text("Permanently delete these trash entries:").size(20)].spacing(12);
+        let mut selection = column![
+            page_title("Delete trash entries", palette),
+            text("Permanently delete these trash entries:")
+        ]
+        .spacing(12);
         for entry in &review.entries {
             selection = selection.push(text(format!(
                 "{} ({})   prefix: {}",
@@ -634,7 +663,12 @@ impl App {
                 }
             )));
             if let Some(note) = prefix_note(&self.paths, entry) {
-                selection = selection.push(text(note).size(13).color(palette.muted));
+                selection = selection.push(
+                    text(note)
+                        .size(13)
+                        .color(palette.muted)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                );
             }
         }
         if let Some(errors) = review_errors(review) {
@@ -644,7 +678,7 @@ impl App {
         let controls = row![
             Space::new().width(Fill),
             focus_button::control(
-                button("Cancel")
+                secondary_button("Cancel", palette)
                     .on_press_maybe(enabled.then(|| message(Event::Dismiss)))
                     .into(),
                 enabled,
@@ -652,9 +686,12 @@ impl App {
                 message(Event::Dismiss)
             ),
             focus_button::control(
-                button("Delete forever")
-                    .on_press_maybe(enabled.then(|| message(Event::Confirm)))
-                    .into(),
+                accent_button(
+                    "Delete forever",
+                    palette.danger,
+                    enabled,
+                    message(Event::Confirm),
+                ),
                 enabled,
                 CONFIRM_ID,
                 message(Event::Confirm)
@@ -670,11 +707,7 @@ impl App {
         )
         .padding(24)
         .width((self.window_size.width - 40.0).clamp(280.0, 700.0))
-        .style(move |_| {
-            container::Style::default()
-                .background(palette.surface)
-                .border(border::rounded(8).width(1).color(palette.border))
-        })
+        .style(move |_| crate::ui::section_style(palette))
         .into()
     }
 }

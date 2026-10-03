@@ -15,6 +15,7 @@ use super::{Editor, Event, Page, TargetEdit, View};
 use crate::chips::{Chips, input_style, secondary};
 use crate::panel::{action_button, error_box};
 use crate::theme::Palette;
+use crate::ui::{secondary_button, section as grouped_section, section_heading};
 use crate::{Message, WHEEL_STEP_SCALE, wheel};
 use wineo_core::paths::Paths;
 
@@ -42,16 +43,14 @@ impl Page {
     ) -> Element<'_, Message> {
         // Global settings is a sidebar section, so the sidebar is its way out.
         let back = (!self.is_global()).then(|| {
-            button(text("< Back").size(14))
+            secondary_button("< Back", palette)
                 .on_press_maybe((!self.saving).then(|| send(Event::Back)))
-                .padding([6, 12])
-                .style(move |_, status| secondary(palette, status))
         });
         let header = container(
             row![
                 back,
                 text(format!("{} settings", self.name))
-                    .size(18)
+                    .size(22)
                     .font(semibold())
                     .color(palette.foreground),
             ]
@@ -66,10 +65,8 @@ impl Page {
                 let mut content = column![error_box(error, palette)].spacing(12);
                 if self.has_file() {
                     content = content.push(
-                        button(text("Open config file").size(14))
-                            .on_press(send(Event::OpenConfig))
-                            .padding([6, 12])
-                            .style(move |_, status| secondary(palette, status)),
+                        secondary_button("Open config file", palette)
+                            .on_press(send(Event::OpenConfig)),
                     );
                 }
                 if let Some(error) = &self.error {
@@ -154,11 +151,8 @@ impl Page {
         }
         let revert_enabled = !self.saving && (self.is_dirty() || self.changed_on_disk);
         actions = actions.push(
-            button(text("Revert").size(14))
-                .on_press_maybe(revert_enabled.then(|| send(Event::Revert)))
-                .height(32)
-                .padding([6, 16])
-                .style(move |_, status| secondary(palette, status)),
+            secondary_button("Revert", palette)
+                .on_press_maybe(revert_enabled.then(|| send(Event::Revert))),
         );
         actions = actions.push(if self.changed_on_disk {
             action_button(
@@ -173,7 +167,11 @@ impl Page {
         container(bar.push(actions))
             .padding([12, 16])
             .width(Fill)
-            .style(move |_| container::Style::default().background(palette.surface))
+            .style(move |_| {
+                container::Style::default()
+                    .background(palette.surface)
+                    .border(border::rounded(0).width(1).color(palette.border))
+            })
             .into()
     }
 }
@@ -1391,15 +1389,8 @@ fn section<'a>(
     palette: Palette,
 ) -> Element<'a, Message> {
     column![
-        text(title)
-            .size(16)
-            .font(semibold())
-            .color(palette.foreground),
-        container(content).padding(16).width(Fill).style(move |_| {
-            container::Style::default()
-                .background(palette.surface)
-                .border(border::rounded(8).width(1).color(palette.border))
-        }),
+        section_heading(title, palette),
+        grouped_section(content, palette),
     ]
     .spacing(8)
     .into()

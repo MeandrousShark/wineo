@@ -1,7 +1,7 @@
 use std::fs;
 
 use iced::futures::channel::mpsc::unbounded;
-use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input};
+use iced::widget::{column, container, pick_list, row, scrollable, text, text_input};
 use iced::{Center, Element, Fill, Task};
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
@@ -16,6 +16,7 @@ use wineo_core::snapshot::{
 
 use crate::logview::{self, LogView};
 use crate::theme::Palette;
+use crate::ui::{accent_button, page_title, secondary_button, section, section_heading};
 
 const SNAPSHOT_LIST_HEIGHT: f32 = 180.0;
 const REPORT_HEIGHT: f32 = 220.0;
@@ -670,48 +671,57 @@ impl Page {
     pub(crate) fn view(&self, palette: Palette, busy: bool) -> Element<'_, Event> {
         let enabled = !busy && !self.working;
         let reviewing = self.review.is_some();
-        let mut content = column![text("Snapshots").size(22)].spacing(14);
-        content = content.push(
+        let mut content = column![
             row![
-                button("Back").on_press(Event::Back),
-                button("Refresh").on_press_maybe(enabled.then_some(Event::Refresh)),
+                page_title("Snapshots", palette).width(Fill),
+                secondary_button("Back", palette).on_press(Event::Back),
+                secondary_button("Refresh", palette)
+                    .on_press_maybe(enabled.then_some(Event::Refresh)),
             ]
-            .spacing(8),
-        );
-        if let Some(error) = &self.choices_error {
-            content = content.push(text(error).color(palette.danger));
-        }
+            .spacing(8)
+            .align_y(Center)
+        ]
+        .spacing(16);
         let selected_choice = self
             .choices
             .iter()
             .find(|choice| self.selected.as_deref() == Some(&choice.name));
-        content = content.push(
+        let mut environment = column![
+            section_heading("Environment", palette),
             pick_list(self.choices.as_slice(), selected_choice, |choice| {
                 Event::Select(choice.name)
             })
             .on_open(Event::Refresh),
-        );
+        ]
+        .spacing(12);
+        if let Some(error) = &self.choices_error {
+            environment = environment.push(text(error).color(palette.danger));
+        }
         if let Some(choice) = selected_choice
             && let Some(problem) = &choice.problem
         {
-            content = content.push(text(problem).color(palette.warning));
+            environment = environment.push(text(problem).color(palette.warning));
         }
+        content = content.push(section(environment, palette));
+
         if !reviewing {
+            let mut snapshot_rows =
+                column![section_heading("Saved snapshots", palette)].spacing(12);
             if let Some(loaded) = &self.loaded {
                 match &loaded.recovery {
                     Recovery::Ready => {
-                        content = content
-                            .push(
-                                text("An interrupted restore needs recovery.")
-                                    .color(palette.warning),
-                            )
-                            .push(
-                                button("Roll back restore")
-                                    .on_press_maybe(enabled.then_some(Event::RecoverReview)),
-                            );
+                        snapshot_rows = snapshot_rows.push(
+                            text("An interrupted restore needs recovery.").color(palette.warning),
+                        );
+                        snapshot_rows = snapshot_rows.push(accent_button(
+                            "Roll back restore",
+                            palette.warning,
+                            enabled,
+                            Event::RecoverReview,
+                        ));
                     }
                     Recovery::Invalid(error) => {
-                        content = content.push(
+                        snapshot_rows = snapshot_rows.push(
                             text(format!("Restore recovery marker: {error}")).color(palette.danger),
                         )
                     }
@@ -720,30 +730,48 @@ impl Page {
                 match &loaded.snapshots {
                     Ok(snapshots) => {
                         if snapshots.is_empty() {
-                            content = content.push(text("No snapshots yet."));
+                            snapshot_rows =
+                                snapshot_rows.push(text("No snapshots yet.").color(palette.muted));
                         } else {
-                            let rows =
-                                snapshots.iter().fold(column![].spacing(8), |rows, info| {
-                                    rows.push(
+                            let mut rows = column![].spacing(8);
+                            for (index, info) in snapshots.iter().enumerate() {
+                                if index > 0 {
+                                    rows = rows.push(crate::ui::separator(palette));
+                                }
+                                rows = rows.push(
+                                    column![
                                         row![
-                                            text(format!("{}   {}", info.label, info.created_at))
-                                                .width(Fill),
-                                            button("Restore").on_press_maybe(enabled.then(|| {
-                                                Event::RestoreReview(info.label.clone())
-                                            })),
-                                            button("Delete").on_press_maybe(enabled.then(|| {
-                                                Event::DeleteReview(info.label.clone())
-                                            })),
+                                            text(info.label.as_str())
+                                                .width(Fill)
+                                                .color(palette.foreground),
+                                            secondary_button("Restore", palette).on_press_maybe(
+                                                enabled.then(|| {
+                                                    Event::RestoreReview(info.label.clone())
+                                                })
+                                            ),
+                                            accent_button(
+                                                "Delete",
+                                                palette.danger,
+                                                enabled,
+                                                Event::DeleteReview(info.label.clone()),
+                                            ),
                                         ]
                                         .spacing(8)
                                         .align_y(Center),
-                                    )
-                                });
-                            content = content.push(scrollable(rows).height(SNAPSHOT_LIST_HEIGHT));
+                                        text(info.created_at.as_str())
+                                            .size(13)
+                                            .color(palette.muted)
+                                            .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                                    ]
+                                    .spacing(4),
+                                );
+                            }
+                            snapshot_rows =
+                                snapshot_rows.push(scrollable(rows).height(SNAPSHOT_LIST_HEIGHT));
                         }
                     }
                     Err(error) => {
-                        content = content.push(
+                        snapshot_rows = snapshot_rows.push(
                             text(format!("Could not list snapshots: {error}"))
                                 .color(palette.danger),
                         )
@@ -751,51 +779,70 @@ impl Page {
                 }
             }
             if self.loading {
-                content = content.push(text("Loading snapshots..."));
+                snapshot_rows =
+                    snapshot_rows.push(text("Loading snapshots...").color(palette.muted));
             }
             if !self.loading && self.selected.is_none() {
-                content = content.push(text("No Wine environments in this library."));
+                snapshot_rows = snapshot_rows
+                    .push(text("No Wine environments in this library.").color(palette.muted));
             }
+            content = content.push(section(snapshot_rows, palette));
+
             if self.selected.is_some()
                 && self
                     .loaded
                     .as_ref()
                     .is_some_and(|loaded| matches!(loaded.recovery, Recovery::None))
             {
-                content = content.push(
-                    row![
-                        text_input("Snapshot label", &self.label).on_input(Event::Label),
-                        button("Create snapshot...")
-                            .on_press_maybe(enabled.then_some(Event::CreateReview)),
+                content = content.push(section(
+                    column![
+                        section_heading("Create snapshot", palette),
+                        row![
+                            text_input("Snapshot label", &self.label).on_input(Event::Label),
+                            accent_button(
+                                "Create snapshot...",
+                                palette.primary,
+                                enabled,
+                                Event::CreateReview,
+                            ),
+                        ]
+                        .spacing(8)
                     ]
-                    .spacing(8),
-                );
+                    .spacing(12),
+                    palette,
+                ));
             }
         }
         if let Some(review) = &self.review {
-            content = content.push(review_view(
-                review,
-                &self.review_report,
-                &self.review_log,
-                self.show_config,
+            content = content.push(section(
+                review_view(
+                    review,
+                    &self.review_report,
+                    &self.review_log,
+                    self.show_config,
+                    palette,
+                    enabled,
+                ),
                 palette,
-                enabled,
             ));
         }
+        let mut feedback = column![].spacing(8);
         if let Some(status) = &self.status {
-            content = content.push(text(status));
+            feedback = feedback.push(text(status).color(palette.muted));
             if self.working && !self.finishing {
-                content = content.push(button("Cancel").on_press(Event::Cancel));
+                feedback =
+                    feedback.push(secondary_button("Cancel", palette).on_press(Event::Cancel));
             }
         }
         if let Some(error) = &self.error {
-            content = content
-                .push(text(error).color(palette.danger))
-                .push(button("Refresh").on_press_maybe(enabled.then_some(Event::Refresh)));
+            feedback = feedback.push(text(error).color(palette.danger)).push(
+                secondary_button("Refresh", palette)
+                    .on_press_maybe(enabled.then_some(Event::Refresh)),
+            );
         }
         if let Some(result) = &self.result {
-            content = content.push(text("Result").size(16).color(palette.success));
-            content = content.push(report_panel(
+            feedback = feedback.push(section_heading("Result", palette).color(palette.success));
+            feedback = feedback.push(report_panel(
                 &self.result_log,
                 result,
                 ReportKind::Result,
@@ -803,8 +850,12 @@ impl Page {
                 72.0,
             ));
             if result.starts_with("Restored snapshot") {
-                content = content.push(button("Check for problems").on_press(Event::Checkup));
+                feedback = feedback
+                    .push(secondary_button("Check for problems", palette).on_press(Event::Checkup));
             }
+        }
+        if self.status.is_some() || self.error.is_some() || self.result.is_some() {
+            content = content.push(section(feedback, palette));
         }
         scrollable(container(content).padding(24).width(Fill))
             .height(Fill)
@@ -899,7 +950,8 @@ fn review_view<'a>(
     match review {
         Review::Create(review) => {
             content = content
-                .push(text(format!("Create snapshot {}?", review.label)).size(18))
+                .push(section_heading("Create snapshot", palette))
+                .push(text(format!("Create snapshot {}?", review.label)))
                 .push(
                     text("Snapshots need reflinks. External files aren't included.")
                         .color(palette.warning),
@@ -913,9 +965,10 @@ fn review_view<'a>(
                 ));
         }
         Review::Restore(review) => {
-            content = content.push(text(format!("Restore {} from {}?", review.name, review.label)).size(18))
+            content = content.push(section_heading("Restore snapshot", palette))
+                .push(text(format!("Restore {} from {}?", review.name, review.label)))
                 .push(text("The prefix and config will be replaced. External files, art, and playtime stay in place.").color(palette.warning))
-                .push(button(if show_config { "Hide config changes" } else { "Show config changes" }).on_press(Event::ShowConfig(!show_config)))
+                .push(secondary_button(if show_config { "Hide config changes" } else { "Show config changes" }, palette).on_press(Event::ShowConfig(!show_config)))
                 .push(report_panel(
                     report_log,
                     report,
@@ -926,29 +979,39 @@ fn review_view<'a>(
         }
         Review::Delete(label) => {
             content = content
-                .push(text(format!("Delete snapshot {label}?")).size(18))
+                .push(section_heading("Delete snapshot", palette))
+                .push(text(format!("Delete snapshot {label}?")))
                 .push(text("It cannot be restored from Trash.").color(palette.warning));
         }
         Review::Recover => {
             content = content
-                .push(text("Roll back the interrupted restore?").size(18))
+                .push(section_heading("Recover interrupted restore", palette))
+                .push(text("Roll back the interrupted restore?"))
                 .push(text("This restores the old prefix and config.").color(palette.warning));
         }
     }
     content = content.push(
         row![
-            button("Cancel").on_press_maybe(enabled.then_some(Event::Dismiss)),
-            button(match review {
-                Review::Create(_) => "Create",
-                Review::Restore(_) => "Restore",
-                Review::Delete(_) => "Delete",
-                Review::Recover => "Roll back restore",
-            })
-            .on_press_maybe(enabled.then_some(Event::Confirm)),
+            secondary_button("Cancel", palette).on_press_maybe(enabled.then_some(Event::Dismiss)),
+            accent_button(
+                match review {
+                    Review::Create(_) => "Create",
+                    Review::Restore(_) => "Restore",
+                    Review::Delete(_) => "Delete",
+                    Review::Recover => "Roll back restore",
+                },
+                if matches!(review, Review::Delete(_)) {
+                    palette.danger
+                } else {
+                    palette.primary
+                },
+                enabled,
+                Event::Confirm,
+            ),
         ]
         .spacing(8),
     );
-    container(content).padding(12).width(Fill).into()
+    container(content).width(Fill).into()
 }
 
 fn report_panel<'a>(

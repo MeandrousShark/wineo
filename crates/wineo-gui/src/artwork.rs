@@ -29,7 +29,7 @@ impl Kind {
 
     fn max_size(self) -> (u32, u32) {
         match self {
-            Self::Grid => (360, 540),
+            Self::Grid => (320, 480),
             Self::Hero => (840, 440),
             Self::Logo => (720, 128),
         }
@@ -308,8 +308,8 @@ mod tests {
     #[test]
     fn caps_each_art_kind_without_upscaling_or_distorting_aspect() {
         for (kind, source, expected) in [
-            (Kind::Grid, (2000.0, 1000.0), (1080, 540)),
-            (Kind::Grid, (1000.0, 2000.0), (360, 720)),
+            (Kind::Grid, (2000.0, 1000.0), (960, 480)),
+            (Kind::Grid, (1000.0, 2000.0), (320, 640)),
             (Kind::Hero, (2000.0, 1000.0), (880, 440)),
             (Kind::Hero, (1920.0, 620.0), (1363, 440)),
             (Kind::Hero, (1000.0, 1000.0), (840, 840)),
@@ -493,22 +493,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("cache");
         let source = dir.path().join("art.svg");
-        // Grid and Hero both fit this to 840x540, with slightly different scales.
+        // Grid and Hero both fit this to 840x480, with slightly different scales.
         fs::write(
             &source,
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2000\" height=\"1286\"><rect width=\"2000\" height=\"1286\" fill=\"red\"/></svg>",
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1750\" height=\"1000\"><rect width=\"1750\" height=\"1000\" fill=\"red\"/></svg>",
         )
         .unwrap();
         let grid = pixel(&decode(&source, Kind::Grid, Some(&cache)).unwrap());
         let hero = pixel(&decode(&source, Kind::Hero, Some(&cache)).unwrap());
-        assert_eq!((grid.0, grid.1), (840, 540));
-        assert_eq!((hero.0, hero.1), (840, 540));
+        assert_eq!((grid.0, grid.1), (840, 480));
+        assert_eq!((hero.0, hero.1), (840, 480));
         let names: Vec<_> = entries(&cache)
             .iter()
             .map(|file| file.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names.len(), 2);
-        assert!(names.iter().any(|name| name.ends_with("-grid-840x540.png")));
-        assert!(names.iter().any(|name| name.ends_with("-hero-840x540.png")));
+        assert!(names.iter().any(|name| name.ends_with("-grid-840x480.png")));
+        assert!(names.iter().any(|name| name.ends_with("-hero-840x480.png")));
     }
 }

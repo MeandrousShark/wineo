@@ -92,6 +92,7 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
 - `docs/plans/`: numbered plans and their decisions.
 - `docs/features.md`: backlog, completed-plan links, and GUI entry criteria.
 - `docs/gui.md`: the desktop app. `docs/core-api.md`: core API for frontends.
+- `docs/gui-style.md`: the approved visual language for future GUI changes.
 - `docs/config-files.md`: config schema and versioning rules, with
   `docs/environment.toml.example` and `docs/native-environment.toml.example`.
 - Per-feature pages: `native.md`, `launch-options.md`,

@@ -112,6 +112,13 @@ impl App {
         if key == Key::Named(Named::Delete) && modifiers.is_empty() {
             return crate::removal::delete_key(self, search_focused, captured);
         }
+        if key == Key::Named(Named::Tab) && !captured && !modifiers.control() {
+            return if modifiers.shift() {
+                iced::widget::operation::focus_previous()
+            } else {
+                iced::widget::operation::focus_next()
+            };
+        }
         if captured
             && !search_focused
             && matches!(

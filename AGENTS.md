@@ -9,6 +9,7 @@ The primary session reads `docs/workflow.md` at the start of each session.
 - Root `src/`, `pkg/`, and `wineo/` are ignored Arch packaging work directories, not workspace source.
 - Use core `Paths` for storage resolution: `--portable` overrides `WINEO_PORTABLE_DIR`; portable run state and cross-root locks still live in host XDG state.
 - Config edits preserve TOML comments/formatting through `toml_edit`. Reads and no-op edits must not rewrite legacy files; see `docs/config-files.md` for schema rules.
+- GUI changes follow `docs/gui-style.md` for layout, palette roles, controls, motion, and review behavior.
 
 ## Build and verification
 

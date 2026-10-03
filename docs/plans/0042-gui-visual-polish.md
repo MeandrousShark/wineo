@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0042: GUI visual polish
 
@@ -19,8 +19,19 @@ and Trash.
 - On 2026-10-02, the maintainer liked the previews and requested the same
   design for Settings, Snapshots, Downloads, Checkup, and Trash. The expanded
   previews use the Grouped direction as their starting point.
-- The expanded app preview awaits feedback; the plan is not approved for
-  implementation yet.
+- On 2026-10-03, the maintainer approved implementation of the expanded
+  Grouped design: compact rounded rectangles, short slide and fade, and
+  grouped reviews and management sections. The HTML preview stays unchanged.
+  Posters should be smaller in the actual app, and the design must be
+  documented for future updates.
+
+## Decisions during implementation
+
+- Use 160 x 240 px library posters, with 16 px gaps, instead of the preview's
+  oversized artwork. Preserve the 2:3 ratio and existing keyboard grid logic.
+- The reusable visual specification lives in [GUI style guide](../gui-style.md).
+  Mockup sample data is illustrative; existing core data and operations remain
+  authoritative.
 
 ## Existing foundation
 
@@ -39,7 +50,7 @@ and Trash.
   conflict handling. Snapshots, Downloads, Checkup, and Trash own their
   review, confirmation, progress, recovery, and result states separately.
 
-## Choices to settle
+## Approved visual direction
 
 ### 1. Detail action shape
 
@@ -52,7 +63,7 @@ The examples use the same inactive and running environment.
 | Running: Play, Stop, Log | Disabled Play is muted, Stop uses the danger fill, Log keeps the same neutral surface | The same running states in the pill shape |
 | Hover, press, keyboard focus | Explicit hover/pressed colors and a visible focus treatment within the same shape | The same feedback within the pill shape |
 
-Selected for previews: A, using the existing palette. Carry the shared geometry to
+Selected: A, using the existing palette. Carry the shared geometry to
 the panel's Settings, Art, Actions, Cancel, Force stop, and Clean up controls
 where they appear. Secondary actions stay visually quieter than Play/Stop.
 Check both palettes, including disabled text and focus visibility.
@@ -69,7 +80,7 @@ surface separation that works in light and dark mode.
 | Select another card while open | Update the selected content without replaying the open transition | Update the selected content without replaying the open transition |
 | Rapid open/close or navigation | Reverse from the current position, or finish immediately when leaving Library | Reverse from the current opacity, or finish immediately when leaving Library |
 
-Recommendation: A. Keep layout changes bounded: reserve the docked width
+Selected: A. Keep layout changes bounded: reserve the docked width
 during a transition and reflow the library once per open/close rather than
 on every animation frame. Tick only while motion is active. Logical close,
 log cancellation, and selection changes take effect immediately; animation
@@ -88,7 +99,7 @@ controls remain easy to reach in a short window.
 | Existing prefix or missing prerequisite | A separate warning/prerequisite area below the summary, above Create/Back | The same warning/prerequisite area below the cards |
 | Long program and prefix paths | A consistent label/value layout with wrapping and a bounded details area | Wrapping inside the matching card and a bounded details area |
 
-Recommendation: A. Use spacing, labels, and muted secondary text for
+Selected: A. Use spacing, labels, and muted secondary text for
 hierarchy. Keep warning and prerequisite controls prominent. Rearrange the
 existing review data without recomputing creation decisions in the view.
 
@@ -168,3 +179,43 @@ mouse Back/Forward navigation, store integration, and runner discovery keep
 their own backlog entries. This plan does not change creation, launch, or
 process ownership policy, add management operations, or redesign pages
 beyond the existing library, review, and five requested management pages.
+
+## Implementation and verification
+
+- Implemented compact 160 x 240 posters and matching decode sizes; shared
+  32 px rounded controls with hover, pressed, disabled, and focus treatments;
+  docked panel depth and bounded slide/fade transitions; grouped frozen
+  creation reviews with a fixed footer; and all five management pages.
+- Added regression coverage for reversals, stale ticks, navigation, immediate
+  close/log cleanup, selection without replay, and Checkup opening a closed
+  panel. Accent label contrast covers both palettes and disabled states.
+- Independent QA passed after correcting disabled accent label contrast.
+  The full suite passed: 2,018 tests, 0 failures, 16 ignored. Formatting,
+  Clippy with warnings denied, and the release GUI build passed.
+- A hidden X11 workspace exercised the actual GUI in light and dark mode at
+  1200 x 800 and 800 x 600, including poster density, panel actions, grouped
+  management pages, empty/error states, and Windows/native review footers.
+  The temporary fixture filesystem does not support reflinks, so real snapshot
+  copying remains part of maintainer acceptance.
+- Visual review removed duplicate Checkup padding and kept longer secondary
+  panel labels at their natural width. The original HTML preview is unchanged
+  and saved under `docs/design/` beside the reusable style guide.
+
+## Maintainer acceptance
+
+Implementation is ready for acceptance. Keep this plan approved until the
+maintainer completes the real-window checks; then mark it done and release.
+
+- [ ] Browse a populated library in both palettes and a short window. Check
+  poster size, title/state text, search, keyboard navigation, and scroll position.
+- [ ] Exercise Play/Stop/Log and secondary actions with mouse and Tab/Shift+Tab.
+  Check inactive, running, busy, error, and disabled states.
+- [ ] Rapidly open/close/switch cards, leave Library mid-transition, and open
+  and close logs during a run. Confirm immediate cleanup and idle animation.
+- [ ] Review Windows/native creation, existing prefixes, long paths, and missing
+  prerequisites. Check complete details and reachable Back/Create controls.
+- [ ] Edit global/environment Settings, save/revert, and test a config conflict.
+- [ ] Create/restore/delete a snapshot on a reflink-capable filesystem. Expand
+  config comparison and confirm reports, results, and controls remain reachable.
+- [ ] Inspect used/unused Downloads, install progress, Checkup fixes/results,
+  and Trash restore/recovery/deletion confirmations. Check navigation during work.

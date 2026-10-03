@@ -133,6 +133,7 @@ impl App {
     }
 
     pub(crate) fn switch_section(&mut self, section: Section) -> Task<Message> {
+        let was_library = self.section == Section::Library;
         self.leave_art();
         self.tool_page = None;
         self.portable_page = None;
@@ -147,6 +148,9 @@ impl App {
             Section::Settings => Section::Library,
             section => section,
         };
+        if was_library && self.section != Section::Library {
+            self.panel_motion.snap(self.panel_open);
+        }
         self.action_menu = None;
         self.hovered = None;
         self.search_focused = false;
@@ -208,6 +212,12 @@ impl App {
                 let mut style = crate::chips::secondary(palette, status);
                 if selected {
                     style.background = Some(palette.primary.scale_alpha(0.15).into());
+                    style.border.color = palette.primary.scale_alpha(0.30);
+                } else {
+                    style.border.color = iced::Color::TRANSPARENT;
+                    if matches!(status, button::Status::Active | button::Status::Disabled) {
+                        style.background = None;
+                    }
                 }
                 style
             })

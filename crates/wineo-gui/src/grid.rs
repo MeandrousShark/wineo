@@ -58,7 +58,7 @@ impl App {
         };
         let framed = container(container(poster).clip(true))
             .width(CARD_WIDTH)
-            .height(270)
+            .height(240)
             .padding(2)
             .style(move |_| {
                 container::Style::default().border(border::rounded(6).width(2).color(if selected {
@@ -437,8 +437,11 @@ impl App {
             return container(
                 page.push(
                     container(
-                        column![text(self.section.label()).size(22), self.checkup_page(),]
-                            .spacing(12),
+                        column![
+                            crate::ui::page_title(self.section.label(), palette),
+                            self.checkup_page(),
+                        ]
+                        .spacing(12),
                     )
                     .padding(24),
                 ),
@@ -461,9 +464,11 @@ impl App {
                 container(
                     column![
                         text("Your library is empty").size(22),
-                        button("Add something").on_press_maybe(
-                            (!self.management_busy() && self.operation.is_none())
-                                .then_some(Message::Add)
+                        crate::ui::accent_control(
+                            "Add something",
+                            palette.primary,
+                            !self.management_busy() && self.operation.is_none(),
+                            Message::Add,
                         ),
                     ]
                     .spacing(12),
@@ -484,13 +489,19 @@ impl App {
         let mut content = row![wheel::scale(scroll, WHEEL_STEP_SCALE)]
             .width(Fill)
             .height(Fill);
-        if self.panel_open
-            && let Some(card) = self
+        if self.panel_reserved() {
+            let panel = self
                 .selected
                 .as_ref()
                 .and_then(|name| self.cards.iter().find(|card| &card.name == name))
-        {
-            content = content.push(self.panel(card));
+                .map(|card| self.panel(card))
+                .unwrap_or_else(|| container(Space::new()).width(420).height(Fill).into());
+            content = content.push(crate::panel_motion::presentation(
+                panel,
+                self.panel_motion.progress(),
+                self.panel_open && self.panel_motion.interactive(),
+                palette.background,
+            ));
         }
         container(page.push(content))
             .width(Fill)
@@ -515,7 +526,7 @@ impl App {
             .padding(iced::Padding::from([6, 10]).right(30))
             .style(move |_, status| text_input::Style {
                 background: palette.surface.into(),
-                border: border::rounded(6).width(1).color(
+                border: border::rounded(crate::ui::CONTROL_RADIUS).width(1).color(
                     if matches!(status, text_input::Status::Focused { .. }) {
                         palette.primary
                     } else {
@@ -541,7 +552,11 @@ impl App {
             .style(move |_| {
                 container::Style::default()
                     .background(palette.surface)
-                    .border(border::rounded(6).width(1).color(palette.border))
+                    .border(
+                        border::rounded(crate::ui::CONTROL_RADIUS)
+                            .width(1)
+                            .color(palette.border),
+                    )
             })
             .into()
         } else {
@@ -576,13 +591,12 @@ impl App {
                     })
                     .color(palette.foreground),
                 search,
-                button("Add")
-                    .on_press_maybe(
-                        (!self.management_busy() && self.operation.is_none())
-                            .then_some(Message::Add)
-                    )
-                    .padding([6, 12])
-                    .style(move |_, status| crate::chips::secondary(palette, status)),
+                crate::ui::accent_control(
+                    "Add",
+                    palette.primary,
+                    !self.management_busy() && self.operation.is_none(),
+                    Message::Add,
+                ),
             ]
             .spacing(16)
             .align_y(Center),

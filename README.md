@@ -119,6 +119,7 @@ you pass `--portable DIR` or set it up for a portable folder.
 ### More documentation
 
 - [Desktop app](docs/gui.md)
+- [GUI style guide](docs/gui-style.md)
 - [Config files](docs/config-files.md)
 - [Native Linux games](docs/native.md)
 - [Launch options](docs/launch-options.md)

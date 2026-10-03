@@ -11,9 +11,13 @@ target half of `wineo setup` do. The GUI also has guided flows for creating,
 importing, and cloning environments.
 [Plan 0039](plans/0039-gui-trash-and-validate.md) added removal, the trash,
 and checking for problems.
+[Plan 0042](plans/0042-gui-visual-polish.md) adds compact controls, panel
+motion, and grouped review and management layouts. Future GUI changes follow
+the [GUI style guide](gui-style.md), which includes the original visual preview.
 
-A sidebar on the left has **Library** at the top. **Trash**, **Checkup**, and
-**Downloads** sit at the bottom, above a divider and **Settings**. Add opens
+A sidebar on the left has **Library** at the top. **Trash**, **Checkup**,
+**Downloads**, and **Snapshots** sit at the bottom, above a divider and
+**Settings**. Add opens
 from the Library.
 
 ## Starting it
@@ -28,7 +32,8 @@ yet.
 ## The library
 
 Each environment gets a card with its grid art, or its name when it has
-none. Art comes from `wineo art`, using the default target's art when it
+none. Posters are 160 x 240 px, with the title and compact metadata below.
+Art comes from `wineo art`, using the default target's art when it
 has its own. See [Art](art.md) for adding and fetching it.
 
 Art bigger than the app shows it is shrunk once and kept in
@@ -54,6 +59,11 @@ Click a card to open its panel, and click it again or press Esc to close
 it. Double-click a card to open it and play it right away. The panel shows
 the hero art with the logo in its corner, the state, playtime, sessions,
 when it was last played, and its tags.
+
+Play, Stop, and Log share compact rounded controls. The panel slides and
+fades over about 160 ms, keeping the library layout steady during the
+transition. Closing takes effect immediately, including stopping log follows.
+Switching cards while open changes the details without replaying the entrance.
 
 - **Play** starts the environment's default target. An environment with
   more than one target has a picker next to Play.
@@ -324,6 +334,10 @@ Completed verbs stay installed; removing a declaration doesn't uninstall it.
 
 ## Add, import, and clone
 
+The new-environment review groups Application, Source, and Runtime details
+as applicable, with warnings and missing prerequisites below. Long paths
+remain complete, and Back/Create stay outside the scrolling summary.
+
 **Add** opens a compact overlay for **New environment**, **Import prefix**,
 or **Import from Heroic**, keeping the library visible behind it. The same
 choices are available when the library is empty. Back preserves entries;
@@ -488,6 +502,7 @@ the saved key. See [The SteamGridDB key](art.md#the-steamgriddb-key).
 | Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+4, Ctrl+5 | Library, Trash, Checkup, Downloads, Snapshots |
 | Ctrl+, | Global settings |
 | Down (in the search) | Back to the cards |
+| Tab, Shift+Tab | Move focus through library controls and panel actions |
 
 In the SteamGridDB picker:
 
@@ -520,6 +535,11 @@ In an Add, import, or clone flow:
 
 The app follows your desktop's light or dark preference and switches when
 it changes.
+
+Settings, Snapshots, Downloads, Checkup, and Trash share grouped surfaces,
+compact controls, and consistent headings. Settings keeps Save/Revert and
+the edit count in a fixed footer. The [GUI style guide](gui-style.md) records
+the palette, spacing, control states, motion, and layout rules for future pages.
 
 ## Not yet
 
