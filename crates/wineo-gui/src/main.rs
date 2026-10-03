@@ -1289,7 +1289,10 @@ impl App {
         let needle = self.search.to_lowercase();
         self.cards
             .iter()
-            .filter(|card| card.name.to_lowercase().contains(&needle))
+            .filter(|card| {
+                card.display_title.to_lowercase().contains(&needle)
+                    || card.name.to_lowercase().contains(&needle)
+            })
             .collect()
     }
     fn columns(&self) -> usize {
@@ -1449,6 +1452,7 @@ mod tests {
     fn card(name: &str, state: State, seconds: i64) -> Card {
         Card {
             name: name.into(),
+            display_title: name.into(),
             state,
             lost: false,
             prefix: None,
@@ -2024,13 +2028,16 @@ mod tests {
     #[test]
     fn search_is_case_insensitive() {
         let mut app = app();
-        app.cards = vec![
-            card("Dusklight", State::Inactive, 0),
-            card("Other", State::Inactive, 0),
-        ];
+        let mut named = card("dusk_id", State::Inactive, 0);
+        named.display_title = "Dusklight".into();
+        app.cards = vec![named, card("Other", State::Inactive, 0)];
         app.search = "LIGHT".into();
         assert_eq!(app.filtered().len(), 1);
-        assert_eq!(app.filtered()[0].name, "Dusklight");
+        assert_eq!(app.filtered()[0].display_title, "Dusklight");
+        assert_eq!(app.filtered()[0].name, "dusk_id");
+        app.search = "DUSK_ID".into();
+        assert_eq!(app.filtered().len(), 1);
+        assert_eq!(app.filtered()[0].name, "dusk_id");
     }
     #[test]
     fn card_state_and_playtime() {
@@ -2270,6 +2277,7 @@ mod tests {
         let mut app = app();
         let mut game = card("game", State::Inactive, 0);
         game.targets = vec!["game".into(), "alternate".into()];
+        game.display_title = "My Game".into();
         app.cards = vec![game];
         let _ = app.update(Message::Select("game".into()));
         let _ = app.update(Message::TargetPicked("alternate".into()));
@@ -2277,6 +2285,8 @@ mod tests {
         let _ = app.update(Message::Select("game".into()));
         let _ = app.update(Message::DoubleClick("game".into()));
         assert_eq!(app.selected.as_deref(), Some("game"));
+        assert_eq!(app.cards[0].name, "game");
+        assert_eq!(app.cards[0].display_title, "My Game");
         assert!(app.panel_open);
         assert_eq!(app.target.as_deref(), Some("alternate"));
         assert!(app.operation.as_ref().is_some_and(|operation| {

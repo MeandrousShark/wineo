@@ -1005,7 +1005,7 @@ fn control(
     } else {
         None
     };
-    let button = button(text(label))
+    let button = button(text(label).size(14).height(Fill).align_y(Center))
         .height(crate::ui::BUTTON_HEIGHT)
         .padding([0, 12])
         .on_press_maybe(enabled.then_some(message.clone()))

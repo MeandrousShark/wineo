@@ -2,7 +2,7 @@
 
 `wineo-gui` is wineo's desktop app. It shows every environment as a library
 of cards with its art, whether it's running, and how long it's been played,
-and it starts and stops games. It was added in
+and it starts and stops applications and games. It was added in
 [plan 0036](plans/0036-gui-library-launcher.md).
 
 [Plan 0037](plans/0037-gui-settings.md) added settings pages for each
@@ -33,6 +33,10 @@ yet.
 
 Each environment gets a card with its grid art, or its name when it has
 none. Posters are 160 x 240 px, with the title and compact metadata below.
+The title comes from the default target's explicit desktop entry name when
+that entry is enabled. Otherwise it uses the environment name. The environment
+name remains visible as muted context when different, and choosing another
+launch target does not rename the card.
 Art comes from `wineo art`, using the default target's art when it
 has its own. See [Art](art.md) for adding and fetching it.
 
@@ -51,22 +55,28 @@ read gets a warning dot, and its panel shows the error.
 The library refreshes every 2 seconds, so a game started or stopped from
 the CLI shows up without doing anything.
 
-Type in the search field to filter by name.
+Type in the search field to filter by desktop title or environment name.
 
 ## The detail panel
 
-Click a card to open its panel, and click it again or press Esc to close
-it. Double-click a card to open it and play it right away. The panel shows
+Click a card to open its panel, and click it again, click unused Library space,
+or press Esc to close it. Double-click a card to open it and launch it right
+away. The panel shows
 the hero art with the logo in its corner, the state, playtime, sessions,
 when it was last played, and its tags.
 
-Play, Stop, and Log share compact rounded controls. The panel slides and
+Play/Launch and Stop occupy the first action row, with Log, Settings, Art,
+and Actions on a quieter row below. They share compact rounded controls.
+The panel slides and
 fades over about 160 ms, keeping the library layout steady during the
 transition. Closing takes effect immediately, including stopping log follows.
 Switching cards while open changes the details without replaying the entrance.
 
-- **Play** starts the environment's default target. An environment with
-  more than one target has a picker next to Play.
+- **Play** or **Launch** starts the environment's default target. The label
+  is Play for the exact `game` tag and Launch otherwise, including native
+  applications and games. New environments from the built-in `gaming`
+  template receive the tag; existing environments can add it in Settings.
+  An environment with more than one target has a **Launch target:** dropdown.
 - **Stop** stops it, like `wineo stop`.
 - **Log** shows the run's log, the one `wineo logs` shows, and follows it
   while the game runs. Drag to select text, or click into the log and use

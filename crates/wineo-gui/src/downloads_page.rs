@@ -7,7 +7,9 @@ use wineo_core::build_lock::Kind;
 use wineo_core::cancel::Token;
 use wineo_core::download::{Provider, Release};
 
-use crate::ui::{accent_button, page_title, secondary_button, section, section_heading};
+use crate::ui::{
+    PickListStyle, accent_button, page_title, secondary_button, section, section_heading,
+};
 use crate::{App, Message, downloads_work, focus_button, removal, sidebar, spinner};
 
 const CANCEL_ID: &str = "downloads-cancel";
@@ -557,6 +559,7 @@ impl App {
                         pick_list(Provider::ALL, page.provider, |provider| message(
                             Event::Provider(provider)
                         ))
+                        .wineo_style(palette)
                     ]
                     .spacing(12)
                     .align_y(Center),
@@ -565,6 +568,7 @@ impl App {
                         pick_list(tags, page.selected.clone(), |tag| message(Event::Select(
                             tag
                         )))
+                        .wineo_style(palette)
                     ]
                     .spacing(12)
                     .align_y(Center),

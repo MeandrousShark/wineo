@@ -22,6 +22,7 @@ use wineo_core::{art_fetch, desktop};
 use crate::chips::secondary;
 use crate::flow::artwork::{self as flow_artwork, Match};
 use crate::theme::Palette;
+use crate::ui::PickListStyle;
 use crate::wheel;
 use crate::{art_picker, artwork};
 
@@ -1024,11 +1025,10 @@ impl Page {
                 );
             }
         } else {
-            controls = controls.push(pick_list(
-                choices,
-                Some(Showing(self.showing.clone())),
-                Event::Showing,
-            ));
+            controls = controls.push(
+                pick_list(choices, Some(Showing(self.showing.clone())), Event::Showing)
+                    .wineo_style(palette),
+            );
         }
         controls.into()
     }
@@ -1231,11 +1231,14 @@ impl Page {
         }
         if !change.matches.is_empty() {
             content = content.push(text("Game matches").size(13).color(palette.muted));
-            content = content.push(pick_list(
-                change.matches.clone(),
-                change.selected.clone(),
-                Event::PickGame,
-            ));
+            content = content.push(
+                pick_list(
+                    change.matches.clone(),
+                    change.selected.clone(),
+                    Event::PickGame,
+                )
+                .wineo_style(palette),
+            );
         }
         if let Some(error) = &change.error {
             content = content.push(text(error).color(palette.danger));

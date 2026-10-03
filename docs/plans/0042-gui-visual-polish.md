@@ -33,6 +33,53 @@ and Trash.
   Mockup sample data is illustrative; existing core data and operations remain
   authoritative.
 
+## Approved acceptance refinements
+
+On 2026-10-03, the maintainer requested the following refinements and settled
+the title and launch-label rules through follow-up answers:
+
+- Use the default launch target's configured desktop entry title for Library
+  cards. Fall back to the environment identifier if the default target or its
+  desktop title is unavailable. Search matches both title and identifier.
+  Keep identifiers as operation and selection keys; changing the selected
+  launch target does not rename the card.
+- Use **Play** when an environment has the `game` tag and **Launch** otherwise.
+  The built-in `gaming` template adds that tag to future creations. Existing
+  environments are not classified from runner or performance options; they
+  can be tagged through their settings.
+- Add **Launch target:** beside the panel chooser and give every dropdown
+  and its menu the shared rounded, bordered, palette-aware treatment.
+- Match the Library context menu and panel Actions menu to the same design,
+  preserving their operations and enabled rules.
+- Center Checkup button labels. Keep Play/Launch and Stop on the first panel
+  action row, with Log and the secondary controls on the next row.
+- Clicking unused Library space closes the detail panel. Card selection,
+  scrolling, menus, keyboard navigation, and immediate cleanup retain their
+  existing behavior.
+
+These refinements extend the original scope to library display names and the
+existing tag-based launch label. True motion between grid positions during
+panel reflow is proposed separately below and is not yet approved.
+
+## Proposed grid-motion amendment
+
+Status: draft
+
+Animate cards between their previous and final grid slots when the panel
+opens or closes. Compute the destination layout once, then interpolate card
+positions over a bounded transition. Keep the scrollable widget tree stable
+and move hit areas with their cards. Use an opaque docked panel overlay and
+input shielding so cards cannot receive clicks through the panel.
+
+The motion preview compares a smooth glide with a lightly staggered settle.
+Both stop when idle and support reversals from the current positions. Filters,
+navigation, window resizing, and changed library contents finish or retarget
+the motion safely. Preserve scroll position, reachable rows near the bottom,
+keyboard column navigation, visible artwork loading, and immediate panel/log
+cleanup. Verify these behaviors in both palettes and small windows before
+landing the layout change. This replaces the original snap at the single
+reflow; it does not resize or rewrap the grid on every animation frame.
+
 ## Existing foundation
 
 - `theme.rs` owns light and dark palette tokens and follows the desktop.
@@ -174,8 +221,8 @@ and results when navigating between pages.
 
 ## Scope limits
 
-Theme customization, new library views, library names from desktop entries,
-mouse Back/Forward navigation, store integration, and runner discovery keep
+Theme customization, new library views, mouse Back/Forward navigation,
+store integration, and runner discovery keep
 their own backlog entries. This plan does not change creation, launch, or
 process ownership policy, add management operations, or redesign pages
 beyond the existing library, review, and five requested management pages.
@@ -217,16 +264,39 @@ beyond the existing library, review, and five requested management pages.
 - Release CLI and GUI builds passed. A read-only check with the new CLI listed
   all four existing entries from the affected installation and verified that
   their manifest bytes were unchanged.
+- Implemented the approved acceptance refinements: desktop display titles and
+  search, explicit game-tag launch labels, shared dropdown and popup styles,
+  a bounded context menu, centered Checkup labels, separate primary/secondary
+  action rows, and closing the panel from unused Library space.
+- Independent QA caught and verified a fix for long busy reasons pushing the
+  context menu outside a small window. The reason and actions now scroll while
+  its title and Close control stay visible. All 506 GUI tests and the full suite
+  passed: 2,028 tests, 0 failures, 16 ignored. Formatting, Clippy with warnings
+  denied, and release CLI/GUI builds passed.
+- A hidden desktop with throwaway registrations checked friendly card/panel
+  titles, Play versus Launch, the labeled chooser and opened popup, compact
+  context menus, Checkup label alignment, and blank-space closing at 1200 x 800
+  and 800 x 600. User registrations were not changed.
 
 ## Maintainer acceptance
 
-Implementation is ready for acceptance. Keep this plan approved until the
-maintainer completes the real-window checks; then mark it done and release.
+The approved refinements are ready for acceptance. The grid-motion amendment
+above awaits a maintainer decision. Keep this plan approved until the maintainer
+completes the real-window checks; then mark it done and release.
 
 - [ ] Browse a populated library in both palettes and a short window. Check
   poster size, title/state text, search, keyboard navigation, and scroll position.
-- [ ] Exercise Play/Stop/Log and secondary actions with mouse and Tab/Shift+Tab.
+- [ ] Check a named default desktop target, no desktop title, and several
+  targets. Search by title and environment name; changing the launch target
+  should keep the card title stable.
+- [ ] Check Play for a `game` tag and Launch without it on Wine and native
+  entries. Future built-in gaming creations should show the tag in review.
+- [ ] Exercise Play/Launch, Stop, Log, and secondary actions with mouse and Tab/Shift+Tab.
   Check inactive, running, busy, error, and disabled states.
+- [ ] Open dropdowns and both action menus, including long names and busy
+  reasons in a small window. Check every action, full reason text, and Close.
+- [ ] Click unused Library space to close the panel without changing keyboard
+  selection. Card selection, scrollbars, and menus keep their own behavior.
 - [ ] Rapidly open/close/switch cards, leave Library mid-transition, and open
   and close logs during a run. Confirm immediate cleanup and idle animation.
 - [ ] Review Windows/native creation, existing prefixes, long paths, and missing

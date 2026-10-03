@@ -16,6 +16,7 @@ use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game};
 
 use crate::theme::Palette;
+use crate::ui::PickListStyle;
 
 /// Width of the stacked tile block.
 const WIDTH: u32 = 356;
@@ -806,11 +807,10 @@ impl Draft {
                         .spacing(8),
                     );
                     if !self.matches.is_empty() {
-                        content = content.push(pick_list(
-                            self.matches.clone(),
-                            self.selected.clone(),
-                            Event::Game,
-                        ));
+                        content = content.push(
+                            pick_list(self.matches.clone(), self.selected.clone(), Event::Game)
+                                .wineo_style(palette),
+                        );
                     }
                 }
             } else {

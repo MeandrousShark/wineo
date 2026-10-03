@@ -11,6 +11,7 @@ use wineo_core::runners::Runners;
 
 use crate::chips::{input_style, secondary};
 use crate::theme::Palette;
+use crate::ui::PickListStyle;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
@@ -591,7 +592,8 @@ impl Page {
                 value.split(" -> ").next().unwrap_or(&value).to_owned()
             ))
             .placeholder("Choose a runner")
-            .width(Fill),
+            .width(Fill)
+            .wineo_style(palette),
             row![
                 button(text(if self.adopt {
                     "Use in place (selected)"
@@ -678,7 +680,8 @@ impl Page {
                 pick_list(vec![Arch::Win64, Arch::Win32], self.arch, |arch| {
                     Event::Arch(Some(arch))
                 })
-                .placeholder("Choose architecture"),
+                .placeholder("Choose architecture")
+                .wineo_style(palette),
             );
         }
         if !review.inspection.external_dependencies.is_empty() {

@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use iced::widget::{Button, Container, Space, Text, button, container, text};
 use iced::{Color, Element, Fill, Font, border, font};
 
@@ -6,6 +8,78 @@ use crate::theme::Palette;
 pub(crate) const BUTTON_HEIGHT: f32 = 32.0;
 pub(crate) const CONTROL_RADIUS: f32 = 8.0;
 pub(crate) const SECTION_RADIUS: f32 = 12.0;
+
+pub(crate) trait PickListStyle<'a, T, L, V, M>
+where
+    T: ToString + PartialEq + Clone,
+    L: Borrow<[T]> + 'a,
+    V: Borrow<T> + 'a,
+    M: Clone,
+{
+    fn wineo_style(self, palette: Palette) -> Self;
+}
+
+impl<'a, T, L, V, M> PickListStyle<'a, T, L, V, M> for iced::widget::PickList<'a, T, L, V, M>
+where
+    T: ToString + PartialEq + Clone,
+    L: Borrow<[T]> + 'a,
+    V: Borrow<T> + 'a,
+    M: Clone,
+{
+    fn wineo_style(self, palette: Palette) -> Self {
+        self.padding([8, 10])
+            .text_size(14)
+            .style(move |_, status| pick_list_style(palette, status))
+            .menu_style(move |_| pick_menu_style(palette))
+    }
+}
+
+fn pick_list_style(
+    palette: Palette,
+    status: iced::widget::pick_list::Status,
+) -> iced::widget::pick_list::Style {
+    use iced::widget::pick_list::Status;
+
+    let (background, border_color) = match status {
+        Status::Active => (palette.surface, palette.border),
+        Status::Hovered => (
+            blend(palette.surface, palette.foreground, 0.06),
+            blend(palette.border, palette.primary, 0.55),
+        ),
+        Status::Opened { .. } => (
+            blend(palette.surface, palette.primary, 0.12),
+            palette.primary,
+        ),
+    };
+    iced::widget::pick_list::Style {
+        text_color: palette.foreground,
+        placeholder_color: palette.muted,
+        handle_color: if matches!(status, Status::Opened { .. }) {
+            palette.primary
+        } else {
+            palette.muted
+        },
+        background: background.into(),
+        border: border::rounded(CONTROL_RADIUS).width(1).color(border_color),
+    }
+}
+
+fn pick_menu_style(palette: Palette) -> iced::overlay::menu::Style {
+    iced::overlay::menu::Style {
+        background: palette.surface.into(),
+        border: border::rounded(CONTROL_RADIUS)
+            .width(1)
+            .color(palette.border),
+        text_color: palette.foreground,
+        selected_text_color: accent_ink(palette.primary),
+        selected_background: palette.primary.into(),
+        shadow: iced::Shadow {
+            color: Color::BLACK.scale_alpha(0.16),
+            offset: iced::Vector::new(0.0, 3.0),
+            blur_radius: 8.0,
+        },
+    }
+}
 
 pub(crate) fn secondary_button<'a, M: 'a>(label: &'a str, palette: Palette) -> Button<'a, M> {
     button(text(label).size(14).center())

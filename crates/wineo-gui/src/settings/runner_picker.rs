@@ -8,6 +8,7 @@ use super::Event;
 use super::load::RunnerChoice;
 use crate::Message;
 use crate::theme::Palette;
+use crate::ui::PickListStyle;
 
 const WIDTH: f32 = 260.0;
 const TEXT_SIZE: f32 = 16.0;
@@ -73,6 +74,7 @@ pub(super) fn picker(
         .text_size(TEXT_SIZE)
         .font(Font::DEFAULT)
         .text_shaping(text::Shaping::Advanced)
+        .wineo_style(palette)
         .into()
     };
     if shown == selected {

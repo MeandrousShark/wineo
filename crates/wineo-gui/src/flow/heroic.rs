@@ -32,6 +32,7 @@ use wineo_core::runners::Runners;
 use super::{Action, artwork};
 use crate::chips::Chips;
 use crate::theme::Palette;
+use crate::ui::PickListStyle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -1831,11 +1832,14 @@ impl Page {
                     );
                     body = body.push(field("Windows runner", &self.draft.runner, Event::Runner));
                     if let Some(options) = &self.batch_options {
-                        body = body.push(pick_list(
-                            options.runners.clone(),
-                            Some(self.draft.runner.clone()),
-                            Event::Runner,
-                        ));
+                        body = body.push(
+                            pick_list(
+                                options.runners.clone(),
+                                Some(self.draft.runner.clone()),
+                                Event::Runner,
+                            )
+                            .wineo_style(palette),
+                        );
                     }
                     if self.draft.runner.is_empty() {
                         body = body.push(
@@ -1927,11 +1931,14 @@ impl Page {
                     if windows {
                         body = body.push(field("Runner", &self.draft.runner, Event::Runner));
                         if let Some(prepared) = &self.prepared {
-                            body = body.push(pick_list(
-                                prepared.runners.clone(),
-                                Some(self.draft.runner.clone()),
-                                Event::Runner,
-                            ));
+                            body = body.push(
+                                pick_list(
+                                    prepared.runners.clone(),
+                                    Some(self.draft.runner.clone()),
+                                    Event::Runner,
+                                )
+                                .wineo_style(palette),
+                            );
                             if let Some(RunnerSuggestion::Copy(copy)) = &prepared.suggested {
                                 body = body.push(
                                     text(format!(
@@ -2420,11 +2427,14 @@ fn launch_settings(draft: &Draft, windows: bool, palette: Palette) -> Element<'_
             let mut options = vec!["Default".to_owned()];
             options.extend(choices);
             body = body.push(text(label).size(13));
-            body = body.push(pick_list(
-                options,
-                Some(selected.unwrap_or("Default").to_owned()),
-                move |value| Event::GamescopeChoice(index, value),
-            ));
+            body = body.push(
+                pick_list(
+                    options,
+                    Some(selected.unwrap_or("Default").to_owned()),
+                    move |value| Event::GamescopeChoice(index, value),
+                )
+                .wineo_style(palette),
+            );
         }
         body = body.push(
             checkbox(scope.grab_cursor)

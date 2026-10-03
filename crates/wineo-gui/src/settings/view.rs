@@ -15,7 +15,7 @@ use super::{Editor, Event, Page, TargetEdit, View};
 use crate::chips::{Chips, input_style, secondary};
 use crate::panel::{action_button, error_box};
 use crate::theme::Palette;
-use crate::ui::{secondary_button, section as grouped_section, section_heading};
+use crate::ui::{PickListStyle, secondary_button, section as grouped_section, section_heading};
 use crate::{Message, WHEEL_STEP_SCALE, wheel};
 use wineo_core::paths::Paths;
 
@@ -342,6 +342,7 @@ fn global_view<'a>(
         .on_open(send(Event::MenuOpened))
         .on_close(send(Event::MenuClosed))
         .width(CONTROL_WIDTH)
+        .wineo_style(palette)
         .into()
     };
     let mut new_env = column![
@@ -1145,6 +1146,7 @@ fn components<'a>(
             .on_open(send(Event::MenuOpened))
             .on_close(send(Event::MenuClosed))
             .width(CONTROL_WIDTH)
+            .wineo_style(palette)
             .into()
         };
         let refused = editor.build_refusal(name, component).is_some();
@@ -1338,6 +1340,7 @@ fn gamescope_fields<'a>(
                 .on_open(send(Event::MenuOpened))
                 .on_close(send(Event::MenuClosed))
                 .width(CONTROL_WIDTH)
+                .wineo_style(palette)
                 .into()
             }
             Field::GrabCursor => toggler(fields.grab_cursor)

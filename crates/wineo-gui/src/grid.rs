@@ -7,11 +7,16 @@ use iced::{Center, Color, ContentFit, Element, Fill, Font, Size, Theme, border, 
 
 use crate::library::Card;
 use crate::theme::Palette;
+use crate::ui;
 use crate::wheel;
 use crate::{App, CARD_WIDTH, GAP, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
 
-// Reserve enough height to keep the last action inside the window.
-const ACTION_MENU_HEIGHT: f32 = 500.0;
+const ACTION_MENU_WIDTH: f32 = 248.0;
+const ACTION_MENU_MAX_HEIGHT: f32 = 448.0;
+const ACTION_MENU_MARGIN: f32 = 8.0;
+const ACTION_MENU_PADDING: f32 = 12.0;
+const ACTION_MENU_SPACING: f32 = 4.0;
+const ACTION_MENU_HEADER_HEIGHT: f32 = 20.0;
 
 impl App {
     pub(crate) fn grid(&self) -> Element<'_, Message> {
@@ -42,19 +47,24 @@ impl App {
                 .border_radius(4)
                 .opacity(if hovered { 0.85_f32 } else { 1.0_f32 })
                 .into(),
-            None => container(text(&card.name).size(14).color(palette.muted).center())
-                .width(Fill)
-                .height(Fill)
-                .padding(12)
-                .center(Fill)
-                .style(move |_| {
-                    container::Style::default().background(
-                        palette
-                            .surface
-                            .scale_alpha(if hovered { 0.85 } else { 1.0 }),
-                    )
-                })
-                .into(),
+            None => container(
+                text(&card.display_title)
+                    .size(14)
+                    .color(palette.muted)
+                    .center(),
+            )
+            .width(Fill)
+            .height(Fill)
+            .padding(12)
+            .center(Fill)
+            .style(move |_| {
+                container::Style::default().background(palette.surface.scale_alpha(if hovered {
+                    0.85
+                } else {
+                    1.0
+                }))
+            })
+            .into(),
         };
         let framed = container(container(poster).clip(true))
             .width(CARD_WIDTH)
@@ -67,7 +77,7 @@ impl App {
                     Color::TRANSPARENT
                 }))
             });
-        let label = truncate_name(&card.name, CARD_WIDTH);
+        let label = truncate_name(&card.display_title, CARD_WIDTH);
         let dot_color = card.dot(palette);
         let meta = row![
             container(Space::new())
@@ -81,7 +91,7 @@ impl App {
         ]
         .spacing(8)
         .align_y(Center);
-        let content = column![
+        let mut content = column![
             framed,
             text(label)
                 .size(14)
@@ -91,10 +101,18 @@ impl App {
                 })
                 .color(palette.foreground)
                 .wrapping(iced::widget::text::Wrapping::None),
-            meta,
         ]
         .spacing(4)
         .width(CARD_WIDTH);
+        if card.name != card.display_title {
+            content = content.push(
+                text(truncate_name(&card.name, CARD_WIDTH))
+                    .size(12)
+                    .color(palette.muted)
+                    .wrapping(iced::widget::text::Wrapping::None),
+            );
+        }
+        content = content.push(meta);
         mouse_area(content)
             .on_press(Message::Select(card.name.clone()))
             .on_double_click(Message::DoubleClick(card.name.clone()))
@@ -280,60 +298,134 @@ impl App {
                 .into();
         }
         if let Some(name) = &self.action_menu {
-            let mut position = menu_position(self.action_menu_position, self.window_size);
-            position.y = position
-                .y
-                .min((self.window_size.height - ACTION_MENU_HEIGHT).max(8.0));
             let palette = self.palette;
-            let menu = container(
-                column![
-                    text(truncate_name(name, 176.0))
-                        .size(14)
-                        .wrapping(iced::widget::text::Wrapping::None),
-                    button("Settings").on_press(Message::ContextSettings(name.clone())),
-                    button("Art...").on_press(Message::ContextArt(name.clone())),
-                    self.wine_actions(name).then(|| button("Snapshots...")
-                        .on_press(Message::SnapshotsEnvironment(name.clone()))),
-                    button("Copy to portable folder...")
-                        .on_press(Message::CopyPortable(name.clone())),
-                    self.wine_actions(name)
-                        .then(|| button("Run program...").on_press(Message::OpenTool(
+            let wine_actions = self.wine_actions(name);
+            let removal_reason = self.remove_reason(name);
+            let menu_buttons = 6 + usize::from(wine_actions) * 3;
+            let menu_dividers = 1 + usize::from(wine_actions);
+            let body_content_height =
+                action_menu_body_height(menu_buttons, menu_dividers, removal_reason.as_deref());
+            let menu_height = action_menu_height(self.window_size.height, body_content_height);
+            let position = menu_position(self.action_menu_position, self.window_size, menu_height);
+            let mut scroll_items = column![
+                context_menu_button(
+                    "Settings",
+                    palette,
+                    false,
+                    Some(Message::ContextSettings(name.clone())),
+                ),
+                context_menu_button(
+                    "Art...",
+                    palette,
+                    false,
+                    Some(Message::ContextArt(name.clone())),
+                ),
+            ]
+            .spacing(ACTION_MENU_SPACING);
+            if wine_actions {
+                scroll_items = scroll_items.push(context_menu_button(
+                    "Snapshots...",
+                    palette,
+                    false,
+                    Some(Message::SnapshotsEnvironment(name.clone())),
+                ));
+            }
+            scroll_items = scroll_items.push(context_menu_button(
+                "Copy to portable folder...",
+                palette,
+                false,
+                Some(Message::CopyPortable(name.clone())),
+            ));
+            if wine_actions {
+                scroll_items = scroll_items
+                    .push(ui::separator(palette).padding([3, 0]))
+                    .push(context_menu_button(
+                        "Run program...",
+                        palette,
+                        false,
+                        Some(Message::OpenTool(
                             name.clone(),
-                            crate::tools_page::Kind::Exec
-                        ))),
-                    self.wine_actions(name)
-                        .then(|| button("Winetricks...").on_press(Message::OpenTool(
+                            crate::tools_page::Kind::Exec,
+                        )),
+                    ))
+                    .push(context_menu_button(
+                        "Winetricks...",
+                        palette,
+                        false,
+                        Some(Message::OpenTool(
                             name.clone(),
-                            crate::tools_page::Kind::Winetricks
-                        ))),
-                    button("Check for problems").on_press(Message::Checkup(
-                        crate::checkup::Event::Open(crate::checkup::Scope::Environment(
-                            name.clone()
-                        ))
-                    )),
-                    button("Clone").on_press_maybe(
-                        (!self.management_busy() && self.remove_reason(name).is_none())
-                            .then(|| Message::CloneEnvironment(name.clone()))
-                    ),
-                    button("Remove...").on_press_maybe(
-                        self.remove_reason(name)
-                            .is_none()
-                            .then(|| Message::Remove(name.clone()))
-                    ),
-                    text(self.remove_reason(name).unwrap_or_default())
+                            crate::tools_page::Kind::Winetricks,
+                        )),
+                    ));
+            }
+            scroll_items = scroll_items
+                .push(context_menu_button(
+                    "Check for problems",
+                    palette,
+                    false,
+                    Some(Message::Checkup(crate::checkup::Event::Open(
+                        crate::checkup::Scope::Environment(name.clone()),
+                    ))),
+                ))
+                .push(ui::separator(palette).padding([3, 0]))
+                .push(context_menu_button(
+                    "Clone",
+                    palette,
+                    false,
+                    (!self.management_busy() && removal_reason.is_none())
+                        .then(|| Message::CloneEnvironment(name.clone())),
+                ))
+                .push(context_menu_button(
+                    "Remove...",
+                    palette,
+                    true,
+                    removal_reason
+                        .is_none()
+                        .then(|| Message::Remove(name.clone())),
+                ));
+            if let Some(reason) = removal_reason {
+                scroll_items = scroll_items.push(
+                    text(reason)
                         .size(12)
+                        .width(Fill)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                         .color(palette.muted),
-                    button("Close menu").on_press(Message::CloseMenu),
-                ]
-                .spacing(8),
-            )
-            .padding(12)
-            .width(220)
-            .style(move |_| {
-                container::Style::default()
-                    .background(palette.surface)
-                    .border(border::rounded(6).width(1).color(palette.border))
-            });
+                );
+            }
+            let menu_items = column![
+                text(truncate_name(name, 224.0))
+                    .size(14)
+                    .font(Font {
+                        weight: font::Weight::Semibold,
+                        ..Font::DEFAULT
+                    })
+                    .color(palette.foreground)
+                    .height(ACTION_MENU_HEADER_HEIGHT)
+                    .align_y(Center)
+                    .wrapping(iced::widget::text::Wrapping::None),
+                scrollable(scroll_items).height(action_menu_scroll_height(menu_height)),
+                context_menu_button("Close menu", palette, false, Some(Message::CloseMenu)),
+            ]
+            .spacing(ACTION_MENU_SPACING)
+            .height(Fill);
+            let menu = container(menu_items)
+                .padding(ACTION_MENU_PADDING)
+                .width(ACTION_MENU_WIDTH)
+                .height(menu_height)
+                .style(move |_| {
+                    container::Style::default()
+                        .background(palette.surface)
+                        .border(
+                            border::rounded(ui::SECTION_RADIUS)
+                                .width(1)
+                                .color(palette.border),
+                        )
+                        .shadow(iced::Shadow {
+                            color: Color::BLACK.scale_alpha(0.2),
+                            offset: iced::Vector::new(0.0, 4.0),
+                            blur_radius: 14.0,
+                        })
+                });
             return page
                 .push(
                     mouse_area(Space::new().width(Fill).height(Fill))
@@ -486,9 +578,13 @@ impl App {
             ))
             .on_scroll(Message::Scrolled)
             .style(move |theme, status| scroll_style(theme, status, palette, visible));
-        let mut content = row![wheel::scale(scroll, WHEEL_STEP_SCALE)]
-            .width(Fill)
-            .height(Fill);
+        let library = mouse_area(wheel::scale(scroll, WHEEL_STEP_SCALE));
+        let library = if self.panel_open {
+            library.on_press(Message::ClosePanel)
+        } else {
+            library
+        };
+        let mut content = row![library].width(Fill).height(Fill);
         if self.panel_reserved() {
             let panel = self
                 .selected
@@ -626,11 +722,97 @@ fn text_width(content: &str) -> f32 {
     .width
 }
 
-fn menu_position(pointer: iced::Point, window: Size) -> iced::Point {
+fn menu_position(pointer: iced::Point, window: Size, menu_height: f32) -> iced::Point {
     iced::Point::new(
-        (pointer.x + 4.0).clamp(8.0, (window.width - 228.0).max(8.0)),
-        (pointer.y + 4.0).clamp(8.0, (window.height - 188.0).max(8.0)),
+        (pointer.x + 4.0).clamp(
+            ACTION_MENU_MARGIN,
+            (window.width - ACTION_MENU_WIDTH - ACTION_MENU_MARGIN).max(ACTION_MENU_MARGIN),
+        ),
+        (pointer.y + 4.0).clamp(
+            ACTION_MENU_MARGIN,
+            (window.height - menu_height - ACTION_MENU_MARGIN).max(ACTION_MENU_MARGIN),
+        ),
     )
+}
+
+fn action_menu_height(window_height: f32, body_content_height: f32) -> f32 {
+    let chrome = ACTION_MENU_PADDING * 2.0
+        + ACTION_MENU_HEADER_HEIGHT
+        + ui::BUTTON_HEIGHT
+        + ACTION_MENU_SPACING * 2.0;
+    (chrome + body_content_height)
+        .min(ACTION_MENU_MAX_HEIGHT)
+        .min((window_height - ACTION_MENU_MARGIN * 2.0).max(0.0))
+}
+
+fn action_menu_scroll_height(menu_height: f32) -> f32 {
+    (menu_height
+        - ACTION_MENU_PADDING * 2.0
+        - ACTION_MENU_HEADER_HEIGHT
+        - ui::BUTTON_HEIGHT
+        - ACTION_MENU_SPACING * 2.0)
+        .max(0.0)
+}
+
+fn action_menu_body_height(buttons: usize, dividers: usize, reason: Option<&str>) -> f32 {
+    let reason_height = reason.map_or(0.0, |reason| text_height(reason, ACTION_MENU_WIDTH - 24.0));
+    let items = buttons + dividers + usize::from(reason.is_some());
+    buttons as f32 * ui::BUTTON_HEIGHT
+        + dividers as f32 * 7.0
+        + reason_height
+        + items.saturating_sub(1) as f32 * ACTION_MENU_SPACING
+}
+
+fn text_height(content: &str, width: f32) -> f32 {
+    iced::advanced::graphics::text::Paragraph::with_text(iced::advanced::Text {
+        content,
+        bounds: Size::new(width, f32::INFINITY),
+        size: 12.into(),
+        line_height: iced::widget::text::LineHeight::default(),
+        font: Font::DEFAULT,
+        align_x: iced::advanced::text::Alignment::Default,
+        align_y: iced::alignment::Vertical::Top,
+        shaping: iced::widget::text::Shaping::Advanced,
+        wrapping: iced::widget::text::Wrapping::WordOrGlyph,
+    })
+    .min_bounds()
+    .height
+}
+
+fn context_menu_button(
+    label: &'static str,
+    palette: Palette,
+    danger: bool,
+    message: Option<Message>,
+) -> iced::widget::Button<'static, Message> {
+    button(text(label).size(14).height(Fill).align_y(Center))
+        .width(Fill)
+        .height(ui::BUTTON_HEIGHT)
+        .padding([0, 10])
+        .on_press_maybe(message)
+        .style(move |_, status| {
+            let background = match status {
+                button::Status::Active | button::Status::Disabled => Color::TRANSPARENT,
+                button::Status::Hovered if danger => palette.danger.scale_alpha(0.12),
+                button::Status::Pressed if danger => palette.danger.scale_alpha(0.2),
+                button::Status::Hovered => palette.foreground.scale_alpha(0.06),
+                button::Status::Pressed => palette.primary.scale_alpha(0.16),
+            };
+            iced::widget::button::Style {
+                background: Some(background.into()),
+                text_color: if status == button::Status::Disabled {
+                    palette.muted
+                } else if danger {
+                    palette.danger
+                } else {
+                    palette.foreground
+                },
+                border: border::rounded(ui::CONTROL_RADIUS)
+                    .width(1)
+                    .color(Color::TRANSPARENT),
+                ..iced::widget::button::Style::default()
+            }
+        })
 }
 
 fn truncate_name(name: &str, max_width: f32) -> String {
@@ -683,15 +865,50 @@ mod tests {
 
     #[test]
     fn context_menu_follows_pointer_and_stays_inside_window() {
+        let height = action_menu_height(800.0, 400.0);
         assert_eq!(
-            menu_position(iced::Point::new(100.0, 200.0), Size::new(1200.0, 800.0)),
+            menu_position(
+                iced::Point::new(100.0, 200.0),
+                Size::new(1200.0, 800.0),
+                height,
+            ),
             iced::Point::new(104.0, 204.0)
         );
-        let position = menu_position(iced::Point::new(1199.0, 799.0), Size::new(1200.0, 800.0));
-        assert_eq!(position, iced::Point::new(972.0, 612.0));
+        let position = menu_position(
+            iced::Point::new(1199.0, 799.0),
+            Size::new(1200.0, 800.0),
+            height,
+        );
+        assert_eq!(position, iced::Point::new(944.0, 344.0));
         assert_eq!(
-            menu_position(iced::Point::ORIGIN, Size::new(100.0, 100.0)),
+            menu_position(
+                iced::Point::ORIGIN,
+                Size::new(100.0, 100.0),
+                action_menu_height(100.0, 0.0),
+            ),
             iced::Point::new(8.0, 8.0)
         );
+    }
+
+    #[test]
+    fn context_menu_keeps_close_reachable_for_long_reasons_in_small_windows() {
+        let reason = format!("Busy: removing {}", "long-environment-name-".repeat(80));
+        let content_height = action_menu_body_height(6, 1, Some(&reason));
+        let window = Size::new(800.0, 600.0);
+        let height = action_menu_height(window.height, content_height);
+        let scroll_height = action_menu_scroll_height(height);
+        let position = menu_position(iced::Point::new(799.0, 599.0), window, height);
+
+        assert!(content_height > scroll_height);
+        assert!(scroll_height > 0.0);
+        assert!(height <= window.height - ACTION_MENU_MARGIN * 2.0);
+        assert!(position.y + height <= window.height - ACTION_MENU_MARGIN);
+        assert_eq!(height, ACTION_MENU_MAX_HEIGHT);
+    }
+
+    #[test]
+    fn context_menu_shrinks_to_its_content_for_native_environments() {
+        let body_height = action_menu_body_height(6, 1, None);
+        assert_eq!(action_menu_height(800.0, body_height), 307.0);
     }
 }

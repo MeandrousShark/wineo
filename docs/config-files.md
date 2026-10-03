@@ -98,6 +98,10 @@ exactly, and can't repeat. They work on Wine and native environments and in
 templates, and needed no schema bump for the same reason as the launch
 options.
 
+The GUI uses **Play** for the exact `game` tag and **Launch** otherwise. This
+changes the label, not launch behavior. Future creations from the built-in
+`gaming` template receive the tag; existing environments are not retagged.
+
 ```sh
 wineo set hades 'tags=["game", "co-op"]'
 wineo list --tag game
@@ -161,6 +165,7 @@ schema_version = 1
 runner = "proton"      # a runner name, or "proton" for the newest Proton installed
 arch = "win64"         # or "win32"
 gamemode = true
+tags = ["game"]
 dxvk = "latest"        # left out on Proton, which bundles its own
 vkd3d = "latest"
 gameid = "umu-12345"
@@ -181,6 +186,8 @@ the rest of its settings into `environments/palworld.toml`. Flags like
 `--runner` and `--arch` win over the template, and a template without a
 runner uses the global default. `wineo templates` lists the templates, and
 the built-in `gaming` template can be shadowed by a file of the same name.
+Its built-in settings include the `game` tag. A custom template named
+`gaming` keeps its own settings and tags.
 Targets come from the installer, `wineo setup`, or `wineo set` afterwards.
 
 ## Legacy files

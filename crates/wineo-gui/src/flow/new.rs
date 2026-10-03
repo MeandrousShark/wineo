@@ -34,7 +34,7 @@ use super::{Action, artwork};
 use crate::logview::{self, LogView};
 use crate::picker;
 use crate::theme::Palette;
-use crate::ui;
+use crate::ui::{self, PickListStyle};
 
 const LOG_ID: &str = "install-log";
 const LOG_CAP: usize = 128 * 1024;
@@ -1169,6 +1169,7 @@ impl Page {
                     column![
                         text("Type"),
                         pick_list(Kind::ALL, Some(self.draft.kind), Event::Kind)
+                            .wineo_style(palette)
                     ]
                     .spacing(4)
                     .width(180),
@@ -1241,6 +1242,7 @@ impl Page {
                             })
                         },
                     )
+                    .wineo_style(palette)
                 ]
                 .spacing(4),
             );
@@ -1286,6 +1288,7 @@ impl Page {
                                 })
                             },
                         )
+                        .wineo_style(palette)
                         .width(Fill),
                     );
                     options_body = options_body.push(
@@ -1299,7 +1302,8 @@ impl Page {
                 }
                 options_body = options_body.push(text("Architecture override")).push(
                     pick_list([Arch::Win64, Arch::Win32], self.draft.arch, Event::Arch)
-                        .placeholder("Use template or global default"),
+                        .placeholder("Use template or global default")
+                        .wineo_style(palette),
                 );
                 options_body = options_body.push(text("Prefix folder override")).push(
                     row![
@@ -2381,7 +2385,8 @@ mod tests {
             [
                 "Runner: newest installed Proton, or the global default",
                 "Graphics: DXVK latest + vkd3d latest (Proton uses its bundled versions)",
-                "GameMode: on"
+                "GameMode: on",
+                "Tags: game"
             ]
         );
         assert!(!page.additional_wine_options_visible());

@@ -24,7 +24,7 @@ use crate::runners::Runners;
 /// gaming runs on it and its DXVK and vkd3d picks drop out.
 const BUILT_IN: [(&str, &str); 1] = [(
     "gaming",
-    "schema_version = 1\nrunner = \"proton\"\ndxvk = \"latest\"\nvkd3d = \"latest\"\ngamemode = true\n",
+    "schema_version = 1\ntags = [\"game\"]\nrunner = \"proton\"\ndxvk = \"latest\"\nvkd3d = \"latest\"\ngamemode = true\n",
 )];
 
 /// What a template's `runner` can be besides a runner's name: the newest
@@ -282,15 +282,37 @@ mod tests {
         assert_eq!(gaming.vkd3d.as_deref(), Some("latest"));
         assert_eq!(gaming.gamemode, Some(true));
         assert_eq!(gaming.runner.as_deref(), Some(NEWEST_PROTON));
+        assert_eq!(gaming.tags, ["game"]);
+
+        let mut doc: DocumentMut = "prefix = '/p'\nrunner = 'wine'\narch = 'win64'\n"
+            .parse()
+            .unwrap();
+        gaming.apply(&mut doc);
+        let config =
+            config::EnvironmentConfig::parse(Path::new("/game.toml"), &doc.to_string()).unwrap();
+        assert_eq!(config.tags, ["game"]);
     }
 
     #[test]
     fn a_file_shadows_a_built_in_of_the_same_name() {
         let root = tempfile::tempdir().unwrap();
-        write(root.path(), "gaming", "gamemode = false\n");
+        write(
+            root.path(),
+            "gaming",
+            "tags = ['work', 'co-op']\ngamemode = false\n",
+        );
         let gaming = templates(root.path()).resolve("gaming").unwrap();
         assert_eq!(gaming.gamemode, Some(false));
         assert_eq!(gaming.dxvk, None);
+        assert_eq!(gaming.tags, ["work", "co-op"]);
+
+        let mut doc: DocumentMut = "prefix = '/p'\nrunner = 'wine'\narch = 'win64'\n"
+            .parse()
+            .unwrap();
+        gaming.apply(&mut doc);
+        let config =
+            config::EnvironmentConfig::parse(Path::new("/game.toml"), &doc.to_string()).unwrap();
+        assert_eq!(config.tags, ["work", "co-op"]);
 
         let listed = templates(root.path()).list().unwrap();
         assert_eq!(

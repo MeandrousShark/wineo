@@ -16,6 +16,10 @@ and oversized preview posters are not implementation requirements.
 - Library posters are 160 x 240 px with a 2:3 aspect ratio and 16 px gaps.
   Titles and compact state/playtime metadata sit beneath the art. Artwork
   should support browsing without dominating the window.
+- Use the named default target's desktop title when available, with the
+  environment identifier as the fallback. Keep the identifier visible as
+  muted context when the title differs. Search matches both; operations and
+  selection always use the identifier.
 - Use a 420 px docked detail panel with a distinct surface, thin border, and
   subtle shadow. Keep hero art bounded and actions easy to reach.
 - Page titles use 22 px semibold text. Section headings use 16 px semibold;
@@ -46,6 +50,9 @@ do not copy literal preview colors into page implementations.
 
 Buttons are compact rounded rectangles, 32 px high with 8 px corners and
 consistent horizontal padding. Play, Stop, and Log share an 82 px width.
+Play/Launch and Stop occupy the first panel action row. Log, Settings, Art,
+and Actions sit on a quieter row below. Use Play for the exact `game` tag and
+Launch otherwise. The target picker has a visible **Launch target:** label.
 Primary actions use a filled accent; secondary actions use a neutral surface
 and border. Destructive actions use danger only where their consequence calls
 for it. Keep text labels visible.
@@ -54,6 +61,14 @@ Hover, press, disabled, and keyboard focus must be visibly distinct in both
 palettes. Use a clear focus outline without changing button geometry. Disabled
 controls keep readable labels and never accept input. Preserve existing action
 availability, focus order, shortcuts, and operation ownership.
+
+Dropdown fields use 14 px text, compact padding, 8 px corners, a neutral
+surface, and a thin border. Hover and opened states emphasize the primary
+color. Their popups use the same surface and corners, a subtle shadow, and a
+readable selected row. Reuse the native chooser behavior and preserve open
+and close callbacks. Context menus use quiet, full-width rows, separators
+between action groups, and a danger treatment for Remove. Bound long content
+to the window and keep the Close control reachable.
 
 ## Panel motion
 
@@ -65,6 +80,8 @@ Selecting another environment while open replaces content without replaying
 the entrance. Rapid reversals continue from the current position. Leaving the
 Library finishes motion immediately. Logical close and log cleanup happen
 immediately; a closing or invisible panel must not receive input.
+Clicking unused Library space closes the panel. Card clicks, scrollbars,
+menus, and the panel itself keep their own input handling.
 
 ## Reviews and management pages
 

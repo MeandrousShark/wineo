@@ -15,7 +15,7 @@ use crate::focus_button;
 use crate::library::Card;
 use crate::logview::{self, LogView};
 use crate::theme::Palette;
-use crate::ui;
+use crate::ui::{self, PickListStyle};
 use crate::worker::LogSource;
 use crate::{App, Message, Operation, OperationKind, worker};
 
@@ -478,20 +478,18 @@ impl App {
                 .padding(12),
         );
         let mut body = column![banner_layers].spacing(0).width(Fill);
-        if logo_image.is_none() {
-            body = body.push(
-                container(ui::page_title(&card.name, palette))
-                    .width(Fill)
-                    .padding([12, 16]),
-            );
+        let mut heading = column![ui::page_title(&card.display_title, palette)].spacing(4);
+        if card.display_title != card.name {
+            heading = heading.push(text(&card.name).size(13).color(palette.muted));
         }
+        body = body.push(container(heading).width(Fill).padding([12, 16]));
         let operation_busy = self.operation.is_some() || self.tool_blocks_launch(&card.name);
         let mut actions = row![].spacing(8).align_y(Center);
         let mut target_picker: Option<Element<'_, Message>> = None;
         if card.error.is_none() {
             let enabled = play_enabled(card, operation_busy, target);
             let play = panel_action_button(
-                "Play",
+                card.launch_button_label(),
                 palette.primary,
                 enabled,
                 Message::Play,
@@ -500,12 +498,18 @@ impl App {
             actions = actions.push(play);
             if card.targets.len() > 1 {
                 target_picker = Some(
-                    pick_list(
-                        card.targets.clone(),
-                        self.target.clone(),
-                        Message::TargetPicked,
-                    )
-                    .width(Fill)
+                    row![
+                        text("Launch target:").size(14),
+                        pick_list(
+                            card.targets.clone(),
+                            self.target.clone(),
+                            Message::TargetPicked,
+                        )
+                        .wineo_style(palette)
+                        .width(Fill),
+                    ]
+                    .spacing(12)
+                    .align_y(Center)
                     .into(),
                 );
             }
@@ -518,14 +522,7 @@ impl App {
             Message::Stop,
             PANEL_STOP_ID,
         ));
-        if self.log_source(card).is_some() {
-            actions = actions.push(panel_log_button(
-                "Log",
-                palette,
-                PANEL_LOG_ID,
-                Message::OpenLog,
-            ));
-        }
+        let has_log = self.log_source(card).is_some();
         let mut inner = column![].spacing(8).width(Fill);
         if self.panel_log_visible() {
             inner = inner.push(self.log_content());
@@ -550,6 +547,14 @@ impl App {
             inner = inner.push(ui::separator(palette));
             inner = inner.push(actions);
             let mut extra = row![].spacing(8);
+            if has_log {
+                extra = extra.push(panel_log_button(
+                    "Log",
+                    palette,
+                    PANEL_LOG_ID,
+                    Message::OpenLog,
+                ));
+            }
             extra = extra.push(panel_secondary_button(
                 "Settings",
                 palette,
@@ -742,6 +747,7 @@ mod tests {
     fn card(state: State) -> Card {
         Card {
             name: "game".into(),
+            display_title: "game".into(),
             state,
             lost: false,
             prefix: None,

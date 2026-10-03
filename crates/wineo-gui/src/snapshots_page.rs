@@ -16,7 +16,9 @@ use wineo_core::snapshot::{
 
 use crate::logview::{self, LogView};
 use crate::theme::Palette;
-use crate::ui::{accent_button, page_title, secondary_button, section, section_heading};
+use crate::ui::{
+    PickListStyle, accent_button, page_title, secondary_button, section, section_heading,
+};
 
 const SNAPSHOT_LIST_HEIGHT: f32 = 180.0;
 const REPORT_HEIGHT: f32 = 220.0;
@@ -691,7 +693,8 @@ impl Page {
             pick_list(self.choices.as_slice(), selected_choice, |choice| {
                 Event::Select(choice.name)
             })
-            .on_open(Event::Refresh),
+            .on_open(Event::Refresh)
+            .wineo_style(palette),
         ]
         .spacing(12);
         if let Some(error) = &self.choices_error {
