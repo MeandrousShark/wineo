@@ -1,7 +1,7 @@
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 
-use crate::{App, CARD_ROW, Message, SCROLL_ID, SEARCH_ID};
+use crate::{App, Message, SEARCH_ID};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Direction {
@@ -223,32 +223,17 @@ impl App {
         self.panel_note = None;
     }
 
-    fn scroll_selection(&mut self) -> Task<Message> {
-        let filtered = self.filtered();
-        let Some(index) = self
-            .selected
-            .as_ref()
-            .and_then(|name| filtered.iter().position(|card| &card.name == name))
-        else {
+    pub(crate) fn scroll_selection(&mut self) -> Task<Message> {
+        let Some(name) = self.selected.as_deref() else {
             return Task::none();
         };
-        let top = (index / self.columns()) as f32 * self.row_pitch + 16.0;
-        let bottom = top + CARD_ROW;
-        let offset = if top < self.scroll_offset {
-            top
-        } else if bottom > self.scroll_offset + self.viewport_height {
-            bottom - self.viewport_height
-        } else {
-            return Task::none();
-        };
-        self.scroll_offset = offset.max(0.0);
-        iced::widget::operation::scroll_to(
-            iced::widget::Id::new(SCROLL_ID),
-            iced::widget::scrollable::AbsoluteOffset {
-                x: 0.0,
-                y: self.scroll_offset,
-            },
-        )
+        let name = name.to_owned();
+        if self.grid_motion.active() {
+            self.grid_scroll_after_settle = Some(name.clone());
+        }
+        let generation = self.grid_motion.generation();
+        crate::grid_motion::locate_card(&name)
+            .map(move |bounds| Message::GridCardLocated(name.clone(), generation, bounds))
     }
 }
 

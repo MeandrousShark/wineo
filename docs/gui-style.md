@@ -73,13 +73,23 @@ to the window and keep the Close control reachable.
 ## Panel motion
 
 Opening and closing use a restrained slide from the right with a fade over
-about 160 ms. Reserve the full docked width while transitioning; do not reflow
-the library every frame. Animate only while a transition is active.
+about 160 ms. Library cards move between their old and final slots with a
+continuous damped spring over about 300 ms. A small stagger and bounded
+overshoot of up to 8 px add a playful settle; posters stay upright and readable.
+Ease to zero velocity at the end, including after a reversal. Compute
+final geometry once per layout change, without rewrapping on every frame.
+Keep the scrollable tree stable and move each card's hit area with its image.
+The docked panel covers and shields the cards beneath it. Animate only while
+a transition is active. Keep its 420 px content width and leave a narrow
+library scrollbar rail accessible beside it.
 
 Selecting another environment while open replaces content without replaying
 the entrance. Rapid reversals continue from the current position. Leaving the
 Library finishes motion immediately. Logical close and log cleanup happen
 immediately; a closing or invisible panel must not receive input.
+Filtering, resizing, and changed library contents settle or retarget safely.
+Keep scroll position, bottom rows, keyboard columns, and visible art loading
+correct through a transition.
 Clicking unused Library space closes the panel. Card clicks, scrollbars,
 menus, and the panel itself keep their own input handling.
 

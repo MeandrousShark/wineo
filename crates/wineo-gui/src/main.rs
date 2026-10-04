@@ -11,6 +11,7 @@ mod downloads_work;
 mod flow;
 mod focus_button;
 mod grid;
+mod grid_motion;
 mod keys;
 mod library;
 mod logview;
@@ -73,6 +74,8 @@ pub(crate) struct App {
     pub(crate) selected: Option<String>,
     panel_open: bool,
     panel_motion: panel_motion::PanelMotion,
+    grid_motion: grid_motion::GridMotion,
+    grid_scroll_after_settle: Option<String>,
     pub(crate) target: Option<String>,
     card_click_target: Option<(String, Option<String>)>,
     pub(crate) hovered: Option<String>,
@@ -91,7 +94,6 @@ pub(crate) struct App {
     viewport_width: f32,
     viewport_height: f32,
     scroll_offset: f32,
-    row_pitch: f32,
     scroll_visible_until: Option<Instant>,
     pub(crate) operation: Option<Operation>,
     pub(crate) panel_error: Option<PanelError>,
@@ -204,11 +206,13 @@ pub(crate) enum Message {
     TrashBadgeLoaded(sidebar::TrashBadge),
     ArtLoaded(ArtKey, Result<image::Handle, String>),
     Scrolled(scrollable::Viewport),
+    GridCardLocated(String, u64, grid_motion::CardBounds),
     ScrollIdle,
     Window(window::Event),
     ThemeChanged(iced::theme::Mode),
     SpinnerTick(Instant),
     PanelTick(u64, Instant),
+    GridTick(u64, Instant),
     Key(keyboard::Key, keyboard::Modifiers, iced::event::Status),
     KeyWithFocus(
         keyboard::Key,
@@ -274,6 +278,8 @@ impl App {
             selected: None,
             panel_open: false,
             panel_motion: panel_motion::PanelMotion::default(),
+            grid_motion: grid_motion::GridMotion::default(),
+            grid_scroll_after_settle: None,
             target: None,
             card_click_target: None,
             hovered: None,
@@ -289,7 +295,6 @@ impl App {
             viewport_width: 1200.0 - sidebar::WIDTH,
             viewport_height: 750.0,
             scroll_offset: 0.0,
-            row_pitch: CARD_ROW,
             scroll_visible_until: None,
             operation: None,
             panel_error: None,
@@ -461,6 +466,14 @@ impl App {
         } else {
             Subscription::none()
         };
+        let grid_motion = if !self.panel_hidden() && self.grid_motion.active() {
+            let generation = self.grid_motion.generation();
+            window::frames()
+                .with(generation)
+                .map(|(generation, now)| Message::GridTick(generation, now))
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
             iced::time::every(Duration::from_secs(2)).map(|_| Message::Refresh),
             iced::system::theme_changes().map(Message::ThemeChanged),
@@ -476,6 +489,7 @@ impl App {
             }),
             spinner,
             panel_motion,
+            grid_motion,
             idle,
             if self.toast.is_some() || self.feature_notice.is_some() {
                 iced::time::every(Duration::from_millis(100)).map(Message::ToastTick)
@@ -558,6 +572,9 @@ impl App {
             | Message::ToastFocus(..)) => removal::update(self, message),
             Message::SearchChanged(search) => {
                 self.search = search;
+                self.grid_motion
+                    .snap(self.panel_open, self.filtered().len());
+                self.grid_scroll_after_settle = None;
                 self.scroll_offset = 0.0;
                 Task::batch([
                     iced::widget::operation::scroll_to(
@@ -801,17 +818,36 @@ impl App {
                 Task::none()
             }
             Message::Scrolled(viewport) => {
-                self.viewport_width =
-                    viewport.bounds().width + if self.panel_reserved() { 420.0 } else { 0.0 };
+                self.viewport_width = viewport.bounds().width;
                 self.viewport_height = viewport.bounds().height;
-                let columns = self.columns();
-                let rows = self.filtered().len().div_ceil(columns);
-                if rows > 0 {
-                    self.row_pitch = (viewport.content_bounds().height - 32.0 + GAP) / rows as f32;
-                }
                 self.scroll_offset = viewport.absolute_offset().y;
                 self.scroll_visible_until = Some(Instant::now() + Duration::from_millis(850));
                 self.load_visible_art()
+            }
+            Message::GridCardLocated(name, generation, bounds) => {
+                if self.selected.as_deref() != Some(&name)
+                    || self.panel_hidden()
+                    || generation != self.grid_motion.generation()
+                {
+                    return Task::none();
+                }
+                let top = bounds.card.y - bounds.viewport.y;
+                let bottom = top + bounds.card.height;
+                let offset = if top < bounds.offset.y {
+                    top
+                } else if bottom > bounds.offset.y + bounds.viewport.height {
+                    bottom - bounds.viewport.height
+                } else {
+                    return Task::none();
+                };
+                self.scroll_offset = offset.max(0.0);
+                iced::widget::operation::scroll_to(
+                    iced::widget::Id::new(SCROLL_ID),
+                    scrollable::AbsoluteOffset {
+                        x: 0.0,
+                        y: self.scroll_offset,
+                    },
+                )
             }
             Message::ScrollIdle => {
                 if self
@@ -826,6 +862,8 @@ impl App {
                 self.window_size = size;
                 self.viewport_width = (size.width - sidebar::WIDTH).max(0.0);
                 self.viewport_height = (size.height - 48.0).max(0.0);
+                self.grid_motion
+                    .snap(self.panel_open, self.filtered().len());
                 self.load_visible_art()
             }
             Message::Window(window::Event::CloseRequested) => {
@@ -854,6 +892,20 @@ impl App {
             Message::PanelTick(generation, now) => {
                 if self.section == sidebar::Section::Library {
                     self.panel_motion.tick(generation, now);
+                }
+                Task::none()
+            }
+            Message::GridTick(generation, now) => {
+                if self.section == sidebar::Section::Library {
+                    let was_active = self.grid_motion.active();
+                    self.grid_motion.tick(generation, now);
+                    if was_active
+                        && !self.grid_motion.active()
+                        && let Some(name) = self.grid_scroll_after_settle.take()
+                        && self.selected.as_deref() == Some(&name)
+                    {
+                        return self.scroll_selection();
+                    }
                 }
                 Task::none()
             }
@@ -1106,8 +1158,25 @@ impl App {
         if !panel_was_open && self.panel_open {
             self.panel_motion.open(Instant::now());
         }
+        let task = if panel_was_open != self.panel_open {
+            if self.panel_hidden() {
+                self.grid_motion
+                    .snap(self.panel_open, self.filtered().len());
+            } else {
+                self.grid_motion
+                    .retarget(self.panel_open, self.filtered().len(), Instant::now());
+            }
+            task.chain(self.load_visible_art())
+        } else {
+            task
+        };
         if self.panel_motion.active() && self.panel_hidden() {
             self.panel_motion.snap(self.panel_open);
+        }
+        if self.grid_motion.active() && self.panel_hidden() {
+            self.grid_motion
+                .snap(self.panel_open, self.filtered().len());
+            self.grid_scroll_after_settle = None;
         }
         let task = if panel_was_open && !self.panel_open {
             task.chain(iced::advanced::widget::operate(
@@ -1245,6 +1314,21 @@ impl App {
         Task::batch(tasks)
     }
     fn merge(&mut self, cards: Vec<Card>) {
+        let needle = self.search.to_lowercase();
+        let old_layout: Vec<_> = self
+            .filtered()
+            .iter()
+            .map(|card| (&card.name, &card.display_title))
+            .collect();
+        let new_layout: Vec<_> = cards
+            .iter()
+            .filter(|card| {
+                card.display_title.to_lowercase().contains(&needle)
+                    || card.name.to_lowercase().contains(&needle)
+            })
+            .map(|card| (&card.name, &card.display_title))
+            .collect();
+        let layout_changed = old_layout != new_layout;
         if self
             .selected
             .as_ref()
@@ -1265,6 +1349,11 @@ impl App {
             self.target = card.default_target.clone();
         }
         self.cards = cards;
+        if layout_changed {
+            self.grid_motion
+                .snap(self.panel_open, self.filtered().len());
+            self.grid_scroll_after_settle = None;
+        }
         self.current_art = self
             .cards
             .iter()
@@ -1296,8 +1385,7 @@ impl App {
             .collect()
     }
     fn columns(&self) -> usize {
-        let width = self.viewport_width - if self.panel_reserved() { 420.0 } else { 0.0 };
-        ((width - 32.0 + GAP) / (CARD_WIDTH + GAP)).floor().max(1.0) as usize
+        grid_motion::columns_for_viewport(self.viewport_width, self.panel_open)
     }
     fn panel_reserved(&self) -> bool {
         self.section == sidebar::Section::Library && self.panel_motion.reserved()
@@ -1313,17 +1401,30 @@ impl App {
             || self.close_prompt
     }
     fn load_visible_art(&mut self) -> Task<Message> {
-        let columns = self.columns();
-        let first = (self.scroll_offset.max(0.0) / self.row_pitch).floor() as usize;
-        let last = ((self.scroll_offset + self.viewport_height) / self.row_pitch).ceil() as usize;
-        let paths: Vec<_> = self
-            .filtered()
-            .into_iter()
-            .skip(first * columns)
-            .take(last.saturating_sub(first) * columns)
-            .filter_map(|card| card.art.as_ref())
-            .map(|art| (art.clone(), artwork::Kind::Grid))
-            .collect();
+        let pitch = CARD_ROW;
+        let first = ((self.scroll_offset - 2.0 * pitch).max(0.0) / pitch).floor() as usize;
+        let last =
+            ((self.scroll_offset + self.viewport_height + 2.0 * pitch) / pitch).ceil() as usize;
+        let filtered = self.filtered();
+        let mut seen = HashSet::new();
+        let mut paths = Vec::new();
+        for columns in [
+            grid_motion::columns_for_viewport(self.viewport_width, false),
+            grid_motion::columns_for_viewport(self.viewport_width, true),
+        ] {
+            for card in filtered
+                .iter()
+                .skip(first * columns)
+                .take(last.saturating_sub(first) * columns)
+            {
+                if let Some(art) = &card.art {
+                    let key = (art.clone(), artwork::Kind::Grid);
+                    if seen.insert(key.clone()) {
+                        paths.push(key);
+                    }
+                }
+            }
+        }
         self.load_images(paths)
     }
     fn load_images(&mut self, paths: Vec<ArtKey>) -> Task<Message> {
@@ -1822,6 +1923,13 @@ mod tests {
         tree.diff(app.view().as_widget());
         assert_eq!(scroll_state(&tree, tag), Some(state));
 
+        let _ = app.update(Message::Select("game".into()));
+        tree.diff(app.view().as_widget());
+        assert_eq!(scroll_state(&tree, tag), Some(state));
+        let _ = app.update(Message::ClosePanel);
+        tree.diff(app.view().as_widget());
+        assert_eq!(scroll_state(&tree, tag), Some(state));
+
         app.flow = Some(flow::Page::choose(app.paths.clone()));
         tree.diff(app.view().as_widget());
         assert_eq!(scroll_state(&tree, tag), Some(state));
@@ -2221,6 +2329,73 @@ mod tests {
         assert_eq!(app.selected.as_deref(), Some("two"));
         assert_eq!(app.panel_motion.generation(), opened);
         assert!(app.panel_motion.interactive());
+    }
+
+    #[test]
+    fn grid_motion_keeps_scroll_tree_and_ignores_stale_bounds() {
+        let mut app = app();
+        app.cards = (1..=30)
+            .map(|index| card(&format!("game-{index}"), State::Inactive, 0))
+            .collect();
+        let _ = app.update(Message::Select("game-21".into()));
+        assert!(app.grid_motion.active());
+        let generation = app.grid_motion.generation();
+        let _ = app.scroll_selection();
+        assert_eq!(app.grid_scroll_after_settle.as_deref(), Some("game-21"));
+
+        let bounds = grid_motion::CardBounds {
+            card: iced::Rectangle::new(
+                iced::Point::new(32.0, 1650.0),
+                iced::Size::new(160.0, 300.0),
+            ),
+            viewport: iced::Rectangle::new(
+                iced::Point::new(0.0, 50.0),
+                iced::Size::new(800.0, 600.0),
+            ),
+            offset: iced::Vector::ZERO,
+        };
+        let _ = app.update(Message::GridCardLocated(
+            "game-21".into(),
+            generation,
+            bounds,
+        ));
+        assert_eq!(app.scroll_offset, 1300.0);
+        let _ = app.update(Message::GridCardLocated(
+            "game-21".into(),
+            generation - 1,
+            grid_motion::CardBounds {
+                card: iced::Rectangle::new(
+                    iced::Point::new(0.0, 0.0),
+                    iced::Size::new(160.0, 300.0),
+                ),
+                ..bounds
+            },
+        ));
+        assert_eq!(app.scroll_offset, 1300.0);
+
+        let _ = app.update(Message::GridTick(
+            generation,
+            Instant::now() + Duration::from_millis(310),
+        ));
+        assert!(!app.grid_motion.active());
+        assert!(app.grid_scroll_after_settle.is_none());
+    }
+
+    #[test]
+    fn unchanged_refresh_does_not_cut_grid_motion_short() {
+        let mut app = app();
+        app.cards = vec![card("game", State::Inactive, 0)];
+        let _ = app.update(Message::Select("game".into()));
+        let generation = app.grid_motion.generation();
+        let _ = app.update(Message::GridTick(
+            generation,
+            Instant::now() + Duration::from_millis(90),
+        ));
+        let position = app.grid_motion.progress(0);
+        app.merge(app.cards.clone());
+        assert!(app.grid_motion.active());
+        assert_eq!(app.grid_motion.generation(), generation);
+        assert_eq!(app.grid_motion.progress(0), position);
     }
 
     #[test]

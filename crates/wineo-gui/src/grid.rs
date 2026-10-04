@@ -1,7 +1,6 @@
 use iced::advanced::text::Paragraph as _;
 use iced::widget::{
-    Row, Space, button, column, container, image, mouse_area, row, scrollable, stack, text,
-    text_input,
+    Space, button, column, container, image, mouse_area, row, scrollable, stack, text, text_input,
 };
 use iced::{Center, Color, ContentFit, Element, Fill, Font, Size, Theme, border, font, mouse};
 
@@ -9,7 +8,7 @@ use crate::library::Card;
 use crate::theme::Palette;
 use crate::ui;
 use crate::wheel;
-use crate::{App, CARD_WIDTH, GAP, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
+use crate::{App, CARD_WIDTH, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
 
 const ACTION_MENU_WIDTH: f32 = 248.0;
 const ACTION_MENU_MAX_HEIGHT: f32 = 448.0;
@@ -20,16 +19,10 @@ const ACTION_MENU_HEADER_HEIGHT: f32 = 20.0;
 
 impl App {
     pub(crate) fn grid(&self) -> Element<'_, Message> {
-        let cards = self.filtered().into_iter().map(|card| self.card(card));
-        container(
-            Row::with_children(cards)
-                .spacing(GAP)
-                .wrap()
-                .vertical_spacing(GAP),
-        )
-        .padding(16)
-        .width(Fill)
-        .into()
+        let filtered = self.filtered();
+        let names = filtered.iter().map(|card| card.name.clone()).collect();
+        let cards = filtered.into_iter().map(|card| self.card(card)).collect();
+        crate::grid_motion::grid(cards, names, &self.grid_motion)
     }
     fn card<'a>(&'a self, card: &'a Card) -> Element<'a, Message> {
         let palette = self.palette;
@@ -584,21 +577,44 @@ impl App {
         } else {
             library
         };
-        let mut content = row![library].width(Fill).height(Fill);
-        if self.panel_reserved() {
+        let panel_layer: Element<'_, Message> = if self.panel_reserved() {
             let panel = self
                 .selected
                 .as_ref()
                 .and_then(|name| self.cards.iter().find(|card| &card.name == name))
                 .map(|card| self.panel(card))
-                .unwrap_or_else(|| container(Space::new()).width(420).height(Fill).into());
-            content = content.push(crate::panel_motion::presentation(
-                panel,
-                self.panel_motion.progress(),
-                self.panel_open && self.panel_motion.interactive(),
-                palette.background,
-            ));
-        }
+                .unwrap_or_else(|| {
+                    container(Space::new())
+                        .width(crate::grid_motion::PANEL_WIDTH)
+                        .height(Fill)
+                        .into()
+                });
+            container(
+                row![
+                    iced::widget::opaque(
+                        container(crate::panel_motion::presentation(
+                            panel,
+                            self.panel_motion.progress(),
+                            self.panel_open && self.panel_motion.interactive(),
+                            palette.surface,
+                        ))
+                        .width(crate::grid_motion::PANEL_WIDTH)
+                        .height(Fill)
+                        .style(move |_| container::Style::default().background(palette.surface)),
+                    ),
+                    Space::new().width(crate::grid_motion::RAIL_WIDTH),
+                ]
+                .width(crate::grid_motion::DOCK_WIDTH)
+                .height(Fill),
+            )
+            .width(Fill)
+            .height(Fill)
+            .align_right(Fill)
+            .into()
+        } else {
+            container(Space::new()).width(Fill).height(Fill).into()
+        };
+        let content = stack![library, panel_layer];
         container(page.push(content))
             .width(Fill)
             .height(Fill)

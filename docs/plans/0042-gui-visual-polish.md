@@ -58,12 +58,18 @@ the title and launch-label rules through follow-up answers:
   existing behavior.
 
 These refinements extend the original scope to library display names and the
-existing tag-based launch label. True motion between grid positions during
-panel reflow is proposed separately below and is not yet approved.
+existing tag-based launch label. The approved amendment below adds motion
+between grid positions during panel reflow.
 
-## Proposed grid-motion amendment
+## Approved grid-motion amendment
 
-Status: draft
+Status: approved
+
+On 2026-10-03, the maintainer selected the playful settle preview with a
+300 ms duration and approved implementation, asking for smoother movement
+with a little more jiggle. Use a continuous damped spring with a small stagger
+and bounded overshoot, instead of the preview's segmented keyframes. Keep
+posters upright and readable, and stop all animation when the cards settle.
 
 Animate cards between their previous and final grid slots when the panel
 opens or closes. Compute the destination layout once, then interpolate card
@@ -71,8 +77,11 @@ positions over a bounded transition. Keep the scrollable widget tree stable
 and move hit areas with their cards. Use an opaque docked panel overlay and
 input shielding so cards cannot receive clicks through the panel.
 
-The motion preview compares a smooth glide with a lightly staggered settle.
-Both stop when idle and support reversals from the current positions. Filters,
+Implementation keeps the panel content at 420 px and exposes a 10 px library
+scrollbar strip beside it. The strip remains interactive, so the full-width
+viewport's scrollbar stays accessible without a second scrolling mechanism.
+
+The selected playful motion supports reversals from the current positions. Filters,
 navigation, window resizing, and changed library contents finish or retarget
 the motion safely. Preserve scroll position, reachable rows near the bottom,
 keyboard column navigation, visible artwork loading, and immediate panel/log
@@ -127,9 +136,10 @@ surface separation that works in light and dark mode.
 | Select another card while open | Update the selected content without replaying the open transition | Update the selected content without replaying the open transition |
 | Rapid open/close or navigation | Reverse from the current position, or finish immediately when leaving Library | Reverse from the current opacity, or finish immediately when leaving Library |
 
-Selected: A. Keep layout changes bounded: reserve the docked width
-during a transition and reflow the library once per open/close rather than
-on every animation frame. Tick only while motion is active. Logical close,
+Selected: A. The approved grid-motion amendment replaces the initial width
+reservation and snap with a stable full-width viewport and docked panel overlay.
+Compute final grid geometry once per open/close and animate card positions
+without rewrapping on every animation frame. Tick only while motion is active. Logical close,
 log cancellation, and selection changes take effect immediately; animation
 must not delay cleanup or keep hidden controls interactive.
 
@@ -277,11 +287,27 @@ beyond the existing library, review, and five requested management pages.
   titles, Play versus Launch, the labeled chooser and opened popup, compact
   context menus, Checkup label alignment, and blank-space closing at 1200 x 800
   and 800 x 600. User registrations were not changed.
+- Implemented the approved playful grid motion with a continuous 300 ms
+  spring, a small stagger, an 8 px overshoot limit, and a smooth final settle.
+  Reversals preserve position and velocity. Measured slot layouts are cached,
+  card hit areas follow the moving artwork, and overlapping cards receive input
+  in paint order. The library keeps one scroll tree and an accessible rail
+  beside the panel. Keyboard scrolling uses actual card bounds and checks again
+  after settling; unchanged background refreshes leave active motion intact.
+- Independent QA passed after fixes for scroll tree replacement and keyboard
+  scrolling during motion. All 512 GUI tests and the full suite passed: 2,034
+  tests, 0 failures, 16 ignored. Formatting, Clippy with warnings denied, and
+  release CLI/GUI builds passed.
+- Hidden window checks used 30 numbered poster fixtures in both palettes,
+  including 1200 x 800 and 800 x 600 windows. Checked rapid reversals, moving-card
+  selection, scrolled opening/closing, reachable bottom rows, scrollbar dragging,
+  keyboard selection during motion, filtering, resizing, navigation, and menus.
+  These checks used throwaway storage and private appearance settings.
 
 ## Maintainer acceptance
 
-The approved refinements are ready for acceptance. The grid-motion amendment
-above awaits a maintainer decision. Keep this plan approved until the maintainer
+The approved refinements and grid-motion amendment are ready for acceptance.
+Keep this plan approved until the maintainer
 completes the real-window checks; then mark it done and release.
 
 - [ ] Browse a populated library in both palettes and a short window. Check
@@ -299,6 +325,9 @@ completes the real-window checks; then mark it done and release.
   selection. Card selection, scrollbars, and menus keep their own behavior.
 - [ ] Rapidly open/close/switch cards, leave Library mid-transition, and open
   and close logs during a run. Confirm immediate cleanup and idle animation.
+- [ ] Open and close the panel in a populated, scrolled library. Check smooth
+  playful card movement, rapid reversals, clicks on moving cards, bottom rows,
+  keyboard navigation, and resizing or filtering during the transition.
 - [ ] Review Windows/native creation, existing prefixes, long paths, and missing
   prerequisites. Check complete details and reachable Back/Create controls.
 - [ ] Edit global/environment Settings, save/revert, and test a config conflict.
