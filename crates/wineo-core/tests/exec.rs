@@ -36,6 +36,12 @@ linger)
     touch "$WINEPREFIX/linger-done"
     exit 0
     ;;
+corelimit)
+    # The limit is set right after spawn, so give wineo a moment to do it.
+    sleep 0.3
+    grep 'Max core file size' /proc/self/limits
+    exit 0
+    ;;
 forest)
     sleep 60 &
     printf '%s %s\n' "$$" "$!" >"$WINEPREFIX/forest-pids"
@@ -420,6 +426,29 @@ fn nonzero_exit_is_a_status_and_locks_are_released() {
             .unwrap()
             .is_some()
     );
+}
+
+#[test]
+fn exec_children_get_a_soft_core_limit_of_one() {
+    let own = fs::read_to_string("/proc/self/limits").unwrap();
+    let hard = own
+        .lines()
+        .find(|line| line.starts_with("Max core file size"))
+        .and_then(|line| line.split_whitespace().nth(5))
+        .unwrap()
+        .to_owned();
+    // A hard limit of 0 leaves no room for a soft limit of 1.
+    if hard == "0" {
+        return;
+    }
+    let f = Fixture::built();
+    let events = f.collect("corelimit", &[], &BTreeMap::new());
+    let line = output_lines(&events)
+        .into_iter()
+        .find(|line| line.starts_with("Max core file size"))
+        .unwrap_or_else(|| panic!("no limit reported: {events:?}"));
+    let fields: Vec<_> = line.split_whitespace().skip(4).collect();
+    assert_eq!(fields[..2], ["1", hard.as_str()], "{line}");
 }
 
 #[test]

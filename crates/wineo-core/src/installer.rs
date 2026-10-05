@@ -245,6 +245,7 @@ impl Installer {
                 return Err(err);
             }
         };
+        process::quiet_core_dumps(&child);
         record.pid = Some(child.id());
         record.group = Some(child.id());
         record.boot_id = process::boot_id();

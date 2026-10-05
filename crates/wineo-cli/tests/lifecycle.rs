@@ -76,6 +76,62 @@ fn declarative_winetricks_runs_once_against_real_wine() {
     assert!(!stderr(&second).contains("Installing win10 with winetricks"));
 }
 
+/// The soft and hard "Max core file size" from the text of a /proc limits file
+/// or a line of it.
+fn core_limits(text: &str) -> (String, String) {
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("Max core file size"))
+        .unwrap();
+    let mut fields = line.split_whitespace().skip(4);
+    (
+        fields.next().unwrap().to_owned(),
+        fields.next().unwrap().to_owned(),
+    )
+}
+
+fn own_core_limits() -> (String, String) {
+    core_limits(&fs::read_to_string("/proc/self/limits").unwrap())
+}
+
+#[test]
+fn a_started_program_keeps_the_inherited_core_limit() {
+    let f = Fixture::new();
+    f.environment("app", "[targets.app]\nexe = \"corelimit\"\n");
+    assert_success(&f.run(&["start", "app"]));
+    let recorded = f.root.path().join("prefixes/app/core-limit");
+    wait_for("the program to record its core limit", || recorded.exists());
+    // Written whole by one redirect, but give a slow machine a moment.
+    wait_for("the core limit line", || {
+        fs::read_to_string(&recorded).is_ok_and(|text| !text.is_empty())
+    });
+    assert_eq!(
+        core_limits(&fs::read_to_string(&recorded).unwrap()),
+        own_core_limits()
+    );
+    assert_success(&f.run(&["stop", "app"]));
+}
+
+#[test]
+fn prefix_creation_gets_a_soft_core_limit_of_one() {
+    let hard = own_core_limits().1;
+    // A hard limit of 0 leaves no room for a soft limit of 1.
+    if hard == "0" {
+        return;
+    }
+    let f = Fixture::new();
+    let output = f
+        .wineo()
+        .env("WINEO_TEST_RECORD_CORE", "1")
+        .args(["new", "-n", "game"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let recorded =
+        fs::read_to_string(f.root.path().join("data/wineo/prefixes/game/core-limit")).unwrap();
+    assert_eq!(core_limits(&recorded), ("1".to_owned(), hard));
+}
+
 #[test]
 fn start_then_stop() {
     let f = Fixture::new();

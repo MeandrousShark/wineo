@@ -223,6 +223,7 @@ pub fn create(
         let child = command
             .spawn()
             .context(|| "failed to run wineboot".to_owned())?;
+        crate::process::quiet_core_dumps(&child);
         let status = wait_for_child(child, token, || Ok(()))?;
         if token.is_canceled() {
             return Err(Error::Canceled("prefix creation"));
@@ -375,6 +376,7 @@ pub fn disable_menu_builder(
     let child = command
         .spawn()
         .context(|| "failed to run wine reg add".to_owned())?;
+    crate::process::quiet_core_dumps(&child);
     let status = wait_for_child(child, token, || runner.kill(dir, None).map(|_| ()))?;
     if status.success() {
         Ok(())

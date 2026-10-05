@@ -653,6 +653,7 @@ fn run_with_output(
     }
 
     let mut child = command.spawn().context("failed to run winetricks")?;
+    crate::process::quiet_core_dumps(&child);
     if tail.is_some() {
         events(WinetricksEvent::LogStarted);
     }

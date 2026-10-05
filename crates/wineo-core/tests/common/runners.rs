@@ -25,6 +25,11 @@ wineboot)
     if [ "$2" = --init ]; then
         mkdir -p "$WINEPREFIX/drive_c"
         printf 'WINE REGISTRY Version 2\n\n#arch=win64\n' >"$WINEPREFIX/system.reg"
+        if [ -n "${WINEO_TEST_RECORD_CORE-}" ]; then
+            # wineo lowers the limit right after spawning, so wait for it.
+            sleep 0.5
+            grep 'Max core file size' /proc/self/limits >"$WINEPREFIX/core-limit"
+        fi
         if [ -n "${WINEO_TEST_REMOVE_INSTALLER-}" ]; then
             rm -f "$WINEO_TEST_REMOVE_INSTALLER"
         fi
@@ -53,6 +58,11 @@ exit-*)
     ;;
 slow)
     sleep 0.5
+    ;;
+corelimit)
+    # Records its core limit for a test, then runs like any other program.
+    sleep 0.5
+    grep 'Max core file size' /proc/self/limits >"$WINEPREFIX/core-limit"
     ;;
 noisy)
     # Two megabytes, a pause long enough for the size check to run, then two

@@ -3,11 +3,14 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+use std::process::Child;
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fd::OwnedFd;
 use rustix::io::Errno;
-use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
+use rustix::process::{
+    Pid, PidfdFlags, Resource, Rlimit, Signal, getrlimit, pidfd_open, pidfd_send_signal, prlimit,
+};
 
 /// Telling a recorded process group apart from one that reused its number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +49,46 @@ pub fn start_time(pid: u32) -> Option<u64> {
         ProcRead::Found(stat) => Some(stat.start_time),
         ProcRead::Gone | ProcRead::Unknown => None,
     }
+}
+
+/// Lowers a freshly spawned child's soft core size limit to exactly 1 byte, so
+/// the Wine processes it starts inherit it. Canceling tears Wine down with
+/// SIGQUIT, and one caught before it installs its handler would dump core and
+/// raise a desktop notification.
+///
+/// It is 1 and not 0 on purpose: when `core_pattern` pipes to a handler such as
+/// systemd-coredump, the kernel ignores a 0 limit and still runs the handler,
+/// but a limit of exactly 1 is a special case that skips it entirely. The hard
+/// limit is left alone. Only for children wineo can cancel; programs the user
+/// plays keep the normal limit so real crashes stay debuggable.
+///
+/// This runs after `spawn` since the crate forbids unsafe code, so a process
+/// that crashes in its first instants can still dump. A failure is ignored: the
+/// operation matters more than a quiet crash.
+pub fn quiet_core_dumps(child: &Child) {
+    let _ = try_quiet_core_dumps(child.id());
+}
+
+fn try_quiet_core_dumps(pid: u32) -> io::Result<()> {
+    let pid = i32::try_from(pid)
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or(Errno::INVAL)?;
+    // The child inherited our hard limit and prlimit sets both, so pass ours
+    // back to leave it as it was. A hard limit of 0 can't hold a soft limit of 1.
+    let hard = getrlimit(Resource::Core).maximum;
+    if hard == Some(0) {
+        return Ok(());
+    }
+    prlimit(
+        Some(pid),
+        Resource::Core,
+        Rlimit {
+            current: Some(1),
+            maximum: hard,
+        },
+    )?;
+    Ok(())
 }
 
 /// Checks whether a recorded leader still identifies the recorded group.
@@ -473,6 +516,49 @@ mod tests {
         {
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// The soft and hard "Max core file size" of a process, as /proc prints them.
+    fn core_limits(pid: u32) -> (String, String) {
+        let limits = fs::read_to_string(format!("/proc/{pid}/limits")).unwrap();
+        let line = limits
+            .lines()
+            .find(|line| line.starts_with("Max core file size"))
+            .unwrap();
+        let mut fields = line.split_whitespace().skip(4);
+        (
+            fields.next().unwrap().to_owned(),
+            fields.next().unwrap().to_owned(),
+        )
+    }
+
+    #[test]
+    fn quieting_core_dumps_sets_the_soft_limit_to_one_and_keeps_the_hard_limit() {
+        let own = core_limits(std::process::id());
+        if own.1 == "0" {
+            return;
+        }
+        let mut child = process_group(&mut Command::new("sleep"))
+            .arg("30")
+            .spawn()
+            .unwrap();
+        quiet_core_dumps(&child);
+        let limits = core_limits(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(limits, ("1".to_owned(), own.1));
+    }
+
+    #[test]
+    fn a_child_left_alone_keeps_the_inherited_core_limit() {
+        let mut child = process_group(&mut Command::new("sleep"))
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let limits = core_limits(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(limits, core_limits(std::process::id()));
     }
 
     #[test]

@@ -113,6 +113,7 @@ fn run(
         .process_group(0)
         .spawn()
         .with_context(|| format!("failed to start {}", launch.host.launcher()))?;
+    crate::process::quiet_core_dumps(&child);
     events(ExecEvent::Started);
     let group = child.id();
     let mut stopping = None;
