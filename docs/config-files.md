@@ -154,6 +154,25 @@ On Proton, umu runs its own winetricks, so nothing extra is needed. On Wine,
 anything runs when it isn't. `status NAME` lists the verbs and marks missing
 ones, and `wineo validate --fix` installs them ahead of time.
 
+## Runners from other launchers
+
+`external_runners` in the global config lets environments use Proton and
+Wine builds that Steam, Heroic, and Lutris installed, read in place. It's
+unset until wineo asks, and setting it to `true` or `false` records the
+answer. It needed no schema bump: an older wineo refuses the file with
+`unknown field` instead of ignoring the setting.
+
+```sh
+wineo set --global external_runners=true
+wineo set --global --unset external_runners
+```
+
+When a name exists in several places, the first folder that has it owns it,
+in this order: wineo's runners root, Steam, Heroic, Lutris. That holds even
+when the first copy is broken, so a damaged wineo build reports an error
+instead of quietly running another launcher's copy. The setting does nothing
+while a portable folder is active.
+
 ## Creating an environment from a template
 
 To reuse the same settings across environments instead of writing each one by
