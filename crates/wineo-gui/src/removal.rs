@@ -1234,6 +1234,16 @@ mod tests {
     }
 
     #[test]
+    fn mouse_back_dismisses_the_remove_dialog_like_escape() {
+        let (_root, mut app) = fixture(false);
+        app.selected = Some("game".into());
+        open(&mut app);
+        let measure = app.removal.as_ref().unwrap().measure.clone();
+        crate::tests::press_back(&mut app, Status::Captured);
+        assert!(app.removal.is_none() && measure.is_canceled());
+    }
+
+    #[test]
     fn closing_prompts_cancels_wait_and_waits_for_moving_or_restore() {
         for moving in [false, true] {
             let (_root, mut app) = fixture(false);

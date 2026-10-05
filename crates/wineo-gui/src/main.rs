@@ -478,15 +478,7 @@ impl App {
             iced::time::every(Duration::from_secs(2)).map(|_| Message::Refresh),
             iced::system::theme_changes().map(Message::ThemeChanged),
             window::events().map(|(_, event)| Message::Window(event)),
-            iced::event::listen_with(|event, status, _| match event {
-                iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                    Some(Message::Key(key, modifiers, status))
-                }
-                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
-                    Some(Message::PointerMoved(position))
-                }
-                _ => None,
-            }),
+            iced::event::listen_with(|event, status, _| event_message(event, status)),
             spinner,
             panel_motion,
             grid_motion,
@@ -1545,6 +1537,29 @@ fn main() -> ExitCode {
     }
 }
 
+/// Maps a runtime event to an app message. The mouse Back button becomes an
+/// uncaptured Escape so every page's existing Escape handling runs unchanged.
+pub(crate) fn event_message(event: iced::Event, status: iced::event::Status) -> Option<Message> {
+    match event {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            Some(Message::Key(key, modifiers, status))
+        }
+        iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+            Some(Message::PointerMoved(position))
+        }
+        // Ignored regardless of status: a text input or button that saw the
+        // click must not turn Back into a captured key that pages skip.
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Back)) => {
+            Some(Message::Key(
+                keyboard::Key::Named(keyboard::key::Named::Escape),
+                keyboard::Modifiers::empty(),
+                iced::event::Status::Ignored,
+            ))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2281,6 +2296,69 @@ mod tests {
         assert!(app.operation.as_ref().is_some_and(|operation| {
             operation.name == "game" && operation.kind == OperationKind::Start
         }));
+    }
+
+    fn mouse_button(button: iced::mouse::Button) -> iced::Event {
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(button))
+    }
+
+    fn back_key(status: iced::event::Status) -> Message {
+        event_message(mouse_button(iced::mouse::Button::Back), status)
+            .expect("Back should map to a key message")
+    }
+
+    /// Delivers a mouse Back press to a page that handles keys directly.
+    pub(crate) fn press_back(app: &mut App, status: iced::event::Status) {
+        let _ = app.update(back_key(status));
+    }
+
+    /// Delivers a mouse Back press on the library, where the Key message
+    /// continues as KeyWithFocus once the search focus is known.
+    fn press_back_in_library(app: &mut App, status: iced::event::Status) {
+        let Message::Key(key, modifiers, status) = back_key(status) else {
+            panic!("Back should map to a key message");
+        };
+        let _ = app.update(Message::Key(key.clone(), modifiers, status));
+        let _ = app.update(Message::KeyWithFocus(key, modifiers, status, false));
+    }
+
+    #[test]
+    fn mouse_back_maps_to_uncaptured_escape_and_forward_does_nothing() {
+        for status in [iced::event::Status::Ignored, iced::event::Status::Captured] {
+            assert!(matches!(
+                event_message(mouse_button(iced::mouse::Button::Back), status),
+                Some(Message::Key(
+                    keyboard::Key::Named(keyboard::key::Named::Escape),
+                    modifiers,
+                    iced::event::Status::Ignored,
+                )) if modifiers.is_empty()
+            ));
+            for button in [
+                iced::mouse::Button::Forward,
+                iced::mouse::Button::Left,
+                iced::mouse::Button::Right,
+            ] {
+                assert!(event_message(mouse_button(button), status).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn mouse_back_closes_log_then_panel_then_clears_search() {
+        let mut app = app();
+        app.cards = vec![card("game", State::Inactive, 0)];
+        let _ = app.update(Message::Select("game".into()));
+        app.log_view = true;
+        app.search = "ga".into();
+        // A captured press must still act, like an uncaptured Escape.
+        press_back_in_library(&mut app, iced::event::Status::Captured);
+        assert!(!app.log_view);
+        assert!(app.panel_open);
+        press_back_in_library(&mut app, iced::event::Status::Ignored);
+        assert!(!app.panel_open);
+        assert_eq!(app.search, "ga");
+        press_back_in_library(&mut app, iced::event::Status::Ignored);
+        assert!(app.search.is_empty());
     }
 
     #[test]

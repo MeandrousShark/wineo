@@ -3968,6 +3968,15 @@ mod tests {
     }
 
     #[test]
+    fn mouse_back_leaves_environment_settings_even_when_captured() {
+        let (_root, paths) = setup();
+        write(&paths, GAME);
+        let mut app = open_app(&paths);
+        crate::tests::press_back(&mut app, iced::event::Status::Captured);
+        assert!(app.settings.is_none());
+    }
+
+    #[test]
     fn escape_asks_before_leaving_and_again_keeps_editing() {
         let (_root, paths) = setup();
         write(&paths, GAME);

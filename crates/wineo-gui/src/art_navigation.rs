@@ -437,6 +437,19 @@ mod tests {
     }
 
     #[test]
+    fn mouse_back_returns_from_art_like_escape() {
+        let (_root, mut app) = fixture();
+        app.selected = Some("game".into());
+        app.panel_open = true;
+        let _ = app.update(Message::OpenArt);
+        assert!(app.art_page.is_some());
+        crate::tests::press_back(&mut app, Status::Captured);
+        assert!(app.art_page.is_none());
+        assert!(app.panel_open);
+        assert_eq!(app.selected.as_deref(), Some("game"));
+    }
+
+    #[test]
     fn sidebar_navigation_leaves_art_and_opens_its_destination() {
         for section in [
             sidebar::Section::Library,
