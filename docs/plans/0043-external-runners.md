@@ -39,6 +39,23 @@ recommendation:
    aliases stay with wineo's own downloads.
 7. External builds are never used while a portable folder is active.
 
+## Decisions during implementation
+
+- Step 1 review, 2026-10-05: the highest-priority folder that has a name
+  owns it, usable or not. A broken build in wineo's root still errors
+  instead of falling through to a working Steam copy, and the same holds
+  between and within external sources. Lower copies, broken or not, are
+  listed as hidden and compared.
+- Within one source the first folder wins a name (Heroic native before
+  Flatpak), but later same-named copies are still compared so a different
+  build gets the note.
+- In Steam's `steamapps/common`, only Proton trees count. Other folders
+  there, like `Proton EasyAntiCheat Runtime`, are ignored silently.
+- When two folders in one place derive to the same name, the one that
+  needed no deriving wins, then alphabetical order.
+- Setting `external_runners` inside a portable folder is allowed but has no
+  effect, per answer 7.
+
 ## Existing foundation
 
 - `Runners` ([runners.rs](../../crates/wineo-core/src/runners.rs)) wraps one
