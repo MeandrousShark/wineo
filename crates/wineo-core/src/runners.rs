@@ -1,12 +1,15 @@
 //! Wine builds installed by extracting them into the runners root, plus the
-//! system wine every config starts out using.
+//! system wine every config starts out using, and, when turned on, builds
+//! other launchers installed.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::config::GlobalConfig;
 use crate::error::{Error, IoContext, Result};
+use crate::external_runners::{self, Comparison, Folder, Source};
 use crate::name;
 use crate::paths::Paths;
 use crate::runner::Runner;
@@ -35,26 +38,73 @@ impl Skipped {
     }
 }
 
-/// Everything in the runners root, usable or not.
+/// Every runner wineo can use, usable or not.
 #[derive(Debug, Default)]
 pub struct Listing {
+    /// One per name, the copy that wins by source priority.
     pub runners: Vec<Runner>,
+    /// What's unusable in wineo's own runners root.
     pub skipped: Vec<(String, Skipped)>,
+    /// What's unusable in other launchers' folders.
+    pub external_skipped: Vec<ExternalSkipped>,
+    /// Same-named builds in lower priority sources, which are never used.
+    pub hidden: Vec<Hidden>,
 }
 
-/// The directory installed wine builds are extracted into.
+impl Listing {
+    /// The sources that have a different build under `name` than the one
+    /// wineo uses. Identical copies, and ones that can't be told apart
+    /// cheaply, aren't included.
+    pub fn different_builds(&self, name: &str) -> Vec<Source> {
+        self.hidden
+            .iter()
+            .filter(|hidden| hidden.name == name && hidden.comparison == Comparison::Different)
+            .map(|hidden| hidden.source)
+            .collect()
+    }
+}
+
+/// A folder in another launcher's folder that isn't a usable runner.
+#[derive(Debug, Clone)]
+pub struct ExternalSkipped {
+    pub source: Source,
+    pub directory: PathBuf,
+    pub reason: Skipped,
+}
+
+/// A build that a higher priority one with the same name hides.
+#[derive(Debug, Clone)]
+pub struct Hidden {
+    pub name: String,
+    pub source: Source,
+    pub directory: PathBuf,
+    pub comparison: Comparison,
+}
+
+/// The directory installed wine builds are extracted into, plus other
+/// launchers' folders when those are turned on.
 #[derive(Debug, Clone)]
 pub struct Runners {
     root: PathBuf,
+    external: Vec<Folder>,
 }
 
 impl Runners {
     pub fn new(paths: &Paths, global: &GlobalConfig) -> Result<Self> {
-        Ok(Self::at(global.runner_root(paths)?))
+        let mut runners = Self::at(global.runner_root(paths)?);
+        // A portable folder moves between machines, and a build that only
+        // this machine's Steam has would break it on the next one.
+        if global.external_runners == Some(true) && paths.portable_root().is_none() {
+            runners.external = external_runners::folders(paths);
+        }
+        Ok(runners)
     }
 
     pub fn at(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            external: Vec::new(),
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -74,19 +124,33 @@ impl Runners {
             return Err(Error::InvalidRunnerName(name.to_owned()));
         }
         let dir = self.root.join(name);
-        match check(&dir) {
-            Ok(runner) => Ok(runner),
-            Err(reason) if reason == Skipped::NoWine && !dir.is_dir() => {
-                Err(Error::UnknownRunner {
-                    name: name.to_owned(),
-                    installed: self.installed()?,
-                    root: self.root.clone(),
-                })
-            }
-            Err(reason) => Err(Error::NotARunner {
+        let reason = match check(&dir) {
+            Ok(runner) => return Ok(runner),
+            Err(reason) => reason,
+        };
+        // The first usable copy wins, the same way `list` picks one.
+        if let Some(runner) = external_runners::entries(&self.external)
+            .into_iter()
+            .filter(|entry| entry.name == name)
+            .find_map(|entry| {
+                check_named(&entry.directory, name)
+                    .ok()
+                    .map(|runner| runner.with_source(entry.source))
+            })
+        {
+            return Ok(runner);
+        }
+        if reason == Skipped::NoWine && !dir.is_dir() {
+            Err(Error::UnknownRunner {
+                name: name.to_owned(),
+                installed: self.installed()?,
+                root: self.root.clone(),
+            })
+        } else {
+            Err(Error::NotARunner {
                 name: name.to_owned(),
                 reason: reason.as_str(),
-            }),
+            })
         }
     }
 
@@ -107,13 +171,19 @@ impl Runners {
         if runner.name() == Runner::SYSTEM {
             return Ok((runner, None));
         }
-        let runners = Self::at(
-            runner
-                .directory()
-                .and_then(Path::parent)
-                .unwrap_or(&self.root)
-                .to_owned(),
-        );
+        // A wineo build may come from another root than this one. Builds from
+        // other launchers are only ever found through this one's folders.
+        let runners = if runner.source() == Source::Wineo {
+            Self::at(
+                runner
+                    .directory()
+                    .and_then(Path::parent)
+                    .unwrap_or(&self.root)
+                    .to_owned(),
+            )
+        } else {
+            self.clone()
+        };
         for attempt in 0..2 {
             let guard =
                 crate::build_lock::shared(paths, crate::build_lock::Kind::Runner, runner.name())?;
@@ -134,9 +204,69 @@ impl Runners {
         unreachable!("the second missing build returns an error")
     }
 
-    /// Everything in the runners root, sorted by name. A missing root just
-    /// means nothing is installed yet.
+    /// Every runner, one per name and sorted by name, with whatever hides
+    /// behind each one compared to it. A missing root just means nothing is
+    /// installed yet.
     pub fn list(&self) -> Result<Listing> {
+        self.collect(true)
+    }
+
+    /// `list`, but without comparing hidden builds when only names matter.
+    fn collect(&self, compare: bool) -> Result<Listing> {
+        let mut listing = self.list_root()?;
+        if self.external.is_empty() {
+            return Ok(listing);
+        }
+        let mut copies: BTreeMap<String, Vec<Runner>> = listing
+            .runners
+            .drain(..)
+            .map(|runner| (runner.name().to_owned(), vec![runner]))
+            .collect();
+        for entry in external_runners::entries(&self.external) {
+            let checked = if entry.name.is_empty() {
+                Err(Skipped::InvalidName)
+            } else if crate::runner_alias::is_alias(&entry.name) {
+                Err(Skipped::AliasReserved)
+            } else if entry.name == Runner::SYSTEM {
+                Err(Skipped::Reserved)
+            } else {
+                check_named(&entry.directory, &entry.name)
+            };
+            match checked {
+                Ok(runner) => {
+                    let found = copies.entry(entry.name).or_default();
+                    // Within one source, the first folder wins a name.
+                    if !found.iter().any(|copy| copy.source() == entry.source) {
+                        found.push(runner.with_source(entry.source));
+                    }
+                }
+                Err(_) if entry.proton_only => {}
+                Err(reason) => listing.external_skipped.push(ExternalSkipped {
+                    source: entry.source,
+                    directory: entry.directory,
+                    reason,
+                }),
+            }
+        }
+        for (name, mut found) in copies {
+            let winner = found.remove(0);
+            if compare {
+                for copy in found {
+                    listing.hidden.push(Hidden {
+                        name: name.clone(),
+                        source: copy.source(),
+                        directory: copy.directory().map(Path::to_owned).unwrap_or_default(),
+                        comparison: external_runners::compare(&winner, &copy),
+                    });
+                }
+            }
+            listing.runners.push(winner);
+        }
+        Ok(listing)
+    }
+
+    /// Everything in wineo's own runners root, sorted by name.
+    fn list_root(&self) -> Result<Listing> {
         let entries = match fs::read_dir(&self.root) {
             Ok(entries) => entries,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Listing::default()),
@@ -192,7 +322,9 @@ impl Runners {
         if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
             return Err(failure("only Linux x86_64 builds are supported".to_owned()));
         }
-        self.list()?.runners.into_iter()
+        // The aliases mean what `wineo download` fetched, so only wineo's own
+        // builds count.
+        self.list_root()?.runners.into_iter()
             .filter(Runner::is_proton)
             .filter(|runner| crate::runner_alias::complete_proton(&self.root.join(runner.name())))
             .filter_map(|runner| crate::runner_alias::version(&self.root, runner.name(), alias).map(|version| (version, runner)))
@@ -205,7 +337,7 @@ impl Runners {
     /// their names, so `GE-Proton11-7` is newer than `GE-Proton9-20`.
     pub fn newest_proton(&self) -> Result<Option<Runner>> {
         Ok(self
-            .list()?
+            .collect(false)?
             .runners
             .into_iter()
             .filter(Runner::is_proton)
@@ -214,7 +346,7 @@ impl Runners {
 
     fn installed(&self) -> Result<Vec<String>> {
         Ok(self
-            .list()?
+            .collect(false)?
             .runners
             .into_iter()
             .map(|runner| runner.name().to_owned())
@@ -253,14 +385,20 @@ fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
     a.len().cmp(&b.len())
 }
 
-/// What kind of runner a directory holds, if any. Proton is checked first,
-/// because a Proton tree carries wine binaries under `files/bin` as well.
 fn check(dir: &Path) -> std::result::Result<Runner, Skipped> {
     let name = dir
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_owned();
+        .unwrap_or_default();
+    check_named(dir, name)
+}
+
+/// What kind of runner a directory holds, if any. Proton is checked first,
+/// because a Proton tree carries wine binaries under `files/bin` as well.
+/// The name is separate, since another launcher's folder name may not be
+/// usable as one.
+fn check_named(dir: &Path, name: &str) -> std::result::Result<Runner, Skipped> {
+    let name = name.to_owned();
 
     // The `proton` script is exactly what PROTONPATH has to point at.
     let proton = dir.join("proton");
@@ -318,6 +456,12 @@ fn removable_directory(paths: &Paths, name: &str) -> Result<PathBuf> {
 
 fn removable_directory_in(runners: &Runners, name: &str) -> Result<PathBuf> {
     let runner = runners.resolve(name)?;
+    if runner.source() != Source::Wineo {
+        return Err(Error::ExternalBuild {
+            name: name.to_owned(),
+            launcher: runner.source(),
+        });
+    }
     let directory = runners.root().join(runner.name());
     crate::build_removal::managed(&directory, name)?;
     Ok(directory)

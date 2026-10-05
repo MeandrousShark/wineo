@@ -152,8 +152,21 @@ impl Paths {
         self.xdg_data().join("icons")
     }
 
+    pub(crate) fn home(&self) -> &Path {
+        &self.home
+    }
+
+    /// `$XDG_CONFIG_HOME` itself. None in a portable folder, whose config dir
+    /// is its own rather than the host's.
+    pub(crate) fn xdg_config(&self) -> Option<&Path> {
+        if self.portable.is_some() {
+            return None;
+        }
+        self.config.parent()
+    }
+
     /// `$XDG_DATA_HOME` itself, which every wineo data path hangs off.
-    fn xdg_data(&self) -> &Path {
+    pub(crate) fn xdg_data(&self) -> &Path {
         self.data
             .parent()
             .expect("the data dir is always `<xdg data home>/wineo`")

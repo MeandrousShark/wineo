@@ -13,6 +13,7 @@ pub mod download;
 pub mod edit;
 pub mod environment;
 pub mod error;
+pub mod external_runners;
 mod files;
 pub mod gamescope;
 pub mod heroic;

@@ -12,6 +12,7 @@ use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, IoContext, Result};
+use crate::external_runners::Source;
 
 /// umu-launcher, which runs Proton the way Steam does.
 const UMU: &str = "umu-run";
@@ -49,6 +50,8 @@ pub struct Runner {
     // Resolution context is not part of persisted runner identity.
     #[serde(skip)]
     directory: Option<PathBuf>,
+    #[serde(skip)]
+    source: Source,
 }
 
 impl PartialEq for Runner {
@@ -81,6 +84,16 @@ impl Runner {
         })
     }
 
+    /// Which launcher's folder the build was found in.
+    pub fn source(&self) -> Source {
+        self.source
+    }
+
+    pub(crate) fn with_source(mut self, source: Source) -> Self {
+        self.source = source;
+        self
+    }
+
     pub fn selection(&self) -> &str {
         self.selection.as_deref().unwrap_or(&self.name)
     }
@@ -100,6 +113,7 @@ impl Runner {
             name: Self::SYSTEM.to_owned(),
             selection: None,
             directory: None,
+            source: Source::Wineo,
             kind: Kind::Wine {
                 wine: find_in_path(&path, "wine").ok_or(Error::ProgramNotFound("wine"))?,
                 wineserver: find_in_path(&path, "wineserver")
@@ -114,6 +128,7 @@ impl Runner {
             name,
             selection: None,
             directory: None,
+            source: Source::Wineo,
             kind: Kind::Wine { wine, wineserver },
         }
     }
@@ -125,6 +140,7 @@ impl Runner {
             name,
             selection: None,
             directory: None,
+            source: Source::Wineo,
             kind: Kind::Proton { root },
         }
     }

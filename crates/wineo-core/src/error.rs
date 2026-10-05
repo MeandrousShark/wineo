@@ -119,6 +119,12 @@ pub enum Error {
     #[error("{0} is not a managed build and cannot be removed")]
     UnmanagedBuild(String),
 
+    #[error("{name} belongs to {launcher}.")]
+    ExternalBuild {
+        name: String,
+        launcher: crate::external_runners::Source,
+    },
+
     #[error(
         "runner `{name}` is not installed{}",
         if .installed.is_empty() {
