@@ -514,6 +514,9 @@ the saved key. See [The SteamGridDB key](art.md#the-steamgriddb-key).
 | Down (in the search) | Back to the cards |
 | Tab, Shift+Tab | Move focus through library controls and panel actions |
 
+The mouse Back button does whatever Esc does on the current page, here and
+in every table below. Forward does nothing.
+
 In the SteamGridDB picker:
 
 | Key | Does |
