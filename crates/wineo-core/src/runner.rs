@@ -331,6 +331,7 @@ impl Runner {
         let mut child = command
             .spawn()
             .context(|| "failed to run wineserver -w".to_owned())?;
+        crate::process::quiet_core_dumps(&child);
         let deadline = Instant::now() + IDLE_NOTE_AFTER;
         while !token.is_canceled()
             && child
@@ -370,6 +371,7 @@ impl Runner {
         let child = command
             .spawn()
             .context(|| "failed to run wineserver -w".to_owned())?;
+        crate::process::quiet_core_dumps(&child);
         let status =
             crate::prefix::wait_for_child(child, token, || self.kill(prefix, None).map(|_| ()))?;
         if !status.success() {
@@ -520,6 +522,7 @@ impl Runner {
         let mut child = quietly(command.arg("-w"))
             .spawn()
             .context(|| "failed to run wineserver -w".to_owned())?;
+        crate::process::quiet_core_dumps(&child);
         let deadline = Instant::now() + SERVER_STOP_WAIT;
         // A second Ctrl+C gives up waiting rather than holding the exit.
         while !token.is_forced() && Instant::now() < deadline {

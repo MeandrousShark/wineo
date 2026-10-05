@@ -8,6 +8,15 @@
 /// runs until `wineboot --end-session` or `wineserver -k` ends it.
 pub const FAKE_WINE: &str = r#"#!/bin/sh
 pids="$WINEPREFIX/fake-pids"
+# wineo lowers the core limit right after spawning, so wait for that to land.
+record_core_when_one() {
+    i=0
+    while [ "$i" -lt 100 ] && ! grep -Eq '^Max core file size +1 ' /proc/self/limits; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+    grep 'Max core file size' /proc/self/limits >"$WINEPREFIX/core-limit"
+}
 burst() {
     line=$(printf 'x%.0s' $(seq 1023))
     i=0
@@ -26,9 +35,7 @@ wineboot)
         mkdir -p "$WINEPREFIX/drive_c"
         printf 'WINE REGISTRY Version 2\n\n#arch=win64\n' >"$WINEPREFIX/system.reg"
         if [ -n "${WINEO_TEST_RECORD_CORE-}" ]; then
-            # wineo lowers the limit right after spawning, so wait for it.
-            sleep 0.5
-            grep 'Max core file size' /proc/self/limits >"$WINEPREFIX/core-limit"
+            record_core_when_one
         fi
         if [ -n "${WINEO_TEST_REMOVE_INSTALLER-}" ]; then
             rm -f "$WINEO_TEST_REMOVE_INSTALLER"
@@ -58,6 +65,10 @@ exit-*)
     ;;
 slow)
     sleep 0.5
+    ;;
+quiet-corelimit)
+    record_core_when_one
+    exit 0
     ;;
 corelimit)
     # Records its core limit for a test, then runs like any other program.

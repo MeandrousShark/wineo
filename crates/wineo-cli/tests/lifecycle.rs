@@ -133,6 +133,20 @@ fn prefix_creation_gets_a_soft_core_limit_of_one() {
 }
 
 #[test]
+fn attached_exec_gets_a_soft_core_limit_of_one() {
+    let hard = own_core_limits().1;
+    // A hard limit of 0 leaves no room for a soft limit of 1.
+    if hard == "0" {
+        return;
+    }
+    let f = Fixture::new();
+    f.environment("app", APP);
+    assert_success(&f.run(&["exec", "app", "quiet-corelimit"]));
+    let recorded = fs::read_to_string(f.root.path().join("prefixes/app/core-limit")).unwrap();
+    assert_eq!(core_limits(&recorded), ("1".to_owned(), hard));
+}
+
+#[test]
 fn start_then_stop() {
     let f = Fixture::new();
     f.environment("app", APP);

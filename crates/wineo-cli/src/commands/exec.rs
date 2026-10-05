@@ -10,6 +10,7 @@ use wineo_core::error::Error;
 use wineo_core::launch::{self, Host, Launch, parse_env_assignment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
+use wineo_core::process;
 use wineo_core::runtime::{Runtime, exit_code};
 
 use crate::commands::build;
@@ -89,9 +90,13 @@ fn run_attached(launch: &Launch) -> anyhow::Result<i32> {
     // waiting instead of exiting out from under it.
     signal_hook::flag::register(SIGINT, Arc::new(AtomicBool::new(false)))
         .context("failed to set up signal handling")?;
-    let status = launch
+    let mut child = launch
         .command()
-        .status()
+        .spawn()
+        .with_context(|| format!("failed to start {}", launch.host.launcher()))?;
+    process::quiet_core_dumps(&child);
+    let status = child
+        .wait()
         .with_context(|| format!("failed to start {}", launch.host.launcher()))?;
     Ok(exit_code(status))
 }

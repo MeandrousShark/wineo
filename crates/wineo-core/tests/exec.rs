@@ -37,8 +37,12 @@ linger)
     exit 0
     ;;
 corelimit)
-    # The limit is set right after spawn, so give wineo a moment to do it.
-    sleep 0.3
+    # The limit is set right after spawn, so wait for it to land.
+    i=0
+    while [ "$i" -lt 100 ] && ! grep -Eq '^Max core file size +1 ' /proc/self/limits; do
+        sleep 0.1
+        i=$((i + 1))
+    done
     grep 'Max core file size' /proc/self/limits
     exit 0
     ;;
