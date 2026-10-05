@@ -234,10 +234,87 @@ fn within_a_source_the_first_folder_wins() {
             ("lutris-flatpak", Source::Lutris),
         ]
     );
-    // Only the other sources' copies are compared.
-    assert!(listing.hidden.is_empty());
+    // The Flatpak copy is hidden, and compared like any other.
+    assert_eq!(listing.hidden.len(), 1);
+    assert_eq!(
+        listing.hidden[0].directory,
+        home.join(HEROIC_FLATPAK).join("GE-Proton-latest")
+    );
+    assert_eq!(
+        listing.different_builds("GE-Proton-latest"),
+        [Source::Heroic]
+    );
     let runner = runners(home).resolve("GE-Proton-latest").unwrap();
     assert_eq!(runner.version().as_deref(), Some("GE-Proton10-3"));
+}
+
+#[test]
+fn a_broken_wineo_build_is_not_replaced_by_steams() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let wineo = paths(home).default_runner_root().join("GE-Proton11-3");
+    fs::create_dir_all(&wineo).unwrap();
+    let steam = home.join(STEAM).join("GE-Proton11-3");
+    proton(&steam, Some("GE-Proton11-3"));
+
+    let runners = runners(home);
+    assert!(matches!(
+        runners.resolve("GE-Proton11-3"),
+        Err(Error::NotARunner { .. })
+    ));
+    let listing = runners.list().unwrap();
+    assert!(listing.runners.is_empty());
+    assert_eq!(
+        listing.skipped,
+        [("GE-Proton11-3".to_owned(), crate::runners::Skipped::NoWine)]
+    );
+    assert_eq!(listing.hidden.len(), 1);
+    assert_eq!(listing.hidden[0].source, Source::Steam);
+    assert_eq!(listing.hidden[0].directory, steam);
+    assert_eq!(listing.hidden[0].comparison, Comparison::Unknown);
+}
+
+#[test]
+fn a_broken_first_folder_owns_the_name_within_a_source() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    heroic_root(&home.join(".config/heroic"));
+    heroic_root(&home.join(".var/app/com.heroicgameslauncher.hgl/config/heroic"));
+    let native = home.join(HEROIC).join("GE-Proton-latest");
+    fs::create_dir_all(&native).unwrap();
+    let flatpak = home.join(HEROIC_FLATPAK).join("GE-Proton-latest");
+    proton(&flatpak, Some("GE-Proton11-7"));
+
+    let runners = runners(home);
+    assert!(matches!(
+        runners.resolve("GE-Proton-latest"),
+        Err(Error::NotARunner { .. })
+    ));
+    let listing = runners.list().unwrap();
+    assert!(listing.runners.is_empty());
+    assert_eq!(listing.external_skipped.len(), 1);
+    assert_eq!(listing.external_skipped[0].directory, native);
+    assert_eq!(listing.hidden.len(), 1);
+    assert_eq!(listing.hidden[0].directory, flatpak);
+    assert_eq!(listing.hidden[0].comparison, Comparison::Unknown);
+}
+
+#[test]
+fn only_proton_counts_in_a_steam_library() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let common = home.join(".local/share/Steam/steamapps/common");
+    wine(&common.join("Proton Wine Tree"), Some("ntdll"));
+
+    let runners = runners(home);
+    let listing = runners.list().unwrap();
+    assert!(listing.runners.is_empty());
+    assert!(listing.external_skipped.is_empty());
+    assert!(listing.hidden.is_empty());
+    assert!(matches!(
+        runners.resolve("Proton-Wine-Tree"),
+        Err(Error::UnknownRunner { .. })
+    ));
 }
 
 #[test]

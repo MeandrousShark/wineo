@@ -128,29 +128,29 @@ impl Runners {
             Ok(runner) => return Ok(runner),
             Err(reason) => reason,
         };
-        // The first usable copy wins, the same way `list` picks one.
-        if let Some(runner) = external_runners::entries(&self.external)
+        // The highest priority folder with the name owns it, even when it's
+        // broken, so a broken build never silently runs as another one.
+        if dir.is_dir() {
+            return Err(Error::NotARunner {
+                name: name.to_owned(),
+                reason: reason.as_str(),
+            });
+        }
+        let owner = external_runners::entries(&self.external)
             .into_iter()
             .filter(|entry| entry.name == name)
-            .find_map(|entry| {
-                check_named(&entry.directory, name)
-                    .ok()
-                    .map(|runner| runner.with_source(entry.source))
-            })
-        {
-            return Ok(runner);
-        }
-        if reason == Skipped::NoWine && !dir.is_dir() {
-            Err(Error::UnknownRunner {
+            .find_map(|entry| check_entry(&entry));
+        match owner {
+            Some(Ok(runner)) => Ok(runner),
+            Some(Err(reason)) => Err(Error::NotARunner {
+                name: name.to_owned(),
+                reason: reason.as_str(),
+            }),
+            None => Err(Error::UnknownRunner {
                 name: name.to_owned(),
                 installed: self.installed()?,
                 root: self.root.clone(),
-            })
-        } else {
-            Err(Error::NotARunner {
-                name: name.to_owned(),
-                reason: reason.as_str(),
-            })
+            }),
         }
     }
 
@@ -217,50 +217,57 @@ impl Runners {
         if self.external.is_empty() {
             return Ok(listing);
         }
-        let mut copies: BTreeMap<String, Vec<Runner>> = listing
+        // Each name belongs to the first folder that has it, usable or not.
+        // Broken owners stay in `skipped`, so they're only placeholders here.
+        let mut owners: BTreeMap<String, (Option<Runner>, Vec<Runner>)> = listing
             .runners
             .drain(..)
-            .map(|runner| (runner.name().to_owned(), vec![runner]))
+            .map(|runner| (runner.name().to_owned(), (Some(runner), Vec::new())))
             .collect();
+        for (name, _) in &listing.skipped {
+            owners.entry(name.clone()).or_default();
+        }
         for entry in external_runners::entries(&self.external) {
-            let checked = if entry.name.is_empty() {
-                Err(Skipped::InvalidName)
-            } else if crate::runner_alias::is_alias(&entry.name) {
-                Err(Skipped::AliasReserved)
-            } else if entry.name == Runner::SYSTEM {
-                Err(Skipped::Reserved)
-            } else {
-                check_named(&entry.directory, &entry.name)
+            let Some(checked) = check_entry(&entry) else {
+                continue;
             };
-            match checked {
-                Ok(runner) => {
-                    let found = copies.entry(entry.name).or_default();
-                    // Within one source, the first folder wins a name.
-                    if !found.iter().any(|copy| copy.source() == entry.source) {
-                        found.push(runner.with_source(entry.source));
-                    }
+            let runner = match checked {
+                Ok(runner) => Some(runner),
+                Err(reason) => {
+                    listing.external_skipped.push(ExternalSkipped {
+                        source: entry.source,
+                        directory: entry.directory,
+                        reason,
+                    });
+                    None
                 }
-                Err(_) if entry.proton_only => {}
-                Err(reason) => listing.external_skipped.push(ExternalSkipped {
-                    source: entry.source,
-                    directory: entry.directory,
-                    reason,
-                }),
+            };
+            if entry.name.is_empty() {
+                continue;
+            }
+            match owners.entry(entry.name) {
+                std::collections::btree_map::Entry::Vacant(vacant) => {
+                    vacant.insert((runner, Vec::new()));
+                }
+                std::collections::btree_map::Entry::Occupied(mut occupied) => {
+                    occupied.get_mut().1.extend(runner);
+                }
             }
         }
-        for (name, mut found) in copies {
-            let winner = found.remove(0);
+        for (name, (owner, copies)) in owners {
             if compare {
-                for copy in found {
+                for copy in copies {
                     listing.hidden.push(Hidden {
                         name: name.clone(),
                         source: copy.source(),
                         directory: copy.directory().map(Path::to_owned).unwrap_or_default(),
-                        comparison: external_runners::compare(&winner, &copy),
+                        comparison: owner.as_ref().map_or(Comparison::Unknown, |owner| {
+                            external_runners::compare(owner, &copy)
+                        }),
                     });
                 }
             }
-            listing.runners.push(winner);
+            listing.runners.extend(owner);
         }
         Ok(listing)
     }
@@ -383,6 +390,25 @@ fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
         }
     }
     a.len().cmp(&b.len())
+}
+
+/// What an entry in another launcher's folder holds. None when it doesn't
+/// count at all: a Steam library folder only counts when it's really Proton,
+/// since games and Valve's runtimes share it.
+fn check_entry(entry: &external_runners::Entry) -> Option<std::result::Result<Runner, Skipped>> {
+    let checked = if entry.name.is_empty() {
+        Err(Skipped::InvalidName)
+    } else if crate::runner_alias::is_alias(&entry.name) {
+        Err(Skipped::AliasReserved)
+    } else if entry.name == Runner::SYSTEM {
+        Err(Skipped::Reserved)
+    } else {
+        check_named(&entry.directory, &entry.name)
+    };
+    if entry.proton_only && !checked.as_ref().is_ok_and(Runner::is_proton) {
+        return None;
+    }
+    Some(checked.map(|runner| runner.with_source(entry.source)))
 }
 
 fn check(dir: &Path) -> std::result::Result<Runner, Skipped> {

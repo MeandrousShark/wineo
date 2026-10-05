@@ -200,7 +200,7 @@ pub(crate) struct Entry {
     /// The derived runner name, empty when the folder name has nothing usable.
     pub name: String,
     pub directory: PathBuf,
-    /// Not a runner unless it checks out, and not worth reporting if it doesn't.
+    /// Counts only as a working Proton build, and isn't worth reporting otherwise.
     pub proton_only: bool,
 }
 
