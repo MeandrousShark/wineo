@@ -21,6 +21,24 @@ From the backlog row in [features.md](../features.md) (2026-10-02):
   the order only matters when same-named builds differ. Hashing whole trees
   is too slow, so this plan picks a cheap identity check.
 
+On 2026-10-05 the maintainer answered every open question below with its
+recommendation:
+
+1. One switch: `external_runners = true` in global config, unset until
+   asked.
+2. The offer shows in guided `new` and the GUI Add flow when the gaming
+   template is picked, and in Heroic import. GUI Settings and `wineo config`
+   change it.
+3. Folders with unusable names get a derived name (`Proton 9.0` is
+   `Proton-9.0`).
+4. Lists show each name's source, with a note only when a hidden copy is a
+   different build. No validate warning.
+5. With scanning on, Heroic import uses Heroic's build in place and copies
+   nothing.
+6. `runner = "proton"` considers every enabled source; the `*-Latest`
+   aliases stay with wineo's own downloads.
+7. External builds are never used while a portable folder is active.
+
 ## Existing foundation
 
 - `Runners` ([runners.rs](../../crates/wineo-core/src/runners.rs)) wraps one
