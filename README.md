@@ -44,7 +44,7 @@ wineo stop hades
 ### Arch Linux
 
 The repository has a `wineo-git` PKGBUILD that builds the latest `main` and
-installs the binary and shell completions:
+installs the binary, shell completions, and man pages:
 
 ```sh
 git clone https://git.hannoncloud.com/mphannon/wineo.git
@@ -75,6 +75,12 @@ install -Dm755 target/release/wineo ~/.local/bin/wineo
 ```
 
 See [Shell completion](docs/shell-completion.md) to set up completions.
+
+To install the man pages, write them into a folder your `man` searches:
+
+```sh
+wineo manpages ~/.local/share/man/man1
+```
 
 ### Runtime dependencies
 
