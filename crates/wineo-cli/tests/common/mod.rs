@@ -313,6 +313,16 @@ impl Fixture {
         fs::read_to_string(self.runtime(name).dir().join("state.toml")).unwrap_or_default()
     }
 
+    /// Waits for a run to end with `status`. The supervisor writes the final
+    /// state before it appends the play log and releases the run lock, so
+    /// the state alone doesn't mean `status` or the log has caught up.
+    pub fn wait_for_run_end(&self, name: &str, status: &str) {
+        let wanted = format!("status = \"{status}\"");
+        wait_for("the run to end", || {
+            self.state(name).contains(&wanted) && !self.runtime(name).is_running().unwrap()
+        });
+    }
+
     pub fn log(&self, name: &str) -> String {
         fs::read_to_string(self.runtime(name).log_path()).unwrap_or_default()
     }

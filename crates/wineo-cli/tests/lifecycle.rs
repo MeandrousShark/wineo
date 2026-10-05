@@ -129,9 +129,7 @@ fn start_reconciles_a_desktop_setting_added_by_hand() {
     f.environment("app", "[targets.app]\nexe = \"exit-0\"\n");
 
     assert_success(&f.run(&["start", "app"]));
-    wait_for("the first run to finish", || {
-        f.state("app").contains("status = \"exited\"")
-    });
+    f.wait_for_run_end("app", "exited");
     let stats_log = f.read_stats_log("app");
     assert_eq!(stats_log.lines().count(), 1, "{stats_log}");
     assert!(stats_log.contains("\"end\":\"exited\""), "{stats_log}");
@@ -162,9 +160,7 @@ fn a_program_exiting_on_its_own_records_its_code() {
     f.environment("app", "[targets.fail]\nexe = \"exit-3\"\n");
 
     assert_success(&f.run(&["start", "app"]));
-    wait_for("the run to end", || {
-        f.state("app").contains("status = \"failed\"")
-    });
+    f.wait_for_run_end("app", "failed");
     let state = f.state("app");
     assert!(state.contains("exit_code = 3"), "{state}");
     assert!(state.contains("program_exited_at"), "{state}");
@@ -1665,9 +1661,7 @@ fn a_proton_run_ends_when_umu_exits() {
     );
 
     assert_success(&f.run(&["start", "hades"]));
-    wait_for("the run to end", || {
-        f.state("hades").contains("status = \"failed\"")
-    });
+    f.wait_for_run_end("hades", "failed");
     let state = f.state("hades");
     assert!(state.contains("exit_code = 3"), "{state}");
     // umu waits for the game, so its exit is the end of the run. Nothing can
