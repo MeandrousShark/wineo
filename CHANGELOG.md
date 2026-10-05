@@ -3,6 +3,20 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.23.1 - 2026-10-05
+
+- `wineo manpages DIR` writes a man page for `wineo` and each subcommand.
+  The Arch package installs them, so `man wineo-new` works.
+- In the desktop app, the mouse Back button does what Esc does on every
+  page. Forward does nothing.
+- Canceling winetricks, an installer, prefix creation, or Run program no
+  longer leaves a core dump and a crash notification behind. Those child
+  processes get a soft core size limit of 1, which makes the kernel skip
+  systemd-coredump. Game launches keep normal limits.
+- CLI `wineo exec` gets the same treatment.
+- Fixed three lifecycle tests that could read `status` or the play log
+  before the supervisor finished, which failed under load.
+
 ## 0.23.0 - 2026-10-04
 
 - GUI visual polish ([0042](docs/plans/0042-gui-visual-polish.md)), following
