@@ -3,6 +3,26 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.23.0 - 2026-10-04
+
+- GUI visual polish ([0042](docs/plans/0042-gui-visual-polish.md)), following
+  the new [GUI style guide](docs/gui-style.md).
+- Library posters are smaller, at 160 x 240 px. Opening, closing, and
+  switching the detail panel moves cards between slots with a short spring.
+- Cards show the default target's enabled desktop entry name, with the
+  environment name as muted context, and search matches both.
+- Environments tagged `game` show Play; others show Launch.
+- Detail actions, dropdowns, and menus share compact rounded controls. The
+  context menu stays inside small windows, and long busy reasons scroll.
+  Clicking unused Library space closes the panel.
+- New-environment reviews group their fields and warnings with a fixed
+  Back/Create footer. Settings, Snapshots, Downloads, Checkup, and Trash use
+  the same grouped layout.
+- Trash entries stay valid when the Linux mount ID of their filesystem
+  changes, such as after a reboot. Previously `wineo trash`, restore, prune,
+  and portable or copy recovery could report an invalid or unsupported trash
+  manifest. Replacement and mount boundary checks are unchanged.
+
 ## 0.22.1 - 2026-10-02
 
 - Process cleanup handles processes disappearing during a `/proc` scan,

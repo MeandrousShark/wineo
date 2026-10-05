@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0042: GUI visual polish
 
@@ -306,32 +306,32 @@ beyond the existing library, review, and five requested management pages.
 
 ## Maintainer acceptance
 
-The approved refinements and grid-motion amendment are ready for acceptance.
-Keep this plan approved until the maintainer
-completes the real-window checks; then mark it done and release.
+The maintainer confirmed acceptance passed on 2026-10-04, including the
+approved refinements, the grid-motion amendment, and snapshots on a
+reflink-capable filesystem. The plan is done and released as 0.23.0.
 
-- [ ] Browse a populated library in both palettes and a short window. Check
+- [x] Browse a populated library in both palettes and a short window. Check
   poster size, title/state text, search, keyboard navigation, and scroll position.
-- [ ] Check a named default desktop target, no desktop title, and several
+- [x] Check a named default desktop target, no desktop title, and several
   targets. Search by title and environment name; changing the launch target
   should keep the card title stable.
-- [ ] Check Play for a `game` tag and Launch without it on Wine and native
+- [x] Check Play for a `game` tag and Launch without it on Wine and native
   entries. Future built-in gaming creations should show the tag in review.
-- [ ] Exercise Play/Launch, Stop, Log, and secondary actions with mouse and Tab/Shift+Tab.
+- [x] Exercise Play/Launch, Stop, Log, and secondary actions with mouse and Tab/Shift+Tab.
   Check inactive, running, busy, error, and disabled states.
-- [ ] Open dropdowns and both action menus, including long names and busy
+- [x] Open dropdowns and both action menus, including long names and busy
   reasons in a small window. Check every action, full reason text, and Close.
-- [ ] Click unused Library space to close the panel without changing keyboard
+- [x] Click unused Library space to close the panel without changing keyboard
   selection. Card selection, scrollbars, and menus keep their own behavior.
-- [ ] Rapidly open/close/switch cards, leave Library mid-transition, and open
+- [x] Rapidly open/close/switch cards, leave Library mid-transition, and open
   and close logs during a run. Confirm immediate cleanup and idle animation.
-- [ ] Open and close the panel in a populated, scrolled library. Check smooth
+- [x] Open and close the panel in a populated, scrolled library. Check smooth
   playful card movement, rapid reversals, clicks on moving cards, bottom rows,
   keyboard navigation, and resizing or filtering during the transition.
-- [ ] Review Windows/native creation, existing prefixes, long paths, and missing
+- [x] Review Windows/native creation, existing prefixes, long paths, and missing
   prerequisites. Check complete details and reachable Back/Create controls.
-- [ ] Edit global/environment Settings, save/revert, and test a config conflict.
-- [ ] Create/restore/delete a snapshot on a reflink-capable filesystem. Expand
+- [x] Edit global/environment Settings, save/revert, and test a config conflict.
+- [x] Create/restore/delete a snapshot on a reflink-capable filesystem. Expand
   config comparison and confirm reports, results, and controls remain reachable.
-- [ ] Inspect used/unused Downloads, install progress, Checkup fixes/results,
+- [x] Inspect used/unused Downloads, install progress, Checkup fixes/results,
   and Trash restore/recovery/deletion confirmations. Check navigation during work.
