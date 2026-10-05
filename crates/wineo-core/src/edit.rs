@@ -150,7 +150,7 @@ fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
             store_value(table, "fetch", value);
             Ok(())
         }
-        "gamemode" | "wayland" | "mangohud" => {
+        "gamemode" | "wayland" | "mangohud" | "external_runners" => {
             store_value(root, key, Value::from(parse_bool(key, raw)?));
             Ok(())
         }
@@ -403,9 +403,8 @@ fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
 
 fn unset_global(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
-        "stop_timeout" | "log_limit_mb" | "gamemode" | "wayland" | "mangohud" => {
-            Ok(root.remove(key).is_some())
-        }
+        "stop_timeout" | "log_limit_mb" | "gamemode" | "wayland" | "mangohud"
+        | "external_runners" => Ok(root.remove(key).is_some()),
         "defaults.runner" => unset_field(root, "defaults", "defaults", "runner"),
         "defaults.arch" => unset_field(root, "defaults", "defaults", "arch"),
         "defaults.prefix_root" => unset_field(root, "defaults", "defaults", "prefix_root"),

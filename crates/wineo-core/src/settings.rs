@@ -436,6 +436,19 @@ pub fn update(
     })
 }
 
+/// Records the answer to the offer to use runners from Steam, Heroic, and
+/// Lutris, keeping the global config's formatting like any other edit.
+pub fn set_external_runners(paths: &Paths, on: bool) -> Result<()> {
+    let value = if on { "true" } else { "false" };
+    update(
+        paths,
+        ConfigFile::Global,
+        &[("external_runners", value)],
+        &[],
+    )
+    .map(|_| ())
+}
+
 fn update_with_writer(
     paths: &Paths,
     file: ConfigFile,
@@ -1005,6 +1018,35 @@ mod tests {
         let missing = update(&paths, ConfigFile::Global, &[], &["gamemode"]).unwrap();
         assert_eq!(missing, ["gamemode"]);
         assert!(!paths.global_config().exists());
+    }
+
+    #[test]
+    fn the_external_runners_answer_keeps_the_rest_of_the_file() {
+        let (_root, paths) = setup();
+        assert_eq!(GlobalConfig::load(&paths).unwrap().external_runners, None);
+        let original = "# mine
+schema_version = 1
+stop_timeout = 3 # short
+";
+        fs::create_dir_all(paths.global_config().parent().unwrap()).unwrap();
+        fs::write(paths.global_config(), original).unwrap();
+
+        set_external_runners(&paths, true).unwrap();
+        let text = fs::read_to_string(paths.global_config()).unwrap();
+        assert_eq!(text, format!("{original}external_runners = true\n"));
+        assert_eq!(
+            GlobalConfig::load(&paths).unwrap().external_runners,
+            Some(true)
+        );
+
+        set_external_runners(&paths, false).unwrap();
+        assert_eq!(
+            GlobalConfig::load(&paths).unwrap().external_runners,
+            Some(false)
+        );
+        let missing = update(&paths, ConfigFile::Global, &[], &["external_runners"]).unwrap();
+        assert!(missing.is_empty());
+        assert_eq!(fs::read_to_string(paths.global_config()).unwrap(), original);
     }
 
     #[test]

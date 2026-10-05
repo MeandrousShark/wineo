@@ -72,6 +72,9 @@ pub struct GlobalConfig {
     pub gamemode: Option<bool>,
     pub wayland: Option<bool>,
     pub mangohud: Option<bool>,
+    /// Whether builds from Steam, Heroic, and Lutris count as runners too.
+    /// Unset means nobody has been asked yet, which is why it isn't a bool.
+    pub external_runners: Option<bool>,
     #[serde(default)]
     pub defaults: Defaults,
     #[serde(default)]
@@ -425,6 +428,7 @@ impl Default for GlobalConfig {
             gamemode: None,
             wayland: None,
             mangohud: None,
+            external_runners: None,
             defaults: Defaults::default(),
             art: ArtConfig::default(),
             env: BTreeMap::new(),
