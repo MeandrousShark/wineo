@@ -110,9 +110,27 @@ fn runner_matches_source(
         })
 }
 
+/// The name wineo knows Heroic's own build by, when external builds are on and
+/// wineo can use it where it is. Heroic names a runner by its folder, which
+/// wineo may have had to derive another name from. A same-named build in a
+/// higher priority place, like wineo's own root, is what that name resolves
+/// to, and it's what the game runs with.
+fn in_place_name(runners: &Runners, imported: &HeroicImport) -> Option<String> {
+    let source = imported.runner.source.as_deref()?;
+    let proton = imported.runner.kind == HeroicRunnerKind::Proton;
+    runners
+        .external_names_at(source)
+        .into_iter()
+        .find_map(|name| {
+            let runner = runners.resolve(&name).ok()?;
+            (runner.is_proton() == proton).then(|| runner.selection().to_owned())
+        })
+}
+
 /// Suggests what to do about the runner of `imported`. With `requested`, a
 /// runner the person named, it only steps in when that runner isn't installed
-/// or is Heroic's own name for a copy wineo doesn't have.
+/// or is Heroic's own name for a copy wineo doesn't have. With external
+/// builds on, Heroic's build is used where it is and nothing is copied.
 pub fn suggest_runner(
     paths: &Paths,
     global: &GlobalConfig,
@@ -136,8 +154,12 @@ pub fn suggest_runner(
         }
     };
     let mut copy_blocked = None;
+    let in_place = in_place_name(&runners, imported);
     match requested {
         None => {
+            if let Some(name) = in_place {
+                return Ok(RunnerSuggestion::Use(name));
+            }
             if let Ok(runner) = runners.resolve(&imported.runner.name)
                 && runner_matches_source(paths, global, imported, &runner)
                 && proton == runner.is_proton()
@@ -154,6 +176,11 @@ pub fn suggest_runner(
                     || runner_matches_source(paths, global, imported, &runner))
             {
                 return Ok(RunnerSuggestion::Use(selected.to_owned()));
+            }
+            if selected == imported.runner.name
+                && let Some(name) = in_place
+            {
+                return Ok(RunnerSuggestion::Use(name));
             }
             if selected == imported.runner.name
                 && let Some(copy) = copy_offer(&mut copy_blocked)
@@ -376,5 +403,129 @@ mod tests {
         let imported = reviewed_import(root.path());
         let suggestion = suggest_runner(&paths, &global, &imported, Some("wine-tkg")).unwrap();
         assert!(matches!(suggestion, RunnerSuggestion::Use(name) if name == "wine-tkg"));
+    }
+
+    fn scanning(root: &Path) -> GlobalConfig {
+        GlobalConfig {
+            external_runners: Some(true),
+            ..global(root)
+        }
+    }
+
+    /// A game whose Proton runner is `name` in Heroic's own tools folder under
+    /// the home at `root`, where wineo's scan finds it.
+    fn heroic_game(root: &Path, name: &str) -> HeroicImport {
+        let heroic = root.join(".config/heroic");
+        fs::create_dir_all(&heroic).unwrap();
+        fs::write(heroic.join("config.json"), "{}").unwrap();
+        let tools = heroic.join("tools/proton");
+        fake_proton_runner(&tools, name);
+        let mut imported = reviewed_import(&root.join("prefix"));
+        imported.runner.kind = HeroicRunnerKind::Proton;
+        imported.runner.name = name.to_owned();
+        imported.runner.source = Some(tools.join(name));
+        imported
+    }
+
+    #[test]
+    fn heroics_build_is_used_in_place_when_scanning_is_on() {
+        let root = tempdir().unwrap();
+        let global = scanning(root.path());
+        let paths = paths(root.path());
+        let imported = heroic_game(root.path(), "GE-Proton-latest");
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Use(name) if name == "GE-Proton-latest"));
+        let suggestion =
+            suggest_runner(&paths, &global, &imported, Some("GE-Proton-latest")).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Use(name) if name == "GE-Proton-latest"));
+        // Nothing is copied into wineo's root.
+        assert!(!root.path().join("wineo-runners").exists());
+    }
+
+    #[test]
+    fn heroics_build_is_still_copied_when_scanning_is_off() {
+        let root = tempdir().unwrap();
+        let paths = paths(root.path());
+        let imported = heroic_game(root.path(), "GE-Proton-latest");
+        let unset = global(root.path());
+        let off = GlobalConfig {
+            external_runners: Some(false),
+            ..global(root.path())
+        };
+        for global in [unset, off] {
+            let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+            assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
+            let suggestion =
+                suggest_runner(&paths, &global, &imported, Some("GE-Proton-latest")).unwrap();
+            assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
+        }
+    }
+
+    #[test]
+    fn heroics_build_is_still_copied_in_a_portable_folder() {
+        let root = tempdir().unwrap();
+        let home = root.path().as_os_str().to_owned();
+        let portable = root.path().join("portable");
+        let paths =
+            Paths::select(|key| (key == "HOME").then(|| home.clone()), Some(&portable)).unwrap();
+        let global = scanning(root.path());
+        let imported = heroic_game(root.path(), "GE-Proton-latest");
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
+    }
+
+    #[test]
+    fn a_same_named_build_in_wineos_root_wins_over_heroics() {
+        let root = tempdir().unwrap();
+        let global = scanning(root.path());
+        let paths = paths(root.path());
+        let imported = heroic_game(root.path(), "GE-Proton-latest");
+        let wineo = root.path().join("wineo-runners");
+        fake_proton_runner(&wineo, "GE-Proton-latest");
+        fs::write(wineo.join("GE-Proton-latest/version"), "2 GE-Proton11-7\n").unwrap();
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Use(name) if name == "GE-Proton-latest"));
+        let resolved = Runners::new(&paths, &global)
+            .unwrap()
+            .resolve("GE-Proton-latest")
+            .unwrap();
+        assert_eq!(resolved.source(), crate::external_runners::Source::Wineo);
+        assert_eq!(fs::read_dir(&wineo).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_folder_name_wineo_cannot_use_is_known_by_its_derived_name() {
+        let root = tempdir().unwrap();
+        let global = scanning(root.path());
+        let paths = paths(root.path());
+        let imported = heroic_game(root.path(), "Proton 9.0");
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Use(name) if name == "Proton-9.0"));
+        let suggestion = suggest_runner(&paths, &global, &imported, Some("Proton 9.0")).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Use(name) if name == "Proton-9.0"));
+    }
+
+    #[test]
+    fn a_build_outside_the_scanned_folders_is_still_copied() {
+        let root = tempdir().unwrap();
+        let global = scanning(root.path());
+        let paths = paths(root.path());
+        let mut imported = heroic_game(root.path(), "GE-Proton-latest");
+        let elsewhere = root.path().join("custom-heroic-tools");
+        fake_proton_runner(&elsewhere, "GE-Proton-latest");
+        imported.runner.source = Some(elsewhere.join("GE-Proton-latest"));
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
+    }
+
+    #[test]
+    fn heroics_build_of_the_wrong_kind_is_not_used_in_place() {
+        let root = tempdir().unwrap();
+        let global = scanning(root.path());
+        let paths = paths(root.path());
+        let mut imported = heroic_game(root.path(), "GE-Proton-latest");
+        imported.runner.kind = HeroicRunnerKind::Wine;
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(!matches!(suggestion, RunnerSuggestion::Use(_)));
     }
 }

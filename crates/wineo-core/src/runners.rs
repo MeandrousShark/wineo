@@ -111,6 +111,22 @@ impl Runners {
         &self.root
     }
 
+    /// The names the other launchers' folders give the build at `directory`,
+    /// in priority order. Empty when external builds are off or it isn't in
+    /// one of their folders. A launcher may call a folder something wineo
+    /// can't use as a name, so this is the name wineo knows the build by.
+    pub(crate) fn external_names_at(&self, directory: &Path) -> Vec<String> {
+        let Ok(wanted) = fs::canonicalize(directory) else {
+            return Vec::new();
+        };
+        external_runners::entries(&self.external)
+            .into_iter()
+            .filter(|entry| !entry.name.is_empty())
+            .filter(|entry| fs::canonicalize(&entry.directory).is_ok_and(|dir| dir == wanted))
+            .map(|entry| entry.name)
+            .collect()
+    }
+
     /// The runner an environment's `runner` value names. `wine` always means
     /// the system wine, whatever is in the runners root.
     pub fn resolve(&self, name: &str) -> Result<Runner> {
