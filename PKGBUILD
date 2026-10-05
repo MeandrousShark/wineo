@@ -80,4 +80,6 @@ package() {
     "$pkgdir/usr/share/zsh/site-functions/_wineo"
   install -Dm644 "$srcdir/wineo.fish" \
     "$pkgdir/usr/share/fish/vendor_completions.d/wineo.fish"
+
+  "$pkgdir/usr/bin/wineo" manpages "$pkgdir/usr/share/man/man1"
 }

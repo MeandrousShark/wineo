@@ -92,6 +92,8 @@ enum Command {
     Winetricks(commands::winetricks::Args),
     /// Print a shell completion script
     Completions(commands::completions::Args),
+    /// Write man pages for wineo and its commands into a folder
+    Manpages(commands::manpages::Args),
 }
 
 fn main() -> ExitCode {
@@ -149,5 +151,6 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Exec(args) => commands::exec::run(&paths, args),
         Command::Winetricks(args) => commands::winetricks::run(&paths, args),
         Command::Completions(args) => commands::completions::run(&mut Cli::command(), args),
+        Command::Manpages(args) => commands::manpages::run(Cli::command(), args),
     }
 }

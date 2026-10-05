@@ -13,6 +13,7 @@ pub mod import_heroic;
 mod json;
 pub mod list;
 pub mod logs;
+pub mod manpages;
 pub mod new;
 pub mod portable;
 pub mod programs;

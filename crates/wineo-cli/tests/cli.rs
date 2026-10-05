@@ -1198,6 +1198,47 @@ fn completions_rejects_an_unknown_shell() {
     assert!(stderr(&out).contains("csh"), "{}", stderr(&out));
 }
 
+#[test]
+fn manpages_writes_a_page_per_visible_command() {
+    let root = tempfile::tempdir().unwrap();
+    // Missing parent directories are created too.
+    let dir = root.path().join("out/man1");
+    let out = output(wineo(root.path()).arg("manpages").arg(&dir));
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let pages: Vec<String> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(
+        stdout(&out),
+        format!("Wrote {} pages to {}.\n", pages.len(), dir.display())
+    );
+    for page in ["wineo.1", "wineo-new.1", "wineo-art.1", "wineo-art-fetch.1"] {
+        assert!(pages.iter().any(|p| p == page), "missing {page}: {pages:?}");
+    }
+    // Neither the supervisor nor clap's generated help command gets a page.
+    for page in &pages {
+        assert!(
+            !page.contains("supervise") && !page.contains("help"),
+            "unexpected page {page}"
+        );
+    }
+    let top = fs::read_to_string(dir.join("wineo.1")).unwrap();
+    assert!(top.contains(r"wineo\-manpages"), "{top}");
+    assert!(!top.contains("supervise"), "{top}");
+}
+
+#[test]
+fn manpages_shows_up_in_help() {
+    let root = tempfile::tempdir().unwrap();
+    let help = stdout(&output(wineo(root.path()).arg("--help")));
+    assert!(
+        help.lines().any(|l| l.trim_start().starts_with("manpages")),
+        "{help}"
+    );
+}
+
 /// A directory wine would recognize as a prefix, with a symlink out of it like
 /// the `z:` drive has.
 fn fake_prefix(dir: &Path, links_to: &Path) {
