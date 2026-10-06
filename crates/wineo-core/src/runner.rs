@@ -89,6 +89,19 @@ impl Runner {
         self.source
     }
 
+    /// Who to name as the build's owner in a list or review. That's `source`,
+    /// except that a build in a runners root inside a launcher's folder is
+    /// really that launcher's. Launching and `source` don't change.
+    pub fn owner(&self, paths: &crate::paths::Paths) -> Source {
+        if self.source != Source::Wineo {
+            return self.source;
+        }
+        self.directory()
+            .and_then(Path::parent)
+            .and_then(|root| crate::external_runners::root_owner(paths, root))
+            .unwrap_or(Source::Wineo)
+    }
+
     pub(crate) fn with_source(mut self, source: Source) -> Self {
         self.source = source;
         self

@@ -688,3 +688,34 @@ fn an_unrelated_root_still_removes_and_one_above_a_launcher_folder_is_unaffected
     assert!(!above.join("GE-Proton9-21").exists());
     assert!(home.join(HEROIC).join("GE-Proton11-1/proton").is_file());
 }
+
+#[test]
+fn the_display_owner_is_the_launcher_for_a_root_inside_its_folder() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let paths = paths(home);
+    let steam = home.join(STEAM);
+    proton(&steam.join("GE-Proton11-3"), Some("GE-Proton11-3"));
+    let own = home.join("my-runners");
+    proton(&own.join("GE-Proton9-20"), Some("GE-Proton9-20"));
+    heroic_root(&home.join(".config/heroic"));
+    proton(
+        &home.join(HEROIC).join("GE-Proton11-1"),
+        Some("GE-Proton11-1"),
+    );
+
+    root_at(&paths, &steam, Some(true));
+    let global = GlobalConfig::load(&paths).unwrap();
+    let runners = Runners::new(&paths, &global).unwrap();
+    let runner = runners.resolve("GE-Proton11-3").unwrap();
+    assert_eq!(runner.source(), Source::Wineo);
+    assert_eq!(runner.owner(&paths), Source::Steam);
+    let heroic = runners.resolve("GE-Proton11-1").unwrap();
+    assert_eq!(heroic.owner(&paths), Source::Heroic);
+
+    root_at(&paths, &own, Some(true));
+    let global = GlobalConfig::load(&paths).unwrap();
+    let runners = Runners::new(&paths, &global).unwrap();
+    let runner = runners.resolve("GE-Proton9-20").unwrap();
+    assert_eq!(runner.owner(&paths), Source::Wineo);
+}
