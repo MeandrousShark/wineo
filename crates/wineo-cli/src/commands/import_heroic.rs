@@ -79,6 +79,23 @@ pub struct Args {
     pub art: bool,
 }
 
+impl Args {
+    /// Whether a flag answers part of the guided import, which marks a
+    /// scripted run that never gets the one-time runner question. Choosing
+    /// the config folder, listing, and forcing the review don't answer one.
+    fn answers_questions(&self) -> bool {
+        self.game.is_some()
+            || self.name.is_some()
+            || self.runner.is_some()
+            || self.adopt
+            || self.dir.is_some()
+            || self.arch.is_some()
+            || self.desktop
+            || self.art
+            || self.yes
+    }
+}
+
 struct OutputOnly;
 
 impl Input for OutputOnly {
@@ -455,11 +472,10 @@ fn guided<I: Input, W: Write>(
         Reply::Back => return Ok(ExitCode::SUCCESS),
     };
 
-    // Any of these flags marks a scripted run, which never asks. Asking here,
-    // before the suggestion, lets Heroic's own build be used in place.
-    let flagged = args.game.is_some() || args.name.is_some() || args.runner.is_some();
+    // Asking here, before the suggestion, lets Heroic's own build be used in
+    // place.
     let reloaded;
-    let global = if !flagged && external_runners::due(paths, global) {
+    let global = if !args.answers_questions() && external_runners::due(paths, global) {
         match external_runners::offer(prompt, paths)? {
             Reply::Value(_) => {
                 reloaded = GlobalConfig::load(paths)?;

@@ -2043,15 +2043,11 @@ fn heroic_game_on_heroics_build(f: &Fixture) -> std::path::PathBuf {
     heroic
 }
 
+/// Guided Heroic import with no flag that answers a question, so the one-time
+/// runner question is due.
 fn heroic_import_at_home(f: &Fixture, heroic: &std::path::Path) -> Pty {
     let mut command = f.wineo_at_home();
-    command.args([
-        "import",
-        "heroic",
-        "--config-dir",
-        heroic.to_str().unwrap(),
-        "--adopt",
-    ]);
+    command.args(["import", "heroic", "--config-dir", heroic.to_str().unwrap()]);
     Pty::spawn(command)
 }
 
@@ -2070,6 +2066,8 @@ fn heroic_import_asks_before_the_runner_and_a_yes_uses_heroics_build_in_place() 
     pick_heroic_game_and_name(&mut pty);
     pty.expect(OFFER);
     pty.send("y");
+    pty.expect("Mode [1]: ");
+    pty.send("2");
     // No runner question, and the review says whose build it is.
     pty.expect("heroic-wine (Heroic)");
     pty.expect("Choice: ");
@@ -2113,10 +2111,31 @@ fn heroic_import_skips_the_question_when_answered_flagged_or_all() {
     let heroic = heroic_game_on_heroics_build(&f);
     let mut pty = heroic_import_at_home(&f, &heroic);
     pick_heroic_game_and_name(&mut pty);
+    pty.expect("Mode [1]: ");
+    pty.send("2");
     pty.expect("heroic-wine (Heroic)");
     pty.ctrl_c();
     let (_, output) = pty.finish();
     assert!(!output.contains("Use Proton and Wine builds"), "{output}");
+
+    // Any flag that answers a question, not just the game or the name.
+    for flag in [&["--adopt"][..], &["--arch", "win64"], &["--desktop"]] {
+        let f = Fixture::new();
+        let heroic = heroic_game_on_heroics_build(&f);
+        let mut command = f.wineo_at_home();
+        command.args(["import", "heroic", "--config-dir", heroic.to_str().unwrap()]);
+        command.args(flag);
+        let mut pty = Pty::spawn(command);
+        pick_heroic_game_and_name(&mut pty);
+        pty.expect("Runner [1]: ");
+        pty.ctrl_c();
+        let (_, output) = pty.finish();
+        assert!(
+            !output.contains("Use Proton and Wine builds"),
+            "{flag:?}: {output}"
+        );
+        assert_eq!(f.global_text(), "", "{flag:?}");
+    }
 
     // A flag that picks the game or the name.
     let f = Fixture::new();
