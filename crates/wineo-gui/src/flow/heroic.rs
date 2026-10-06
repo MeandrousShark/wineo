@@ -102,6 +102,9 @@ struct Draft {
     unparsed_arguments: Option<String>,
     working_directory: String,
     runner: String,
+    /// Set once the person picks, types, copies, or downloads a runner, so
+    /// a refreshed suggestion leaves their choice alone.
+    runner_chosen: bool,
     adopt: bool,
     desktop: bool,
     batch: bool,
@@ -320,6 +323,9 @@ pub(crate) struct Page {
     notes: Vec<String>,
     leave_prompt: bool,
     action: Option<Action>,
+    /// Set while an answer to the offer is being saved.
+    answering: bool,
+    offer_sequence: u64,
 }
 
 impl Page {
@@ -353,6 +359,8 @@ impl Page {
             notes: Vec::new(),
             leave_prompt: false,
             action: None,
+            answering: false,
+            offer_sequence: 0,
         };
         let task = page.discover();
         (page, task)
@@ -472,40 +480,48 @@ impl Page {
             }
     }
 
-    /// Takes the new runner choices, and the new suggestion too unless the
-    /// person already picked a runner of their own.
-    fn refreshed(&mut self, refreshed: Refreshed) {
-        self.review = None;
-        match refreshed {
+    /// Takes the new runner choices, and the new suggestion too while the
+    /// person hasn't chosen a runner and is still on the runner step. An
+    /// open review shows what Import does and stays.
+    fn refreshed(&mut self, refreshed: Refreshed) -> Task<Event> {
+        let suggested = match refreshed {
             Refreshed::Single {
                 runners,
                 suggested,
                 runner,
             } => {
-                if let Some(prepared) = &mut self.prepared {
-                    if self.draft.runner == prepared.runner {
-                        self.draft.runner.clone_from(&runner);
-                    }
-                    *prepared = Prepared {
-                        runners,
-                        suggested,
-                        runner,
-                        offer: false,
-                        ..prepared.clone()
-                    };
-                }
+                let Some(prepared) = &mut self.prepared else {
+                    return Task::none();
+                };
+                *prepared = Prepared {
+                    runners,
+                    suggested,
+                    runner: runner.clone(),
+                    offer: false,
+                    ..prepared.clone()
+                };
+                runner
             }
             Refreshed::Batch(options) => {
-                if self
-                    .batch_options
-                    .as_ref()
-                    .is_none_or(|old| old.runner == self.draft.runner)
-                {
-                    self.draft.runner.clone_from(&options.runner);
-                }
+                let runner = options.runner.clone();
                 self.batch_options = Some(options);
+                runner
             }
+        };
+        if self.step != Step::Details {
+            return Task::none();
         }
+        // A plan started before the answer was saved may have read the old
+        // setting.
+        let planning = !self.status.is_empty() && !self.busy();
+        if !self.draft.runner_chosen && self.draft.runner != suggested {
+            self.draft.runner = suggested;
+            self.review = None;
+        }
+        if planning {
+            return self.plan();
+        }
+        Task::none()
     }
 
     fn exit(&mut self) {
@@ -1519,12 +1535,15 @@ impl Page {
             Event::PickedWorkingDirectory(_, Ok(None)) => Task::none(),
             Event::Runner(value) => {
                 self.draft.runner = value;
+                self.draft.runner_chosen = true;
                 self.review = None;
                 Task::none()
             }
-            Event::Offer(on) if self.offer_shown() => {
+            Event::Offer(on) if self.offer_shown() && !self.answering => {
+                self.answering = true;
+                self.offer_sequence = self.offer_sequence.wrapping_add(1);
+                let sequence = self.offer_sequence;
                 let paths = self.paths.clone();
-                let generation = self.generation;
                 let single = (!self.draft.batch)
                     .then(|| {
                         let listing = self.listing.as_ref()?;
@@ -1541,17 +1560,18 @@ impl Page {
                         .await
                         .map_err(|e| e.to_string())?
                     },
-                    move |result| Event::Offered(generation, result),
+                    move |result| Event::Offered(sequence, result),
                 )
             }
-            Event::Offered(generation, result)
-                if generation == self.generation && self.step == Step::Details =>
-            {
+            Event::Offered(sequence, result) if sequence == self.offer_sequence => {
+                self.answering = false;
                 match result {
                     Ok(refreshed) => self.refreshed(refreshed),
-                    Err(error) => self.error = Some(error),
+                    Err(error) => {
+                        self.error = Some(error);
+                        Task::none()
+                    }
                 }
-                Task::none()
             }
             Event::Adopt(value) => {
                 self.draft.adopt = value;
@@ -1620,6 +1640,7 @@ impl Page {
                             })
                         {
                             self.draft.runner = name;
+                            self.draft.runner_chosen = true;
                         }
                         self.plan()
                     }
@@ -1906,7 +1927,11 @@ impl Page {
             }
             Step::Details => {
                 if self.offer_shown() {
-                    body = body.push(runner_label::offer_card(palette, Event::Offer));
+                    body = body.push(runner_label::offer_card(
+                        palette,
+                        !self.answering,
+                        Event::Offer,
+                    ));
                 }
                 if self.draft.batch {
                     body = body.push(
@@ -4207,6 +4232,156 @@ mod tests {
         );
     }
 
+    fn fake_proton(dir: &std::path::Path) {
+        for program in ["proton", "files/bin/wine", "files/bin/wineserver"] {
+            let file = dir.join(program);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    /// A Windows game Heroic runs on its own GE-Proton-latest, in the config
+    /// folder wineo's scan looks at, with its details open.
+    fn windows_details(root: &std::path::Path) -> Page {
+        let heroic = root.join(".config/heroic");
+        for dir in ["sideload_apps", "GamesConfig", "store"] {
+            fs::create_dir_all(heroic.join(dir)).unwrap();
+        }
+        let proton = heroic.join("tools/proton/GE-Proton-latest");
+        fake_proton(&proton);
+        let prefix = root.join("prefix");
+        fs::create_dir_all(prefix.join("pfx/drive_c")).unwrap();
+        fs::write(
+            prefix.join("pfx/system.reg"),
+            "WINE REGISTRY Version 2\n#arch=win64\n",
+        )
+        .unwrap();
+        fs::write(
+            heroic.join("config.json"),
+            format!(
+                r#"{{"defaultSettings":{{"winePrefix":"{}","wineVersion":{{"type":"proton","name":"GE-Proton-latest","bin":"{}"}}}}}}"#,
+                prefix.display(),
+                proton.join("proton").display()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            heroic.join("sideload_apps/library.json"),
+            format!(
+                r#"{{"games":[{{"app_name":"dusk","title":"Dusk","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}}]}}"#,
+                prefix.join("pfx/drive_c/game.exe").display()
+            ),
+        )
+        .unwrap();
+        fs::write(heroic.join("GamesConfig/dusk.json"), r#"{"dusk":{}}"#).unwrap();
+        let paths = paths(root);
+        let source = HeroicSource::from_config_dir_with_home(heroic, root.to_owned());
+        let global = GlobalConfig::load(&paths).unwrap();
+        let listing = heroic_import::listing(&paths, &global, &source).unwrap();
+        assert_eq!(listing.candidates[0].kind, HeroicGameKind::Windows);
+        let (mut page, _) = Page::new(paths);
+        page.step = Step::Games;
+        page.status.clear();
+        page.listing = Some(listing);
+        open_single(&mut page, 0);
+        page
+    }
+
+    fn answer_single(page: &mut Page) {
+        let _ = page.update(Event::Offer(true));
+        assert!(page.answering);
+        let listing = page.listing.clone().unwrap();
+        let candidate = page.prepared.as_ref().unwrap().candidate.clone();
+        let answered = runner_label::answer(&page.paths, true)
+            .and_then(|()| refresh(&page.paths, Some((listing.source, candidate))));
+        let _ = page.update(Event::Offered(page.offer_sequence, answered));
+        assert!(!page.answering);
+        assert!(!page.offer_shown());
+    }
+
+    #[test]
+    fn answering_yes_uses_heroics_build_in_place_for_a_single_game() {
+        let root = tempdir().unwrap();
+        let mut page = windows_details(root.path());
+        assert!(page.offer_shown());
+        assert!(matches!(
+            page.prepared.as_ref().unwrap().suggested,
+            Some(RunnerSuggestion::Copy(_))
+        ));
+        answer_single(&mut page);
+        assert!(matches!(
+            &page.prepared.as_ref().unwrap().suggested,
+            Some(RunnerSuggestion::Use(name)) if name == "GE-Proton-latest"
+        ));
+        assert_eq!(page.draft.runner, "GE-Proton-latest");
+    }
+
+    #[test]
+    fn answering_keeps_a_runner_the_person_chose_for_a_single_game() {
+        let root = tempdir().unwrap();
+        let mut page = windows_details(root.path());
+        let _ = page.update(Event::Runner("my-proton".to_owned()));
+        answer_single(&mut page);
+        assert_eq!(page.draft.runner, "my-proton");
+    }
+
+    #[test]
+    fn answering_keeps_a_picked_batch_runner_even_when_it_was_the_default() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        fake_proton(&page.paths.default_runner_root().join("GE-Proton9-1"));
+        crate::runner_label::fake_steam_build(root.path(), "GE-Proton11-3");
+        let _ = page.update(Event::Toggle(DUSK));
+        let _ = page.update(Event::Toggle(NOON));
+        let _ = page.update(Event::ImportSelected);
+        let _ = page.update(Event::BatchPrepared(
+            page.generation,
+            batch_options(&page.paths),
+        ));
+        assert_eq!(page.draft.runner, "GE-Proton9-1");
+        let _ = page.update(Event::Runner("GE-Proton9-1".to_owned()));
+        let _ = page.update(Event::Offer(true));
+        let paths = page.paths.clone();
+        let answered = runner_label::answer(&paths, true).and_then(|()| refresh(&paths, None));
+        let Ok(Refreshed::Batch(options)) = &answered else {
+            panic!("expected batch options");
+        };
+        assert_eq!(options.runner, "GE-Proton11-3");
+        let _ = page.update(Event::Offered(page.offer_sequence, answered));
+        assert_eq!(page.draft.runner, "GE-Proton9-1");
+    }
+
+    #[test]
+    fn a_late_answer_leaves_an_open_review_alone() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        let _ = page.update(Event::Toggle(DUSK));
+        let _ = page.update(Event::Toggle(NOON));
+        let _ = page.update(Event::ImportSelected);
+        let _ = page.update(Event::BatchPrepared(
+            page.generation,
+            batch_options(&page.paths),
+        ));
+        let _ = page.update(Event::Offer(true));
+        // The answer is still saving, so a second click does nothing.
+        let sequence = page.offer_sequence;
+        let _ = page.update(Event::Offer(false));
+        assert_eq!(page.offer_sequence, sequence);
+
+        let _ = page.update(Event::Plan);
+        let listing = page.listing.clone().unwrap();
+        let review = plan_review(&page.paths, &listing, None, &page.draft).map(Box::new);
+        let _ = page.update(Event::Planned(page.generation, review));
+        assert_eq!(page.step, Step::Review);
+        let paths = page.paths.clone();
+        let answered = runner_label::answer(&paths, true).and_then(|()| refresh(&paths, None));
+        let _ = page.update(Event::Offered(sequence, answered));
+        assert_eq!(page.step, Step::Review);
+        assert!(page.review.is_some());
+        assert!(!page.answering);
+    }
+
     #[test]
     fn the_runner_step_asks_once_and_answering_relists_in_place() {
         let root = tempdir().unwrap();
@@ -4226,7 +4401,7 @@ mod tests {
         let _ = page.update(Event::Offer(true));
         let paths = page.paths.clone();
         let answered = runner_label::answer(&paths, true).and_then(|()| refresh(&paths, None));
-        let _ = page.update(Event::Offered(page.generation, answered));
+        let _ = page.update(Event::Offered(page.offer_sequence, answered));
         assert_eq!(
             GlobalConfig::load(&paths).unwrap().external_runners,
             Some(true)

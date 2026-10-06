@@ -36,6 +36,26 @@ pub(crate) fn labeled(name: &str, launcher: Option<Source>) -> String {
     }
 }
 
+/// `text` with a note in parentheses, plus the launcher when it isn't
+/// wineo's, like `proton (GE-Proton11-3, Steam)`.
+pub(crate) fn noted(text: &str, note: &str, launcher: Option<Source>) -> String {
+    match launcher {
+        Some(launcher) => format!("{text} ({note}, {launcher})"),
+        None => format!("{text} ({note})"),
+    }
+}
+
+/// A review's runner: the name as configured, then the build it resolved
+/// to and its launcher. A build named as itself only needs the launcher.
+pub(crate) fn resolved(runner: &Runner) -> String {
+    match launcher(runner) {
+        Some(launcher) if runner.selection() == runner.name() => {
+            labeled(runner.name(), Some(launcher))
+        }
+        launcher => noted(runner.selection(), runner.name(), launcher),
+    }
+}
+
 /// A runner name in a picker, shown with its launcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Choice {
@@ -85,8 +105,10 @@ pub(crate) fn answer(paths: &Paths, on: bool) -> Result<(), String> {
     wineo_core::settings::set_external_runners(paths, on).map_err(|error| format!("{error:#}"))
 }
 
+/// The question, with its buttons off while an answer is being saved.
 pub(crate) fn offer_card<'a, M: Clone + 'static>(
     palette: Palette,
+    enabled: bool,
     on_answer: impl Fn(bool) -> M,
 ) -> Element<'a, M> {
     let no = on_answer(false);
@@ -98,15 +120,15 @@ pub(crate) fn offer_card<'a, M: Clone + 'static>(
                 Space::new().width(Fill),
                 crate::focus_button::control(
                     ui::secondary_button("No", palette)
-                        .on_press(no.clone())
+                        .on_press_maybe(enabled.then(|| no.clone()))
                         .into(),
-                    true,
+                    enabled,
                     NO_ID,
                     no,
                 ),
                 crate::focus_button::control(
-                    ui::accent_button("Yes", palette.primary, true, yes.clone()),
-                    true,
+                    ui::accent_button("Yes", palette.primary, enabled, yes.clone()),
+                    enabled,
                     YES_ID,
                     yes,
                 ),
@@ -156,5 +178,10 @@ mod tests {
             "GE-Proton11-3 (Steam)"
         );
         assert_eq!(Choice::find(&choices, "typed").to_string(), "typed");
+        assert_eq!(
+            noted("proton", "GE-Proton11-3", Some(Source::Steam)),
+            "proton (GE-Proton11-3, Steam)"
+        );
+        assert_eq!(noted("fake", "fake", None), "fake (fake)");
     }
 }

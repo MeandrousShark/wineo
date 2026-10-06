@@ -244,7 +244,7 @@ pub(crate) enum Event {
     Options(Result<Options, String>),
     /// The answer to using other launchers' builds.
     Offer(bool),
-    Offered(Result<Options, String>),
+    Offered(u64, Result<Options, String>),
     Reviewed(u64, Result<Box<Review>, String>),
     Progress(u64, String),
     LogChunk(u64, String),
@@ -280,6 +280,11 @@ pub(crate) struct Page {
     token: Option<Token>,
     downloading: Option<Provider>,
     picker_sequence: u64,
+    /// The generation of the review being prepared, if one is.
+    reviewing: Option<u64>,
+    /// Set while an answer to the offer is being saved.
+    answering: bool,
+    offer_sequence: u64,
 }
 
 impl Page {
@@ -308,6 +313,9 @@ impl Page {
             token: None,
             downloading: None,
             picker_sequence: 0,
+            reviewing: None,
+            answering: false,
+            offer_sequence: 0,
         };
         let task = Task::batch([
             page.load_options(),
@@ -460,6 +468,7 @@ impl Page {
         let generation = self.generation;
         let paths = self.paths.clone();
         let draft = self.draft.clone();
+        self.reviewing = Some(generation);
         self.status = "Checking creation choices...".to_owned();
         Task::perform(
             async move {
@@ -837,6 +846,7 @@ impl Page {
             Event::Reviewed(generation, result)
                 if generation == self.generation && self.stage == Stage::Details =>
             {
+                self.reviewing = None;
                 self.status.clear();
                 match result {
                     Ok(review) => {
@@ -1094,7 +1104,10 @@ impl Page {
                 }
                 Err(error) => self.error = Some(error),
             },
-            Event::Offer(on) if self.offer_shown() => {
+            Event::Offer(on) if self.offer_shown() && !self.answering => {
+                self.answering = true;
+                self.offer_sequence = self.offer_sequence.wrapping_add(1);
+                let sequence = self.offer_sequence;
                 let paths = self.paths.clone();
                 return Task::perform(
                     async move {
@@ -1102,17 +1115,24 @@ impl Page {
                             .await
                             .map_err(|error| error.to_string())?
                     },
-                    Event::Offered,
+                    move |result| Event::Offered(sequence, result),
                 );
             }
-            Event::Offered(result) => match result {
-                Ok(options) => {
-                    self.options = Some(options);
-                    // The template's runner may resolve to another build now.
-                    self.edited();
+            Event::Offered(sequence, result) if sequence == self.offer_sequence => {
+                self.answering = false;
+                match result {
+                    Ok(options) => {
+                        self.options = Some(options);
+                        // A review started before the answer was saved may
+                        // have read the old setting, so check it again. An
+                        // open review shows what Create does and stays.
+                        if self.stage == Stage::Details && self.reviewing == Some(self.generation) {
+                            return self.review_task();
+                        }
+                    }
+                    Err(error) => self.error = Some(error),
                 }
-                Err(error) => self.error = Some(error),
-            },
+            }
             _ => {}
         }
         Task::none()
@@ -1257,7 +1277,11 @@ impl Page {
                 .spacing(4),
             );
             if self.offer_shown() {
-                form = form.push(runner_label::offer_card(palette, Event::Offer));
+                form = form.push(runner_label::offer_card(
+                    palette,
+                    !self.answering,
+                    Event::Offer,
+                ));
             }
             if let Some(template) = &self.template_preview {
                 let effects = template_effects(template, &self.draft);
@@ -1419,7 +1443,7 @@ impl Page {
                     }
                     let mut runtime = Vec::new();
                     if let Some(runner) = &review.runner {
-                        runtime.push(("Runner", runner_row(runner)));
+                        runtime.push(("Runner", runner_label::resolved(runner)));
                     } else if let Some(Prerequisite::Runner(name)) = &review.prerequisite {
                         runtime.push(("Runner", format!("{name} (not installed)")));
                     }
@@ -1755,18 +1779,6 @@ fn read_options(paths: &Paths) -> Result<Options, String> {
 fn answer_offer(paths: &Paths, on: bool) -> Result<Options, String> {
     runner_label::answer(paths, on)?;
     read_options(paths)
-}
-
-/// The review's runner row: the name as configured, then the build it
-/// resolved to, with its launcher when it isn't wineo's.
-fn runner_row(runner: &Runner) -> String {
-    match runner_label::launcher(runner) {
-        Some(launcher) if runner.selection() == runner.name() => {
-            runner_label::labeled(runner.name(), Some(launcher))
-        }
-        Some(launcher) => format!("{} ({}, {launcher})", runner.selection(), runner.name()),
-        None => format!("{} ({})", runner.selection(), runner.name()),
-    }
 }
 
 fn template_effects(template: &Template, draft: &Draft) -> Vec<String> {
@@ -2635,7 +2647,12 @@ mod tests {
         assert!(!steam(&page));
 
         let _ = page.update(Event::Offer(true));
-        let _ = page.update(Event::Offered(answer_offer(&paths, true)));
+        assert!(page.answering);
+        let _ = page.update(Event::Offered(
+            page.offer_sequence,
+            answer_offer(&paths, true),
+        ));
+        assert!(!page.answering);
         assert_eq!(
             GlobalConfig::load(&paths).unwrap().external_runners,
             Some(true)
@@ -2651,6 +2668,60 @@ mod tests {
     }
 
     #[test]
+    fn a_late_answer_keeps_the_review_and_rechecks_a_pending_one() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        runner_label::fake_steam_build(root.path(), "GE-Proton11-3");
+        let mut page = offer_page(&paths);
+        let _ = page.update(Event::Template("gaming".to_owned()));
+        let _ = page.update(Event::Name("Hades".to_owned()));
+
+        let _ = page.update(Event::Offer(true));
+        let sequence = page.offer_sequence;
+        // The buttons are off while it saves, so another click does nothing.
+        let _ = page.update(Event::Offer(false));
+        assert_eq!(page.offer_sequence, sequence);
+
+        // Next is clicked and its review lands before the answer does.
+        let _ = page.update(Event::Next);
+        let _ = page.update(Event::Reviewed(
+            page.generation,
+            prepare(&paths, &page.draft).map(Box::new),
+        ));
+        assert_eq!(page.stage, Stage::Review);
+        let _ = page.update(Event::Offered(sequence, answer_offer(&paths, true)));
+        assert_eq!(page.stage, Stage::Review);
+        assert!(page.review.is_some());
+        assert!(!page.answering);
+
+        // A review still being prepared when the answer lands is redone, so
+        // it can't read the old setting.
+        fs::remove_file(paths.global_config()).unwrap();
+        let mut page = offer_page(&paths);
+        let _ = page.update(Event::Template("gaming".to_owned()));
+        let _ = page.update(Event::Name("Hades".to_owned()));
+        let _ = page.update(Event::Offer(true));
+        let _ = page.update(Event::Next);
+        let stale = page.generation;
+        let _ = page.update(Event::Offered(
+            page.offer_sequence,
+            answer_offer(&paths, true),
+        ));
+        assert_ne!(page.generation, stale);
+        assert_eq!(page.reviewing, Some(page.generation));
+        let old = prepare(&paths, &page.draft).map(Box::new);
+        let _ = page.update(Event::Reviewed(stale, old));
+        assert_eq!(page.stage, Stage::Details);
+        // A reply from an earlier answer is ignored.
+        let _ = page.update(Event::Offered(
+            page.offer_sequence.wrapping_sub(1),
+            Err("old".to_owned()),
+        ));
+        assert!(page.error.is_none());
+    }
+
+    #[test]
     fn the_review_runner_row_names_another_launchers_build() {
         let root = tempfile::tempdir().unwrap();
         let paths =
@@ -2660,9 +2731,9 @@ mod tests {
         let global = GlobalConfig::load(&paths).unwrap();
         let runners = Runners::new(&paths, &global).unwrap();
         let steam = runners.resolve("GE-Proton11-3").unwrap();
-        assert_eq!(runner_row(&steam), "GE-Proton11-3 (Steam)");
+        assert_eq!(runner_label::resolved(&steam), "GE-Proton11-3 (Steam)");
         fake_runner(&paths);
         let own = runners.resolve("fake").unwrap();
-        assert_eq!(runner_row(&own), "fake (fake)");
+        assert_eq!(runner_label::resolved(&own), "fake (fake)");
     }
 }

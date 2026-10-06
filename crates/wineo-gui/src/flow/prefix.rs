@@ -59,11 +59,11 @@ struct RunnerChoice {
 
 impl RunnerChoice {
     fn label(&self) -> String {
-        let kind = if self.proton { "Proton" } else { "Wine" };
-        match self.launcher {
-            Some(launcher) => format!("{} -> {} ({kind}, {launcher})", self.selection, self.name),
-            None => format!("{} -> {} ({kind})", self.selection, self.name),
-        }
+        runner_label::noted(
+            &format!("{} -> {}", self.selection, self.name),
+            if self.proton { "Proton" } else { "Wine" },
+            self.launcher,
+        )
     }
 }
 
