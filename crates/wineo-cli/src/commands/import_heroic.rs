@@ -27,6 +27,7 @@ use super::art::{Access, AutoFetch, KeyCheck, Pick};
 use super::components;
 use super::desktop;
 use super::download;
+use super::external_runners;
 use super::import::{choose_runner, finish_guided};
 use super::transfer::Cancellation;
 use crate::picker;
@@ -452,6 +453,22 @@ fn guided<I: Input, W: Write>(
     })? {
         Reply::Value(value) => value,
         Reply::Back => return Ok(ExitCode::SUCCESS),
+    };
+
+    // Any of these flags marks a scripted run, which never asks. Asking here,
+    // before the suggestion, lets Heroic's own build be used in place.
+    let flagged = args.game.is_some() || args.name.is_some() || args.runner.is_some();
+    let reloaded;
+    let global = if !flagged && external_runners::due(paths, global) {
+        match external_runners::offer(prompt, paths)? {
+            Reply::Value(_) => {
+                reloaded = GlobalConfig::load(paths)?;
+                &reloaded
+            }
+            Reply::Back => return Err(Canceled.into()),
+        }
+    } else {
+        global
     };
 
     let chosen = pick_runner(
@@ -1964,11 +1981,15 @@ fn final_facts_text(ctx: &ReviewContext, plan: &GamePlan, verbose: bool) -> Stri
         )],
     });
 
-    let runner_label = if request.runner == resolved.name() {
-        resolved.name().to_owned()
-    } else {
-        format!("{} -> {}", request.runner, resolved.name())
-    };
+    let runner_label = external_runners::with_owner(
+        paths,
+        resolved,
+        if request.runner == resolved.name() {
+            resolved.name().to_owned()
+        } else {
+            format!("{} -> {}", request.runner, resolved.name())
+        },
+    );
     blocks.push(Block {
         label: "runner",
         lines: vec![runner_label],

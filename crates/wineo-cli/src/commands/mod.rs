@@ -8,6 +8,7 @@ pub mod config;
 pub mod desktop;
 pub mod download;
 pub mod exec;
+pub mod external_runners;
 pub mod import;
 pub mod import_heroic;
 mod json;

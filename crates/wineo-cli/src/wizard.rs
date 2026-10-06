@@ -26,9 +26,12 @@ use wineo_core::winpath;
 use crate::commands::art::{Access, AutoFetch, KeyCheck, Pick};
 use crate::commands::setup::{self, Ran};
 use crate::commands::transfer::Cancellation;
-use crate::commands::{components, desktop};
+use crate::commands::{components, desktop, external_runners};
 use crate::picker::{self, Place};
 use crate::prompt::{Canceled, Input, Prompt, Reply, numbered};
+
+/// The built-in template that the one-time runner question goes with.
+const GAMING: &str = "gaming";
 
 /// What the command line already said, which the questions start from.
 #[derive(Debug, Default, Clone)]
@@ -47,6 +50,11 @@ pub struct Prefill {
 }
 
 impl Prefill {
+    /// Whether any flag was given at all.
+    fn flagged(&self) -> bool {
+        self.name.is_some() || self.native || self.exe.is_some() || self.wine_only()
+    }
+
     /// Whether a flag only a Wine environment has was given, which answers
     /// the kind question.
     fn wine_only(&self) -> bool {
@@ -112,12 +120,15 @@ pub struct Guided {
 
 pub fn run<I: Input, W: Write>(
     paths: &Paths,
-    global: &GlobalConfig,
+    loaded: &GlobalConfig,
     prefill: &Prefill,
     prompt: &mut Prompt<I, W>,
     guided: &mut Guided,
     access: &Access,
 ) -> anyhow::Result<ExitCode> {
+    // Replaces `loaded` once the one-time runner question is answered, so the
+    // runner choice that follows sees the answer.
+    let mut reloaded: Option<GlobalConfig> = None;
     let templates = Templates::new(paths);
     let template = match &prefill.template {
         Some(name) => Some((name.clone(), templates.resolve(name)?)),
@@ -155,6 +166,7 @@ pub fn run<I: Input, W: Write>(
     // Only a kind question that was asked can be gone back to.
     let kind_asked = step == Step::Kind;
     let chosen = loop {
+        let global = reloaded.as_ref().unwrap_or(loaded);
         match step {
             Step::Kind => {
                 answers.native = ask_kind(prompt)?;
@@ -181,6 +193,16 @@ pub fn run<I: Input, W: Write>(
                     step = Step::Kind;
                     continue;
                 };
+                // Any flag marks a scripted run, which never asks.
+                if template.as_ref().is_some_and(|(name, _)| name == GAMING)
+                    && !prefill.flagged()
+                    && external_runners::due(paths, global)
+                {
+                    match external_runners::offer(prompt, paths)? {
+                        Reply::Value(_) => reloaded = Some(GlobalConfig::load(paths)?),
+                        Reply::Back => continue,
+                    }
+                }
                 answers.arch_asked = prefill.arch.is_some()
                     || template.as_ref().is_some_and(|(_, t)| t.arch.is_some());
                 answers.template = template;
@@ -276,6 +298,7 @@ pub fn run<I: Input, W: Write>(
         }
     };
 
+    let global = reloaded.as_ref().unwrap_or(loaded);
     let art = key.flatten().zip(answers.art.clone());
     let Some((runner, arch, dir)) = chosen else {
         let name = answers.name.expect("named before the review");
@@ -639,7 +662,7 @@ fn settings<I: Input, W: Write>(
         heading.push_str(&format!(
             "  runner    {}\n",
             match &runner {
-                Ok(runner) => describe_runner(runner),
+                Ok(runner) => runner_row(paths, runner),
                 Err(_) => format!("{runner_name}, not usable"),
             }
         ));
@@ -780,6 +803,12 @@ fn adopted_arch(runner: &Runner, dir: &Path) -> Option<Arch> {
         return None;
     }
     prefix::detect_arch(&wine_prefix).ok().flatten()
+}
+
+/// A runner line for a card, naming the launcher when the build isn't
+/// wineo's own.
+fn runner_row(paths: &Paths, runner: &Runner) -> String {
+    external_runners::with_owner(paths, runner, describe_runner(runner))
 }
 
 fn describe_runner(runner: &Runner) -> String {
@@ -986,7 +1015,7 @@ fn review<I: Input, W: Write>(
             ", made new"
         }
     ));
-    heading.push_str(&format!("  runner    {}\n", describe_runner(&runner)));
+    heading.push_str(&format!("  runner    {}\n", runner_row(paths, &runner)));
     heading.push_str(&format!("  arch      {arch}\n"));
     heading.push_str(&format!(
         "  template  {}\n",
