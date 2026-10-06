@@ -503,6 +503,34 @@ impl Page {
         )
     }
 
+    /// Whether the open details pick a runner: a Windows game, or a batch
+    /// with one. Reading a native game's choices would inspect Wine
+    /// settings it doesn't have.
+    fn uses_runner(&self) -> bool {
+        if self.draft.batch {
+            self.listing.as_ref().is_some_and(|listing| {
+                listing.candidates.iter().any(|candidate| {
+                    self.draft.games.contains(&candidate.id)
+                        && candidate.kind == HeroicGameKind::Windows
+                })
+            })
+        } else {
+            self.prepared
+                .as_ref()
+                .is_some_and(|prepared| prepared.candidate.kind == HeroicGameKind::Windows)
+        }
+    }
+
+    /// The setting is saved, so the open details stop asking.
+    fn offer_answered(&mut self) {
+        if let Some(prepared) = &mut self.prepared {
+            prepared.offer = false;
+        }
+        if let Some(options) = &mut self.batch_options {
+            options.offer = false;
+        }
+    }
+
     /// The question shows on the runner step until it's answered, for a
     /// batch or a Windows game.
     fn offer_shown(&self) -> bool {
@@ -1588,9 +1616,13 @@ impl Page {
                 match result {
                     Ok(refreshed) if session == self.details_session => self.refreshed(refreshed),
                     // The answer is saved, but these choices were for a game
-                    // or batch that's no longer open, so read the open one's.
-                    Ok(_) if self.step == Step::Details => self.relist(None),
-                    Ok(_) => Task::none(),
+                    // or batch that's no longer open, so read the open one's
+                    // when it has a runner to pick.
+                    Ok(_) if self.step == Step::Details && self.uses_runner() => self.relist(None),
+                    Ok(_) => {
+                        self.offer_answered();
+                        Task::none()
+                    }
                     Err(error) => {
                         self.error = Some(error);
                         Task::none()
@@ -4273,7 +4305,7 @@ mod tests {
 
     /// Windows games Heroic runs on its own builds, in the config folder
     /// wineo's scan looks at: Dusk on GE-Proton-latest, with its details
-    /// open, and Dawn on GE-Proton11-1.
+    /// open, and Dawn on GE-Proton11-1. Noon is a native game.
     fn windows_details(root: &std::path::Path) -> Page {
         let heroic = root.join(".config/heroic");
         for dir in ["sideload_apps", "GamesConfig", "store"] {
@@ -4283,6 +4315,10 @@ mod tests {
         fake_proton(&proton);
         let dawn_proton = heroic.join("tools/proton/GE-Proton11-1");
         fake_proton(&dawn_proton);
+        let native = root.join("games/noon");
+        fs::create_dir_all(native.parent().unwrap()).unwrap();
+        fs::write(&native, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&native, fs::Permissions::from_mode(0o755)).unwrap();
         let prefix = root.join("prefix");
         fs::create_dir_all(prefix.join("pfx/drive_c")).unwrap();
         fs::write(
@@ -4302,11 +4338,13 @@ mod tests {
         fs::write(
             heroic.join("sideload_apps/library.json"),
             format!(
-                r#"{{"games":[{{"app_name":"dusk","title":"Dusk","runner":"sideload","install":{{"platform":"Windows","executable":"{exe}"}}}},{{"app_name":"dawn","title":"Dawn","runner":"sideload","install":{{"platform":"Windows","executable":"{exe}"}}}}]}}"#,
-                exe = prefix.join("pfx/drive_c/game.exe").display()
+                r#"{{"games":[{{"app_name":"dusk","title":"Dusk","runner":"sideload","install":{{"platform":"Windows","executable":"{exe}"}}}},{{"app_name":"dawn","title":"Dawn","runner":"sideload","install":{{"platform":"Windows","executable":"{exe}"}}}},{{"app_name":"noon","title":"Noon","runner":"sideload","install":{{"platform":"linux","executable":"{native}"}}}}]}}"#,
+                exe = prefix.join("pfx/drive_c/game.exe").display(),
+                native = native.display()
             ),
         )
         .unwrap();
+        fs::write(heroic.join("GamesConfig/noon.json"), r#"{"noon":{}}"#).unwrap();
         fs::write(heroic.join("GamesConfig/dusk.json"), r#"{"dusk":{}}"#).unwrap();
         fs::write(
             heroic.join("GamesConfig/dawn.json"),
@@ -4387,6 +4425,35 @@ mod tests {
             GlobalConfig::load(&page.paths).unwrap().external_runners,
             Some(true)
         );
+    }
+
+    #[test]
+    fn an_answer_landing_on_a_native_game_reads_no_runner_choices() {
+        let root = tempdir().unwrap();
+        let mut page = windows_details(root.path());
+        let dusk = page.prepared.as_ref().unwrap().candidate.clone();
+        let _ = page.update(Event::Offer(true));
+        let sequence = page.offer_sequence;
+        let session = page.details_session;
+
+        let _ = page.back();
+        let _ = page.update(Event::Toggle(0));
+        open_single(&mut page, 2);
+        assert_eq!(
+            page.prepared.as_ref().unwrap().candidate.kind,
+            HeroicGameKind::Native
+        );
+
+        let listing = page.listing.clone().unwrap();
+        let answered = runner_label::answer(&page.paths, true)
+            .and_then(|()| refresh(&page.paths, Some((listing.source, dusk))));
+        let _ = page.update(Event::Offered(sequence, session, answered));
+        // No replacement read starts, so nothing inspects Wine settings.
+        assert_eq!(page.offer_sequence, sequence);
+        assert!(!page.answering);
+        assert!(page.error.is_none());
+        assert!(!page.prepared.as_ref().unwrap().offer);
+        assert_eq!(page.step, Step::Details);
     }
 
     #[test]
