@@ -59,6 +59,7 @@ pub(crate) enum Event {
     GlobalField(global::Field, String),
     GlobalArt(ArtFetch),
     GlobalArtKind(wineo_core::art::Kind, bool),
+    GlobalExternalRunners(bool),
     SteamGridDbKeySetOpen,
     SteamGridDbKeySetCancel,
     SteamGridDbKeyText(steamgriddb::Secret),
@@ -202,6 +203,7 @@ impl Event {
                 | Event::GlobalField(..)
                 | Event::GlobalArt(_)
                 | Event::GlobalArtKind(_, _)
+                | Event::GlobalExternalRunners(_)
                 | Event::Target(..)
                 | Event::ProgramPicked(_)
                 | Event::NewTargetName(_)
@@ -740,6 +742,7 @@ impl Page {
                     | Event::GlobalField(..)
                     | Event::GlobalArt(_)
                     | Event::GlobalArtKind(_, _)
+                    | Event::GlobalExternalRunners(_)
                     | Event::EnvKey(..)
                     | Event::EnvValue(..)
                     | Event::EnvRemove(_)
@@ -759,6 +762,7 @@ impl Page {
                     | Event::GlobalField(..)
                     | Event::GlobalArt(_)
                     | Event::GlobalArtKind(_, _)
+                    | Event::GlobalExternalRunners(_)
             )
         {
             return Step::none();
@@ -1159,6 +1163,16 @@ impl Page {
                     && editor.form.draft.set_field(field, value)
                 {
                     self.edited();
+                }
+                Step::none()
+            }
+            // A portable folder never uses other launchers' builds, so the
+            // switch there would do nothing.
+            Event::GlobalExternalRunners(_) if paths.portable_root().is_some() => Step::none(),
+            Event::GlobalExternalRunners(on) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.set_external_runners(on);
                 }
                 Step::none()
             }
@@ -2324,6 +2338,7 @@ mod tests {
             Event::GlobalSwitch(Switch::Wayland, true),
             Event::GlobalRunner(RunnerChoice {
                 name: "other".into(),
+                launcher: None,
                 proton: None,
             }),
             Event::GlobalArch(Arch::Win32),
@@ -2377,6 +2392,46 @@ mod tests {
         let _ = page.update(&paths, Event::Revert);
         assert_eq!(global_editor(&page).new_env, EnvRow::default());
         assert!(!page.is_dirty());
+    }
+
+    #[test]
+    fn external_runners_switch_reads_and_writes_the_global_key() {
+        let (_root, paths) = setup();
+        let mut page = global_page(&paths);
+        assert_eq!(global_editor(&page).form.draft.external_runners, None);
+        let _ = page.update(&paths, Event::GlobalExternalRunners(true));
+        assert_eq!(page.changes(), 1);
+        let report = load::save_global(&paths, &global_editor(&page).form.edits()).unwrap();
+        assert!(report.failed.is_none());
+        assert_eq!(
+            GlobalConfig::load(&paths).unwrap().external_runners,
+            Some(true)
+        );
+
+        let mut page = global_page(&paths);
+        assert_eq!(global_editor(&page).form.draft.external_runners, Some(true));
+        let _ = page.update(&paths, Event::GlobalExternalRunners(false));
+        load::save_global(&paths, &global_editor(&page).form.edits()).unwrap();
+        assert_eq!(
+            GlobalConfig::load(&paths).unwrap().external_runners,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn external_runners_switch_does_nothing_in_a_portable_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_owned();
+        let portable = root.path().join("portable");
+        let paths = Paths::select(
+            move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+            Some(&portable),
+        )
+        .unwrap();
+        let mut page = global_page(&paths);
+        let _ = page.update(&paths, Event::GlobalExternalRunners(true));
+        assert!(!page.is_dirty());
+        assert_eq!(global_editor(&page).form.draft.external_runners, None);
     }
 
     #[test]
@@ -2718,6 +2773,7 @@ mod tests {
             Event::ArgsAdd,
             Event::RunnerPicked(RunnerChoice {
                 name: "other".into(),
+                launcher: None,
                 proton: None,
             }),
             Event::BuildPicked(Component::Dxvk, Build(Some("latest".into()))),
@@ -2914,6 +2970,7 @@ mod tests {
         }
         let proton = RunnerChoice {
             name: "GE-Proton9-20".into(),
+            launcher: None,
             proton: Some(true),
         };
         let _ = page.update(&paths, Event::RunnerPicked(proton));
@@ -2926,6 +2983,7 @@ mod tests {
         assert!(!page.is_dirty());
         let wine = RunnerChoice {
             name: "wine-ge".into(),
+            launcher: None,
             proton: Some(false),
         };
         let _ = page.update(&paths, Event::RunnerPicked(wine));
@@ -2937,6 +2995,7 @@ mod tests {
         // An unresolvable runner is left for save to check.
         let unknown = RunnerChoice {
             name: "gone".into(),
+            launcher: None,
             proton: None,
         };
         assert!(!refused(
@@ -3344,6 +3403,7 @@ mod tests {
         assert!(!editor(&page).protonfixes_shown());
         let proton = RunnerChoice {
             name: "GE-Proton9-20".into(),
+            launcher: None,
             proton: Some(true),
         };
         let _ = page.update(&paths, Event::RunnerPicked(proton));
@@ -3355,6 +3415,7 @@ mod tests {
         assert!(page.can_save());
         let wine = RunnerChoice {
             name: "wine-tkg".into(),
+            launcher: None,
             proton: Some(false),
         };
         let _ = page.update(&paths, Event::RunnerPicked(wine));
@@ -3375,6 +3436,7 @@ mod tests {
             &paths,
             Event::RunnerPicked(RunnerChoice {
                 name: "GE-Proton9-20".into(),
+                launcher: None,
                 proton: Some(true),
             }),
         );
@@ -3383,6 +3445,7 @@ mod tests {
             &paths,
             Event::RunnerPicked(RunnerChoice {
                 name: "wine-tkg".into(),
+                launcher: None,
                 proton: Some(false),
             }),
         );
@@ -3406,6 +3469,7 @@ mod tests {
         assert!(page.can_save());
         let wine = RunnerChoice {
             name: "wine-tkg".into(),
+            launcher: None,
             proton: Some(false),
         };
         let _ = page.update(&paths, Event::RunnerPicked(wine));

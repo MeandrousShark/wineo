@@ -38,14 +38,21 @@ pub(super) fn picker(
         .iter()
         .map(|choice| OptionLabel {
             choice: choice.clone(),
-            label: fit(&choice.name),
+            label: fit(&crate::runner_label::labeled(&choice.name, choice.launcher)),
         })
         .collect();
     let selected_option = options
         .iter()
         .find(|option| option.choice.name == selected)
         .cloned();
-    let shown = fit(selected);
+    let full = runners
+        .iter()
+        .find(|choice| choice.name == selected)
+        .map_or_else(
+            || selected.to_owned(),
+            |choice| crate::runner_label::labeled(&choice.name, choice.launcher),
+        );
+    let shown = fit(&full);
     let control: Element<'static, Message> = if locked {
         container(
             label(shown.clone())
@@ -77,17 +84,12 @@ pub(super) fn picker(
         .wineo_style(palette)
         .into()
     };
-    if shown == selected {
+    if shown == full {
         control
     } else {
         tooltip(
             control,
-            container(
-                label(selected.to_owned())
-                    .size(14)
-                    .color(palette.foreground),
-            )
-            .max_width(480),
+            container(label(full).size(14).color(palette.foreground)).max_width(480),
             tooltip::Position::Top,
         )
         .padding(8)
@@ -163,6 +165,7 @@ mod tests {
             let option = OptionLabel {
                 choice: RunnerChoice {
                     name: name.to_owned(),
+                    launcher: None,
                     proton: Some(true),
                 },
                 label: shown,

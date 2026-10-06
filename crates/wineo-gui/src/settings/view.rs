@@ -377,6 +377,23 @@ fn global_view<'a>(
             );
         }
     }
+    let portable = paths.portable_root().is_some();
+    new_env = new_env.push(switch_row(
+        "Builds from Steam, Heroic, and Lutris",
+        draft.external_runners == Some(true),
+        None,
+        |on| send(Event::GlobalExternalRunners(on)),
+        None,
+        locked || portable,
+        palette,
+    ));
+    if portable {
+        new_env = new_env.push(
+            text("Not used in a portable folder.")
+                .size(13)
+                .color(palette.muted),
+        );
+    }
     let mut runs = column![].spacing(12);
     for field in global::Field::NUMBERS {
         let placeholder = match field {

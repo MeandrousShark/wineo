@@ -78,6 +78,8 @@ pub(crate) struct Values {
     pub(crate) log_limit_mb: String,
     pub(crate) art_fetch: ArtFetch,
     pub(crate) env: Vec<EnvRow>,
+    /// Unset until the offer is answered, which reads as off.
+    pub(crate) external_runners: Option<bool>,
 }
 
 impl Values {
@@ -100,6 +102,7 @@ impl Values {
             stop_timeout: shown("stop_timeout", config.stop_timeout),
             log_limit_mb: shown("log_limit_mb", config.log_limit_mb),
             art_fetch: config.art.fetch,
+            external_runners: config.external_runners,
             env: config
                 .env
                 .iter()
@@ -207,6 +210,17 @@ impl Form {
             None
         };
     }
+    /// Turning it off writes `false` once it was set, since that answers
+    /// the offer. Off while still unset stays unset, so it can still ask.
+    pub(crate) fn set_external_runners(&mut self, on: bool) {
+        self.draft.external_runners = if on {
+            Some(true)
+        } else if self.loaded.external_runners.is_some() {
+            Some(false)
+        } else {
+            None
+        };
+    }
     pub(crate) fn changes(&self) -> usize {
         let edits = self.edits();
         edits.pairs.len() + edits.unset.len()
@@ -270,6 +284,14 @@ impl Form {
                     };
                     edits.pairs.push((field.key().to_owned(), value));
                 }
+            }
+        }
+        if before.external_runners != after.external_runners {
+            match after.external_runners {
+                Some(on) => edits
+                    .pairs
+                    .push(("external_runners".to_owned(), on.to_string())),
+                None => edits.unset.push("external_runners".to_owned()),
             }
         }
         if before.art_fetch != after.art_fetch {
@@ -350,6 +372,29 @@ mod tests {
         );
         form.revert();
         assert!(!form.is_dirty());
+    }
+
+    #[test]
+    fn external_runners_reads_unset_as_off_and_writes_the_answer() {
+        let mut form = parsed_form("");
+        assert_eq!(form.draft.external_runners, None);
+        form.set_external_runners(false);
+        assert_eq!(form.changes(), 0);
+        form.set_external_runners(true);
+        assert_eq!(
+            form.edits().pairs,
+            [("external_runners".to_owned(), "true".to_owned())]
+        );
+        form.set_external_runners(false);
+        assert_eq!(form.changes(), 0);
+
+        let mut form = parsed_form("external_runners = true\n");
+        assert_eq!(form.draft.external_runners, Some(true));
+        form.set_external_runners(false);
+        assert_eq!(
+            form.edits().pairs,
+            [("external_runners".to_owned(), "false".to_owned())]
+        );
     }
 
     #[test]

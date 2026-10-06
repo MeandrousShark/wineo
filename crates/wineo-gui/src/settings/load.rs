@@ -12,6 +12,7 @@ use wineo_core::components::{Builds, Component};
 use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
+use wineo_core::external_runners::Source;
 use wineo_core::install::Change;
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
@@ -31,6 +32,8 @@ use crate::panel::PanelError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RunnerChoice {
     pub(crate) name: String,
+    /// Set for another launcher's build, which the picker labels.
+    pub(crate) launcher: Option<Source>,
     pub(crate) proton: Option<bool>,
 }
 
@@ -333,6 +336,7 @@ pub(crate) fn runner_choices(
         return (
             vec![RunnerChoice {
                 name: configured.to_owned(),
+                launcher: None,
                 proton: None,
             }],
             None,
@@ -340,23 +344,27 @@ pub(crate) fn runner_choices(
     };
     let mut choices = vec![RunnerChoice {
         name: Runner::SYSTEM.to_owned(),
+        launcher: None,
         proton: Runner::system().ok().map(|runner| runner.is_proton()),
     }];
     if let Ok(listing) = runners.list() {
         choices.extend(listing.runners.iter().map(|runner| RunnerChoice {
             name: runner.name().to_owned(),
+            launcher: crate::runner_label::launcher(runner),
             proton: Some(runner.is_proton()),
         }));
     }
     for alias in runner_alias::ALIASES {
         choices.push(RunnerChoice {
             name: alias.to_owned(),
+            launcher: None,
             proton: runners.resolve(alias).ok().map(|runner| runner.is_proton()),
         });
     }
     if !choices.iter().any(|choice| choice.name == configured) {
         choices.push(RunnerChoice {
             name: configured.to_owned(),
+            launcher: None,
             proton: runners
                 .resolve(configured)
                 .ok()

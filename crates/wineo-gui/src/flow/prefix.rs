@@ -4,12 +4,14 @@ use iced::widget::{button, column, container, pick_list, row, scrollable, text, 
 use iced::{Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GlobalConfig};
+use wineo_core::external_runners::Source;
 use wineo_core::import::{self, ImportRequest, Inspection};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
 use crate::chips::{input_style, secondary};
+use crate::runner_label;
 use crate::theme::Palette;
 use crate::ui::PickListStyle;
 
@@ -52,6 +54,17 @@ struct RunnerChoice {
     selection: String,
     name: String,
     proton: bool,
+    launcher: Option<Source>,
+}
+
+impl RunnerChoice {
+    fn label(&self) -> String {
+        let kind = if self.proton { "Proton" } else { "Wine" };
+        match self.launcher {
+            Some(launcher) => format!("{} -> {} ({kind}, {launcher})", self.selection, self.name),
+            None => format!("{} -> {} ({kind})", self.selection, self.name),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -544,30 +557,12 @@ impl Page {
     }
 
     fn details(&self, palette: Palette, key_available: bool) -> Element<'_, Event> {
-        let runner_options: Vec<String> = self
-            .runners
-            .iter()
-            .map(|runner| {
-                format!(
-                    "{} -> {} ({})",
-                    runner.selection,
-                    runner.name,
-                    if runner.proton { "Proton" } else { "Wine" }
-                )
-            })
-            .collect();
+        let runner_options: Vec<String> = self.runners.iter().map(RunnerChoice::label).collect();
         let selected = self
             .runners
             .iter()
             .find(|runner| runner.selection == self.runner)
-            .map(|runner| {
-                format!(
-                    "{} -> {} ({})",
-                    runner.selection,
-                    runner.name,
-                    if runner.proton { "Proton" } else { "Wine" }
-                )
-            });
+            .map(RunnerChoice::label);
         let mut fields = column![
             text("Source folder").color(palette.foreground),
             row![
@@ -942,6 +937,7 @@ fn choice(runner: Runner) -> RunnerChoice {
         selection: runner.selection().to_owned(),
         name: runner.name().to_owned(),
         proton: runner.is_proton(),
+        launcher: runner_label::launcher(&runner),
     }
 }
 
@@ -1013,7 +1009,7 @@ fn inspect_review(
     Ok(Review {
         inspection: inspection.0,
         destination,
-        runner_name: runner.name().to_owned(),
+        runner_name: runner_label::labeled(runner.name(), runner_label::launcher(&runner)),
         arch_missing: inspection.1,
     })
 }
