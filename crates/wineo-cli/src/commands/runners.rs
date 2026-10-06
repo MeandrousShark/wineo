@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use clap::Subcommand;
 use wineo_core::config::GlobalConfig;
+use wineo_core::external_runners::Source;
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
@@ -32,13 +33,15 @@ struct RemoveArgs {
     yes: bool,
 }
 
-/// One line: what it's called, what it is, what version, and where. Only the
-/// system wine fills the path column, since the rest live in the runners root.
+/// One line: what it's called, what it is, whose it is, what version, and a
+/// last column. That's the path for the system wine, the only build not in a
+/// folder, and a note about a hidden different build for the rest.
 struct Row {
     name: String,
     kind: String,
+    source: String,
     detail: String,
-    path: String,
+    last: String,
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
@@ -63,8 +66,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         Ok(runner) => Row {
             name: Runner::SYSTEM.to_owned(),
             kind: runner.kind_name().to_owned(),
+            source: String::new(),
             detail: version(&runner),
-            path: runner
+            last: runner
                 .wine_path()
                 .map(|path| path.display().to_string())
                 .unwrap_or_default(),
@@ -72,15 +76,17 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         Err(err) => Row {
             name: Runner::SYSTEM.to_owned(),
             kind: String::new(),
+            source: String::new(),
             detail: err.to_string(),
-            path: String::new(),
+            last: String::new(),
         },
     }];
     rows.extend(listing.runners.iter().map(|runner| Row {
         name: runner.name().to_owned(),
         kind: runner.kind_name().to_owned(),
+        source: runner.owner(paths).to_string(),
         detail: version(runner),
-        path: String::new(),
+        last: different_note(&listing.different_builds(runner.name())),
     }));
     for alias in wineo_core::runner_alias::ALIASES {
         let detail = match runners.resolve(alias) {
@@ -90,16 +96,31 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         rows.push(Row {
             name: alias.to_owned(),
             kind: "alias".to_owned(),
+            source: String::new(),
             detail,
-            path: String::new(),
+            last: String::new(),
         });
     }
     if args.all {
         rows.extend(listing.skipped.iter().map(|(name, reason)| Row {
             name: name.clone(),
             kind: String::new(),
+            source: String::new(),
             detail: format!("skipped, {}", reason.as_str()),
-            path: String::new(),
+            last: String::new(),
+        }));
+        rows.extend(listing.external_skipped.iter().map(|skipped| {
+            Row {
+                name: skipped
+                    .directory
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                kind: String::new(),
+                source: skipped.source.to_string(),
+                detail: format!("skipped, {}", skipped.reason.as_str()),
+                last: String::new(),
+            }
         }));
     }
 
@@ -109,15 +130,23 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             .max()
             .unwrap_or_default()
     };
-    let (names, kinds, details) = (
+    // A detail only needs padding when something follows it, so a long alias
+    // error doesn't push the last column off the screen.
+    let details = rows
+        .iter()
+        .filter(|row| !row.last.is_empty())
+        .map(|row| row.detail.len())
+        .max()
+        .unwrap_or_default();
+    let (names, kinds, sources) = (
         width(|row| &row.name),
         width(|row| &row.kind),
-        width(|row| &row.detail),
+        width(|row| &row.source),
     );
     for row in &rows {
         let line = format!(
-            "{:names$}  {:kinds$}  {:details$}  {}",
-            row.name, row.kind, row.detail, row.path
+            "{:names$}  {:kinds$}  {:sources$}  {:details$}  {}",
+            row.name, row.kind, row.source, row.detail, row.last
         );
         println!("{}", line.trim_end());
     }
@@ -129,6 +158,23 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         );
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Which launchers have a different build under the same name than the one
+/// in use, since only the first copy is ever used.
+fn different_note(sources: &[Source]) -> String {
+    let mut names: Vec<String> = Vec::new();
+    for source in sources {
+        if !names.contains(&source.to_string()) {
+            names.push(source.to_string());
+        }
+    }
+    match names.as_slice() {
+        [] => String::new(),
+        [one] => format!("({one} has a different build)"),
+        [first, second] => format!("({first} and {second} have different builds)"),
+        [rest @ .., last] => format!("({}, and {last} have different builds)", rest.join(", ")),
+    }
 }
 
 fn version(runner: &Runner) -> String {

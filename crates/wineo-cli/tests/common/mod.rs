@@ -113,6 +113,70 @@ impl Fixture {
         command
     }
 
+    /// `wineo` with HOME inside the fixture, so what Steam, Heroic, and Lutris
+    /// would have installed can be faked under it. Their folders are the
+    /// ones `external_dir` names.
+    pub fn wineo_at_home(&self) -> Command {
+        let mut command = self.wineo();
+        command.env("HOME", self.root.path());
+        command
+    }
+
+    pub fn run_at_home(&self, args: &[&str]) -> Output {
+        self.wineo_at_home()
+            .args(args)
+            .output()
+            .expect("wineo should start")
+    }
+
+    /// A launcher's folder of builds under the fixture's home.
+    pub fn external_dir(&self, launcher: &str) -> PathBuf {
+        let root = self.root.path();
+        match launcher {
+            "steam" => root.join(".local/share/Steam/compatibilitytools.d"),
+            // The XDG config folder is inside the fixture, and Heroic only
+            // counts once it has written its config.
+            "heroic-proton" => root.join("config/heroic/tools/proton"),
+            "heroic-wine" => root.join("config/heroic/tools/wine"),
+            "lutris" => root.join("data/lutris/runners/wine"),
+            other => panic!("no folder for {other}"),
+        }
+    }
+
+    /// A Proton build in a launcher's folder, with the `version` file wineo
+    /// compares same-named builds by.
+    pub fn install_external_proton(&self, launcher: &str, name: &str, version: &str) {
+        let dir = self.external_dir(launcher).join(name);
+        fs::create_dir_all(dir.join("files/bin")).unwrap();
+        let script = |path: PathBuf| {
+            fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        script(dir.join("proton"));
+        script(dir.join("files/bin/wine"));
+        script(dir.join("files/bin/wineserver"));
+        fs::write(dir.join("version"), format!("1717451631 {version}\n")).unwrap();
+        if launcher.starts_with("heroic") {
+            fs::write(self.root.path().join("config/heroic/config.json"), "{}").unwrap();
+        }
+    }
+
+    /// A wine build in a launcher's folder, made of the fake wine scripts.
+    pub fn install_external_wine(&self, launcher: &str, name: &str) {
+        let dir = self.external_dir(launcher).join(name);
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        for file in ["wine", "wineserver"] {
+            fs::copy(
+                self.root.path().join("bin").join(file),
+                dir.join("bin").join(file),
+            )
+            .unwrap();
+        }
+        if launcher.starts_with("heroic") {
+            fs::write(self.root.path().join("config/heroic/config.json"), "{}").unwrap();
+        }
+    }
+
     pub fn run(&self, args: &[&str]) -> Output {
         self.wineo()
             .args(args)
