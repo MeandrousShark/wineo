@@ -10,7 +10,7 @@ use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
 use super::transfer::Cancellation;
-use super::{download, import_heroic, setup};
+use super::{download, external_runners, import_heroic, setup};
 use crate::picker;
 use crate::prompt::{self, Canceled, Choice, Input, Prompt, Reply, Terminal, numbered};
 
@@ -440,7 +440,7 @@ fn print_review<I: Input, W: Write>(
         },
         destination.display(),
         request.runner,
-        runner.name(),
+        external_runners::with_owner(paths, &runner, runner.name().to_owned()),
         inspection.layout,
         inspection.arch
     ))?;

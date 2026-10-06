@@ -1856,3 +1856,350 @@ fn a_bad_token_at_the_validate_review_asks_again_without_skipping() {
     assert!(!state.exists());
     assert!(!entry.exists());
 }
+
+const OFFER: &str = "Use Proton and Wine builds from Steam, Heroic, and Lutris too? [Y/n]: ";
+
+impl Fixture {
+    /// Guided `new` with HOME inside the fixture, where Steam's folder is.
+    fn new_guided_at_home(&self, args: &[&str]) -> Pty {
+        let mut command = self.wineo_at_home();
+        command.arg("new").args(args);
+        Pty::spawn(command)
+    }
+
+    /// The global config as written, or nothing when it was never written.
+    fn global_text(&self) -> String {
+        fs::read_to_string(self.config_dir().join("config.toml")).unwrap_or_default()
+    }
+}
+
+/// Picks the gaming template from the menu, the way the guided flow offers it.
+fn pick_gaming(pty: &mut Pty) {
+    pick_wine(pty);
+    pty.expect("Template [1]: ");
+    pty.send("2");
+}
+
+#[test]
+fn picking_the_gaming_template_asks_once_and_the_runner_choice_sees_a_yes() {
+    let f = Fixture::new();
+    f.install_external_proton("steam", "GE-Proton11-3", "GE-Proton11-3");
+    let mut pty = f.new_guided_at_home(&[]);
+    pick_gaming(&mut pty);
+    pty.expect(OFFER);
+    pty.send("");
+    pty.expect("Install name: ");
+    pty.send("game");
+    pty.expect("Prefix location [");
+    pty.send("");
+    // Saved already, and the newest Proton is Steam's.
+    assert!(f.global_text().contains("external_runners = true"));
+    pty.expect("  runner    GE-Proton11-3 (Proton) (Steam)");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Choice [1]: ");
+    pty.send("3");
+    pty.expect("Ready to create game:");
+    pty.expect("  runner    GE-Proton11-3 (Proton) (Steam)");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert_eq!(output.matches("Use Proton and Wine builds").count(), 1);
+}
+
+#[test]
+fn a_no_is_saved_and_leaves_other_launchers_builds_out() {
+    let f = Fixture::new();
+    f.install_external_proton("steam", "GE-Proton11-3", "GE-Proton11-3");
+    // The template's DXVK and vkd3d-proton are there, so a plain wine works.
+    f.install_build("dxvk", "dxvk-2.7", &["x64", "x32"]);
+    f.install_build("vkd3d", "vkd3d-2.14", &["x64", "x86"]);
+    let mut pty = f.new_guided_at_home(&[]);
+    pick_gaming(&mut pty);
+    pty.expect(OFFER);
+    pty.send("n");
+    pty.expect("Install name: ");
+    pty.send("game");
+    pty.expect("Prefix location [");
+    pty.send("");
+    pty.expect("Settings for game:");
+    pty.expect("Choice [1]: ");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(f.global_text().contains("external_runners = false"));
+    assert!(!output.contains("GE-Proton11-3"), "{output}");
+}
+
+#[test]
+fn the_question_is_not_asked_when_the_setting_is_already_there() {
+    for setting in ["true", "false"] {
+        let f = Fixture::new();
+        let text = format!("external_runners = {setting}\n");
+        f.global_config(&text);
+        let mut pty = f.new_guided_at_home(&[]);
+        pick_gaming(&mut pty);
+        pty.expect("Install name: ");
+        pty.ctrl_c();
+        let (status, output) = pty.finish();
+        assert_eq!(status.code(), Some(130), "{output}");
+        assert!(!output.contains("Use Proton and Wine builds"), "{output}");
+        assert_eq!(f.global_text(), text);
+    }
+}
+
+#[test]
+fn only_the_gaming_template_brings_up_the_question() {
+    let f = Fixture::new();
+    let mut pty = f.new_guided_at_home(&[]);
+    pick_wine(&mut pty);
+    pty.expect("Template [1]: ");
+    pty.send("1");
+    pty.expect("Install name: ");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(!output.contains("Use Proton and Wine builds"), "{output}");
+    assert_eq!(f.global_text(), "");
+}
+
+#[test]
+fn a_flag_or_a_portable_folder_means_no_question() {
+    let f = Fixture::new();
+    let mut pty = f.new_guided_at_home(&["-t", "gaming"]);
+    pty.expect("Install name: ");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(!output.contains("Use Proton and Wine builds"), "{output}");
+
+    let portable = f.root.path().join("portable");
+    let mut command = f.wineo_at_home();
+    command.args(["--portable", portable.to_str().unwrap(), "new"]);
+    let mut pty = Pty::spawn(command);
+    pick_gaming(&mut pty);
+    pty.expect("Install name: ");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(!output.contains("Use Proton and Wine builds"), "{output}");
+    assert_eq!(f.global_text(), "");
+    assert!(!portable.join("config/config.toml").exists());
+}
+
+#[test]
+fn a_terminalless_run_never_asks_and_leaves_the_key_unset() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    let created = f.run_at_home(&["new", "-n", "app", "-t", "gaming"]);
+    assert_success(&created);
+    assert!(!stdout(&created).contains("Use Proton and Wine builds"));
+    assert_eq!(f.global_text(), "");
+}
+
+#[test]
+fn esc_at_the_question_goes_back_to_the_template_and_saves_nothing() {
+    let f = Fixture::new();
+    let mut pty = f.new_guided_at_home(&[]);
+    pick_gaming(&mut pty);
+    pty.expect(OFFER);
+    pty.esc();
+    pty.expect("Template [");
+    assert_eq!(f.global_text(), "");
+    // Picking it again asks again, since nothing was answered.
+    pty.send("2");
+    pty.expect(OFFER);
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(
+        output.contains("Canceled. Nothing was created."),
+        "{output}"
+    );
+    assert_eq!(f.global_text(), "");
+}
+
+/// A Heroic library whose game `a` runs on a build in Heroic's own folder,
+/// where wineo's scan finds it too.
+fn heroic_game_on_heroics_build(f: &Fixture) -> std::path::PathBuf {
+    let prefix = f.root.path().join("heroic prefix");
+    fs::create_dir_all(prefix.join("drive_c/Games")).unwrap();
+    fs::write(
+        prefix.join("system.reg"),
+        "WINE REGISTRY Version 2\n#arch=win64\n",
+    )
+    .unwrap();
+    f.install_external_wine("heroic-wine", "heroic-wine");
+    let heroic = heroic_library(f, &prefix);
+    let wine = f.external_dir("heroic-wine").join("heroic-wine/bin/wine");
+    fs::write(
+        heroic.join("GamesConfig/a.json"),
+        format!(
+            r#"{{"a":{{"wineVersion":{{"type":"wine","name":"heroic-wine","bin":"{}"}}}}}}"#,
+            wine.display()
+        ),
+    )
+    .unwrap();
+    heroic
+}
+
+fn heroic_import_at_home(f: &Fixture, heroic: &std::path::Path) -> Pty {
+    let mut command = f.wineo_at_home();
+    command.args([
+        "import",
+        "heroic",
+        "--config-dir",
+        heroic.to_str().unwrap(),
+        "--adopt",
+    ]);
+    Pty::spawn(command)
+}
+
+fn pick_heroic_game_and_name(pty: &mut Pty) {
+    pty.expect("Game: ");
+    pty.send("1");
+    pty.expect("Environment name [alpha]: ");
+    pty.send("");
+}
+
+#[test]
+fn heroic_import_asks_before_the_runner_and_a_yes_uses_heroics_build_in_place() {
+    let f = Fixture::new();
+    let heroic = heroic_game_on_heroics_build(&f);
+    let mut pty = heroic_import_at_home(&f, &heroic);
+    pick_heroic_game_and_name(&mut pty);
+    pty.expect(OFFER);
+    pty.send("y");
+    // No runner question, and the review says whose build it is.
+    pty.expect("heroic-wine (Heroic)");
+    pty.expect("Choice: ");
+    assert!(f.global_text().contains("external_runners = true"));
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(!output.contains("Runner ["), "{output}");
+    assert!(
+        !f.root
+            .path()
+            .join("data/wineo/runners/heroic-wine")
+            .exists()
+    );
+}
+
+#[test]
+fn heroic_import_with_a_no_still_copies_the_runner() {
+    let f = Fixture::new();
+    let heroic = heroic_game_on_heroics_build(&f);
+    let mut pty = heroic_import_at_home(&f, &heroic);
+    pick_heroic_game_and_name(&mut pty);
+    pty.expect(OFFER);
+    pty.send("n");
+    pty.expect("Runner [1]: ");
+    assert!(f.global_text().contains("external_runners = false"));
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(
+        output.contains("Copy Heroic runner heroic-wine"),
+        "{output}"
+    );
+}
+
+#[test]
+fn heroic_import_skips_the_question_when_answered_flagged_or_all() {
+    // Already answered.
+    let f = Fixture::new();
+    f.global_config("external_runners = true\n");
+    let heroic = heroic_game_on_heroics_build(&f);
+    let mut pty = heroic_import_at_home(&f, &heroic);
+    pick_heroic_game_and_name(&mut pty);
+    pty.expect("heroic-wine (Heroic)");
+    pty.ctrl_c();
+    let (_, output) = pty.finish();
+    assert!(!output.contains("Use Proton and Wine builds"), "{output}");
+
+    // A flag that picks the game or the name.
+    let f = Fixture::new();
+    let heroic = heroic_game_on_heroics_build(&f);
+    let mut command = f.wineo_at_home();
+    command.args([
+        "import",
+        "heroic",
+        "--config-dir",
+        heroic.to_str().unwrap(),
+        "--game",
+        "a",
+        "--name",
+        "alpha",
+    ]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Environment name [alpha]: ");
+    pty.send("");
+    pty.expect("Runner [1]: ");
+    pty.ctrl_c();
+    let (_, output) = pty.finish();
+    assert!(!output.contains("Use Proton and Wine builds"), "{output}");
+    assert_eq!(f.global_text(), "");
+
+    // Importing everything has nobody to ask.
+    let f = Fixture::new();
+    let heroic = heroic_game_on_heroics_build(&f);
+    let mut command = f.wineo_at_home();
+    command.args([
+        "import",
+        "heroic",
+        "--config-dir",
+        heroic.to_str().unwrap(),
+        "--all",
+        "--runner",
+        "wine",
+        "--adopt",
+    ]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Create desktop entries for these games? [Y/n]: ");
+    pty.send("");
+    pty.expect("Import 2 games? [Y/n]: ");
+    pty.send("n");
+    let (_, output) = pty.finish();
+    assert!(!output.contains("Use Proton and Wine builds"), "{output}");
+    assert_eq!(f.global_text(), "");
+}
+
+#[test]
+fn removing_a_launchers_build_at_a_terminal_refuses_before_any_prompt() {
+    let f = Fixture::new();
+    f.global_config("external_runners = true\n");
+    f.install_external_proton("steam", "GE-Proton11-3", "GE-Proton11-3");
+    let mut command = f.wineo_at_home();
+    command.args(["runners", "remove", "GE-Proton11-3"]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("error: GE-Proton11-3 belongs to Steam.");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(1), "{output}");
+    assert!(!output.contains("[y/N]"), "{output}");
+    assert!(
+        f.external_dir("steam")
+            .join("GE-Proton11-3/proton")
+            .is_file()
+    );
+}
+
+#[test]
+fn esc_and_ctrl_c_at_the_heroic_question_cancel_the_import_and_save_nothing() {
+    for esc in [true, false] {
+        let f = Fixture::new();
+        let heroic = heroic_game_on_heroics_build(&f);
+        let mut pty = heroic_import_at_home(&f, &heroic);
+        pick_heroic_game_and_name(&mut pty);
+        pty.expect(OFFER);
+        if esc {
+            pty.esc();
+        } else {
+            pty.ctrl_c();
+        }
+        let (status, output) = pty.finish();
+        assert_eq!(status.code(), Some(130), "{output}");
+        assert!(output.contains("Import canceled"), "{output}");
+        assert_eq!(f.global_text(), "");
+    }
+}

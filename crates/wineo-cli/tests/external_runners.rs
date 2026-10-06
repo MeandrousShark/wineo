@@ -150,6 +150,40 @@ fn a_root_inside_a_launcher_folder_is_labeled_with_that_launcher() {
 }
 
 #[test]
+fn the_import_review_names_a_launchers_build() {
+    let f = Fixture::new();
+    f.global_config(on());
+    f.install_external_wine("lutris", "lutris-9");
+    let prefix = f.root.path().join("old prefix");
+    fs::create_dir_all(prefix.join("drive_c")).unwrap();
+    fs::write(
+        prefix.join("system.reg"),
+        "WINE REGISTRY Version 2\n#arch=win64\n",
+    )
+    .unwrap();
+
+    for (runner, shown) in [
+        ("lutris-9", "runner: lutris-9 -> lutris-9 (Lutris)\n"),
+        ("wine", "runner: wine -> wine\n"),
+    ] {
+        let destination = f.root.path().join(format!("copy-{runner}"));
+        let imported = f.run_at_home(&[
+            "import",
+            "prefix",
+            prefix.to_str().unwrap(),
+            "-n",
+            runner,
+            "--runner",
+            runner,
+            "--dir",
+            destination.to_str().unwrap(),
+        ]);
+        assert_success(&imported);
+        assert!(stdout(&imported).contains(shown), "{}", stdout(&imported));
+    }
+}
+
+#[test]
 fn removing_a_launchers_build_says_whose_it_is_without_asking() {
     let f = Fixture::new();
     f.global_config(on());
