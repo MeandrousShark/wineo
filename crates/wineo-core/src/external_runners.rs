@@ -118,6 +118,22 @@ pub fn folders(paths: &Paths) -> Vec<Folder> {
         .collect()
 }
 
+/// The launcher whose folder holds `root` or is `root` itself, after resolving
+/// symlinks. Builds in such a root launch as wineo's, but they're really that
+/// launcher's files, so removal must leave them alone. This doesn't depend on
+/// the `external_runners` setting. A portable folder's root is the portable
+/// folder's own, and a root that only contains a launcher folder is unaffected.
+pub(crate) fn root_owner(paths: &Paths, root: &Path) -> Option<Source> {
+    if paths.portable_root().is_some() {
+        return None;
+    }
+    let root = fs::canonicalize(root).ok()?;
+    folders(paths)
+        .into_iter()
+        .find(|folder| fs::canonicalize(&folder.path).is_ok_and(|path| root.starts_with(path)))
+        .map(|folder| folder.source)
+}
+
 /// The Steam root itself, plus every library `libraryfolders.vdf` names.
 fn steam_libraries(root: &Path) -> Vec<PathBuf> {
     let mut libraries = vec![root.to_owned()];

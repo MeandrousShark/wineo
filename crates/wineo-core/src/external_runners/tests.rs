@@ -591,3 +591,100 @@ fn external_builds_lock_by_name_and_are_never_removed() {
         Err(Error::UnknownRunner { .. })
     ));
 }
+
+/// Points wineo's runners root at `root` in the global config, whatever the
+/// `external_runners` setting is.
+fn root_at(paths: &Paths, root: &Path, setting: Option<bool>) {
+    let mut text = String::new();
+    if let Some(setting) = setting {
+        text.push_str(&format!("external_runners = {setting}\n\n"));
+    }
+    text.push_str(&format!("[defaults]\nrunner_root = '{}'\n", root.display()));
+    file(&paths.global_config(), &text, false);
+}
+
+#[test]
+fn a_root_that_is_a_launcher_folder_refuses_removal_whatever_the_setting() {
+    for setting in [None, Some(false), Some(true)] {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let paths = paths(home);
+        let steam = home.join(STEAM);
+        proton(&steam.join("GE-Proton11-3"), Some("GE-Proton11-3"));
+        root_at(&paths, &steam, setting);
+
+        // It still launches as wineo's own.
+        let global = GlobalConfig::load(&paths).unwrap();
+        let runner = Runners::new(&paths, &global)
+            .unwrap()
+            .resolve("GE-Proton11-3")
+            .unwrap();
+        assert_eq!(runner.source(), Source::Wineo, "{setting:?}");
+
+        let error = crate::runners::remove(&paths, "GE-Proton11-3").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "GE-Proton11-3 belongs to Steam.",
+            "{setting:?}"
+        );
+        assert!(matches!(
+            crate::runners::size(&paths, "GE-Proton11-3"),
+            Err(Error::ExternalBuild { .. })
+        ));
+        assert!(steam.join("GE-Proton11-3/proton").is_file());
+    }
+}
+
+#[test]
+fn a_root_reached_through_a_symlink_into_a_launcher_folder_is_still_theirs() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let paths = paths(home);
+    heroic_root(&home.join(".config/heroic"));
+    let tools = home.join(HEROIC);
+    proton(&tools.join("GE-Proton11-1"), Some("GE-Proton11-1"));
+
+    // A link to the folder itself, and a link to a folder inside it.
+    let link = home.join("runners-link");
+    symlink(&tools, &link).unwrap();
+    root_at(&paths, &link, None);
+    let error = crate::runners::remove(&paths, "GE-Proton11-1").unwrap_err();
+    assert_eq!(error.to_string(), "GE-Proton11-1 belongs to Heroic.");
+
+    let nested = tools.join("nested");
+    proton(&nested.join("GE-Proton11-2"), Some("GE-Proton11-2"));
+    let link = home.join("nested-link");
+    symlink(&nested, &link).unwrap();
+    root_at(&paths, &link, None);
+    let error = crate::runners::remove(&paths, "GE-Proton11-2").unwrap_err();
+    assert_eq!(error.to_string(), "GE-Proton11-2 belongs to Heroic.");
+    assert!(nested.join("GE-Proton11-2/proton").is_file());
+}
+
+#[test]
+fn an_unrelated_root_still_removes_and_one_above_a_launcher_folder_is_unaffected() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let paths = paths(home);
+    heroic_root(&home.join(".config/heroic"));
+    proton(
+        &home.join(HEROIC).join("GE-Proton11-1"),
+        Some("GE-Proton11-1"),
+    );
+
+    let own = home.join("my-runners");
+    proton(&own.join("GE-Proton9-20"), Some("GE-Proton9-20"));
+    root_at(&paths, &own, Some(true));
+    crate::runners::remove(&paths, "GE-Proton9-20").unwrap();
+    assert!(!own.join("GE-Proton9-20").exists());
+
+    // A root that only contains a launcher folder further down is just a root.
+    let above = home.join(".config");
+    proton(&above.join("GE-Proton9-21"), Some("GE-Proton9-21"));
+    // The gaming template follows the newest Proton, so keep this one off it.
+    proton(&above.join("GE-Proton10-1"), Some("GE-Proton10-1"));
+    root_at(&paths, &above, None);
+    crate::runners::remove(&paths, "GE-Proton9-21").unwrap();
+    assert!(!above.join("GE-Proton9-21").exists());
+    assert!(home.join(HEROIC).join("GE-Proton11-1/proton").is_file());
+}

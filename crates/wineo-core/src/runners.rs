@@ -498,16 +498,33 @@ fn removable_directory(paths: &Paths, name: &str) -> Result<PathBuf> {
     }
     let global = GlobalConfig::load(paths)?;
     let runners = Runners::new(paths, &global)?;
-    crate::build_removal::sweep_best_effort(paths, crate::build_lock::Kind::Runner, runners.root());
-    removable_directory_in(&runners, name)
+    // A root inside a launcher's folder is that launcher's, so nothing in it
+    // gets swept either.
+    let owner = external_runners::root_owner(paths, runners.root());
+    if owner.is_none() {
+        crate::build_removal::sweep_best_effort(
+            paths,
+            crate::build_lock::Kind::Runner,
+            runners.root(),
+        );
+    }
+    removable_directory_in(&runners, name, owner)
 }
 
-fn removable_directory_in(runners: &Runners, name: &str) -> Result<PathBuf> {
+fn removable_directory_in(
+    runners: &Runners,
+    name: &str,
+    root_owner: Option<Source>,
+) -> Result<PathBuf> {
     let runner = runners.resolve(name)?;
-    if runner.source() != Source::Wineo {
+    let launcher = match (runner.source(), root_owner) {
+        (Source::Wineo, owner) => owner,
+        (other, _) => Some(other),
+    };
+    if let Some(launcher) = launcher {
         return Err(Error::ExternalBuild {
             name: name.to_owned(),
-            launcher: runner.source(),
+            launcher,
         });
     }
     let directory = runners.root().join(runner.name());
