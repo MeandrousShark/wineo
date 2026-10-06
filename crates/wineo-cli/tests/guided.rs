@@ -1949,7 +1949,40 @@ fn the_question_is_not_asked_when_the_setting_is_already_there() {
 }
 
 #[test]
-fn only_the_gaming_template_brings_up_the_question() {
+fn a_template_tagged_game_asks_whatever_it_is_called() {
+    let f = Fixture::new();
+    f.write_template("arcade", "schema_version = 1\ntags = [\"game\"]\n");
+    let mut pty = f.new_guided_at_home(&[]);
+    pick_wine(&mut pty);
+    // It sorts ahead of the built-in gaming template.
+    pty.expect("  2) arcade");
+    pty.expect("Template [1]: ");
+    pty.send("2");
+    pty.expect(OFFER);
+    pty.send("n");
+    pty.expect("Install name: ");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(f.global_text().contains("external_runners = false"));
+}
+
+#[test]
+fn gaming_without_the_game_tag_does_not_ask() {
+    let f = Fixture::new();
+    f.write_template("gaming", "schema_version = 1\ngamemode = true\n");
+    let mut pty = f.new_guided_at_home(&[]);
+    pick_gaming(&mut pty);
+    pty.expect("Install name: ");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(!output.contains("Use Proton and Wine builds"), "{output}");
+    assert_eq!(f.global_text(), "");
+}
+
+#[test]
+fn no_template_means_no_question() {
     let f = Fixture::new();
     let mut pty = f.new_guided_at_home(&[]);
     pick_wine(&mut pty);

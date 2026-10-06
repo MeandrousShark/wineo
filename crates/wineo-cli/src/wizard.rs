@@ -30,8 +30,9 @@ use crate::commands::{components, desktop, external_runners};
 use crate::picker::{self, Place};
 use crate::prompt::{Canceled, Input, Prompt, Reply, numbered};
 
-/// The built-in template that the one-time runner question goes with.
-const GAMING: &str = "gaming";
+/// The tag that makes a template a game's, which is what the one-time runner
+/// question goes with.
+const GAME_TAG: &str = "game";
 
 /// What the command line already said, which the questions start from.
 #[derive(Debug, Default, Clone)]
@@ -194,7 +195,9 @@ pub fn run<I: Input, W: Write>(
                     continue;
                 };
                 // Any flag marks a scripted run, which never asks.
-                if template.as_ref().is_some_and(|(name, _)| name == GAMING)
+                if template
+                    .as_ref()
+                    .is_some_and(|(_, t)| t.tags.iter().any(|tag| tag == GAME_TAG))
                     && !prefill.flagged()
                     && external_runners::due(paths, global)
                 {
