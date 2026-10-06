@@ -21,6 +21,7 @@ mod picker;
 mod portable_page;
 mod removal;
 mod remove_work;
+mod runner_label;
 mod settings;
 mod shortcuts;
 mod sidebar;

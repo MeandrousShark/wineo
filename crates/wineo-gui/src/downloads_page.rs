@@ -6,6 +6,7 @@ use iced::{Center, Element, Fill, Task};
 use wineo_core::build_lock::Kind;
 use wineo_core::cancel::Token;
 use wineo_core::download::{Provider, Release};
+use wineo_core::external_runners::Source;
 
 use crate::ui::{
     PickListStyle, accent_button, page_title, secondary_button, section, section_heading,
@@ -21,6 +22,10 @@ pub(crate) struct Build {
     pub(crate) name: String,
     pub(crate) users: Vec<String>,
     pub(crate) error: Option<String>,
+    /// Set for another launcher's build, which wineo never deletes.
+    pub(crate) launcher: Option<Source>,
+    /// Lower priority sources with a different build under the same name.
+    pub(crate) different: Vec<Source>,
 }
 
 impl Build {
@@ -30,6 +35,8 @@ impl Build {
             name: name.into(),
             users: Vec::new(),
             error: None,
+            launcher: None,
+            different: Vec::new(),
         }
     }
 
@@ -43,6 +50,10 @@ impl Build {
             && !(self.kind == Kind::Runner && self.name == "wine")
     }
 
+    fn deletable(&self) -> bool {
+        self.unused() && self.launcher.is_none()
+    }
+
     fn uses_label(&self) -> String {
         if self.users.is_empty() {
             "unused".into()
@@ -50,7 +61,32 @@ impl Build {
             format!("used by {}", self.users.join(", "))
         }
     }
+
+    /// The muted line under the name: where it's from when that isn't
+    /// wineo, what uses it, and any different build its name hides.
+    fn detail(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(launcher) = self.launcher {
+            parts.push(launcher.to_string());
+        }
+        parts.push(self.uses_label());
+        match self.different.as_slice() {
+            [] => {}
+            [source] => parts.push(format!("{source} has a different build")),
+            sources => parts.push(format!(
+                "{} have different builds",
+                sources
+                    .iter()
+                    .map(|source| source.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+        parts.join(", ")
+    }
 }
+
+const EXTERNAL_HEADING: &str = "From Steam, Heroic, and Lutris";
 
 fn heading(kind: Kind) -> &'static str {
     match kind {
@@ -204,7 +240,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                     snapshot
                         .builds
                         .iter()
-                        .find(|build| build.id() == id && build.unused())
+                        .find(|build| build.id() == id && build.deletable())
                 })
                 .cloned()
             else {
@@ -612,41 +648,28 @@ impl App {
                     );
                     content = content.push(section(notices, palette));
                 }
+                let external = snapshot
+                    .builds
+                    .iter()
+                    .filter(|build| build.launcher.is_some())
+                    .collect::<Vec<_>>();
                 for kind in [Kind::Runner, Kind::Dxvk, Kind::Vkd3d] {
                     let builds = snapshot
                         .builds
                         .iter()
-                        .filter(|build| build.kind == kind)
+                        .filter(|build| build.kind == kind && build.launcher.is_none())
                         .collect::<Vec<_>>();
-                    let mut rows = column![section_heading(heading(kind), palette)].spacing(8);
-                    if builds.is_empty() {
-                        rows = rows.push(text("None installed").color(palette.muted));
+                    content =
+                        content.push(build_section(heading(kind), builds, page, enabled, palette));
+                    if kind == Kind::Runner && !external.is_empty() {
+                        content = content.push(build_section(
+                            EXTERNAL_HEADING,
+                            external.clone(),
+                            page,
+                            enabled,
+                            palette,
+                        ));
                     }
-                    for (index, build) in builds.into_iter().enumerate() {
-                        let mut line = row![
-                            column![
-                                text(&build.name).color(palette.foreground),
-                                text(build.uses_label()).size(13).color(palette.muted)
-                            ]
-                            .width(Fill),
-                        ]
-                        .align_y(Center);
-                        if build.unused() {
-                            line = line.push(secondary_button("Delete", palette).on_press_maybe(
-                                enabled.then(|| message(Event::Review(build.id()))),
-                            ));
-                        }
-                        if index > 0 {
-                            rows = rows.push(crate::ui::separator(palette));
-                        }
-                        rows = rows.push(line);
-                        if let Some(error) =
-                            page.row_errors.get(&build.id()).or(build.error.as_ref())
-                        {
-                            rows = rows.push(text(error).color(palette.danger));
-                        }
-                    }
-                    content = content.push(section(rows, palette));
                 }
                 if !snapshot.skipped.is_empty() {
                     let skipped = snapshot.skipped.iter().fold(
@@ -685,6 +708,43 @@ impl App {
             .height(Fill)
             .into()
     }
+}
+
+fn build_section<'a>(
+    title: &'a str,
+    builds: Vec<&'a Build>,
+    page: &'a Page,
+    enabled: bool,
+    palette: crate::theme::Palette,
+) -> Element<'a, Message> {
+    let mut rows = column![section_heading(title, palette)].spacing(8);
+    if builds.is_empty() {
+        rows = rows.push(text("None installed").color(palette.muted));
+    }
+    for (index, build) in builds.into_iter().enumerate() {
+        let mut line = row![
+            column![
+                text(&build.name).color(palette.foreground),
+                text(build.detail()).size(13).color(palette.muted)
+            ]
+            .width(Fill),
+        ]
+        .align_y(Center);
+        if build.deletable() {
+            line = line.push(
+                secondary_button("Delete", palette)
+                    .on_press_maybe(enabled.then(|| message(Event::Review(build.id())))),
+            );
+        }
+        if index > 0 {
+            rows = rows.push(crate::ui::separator(palette));
+        }
+        rows = rows.push(line);
+        if let Some(error) = page.row_errors.get(&build.id()).or(build.error.as_ref()) {
+            rows = rows.push(text(error).color(palette.danger));
+        }
+    }
+    section(rows, palette).into()
 }
 
 #[cfg(test)]

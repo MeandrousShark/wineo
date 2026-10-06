@@ -13,7 +13,7 @@ use wineo_core::report::OverviewError;
 use wineo_core::runners::{self, Runners};
 
 use crate::downloads_page::{Build, Event, ReleasePage, Snapshot};
-use crate::{Message, download_progress};
+use crate::{Message, download_progress, runner_label};
 
 pub(crate) fn warnings(paths: &Paths, errors: &[OverviewError]) -> Vec<String> {
     errors
@@ -43,15 +43,27 @@ pub(crate) fn read(paths: &Paths) -> Result<Snapshot, String> {
         let mut snapshot = Snapshot::default();
         let _ = build_removal::sweep(paths, Kind::Runner, runners.root());
         let listing = runners.list()?;
-        for runner in listing.runners {
-            snapshot
-                .builds
-                .push(Build::new(Kind::Runner, runner.name()));
+        for runner in &listing.runners {
+            let mut build = Build::new(Kind::Runner, runner.name());
+            build.launcher = runner_label::launcher(runner);
+            build.different = listing.different_builds(runner.name());
+            snapshot.builds.push(build);
         }
         for (name, reason) in listing.skipped {
             snapshot
                 .skipped
                 .push(format!("Runners / {name}: {}", reason.as_str()));
+        }
+        for skipped in listing.external_skipped {
+            let folder = skipped.directory.file_name().map_or_else(
+                || skipped.directory.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            snapshot.skipped.push(format!(
+                "{} / {folder}: {}",
+                skipped.source,
+                skipped.reason.as_str()
+            ));
         }
         for component in Component::ALL {
             let builds = Builds::new(paths, &global, component)?;
@@ -97,7 +109,21 @@ pub(crate) fn load(generation: u64, paths: Paths) -> Task<Message> {
     )
 }
 
+/// Core refuses these too, but a row that slipped through must not even
+/// start measuring or moving another launcher's files.
+fn refuse_external(build: &Build) -> Result<(), String> {
+    match build.launcher {
+        Some(launcher) => Err(wineo_core::Error::ExternalBuild {
+            name: build.name.clone(),
+            launcher,
+        }
+        .to_string()),
+        None => Ok(()),
+    }
+}
+
 pub(crate) fn size(paths: &Paths, build: &Build) -> Result<u64, String> {
+    refuse_external(build)?;
     let result = match build.kind {
         Kind::Runner => runners::size(paths, &build.name),
         Kind::Dxvk => components::size(paths, Component::Dxvk, &build.name),
@@ -114,6 +140,7 @@ pub(crate) fn measure(generation: u64, paths: Paths, build: Build) -> Task<Messa
 }
 
 pub(crate) fn remove(paths: &Paths, build: &Build) -> Result<Removed, String> {
+    refuse_external(build)?;
     let result = match build.kind {
         Kind::Runner => runners::remove(paths, &build.name),
         Kind::Dxvk => components::remove(paths, Component::Dxvk, &build.name),

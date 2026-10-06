@@ -839,3 +839,64 @@ fn failed_reads_and_release_errors_can_retry_without_creating_changes() {
     assert!(app.downloads_page.listing);
     assert!(app.downloads_page.error.is_none());
 }
+
+#[test]
+fn other_launchers_builds_are_listed_apart_and_never_deletable() {
+    let (root, mut app) = fixture();
+    runner(&app.paths, "wine-tkg", false);
+    let steam = crate::runner_label::fake_steam_build(root.path(), "GE-Proton11-3");
+    let unusable = root.path().join(".steam/root/compatibilitytools.d/Broken");
+    fs::create_dir_all(&unusable).unwrap();
+    let global = app.paths.global_config();
+    fs::create_dir_all(global.parent().unwrap()).unwrap();
+    fs::write(&global, "external_runners = true\n").unwrap();
+    config(&app.paths, "celeste", "runner = 'GE-Proton11-3'\n");
+    open(&mut app);
+
+    let own = build(&app, Kind::Runner, "wine-tkg");
+    assert_eq!(own.launcher, None);
+    assert!(own.deletable());
+    let external = build(&app, Kind::Runner, "GE-Proton11-3");
+    assert_eq!(external.launcher, Some(Source::Steam));
+    assert!(external.users.iter().any(|user| user == "celeste"));
+    assert!(!external.deletable());
+    assert!(external.detail().starts_with("Steam, used by celeste"));
+    assert!(
+        app.downloads_page
+            .snapshot()
+            .unwrap()
+            .skipped
+            .iter()
+            .any(|line| line.starts_with("Steam / Broken: "))
+    );
+
+    // Unused, it's still not wineo's to delete.
+    fs::remove_file(app.paths.environment_config("celeste")).unwrap();
+    load(&mut app);
+    let external = build(&app, Kind::Runner, "GE-Proton11-3");
+    assert!(!external.deletable());
+    send(Event::Review(external.id()), &mut app);
+    assert!(!app.downloads_confirm_open());
+    assert_eq!(
+        downloads_work::remove(&app.paths, &external).unwrap_err(),
+        "GE-Proton11-3 belongs to Steam."
+    );
+    assert!(downloads_work::size(&app.paths, &external).is_err());
+    assert!(steam.join("proton").exists());
+    let _ = app.downloads_view();
+}
+
+#[test]
+fn a_different_build_behind_a_name_is_noted_on_its_row() {
+    let mut build = Build::new(Kind::Runner, "GE-Proton-latest");
+    assert_eq!(build.detail(), "unused");
+    build.users = vec!["dusk".into()];
+    build.different = vec![Source::Heroic];
+    assert_eq!(build.detail(), "used by dusk, Heroic has a different build");
+    build.launcher = Some(Source::Steam);
+    build.different = vec![Source::Heroic, Source::Lutris];
+    assert_eq!(
+        build.detail(),
+        "Steam, used by dusk, Heroic, Lutris have different builds"
+    );
+}
