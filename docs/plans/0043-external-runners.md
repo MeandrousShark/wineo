@@ -355,7 +355,49 @@ It's computed only when a name appears in more than one place.
   means nothing external, removal refused.
 - Heroic import test: scanning on writes Heroic's name and copies nothing.
 - CLI tests for the runners list and the one-time offer.
-- Acceptance checklist on a real machine, written when implementation lands.
+- Acceptance checklist on a real machine, below.
+
+### Acceptance checklist
+
+Run from a build of `main` (`cargo run -p wineo-cli --` and
+`cargo run -p wineo-gui`). Start with the key unset:
+`wineo set --global --unset external_runners`.
+
+1. `wineo runners` looks as before 0043: wineo's own builds only, with
+   `wineo` in the new source column.
+2. `wineo new`, pick the gaming template. The question "Use Proton and Wine
+   builds from Steam, Heroic, and Lutris too? [Y/n]" appears once. Answer
+   yes, then Ctrl+C. `~/.config/wineo/config.toml` now has
+   `external_runners = true`, with its other lines untouched.
+3. `wineo runners` lists `GE-Proton11-3` as Steam, `GE-Proton11-1` as
+   Heroic, and wineo's builds as wineo. No "different build" note, since
+   wineo's and Heroic's `GE-Proton-latest` are both GE-Proton10-3.
+4. `wineo runners remove GE-Proton11-3` prints `GE-Proton11-3 belongs to
+   Steam.` without asking, and
+   `~/.steam/root/compatibilitytools.d/GE-Proton11-3` is still there.
+5. Make a throwaway: `wineo new -n acc-0043 --runner GE-Proton11-3`, then
+   `wineo exec acc-0043 winecfg`. It opens on Steam's
+   build. Remove it after: `wineo rm acc-0043 --delete-prefix`.
+6. `wineo import heroic` for a manually added Windows game whose Heroic
+   runner is `GE-Proton11-1`: the review's runner row reads
+   `GE-Proton11-1 (Heroic)`, and nothing new appears in
+   `~/.local/share/wineo/runners`. Cancel at the review if you don't want
+   the game imported.
+7. `wineo runners --portable /tmp/acc-0043` shows no Steam or Heroic builds.
+8. GUI Downloads: wineo's builds keep Delete. A **From Steam, Heroic, and
+   Lutris** section lists the others with "Steam, unused"-style lines and no
+   Delete.
+9. GUI Settings > New environments: **Builds from Steam, Heroic, and
+   Lutris** is on. Turn it off and save: Downloads drops the section and the
+   runner pickers lose the Steam and Heroic builds. Turn it back on.
+10. Unset the key again, then GUI Add > New environment, pick the gaming
+    template. The card shows under Template. Click **Yes**: it goes away and
+    the runner override picker now includes "GE-Proton11-3 (Steam)". Close
+    Add without creating anything.
+11. Unset the key again, then GUI Add > Import from Heroic, open one game.
+    The card tops the details step. **Yes** switches the runner to Heroic's
+    build in place. Back out without importing.
+12. Leave the key set the way you want it.
 
 ## Not in this plan
 

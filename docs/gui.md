@@ -190,6 +190,13 @@ or "unused". The uses are the same ones `wineo runners remove` checks; see
 Directories that aren't usable builds are listed under **Not usable** with
 the reason.
 
+With [builds from other launchers](downloads-and-imports.md#use-builds-from-steam-heroic-and-lutris)
+on, a read-only **From Steam, Heroic, and Lutris** section follows the
+runners, with each build's source and what uses it, like "Steam, used by
+celeste". It never offers Delete, and neither does a build in a runners
+folder you pointed inside a launcher's own folder. A row whose name hides a
+different build elsewhere says so, like "Heroic has a different build".
+
 **Delete** shows only on unused builds. It asks first with how much space
 it frees, and refuses on the row if something started using the build in
 the meantime. A config that can't be read is skipped with a warning naming
@@ -400,7 +407,14 @@ after registration, retry or skip it. General artwork, key, and download
 management remain CLI tasks; GUI managers are planned separately.
 
 Windows creation keeps runner, architecture, and prefix overrides under
-**Additional wine options**. Selecting a template shows a compact summary
+**Additional wine options**. Picking a template tagged `game` shows a card
+under the Template picker, until it's answered once: "Use Proton and Wine
+builds from Steam, Heroic, and Lutris too?" with **No** and **Yes**. The
+answer is saved and the runner choices refresh in place. Heroic import asks
+the same at the top of its details step, and **Yes** uses Heroic's runner
+where it is instead of copying it. Runners from other launchers read like
+"GE-Proton11-3 (Steam)" in pickers and reviews. The card never shows in a
+portable folder. Selecting a template shows a compact summary
 of the settings it changes. Native creation hides the Wine-only controls.
 
 The new environment finish page has an unchecked **Launch game when this
@@ -478,8 +492,10 @@ Hover the selected runner to see its full name.
 
 - **Launch defaults:** gamemode, MangoHud, and Wayland for every
   environment that doesn't set its own.
-- **New environments:** the runner and arch `wineo new` uses, and where
-  prefixes, runners, DXVK, and vkd3d-proton builds go. Empty root fields show
+- **New environments:** the runner and arch `wineo new` uses, whether to
+  use **Builds from Steam, Heroic, and Lutris**, and where prefixes, runners,
+  DXVK, and vkd3d-proton builds go. The builds switch is off until it's
+  answered, and is disabled in a portable folder. Empty root fields show
   the default locations for the current XDG or portable setup.
 - **Runs:** how long `stop` waits before killing a game, and how big a log
   gets.
