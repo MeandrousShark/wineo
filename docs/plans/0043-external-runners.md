@@ -70,9 +70,11 @@ recommendation:
     section, each with its source and what uses it.
   - The GUI switch, "Builds from Steam, Heroic, and Lutris", goes in the
     New environments group of global Settings.
-  - The GUI asks the one-time question as an inline card at the top of the
-    runner step, with No and Yes. Answering saves it and refreshes the
-    runner list in place.
+  - The GUI asks the one-time question as an inline card, with No and Yes.
+    Answering saves it and refreshes the runner list in place. The Add flow
+    has no separate runner step, so the card sits right under the Template
+    picker (approved over placing it inside Additional wine options or on
+    the Review page). In Heroic import it tops the Details step.
   - The CLI changes the setting with `wineo set --global external_runners=`,
     which already works, so answer 2's `wineo config` needs no new command.
   - Step 3 review: `wineo runners` puts the source column right after the
