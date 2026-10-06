@@ -268,7 +268,9 @@ pub(crate) enum Event {
     Runner(String),
     /// The answer to using other launchers' builds.
     Offer(bool),
-    Offered(u64, Result<Refreshed, String>),
+    /// The reply's sequence, the details session it was asked for, and
+    /// the runner choices read after saving the answer.
+    Offered(u64, u64, Result<Refreshed, String>),
     Adopt(bool),
     Desktop(bool),
     FetchBatchArt(bool),
@@ -329,6 +331,9 @@ pub(crate) struct Page {
     /// Set while an answer to the offer is being saved.
     answering: bool,
     offer_sequence: u64,
+    /// Bumped each time details open for a game or a batch, so choices read
+    /// for one never land on another.
+    details_session: u64,
 }
 
 impl Page {
@@ -364,6 +369,7 @@ impl Page {
             action: None,
             answering: false,
             offer_sequence: 0,
+            details_session: 0,
         };
         let task = page.discover();
         (page, task)
@@ -466,6 +472,35 @@ impl Page {
             Step::Finished => self.exit(),
         }
         Task::none()
+    }
+
+    /// Saves the answer, if there is one, then reads the runner choices
+    /// again for the open game or batch.
+    fn relist(&mut self, answer: Option<bool>) -> Task<Event> {
+        self.offer_sequence = self.offer_sequence.wrapping_add(1);
+        let sequence = self.offer_sequence;
+        let session = self.details_session;
+        let paths = self.paths.clone();
+        let single = (!self.draft.batch)
+            .then(|| {
+                let listing = self.listing.as_ref()?;
+                let candidate = self.prepared.as_ref()?.candidate.clone();
+                Some((listing.source.clone(), candidate))
+            })
+            .flatten();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    if let Some(on) = answer {
+                        runner_label::answer(&paths, on)?;
+                    }
+                    refresh(&paths, single)
+                })
+                .await
+                .map_err(|e| e.to_string())?
+            },
+            move |result| Event::Offered(sequence, session, result),
+        )
     }
 
     /// The question shows on the runner step until it's answered, for a
@@ -625,6 +660,7 @@ impl Page {
             return Task::none();
         }
         self.selected = Some(index);
+        self.details_session = self.details_session.wrapping_add(1);
         self.status = format!("Inspecting {}...", candidate.title);
         self.error = None;
         let paths = self.paths.clone();
@@ -651,6 +687,7 @@ impl Page {
             ..Draft::default()
         };
         self.prepared = None;
+        self.details_session = self.details_session.wrapping_add(1);
         self.step = Step::Details;
         self.status = "Checking installed runners...".to_owned();
         let paths = self.paths.clone();
@@ -1544,32 +1581,16 @@ impl Page {
             }
             Event::Offer(on) if self.offer_shown() && !self.answering => {
                 self.answering = true;
-                self.offer_sequence = self.offer_sequence.wrapping_add(1);
-                let sequence = self.offer_sequence;
-                let paths = self.paths.clone();
-                let single = (!self.draft.batch)
-                    .then(|| {
-                        let listing = self.listing.as_ref()?;
-                        let candidate = self.prepared.as_ref()?.candidate.clone();
-                        Some((listing.source.clone(), candidate))
-                    })
-                    .flatten();
-                Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            runner_label::answer(&paths, on)?;
-                            refresh(&paths, single)
-                        })
-                        .await
-                        .map_err(|e| e.to_string())?
-                    },
-                    move |result| Event::Offered(sequence, result),
-                )
+                self.relist(Some(on))
             }
-            Event::Offered(sequence, result) if sequence == self.offer_sequence => {
+            Event::Offered(sequence, session, result) if sequence == self.offer_sequence => {
                 self.answering = false;
                 match result {
-                    Ok(refreshed) => self.refreshed(refreshed),
+                    Ok(refreshed) if session == self.details_session => self.refreshed(refreshed),
+                    // The answer is saved, but these choices were for a game
+                    // or batch that's no longer open, so read the open one's.
+                    Ok(_) if self.step == Step::Details => self.relist(None),
+                    Ok(_) => Task::none(),
                     Err(error) => {
                         self.error = Some(error);
                         Task::none()
@@ -4250,8 +4271,9 @@ mod tests {
         }
     }
 
-    /// A Windows game Heroic runs on its own GE-Proton-latest, in the config
-    /// folder wineo's scan looks at, with its details open.
+    /// Windows games Heroic runs on its own builds, in the config folder
+    /// wineo's scan looks at: Dusk on GE-Proton-latest, with its details
+    /// open, and Dawn on GE-Proton11-1.
     fn windows_details(root: &std::path::Path) -> Page {
         let heroic = root.join(".config/heroic");
         for dir in ["sideload_apps", "GamesConfig", "store"] {
@@ -4259,6 +4281,8 @@ mod tests {
         }
         let proton = heroic.join("tools/proton/GE-Proton-latest");
         fake_proton(&proton);
+        let dawn_proton = heroic.join("tools/proton/GE-Proton11-1");
+        fake_proton(&dawn_proton);
         let prefix = root.join("prefix");
         fs::create_dir_all(prefix.join("pfx/drive_c")).unwrap();
         fs::write(
@@ -4278,12 +4302,20 @@ mod tests {
         fs::write(
             heroic.join("sideload_apps/library.json"),
             format!(
-                r#"{{"games":[{{"app_name":"dusk","title":"Dusk","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}}]}}"#,
-                prefix.join("pfx/drive_c/game.exe").display()
+                r#"{{"games":[{{"app_name":"dusk","title":"Dusk","runner":"sideload","install":{{"platform":"Windows","executable":"{exe}"}}}},{{"app_name":"dawn","title":"Dawn","runner":"sideload","install":{{"platform":"Windows","executable":"{exe}"}}}}]}}"#,
+                exe = prefix.join("pfx/drive_c/game.exe").display()
             ),
         )
         .unwrap();
         fs::write(heroic.join("GamesConfig/dusk.json"), r#"{"dusk":{}}"#).unwrap();
+        fs::write(
+            heroic.join("GamesConfig/dawn.json"),
+            format!(
+                r#"{{"dawn":{{"wineVersion":{{"type":"proton","name":"GE-Proton11-1","bin":"{}"}}}}}}"#,
+                dawn_proton.join("proton").display()
+            ),
+        )
+        .unwrap();
         let paths = paths(root);
         let source = HeroicSource::from_config_dir_with_home(heroic, root.to_owned());
         let global = GlobalConfig::load(&paths).unwrap();
@@ -4304,9 +4336,57 @@ mod tests {
         let candidate = page.prepared.as_ref().unwrap().candidate.clone();
         let answered = runner_label::answer(&page.paths, true)
             .and_then(|()| refresh(&page.paths, Some((listing.source, candidate))));
-        let _ = page.update(Event::Offered(page.offer_sequence, answered));
+        let _ = page.update(Event::Offered(
+            page.offer_sequence,
+            page.details_session,
+            answered,
+        ));
         assert!(!page.answering);
         assert!(!page.offer_shown());
+    }
+
+    #[test]
+    fn an_answer_for_one_game_does_not_change_the_next_games_runner() {
+        let root = tempdir().unwrap();
+        let mut page = windows_details(root.path());
+        let dusk = page.prepared.as_ref().unwrap().candidate.clone();
+        let _ = page.update(Event::Offer(true));
+        let sequence = page.offer_sequence;
+        let session = page.details_session;
+
+        // Back to the grid and on to Dawn before Dusk's answer comes back.
+        let _ = page.back();
+        assert_eq!(page.step, Step::Games);
+        let _ = page.update(Event::Toggle(0));
+        open_single(&mut page, 1);
+        assert_eq!(page.prepared.as_ref().unwrap().candidate.id, "dawn");
+        assert!(page.draft.runner.is_empty());
+
+        let listing = page.listing.clone().unwrap();
+        let answered = runner_label::answer(&page.paths, true)
+            .and_then(|()| refresh(&page.paths, Some((listing.source.clone(), dusk))));
+        let _ = page.update(Event::Offered(sequence, session, answered));
+        assert!(!page.answering);
+        assert!(page.draft.runner.is_empty());
+        assert!(!matches!(
+            page.prepared.as_ref().unwrap().suggested,
+            Some(RunnerSuggestion::Use(_))
+        ));
+        // Dawn's own choices are read instead.
+        assert_ne!(page.offer_sequence, sequence);
+        let dawn = page.prepared.as_ref().unwrap().candidate.clone();
+        let relisted = refresh(&page.paths, Some((listing.source, dawn)));
+        let _ = page.update(Event::Offered(
+            page.offer_sequence,
+            page.details_session,
+            relisted,
+        ));
+        assert_eq!(page.draft.runner, "GE-Proton11-1");
+        assert!(!page.offer_shown());
+        assert_eq!(
+            GlobalConfig::load(&page.paths).unwrap().external_runners,
+            Some(true)
+        );
     }
 
     #[test]
@@ -4324,6 +4404,15 @@ mod tests {
             Some(RunnerSuggestion::Use(name)) if name == "GE-Proton-latest"
         ));
         assert_eq!(page.draft.runner, "GE-Proton-latest");
+        let listing = page.listing.clone().unwrap();
+        let review = plan_review(&page.paths, &listing, page.selected, &page.draft).unwrap();
+        let Review::Single { runner_line, .. } = review else {
+            panic!("expected a single review");
+        };
+        assert_eq!(
+            runner_line.as_deref(),
+            Some("Runner: GE-Proton-latest (Heroic)")
+        );
     }
 
     #[test]
@@ -4357,7 +4446,11 @@ mod tests {
             panic!("expected batch options");
         };
         assert_eq!(options.runner, "GE-Proton11-3");
-        let _ = page.update(Event::Offered(page.offer_sequence, answered));
+        let _ = page.update(Event::Offered(
+            page.offer_sequence,
+            page.details_session,
+            answered,
+        ));
         assert_eq!(page.draft.runner, "GE-Proton9-1");
     }
 
@@ -4385,7 +4478,7 @@ mod tests {
         assert_eq!(page.step, Step::Review);
         let paths = page.paths.clone();
         let answered = runner_label::answer(&paths, true).and_then(|()| refresh(&paths, None));
-        let _ = page.update(Event::Offered(sequence, answered));
+        let _ = page.update(Event::Offered(sequence, page.details_session, answered));
         assert_eq!(page.step, Step::Review);
         assert!(page.review.is_some());
         assert!(!page.answering);
@@ -4410,7 +4503,11 @@ mod tests {
         let _ = page.update(Event::Offer(true));
         let paths = page.paths.clone();
         let answered = runner_label::answer(&paths, true).and_then(|()| refresh(&paths, None));
-        let _ = page.update(Event::Offered(page.offer_sequence, answered));
+        let _ = page.update(Event::Offered(
+            page.offer_sequence,
+            page.details_session,
+            answered,
+        ));
         assert_eq!(
             GlobalConfig::load(&paths).unwrap().external_runners,
             Some(true)
