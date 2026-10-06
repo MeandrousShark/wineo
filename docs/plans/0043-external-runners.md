@@ -60,6 +60,18 @@ recommendation:
   `GE-Proton-latest (Heroic)`, with no extra note or prompt. Reserved names
   (`wine` and the `*-Latest` aliases) are never used in place.
 
+## Amendment: a runners root inside a launcher folder
+
+Approved by the maintainer on 2026-10-05, from a step 1 review note.
+
+If `runner_root` points at, or inside, a folder this plan knows belongs to
+Steam, Heroic, or Lutris (after resolving symlinks), wineo still launches
+from it but treats its builds as that launcher's for removal: `runners
+remove` and Downloads refuse with the same "GE-Proton11-3 belongs to Steam."
+This holds whether `external_runners` is on or not, since the point is to
+never delete another launcher's files. A root that merely contains a
+launcher folder further down is unaffected.
+
 ## Existing foundation
 
 - `Runners` ([runners.rs](../../crates/wineo-core/src/runners.rs)) wraps one
