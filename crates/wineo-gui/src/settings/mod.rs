@@ -2419,6 +2419,34 @@ mod tests {
     }
 
     #[test]
+    fn an_alias_resolving_into_steams_folder_is_labeled_steam() {
+        let (root, paths) = setup();
+        let steam = crate::runner_label::fake_steam_build(root.path(), "GE-Proton11-3");
+        let tools = steam.parent().unwrap();
+        write_global(
+            &paths,
+            &format!("[defaults]\nrunner_root = '{}'\n", tools.display()),
+        );
+        let global = GlobalConfig::load(&paths).unwrap();
+        let (choices, _) = load::runner_choices(&paths, &global, "GE-Proton-Latest");
+        let alias = choices
+            .iter()
+            .find(|choice| choice.name == "GE-Proton-Latest")
+            .unwrap();
+        assert_eq!(
+            alias.launcher,
+            Some(wineo_core::external_runners::Source::Steam)
+        );
+        assert_eq!(alias.proton, Some(true));
+        let missing = choices
+            .iter()
+            .find(|choice| choice.name == "Proton-CachyOS-Latest")
+            .unwrap();
+        assert_eq!(missing.launcher, None);
+        assert_eq!(missing.proton, None);
+    }
+
+    #[test]
     fn external_runners_switch_does_nothing_in_a_portable_folder() {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().to_owned();

@@ -2744,5 +2744,13 @@ mod tests {
         fake_runner(&paths);
         let own = runners.resolve("fake").unwrap();
         assert_eq!(runner_label::resolved(&paths, &own), "fake (fake)");
+
+        let draft = Draft {
+            title: "steam-game".to_owned(),
+            runner: "GE-Proton11-3".to_owned(),
+            ..Draft::default()
+        };
+        let review = prepare(&paths, &draft).unwrap();
+        assert_eq!(review.runner_row.as_deref(), Some("GE-Proton11-3 (Steam)"));
     }
 }

@@ -354,22 +354,22 @@ pub(crate) fn runner_choices(
             proton: Some(runner.is_proton()),
         }));
     }
+    // An alias or a configured name is labeled by the build it resolves to.
+    let resolved = |name: &str| {
+        let runner = runners.resolve(name).ok();
+        RunnerChoice {
+            name: name.to_owned(),
+            launcher: runner
+                .as_ref()
+                .and_then(|runner| crate::runner_label::launcher(paths, runner)),
+            proton: runner.map(|runner| runner.is_proton()),
+        }
+    };
     for alias in runner_alias::ALIASES {
-        choices.push(RunnerChoice {
-            name: alias.to_owned(),
-            launcher: None,
-            proton: runners.resolve(alias).ok().map(|runner| runner.is_proton()),
-        });
+        choices.push(resolved(alias));
     }
     if !choices.iter().any(|choice| choice.name == configured) {
-        choices.push(RunnerChoice {
-            name: configured.to_owned(),
-            launcher: None,
-            proton: runners
-                .resolve(configured)
-                .ok()
-                .map(|runner| runner.is_proton()),
-        });
+        choices.push(resolved(configured));
     }
     let current = runners.resolve(configured).ok().map(|runner| Current {
         name: runner.name().to_owned(),
