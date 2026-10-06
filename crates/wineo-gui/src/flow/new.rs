@@ -33,6 +33,7 @@ use wineo_core::templates::{Template, Templates};
 use super::{Action, artwork};
 use crate::logview::{self, LogView};
 use crate::picker;
+use crate::runner_label::{self, Choice};
 use crate::theme::Palette;
 use crate::ui::{self, PickListStyle};
 
@@ -93,7 +94,9 @@ enum Stage {
 pub(crate) struct Options {
     runner: String,
     templates: Vec<String>,
-    runners: Vec<String>,
+    runners: Vec<Choice>,
+    /// Whether to ask about other launchers' builds for a game.
+    offer: bool,
     arch: Arch,
     prefix_root: PathBuf,
 }
@@ -239,6 +242,9 @@ pub(crate) enum Event {
     ArtApplied(u64, Result<Vec<String>, String>),
     TargetAdded(u64, Result<Vec<String>, String>),
     Options(Result<Options, String>),
+    /// The answer to using other launchers' builds.
+    Offer(bool),
+    Offered(Result<Options, String>),
     Reviewed(u64, Result<Box<Review>, String>),
     Progress(u64, String),
     LogChunk(u64, String),
@@ -317,39 +323,24 @@ impl Page {
         let paths = self.paths.clone();
         Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || {
-                    let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
-                    let available = Runners::new(&paths, &global).map_err(|e| e.to_string())?;
-                    let mut runners = vec![global.defaults.runner.clone(), "wine".to_owned()];
-                    runners.extend(
-                        available
-                            .list()
-                            .map_err(|e| e.to_string())?
-                            .runners
-                            .iter()
-                            .map(|runner| runner.name().to_owned()),
-                    );
-                    runners.sort();
-                    runners.dedup();
-                    let templates = Templates::new(&paths)
-                        .list()
-                        .map_err(|e| e.to_string())?
-                        .into_iter()
-                        .map(|entry| entry.name)
-                        .collect();
-                    Ok::<_, String>(Options {
-                        prefix_root: global.prefix_root(&paths).map_err(|e| e.to_string())?,
-                        runner: global.defaults.runner,
-                        templates,
-                        runners,
-                        arch: global.defaults.arch,
-                    })
-                })
-                .await
-                .map_err(|error| error.to_string())?
+                tokio::task::spawn_blocking(move || read_options(&paths))
+                    .await
+                    .map_err(|error| error.to_string())?
             },
             Event::Options,
         )
+    }
+
+    /// The question shows for a game, which is where Steam, Heroic, and
+    /// Lutris builds matter, until it's answered.
+    fn offer_shown(&self) -> bool {
+        self.stage == Stage::Details
+            && self.draft.kind == Kind::Windows
+            && self.options.as_ref().is_some_and(|options| options.offer)
+            && self
+                .template_preview
+                .as_ref()
+                .is_some_and(|template| template.tags.iter().any(|tag| tag == "game"))
     }
 
     #[must_use]
@@ -1103,6 +1094,25 @@ impl Page {
                 }
                 Err(error) => self.error = Some(error),
             },
+            Event::Offer(on) if self.offer_shown() => {
+                let paths = self.paths.clone();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || answer_offer(&paths, on))
+                            .await
+                            .map_err(|error| error.to_string())?
+                    },
+                    Event::Offered,
+                );
+            }
+            Event::Offered(result) => match result {
+                Ok(options) => {
+                    self.options = Some(options);
+                    // The template's runner may resolve to another build now.
+                    self.edited();
+                }
+                Err(error) => self.error = Some(error),
+            },
             _ => {}
         }
         Task::none()
@@ -1246,6 +1256,9 @@ impl Page {
                 ]
                 .spacing(4),
             );
+            if self.offer_shown() {
+                form = form.push(runner_label::offer_card(palette, Event::Offer));
+            }
             if let Some(template) = &self.template_preview {
                 let effects = template_effects(template, &self.draft);
                 let mut summary = column![text("This template sets:").size(12)].spacing(2);
@@ -1272,19 +1285,18 @@ impl Page {
                 if let Some(options) = &self.options {
                     options_body = options_body.push(
                         pick_list(
-                            std::iter::once("Use template or global default".to_owned())
-                                .chain(options.runners.iter().cloned())
+                            std::iter::once(Pick::Default)
+                                .chain(options.runners.iter().cloned().map(Pick::Runner))
                                 .collect::<Vec<_>>(),
                             Some(if self.draft.runner.is_empty() {
-                                "Use template or global default".to_owned()
+                                Pick::Default
                             } else {
-                                self.draft.runner.clone()
+                                Pick::Runner(Choice::find(&options.runners, &self.draft.runner))
                             }),
-                            |runner| {
-                                Event::Runner(if runner == "Use template or global default" {
-                                    String::new()
-                                } else {
-                                    runner
+                            |pick| {
+                                Event::Runner(match pick {
+                                    Pick::Default => String::new(),
+                                    Pick::Runner(choice) => choice.name,
                                 })
                             },
                         )
@@ -1407,10 +1419,7 @@ impl Page {
                     }
                     let mut runtime = Vec::new();
                     if let Some(runner) = &review.runner {
-                        runtime.push((
-                            "Runner",
-                            format!("{} ({})", runner.selection(), runner.name()),
-                        ));
+                        runtime.push(("Runner", runner_row(runner)));
                     } else if let Some(Prerequisite::Runner(name)) = &review.prerequisite {
                         runtime.push(("Runner", format!("{name} (not installed)")));
                     }
@@ -1691,6 +1700,73 @@ fn review_field(label: &'static str, value: String, palette: Palette) -> Element
     .spacing(2)
     .width(Fill)
     .into()
+}
+
+/// A picker entry: the template or global default, or a named runner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Pick {
+    Default,
+    Runner(Choice),
+}
+
+impl std::fmt::Display for Pick {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Default => f.write_str("Use template or global default"),
+            Self::Runner(choice) => choice.fmt(f),
+        }
+    }
+}
+
+fn read_options(paths: &Paths) -> Result<Options, String> {
+    let global = GlobalConfig::load(paths).map_err(|e| e.to_string())?;
+    let available = Runners::new(paths, &global).map_err(|e| e.to_string())?;
+    let mut runners = vec![
+        Choice::plain(global.defaults.runner.clone()),
+        Choice::plain(Runner::SYSTEM),
+    ];
+    runners.extend(
+        available
+            .list()
+            .map_err(|e| e.to_string())?
+            .runners
+            .iter()
+            .map(Choice::of),
+    );
+    // A listed build knows its launcher, so it wins over the plain default.
+    runners.sort_by(|a, b| a.name.cmp(&b.name).then(b.launcher.cmp(&a.launcher)));
+    runners.dedup_by(|a, b| a.name == b.name);
+    let templates = Templates::new(paths)
+        .list()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect();
+    Ok(Options {
+        prefix_root: global.prefix_root(paths).map_err(|e| e.to_string())?,
+        offer: runner_label::offer(paths, &global),
+        runner: global.defaults.runner,
+        templates,
+        runners,
+        arch: global.defaults.arch,
+    })
+}
+
+fn answer_offer(paths: &Paths, on: bool) -> Result<Options, String> {
+    runner_label::answer(paths, on)?;
+    read_options(paths)
+}
+
+/// The review's runner row: the name as configured, then the build it
+/// resolved to, with its launcher when it isn't wineo's.
+fn runner_row(runner: &Runner) -> String {
+    match runner_label::launcher(runner) {
+        Some(launcher) if runner.selection() == runner.name() => {
+            runner_label::labeled(runner.name(), Some(launcher))
+        }
+        Some(launcher) => format!("{} ({}, {launcher})", runner.selection(), runner.name()),
+        None => format!("{} ({})", runner.selection(), runner.name()),
+    }
 }
 
 fn template_effects(template: &Template, draft: &Draft) -> Vec<String> {
@@ -2497,5 +2573,96 @@ mod tests {
         );
         assert!(!report.registered);
         assert!(!paths.environment_config("canceled-game").exists());
+    }
+
+    fn offer_page(paths: &Paths) -> Page {
+        let mut page = Page::new(paths.clone()).0;
+        let _ = page.update(Event::Options(read_options(paths)));
+        page
+    }
+
+    fn write_global(paths: &Paths, text: &str) {
+        let file = paths.global_config();
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    }
+
+    #[test]
+    fn the_offer_shows_for_a_game_only_while_unanswered_and_not_portable() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_owned();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(&home))).unwrap();
+        let mut page = offer_page(&paths);
+        assert!(!page.offer_shown());
+        let _ = page.update(Event::Template("gaming".to_owned()));
+        assert!(page.offer_shown());
+        let _ = page.update(Event::Kind(Kind::Native));
+        assert!(!page.offer_shown());
+
+        write_global(&paths, "external_runners = false\n");
+        let mut page = offer_page(&paths);
+        let _ = page.update(Event::Template("gaming".to_owned()));
+        assert!(!page.offer_shown());
+
+        let portable = root.path().join("portable");
+        let paths = Paths::select(
+            |key| (key == "HOME").then(|| OsString::from(&home)),
+            Some(&portable),
+        )
+        .unwrap();
+        let mut page = offer_page(&paths);
+        let _ = page.update(Event::Template("gaming".to_owned()));
+        assert!(!page.offer_shown());
+    }
+
+    #[test]
+    fn answering_the_offer_saves_it_hides_it_and_relists_runners() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        runner_label::fake_steam_build(root.path(), "GE-Proton11-3");
+        let mut page = offer_page(&paths);
+        let _ = page.update(Event::Template("gaming".to_owned()));
+        let steam = |page: &Page| {
+            page.options
+                .as_ref()
+                .unwrap()
+                .runners
+                .iter()
+                .any(|choice| choice.to_string() == "GE-Proton11-3 (Steam)")
+        };
+        assert!(!steam(&page));
+
+        let _ = page.update(Event::Offer(true));
+        let _ = page.update(Event::Offered(answer_offer(&paths, true)));
+        assert_eq!(
+            GlobalConfig::load(&paths).unwrap().external_runners,
+            Some(true)
+        );
+        assert!(!page.offer_shown());
+        assert!(steam(&page));
+        // Answered, it never comes back.
+        let _ = page.update(Event::Offer(false));
+        assert_eq!(
+            GlobalConfig::load(&paths).unwrap().external_runners,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn the_review_runner_row_names_another_launchers_build() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        runner_label::fake_steam_build(root.path(), "GE-Proton11-3");
+        write_global(&paths, "external_runners = true\n");
+        let global = GlobalConfig::load(&paths).unwrap();
+        let runners = Runners::new(&paths, &global).unwrap();
+        let steam = runners.resolve("GE-Proton11-3").unwrap();
+        assert_eq!(runner_row(&steam), "GE-Proton11-3 (Steam)");
+        fake_runner(&paths);
+        let own = runners.resolve("fake").unwrap();
+        assert_eq!(runner_row(&own), "fake (fake)");
     }
 }

@@ -31,6 +31,7 @@ use wineo_core::runners::Runners;
 
 use super::{Action, artwork};
 use crate::chips::Chips;
+use crate::runner_label::{self, Choice};
 use crate::theme::Palette;
 use crate::ui::PickListStyle;
 
@@ -56,9 +57,11 @@ pub(crate) enum Review {
 #[derive(Debug, Clone)]
 pub(crate) struct Prepared {
     candidate: HeroicCandidate,
-    runners: Vec<String>,
+    runners: Vec<Choice>,
     suggested: Option<RunnerSuggestion>,
     runner: String,
+    /// Whether to ask about other launchers' builds.
+    offer: bool,
     arguments: Vec<String>,
     unparsed_arguments: Option<String>,
     working_directory: String,
@@ -73,8 +76,21 @@ pub(crate) struct Prepared {
 #[derive(Debug, Clone)]
 pub(crate) struct BatchOptions {
     runner: String,
-    runners: Vec<String>,
+    runners: Vec<Choice>,
     art_fetch_enabled: bool,
+    offer: bool,
+}
+
+/// The runner choices again after the offer is answered, which can add
+/// builds and change what Heroic's runner suggests.
+#[derive(Debug, Clone)]
+pub(crate) enum Refreshed {
+    Single {
+        runners: Vec<Choice>,
+        suggested: Option<RunnerSuggestion>,
+        runner: String,
+    },
+    Batch(BatchOptions),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -244,6 +260,9 @@ pub(crate) enum Event {
     BrowseWorkingDirectory,
     PickedWorkingDirectory(u64, Result<Option<PathBuf>, String>),
     Runner(String),
+    /// The answer to using other launchers' builds.
+    Offer(bool),
+    Offered(u64, Result<Refreshed, String>),
     Adopt(bool),
     Desktop(bool),
     FetchBatchArt(bool),
@@ -438,6 +457,57 @@ impl Page {
         Task::none()
     }
 
+    /// The question shows on the runner step until it's answered, for a
+    /// batch or a Windows game.
+    fn offer_shown(&self) -> bool {
+        self.step == Step::Details
+            && if self.draft.batch {
+                self.batch_options
+                    .as_ref()
+                    .is_some_and(|options| options.offer)
+            } else {
+                self.prepared.as_ref().is_some_and(|prepared| {
+                    prepared.offer && prepared.candidate.kind == HeroicGameKind::Windows
+                })
+            }
+    }
+
+    /// Takes the new runner choices, and the new suggestion too unless the
+    /// person already picked a runner of their own.
+    fn refreshed(&mut self, refreshed: Refreshed) {
+        self.review = None;
+        match refreshed {
+            Refreshed::Single {
+                runners,
+                suggested,
+                runner,
+            } => {
+                if let Some(prepared) = &mut self.prepared {
+                    if self.draft.runner == prepared.runner {
+                        self.draft.runner.clone_from(&runner);
+                    }
+                    *prepared = Prepared {
+                        runners,
+                        suggested,
+                        runner,
+                        offer: false,
+                        ..prepared.clone()
+                    };
+                }
+            }
+            Refreshed::Batch(options) => {
+                if self
+                    .batch_options
+                    .as_ref()
+                    .is_none_or(|old| old.runner == self.draft.runner)
+                {
+                    self.draft.runner.clone_from(&options.runner);
+                }
+                self.batch_options = Some(options);
+            }
+        }
+    }
+
     fn exit(&mut self) {
         self.action = Some(Action::Library {
             name: None,
@@ -568,30 +638,9 @@ impl Page {
         let generation = self.next_generation();
         Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || {
-                    let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
-                    let runners = Runners::new(&paths, &global).map_err(|e| e.to_string())?;
-                    let runner = runners
-                        .newest_proton()
-                        .map_err(|e| e.to_string())?
-                        .map(|runner| runner.selection().to_owned())
-                        .unwrap_or_default();
-                    let names = runners
-                        .list()
-                        .map_err(|e| e.to_string())?
-                        .runners
-                        .into_iter()
-                        .map(|runner| runner.selection().to_owned())
-                        .collect();
-                    let art_fetch_enabled = !global.art.fetch.kinds().is_empty();
-                    Ok(BatchOptions {
-                        runner,
-                        runners: names,
-                        art_fetch_enabled,
-                    })
-                })
-                .await
-                .map_err(|e| e.to_string())?
+                tokio::task::spawn_blocking(move || batch_options(&paths))
+                    .await
+                    .map_err(|e| e.to_string())?
             },
             move |result| Event::BatchPrepared(generation, result),
         )
@@ -1473,6 +1522,37 @@ impl Page {
                 self.review = None;
                 Task::none()
             }
+            Event::Offer(on) if self.offer_shown() => {
+                let paths = self.paths.clone();
+                let generation = self.generation;
+                let single = (!self.draft.batch)
+                    .then(|| {
+                        let listing = self.listing.as_ref()?;
+                        let candidate = self.prepared.as_ref()?.candidate.clone();
+                        Some((listing.source.clone(), candidate))
+                    })
+                    .flatten();
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            runner_label::answer(&paths, on)?;
+                            refresh(&paths, single)
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?
+                    },
+                    move |result| Event::Offered(generation, result),
+                )
+            }
+            Event::Offered(generation, result)
+                if generation == self.generation && self.step == Step::Details =>
+            {
+                match result {
+                    Ok(refreshed) => self.refreshed(refreshed),
+                    Err(error) => self.error = Some(error),
+                }
+                Task::none()
+            }
             Event::Adopt(value) => {
                 self.draft.adopt = value;
                 self.review = None;
@@ -1825,6 +1905,9 @@ impl Page {
                 }
             }
             Step::Details => {
+                if self.offer_shown() {
+                    body = body.push(runner_label::offer_card(palette, Event::Offer));
+                }
                 if self.draft.batch {
                     body = body.push(
                         text("Windows games use the selected runner. Native games need no runner.")
@@ -1835,8 +1918,8 @@ impl Page {
                         body = body.push(
                             pick_list(
                                 options.runners.clone(),
-                                Some(self.draft.runner.clone()),
-                                Event::Runner,
+                                Some(Choice::find(&options.runners, &self.draft.runner)),
+                                |choice| Event::Runner(choice.name),
                             )
                             .wineo_style(palette),
                         );
@@ -1934,8 +2017,8 @@ impl Page {
                             body = body.push(
                                 pick_list(
                                     prepared.runners.clone(),
-                                    Some(self.draft.runner.clone()),
-                                    Event::Runner,
+                                    Some(Choice::find(&prepared.runners, &self.draft.runner)),
+                                    |choice| Event::Runner(choice.name),
                                 )
                                 .wineo_style(palette),
                             );
@@ -2014,10 +2097,7 @@ impl Page {
                             body = body.push(text(format!("{} -> {}", game.title(), game.name())));
                             match game.as_ref() {
                                 Game::Windows(plan) => {
-                                    body = body.push(text(format!(
-                                        "Runner: {}",
-                                        plan.runner().selection()
-                                    )));
+                                    body = body.push(text(runner_line(plan.runner())));
                                     body = body.push(text(format!(
                                         "Executable: {}",
                                         plan.resolved().exe.display()
@@ -2624,16 +2704,7 @@ fn prepare_game(
     candidate: HeroicCandidate,
 ) -> Result<Prepared, String> {
     let global = GlobalConfig::load(paths).map_err(|e| e.to_string())?;
-    let runners = Runners::new(paths, &global).map_err(|e| e.to_string())?;
-    let installed = runners.list().map_err(|e| e.to_string())?;
-    let mut names: Vec<String> = installed
-        .runners
-        .iter()
-        .map(|runner| runner.selection().to_owned())
-        .collect();
-    if runners.resolve("wine").is_ok() {
-        names.insert(0, "wine".to_owned());
-    }
+    let (runners, names) = runner_choices(paths, &global, true)?;
     let (
         suggested,
         runner,
@@ -2647,21 +2718,7 @@ fn prepare_game(
         hdr,
     ) = if candidate.kind == HeroicGameKind::Windows {
         let imported = source.inspect(&candidate.id).map_err(|e| e.to_string())?;
-        let suggestion = heroic_import::suggest_runner(paths, &global, &imported, None)
-            .map_err(|e| e.to_string())?;
-        let runner = match &suggestion {
-            RunnerSuggestion::Use(name) => name.clone(),
-            RunnerSuggestion::Copy(_) => String::new(),
-            RunnerSuggestion::Choose { proton, .. } => names
-                .iter()
-                .find(|name| {
-                    runners
-                        .resolve(name)
-                        .is_ok_and(|runner| runner.is_proton() == *proton)
-                })
-                .cloned()
-                .unwrap_or_default(),
-        };
+        let (suggestion, runner) = suggest(paths, &global, &runners, &names, &imported)?;
         (
             Some(suggestion),
             runner,
@@ -2713,6 +2770,7 @@ fn prepare_game(
         runners: names,
         suggested,
         runner,
+        offer: runner_label::offer(paths, &global),
         arguments,
         unparsed_arguments,
         working_directory,
@@ -2723,6 +2781,97 @@ fn prepare_game(
         gamescope,
         hdr,
     })
+}
+
+/// Installed runners as the pickers show them, with the system wine first
+/// when it's wanted and there is one.
+fn runner_choices(
+    paths: &Paths,
+    global: &GlobalConfig,
+    system: bool,
+) -> Result<(Runners, Vec<Choice>), String> {
+    let runners = Runners::new(paths, global).map_err(|e| e.to_string())?;
+    let mut choices: Vec<Choice> = runners
+        .list()
+        .map_err(|e| e.to_string())?
+        .runners
+        .iter()
+        .map(Choice::of)
+        .collect();
+    if system && runners.resolve("wine").is_ok() {
+        choices.insert(0, Choice::plain("wine"));
+    }
+    Ok((runners, choices))
+}
+
+/// What to do about a Windows game's runner, and the runner that starts out
+/// picked for it.
+fn suggest(
+    paths: &Paths,
+    global: &GlobalConfig,
+    runners: &Runners,
+    choices: &[Choice],
+    imported: &wineo_core::heroic::HeroicImport,
+) -> Result<(RunnerSuggestion, String), String> {
+    let suggestion =
+        heroic_import::suggest_runner(paths, global, imported, None).map_err(|e| e.to_string())?;
+    let runner = match &suggestion {
+        RunnerSuggestion::Use(name) => name.clone(),
+        RunnerSuggestion::Copy(_) => String::new(),
+        RunnerSuggestion::Choose { proton, .. } => choices
+            .iter()
+            .find(|choice| {
+                runners
+                    .resolve(&choice.name)
+                    .is_ok_and(|runner| runner.is_proton() == *proton)
+            })
+            .map(|choice| choice.name.clone())
+            .unwrap_or_default(),
+    };
+    Ok((suggestion, runner))
+}
+
+fn batch_options(paths: &Paths) -> Result<BatchOptions, String> {
+    let global = GlobalConfig::load(paths).map_err(|e| e.to_string())?;
+    let (runners, choices) = runner_choices(paths, &global, false)?;
+    let runner = runners
+        .newest_proton()
+        .map_err(|e| e.to_string())?
+        .map(|runner| runner.selection().to_owned())
+        .unwrap_or_default();
+    Ok(BatchOptions {
+        runner,
+        runners: choices,
+        art_fetch_enabled: !global.art.fetch.kinds().is_empty(),
+        offer: runner_label::offer(paths, &global),
+    })
+}
+
+fn refresh(
+    paths: &Paths,
+    single: Option<(HeroicSource, HeroicCandidate)>,
+) -> Result<Refreshed, String> {
+    let Some((source, candidate)) = single else {
+        return batch_options(paths).map(Refreshed::Batch);
+    };
+    let global = GlobalConfig::load(paths).map_err(|e| e.to_string())?;
+    let (runners, choices) = runner_choices(paths, &global, true)?;
+    let imported = source.inspect(&candidate.id).map_err(|e| e.to_string())?;
+    let (suggested, runner) = suggest(paths, &global, &runners, &choices, &imported)?;
+    Ok(Refreshed::Single {
+        runners: choices,
+        suggested: Some(suggested),
+        runner,
+    })
+}
+
+/// The review's runner line, naming the launcher when the build isn't
+/// wineo's, like `Runner: GE-Proton-latest (Heroic)`.
+fn runner_line(runner: &wineo_core::runner::Runner) -> String {
+    format!(
+        "Runner: {}",
+        runner_label::labeled(runner.selection(), runner_label::launcher(runner))
+    )
 }
 
 fn toggle_label(value: Option<bool>) -> &'static str {
@@ -4056,5 +4205,58 @@ mod tests {
                 .join(wineo_core::art::ART_FILE)
                 .exists()
         );
+    }
+
+    #[test]
+    fn the_runner_step_asks_once_and_answering_relists_in_place() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        crate::runner_label::fake_steam_build(root.path(), "GE-Proton11-3");
+        let _ = page.update(Event::Toggle(DUSK));
+        let _ = page.update(Event::Toggle(NOON));
+        let _ = page.update(Event::ImportSelected);
+        let _ = page.update(Event::BatchPrepared(
+            page.generation,
+            batch_options(&page.paths),
+        ));
+        assert!(page.offer_shown());
+        assert!(page.batch_options.as_ref().unwrap().runners.is_empty());
+        assert!(page.draft.runner.is_empty());
+
+        let _ = page.update(Event::Offer(true));
+        let paths = page.paths.clone();
+        let answered = runner_label::answer(&paths, true).and_then(|()| refresh(&paths, None));
+        let _ = page.update(Event::Offered(page.generation, answered));
+        assert_eq!(
+            GlobalConfig::load(&paths).unwrap().external_runners,
+            Some(true)
+        );
+        assert!(!page.offer_shown());
+        assert_eq!(page.step, Step::Details);
+        assert_eq!(
+            page.batch_options
+                .as_ref()
+                .unwrap()
+                .runners
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["GE-Proton11-3 (Steam)"]
+        );
+        assert_eq!(page.draft.runner, "GE-Proton11-3");
+    }
+
+    #[test]
+    fn the_review_names_the_launcher_of_a_build_used_in_place() {
+        let root = tempdir().unwrap();
+        let paths = paths(root.path());
+        crate::runner_label::fake_steam_build(root.path(), "GE-Proton11-3");
+        wineo_core::settings::set_external_runners(&paths, true).unwrap();
+        let global = GlobalConfig::load(&paths).unwrap();
+        let runner = Runners::new(&paths, &global)
+            .unwrap()
+            .resolve("GE-Proton11-3")
+            .unwrap();
+        assert_eq!(runner_line(&runner), "Runner: GE-Proton11-3 (Steam)");
     }
 }
