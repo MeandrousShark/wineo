@@ -55,6 +55,10 @@ recommendation:
   needed no deriving wins, then alphabetical order.
 - Setting `external_runners` inside a portable folder is allowed but has no
   effect, per answer 7.
+- Step 2, 2026-10-05: when Heroic import uses a build in place, the CLI and
+  GUI import reviews show the source in the runner row, like
+  `GE-Proton-latest (Heroic)`, with no extra note or prompt. Reserved names
+  (`wine` and the `*-Latest` aliases) are never used in place.
 
 ## Existing foundation
 
