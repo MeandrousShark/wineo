@@ -528,4 +528,150 @@ mod tests {
         let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
         assert!(!matches!(suggestion, RunnerSuggestion::Use(_)));
     }
+
+    #[test]
+    fn a_reserved_folder_name_is_never_used_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir().unwrap();
+        let global = scanning(root.path());
+        let paths = paths(root.path());
+        let runners = Runners::new(&paths, &global).unwrap();
+
+        // An alias name would resolve to wineo's own alias target instead.
+        let imported = heroic_game(root.path(), "GE-Proton-Latest");
+        let source = imported.runner.source.clone().unwrap();
+        assert!(runners.external_names_at(&source).is_empty());
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
+        let suggestion =
+            suggest_runner(&paths, &global, &imported, Some("GE-Proton-Latest")).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
+
+        // `wine` would resolve to the system wine.
+        let tools = root.path().join(".config/heroic/tools/wine");
+        let dir = tools.join("wine");
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        for executable in ["wine", "wineserver"] {
+            let path = dir.join("bin").join(executable);
+            fs::write(&path, "#!/bin/sh\n").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut imported = reviewed_import(&root.path().join("prefix"));
+        imported.runner.kind = HeroicRunnerKind::Wine;
+        imported.runner.name = "wine".to_owned();
+        imported.runner.source = Some(dir.clone());
+        assert!(runners.external_names_at(&dir).is_empty());
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
+    }
+
+    #[test]
+    fn a_build_reached_through_a_symlink_is_still_heroics() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir().unwrap();
+        let global = scanning(root.path());
+        let paths = paths(root.path());
+        let mut imported = heroic_game(root.path(), "GE-Proton-latest");
+
+        // The game's runner path goes through a link to Heroic's folder.
+        let link = root.path().join("link");
+        symlink(imported.runner.source.as_ref().unwrap(), &link).unwrap();
+        imported.runner.source = Some(link);
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Use(name) if name == "GE-Proton-latest"));
+
+        // Heroic's folder is itself a link into another launcher's tree.
+        let real = root.path().join("elsewhere");
+        fake_proton_runner(&real, "GE-Proton11-1");
+        let tools = root.path().join(".config/heroic/tools/proton");
+        symlink(real.join("GE-Proton11-1"), tools.join("Linked")).unwrap();
+        imported.runner.source = Some(real.join("GE-Proton11-1"));
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Use(name) if name == "Linked"));
+    }
+
+    #[test]
+    fn a_broken_same_named_build_in_wineos_root_is_not_used() {
+        let root = tempdir().unwrap();
+        let global = scanning(root.path());
+        let paths = paths(root.path());
+        let imported = heroic_game(root.path(), "GE-Proton-latest");
+        // The folder owns the name even though nothing in it works.
+        fs::create_dir_all(root.path().join("wineo-runners/GE-Proton-latest")).unwrap();
+        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
+        assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
+    }
+
+    #[test]
+    fn a_scanning_import_registers_heroics_name_and_copies_nothing() {
+        use crate::cancel::Token;
+        use crate::heroic::HeroicSource;
+        use crate::heroic_import::{Options, apply, plan_game};
+
+        let root = tempdir().unwrap();
+        let home = root.path();
+        let prefix = home.join("heroic-prefix");
+        fs::create_dir_all(prefix.join("drive_c/Games")).unwrap();
+        fs::write(
+            prefix.join("system.reg"),
+            "WINE REGISTRY Version 2\n#arch=win64\n",
+        )
+        .unwrap();
+        let exe = prefix.join("drive_c/Games/Game.exe");
+        fs::write(&exe, "game executable").unwrap();
+        let tools = home.join(".config/heroic/tools/wine");
+        let runner = fake_wine_runner(&tools, "wine-heroic");
+        let bin = runner.wine_path().unwrap().display().to_string();
+        let config = home.join(".config/heroic");
+        fs::create_dir_all(config.join("sideload_apps")).unwrap();
+        fs::create_dir_all(config.join("GamesConfig")).unwrap();
+        fs::write(
+            config.join("config.json"),
+            format!(
+                r#"{{"defaultSettings":{{"winePrefix":"{}","wineVersion":{{"type":"wine","name":"wine-heroic","bin":"{bin}"}}}}}}"#,
+                prefix.display()
+            ),
+        )
+        .unwrap();
+        fs::write(config.join("GamesConfig/a.json"), r#"{"a":{}}"#).unwrap();
+        fs::write(
+            config.join("sideload_apps/library.json"),
+            format!(
+                r#"{{"games":[{{"app_name":"a","title":"Alpha","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}}]}}"#,
+                exe.display()
+            ),
+        )
+        .unwrap();
+
+        let mut global = scanning(home);
+        global.defaults.prefix_root = Some(home.join("prefixes").display().to_string());
+        let paths = paths(home);
+        let source = HeroicSource::from_config_dir_with_home(config, home.to_owned());
+        let imported = source.inspect("a").unwrap();
+        let RunnerSuggestion::Use(name) = suggest_runner(&paths, &global, &imported, None).unwrap()
+        else {
+            panic!("expected Heroic's build to be used in place");
+        };
+        assert_eq!(name, "wine-heroic");
+
+        let plan = plan_game(&paths, &global, &source, "a", &name, Options::default()).unwrap();
+        let registered = apply(&paths, &global, &source, &plan, &Token::new(), |_| {}).unwrap();
+        assert_eq!(registered.runner().unwrap().name(), "wine-heroic");
+        let written = fs::read_to_string(paths.environment_config("alpha")).unwrap();
+        assert!(written.contains("runner = \"wine-heroic\""), "{written}");
+        // The build stays in Heroic's folder, and nothing lands in wineo's.
+        assert!(
+            Runners::new(&paths, &global)
+                .unwrap()
+                .resolve("wine-heroic")
+                .unwrap()
+                .wine_path()
+                .unwrap()
+                .starts_with(&tools)
+        );
+        let copied = fs::read_dir(home.join("wineo-runners")).map_or(0, Iterator::count);
+        assert_eq!(copied, 0);
+    }
 }

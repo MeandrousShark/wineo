@@ -121,7 +121,13 @@ impl Runners {
         };
         external_runners::entries(&self.external)
             .into_iter()
-            .filter(|entry| !entry.name.is_empty())
+            // Reserved names resolve to something else, an alias target or
+            // the system wine, so they never mean the folder.
+            .filter(|entry| {
+                !entry.name.is_empty()
+                    && !crate::runner_alias::is_alias(&entry.name)
+                    && entry.name != Runner::SYSTEM
+            })
             .filter(|entry| fs::canonicalize(&entry.directory).is_ok_and(|dir| dir == wanted))
             .map(|entry| entry.name)
             .collect()
