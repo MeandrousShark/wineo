@@ -50,6 +50,9 @@ pub(crate) enum Review {
     Single {
         game: Box<Game>,
         missing_build: Option<(Component, Option<String>)>,
+        /// Worked out on the worker, since naming the launcher reads the
+        /// disk.
+        runner_line: Option<String>,
     },
     Batch(LibraryPlan),
 }
@@ -2118,11 +2121,12 @@ impl Page {
                         Review::Single {
                             game,
                             missing_build,
+                            runner_line,
                         } => {
                             body = body.push(text(format!("{} -> {}", game.title(), game.name())));
                             match game.as_ref() {
                                 Game::Windows(plan) => {
-                                    body = body.push(text(runner_line(plan.runner())));
+                                    body = body.push(runner_line.as_deref().map(text));
                                     body = body.push(text(format!(
                                         "Executable: {}",
                                         plan.resolved().exe.display()
@@ -2821,7 +2825,7 @@ fn runner_choices(
         .map_err(|e| e.to_string())?
         .runners
         .iter()
-        .map(Choice::of)
+        .map(|runner| Choice::of(paths, runner))
         .collect();
     if system && runners.resolve("wine").is_ok() {
         choices.insert(0, Choice::plain("wine"));
@@ -2892,10 +2896,10 @@ fn refresh(
 
 /// The review's runner line, naming the launcher when the build isn't
 /// wineo's, like `Runner: GE-Proton-latest (Heroic)`.
-fn runner_line(runner: &wineo_core::runner::Runner) -> String {
+fn runner_line(paths: &Paths, runner: &wineo_core::runner::Runner) -> String {
     format!(
         "Runner: {}",
-        runner_label::labeled(runner.selection(), runner_label::launcher(runner))
+        runner_label::labeled(runner.selection(), runner_label::launcher(paths, runner))
     )
 }
 
@@ -3069,9 +3073,14 @@ fn plan_review(
             .map(|missing| (missing.component, missing.version));
         Game::Windows(plan)
     };
+    let runner_line = match &game {
+        Game::Windows(plan) => Some(runner_line(paths, plan.runner())),
+        Game::Native(_) => None,
+    };
     Ok(Review::Single {
         game: Box::new(game),
         missing_build,
+        runner_line,
     })
 }
 
@@ -4432,6 +4441,9 @@ mod tests {
             .unwrap()
             .resolve("GE-Proton11-3")
             .unwrap();
-        assert_eq!(runner_line(&runner), "Runner: GE-Proton11-3 (Steam)");
+        assert_eq!(
+            runner_line(&paths, &runner),
+            "Runner: GE-Proton11-3 (Steam)"
+        );
     }
 }

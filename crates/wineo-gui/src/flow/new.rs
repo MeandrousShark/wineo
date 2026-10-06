@@ -104,6 +104,9 @@ pub(crate) struct Options {
 #[derive(Debug, Clone)]
 pub(crate) struct Review {
     runner: Option<Runner>,
+    /// The runner as the review shows it, worked out on the worker since
+    /// naming its launcher reads the disk.
+    runner_row: Option<String>,
     template: Option<Template>,
     arch: Arch,
     prefix: Option<PathBuf>,
@@ -1442,8 +1445,8 @@ impl Page {
                         source.push(("Program", self.draft.path.clone()));
                     }
                     let mut runtime = Vec::new();
-                    if let Some(runner) = &review.runner {
-                        runtime.push(("Runner", runner_label::resolved(runner)));
+                    if let Some(row) = &review.runner_row {
+                        runtime.push(("Runner", row.clone()));
                     } else if let Some(Prerequisite::Runner(name)) = &review.prerequisite {
                         runtime.push(("Runner", format!("{name} (not installed)")));
                     }
@@ -1755,7 +1758,7 @@ fn read_options(paths: &Paths) -> Result<Options, String> {
             .map_err(|e| e.to_string())?
             .runners
             .iter()
-            .map(Choice::of),
+            .map(|runner| Choice::of(paths, runner)),
     );
     // A listed build knows its launcher, so it wins over the plain default.
     runners.sort_by(|a, b| a.name.cmp(&b.name).then(b.launcher.cmp(&a.launcher)));
@@ -1870,6 +1873,7 @@ fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
         }
         return Ok(Review {
             runner: None,
+            runner_row: None,
             template: None,
             arch: global.defaults.arch,
             prefix: None,
@@ -1923,6 +1927,7 @@ fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
             .map_err(|error| error.to_string())?;
             return Ok(Review {
                 runner: None,
+                runner_row: None,
                 template,
                 arch: draft.arch.unwrap_or(global.defaults.arch),
                 prefix: Some(prefix),
@@ -2005,6 +2010,7 @@ fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
         None
     };
     Ok(Review {
+        runner_row: Some(runner_label::resolved(paths, &runner)),
         runner: Some(runner),
         template,
         arch,
@@ -2731,9 +2737,12 @@ mod tests {
         let global = GlobalConfig::load(&paths).unwrap();
         let runners = Runners::new(&paths, &global).unwrap();
         let steam = runners.resolve("GE-Proton11-3").unwrap();
-        assert_eq!(runner_label::resolved(&steam), "GE-Proton11-3 (Steam)");
+        assert_eq!(
+            runner_label::resolved(&paths, &steam),
+            "GE-Proton11-3 (Steam)"
+        );
         fake_runner(&paths);
         let own = runners.resolve("fake").unwrap();
-        assert_eq!(runner_label::resolved(&own), "fake (fake)");
+        assert_eq!(runner_label::resolved(&paths, &own), "fake (fake)");
     }
 }

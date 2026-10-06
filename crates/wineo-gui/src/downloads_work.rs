@@ -45,7 +45,7 @@ pub(crate) fn read(paths: &Paths) -> Result<Snapshot, String> {
         let listing = runners.list()?;
         for runner in &listing.runners {
             let mut build = Build::new(Kind::Runner, runner.name());
-            build.launcher = runner_label::launcher(runner);
+            build.launcher = runner_label::launcher(paths, runner);
             build.different = listing.different_builds(runner.name());
             snapshot.builds.push(build);
         }

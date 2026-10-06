@@ -350,7 +350,7 @@ pub(crate) fn runner_choices(
     if let Ok(listing) = runners.list() {
         choices.extend(listing.runners.iter().map(|runner| RunnerChoice {
             name: runner.name().to_owned(),
-            launcher: crate::runner_label::launcher(runner),
+            launcher: crate::runner_label::launcher(paths, runner),
             proton: Some(runner.is_proton()),
         }));
     }

@@ -900,3 +900,49 @@ fn a_different_build_behind_a_name_is_noted_on_its_row() {
         "Steam, used by dusk, Heroic, Lutris have different builds"
     );
 }
+
+#[test]
+fn a_runners_root_inside_steams_folder_holds_steams_builds() {
+    let (root, mut app) = fixture();
+    let steam = crate::runner_label::fake_steam_build(root.path(), "GE-Proton11-3");
+    let tools = steam.parent().unwrap().to_owned();
+    let link = root.path().join("runners-link");
+    std::os::unix::fs::symlink(&tools, &link).unwrap();
+    let global = app.paths.global_config();
+    fs::create_dir_all(global.parent().unwrap()).unwrap();
+    // The setting stays unset: a root in a launcher's folder is that
+    // launcher's either way.
+    for runner_root in [&tools, &link] {
+        fs::write(
+            &global,
+            format!("[defaults]\nrunner_root = '{}'\n", runner_root.display()),
+        )
+        .unwrap();
+        open(&mut app);
+        let build = build(&app, Kind::Runner, "GE-Proton11-3");
+        assert_eq!(build.launcher, Some(Source::Steam));
+        assert!(!build.deletable());
+        assert!(build.detail().starts_with("Steam, "));
+        send(Event::Review(build.id()), &mut app);
+        assert!(!app.downloads_confirm_open());
+        assert_eq!(
+            downloads_work::remove(&app.paths, &build).unwrap_err(),
+            "GE-Proton11-3 belongs to Steam."
+        );
+        assert!(steam.join("proton").exists());
+
+        let global = wineo_core::config::GlobalConfig::load(&app.paths).unwrap();
+        let runner = wineo_core::runners::Runners::new(&app.paths, &global)
+            .unwrap()
+            .resolve("GE-Proton11-3")
+            .unwrap();
+        assert_eq!(
+            crate::runner_label::resolved(&app.paths, &runner),
+            "GE-Proton11-3 (Steam)"
+        );
+        assert_eq!(
+            crate::runner_label::Choice::of(&app.paths, &runner).to_string(),
+            "GE-Proton11-3 (Steam)"
+        );
+    }
+}

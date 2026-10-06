@@ -17,11 +17,11 @@ const OFFER: &str = "Use Proton and Wine builds from Steam, Heroic, and Lutris t
 const NO_ID: &str = "external-runners-no";
 const YES_ID: &str = "external-runners-yes";
 
-/// The launcher that owns a runner, or None for wineo's own builds.
-pub(crate) fn launcher(runner: &Runner) -> Option<Source> {
-    // A runners root inside a launcher folder makes its builds that
-    // launcher's too, which needs core's owner lookup to see.
-    match runner.source() {
+/// The launcher that owns a runner, or None for wineo's own builds. A
+/// runners root inside a launcher folder makes its builds that launcher's
+/// too. It reads the disk, so call it from a worker, not a view.
+pub(crate) fn launcher(paths: &Paths, runner: &Runner) -> Option<Source> {
+    match runner.owner(paths) {
         Source::Wineo => None,
         other => Some(other),
     }
@@ -47,8 +47,8 @@ pub(crate) fn noted(text: &str, note: &str, launcher: Option<Source>) -> String 
 
 /// A review's runner: the name as configured, then the build it resolved
 /// to and its launcher. A build named as itself only needs the launcher.
-pub(crate) fn resolved(runner: &Runner) -> String {
-    match launcher(runner) {
+pub(crate) fn resolved(paths: &Paths, runner: &Runner) -> String {
+    match launcher(paths, runner) {
         Some(launcher) if runner.selection() == runner.name() => {
             labeled(runner.name(), Some(launcher))
         }
@@ -71,10 +71,10 @@ impl Choice {
         }
     }
 
-    pub(crate) fn of(runner: &Runner) -> Self {
+    pub(crate) fn of(paths: &Paths, runner: &Runner) -> Self {
         Self {
             name: runner.selection().to_owned(),
-            launcher: launcher(runner),
+            launcher: launcher(paths, runner),
         }
     }
 

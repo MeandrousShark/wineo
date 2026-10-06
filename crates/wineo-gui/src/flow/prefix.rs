@@ -912,13 +912,18 @@ fn runner_choices(paths: &Paths) -> Result<RunnerListing, String> {
     let runners = Runners::new(paths, &global).map_err(|error| error.to_string())?;
     let mut choices = Vec::new();
     if let Ok(runner) = Runner::system() {
-        choices.push(choice(runner));
+        choices.push(choice(paths, runner));
     }
     let listing = runners.list().map_err(|error| error.to_string())?;
-    choices.extend(listing.runners.into_iter().map(choice));
+    choices.extend(
+        listing
+            .runners
+            .into_iter()
+            .map(|runner| choice(paths, runner)),
+    );
     for alias in wineo_core::runner_alias::ALIASES {
         if let Ok(runner) = runners.resolve(alias) {
-            choices.push(choice(runner));
+            choices.push(choice(paths, runner));
         }
     }
     choices.sort_by(|a, b| a.selection.cmp(&b.selection));
@@ -932,12 +937,12 @@ fn runner_choices(paths: &Paths) -> Result<RunnerListing, String> {
     Ok(RunnerListing { choices, default })
 }
 
-fn choice(runner: Runner) -> RunnerChoice {
+fn choice(paths: &Paths, runner: Runner) -> RunnerChoice {
     RunnerChoice {
         selection: runner.selection().to_owned(),
         name: runner.name().to_owned(),
         proton: runner.is_proton(),
-        launcher: runner_label::launcher(&runner),
+        launcher: runner_label::launcher(paths, &runner),
     }
 }
 
@@ -1009,7 +1014,7 @@ fn inspect_review(
     Ok(Review {
         inspection: inspection.0,
         destination,
-        runner_name: runner_label::labeled(runner.name(), runner_label::launcher(&runner)),
+        runner_name: runner_label::labeled(runner.name(), runner_label::launcher(paths, &runner)),
         arch_missing: inspection.1,
     })
 }
