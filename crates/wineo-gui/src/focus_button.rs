@@ -14,12 +14,12 @@ pub(crate) fn undo<'a>(
     control(content, enabled, UNDO_ID, crate::Message::Undo)
 }
 
-pub(crate) fn control<'a>(
-    content: Element<'a, crate::Message>,
+pub(crate) fn control<'a, M: Clone + 'a>(
+    content: Element<'a, M>,
     enabled: bool,
     id: impl Into<iced::widget::Id>,
-    on_press: crate::Message,
-) -> Element<'a, crate::Message> {
+    on_press: M,
+) -> Element<'a, M> {
     Element::new(FocusControl {
         content,
         enabled,
@@ -99,11 +99,11 @@ impl iced::advanced::widget::Operation for Cycle {
     }
 }
 
-struct FocusControl<'a, R: AdvancedRenderer = iced::Renderer> {
-    content: Element<'a, crate::Message, iced::Theme, R>,
+struct FocusControl<'a, M, R: AdvancedRenderer = iced::Renderer> {
+    content: Element<'a, M, iced::Theme, R>,
     enabled: bool,
     id: iced::widget::Id,
-    on_press: crate::Message,
+    on_press: M,
 }
 
 #[derive(Default)]
@@ -125,8 +125,9 @@ impl iced::advanced::widget::operation::Focusable for State {
     }
 }
 
-impl<R> Widget<crate::Message, iced::Theme, R> for FocusControl<'_, R>
+impl<M, R> Widget<M, iced::Theme, R> for FocusControl<'_, M, R>
 where
+    M: Clone,
     R: AdvancedRenderer,
 {
     fn tag(&self) -> tree::Tag {
@@ -197,7 +198,7 @@ where
         cursor: mouse::Cursor,
         renderer: &R,
         clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, crate::Message>,
+        shell: &mut Shell<'_, M>,
         viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_mut::<State>();
@@ -296,7 +297,7 @@ where
         renderer: &R,
         viewport: &Rectangle,
         translation: Vector,
-    ) -> Option<overlay::Element<'a, crate::Message, iced::Theme, R>> {
+    ) -> Option<overlay::Element<'a, M, iced::Theme, R>> {
         self.content.as_widget_mut().overlay(
             &mut tree.children[0],
             layout,
