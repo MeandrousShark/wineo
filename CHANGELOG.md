@@ -3,6 +3,31 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.24.0 - 2026-10-06
+
+- Runners from Steam, Heroic, and Lutris
+  ([0043](docs/plans/0043-external-runners.md)). With
+  `external_runners = true` in global config, environments can use Proton
+  and Wine builds those launchers already installed, read in place. When a
+  name exists in several places, wineo's own runners root wins, then Steam,
+  then Heroic, then Lutris. Portable folders never use external builds.
+- The setting is offered once: in guided `wineo new` and the GUI Add flow
+  when the picked template is tagged `game`, and in Heroic import. GUI
+  Settings has a switch for it under New environments, and
+  `wineo set --global external_runners=` changes it from the CLI.
+- `wineo runners` has a new source column (`wineo`, `Steam`, `Heroic`, or
+  `Lutris`), with a note when a hidden copy of a name is a different build.
+  Guided `new` shows the source in the runner row, like
+  `GE-Proton11-3 (Proton, Steam)`.
+- With the setting on, Heroic import uses Heroic's build in place instead of
+  copying it, and the review shows `GE-Proton11-1 (Heroic)`.
+- `wineo runners remove` and GUI Downloads refuse builds wineo didn't
+  install: "GE-Proton11-3 belongs to Steam." This also covers a
+  `runner_root` that points inside a launcher's folder, even with the
+  setting off.
+- GUI Downloads lists other launchers' builds in a read-only "From Steam,
+  Heroic, and Lutris" section, and runner pickers label them by launcher.
+
 ## 0.23.1 - 2026-10-05
 
 - `wineo manpages DIR` writes a man page for `wineo` and each subcommand.
