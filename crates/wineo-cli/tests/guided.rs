@@ -1894,13 +1894,13 @@ fn picking_the_gaming_template_asks_once_and_the_runner_choice_sees_a_yes() {
     pty.send("");
     // Saved already, and the newest Proton is Steam's.
     assert!(f.global_text().contains("external_runners = true"));
-    pty.expect("  runner    GE-Proton11-3 (Proton) (Steam)");
+    pty.expect("  runner    GE-Proton11-3 (Proton, Steam)");
     pty.expect("Choice [1]: ");
     pty.send("1");
     pty.expect("Choice [1]: ");
     pty.send("3");
     pty.expect("Ready to create game:");
-    pty.expect("  runner    GE-Proton11-3 (Proton) (Steam)");
+    pty.expect("  runner    GE-Proton11-3 (Proton, Steam)");
     pty.ctrl_c();
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");

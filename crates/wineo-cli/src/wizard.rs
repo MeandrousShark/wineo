@@ -805,26 +805,39 @@ fn adopted_arch(runner: &Runner, dir: &Path) -> Option<Arch> {
     prefix::detect_arch(&wine_prefix).ok().flatten()
 }
 
-/// A runner line for a card, naming the launcher when the build isn't
-/// wineo's own.
+/// A runner line for a card, with the launcher folded into its parenthesis
+/// when the build isn't wineo's own.
 fn runner_row(paths: &Paths, runner: &Runner) -> String {
-    external_runners::with_owner(paths, runner, describe_runner(runner))
+    let launcher = match runner.owner(paths) {
+        wineo_core::external_runners::Source::Wineo => None,
+        launcher => Some(launcher.to_string()),
+    };
+    describe_runner_from(runner, launcher)
 }
 
 fn describe_runner(runner: &Runner) -> String {
+    describe_runner_from(runner, None)
+}
+
+fn describe_runner_from(runner: &Runner, launcher: Option<String>) -> String {
     let mut text = if runner.selection() != runner.name() {
         format!("{} -> {}", runner.selection(), runner.name())
     } else {
         runner.name().to_owned()
     };
+    let mut details = Vec::new();
     let version = runner.version();
     match (runner.is_proton(), version) {
         (true, Some(version)) if version != runner.name() => {
-            text.push_str(&format!(" (Proton, {version})"));
+            details.extend(["Proton".to_owned(), version]);
         }
-        (true, _) => text.push_str(" (Proton)"),
-        (false, Some(version)) => text.push_str(&format!(" ({version})")),
+        (true, _) => details.push("Proton".to_owned()),
+        (false, Some(version)) => details.push(version),
         (false, None) => {}
+    }
+    details.extend(launcher);
+    if !details.is_empty() {
+        text.push_str(&format!(" ({})", details.join(", ")));
     }
     text
 }
@@ -1317,6 +1330,55 @@ mod tests {
             "mangohud on, wayland off, gamescope on"
         );
     }
+    #[test]
+    fn a_launcher_goes_inside_the_runners_parenthesis() {
+        let root = tempfile::tempdir().unwrap();
+        let script = |path: std::path::PathBuf, body: &str| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, body).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        for (name, version) in [
+            ("GE-Proton11-3", "GE-Proton11-3"),
+            ("Proton-CachyOS-latest", "cachyos-11.0-20260703-slr"),
+        ] {
+            script(root.path().join(name).join("proton"), "#!/bin/sh\n");
+            fs::write(
+                root.path().join(name).join("version"),
+                format!("1 {version}\n"),
+            )
+            .unwrap();
+        }
+        for (name, body) in [
+            ("wine-ge-8-26", "#!/bin/sh\necho wine-8.26\n"),
+            ("plain", "#!/bin/sh\nexit 1\n"),
+        ] {
+            script(root.path().join(name).join("bin/wine"), body);
+            script(root.path().join(name).join("bin/wineserver"), "#!/bin/sh\n");
+        }
+        let runners = Runners::at(root.path().to_owned());
+        let row = |name: &str, launcher: Option<&str>| {
+            describe_runner_from(&runners.resolve(name).unwrap(), launcher.map(str::to_owned))
+        };
+        assert_eq!(
+            row("GE-Proton11-3", Some("Steam")),
+            "GE-Proton11-3 (Proton, Steam)"
+        );
+        assert_eq!(
+            row("Proton-CachyOS-latest", Some("Heroic")),
+            "Proton-CachyOS-latest (Proton, cachyos-11.0-20260703-slr, Heroic)"
+        );
+        assert_eq!(
+            row("wine-ge-8-26", Some("Lutris")),
+            "wine-ge-8-26 (wine-8.26, Lutris)"
+        );
+        assert_eq!(row("plain", Some("Steam")), "plain (Steam)");
+        // wineo's own builds read as before.
+        assert_eq!(row("GE-Proton11-3", None), "GE-Proton11-3 (Proton)");
+        assert_eq!(row("wine-ge-8-26", None), "wine-ge-8-26 (wine-8.26)");
+        assert_eq!(row("plain", None), "plain");
+    }
+
     use crate::commands::art::NO_KEY_NOTE;
     use crate::commands::art::fake::{Fake, PNG};
     use crate::prompt::Script;
