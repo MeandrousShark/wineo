@@ -40,6 +40,59 @@ Selecting a concrete runner name keeps it pinned. Aliases do not check for
 updates or fall back to another runner family. The two alias names are reserved;
 do not create directories or symlinks with those names in the runner root.
 
+## Use builds from Steam, Heroic, and Lutris
+
+wineo can use Proton and Wine builds that Steam, Heroic, and Lutris already
+installed, read where they are, instead of downloading or copying them again.
+It's off until you say yes. Guided `new` asks once when you pick a template
+tagged `game`, and guided `wineo import heroic` asks before choosing a
+runner:
+
+```
+Use Proton and Wine builds from Steam, Heroic, and Lutris too? [Y/n]
+```
+
+Either answer is saved as `external_runners` in the global config, and
+`wineo set --global external_runners=true` changes it later. Runs that pass
+flags answering part of the flow, `--all`, and runs without a terminal never
+ask. See [Runners from other launchers](config-files.md#runners-from-other-launchers).
+
+With it on, `wineo runners` lists each build's source:
+
+```
+wine                   wine            wine-11.19     /usr/bin/wine
+GE-Proton-latest       proton  wineo   GE-Proton10-3
+GE-Proton11-1          proton  Heroic  GE-Proton11-1
+GE-Proton11-3          proton  Steam   GE-Proton11-3
+GE-Proton11-7          proton  wineo   GE-Proton11-7
+Proton-9.0             proton  Steam   Proton-9.0
+GE-Proton-Latest       alias           -> GE-Proton11-7
+```
+
+wineo looks in:
+
+- Steam: `compatibilitytools.d` under `~/.steam/root`, `~/.local/share/Steam`,
+  and Flatpak Steam, plus Valve's Proton in each library's
+  `steamapps/common`.
+- Heroic: `tools/proton` and `tools/wine`, native and Flatpak.
+- Lutris: `runners/wine`, native and Flatpak.
+
+A folder name wineo can't use gets a derived one, so Valve's `Proton 9.0` is
+`Proton-9.0`. When the same name is in several places, the first folder
+that has it owns it, in the order wineo's runners root, Steam, Heroic,
+Lutris, even if that copy is broken. If a hidden copy is a different build,
+its row says so: `(Heroic has a different build)`. `wine` and the
+`*-Latest` aliases keep their meaning; the aliases still follow only
+builds wineo downloaded. `runner = "proton"`, which the gaming template uses,
+picks the newest Proton from every source.
+
+wineo never changes or deletes another launcher's builds. `wineo runners
+remove` refuses with `GE-Proton11-3 belongs to Steam.`, and so does a
+runners root you pointed inside a launcher's folder. If Steam or Heroic
+deletes a build an environment uses, launching reports an unknown runner, as
+it would for a build deleted by hand. Builds from other launchers are never
+used while a portable folder is active.
+
 ## Remove a runner or graphics component
 
 ```sh
@@ -131,8 +184,11 @@ wineo reads local Heroic settings once. It supports manually added Windows games
 and [native Linux games](#native-heroic-games), with source selection when native and Flatpak libraries are both present.
 Heroic files are never edited. Store libraries and credentials are not imported.
 
-The guided flow can copy Heroic's runner, choose an installed runner, or download
-a supported replacement. Runner installation finishes before prefix copying.
+With [builds from other launchers](#use-builds-from-steam-heroic-and-lutris)
+on, the game uses Heroic's runner where it is, with no copy, and the review
+shows it as `GE-Proton-latest (Heroic)`. Otherwise the guided flow can copy
+Heroic's runner, choose an installed runner, or download a supported
+replacement. Runner installation finishes before prefix copying.
 A successfully installed runner remains available if the import is canceled.
 
 Review covers the executable, argument boundaries, working directory,

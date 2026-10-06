@@ -19,7 +19,8 @@ wineo stop hades
   programs it finds as launch targets.
 - **Wine and Proton.** Use system Wine, downloaded Wine builds, or Proton
   through `umu-launcher`. `wineo download` fetches runners, DXVK, and
-  vkd3d-proton with checksum verification.
+  vkd3d-proton with checksum verification, or use the
+  [builds Steam, Heroic, and Lutris already installed](docs/downloads-and-imports.md#use-builds-from-steam-heroic-and-lutris).
 - **Targets.** Each environment can have several launch targets, one of them
   the default, with their own arguments, working directory, and desktop entry.
 - **Supervised runs.** `start` runs in the background, `stop` ends the whole
