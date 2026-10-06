@@ -530,28 +530,56 @@ mod tests {
     }
 
     #[test]
-    fn a_reserved_folder_name_is_never_used_in_place() {
+    fn an_alias_named_folder_is_never_used_in_place() {
+        // Each folder is called an alias name, or derives to one, and wineo
+        // has a working target for that alias in its own root.
+        for (folder, target) in [
+            ("GE-Proton-Latest", "GE-Proton11-7"),
+            ("GE Proton Latest", "GE-Proton11-7"),
+            (
+                "Proton-CachyOS-Latest",
+                "proton-cachyos-11.0-20260703-slr-x86_64",
+            ),
+            (
+                "Proton CachyOS Latest",
+                "proton-cachyos-11.0-20260703-slr-x86_64",
+            ),
+        ] {
+            let root = tempdir().unwrap();
+            let global = scanning(root.path());
+            let paths = paths(root.path());
+            let imported = heroic_game(root.path(), folder);
+            fake_proton_runner(&root.path().join("wineo-runners"), target);
+            // Built after the folders exist, so it sees them.
+            let runners = Runners::new(&paths, &global).unwrap();
+            let alias = crate::external_runners::derived_name(folder);
+            assert!(crate::runner_alias::is_alias(&alias), "{folder}");
+            assert!(runners.resolve(&alias).is_ok(), "{folder}: alias target");
+            let source = imported.runner.source.clone().unwrap();
+            assert!(runners.external_names_at(&source).is_empty(), "{folder}");
+            // Naming the alias outright is the person's own choice, so only
+            // Heroic's name for it is checked.
+            for requested in [None, Some(folder)] {
+                let suggestion = suggest_runner(&paths, &global, &imported, requested).unwrap();
+                assert!(
+                    !matches!(suggestion, RunnerSuggestion::Use(_)),
+                    "{folder} {requested:?}: {suggestion:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_wine_named_folder_is_never_used_in_place() {
         use std::os::unix::fs::PermissionsExt;
 
         let root = tempdir().unwrap();
         let global = scanning(root.path());
         let paths = paths(root.path());
-        let runners = Runners::new(&paths, &global).unwrap();
-
-        // An alias name would resolve to wineo's own alias target instead.
-        let imported = heroic_game(root.path(), "GE-Proton-Latest");
-        let source = imported.runner.source.clone().unwrap();
-        assert!(runners.external_names_at(&source).is_empty());
-        let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
-        assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
-        let suggestion =
-            suggest_runner(&paths, &global, &imported, Some("GE-Proton-Latest")).unwrap();
-        assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
-
         // `wine` would resolve to the system wine.
-        let tools = root.path().join(".config/heroic/tools/wine");
-        let dir = tools.join("wine");
+        let dir = root.path().join(".config/heroic/tools/wine/wine");
         fs::create_dir_all(dir.join("bin")).unwrap();
+        fs::write(root.path().join(".config/heroic/config.json"), "{}").unwrap();
         for executable in ["wine", "wineserver"] {
             let path = dir.join("bin").join(executable);
             fs::write(&path, "#!/bin/sh\n").unwrap();
@@ -561,6 +589,13 @@ mod tests {
         imported.runner.kind = HeroicRunnerKind::Wine;
         imported.runner.name = "wine".to_owned();
         imported.runner.source = Some(dir.clone());
+        let runners = Runners::new(&paths, &global).unwrap();
+        // The folder is really among the scanned ones.
+        assert!(
+            crate::external_runners::folders(&paths)
+                .iter()
+                .any(|folder| dir.starts_with(&folder.path))
+        );
         assert!(runners.external_names_at(&dir).is_empty());
         let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
         assert!(matches!(suggestion, RunnerSuggestion::Copy(_)));
