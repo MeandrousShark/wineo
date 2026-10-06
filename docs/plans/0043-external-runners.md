@@ -27,7 +27,8 @@ recommendation:
 1. One switch: `external_runners = true` in global config, unset until
    asked.
 2. The offer shows in guided `new` and the GUI Add flow when the gaming
-   template is picked, and in Heroic import. GUI Settings and `wineo config`
+   template is picked, and in Heroic import. (Later refined: a template
+   tagged `game`; see Decisions during implementation.) GUI Settings and `wineo config`
    change it.
 3. Folders with unusable names get a derived name (`Proton 9.0` is
    `Proton-9.0`).
@@ -80,8 +81,11 @@ recommendation:
     parenthesis: `GE-Proton11-3 (Proton, Steam)`. wineo's own builds read as
     before.
   - The CLI offer is skipped whenever a flag already answered part of the
-    flow (`-t gaming`, `-n`, `--runner`, `--game`, `--all`, and the like).
-    The guided gaming template is detected by its name, `gaming`.
+    flow (`-t gaming`, `-n`, `--runner`, `--game`, `--adopt`, `--dir`,
+    `--arch`, `--yes`, `--all`, and the like).
+  - "A game" means the picked template is tagged `game`, in both the CLI and
+    the GUI, so a custom template tagged `game` asks and a `gaming` template
+    edited to drop the tag doesn't.
 
 ## Amendment: a runners root inside a launcher folder
 
