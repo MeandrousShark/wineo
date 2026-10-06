@@ -72,6 +72,11 @@ This holds whether `external_runners` is on or not, since the point is to
 never delete another launcher's files. A root that merely contains a
 launcher folder further down is unaffected.
 
+Cleanup of wineo's own leftovers still runs in such a root: the removal
+sweep and abandoned download stages only match `.wineo-remove-*` and
+`.wineo-stage-*` folders, which only wineo creates, so they never touch the
+launcher's files.
+
 ## Existing foundation
 
 - `Runners` ([runners.rs](../../crates/wineo-core/src/runners.rs)) wraps one
