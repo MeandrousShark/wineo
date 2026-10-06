@@ -74,6 +74,14 @@ recommendation:
     runner list in place.
   - The CLI changes the setting with `wineo set --global external_runners=`,
     which already works, so answer 2's `wineo config` needs no new command.
+  - Step 3 review: `wineo runners` puts the source column right after the
+    kind, so long detail text can't push it away, and the note goes last.
+  - Guided `new` folds the source into the runner row's existing
+    parenthesis: `GE-Proton11-3 (Proton, Steam)`. wineo's own builds read as
+    before.
+  - The CLI offer is skipped whenever a flag already answered part of the
+    flow (`-t gaming`, `-n`, `--runner`, `--game`, `--all`, and the like).
+    The guided gaming template is detected by its name, `gaming`.
 
 ## Amendment: a runners root inside a launcher folder
 
