@@ -5398,6 +5398,7 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "tempfile",
+ "unicode-width",
  "wineo-core",
 ]
 

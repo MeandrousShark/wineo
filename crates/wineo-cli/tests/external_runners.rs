@@ -135,6 +135,30 @@ fn all_lists_unusable_builds_from_other_launchers_with_their_source() {
 }
 
 #[test]
+fn wide_folder_names_keep_the_columns_lined_up_by_display_width() {
+    use unicode_width::UnicodeWidthStr;
+
+    let f = Fixture::new();
+    f.global_config(on());
+    f.install_external_proton("steam", "GE-Proton11-3", "GE-Proton11-3");
+    // Wider on screen than any other name, so it sets the column.
+    let wide = "测试测试测试测试测试测试";
+    let broken = f.external_dir("steam").join(wide);
+    fs::create_dir_all(&broken).unwrap();
+    fs::write(broken.join("proton"), "not executable").unwrap();
+
+    let text = stdout(&f.run_at_home(&["runners", "--all"]));
+    let source_at = |name: &str| {
+        let line = text
+            .lines()
+            .find(|line| line.starts_with(name))
+            .unwrap_or_else(|| panic!("no row for {name} in:\n{text}"));
+        line[..line.find("Steam").unwrap()].width()
+    };
+    assert_eq!(source_at(wide), source_at("GE-Proton11-3"), "{text}");
+}
+
+#[test]
 fn a_root_inside_a_launcher_folder_is_labeled_with_that_launcher() {
     let f = Fixture::new();
     let steam = f.external_dir("steam");

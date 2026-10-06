@@ -34,6 +34,7 @@ tempfile = "3"
 thiserror = "2"
 toml = "1.1"
 toml_edit = "0.25"
+unicode-width = "0.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

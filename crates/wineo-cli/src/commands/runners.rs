@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 
 use clap::Subcommand;
+use unicode_width::UnicodeWidthStr;
 use wineo_core::config::GlobalConfig;
 use wineo_core::external_runners::Source;
 use wineo_core::paths::Paths;
@@ -124,9 +125,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }));
     }
 
+    // Display width, not bytes or chars, since a folder's name may be wide.
     let width = |column: fn(&Row) -> &str| {
         rows.iter()
-            .map(|row| column(row).len())
+            .map(|row| column(row).width())
             .max()
             .unwrap_or_default()
     };
@@ -135,7 +137,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let details = rows
         .iter()
         .filter(|row| !row.last.is_empty())
-        .map(|row| row.detail.len())
+        .map(|row| row.detail.width())
         .max()
         .unwrap_or_default();
     let (names, kinds, sources) = (
@@ -145,8 +147,12 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     );
     for row in &rows {
         let line = format!(
-            "{:names$}  {:kinds$}  {:sources$}  {:details$}  {}",
-            row.name, row.kind, row.source, row.detail, row.last
+            "{}  {}  {}  {}  {}",
+            pad(&row.name, names),
+            pad(&row.kind, kinds),
+            pad(&row.source, sources),
+            pad(&row.detail, details),
+            row.last
         );
         println!("{}", line.trim_end());
     }
@@ -158,6 +164,11 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         );
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `text` padded with spaces to `width` columns on screen.
+fn pad(text: &str, width: usize) -> String {
+    format!("{text}{}", " ".repeat(width.saturating_sub(text.width())))
 }
 
 /// Which launchers have a different build under the same name than the one
