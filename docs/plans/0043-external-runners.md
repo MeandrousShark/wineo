@@ -60,6 +60,21 @@ recommendation:
   `GE-Proton-latest (Heroic)`, with no extra note or prompt. Reserved names
   (`wine` and the `*-Latest` aliases) are never used in place.
 
+- Steps 3 and 4, 2026-10-05:
+  - Builds in a runners root inside a launcher folder are labeled with that
+    launcher (`Steam`) in the CLI and GUI, and the GUI hides Delete for
+    them.
+  - GUI Downloads keeps wineo's deletable builds on top and lists other
+    launchers' builds in a read-only "From Steam, Heroic, and Lutris"
+    section, each with its source and what uses it.
+  - The GUI switch, "Builds from Steam, Heroic, and Lutris", goes in the
+    New environments group of global Settings.
+  - The GUI asks the one-time question as an inline card at the top of the
+    runner step, with No and Yes. Answering saves it and refreshes the
+    runner list in place.
+  - The CLI changes the setting with `wineo set --global external_runners=`,
+    which already works, so answer 2's `wineo config` needs no new command.
+
 ## Amendment: a runners root inside a launcher folder
 
 Approved by the maintainer on 2026-10-05, from a step 1 review note.
