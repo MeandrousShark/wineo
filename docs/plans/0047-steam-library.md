@@ -47,6 +47,13 @@ recommendation:
    backlog row.
 7. The desktop app is part of this plan.
 
+A review on 2026-10-07 found gaps, and the design was revised: native
+environments keep Clone and Copy to portable; claiming a game and Stop got
+identity rules; startup, cancellation, and lost runs got a contract; one
+Steam install is active; missing Steam data has states; stats say what Steam
+can't supply; and the implicit `steam` target covers desktop entries and hook
+variables. Questions 8 to 10 came out of it and are still open.
+
 ## Existing foundation
 
 - **Kinds.** `Kind { Wine(WineConfig), Native }` in
@@ -76,8 +83,11 @@ recommendation:
   with `--list`, `--game`, `--all`, `--art`, and `--dry-run`, and a GUI
   import page with a poster grid.
 - **Desktop app.** Cards have no kind. `Card.prefix.is_some()` gates the
-  Wine-only actions in the context menu, and Clone and Copy to portable are
-  still offered for cards without a prefix, then refused by core.
+  Wine-only actions in the context menu (`tools_navigation.rs`
+  `wine_actions`, which also stays true while a restore is pending). Clone
+  and Copy to portable are offered for every card, and native environments
+  have their own working paths for both (`portable::inspect_native`, and
+  [native.md](../native.md)).
 
 ### What Steam's files say
 
@@ -106,6 +116,19 @@ Checked on a real install (native Steam, one library, 13 manifests):
 
 ## Proposed design
 
+### Choosing a Steam install
+
+Native Steam (`~/.local/share/Steam`, which `~/.steam/steam` and
+`~/.steam/root` point at) and Flatpak Steam
+(`~/.var/app/com.valvesoftware.Steam/.local/share/Steam`) are found the way
+`external_runners.rs` finds them, deduplicated by canonical path.
+
+Wineo uses one active install for everything: import, launch, art, playtime,
+and the reaper scan (question 8). When only one is found, it's that one. When
+both are, native wins unless the global config says `steam = "flatpak"`. An
+app id that only the inactive install has is treated as not installed, so
+the two installs are never mixed for one game.
+
 ### Getting games in
 
 An explicit import, like Heroic (question 1).
@@ -120,14 +143,18 @@ wineo import steam --all --dry-run
 
 - `--list` shows installed Steam games with their app id, title, size, and
   whether they're already imported.
+- A game is already imported when any environment has `launcher = "steam"`
+  and its `app_id`, whatever that environment is called. Importing it again
+  is skipped with `Already imported as bg3.`
 - The name defaults to a slug of the title (`baldurs-gate-3`), like the
-  desktop app's Heroic import. A taken name is an error, unless it's already
-  this game, which is skipped as already imported.
+  desktop app's Heroic import. A name taken by a different environment is an
+  error.
 - `--all` imports every installed game that isn't imported yet and skips
   tools. It's fail-soft like `import heroic --all`.
 - Guided `wineo import` gets a third source, Steam.
 - Import writes the config, copies Steam's cached art, and tags the
-  environment `game`. It never writes inside Steam's folders.
+  environment `game`. It uses no template, and it never writes inside
+  Steam's folders.
 
 ### Config
 
@@ -139,7 +166,9 @@ schema_version = 1
 kind = "proxied"
 launcher = "steam"
 app_id = "1086940"
+title = "Baldur's Gate 3"
 tags = ["game"]
+desktop = false
 
 [hooks]
 after = 'notify-send "Saves synced"'
@@ -148,78 +177,210 @@ after = 'notify-send "Saves synced"'
 - `launcher` names who launches it. Only `steam` for now; Heroic's store
   games will add `heroic`. `app_id` is a string, since GOG and Epic ids
   aren't numbers.
+- `title` is written at import and shown when Steam no longer has the game's
+  manifest. While the manifest exists, its `name` wins (question 10).
 - A proxied environment has no `prefix`, `runner`, targets, `[env]`, launch
   options, winetricks, or components. Setting one is refused like a Wine-only
   key on a native environment: `baldurs-gate-3 is a Steam game, so it can't
   set runner.`
-- It can have `tags`, `[hooks]`, and `desktop`.
+- It can have `tags`, `title`, `[hooks]`, and `desktop`.
 - No schema bump, per 0026's rule.
-- Title, install state, size, and Proton build are read from Steam each time,
-  never stored.
+- Install state, size, and Proton build are read from Steam each time, never
+  stored.
 - A new `docs/proxied-environment.toml.example`, tested like the others.
+
+### The implicit target
+
+A proxied environment has exactly one launch, so it gets one implicit target
+named after its launcher: `steam`. It's never written to the config, and
+`[targets]` is still refused. It gives the rest of wineo a target name where
+it expects one:
+
+- The desktop entry is `wineo-<env>-steam.desktop`, from the top-level
+  `desktop` key, which defaults to `false`. Its title is the game's title.
+- Run state records target `steam`, and `status` shows `target  steam
+  (Baldur's Gate 3)`.
+- `wineo start NAME steam` works, and any other target name is an error.
+
+### Global defaults
+
+Nothing global reaches a Steam game: the global `[env]`, `gamemode`,
+`mangohud`, `gamescope`, `wayland`, and template defaults are skipped for
+proxied environments, and `status` doesn't list them. Only `stop_timeout`
+applies, to Stop.
 
 ### Launching
 
 - `wineo start NAME [-- ARGS]` runs `steam -applaunch <app_id> [ARGS]`, or
-  `flatpak run com.valvesoftware.Steam -applaunch ...` for Flatpak Steam.
-  It's spawned in its own session, never in wineo's process group, since it
-  starts the Steam client when Steam isn't running.
+  `flatpak run com.valvesoftware.Steam -applaunch ...` for the Flatpak
+  install. It's spawned in its own session, never in wineo's process group,
+  since it starts the Steam client when Steam isn't running.
 - Only arguments reach the game (question 6). `-e`, `[env]`, gamemode,
   MangoHud, and gamescope are refused and point to Steam's launch options:
   `baldurs-gate-3 is a Steam game, so set environment variables in its Steam
   launch options.`
-- `before` runs first, as for every kind. A detached supervisor then waits
-  for the game's `reaper` process: about 60 seconds, longer while the
-  manifest says Steam is updating or downloading the game. If it never
-  appears, the run fails: `Steam didn't start baldurs-gate-3.`
-- Once found, the supervisor watches the reaper through a pidfd, holds the
-  run lock as usual, and the run ends when the reaper exits. Then `after`
-  runs.
-- `run` does the same in the foreground. `restart` works.
-- A game Steam lists as not installed (uninstalled after import) refuses to
-  start: `Steam lists baldurs-gate-3 as not installed.`
+- Before anything runs, wineo checks for a running game: if a reaper for the
+  app id already exists, `start` says `baldurs-gate-3 is already running
+  (started from Steam).` and exits 0, like `start` on any running
+  environment, and `run` exits 1. No hooks run.
+- Then `before` runs, as for every kind, and the supervisor takes the run
+  lock and hands off to Steam.
+- A run has three phases, which `status` and the desktop app show:
+  `starting` (asked Steam, waiting for the game), `running`, and ended.
+- `start` returns once Steam has accepted the handoff, printing `Asked Steam
+  to start baldurs-gate-3.` and exiting 0 (question 9). `run` stays in the
+  foreground through all three phases.
+- The game must appear within 60 seconds of the handoff. While the manifest
+  says Steam is downloading, updating, or staging the game, the wait goes on
+  as long as the downloaded bytes keep growing, and fails after 10 minutes
+  without progress. A run that never sees its game fails: `Steam didn't
+  start baldurs-gate-3.`
+- Stop or Ctrl+C during `starting` ends the wait right away. The run ends
+  `stopped`. Wineo can't take back a launch Steam has already queued, so a
+  game that appears afterward isn't claimed by this run. It shows as
+  `running (started from Steam)`.
+- `after` follows the existing contract: it runs once the launch got past
+  `before`, however the run ended, including a failed or canceled
+  `starting` phase.
+- A game Steam lists as not installed refuses to start: `Steam lists
+  baldurs-gate-3 as not installed.` An unavailable library refuses with its
+  own reason (see below).
+
+### Claiming the game
+
+A run claims exactly one reaper, so it never takes over someone else's
+launch or runs hooks for it.
+
+- A reaper matches an environment when it's a `reaper` process whose command
+  line has the token `SteamLaunch` and exactly `AppId=<app_id>`, and whose
+  ancestors include the active install's Steam client. The command line shape
+  still needs checking with Steam running, before step 4 starts.
+- Before handing off, the supervisor records every matching reaper that
+  already exists (normally none, since `start` refused if one did). It only
+  claims a reaper that isn't on that list and started after the handoff.
+- Steam runs one instance of a game at a time, so a reaper that starts after
+  the handoff is the one wineo asked for, even if Play was also clicked in
+  Steam during that window. Claiming it is correct.
+- More than one candidate at once is ambiguous: the run claims none, ends
+  `failed` with `More than one Steam process matches baldurs-gate-3.`, and
+  leaves them all alone.
+- The claim is recorded as pid, start time, and boot id, the same identity
+  `process.rs` checks for groups, and the supervisor watches it through a
+  pidfd.
 
 ### Running state and Stop
 
 Games started from the Steam client show as running too (question 4).
 
-- `status` and `list` show a proxied environment as running while wineo's
-  supervisor holds its lock, or while a reaper for its app id exists. A run
-  Steam started shows as `running (started from Steam)`, Stop works on it,
-  and no hooks run for it.
-- Stop sends SIGTERM to the reaper and the processes under it, then SIGKILL
-  after `stop_timeout`. It never signals anything outside the reaper's tree,
-  so the Steam client is safe. `--force` and the desktop app's Force stop
-  skip straight to SIGKILL.
-- Lost-run cleanup never kills a proxied run. It records the end and leaves
-  any reaper alone.
-- The reaper is found by scanning `/proc` for a `reaper` whose command line
-  has `SteamLaunch` and `AppId=<id>`, verified by its start time like other
-  owned processes. The command line shape still needs checking with Steam
-  running.
+- `status` and `list` show a proxied environment as `starting` or `running`
+  while wineo's supervisor holds its lock. Without a wineo run, a matching
+  reaper shows as `running (started from Steam)`. Stop works on it, and no
+  hooks run for it.
+- Two matching reapers without a wineo run show as running, and Stop refuses
+  with the ambiguity message rather than picking one.
+- Stop works on the reaper's tree: the reaper plus every process whose
+  parent chain leads to it, found by walking `/proc` from the verified
+  reaper. Each one is opened as a pidfd and checked against its start time
+  before it's signaled, so a reused pid is never hit. Nothing outside the
+  tree is signaled, so the Steam client is safe.
+- Stop sends SIGTERM to the tree, rescans for new members while it waits,
+  and sends SIGKILL to whatever is left after `stop_timeout`. `--force` and
+  the desktop app's Force stop skip straight to SIGKILL.
+- Processes that outlive the reaper during a Stop are still killed: the
+  supervisor keeps pidfds for every tree member it has seen, so a child that
+  was reparented away from the reaper still gets its SIGKILL.
+- When the game exits on its own, the run ends when the reaper exits.
+  Leftover children are Steam's business, the same as when Steam launches it.
+- The game's exit code can't be collected, since wineo isn't the reaper's
+  parent.
+
+### Lost runs
+
+When a proxied run's supervisor dies, the next `status`, `start`, or `stop`
+finds the lock free and the state still `starting` or `running`. Cleanup:
+
+- never signals anything;
+- marks the run `stopped` and lost, ending at its last heartbeat;
+- writes no playtime session, since Steam's total is the source of truth;
+- releases the run, so the next launch isn't blocked. A reaper that's still
+  alive shows as `running (started from Steam)`.
+
+### Hook variables
+
+For a proxied environment's hooks:
+
+- `WINEO_ENVIRONMENT`, `WINEO_HOOK`, `WINEO_PORTABLE_DIR` as usual, and
+  `WINEO_TARGET=steam`.
+- `WINEO_LAUNCHER=steam` and `WINEO_APP_ID=1086940`, which are new.
+- `WINEO_PREFIX` is Steam's `compatdata/<app_id>/pfx` when that exists, so a
+  save-sync hook can find a Proton game's saves. It's set but never written
+  to by wineo.
+- No `WINEO_EXE`. `WINEO_EXIT_CODE` is always empty, since the exit code
+  can't be collected.
+- `WINEO_END` is `exited` when the reaper exited on its own, `stopped`, or
+  `failed` when the game never started. `WINEO_SECONDS` covers the
+  `running` phase only.
+
+### When Steam data is missing
+
+Each Steam game is in one of these states, shown in `status`, `list`,
+validate, and the desktop app:
+
+| State | Meaning | Play |
+|---|---|---|
+| installed | Its manifest says fully installed | Works |
+| updating | Its manifest says Steam is updating it | Works, waits in `starting` |
+| not installed | Steam is readable and no available library has its manifest | Refused, grayscaled card |
+| unavailable | A library listed in `libraryfolders.vdf` is missing, so it might be there | Refused: `Steam's library at /mnt/games isn't available.` |
+| unknown | Steam isn't found, or a file can't be read or parsed | Refused with the reason |
+
+- Unavailable and unknown aren't uninstalled, so their cards aren't
+  grayscaled. They show a warning instead.
+- The title falls back to the config's `title` when there's no manifest.
 
 ### Playtime
 
 Steam's own total is the source of truth (question 3).
 
-- `stats` reads `Playtime` and `LastPlayed` from `localconfig.vdf` for the
-  account that owns the game (the manifest's `LastOwner`).
+- The account is the most recent one in `config/loginusers.vdf`. Playtime
+  belongs to whoever played, which is the logged-in account, not the
+  manifest's `LastOwner` (they differ for family sharing). So the account
+  doesn't depend on the manifest still existing.
+- `stats` reads `Playtime` and `LastPlayed` for the app from that account's
+  `localconfig.vdf`.
+- Known zero and unknown are different. A readable `localconfig.vdf` with no
+  entry or `Playtime` 0 is 0 h. A missing account, or a file that can't be
+  read or parsed, is unknown.
 - Wineo records no sessions for proxied environments, so nothing is counted
   twice and play started from Steam counts too.
-- `stats NAME` shows `played 370 h on Steam, last Sep 4` with no session
-  breakdown, and `--json` reports the seconds plus `"source": "steam"`.
-  `--by-tag` and totals include it.
+
+What Steam can't supply is left out, not shown as zero:
+
+- `stats NAME` shows only `played  370 h on Steam, last Sep 4`. There are no
+  session, average, longest, first played, this week, or this month lines.
+  Unknown shows as `played  unknown (Steam's playtime can't be read)`.
+- The overview shows Steam's total under played and `-` under sessions.
+- `--json` has `seconds` and `last_played` (`null` when unknown), `"source":
+  "steam"`, and `null` for `sessions`, `average_seconds`, `longest`,
+  `first_played`, and the week and month totals. Wine and native
+  environments get `"source": "wineo"`.
+- `--by-tag` and the overview total add Steam's totals to the played column,
+  while sessions count only wineo's own. When any Steam game contributes,
+  a note says `Steam games count Steam's total, without sessions.` A game
+  whose playtime is unknown is left out of totals, with `1 Steam game's
+  playtime is unknown.`
+- Nothing for a Steam game says "from Heroic".
 
 ### Other commands
 
 | Command | Proxied environment |
 |---|---|
 | `start`, `run`, `restart`, `stop`, `status`, `list`, `stats` | Yes |
-| `set` | Tags, hooks, and `desktop` only |
+| `set` | `tags`, `title`, `hooks`, and `desktop` only |
 | `art` | Yes, and `--art` uses SteamGridDB's lookup by Steam app id |
 | `desktop` | Yes: the entry runs `wineo start NAME`, so hooks run |
 | `rm` | Removes wineo's config, art, and stats. Never uninstalls; the review says so |
-| `validate` | New checks: Steam not found, game not installed, unknown app id |
+| `validate` | New checks: Steam not found, no active install, game not installed, library unavailable, unreadable files |
 | `winetricks`, `exec`, `snapshot`, `clone`, `portable copy` | Refused: `Steam manages baldurs-gate-3's prefix.` |
 | `import steam --portable` | Refused: a portable folder can't depend on this machine's Steam |
 
@@ -231,21 +392,23 @@ into native code. That covers `Host`, `RunState`, `report.rs`, `view.rs`
 (`kind` becomes `"wine"`, `"native"`, or `"proxied"`), validate, desktop
 reconcile, and the GUI's `Card`. `NoPrefix` stops saying "native" for
 every kind. `status --json` and `list --json` get `kind`, plus `launcher`
-and `app_id` for proxied environments.
+and `app_id` for proxied environments. The GUI keeps showing Snapshots, Run
+program, and Winetricks while a restore is pending, as `wine_actions` does
+today.
 
 ### Steam module
 
 A new `crates/wineo-core/src/steam.rs` owns everything Steam-specific:
 
-- Finding Steam: roots, native or Flatpak (moved from `external_runners.rs`,
-  which then uses it).
+- Finding installs and choosing the active one (moved from
+  `external_runners.rs`, which then uses it).
 - A small text KeyValues parser for `.vdf` and `.acf`, replacing
   `vdf_paths`.
-- Libraries, manifests, and the tools filter: known tool app ids plus the
-  name prefixes `Proton`, `Steam Linux Runtime`, and `Steamworks`
-  (question 5).
+- Libraries, their availability, manifests, and the tools filter: known tool
+  app ids plus the name prefixes `Proton`, `Steam Linux Runtime`, and
+  `Steamworks` (question 5).
 - Account, playtime, `CompatToolMapping`, and art paths.
-- Finding a game's reaper.
+- Finding, verifying, and walking a game's reaper.
 
 It never writes to Steam's folders and never reads `registry.vdf`.
 
@@ -255,19 +418,22 @@ In this plan (question 7).
 
 - Add gets **Import from Steam**: a poster grid of installed games that
   aren't imported yet, like Heroic's, with select all.
-- Cards for Steam games show a small Steam mark, and a game Steam lists as
-  not installed is grayscaled and dimmed with Play disabled.
-- Play and Stop work like other kinds, including Force stop.
+- Cards for Steam games show a small Steam mark. Not installed is
+  grayscaled and dimmed with Play disabled; unavailable and unknown show a
+  warning.
+- Play and Stop work like other kinds, including Force stop. The panel shows
+  `Waiting for Steam...` during `starting`, with Stop available.
 - The panel shows `Steam`, the Proton build if any, and the install size.
 - The context menu hides Snapshots, Run program, Winetricks, Clone, and Copy
-  to portable for Steam games. It also stops offering Clone and Copy to
-  portable for native ones, which core already refuses.
-- Settings shows only tags and the desktop entry switch.
+  to portable for Steam games. Native environments keep Clone and Copy to
+  portable, which work for them.
+- Settings shows tags, title, and the desktop entry switch.
 
 ## Questions
 
-All answered A by the maintainer on 2026-10-07; see the settled list above.
-The options are kept as a record of what was weighed.
+Questions 1 to 7 were answered A by the maintainer on 2026-10-07; see the
+settled list above. The options are kept as a record of what was weighed.
+Questions 8 to 10 are open.
 
 1. How Steam games get into wineo:
    - **A (recommended).** An explicit `wineo import steam`, one config per
@@ -308,6 +474,23 @@ The options are kept as a record of what was weighed.
    - **A (recommended).** In this plan, like 0043 did.
    - **B.** A follow-up plan, with this one CLI only.
 
+8. Which Steam install wineo uses when both native and Flatpak exist:
+   - **A (recommended).** One active install for everything: native, unless
+     the global config says `steam = "flatpak"`.
+   - **B.** Record the install in each environment at import
+     (`steam_install = "flatpak"`), so different games can use different
+     installs.
+9. When `start` reports success for a Steam game:
+   - **A (recommended).** Once Steam accepts the launch: `Asked Steam to
+     start baldurs-gate-3.`, with `starting` in `status` until the game
+     appears. A download can take hours, and `start` shouldn't block on it.
+   - **B.** Once the game's process appears, so `start` blocks through any
+     update.
+10. The title when Steam no longer has the game's manifest:
+   - **A (recommended).** Import writes `title` to the config, and the live
+     manifest name wins while it exists.
+   - **B.** Fall back to the environment name.
+
 ## Implementation sequence
 
 1. Kind plumbing: explicit kind matches everywhere, `Kind::Proxied`,
@@ -319,9 +502,11 @@ The options are kept as a record of what was weighed.
    use fixture Steam trees.
 3. `wineo import steam` in core (plan, then apply) and the CLI, with
    `--dry-run`, art, and guided `import`.
-4. Launching and stopping: the detached Steam spawn, the reaper wait and
-   pidfd watch, Stop on the reaper's tree, lost runs, hooks, and validate
-   checks.
+4. Launching and stopping. First confirm the reaper's command line and
+   ancestry with Steam running, and record it in the plan. Then the detached
+   Steam spawn, the `starting` phase and its waits, claiming, the pidfd
+   watch, Stop on the verified tree, lost runs, the implicit target, hook
+   variables, and validate checks.
 5. Playtime from Steam in `stats`, `status`, and JSON.
 6. Desktop app: Import from Steam, cards, panel, context menu, settings.
 7. Docs: a Steam page, config-files, json-output, gui.md, and an acceptance
@@ -335,9 +520,18 @@ The options are kept as a record of what was weighed.
 - The KeyValues parser gets tests for nesting, escapes, comments, and
   malformed files, which fail with a clear error instead of a panic.
 - A fake `steam` script spawns a fake `reaper SteamLaunch AppId=<id>` and
-  covers start, run, Stop, `--force`, a reaper that never appears, a lost
-  supervisor, and hooks. A test checks Stop never signals the fake Steam
-  client.
+  covers start, run, Stop, `--force`, a reaper that never appears, a stalled
+  and a progressing download, Stop and Ctrl+C during `starting`, a game
+  already running, two matching reapers, a reaper for a different app id or
+  install, a child that outlives the reaper during Stop, a lost supervisor
+  (no session written, next launch not blocked), and hooks with their
+  variables. A test checks Stop never signals the fake Steam client.
+- Install selection with both installs present, and the missing-data states:
+  not installed, an unavailable library, an unreadable manifest, and unknown
+  versus zero playtime.
+- Stats text and JSON for Steam games, with no session fields and no "from
+  Heroic", and mixed `--by-tag` totals.
+- Native Clone and Copy to portable still work in the desktop app.
 - Every refused command gets a test with the proxied message.
 - Tests from step 1 show Wine and native behavior is unchanged.
 - The acceptance checklist uses the maintainer's real Steam library: import
