@@ -28,7 +28,9 @@ pub use orchestration::{
 pub(crate) use stop::{
     LostRunOutcome, busy_with, clean_up_installer, clean_up_lost_run, stop_timeout,
 };
-pub use stop::{StopEvent, StopOutcome, stop, stop_run, stop_run_with, stop_with};
+pub use stop::{
+    StopAction, StopEvent, StopOutcome, force_stop_after, stop, stop_run, stop_run_with, stop_with,
+};
 
 /// The binary gamemode ships, which is not what the setting is called.
 pub(crate) const GAMEMODE: &str = "gamemoderun";

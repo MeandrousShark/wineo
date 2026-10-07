@@ -132,6 +132,7 @@ impl App {
                 && self.removal.is_none()
                 && !self.trash_confirm_open()
                 && !self.downloads_confirm_open()
+                && self.hook_stop_confirm.is_none()
                 && self.flow.is_none()
                 && self.settings.is_none()
                 && self.art_page.is_none()
@@ -175,6 +176,14 @@ impl App {
         if self.removal.is_some() {
             page = page.push(iced::widget::opaque(
                 mouse_area(container(self.remove_view()).center(Fill).style(|_| {
+                    container::Style::default().background(Color::BLACK.scale_alpha(0.55))
+                }))
+                .on_scroll(|_| Message::OverlayInput),
+            ));
+        }
+        if self.hook_stop_confirm.is_some() {
+            page = page.push(iced::widget::opaque(
+                mouse_area(container(self.hook_stop_view()).center(Fill).style(|_| {
                     container::Style::default().background(Color::BLACK.scale_alpha(0.55))
                 }))
                 .on_scroll(|_| Message::OverlayInput),

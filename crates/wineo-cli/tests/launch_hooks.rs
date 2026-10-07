@@ -11,6 +11,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use common::*;
+use wineo_core::hooks::Phase;
+use wineo_core::launch::{self, StopAction, StopOutcome};
 use wineo_core::operation::Locks;
 use wineo_core::paths::Paths;
 
@@ -362,9 +364,9 @@ fn launcher_cleanup_after_uses_the_two_signal_wait_then_kill_behavior() {
     assert_eq!(fs::read_to_string(before).unwrap(), "ran\n");
 }
 
-fn locks(f: &Fixture) -> Locks {
+fn paths(f: &Fixture) -> Paths {
     let root = f.root.path().to_owned();
-    let paths = Paths::from_lookup(move |key| {
+    Paths::from_lookup(move |key| {
         let path = match key {
             "HOME" => root.clone(),
             "XDG_CONFIG_HOME" => root.join("config"),
@@ -374,8 +376,11 @@ fn locks(f: &Fixture) -> Locks {
         };
         Some(OsString::from(path.as_os_str()))
     })
-    .unwrap();
-    Locks::new(&paths)
+    .unwrap()
+}
+
+fn locks(f: &Fixture) -> Locks {
+    Locks::new(&paths(f))
 }
 
 fn hook_group(f: &Fixture, name: &str) -> u32 {
@@ -518,6 +523,7 @@ fn stop_during_before_cancels_the_hook() {
     wait_for("before hook to start", || before.exists());
     let stopped = f.run(&["stop", "app"]);
     assert_success(&stopped);
+    assert_eq!(stdout(&stopped), "The before hook was canceled.\n");
     let output = child.wait_with_output().unwrap();
     assert!(!output.status.success(), "{}", stderr(&output));
     assert!(!after.exists());
@@ -546,13 +552,73 @@ fn force_stop_during_before_kills_the_hook_group() {
     let child = spawn_wineo(&f, &["start", "app"]);
     wait_for("before hook child to start", || child_pid.exists());
     let group = hook_group(&f, "app");
-    assert_success(&f.run(&["stop", "--force", "app"]));
+    let stopped = f.run(&["stop", "--force", "app"]);
+    assert_success(&stopped);
+    assert_eq!(stdout(&stopped), "The before hook was canceled.\n");
     wait_for("before hook process group to be killed", || {
         wineo_core::process::group_has_live_members(group) == Some(false)
     });
     let output = child.wait_with_output().unwrap();
     assert!(!output.status.success(), "{}", stderr(&output));
     assert!(!after.exists());
+}
+
+#[test]
+fn confirmed_after_kill_requires_the_same_hook_run() {
+    let f = Fixture::new();
+    let active = f.root.path().join("after-active");
+    let after = format!(
+        "touch {}; while :; do sleep 0.02; done",
+        shell_quote(&active.display().to_string())
+    );
+    f.environment(
+        "app",
+        &hooked_targets("[targets.app]\nexe = 'exit-0'\n", None, Some(&after)),
+    );
+
+    assert_success(&f.run(&["start", "app"]));
+    wait_for("first after hook to start", || active.exists());
+    let (phase, first) = locks(&f).hook_group("app").unwrap().unwrap();
+    assert_eq!(phase, Phase::After);
+    let mut wrong = first.clone();
+    wrong.leader_start += 1;
+    assert!(matches!(
+        launch::force_stop_after(&paths(&f), "app", &wrong).unwrap(),
+        StopOutcome::NotRunning { .. }
+    ));
+    assert_eq!(
+        wineo_core::process::group_has_live_members(first.group),
+        Some(true)
+    );
+    assert!(matches!(
+        launch::force_stop_after(&paths(&f), "app", &first).unwrap(),
+        StopOutcome::Stopped {
+            action: StopAction::AfterKilled,
+            ..
+        }
+    ));
+
+    fs::remove_file(&active).unwrap();
+    assert_success(&f.run(&["start", "app"]));
+    wait_for("second after hook to start", || active.exists());
+    let (phase, second) = locks(&f).hook_group("app").unwrap().unwrap();
+    assert_eq!(phase, Phase::After);
+    assert_ne!(first, second);
+    assert!(matches!(
+        launch::force_stop_after(&paths(&f), "app", &first).unwrap(),
+        StopOutcome::NotRunning { .. }
+    ));
+    assert_eq!(
+        wineo_core::process::group_has_live_members(second.group),
+        Some(true)
+    );
+    assert!(matches!(
+        launch::force_stop_after(&paths(&f), "app", &second).unwrap(),
+        StopOutcome::Stopped {
+            action: StopAction::AfterKilled,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -932,7 +998,16 @@ fn a_second_launch_is_busy_during_before_and_status_reports_it() {
         json["hooks"],
         serde_json::json!({"before": true, "after": false})
     );
+    assert!(
+        !json.to_string().contains(&hook),
+        "hook commands must not be included in status JSON: {json}"
+    );
     assert_eq!(fs::read_to_string(before).unwrap(), "ran\n");
+
+    let overview = f.run(&["status"]);
+    assert_success(&overview);
+    assert!(stdout(&overview).contains("running its before hook"));
+    assert!(!stdout(&overview).contains("hook-before"));
 
     fs::write(release, "").unwrap();
     assert_success(&child.wait_with_output().unwrap());
@@ -981,6 +1056,15 @@ fn status_and_launches_during_after_show_ended_but_busy() {
         json["hooks"],
         serde_json::json!({"before": true, "after": true})
     );
+    assert!(
+        !json.to_string().contains(&before_command) && !json.to_string().contains(&after),
+        "hook commands must not be included in status JSON: {json}"
+    );
+
+    let overview = f.run(&["status"]);
+    assert_success(&overview);
+    assert!(stdout(&overview).contains("running its after hook"));
+    assert!(!stdout(&overview).contains("hook-after"));
 
     let second = f.run(&["start", "app"]);
     assert!(!second.status.success());
@@ -1113,7 +1197,7 @@ fn stop_runs_after_and_force_stop_kills_after_hook_children() {
     let mut stop = f
         .wineo()
         .args(["stop", "app"])
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::from(File::create(&stop_output).unwrap()))
         .spawn()
         .unwrap();
@@ -1127,7 +1211,9 @@ fn stop_runs_after_and_force_stop_kills_after_hook_children() {
         thread::sleep(Duration::from_millis(20));
     }
     fs::write(release, "").unwrap();
-    assert!(stop.wait().unwrap().success());
+    let stopped = stop.wait_with_output().unwrap();
+    assert_success(&stopped);
+    assert_eq!(stdout(&stopped), "The after hook finished.\n");
 
     let f = Fixture::new();
     let active = f.root.path().join("after-active");
@@ -1144,7 +1230,9 @@ fn stop_runs_after_and_force_stop_kills_after_hook_children() {
     assert_success(&f.run(&["start", "app"]));
     wait_for("after hook child to start", || child_pid.exists());
     let group = hook_group(&f, "app");
-    assert_success(&f.run(&["stop", "--force", "app"]));
+    let stopped = f.run(&["stop", "--force", "app"]);
+    assert_success(&stopped);
+    assert_eq!(stdout(&stopped), "The after hook was killed.\n");
     wait_for("after hook process group to be killed", || {
         wineo_core::process::group_has_live_members(group) == Some(false)
     });
@@ -1212,20 +1300,47 @@ fn restart_waits_for_after_before_starting_again() {
     wait_for("first after hook to wait", || active.exists());
 
     let restart_output = f.root.path().join("restart.output");
-    let mut restart = f
+    let restart = f
         .wineo()
         .args(["restart", "app"])
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::from(File::create(&restart_output).unwrap()))
         .spawn()
         .unwrap();
     wait_for_text(&restart_output, "Waiting for the after hook.");
     assert_eq!(fs::read_to_string(&before).unwrap(), "ran\n");
     fs::write(&release, "").unwrap();
-    assert!(restart.wait().unwrap().success());
+    let restarted = restart.wait_with_output().unwrap();
+    assert_success(&restarted);
+    assert_eq!(stdout(&restarted), "Started app\n");
     wait_for("restart to run its before hook", || {
         fs::read_to_string(&before).is_ok_and(|text| text.lines().count() == 2)
     });
+}
+
+#[test]
+fn restart_during_before_reports_started() {
+    let f = Fixture::new();
+    let active = f.root.path().join("before-active");
+    let release = f.root.path().join("release");
+    let before = format!(
+        "if [ ! -e {} ]; then {}; fi",
+        shell_quote(&active.display().to_string()),
+        gate_hook(&active, &release)
+    );
+    f.environment(
+        "app",
+        &hooked_targets("[targets.app]\nexe = 'exit-0'\n", Some(&before), None),
+    );
+
+    let first = spawn_wineo(&f, &["start", "app"]);
+    wait_for("before hook to start", || active.exists());
+    let restarted = f.run(&["restart", "app"]);
+    assert_success(&restarted);
+    assert_eq!(stdout(&restarted), "Started app\n");
+    let first_output = first.wait_with_output().unwrap();
+    assert!(!first_output.status.success(), "{}", stderr(&first_output));
+    fs::write(release, "").unwrap();
 }
 
 #[test]

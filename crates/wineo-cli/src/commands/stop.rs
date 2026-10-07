@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
 use crate::commands::transfer::Cancellation;
-use wineo_core::launch::{self, StopOutcome};
+use wineo_core::launch::{self, StopAction, StopOutcome};
 use wineo_core::paths::Paths;
 
 #[derive(clap::Args)]
@@ -46,9 +46,14 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         result => result?,
     };
     match outcome {
-        StopOutcome::Stopped { messages } => {
+        StopOutcome::Stopped { messages, action } => {
             print_messages(messages);
-            println!("Stopped {name}");
+            match action {
+                StopAction::BeforeCanceled => println!("The before hook was canceled."),
+                StopAction::AfterKilled => println!("The after hook was killed."),
+                StopAction::AfterWaited => println!("The after hook finished."),
+                StopAction::Run => println!("Stopped {name}"),
+            }
         }
         StopOutcome::NotRunning { messages } => {
             print_messages(messages);

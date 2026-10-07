@@ -477,6 +477,18 @@ fn describe_template(template: &Template) -> String {
             }
         ));
     }
+    if let Some(hooks) = template.hooks.as_ref().and_then(|hooks| hooks.on()) {
+        let phases: Vec<_> = [("before", &hooks.before), ("after", &hooks.after)]
+            .into_iter()
+            .filter_map(|(phase, command)| command.as_ref().map(|_| phase))
+            .collect();
+        // Joined with "and", since commas already separate the summary's items.
+        match phases.as_slice() {
+            [] => {}
+            [phase] => parts.push(format!("{phase} hook")),
+            _ => parts.push(format!("{} hooks", phases.join(" and "))),
+        }
+    }
     if let Some(gameid) = &template.gameid {
         parts.push(format!("gameid {gameid}"));
     }
@@ -1322,7 +1334,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use wineo_core::art::Kind;
-    use wineo_core::config::Defaults;
+    use wineo_core::config::{Defaults, Hooks, HooksSetting};
     use wineo_core::steamgriddb::KeySource;
 
     use super::*;
@@ -1340,6 +1352,44 @@ mod tests {
             describe_template(&template),
             "mangohud on, wayland off, gamescope on"
         );
+    }
+
+    #[test]
+    fn template_summary_lists_configured_hook_phases() {
+        let summary = |hooks| {
+            describe_template(&Template {
+                hooks,
+                ..Template::default()
+            })
+        };
+
+        assert_eq!(
+            summary(Some(HooksSetting::On(Hooks {
+                before: Some("mount /mnt/games".to_owned()),
+                after: None,
+            }))),
+            "before hook"
+        );
+        assert_eq!(
+            summary(Some(HooksSetting::On(Hooks {
+                before: None,
+                after: Some("sync".to_owned()),
+            }))),
+            "after hook"
+        );
+        assert_eq!(
+            summary(Some(HooksSetting::On(Hooks {
+                before: Some("mount /mnt/games".to_owned()),
+                after: Some("sync".to_owned()),
+            }))),
+            "before and after hooks"
+        );
+        assert_eq!(
+            summary(Some(HooksSetting::On(Hooks::default()))),
+            "sets nothing"
+        );
+        assert_eq!(summary(Some(HooksSetting::Off)), "sets nothing");
+        assert_eq!(summary(None), "sets nothing");
     }
     #[test]
     fn a_launcher_goes_inside_the_runners_parenthesis() {

@@ -148,6 +148,7 @@ impl App {
             || self.settings.is_some()
             || self.trash_confirm_open()
             || self.downloads_confirm_open()
+            || self.hook_stop_confirm.is_some()
     }
 
     fn enter_feature(&mut self, name: Option<&str>) {

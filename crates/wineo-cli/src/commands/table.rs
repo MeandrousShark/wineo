@@ -31,6 +31,7 @@ impl Row {
         tz: &TimeZone,
     ) -> Self {
         let state = match busy {
+            Some(operation @ Operation::Hook(_)) => operation.describe(),
             Some(operation) => operation.as_str(),
             None if unresolved => "unresolved",
             None => status.state.as_str(),

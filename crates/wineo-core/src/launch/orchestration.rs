@@ -134,6 +134,7 @@ pub struct PreparedLaunch {
     pub launch: Launch,
     pub after: Option<AfterHook>,
     guard: Option<Guard>,
+    hook_output: hooks::Output,
     _reservation: Option<LaunchReservation>,
 }
 
@@ -166,10 +167,12 @@ impl PreparedLaunch {
             self.global.stop_timeout,
             lock,
             token,
+            std::mem::replace(&mut self.hook_output, hooks::Output::Inherit),
         );
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn failed_after(
     paths: &Paths,
     name: &str,
@@ -178,6 +181,7 @@ fn failed_after(
     stop_timeout: u32,
     lock: Option<crate::runtime::RunLock>,
     token: &Token,
+    output: hooks::Output,
 ) {
     let Some(after) = after else {
         return;
@@ -201,7 +205,7 @@ fn failed_after(
             },
             token,
             Duration::from_secs(stop_timeout.into()),
-            hooks::Output::Inherit,
+            output,
         )
     })();
     if let Err(err) = result {
@@ -214,7 +218,7 @@ pub fn prepare(
     name: &str,
     overrides: &Overrides,
     token: &Token,
-    before_output: hooks::Output,
+    hook_output: hooks::Output,
     mut events: impl FnMut(LaunchEvent),
 ) -> anyhow::Result<PreparedLaunch> {
     let global = GlobalConfig::load(paths)?;
@@ -300,7 +304,12 @@ pub fn prepare(
             &guard,
             token,
             Duration::from_secs(global.stop_timeout.into()),
-            before_output,
+            match &hook_output {
+                hooks::Output::Inherit => hooks::Output::Inherit,
+                hooks::Output::File(file) => {
+                    hooks::Output::File(file.try_clone().context("failed to clone hook output")?)
+                }
+            },
         )? {
             hooks::Outcome::Canceled(_) => return Err(Error::Canceled("launch").into()),
             hooks::Outcome::Finished(status) if !status.success() => {
@@ -352,6 +361,7 @@ pub fn prepare(
                 global.stop_timeout,
                 None,
                 &cleanup,
+                hook_output,
             );
             return Err(err);
         }
@@ -362,6 +372,7 @@ pub fn prepare(
         launch,
         after,
         guard,
+        hook_output,
         _reservation: reservation,
     })
 }
@@ -586,7 +597,7 @@ pub fn start(
     overrides: Overrides,
     exe: &Path,
     token: &Token,
-    before_output: hooks::Output,
+    hook_output: hooks::Output,
     winetricks_output: Output<'_>,
     mut events: impl FnMut(LaunchEvent),
 ) -> anyhow::Result<StartOutcome> {
@@ -596,8 +607,9 @@ pub fn start(
         launch,
         after,
         mut guard,
+        hook_output,
         _reservation,
-    } = match prepare(paths, name, &overrides, token, before_output, &mut events) {
+    } = match prepare(paths, name, &overrides, token, hook_output, &mut events) {
         Err(err) if matches!(err.downcast_ref::<Error>(), Some(Error::AlreadyRunning(_))) => {
             return Ok(StartOutcome::AlreadyRunning);
         }
@@ -684,6 +696,7 @@ pub fn start(
             global.stop_timeout,
             None,
             &cleanup,
+            hook_output,
         );
     }
     result
@@ -696,6 +709,78 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+
+    #[test]
+    fn launcher_cleanup_after_writes_to_the_callers_output() {
+        for stage in ["prepare", "start", "prepared"] {
+            let root = tempfile::tempdir().unwrap();
+            let paths = Paths::from_lookup(|key| {
+                (key == "HOME").then(|| root.path().as_os_str().to_owned())
+            })
+            .unwrap();
+            let config = paths.environment_config("app");
+            fs::create_dir_all(config.parent().unwrap()).unwrap();
+            let exe = if stage == "prepare" {
+                root.path().join("missing")
+            } else {
+                PathBuf::from("/bin/sh")
+            };
+            fs::write(
+                config,
+                format!(
+                    "kind = 'native'\n[hooks]\nbefore = 'echo before'\nafter = 'echo after; echo cleanup-error >&2'\n[targets.app]\nexe = '{}'\n",
+                    exe.display()
+                ),
+            )
+            .unwrap();
+            let mut capture = tempfile::tempfile().unwrap();
+            let output = hooks::Output::File(capture.try_clone().unwrap());
+            match stage {
+                "prepare" => assert!(
+                    prepare(
+                        &paths,
+                        "app",
+                        &Overrides::default(),
+                        &Token::new(),
+                        output,
+                        |_| {},
+                    )
+                    .is_err()
+                ),
+                "start" => assert!(
+                    start(
+                        &paths,
+                        "app",
+                        Overrides::default(),
+                        &root.path().join("missing-supervisor"),
+                        &Token::new(),
+                        output,
+                        Output::Inherit,
+                        |_| {},
+                    )
+                    .is_err()
+                ),
+                "prepared" => {
+                    let mut prepared = prepare(
+                        &paths,
+                        "app",
+                        &Overrides::default(),
+                        &Token::new(),
+                        output,
+                        |_| {},
+                    )
+                    .unwrap();
+                    prepared.failed(&paths, None, &Token::new());
+                }
+                _ => unreachable!(),
+            }
+            use std::io::{Read, Seek};
+            capture.rewind().unwrap();
+            let mut captured = String::new();
+            capture.read_to_string(&mut captured).unwrap();
+            assert_eq!(captured, "before\nafter\ncleanup-error\n", "{stage}");
+        }
+    }
 
     #[test]
     fn reconcile_uses_the_component_build_locked_by_the_launch() {
@@ -774,7 +859,16 @@ mod tests {
         };
         let (sender, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            failed_after(&paths, "app", Some(&after), None, 1, None, &Token::new());
+            failed_after(
+                &paths,
+                "app",
+                Some(&after),
+                None,
+                1,
+                None,
+                &Token::new(),
+                hooks::Output::Inherit,
+            );
             sender.send(()).unwrap();
         });
         let result = receiver.recv_timeout(Duration::from_millis(250));
@@ -872,7 +966,16 @@ mod tests {
             wine: None,
             command: format!("printf '%s\\n' \"$WINEO_END\" >> '{}'", captured.display()),
         };
-        failed_after(&paths, "app", Some(&after), None, 1, None, &Token::new());
+        failed_after(
+            &paths,
+            "app",
+            Some(&after),
+            None,
+            1,
+            None,
+            &Token::new(),
+            hooks::Output::Inherit,
+        );
         assert_eq!(fs::read_to_string(captured).unwrap(), "failed\n");
         assert!(matches!(
             locks.acquire(Operation::Snapshot, "app", &[]),

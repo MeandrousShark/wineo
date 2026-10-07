@@ -51,6 +51,91 @@ pub(crate) fn normalize(text: &str) -> Cow<'_, str> {
     }
 }
 
+/// Prepares a completed hook tail for the error panel.
+pub(crate) fn normalize_captured(text: &str) -> String {
+    let mut output = String::new();
+    let mut chars = text.chars().peekable();
+    let mut line_len = 0;
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            match chars.peek() {
+                Some('[') => {
+                    let _ = chars.next();
+                    for code in chars.by_ref() {
+                        if ('@'..='~').contains(&code) {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some(']') => {
+                    let _ = chars.next();
+                    while let Some(code) = chars.peek().copied() {
+                        if code == '\n' || code == '\r' {
+                            break;
+                        }
+                        let _ = chars.next();
+                        if code == '\u{7}' {
+                            break;
+                        }
+                        if code == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            let _ = chars.next();
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some(code) if ('0'..='~').contains(code) => {
+                    let _ = chars.next();
+                    continue;
+                }
+                Some(code) if (' '..='/').contains(code) => {
+                    let _ = chars.next();
+                    while let Some(code) = chars.peek().copied() {
+                        if (' '..='/').contains(&code) {
+                            let _ = chars.next();
+                        } else if ('0'..='~').contains(&code) {
+                            let _ = chars.next();
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        if ch == '\r' {
+            if chars.peek() == Some(&'\n') {
+                let _ = chars.next();
+            }
+            output.push('\n');
+            line_len = 0;
+            continue;
+        }
+        if ch == '\n' {
+            output.push('\n');
+            line_len = 0;
+            continue;
+        }
+        let clean = if ch.is_control() && ch != '\t' {
+            '\u{fffd}'
+        } else {
+            ch
+        };
+        if line_len < 200 {
+            output.push(clean);
+        } else if line_len == 200 {
+            output.push('…');
+        }
+        if line_len <= 200 {
+            line_len += 1;
+        }
+    }
+    output
+}
+
 impl LogView {
     pub(crate) fn content(&self) -> &Content {
         &self.content
@@ -459,6 +544,16 @@ mod tests {
     fn carriage_returns_are_removed() {
         assert_eq!(normalize("a\r\nb\rc"), "a\nbc");
         assert!(matches!(normalize("plain\n"), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn captured_output_strips_terminal_sequences_and_bounds_lines() {
+        let text = "\u{1b}[31mred\u{1b}[0m\u{1b}(B\u{1b}7\u{1b}]0;title\u{7}\0\u{7}\rnext\r\nend\u{1b}]2;other\u{1b}\\\u{1b}]unterminated\nvisible";
+        assert_eq!(normalize_captured(text), "red��\nnext\nend\nvisible");
+        assert_eq!(
+            normalize_captured(&"x".repeat(205)),
+            format!("{}…", "x".repeat(200))
+        );
     }
 
     #[test]

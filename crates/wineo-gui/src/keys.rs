@@ -62,6 +62,7 @@ impl App {
             || self.removal.is_some()
             || self.trash_confirm_open()
             || self.downloads_confirm_open()
+            || self.hook_stop_confirm.is_some()
         {
             return Task::none();
         }

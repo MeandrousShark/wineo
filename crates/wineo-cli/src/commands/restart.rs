@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
-use wineo_core::launch;
+use wineo_core::launch::{self, StopAction};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::Runtime;
 
@@ -94,7 +94,13 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     for message in stopped.messages() {
         eprintln!("{message}");
     }
-    let was_running = matches!(stopped, launch::StopOutcome::Stopped { .. });
+    let was_running = matches!(
+        stopped,
+        launch::StopOutcome::Stopped {
+            action: StopAction::Run,
+            ..
+        }
+    );
     match start::start(paths, name, overrides) {
         Ok(true) => {
             let verb = if was_running { "Restarted" } else { "Started" };

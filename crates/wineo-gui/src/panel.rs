@@ -6,7 +6,9 @@ use iced::widget::{
 use iced::{Center, Color, ContentFit, Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::error::Error;
+use wineo_core::hooks::Phase;
 use wineo_core::launch::LaunchEvent;
+use wineo_core::operation::Operation as CoreOperation;
 use wineo_core::runtime::State;
 use wineo_core::winetricks::WinetricksEvent;
 
@@ -31,12 +33,16 @@ const PANEL_ART_ID: &str = "panel-art";
 const PANEL_ACTIONS_ID: &str = "panel-actions";
 const PANEL_CANCEL_ID: &str = "panel-cancel";
 const PANEL_FORCE_STOP_ID: &str = "panel-force-stop";
+const HOOK_CANCEL_ID: &str = "hook-stop-cancel";
+const HOOK_CONFIRM_ID: &str = "hook-stop-confirm";
+const HOOK_CONFIRM_TEXT: &str = "Kill the after hook?";
 const PANEL_CLEANUP_ID: &str = "panel-cleanup";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PanelError {
     pub(crate) text: String,
     pub(crate) cleanup: bool,
+    pub(crate) output: Option<String>,
 }
 
 impl PanelError {
@@ -45,6 +51,7 @@ impl PanelError {
             Some(Error::LostRun(_)) => Self {
                 text: format!("{error:#}"),
                 cleanup: true,
+                output: None,
             },
             Some(Error::Busy {
                 holder,
@@ -53,13 +60,20 @@ impl PanelError {
             }) => Self {
                 text: holder.map_or_else(
                     || format!("Environment is busy: {holder_label}"),
-                    |holder| format!("Environment is busy with {}", holder.as_str()),
+                    |holder| match holder {
+                        CoreOperation::Hook(_) => {
+                            format!("Environment is busy {}", holder.describe())
+                        }
+                        _ => format!("Environment is busy with {}", holder.as_str()),
+                    },
                 ),
                 cleanup: false,
+                output: None,
             },
             _ => Self {
                 text: format!("{error:#}"),
                 cleanup: false,
+                output: None,
             },
         }
     }
@@ -157,6 +171,7 @@ pub(crate) fn status(event: &LaunchEvent) -> Option<&'static str> {
         LaunchEvent::BuildingPrefix { .. } => Some("Building prefix..."),
         LaunchEvent::Winetricks(WinetricksEvent::Installing(_)) => Some("Installing..."),
         LaunchEvent::Starting | LaunchEvent::Started => Some("Starting..."),
+        LaunchEvent::AfterHook(_) => Some("Running its after hook"),
         _ => None,
     }
 }
@@ -188,12 +203,21 @@ pub(crate) fn play_enabled(card: &Card, operation_busy: bool, target: Option<&st
 }
 
 pub(crate) fn stop_enabled(card: &Card, operation_busy: bool) -> bool {
-    !card.busy && card.state == State::Running && !operation_busy
+    (!card.busy && card.state == State::Running
+        || matches!(card.busy_holder, Some(CoreOperation::Hook(_))))
+        && !operation_busy
 }
 
 fn busy_notice(card: &Card, operation_busy: bool) -> Option<(String, bool)> {
     if let Some(holder) = &card.busy_holder {
-        Some((format!("Busy with {holder}"), false))
+        Some((
+            match holder {
+                CoreOperation::Hook(Phase::Before) => "Running its before hook".to_owned(),
+                CoreOperation::Hook(Phase::After) => "Running its after hook".to_owned(),
+                _ => format!("Busy with {}", holder.as_str()),
+            },
+            false,
+        ))
     } else if card.unresolved {
         Some((
             "an installer did not finish cleanly".to_owned(),
@@ -258,10 +282,19 @@ impl App {
             status: "Starting...".to_owned(),
             install_done: Some(install_done.clone()),
             installing: false,
+            after_hook: false,
         });
         self.panel_error = None;
         self.panel_note = None;
         worker::start(self.paths.clone(), name, target, token, install_done)
+    }
+    fn after_hook_active(&self, card: &Card) -> bool {
+        card.busy_holder == Some(CoreOperation::Hook(Phase::After))
+            || self.operation.as_ref().is_some_and(|operation| {
+                operation.name == card.name
+                    && operation.kind == OperationKind::Start
+                    && operation.after_hook
+            })
     }
     pub(crate) fn stop_selected(&mut self) -> Task<Message> {
         let Some(card) = self
@@ -273,26 +306,145 @@ impl App {
         };
         let cleanup = card.busy_holder.is_none()
             && (card.unresolved || self.panel_error.as_ref().is_some_and(|error| error.cleanup));
-        if !cleanup && !stop_enabled(card, self.operation.is_some()) {
+        let own_start = self.operation.as_ref().is_some_and(|operation| {
+            operation.name == card.name && operation.kind == OperationKind::Start
+        });
+        if !cleanup
+            && !self.after_hook_active(card)
+            && !stop_enabled(card, self.operation.is_some() && !own_start)
+        {
             return Task::none();
         }
-        if self.operation.is_some() || self.tool_prefix_busy(&card.name) {
+        if (self.operation.is_some() && !own_start) || self.tool_prefix_busy(&card.name) {
             return Task::none();
         }
         let name = card.name.clone();
-        self.operation = Some(Operation {
-            name: name.clone(),
-            kind: OperationKind::Stop,
-            token: None,
-            cancelled: false,
-            status: "Stopping...".to_owned(),
-            install_done: None,
-            installing: false,
-        });
-        self.panel_error = None;
-        self.panel_note = None;
-        worker::stop(self.paths.clone(), name)
+        if self.after_hook_active(card) {
+            self.hook_stop_identity = wineo_core::operation::Locks::new(&self.paths)
+                .hook_group(&name)
+                .ok()
+                .flatten()
+                .filter(|(phase, _)| *phase == Phase::After)
+                .map(|(_, running)| running);
+            self.hook_stop_confirm = Some(name);
+            return iced::widget::operation::focus(iced::widget::Id::new(HOOK_CANCEL_ID));
+        }
+        if own_start && matches!(card.busy_holder, Some(CoreOperation::Hook(_))) {
+            return self.update(Message::CancelStart);
+        }
+        if own_start {
+            return Task::none();
+        }
+        if !own_start {
+            self.operation = Some(Operation {
+                name: name.clone(),
+                kind: OperationKind::Stop,
+                token: None,
+                cancelled: false,
+                status: "Stopping...".to_owned(),
+                install_done: None,
+                installing: false,
+                after_hook: false,
+            });
+            self.panel_error = None;
+            self.panel_note = None;
+        }
+        worker::stop(self.paths.clone(), name, false)
     }
+    pub(crate) fn confirm_hook_stop(&mut self) -> Task<Message> {
+        let Some(name) = self.hook_stop_confirm.take() else {
+            return Task::none();
+        };
+        let expected = self.hook_stop_identity.take().or_else(|| {
+            wineo_core::operation::Locks::new(&self.paths)
+                .hook_group(&name)
+                .ok()
+                .flatten()
+                .filter(|(phase, _)| *phase == Phase::After)
+                .map(|(_, running)| running)
+        });
+        if self.selected.as_deref() != Some(&name) {
+            return Task::none();
+        }
+        let Some(expected) = expected else {
+            self.panel_note = Some(worker::AFTER_HOOK_ENDED_NOTE.to_owned());
+            return Task::none();
+        };
+        let own_start = self.operation.as_ref().is_some_and(|operation| {
+            operation.name == name && operation.kind == OperationKind::Start
+        });
+        if !own_start {
+            self.operation = Some(Operation {
+                name: name.clone(),
+                kind: OperationKind::Stop,
+                token: None,
+                cancelled: false,
+                status: "Stopping...".to_owned(),
+                install_done: None,
+                installing: false,
+                after_hook: false,
+            });
+            self.panel_error = None;
+            self.panel_note = None;
+        }
+        worker::stop_after(self.paths.clone(), name, Some(expected))
+    }
+
+    pub(crate) fn hook_stop_key(
+        &mut self,
+        key: &iced::keyboard::Key,
+        modifiers: iced::keyboard::Modifiers,
+    ) -> Task<Message> {
+        use iced::keyboard::{Key, key::Named};
+        match key {
+            Key::Named(Named::Escape) => {
+                self.hook_stop_confirm = None;
+                self.hook_stop_identity = None;
+                Task::none()
+            }
+            Key::Named(Named::Tab) => iced::advanced::widget::operate(focus_button::cycle(
+                &[HOOK_CANCEL_ID, HOOK_CONFIRM_ID],
+                modifiers.shift(),
+            ))
+            .discard(),
+            _ => Task::none(),
+        }
+    }
+
+    pub(crate) fn hook_stop_view(&self) -> Element<'_, Message> {
+        let palette = self.palette;
+        let content = column![
+            ui::section_heading(HOOK_CONFIRM_TEXT, palette),
+            text(self.hook_stop_confirm.as_deref().unwrap_or_default())
+                .size(14)
+                .color(palette.muted),
+            row![
+                Space::new().width(Fill),
+                focus_button::control(
+                    ui::secondary_button("Cancel", palette)
+                        .on_press(Message::CancelHookStop)
+                        .into(),
+                    true,
+                    HOOK_CANCEL_ID,
+                    Message::CancelHookStop,
+                ),
+                focus_button::control(
+                    ui::accent_button("Kill", palette.danger, true, Message::ConfirmHookStop),
+                    true,
+                    HOOK_CONFIRM_ID,
+                    Message::ConfirmHookStop,
+                ),
+            ]
+            .spacing(12),
+        ]
+        .spacing(16);
+        container(content)
+            .padding(24)
+            .width((self.window_size.width - 40.0).clamp(280.0, 600.0))
+            .style(move |_| ui::section_style(palette))
+            .into()
+    }
+
     pub(crate) fn open_log(&mut self) -> Task<Message> {
         let Some(card) = self
             .selected
@@ -514,7 +666,14 @@ impl App {
                 );
             }
         }
-        let enabled = stop_enabled(card, operation_busy);
+        let own_hook = (matches!(card.busy_holder, Some(CoreOperation::Hook(_)))
+            || self.after_hook_active(card))
+            && self.operation.as_ref().is_some_and(|operation| {
+                operation.name == card.name && operation.kind == OperationKind::Start
+            });
+        let enabled = (self.after_hook_active(card) && !operation_busy)
+            || own_hook
+            || stop_enabled(card, operation_busy);
         actions = actions.push(panel_action_button(
             "Stop",
             palette.danger,
@@ -532,7 +691,7 @@ impl App {
         } else if let Some(error) = &card.error {
             inner = inner.push(error_box(error, palette));
         } else {
-            inner = inner.push(detail_row("State", card.state.as_str(), palette));
+            inner = inner.push(detail_row("State", card.state_word(), palette));
             inner = inner.push(detail_row("Playtime", &card.playtime, palette));
             inner = inner.push(detail_row("Sessions", &card.sessions.to_string(), palette));
             inner = inner.push(detail_row("Last played", &card.last_played, palette));
@@ -586,7 +745,10 @@ impl App {
                 .spacing(8)
                 .align_y(Center),
             );
-            if operation.kind == OperationKind::Start {
+            if operation.kind == OperationKind::Start
+                && card.busy_holder != Some(CoreOperation::Hook(Phase::After))
+                && !operation.after_hook
+            {
                 let label = if operation.cancelled {
                     "Force stop"
                 } else {
@@ -622,6 +784,14 @@ impl App {
         if let Some(error) = &self.panel_error {
             let mut box_content =
                 column![text(&error.text).size(14).color(palette.danger)].spacing(8);
+            if let Some(output) = &error.output {
+                box_content = box_content.push(
+                    text(output)
+                        .size(12)
+                        .font(iced::Font::MONOSPACE)
+                        .color(palette.foreground),
+                );
+            }
             if error.cleanup && !card.unresolved && card.busy_holder.is_none() && !operation_busy {
                 box_content = box_content.push(panel_secondary_button(
                     "Clean up",
@@ -801,7 +971,7 @@ mod tests {
         );
         let mut busy = card(State::Inactive);
         busy.busy = true;
-        busy.busy_holder = Some("create".into());
+        busy.busy_holder = Some(Operation::Create);
         assert_eq!(
             busy_notice(&busy, false),
             Some(("Busy with create".into(), false))
@@ -855,6 +1025,40 @@ mod tests {
         let mapped = PanelError::from_error(&busy);
         assert_eq!(mapped.text, "Environment is busy with create");
         assert!(!mapped.cleanup);
+    }
+
+    #[test]
+    fn hooks_are_readable_busy_states_with_stop_available() {
+        for (phase, label) in [
+            (Phase::Before, "Running its before hook"),
+            (Phase::After, "Running its after hook"),
+        ] {
+            let mut busy = card(State::Inactive);
+            busy.busy = true;
+            busy.busy_holder = Some(Operation::Hook(phase));
+            assert_eq!(busy.state_word(), "busy");
+            assert_eq!(busy_notice(&busy, false), Some((label.into(), false)));
+            assert!(!play_enabled(&busy, false, Some("game")));
+            assert!(stop_enabled(&busy, false));
+            assert!(!stop_enabled(&busy, true));
+            let error = anyhow::Error::new(Error::Busy {
+                subject: "game".into(),
+                holder: Some(Operation::Hook(phase)),
+                holder_label: Operation::Hook(phase).describe(),
+            })
+            .context("launch preparation failed");
+            let mapped = PanelError::from_error(&error);
+            assert_eq!(
+                mapped.text,
+                format!("Environment is busy {}", Operation::Hook(phase).describe())
+            );
+            assert!(!mapped.cleanup);
+            assert!(mapped.output.is_none());
+        }
+        assert_eq!(
+            event_status(&LaunchEvent::AfterHook(Token::new())),
+            Some("Running its after hook".into())
+        );
     }
 
     #[test]

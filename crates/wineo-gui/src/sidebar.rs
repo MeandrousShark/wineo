@@ -99,6 +99,7 @@ impl App {
         self.close_prompt
             || self.trash_confirm_open()
             || self.downloads_confirm_open()
+            || self.hook_stop_confirm.is_some()
             || self.removal.is_some()
             || self.flow.is_some()
             || self
@@ -526,6 +527,7 @@ mod tests {
             status: "Starting...".into(),
             install_done: None,
             installing: false,
+            after_hook: false,
         });
         for section in [Section::Trash, Section::Checkup, Section::Downloads] {
             let _ = app.update(Message::Section(section));

@@ -6,7 +6,7 @@ use crate::cancel::Token;
 use crate::config::{DEFAULT_STOP_TIMEOUT, GlobalConfig};
 use crate::environment::Environment;
 use crate::error::Result;
-use crate::hooks::Phase;
+use crate::hooks::{Phase, Running};
 use crate::installer::{self, Cleaned};
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
@@ -16,21 +16,61 @@ use crate::supervisor;
 /// The result of stopping an environment.
 #[derive(Debug)]
 pub enum StopOutcome {
-    Stopped { messages: Vec<String> },
-    NotRunning { messages: Vec<String> },
-    CleanedUp { messages: Vec<String> },
-    Unresolved { messages: Vec<String> },
+    Stopped {
+        messages: Vec<String>,
+        action: StopAction,
+    },
+    NotRunning {
+        messages: Vec<String>,
+    },
+    CleanedUp {
+        messages: Vec<String>,
+    },
+    Unresolved {
+        messages: Vec<String>,
+    },
 }
 
 impl StopOutcome {
     pub fn messages(&self) -> &[String] {
         match self {
-            StopOutcome::Stopped { messages }
+            StopOutcome::Stopped { messages, .. }
             | StopOutcome::NotRunning { messages }
             | StopOutcome::CleanedUp { messages }
             | StopOutcome::Unresolved { messages } => messages,
         }
     }
+}
+
+/// What stop actually did before returning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopAction {
+    Run,
+    BeforeCanceled,
+    AfterWaited,
+    AfterKilled,
+}
+
+/// Kills only the after hook identified when a confirmation was opened.
+pub fn force_stop_after(
+    paths: &Paths,
+    name: &str,
+    expected: &Running,
+) -> anyhow::Result<StopOutcome> {
+    let locks = Locks::new(paths);
+    if !locks.request_hook_force_for(name, expected)? {
+        return Ok(StopOutcome::NotRunning {
+            messages: Vec::new(),
+        });
+    }
+    let token = Token::new();
+    while locks.hook_group(name)? == Some((Phase::After, expected.clone())) {
+        token.wait_timeout(Duration::from_millis(20));
+    }
+    Ok(StopOutcome::Stopped {
+        messages: Vec::new(),
+        action: StopAction::AfterKilled,
+    })
 }
 
 /// Stops an environment, cleaning up a lost run or installer when needed.
@@ -99,10 +139,17 @@ pub fn stop_run_with(
     Environment::ensure_exists(paths, name)?;
     if let Some(operation) = busy_with(paths, name)? {
         if matches!(operation, Operation::Hook(_)) {
-            wait_hook(paths, name, force, false, token, &mut events)?;
-            return Ok(StopOutcome::Stopped {
-                messages: Vec::new(),
-            });
+            return Ok(
+                match wait_hook(paths, name, force, false, token, &mut events)? {
+                    Some(action) => StopOutcome::Stopped {
+                        messages: Vec::new(),
+                        action,
+                    },
+                    None => StopOutcome::NotRunning {
+                        messages: Vec::new(),
+                    },
+                },
+            );
         }
         bail!(
             "{name} is busy: {}, so there is no run to stop. Finish or cancel it in its terminal",
@@ -137,7 +184,10 @@ pub fn stop_run_with(
             token.wait_timeout(Duration::from_millis(20));
         }
         wait_hook(paths, name, false, true, token, &mut events)?;
-        return Ok(StopOutcome::Stopped { messages });
+        return Ok(StopOutcome::Stopped {
+            messages,
+            action: StopAction::Run,
+        });
     }
 
     match clean_up_lost_run(paths, name, timeout)? {
@@ -172,11 +222,12 @@ fn wait_hook(
     after_only: bool,
     token: &Token,
     events: &mut impl FnMut(StopEvent),
-) -> Result<()> {
+) -> Result<Option<StopAction>> {
     let locks = Locks::new(paths);
     let mut waiting = false;
     let mut listening = false;
     let mut requested = None;
+    let mut action = None;
     while let Some(Operation::Hook(phase)) = locks.busy_with(name)? {
         if after_only && phase != Phase::After {
             break;
@@ -191,6 +242,9 @@ fn wait_hook(
         if phase == Phase::After && !force && !waiting {
             events(StopEvent::WaitingAfter);
             waiting = true;
+            if action != Some(StopAction::BeforeCanceled) {
+                action = Some(StopAction::AfterWaited);
+            }
         }
         if (phase == Phase::Before || force)
             && requested != Some(phase)
@@ -200,10 +254,14 @@ fn wait_hook(
             if force {
                 running.kill_now()?;
             }
+            action = Some(match phase {
+                Phase::Before => StopAction::BeforeCanceled,
+                Phase::After => StopAction::AfterKilled,
+            });
         }
         token.wait_timeout(Duration::from_millis(20));
     }
-    Ok(())
+    Ok(action)
 }
 
 /// Result of cleaning up state left behind by a lost app run.
@@ -322,6 +380,30 @@ mod tests {
         let outcome = stop(&paths, "app", false).unwrap();
 
         assert!(matches!(outcome, StopOutcome::NotRunning { messages } if messages.is_empty()));
+    }
+
+    #[test]
+    fn confirmed_after_kill_ignores_a_before_hook() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let locks = Locks::new(&paths);
+        let guard = locks
+            .acquire(Operation::Hook(Phase::Before), "app", &[])
+            .unwrap();
+        let running = Running {
+            group: 123,
+            boot_id: "boot".to_owned(),
+            leader_start: 456,
+        };
+        guard.record_hook(Phase::Before, Some(&running)).unwrap();
+        assert!(matches!(
+            force_stop_after(&paths, "app", &running).unwrap(),
+            StopOutcome::NotRunning { .. }
+        ));
+        assert_eq!(
+            locks.hook_group("app").unwrap(),
+            Some((Phase::Before, running))
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@ impl App {
             || self.removal.is_some()
             || self.trash_confirm_open()
             || self.downloads_confirm_open()
+            || self.hook_stop_confirm.is_some()
             || self.close_prompt
             || self.closing
             || !self.cards.iter().any(|card| card.name == name)

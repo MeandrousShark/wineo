@@ -98,6 +98,8 @@ pub(crate) struct App {
     scroll_visible_until: Option<Instant>,
     pub(crate) operation: Option<Operation>,
     pub(crate) panel_error: Option<PanelError>,
+    pub(crate) hook_stop_confirm: Option<String>,
+    pub(crate) hook_stop_identity: Option<wineo_core::hooks::Running>,
     pub(crate) panel_note: Option<String>,
     pub(crate) log_view: bool,
     log_error: Option<String>,
@@ -172,6 +174,7 @@ pub(crate) struct Operation {
     install_done: Option<Token>,
     /// True while winetricks is installing, which is when install.log can be read.
     installing: bool,
+    after_hook: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -190,6 +193,9 @@ pub(crate) enum Message {
     InstallPhase(String, bool),
     StartFinished(String, Result<wineo_core::launch::StartOutcome, PanelError>),
     StopFinished(String, Result<Vec<String>, PanelError>),
+    ConfirmHookStop,
+    CancelHookStop,
+    AfterHookPhase(String, Token),
     OpenLog,
     CloseLog,
     LogChunk(u64, String),
@@ -299,6 +305,8 @@ impl App {
             scroll_visible_until: None,
             operation: None,
             panel_error: None,
+            hook_stop_confirm: None,
+            hook_stop_identity: None,
             panel_note: None,
             log_view: false,
             log_error: None,
@@ -504,6 +512,7 @@ impl App {
             || self.removal.is_some()
             || self.trash_confirm_open()
             || self.downloads_confirm_open()
+            || self.hook_stop_confirm.is_some()
             || self.art_page.is_some()
             || self.tool_page.is_some()
             || self.portable_page.is_some())
@@ -628,6 +637,23 @@ impl App {
             }
             Message::Play => self.start_selected(),
             Message::Stop | Message::CleanUp => self.stop_selected(),
+            Message::ConfirmHookStop => self.confirm_hook_stop(),
+            Message::CancelHookStop => {
+                self.hook_stop_confirm = None;
+                self.hook_stop_identity = None;
+                Task::none()
+            }
+            Message::AfterHookPhase(name, token) => {
+                if let Some(operation) = &mut self.operation
+                    && operation.name == name
+                    && operation.kind == OperationKind::Start
+                {
+                    operation.token = Some(token);
+                    operation.status = "Running its after hook".to_owned();
+                    operation.after_hook = true;
+                }
+                Task::none()
+            }
             Message::CancelStart => {
                 if let Some(operation) = &mut self.operation
                     && operation.kind == OperationKind::Start
@@ -785,6 +811,18 @@ impl App {
             Message::Loaded(Ok(cards)) => {
                 self.refreshing = false;
                 self.loaded = true;
+                if self.hook_stop_confirm.as_ref().is_some_and(|name| {
+                    !cards.iter().any(|card| {
+                        &card.name == name
+                            && card.busy_holder
+                                == Some(wineo_core::operation::Operation::Hook(
+                                    wineo_core::hooks::Phase::After,
+                                ))
+                    })
+                }) {
+                    self.hook_stop_confirm = None;
+                    self.hook_stop_identity = None;
+                }
                 let art = self.refresh_art(&cards);
                 self.merge(cards);
                 Task::batch([art, self.load_visible_art(), self.load_panel_art()])
@@ -907,6 +945,9 @@ impl App {
                     self.close_prompt = false;
                 }
                 Task::none()
+            }
+            Message::Key(key, modifiers, _) if self.hook_stop_confirm.is_some() => {
+                self.hook_stop_key(&key, modifiers)
             }
             Message::Key(key, modifiers, _) if self.removal.is_some() => {
                 removal::dialog_key(self, &key, modifiers)
@@ -2560,6 +2601,305 @@ mod tests {
         assert!(app.operation.is_none());
     }
 
+    fn hook_app(phase: wineo_core::hooks::Phase) -> App {
+        let mut app = app();
+        let mut game = card("game", State::Inactive, 0);
+        game.busy = true;
+        game.busy_holder = Some(wineo_core::operation::Operation::Hook(phase));
+        app.cards = vec![game];
+        let _ = app.update(Message::Select("game".into()));
+        app
+    }
+
+    fn record_after_hook_identity(paths: &Paths, name: &str) {
+        let running = wineo_core::hooks::Running {
+            group: 12345,
+            boot_id: "test-boot".into(),
+            leader_start: 67890,
+        };
+        std::fs::write(
+            paths.locks_dir().join(format!("name-{name}.lock")),
+            format!(
+                "hook-after {} {} {} {}\n",
+                std::process::id(),
+                running.group,
+                running.boot_id,
+                running.leader_start
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn stop_after_opens_confirmation_and_cancel_keeps_hook_busy() {
+        let mut app = hook_app(wineo_core::hooks::Phase::After);
+        let _ = app.update(Message::Stop);
+        assert_eq!(app.hook_stop_confirm.as_deref(), Some("game"));
+        assert!(app.operation.is_none());
+        let _ = iced::advanced::widget::Tree::new(app.view().as_widget());
+        let _ = app.update(Message::Section(sidebar::Section::Downloads));
+        let _ = app.update(Message::ClosePanel);
+        let _ = app.update(Message::Select("other".into()));
+        assert_eq!(app.section, sidebar::Section::Library);
+        assert!(app.panel_open);
+        assert_eq!(app.selected.as_deref(), Some("game"));
+        let _ = app.update(Message::CancelHookStop);
+        assert!(app.hook_stop_confirm.is_none());
+        assert!(app.cards[0].busy);
+        assert!(app.operation.is_none());
+        let _ = app.update(Message::Stop);
+        let _ = app.update(Message::Key(
+            keyboard::Key::Named(keyboard::key::Named::Escape),
+            keyboard::Modifiers::empty(),
+            iced::event::Status::Ignored,
+        ));
+        assert!(app.hook_stop_confirm.is_none());
+        assert!(app.panel_open);
+    }
+
+    #[test]
+    fn confirm_after_uses_force_stop_only_while_hook_is_active() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        let mut app = hook_app(wineo_core::hooks::Phase::After);
+        app.paths = paths;
+        let guard = wineo_core::operation::Locks::new(&app.paths)
+            .acquire(
+                wineo_core::operation::Operation::Hook(wineo_core::hooks::Phase::After),
+                "game",
+                &[],
+            )
+            .unwrap();
+        record_after_hook_identity(&app.paths, "game");
+        let _ = app.update(Message::Stop);
+        let task = app.update(Message::ConfirmHookStop);
+        assert!(task.units() > 0);
+        assert!(app.hook_stop_confirm.is_none());
+        assert_eq!(app.operation.as_ref().unwrap().kind, OperationKind::Stop);
+        drop(guard);
+        app.operation = None;
+        let _ = app.update(Message::Stop);
+        let task = app.update(Message::ConfirmHookStop);
+        assert_eq!(task.units(), 0);
+        assert!(app.operation.is_none());
+    }
+
+    #[test]
+    fn confirm_after_refreshes_missing_hook_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        let mut app = hook_app(wineo_core::hooks::Phase::After);
+        app.paths = paths.clone();
+        let _ = app.update(Message::Stop);
+        assert_eq!(app.hook_stop_confirm.as_deref(), Some("game"));
+        assert!(app.hook_stop_identity.is_none());
+
+        let guard = wineo_core::operation::Locks::new(&paths)
+            .acquire(
+                wineo_core::operation::Operation::Hook(wineo_core::hooks::Phase::After),
+                "game",
+                &[],
+            )
+            .unwrap();
+        record_after_hook_identity(&paths, "game");
+        let task = app.update(Message::ConfirmHookStop);
+        assert!(task.units() > 0);
+        assert_eq!(app.operation.as_ref().unwrap().kind, OperationKind::Stop);
+        drop(task);
+        drop(guard);
+    }
+
+    #[test]
+    fn confirm_after_without_matching_hook_shows_note() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        let mut app = hook_app(wineo_core::hooks::Phase::After);
+        app.paths = paths;
+        let _ = app.update(Message::Stop);
+        assert!(app.hook_stop_identity.is_none());
+
+        let task = app.update(Message::ConfirmHookStop);
+        assert_eq!(task.units(), 0);
+        assert_eq!(
+            app.panel_note.as_deref(),
+            Some(worker::AFTER_HOOK_ENDED_NOTE)
+        );
+        assert!(app.operation.is_none());
+    }
+
+    #[test]
+    fn reload_dismisses_confirmation_when_after_is_no_longer_busy() {
+        for holder in [
+            None,
+            Some(wineo_core::operation::Operation::Hook(
+                wineo_core::hooks::Phase::Before,
+            )),
+        ] {
+            let mut app = hook_app(wineo_core::hooks::Phase::After);
+            let _ = app.update(Message::Stop);
+            let mut loaded = app.cards[0].clone();
+            loaded.busy_holder = holder;
+            loaded.busy = holder.is_some();
+            let _ = app.update(Message::LibraryReloaded(
+                app.library_generation,
+                Ok(vec![loaded]),
+            ));
+            assert!(app.hook_stop_confirm.is_none());
+            assert!(app.hook_stop_identity.is_none());
+        }
+        let mut app = hook_app(wineo_core::hooks::Phase::After);
+        let _ = app.update(Message::Stop);
+        let _ = app.update(Message::Loaded(Ok(Vec::new())));
+        assert!(app.hook_stop_confirm.is_none());
+    }
+
+    #[test]
+    fn reload_keeps_confirmation_for_an_active_after_hook() {
+        let mut app = hook_app(wineo_core::hooks::Phase::After);
+        let _ = app.update(Message::Stop);
+        let _ = app.update(Message::Loaded(Ok(app.cards.clone())));
+        assert_eq!(app.hook_stop_confirm.as_deref(), Some("game"));
+    }
+
+    #[test]
+    fn stop_during_hookless_start_does_not_cancel_start_token() {
+        let mut app = selected_app(State::Running);
+        let token = Token::new();
+        app.operation = Some(installing_start("game", false));
+        app.operation.as_mut().unwrap().token = Some(token.clone());
+        let task = app.update(Message::Stop);
+        assert_eq!(task.units(), 0);
+        assert!(!token.is_canceled());
+        assert!(!app.operation.as_ref().unwrap().cancelled);
+    }
+
+    #[test]
+    fn stop_before_uses_the_launch_cancel_token() {
+        let mut app = hook_app(wineo_core::hooks::Phase::Before);
+        let token = Token::new();
+        app.operation = Some(installing_start("game", false));
+        app.operation.as_mut().unwrap().token = Some(token.clone());
+        let _ = app.update(Message::Stop);
+        assert!(token.is_canceled());
+        assert!(app.hook_stop_confirm.is_none());
+        assert_eq!(app.operation.as_ref().unwrap().kind, OperationKind::Start);
+    }
+
+    #[test]
+    fn gui_cancel_interrupts_a_real_before_hook() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        let config = paths.environment_config("game");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(config, "schema_version = 1\nkind = 'native'\n[hooks]\nbefore = 'sleep 30'\n[targets.game]\nexe = '/missing'\n").unwrap();
+        let mut app = hook_app(wineo_core::hooks::Phase::Before);
+        app.paths = paths.clone();
+        let token = Token::new();
+        app.operation = Some(installing_start("game", false));
+        app.operation.as_mut().unwrap().token = Some(token.clone());
+        let capture = tempfile::tempfile().unwrap();
+        let work = std::thread::spawn(move || {
+            wineo_core::launch::prepare(
+                &paths,
+                "game",
+                &wineo_core::launch::Overrides {
+                    target: Some("game".into()),
+                    ..Default::default()
+                },
+                &token,
+                wineo_core::hooks::Output::File(capture),
+                |_| {},
+            )
+        });
+        let locks = wineo_core::operation::Locks::new(&app.paths);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while locks.busy_with("game").unwrap()
+            != Some(wineo_core::operation::Operation::Hook(
+                wineo_core::hooks::Phase::Before,
+            ))
+        {
+            if work.is_finished() || Instant::now() >= deadline {
+                app.operation
+                    .as_ref()
+                    .unwrap()
+                    .token
+                    .as_ref()
+                    .unwrap()
+                    .force();
+                panic!("before hook did not acquire its lock");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = app.update(Message::CancelStart);
+        let error = work
+            .join()
+            .unwrap()
+            .err()
+            .expect("before hook should be canceled");
+        assert!(matches!(
+            error.downcast_ref::<wineo_core::Error>(),
+            Some(wineo_core::Error::Canceled("launch"))
+        ));
+        assert!(locks.busy_with("game").unwrap().is_none());
+    }
+
+    #[test]
+    fn launcher_after_cleanup_gets_confirmation_and_its_fresh_token() {
+        let mut app = hook_app(wineo_core::hooks::Phase::After);
+        app.cards[0].busy = false;
+        app.cards[0].busy_holder = None;
+        app.operation = Some(installing_start("game", false));
+        let fresh = Token::new();
+        let _ = app.update(Message::AfterHookPhase("game".into(), fresh.clone()));
+        assert_eq!(
+            app.operation.as_ref().unwrap().status,
+            "Running its after hook"
+        );
+        let _ = app.update(Message::Stop);
+        assert_eq!(app.hook_stop_confirm.as_deref(), Some("game"));
+        assert!(!fresh.is_canceled());
+    }
+
+    #[test]
+    fn after_cleanup_preserves_canceled_launch_error_suppression() {
+        let mut app = hook_app(wineo_core::hooks::Phase::After);
+        app.operation = Some(installing_start("game", false));
+        let _ = app.update(Message::CancelStart);
+        let _ = app.update(Message::AfterHookPhase("game".into(), Token::new()));
+        assert!(app.operation.as_ref().unwrap().cancelled);
+        let error = anyhow::Error::new(wineo_core::Error::Canceled("launch"));
+        let _ = app.update(Message::StartFinished(
+            "game".into(),
+            Err(PanelError::from_error(&error)),
+        ));
+        assert!(app.panel_error.is_none());
+    }
+
+    #[test]
+    fn before_error_keeps_output_in_panel_and_cancel_hides_it() {
+        for cancelled in [false, true] {
+            let mut app = hook_app(wineo_core::hooks::Phase::Before);
+            app.operation = Some(installing_start("game", false));
+            app.operation.as_mut().unwrap().cancelled = cancelled;
+            let error = PanelError {
+                text: "Launch canceled: the before hook exited with code 4.".into(),
+                cleanup: false,
+                output: Some("last line".into()),
+            };
+            let _ = app.update(Message::StartFinished("game".into(), Err(error.clone())));
+            assert_eq!(app.panel_error, (!cancelled).then_some(error));
+            let _ = iced::advanced::widget::Tree::new(app.panel(&app.cards[0]).as_widget());
+        }
+    }
+
     #[test]
     fn cancel_then_force_stops_the_same_token() {
         let mut app = app();
@@ -2572,6 +2912,7 @@ mod tests {
             status: "Starting...".into(),
             install_done: None,
             installing: false,
+            after_hook: false,
         });
         let _ = app.update(Message::CancelStart);
         assert!(token.is_canceled());
@@ -2590,6 +2931,7 @@ mod tests {
             status: "Installing...".into(),
             install_done: Some(Token::new()),
             installing,
+            after_hook: false,
         }
     }
 

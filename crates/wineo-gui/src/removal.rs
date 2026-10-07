@@ -213,6 +213,7 @@ pub(crate) fn update(app: &mut App, message: Message) -> Task<Message> {
                 && app.art_page.is_none()
                 && app.flow.is_none()
                 && app.removal.is_none()
+                && app.hook_stop_confirm.is_none()
                 && !app.close_prompt
             {
                 delete_key(app, search, any || status == iced::event::Status::Captured)
@@ -350,6 +351,7 @@ impl App {
             || self.close_prompt
             || self.trash_confirm_open()
             || self.downloads_confirm_open()
+            || self.hook_stop_confirm.is_some()
             || self.management_busy()
             || self.remove_reason(&name).is_some()
         {
@@ -502,6 +504,7 @@ impl App {
             || self.close_prompt
             || self.trash_confirm_open()
             || self.downloads_confirm_open()
+            || self.hook_stop_confirm.is_some()
         {
             return Task::none();
         }
@@ -670,6 +673,7 @@ impl App {
         let enabled = !self.management_busy()
             && !self.trash_confirm_open()
             && !self.downloads_confirm_open()
+            && self.hook_stop_confirm.is_none()
             && self.flow.is_none()
             && self.removal.is_none()
             && self.settings.is_none()
@@ -1026,6 +1030,7 @@ mod tests {
                         status: String::new(),
                         install_done: None,
                         installing: false,
+                        after_hook: false,
                     })
                 }
             }
@@ -1339,6 +1344,7 @@ mod tests {
             status: String::new(),
             install_done: None,
             installing: false,
+            after_hook: false,
         });
         assert!(app.remove_reason("game").is_none());
         open(&mut app);

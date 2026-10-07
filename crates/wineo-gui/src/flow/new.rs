@@ -1833,6 +1833,19 @@ fn template_effects(template: &Template, draft: &Draft) -> Vec<String> {
             }
         ));
     }
+    if let Some(hooks) = template
+        .hooks
+        .as_ref()
+        .and_then(wineo_core::config::HooksSetting::on)
+    {
+        let phases: Vec<_> = [("before", &hooks.before), ("after", &hooks.after)]
+            .into_iter()
+            .filter_map(|(phase, command)| command.as_ref().map(|_| phase))
+            .collect();
+        if !phases.is_empty() {
+            effects.push(format!("Hooks: {}", phases.join(", ")));
+        }
+    }
     for (label, value) in [("Game ID", &template.gameid), ("Store", &template.store)] {
         if let Some(value) = value {
             effects.push(format!("{label}: {value}"));
@@ -2467,6 +2480,36 @@ mod tests {
         assert_eq!(spec.name.as_deref(), Some("Hades"));
         assert!(spec.desktop);
         assert_eq!(target_spec(String::new(), None, false).name, None);
+    }
+
+    #[test]
+    fn template_preview_names_only_configured_hook_phases() {
+        let draft = page().draft;
+        for (before, after, expected) in [
+            (true, true, Some("Hooks: before, after")),
+            (true, false, Some("Hooks: before")),
+            (false, true, Some("Hooks: after")),
+            (false, false, None),
+        ] {
+            let template = Template {
+                hooks: Some(wineo_core::config::HooksSetting::On(
+                    wineo_core::config::Hooks {
+                        before: before.then(|| "private command".into()),
+                        after: after.then(|| "private command".into()),
+                    },
+                )),
+                ..Template::default()
+            };
+            let effects = template_effects(&template, &draft);
+            assert_eq!(
+                effects
+                    .iter()
+                    .find(|line| line.starts_with("Hooks:"))
+                    .map(String::as_str),
+                expected
+            );
+            assert!(effects.iter().all(|line| !line.contains("private command")));
+        }
     }
 
     #[test]

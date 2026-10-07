@@ -177,9 +177,40 @@ impl Guard {
                 Operation::Hook(phase) => phase,
                 _ => continue,
             };
-            if text
-                .split_whitespace()
-                .any(|word| word == format!("force-{}", phase.as_str()))
+            let pinned_force = if phase == Phase::After {
+                let mut recorded = text.lines().next().unwrap_or_default().split_whitespace();
+                let identity = (|| {
+                    if recorded.next()? != Operation::Hook(phase).as_str() {
+                        return None;
+                    }
+                    recorded.next()?;
+                    Some(Running {
+                        group: recorded.next()?.parse().ok()?,
+                        boot_id: recorded.next()?.to_owned(),
+                        leader_start: recorded.next()?.parse().ok()?,
+                    })
+                })();
+                text.lines().skip(1).any(|line| {
+                    let mut words = line.split_whitespace();
+                    if words.next() != Some("force-after-for") {
+                        return false;
+                    }
+                    let request = (|| {
+                        Some(Running {
+                            group: words.next()?.parse().ok()?,
+                            boot_id: words.next()?.to_owned(),
+                            leader_start: words.next()?.parse().ok()?,
+                        })
+                    })();
+                    words.next().is_none() && request.is_some() && request == identity
+                })
+            } else {
+                false
+            };
+            if pinned_force
+                || text
+                    .split_whitespace()
+                    .any(|word| word == format!("force-{}", phase.as_str()))
             {
                 token.force();
             } else if text
@@ -335,6 +366,25 @@ impl Locks {
         )
         .context(|| format!("failed to write {}", path.display()))?;
         Ok(Some(running))
+    }
+
+    /// A stale confirmation cannot force a later after hook using the same lock.
+    pub fn request_hook_force_for(&self, name: &str, expected: &Running) -> Result<bool> {
+        if self.hook_group(name)? != Some((Phase::After, expected.clone())) {
+            return Ok(false);
+        }
+        let path = self.name_path(name);
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .context(|| format!("failed to open {}", path.display()))?;
+        let request = format!(
+            "force-after-for {} {} {}\n",
+            expected.group, expected.boot_id, expected.leader_start
+        );
+        file.write_all(request.as_bytes())
+            .context(|| format!("failed to write {}", path.display()))?;
+        Ok(true)
     }
 
     fn admissions(
@@ -911,6 +961,43 @@ mod tests {
             locks.request_hook_stop("app", Phase::After, true).unwrap(),
             Some(running)
         );
+        guard.hook_request(&token).unwrap();
+        assert!(token.is_forced());
+    }
+
+    #[test]
+    fn pinned_after_force_ignores_a_stale_request_on_a_later_run() {
+        let root = tempfile::tempdir().unwrap();
+        let locks = locks(root.path());
+        let guard = locks
+            .acquire(Operation::Hook(Phase::After), "app", &[])
+            .unwrap();
+        let first = Running {
+            group: 123,
+            boot_id: "boot".to_owned(),
+            leader_start: 456,
+        };
+        let later = Running {
+            group: 124,
+            boot_id: "boot".to_owned(),
+            leader_start: 789,
+        };
+        guard.record_hook(Phase::After, Some(&first)).unwrap();
+        guard.record_hook(Phase::After, Some(&later)).unwrap();
+        let path = locks.name_path("app");
+        writeln!(
+            OpenOptions::new().append(true).open(&path).unwrap(),
+            "force-after-for {} {} {}",
+            first.group,
+            first.boot_id,
+            first.leader_start
+        )
+        .unwrap();
+        let token = crate::cancel::Token::new();
+        guard.hook_request(&token).unwrap();
+        assert!(!token.is_forced());
+        assert!(!locks.request_hook_force_for("app", &first).unwrap());
+        assert!(locks.request_hook_force_for("app", &later).unwrap());
         guard.hook_request(&token).unwrap();
         assert!(token.is_forced());
     }
