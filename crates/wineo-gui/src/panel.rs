@@ -296,6 +296,14 @@ impl App {
                     && operation.after_hook
             })
     }
+    /// Our own Stop waits on the after hook with no deadline, so it mustn't
+    /// lock out the Stop that offers to kill that hook.
+    fn own_stop_waiting_on_after(&self, card: &Card) -> bool {
+        self.after_hook_active(card)
+            && self.operation.as_ref().is_some_and(|operation| {
+                operation.name == card.name && operation.kind == OperationKind::Stop
+            })
+    }
     pub(crate) fn stop_selected(&mut self) -> Task<Message> {
         let Some(card) = self
             .selected
@@ -309,13 +317,14 @@ impl App {
         let own_start = self.operation.as_ref().is_some_and(|operation| {
             operation.name == card.name && operation.kind == OperationKind::Start
         });
+        let own = own_start || self.own_stop_waiting_on_after(card);
         if !cleanup
             && !self.after_hook_active(card)
-            && !stop_enabled(card, self.operation.is_some() && !own_start)
+            && !stop_enabled(card, self.operation.is_some() && !own)
         {
             return Task::none();
         }
-        if (self.operation.is_some() && !own_start) || self.tool_prefix_busy(&card.name) {
+        if (self.operation.is_some() && !own) || self.tool_prefix_busy(&card.name) {
             return Task::none();
         }
         let name = card.name.clone();
@@ -672,6 +681,7 @@ impl App {
                 operation.name == card.name && operation.kind == OperationKind::Start
             });
         let enabled = (self.after_hook_active(card) && !operation_busy)
+            || self.own_stop_waiting_on_after(card)
             || own_hook
             || stop_enabled(card, operation_busy);
         actions = actions.push(panel_action_button(

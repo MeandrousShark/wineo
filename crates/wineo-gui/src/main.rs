@@ -2658,6 +2658,24 @@ mod tests {
     }
 
     #[test]
+    fn stop_while_our_own_stop_waits_on_after_opens_confirmation() {
+        let mut app = hook_app(wineo_core::hooks::Phase::After);
+        app.operation = Some(Operation {
+            name: "game".into(),
+            kind: OperationKind::Stop,
+            token: None,
+            cancelled: false,
+            status: "Stopping...".into(),
+            install_done: None,
+            installing: false,
+            after_hook: false,
+        });
+        let _ = iced::advanced::widget::Tree::new(app.view().as_widget());
+        let _ = app.update(Message::Stop);
+        assert_eq!(app.hook_stop_confirm.as_deref(), Some("game"));
+    }
+
+    #[test]
     fn confirm_after_uses_force_stop_only_while_hook_is_active() {
         let root = tempfile::tempdir().unwrap();
         let paths =

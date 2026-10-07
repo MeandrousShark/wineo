@@ -325,6 +325,10 @@ step 2, and step 4 needs step 3.
     `after` does the same after a canceled launch.
   - Killing the hook with Ctrl+C prints `The after hook was killed.`, the
     same line `stop --force` prints.
+- GUI Stop during its own wait (2026-10-07). Step 9 found Stop greyed out
+  while the app's own Stop waited on `after`: that Stop counted as another
+  operation, which disables Stop. It now stays enabled and asks `Kill the
+  after hook?` as planned.
 
 ## Testing and acceptance
 
