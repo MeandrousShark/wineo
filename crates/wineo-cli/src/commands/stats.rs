@@ -170,6 +170,7 @@ fn print_by_tag(overview: &Overview) {
     if overview.tags.values().any(|tags| tags.len() > 1) {
         println!("An environment with several tags counts under each.");
     }
+    print_steam_notes(overview);
 }
 
 fn print_overview(overview: &Overview, tz: &TimeZone) {
@@ -191,7 +192,7 @@ fn print_overview(overview: &Overview, tz: &TimeZone) {
             .max("played".len());
         let sessions_w = played
             .iter()
-            .map(|(_, s)| s.sessions.to_string().len())
+            .map(|(_, summary)| overview_sessions(summary).len())
             .max()
             .unwrap_or(0)
             .max("sessions".len());
@@ -210,7 +211,7 @@ fn print_overview(overview: &Overview, tz: &TimeZone) {
             println!(
                 "{name:name_w$}  {:played_w$}  {:>sessions_w$}  {last}",
                 duration_hm(summary.seconds),
-                summary.sessions,
+                overview_sessions(summary),
             );
         }
     }
@@ -219,6 +220,26 @@ fn print_overview(overview: &Overview, tz: &TimeZone) {
         overview.never_played,
         duration_hm(overview.total_seconds)
     );
+    print_steam_notes(overview);
+}
+
+fn overview_sessions(summary: &Summary) -> String {
+    if summary.source == stats::Source::Steam {
+        "-".to_owned()
+    } else {
+        summary.sessions.to_string()
+    }
+}
+
+fn print_steam_notes(overview: &Overview) {
+    if overview.steam_games > 0 {
+        println!("Steam games count Steam's total, without sessions.");
+    }
+    match overview.unknown_steam_games {
+        0 => {}
+        1 => println!("1 Steam game's playtime is unknown."),
+        count => println!("{count} Steam games' playtime is unknown."),
+    }
 }
 
 fn named(
@@ -230,23 +251,44 @@ fn named(
     include_sessions: bool,
 ) -> anyhow::Result<ExitCode> {
     Environment::ensure_exists(paths, name)?;
-    let log = stats::read(&paths.stats_log(name))?;
-    for warning in &log.warnings {
+    let (summary, log, warnings) = stats::summary_with_log(paths, name, now, tz)?;
+    for warning in &warnings {
         eprintln!("warning: {warning}");
     }
-    let running = stats::running_session(paths, name)?;
-    let summary = stats::summarize(&log, running.as_ref(), now, tz);
     if json_output {
-        let sessions_log = include_sessions.then_some(log.sessions.as_slice());
+        let sessions_log = include_sessions
+            .then(|| log.as_ref().map(|log| log.sessions.as_slice()))
+            .flatten();
         json::print(&StatsOutput::new(name, &summary, sessions_log))?;
     } else {
-        print!("{}", render_named(name, &log, &summary, now, tz));
+        print!("{}", render_named(name, log.as_ref(), &summary, now, tz));
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn render_named(name: &str, log: &Log, summary: &Summary, now: Timestamp, tz: &TimeZone) -> String {
+fn render_named(
+    name: &str,
+    log: Option<&Log>,
+    summary: &Summary,
+    now: Timestamp,
+    tz: &TimeZone,
+) -> String {
     let mut lines = vec![name.to_owned()];
+    if summary.source == stats::Source::Steam {
+        if summary.playtime_unknown {
+            lines.push(label_line(
+                "played",
+                "unknown (Steam's playtime can't be read)",
+            ));
+        } else {
+            let mut value = format!("{} on Steam", duration_hm(summary.seconds));
+            if let Some(last) = summary.last_played {
+                value.push_str(&format!(", last {}", day_label(now, last, tz)));
+            }
+            lines.push(label_line("played", &value));
+        }
+        return lines.join("\n") + "\n";
+    }
     if summary.seconds == 0 {
         lines.push(label_line("played", "never"));
         return lines.join("\n") + "\n";
@@ -284,7 +326,7 @@ fn render_named(name: &str, log: &Log, summary: &Summary, now: Timestamp, tz: &T
     }
     if let Some(last) = summary.last_played {
         let mut value = day_label(now, last, tz);
-        if let Some(seconds) = stats::last_session_seconds(log, summary, now) {
+        if let Some(seconds) = log.and_then(|log| stats::last_session_seconds(log, summary, now)) {
             value.push_str(&format!(", {}", duration_hm(seconds)));
         }
         if summary.running {

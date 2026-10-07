@@ -1631,7 +1631,7 @@ mod tests {
             unresolved: false,
             error: None,
             playtime: playtime_label(seconds),
-            sessions: 0,
+            sessions: "0".to_owned(),
             last_played: "never".into(),
             tags: Vec::new(),
             targets: vec!["game".into()],

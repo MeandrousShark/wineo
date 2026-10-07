@@ -191,13 +191,13 @@ pub struct CollectionError {
 }
 
 /// `wineo stats [NAME] --json`'s shape, named or as one of a collection's
-/// `environments`. `this_week_seconds` and `this_month_seconds` are text-only,
-/// so `Summary` isn't serialized as is.
+/// `environments`. Week and month fields stay omitted for Wineo stats and are
+/// null for Steam, which cannot supply them.
 #[derive(Serialize)]
 pub struct StatsOutput<'a> {
     pub name: &'a str,
-    pub seconds: i64,
-    pub sessions: usize,
+    pub seconds: Option<i64>,
+    pub sessions: Option<usize>,
     pub average_seconds: Option<i64>,
     pub longest: Option<Longest>,
     pub first_played: Option<Timestamp>,
@@ -207,14 +207,20 @@ pub struct StatsOutput<'a> {
     pub targets: Vec<TargetSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions_log: Option<&'a [Session]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub this_week_seconds: Option<Option<i64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub this_month_seconds: Option<Option<i64>>,
+    pub source: &'static str,
 }
 
 impl<'a> StatsOutput<'a> {
     pub fn new(name: &'a str, summary: &Summary, sessions_log: Option<&'a [Session]>) -> Self {
+        let steam = summary.source == crate::stats::Source::Steam;
         Self {
             name,
-            seconds: summary.seconds,
-            sessions: summary.sessions,
+            seconds: (!summary.playtime_unknown).then_some(summary.seconds),
+            sessions: (!steam).then_some(summary.sessions),
             average_seconds: summary.average_seconds,
             longest: summary.longest,
             first_played: summary.first_played,
@@ -222,7 +228,10 @@ impl<'a> StatsOutput<'a> {
             running: summary.running,
             imported_seconds: summary.imported_seconds,
             targets: summary.targets.clone(),
-            sessions_log,
+            sessions_log: (!steam).then_some(sessions_log).flatten(),
+            this_week_seconds: steam.then_some(None),
+            this_month_seconds: steam.then_some(None),
+            source: summary.source.as_str(),
         }
     }
 }

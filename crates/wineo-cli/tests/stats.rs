@@ -3,8 +3,57 @@
 mod common;
 
 use std::fs;
+use std::path::Path;
 
 use common::{Fixture, assert_success, stderr, stdout};
+
+const STEAM_ACCOUNT_BASE: u64 = 76_561_197_960_265_728;
+
+fn steam_environment(f: &Fixture, name: &str, app_id: &str, tags: &[&str]) {
+    let tags = if tags.is_empty() {
+        String::new()
+    } else {
+        format!("tags = {:?}\n", tags)
+    };
+    let path = f.config_dir().join(format!("environments/{name}.toml"));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        path,
+        format!(
+            "schema_version = 1\nkind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"{app_id}\"\ntitle = \"{name}\"\n{tags}"
+        ),
+    )
+    .unwrap();
+}
+
+fn steam_playtime_files(f: &Fixture, apps: &[(&str, &str, &str)]) {
+    let root = f.root.path().join(".local/share/Steam");
+    steam_playtime_files_at(&root, apps);
+}
+
+fn steam_playtime_files_at(root: &Path, apps: &[(&str, &str, &str)]) {
+    fs::create_dir_all(root.join("config")).unwrap();
+    fs::write(
+        root.join("config/loginusers.vdf"),
+        format!(
+            "\"users\"\n{{\n\t\"{}\"\n\t{{\n\t\t\"MostRecent\"\t\t\"1\"\n\t}}\n}}\n",
+            STEAM_ACCOUNT_BASE + 1
+        ),
+    )
+    .unwrap();
+    let mut entries = String::new();
+    for (app_id, playtime, last_played) in apps {
+        entries.push_str(&format!(
+            "\t\t\t\t\t\"{app_id}\"\n\t\t\t\t\t{{\n\t\t\t\t\t\t\"Playtime\"\t\t\"{playtime}\"\n\t\t\t\t\t\t\"LastPlayed\"\t\t\"{last_played}\"\n\t\t\t\t\t}}\n"
+        ));
+    }
+    let localconfig = format!(
+        "\"UserLocalConfigStore\"\n{{\n\t\"Software\"\n\t{{\n\t\t\"Valve\"\n\t\t{{\n\t\t\t\"Steam\"\n\t\t\t{{\n\t\t\t\t\"apps\"\n\t\t\t\t{{\n{entries}\t\t\t\t}}\n\t\t\t}}\n\t\t}}\n\t}}\n}}\n"
+    );
+    let localconfig_path = root.join("userdata/1/config/localconfig.vdf");
+    fs::create_dir_all(localconfig_path.parent().unwrap()).unwrap();
+    fs::write(localconfig_path, localconfig).unwrap();
+}
 
 fn session(target: &str, started_at: &str, ended_at: &str, seconds: i64, end: &str) -> String {
     format!(
@@ -116,6 +165,272 @@ fn a_never_played_environment_says_so() {
     let output = f.run(&["stats", "game"]);
     assert_success(&output);
     assert_eq!(stdout(&output), "game\n  played      never\n");
+}
+
+#[test]
+fn steam_stats_distinguish_known_zero_and_unknown_playtime() {
+    let f = Fixture::new();
+    steam_environment(&f, "known", "100", &[]);
+    steam_environment(&f, "zero", "200", &[]);
+    steam_environment(&f, "unknown", "300", &[]);
+    steam_playtime_files(&f, &[("100", "22200", "1788523200"), ("300", "bad", "0")]);
+    f.write_stats_log("known", "not a session\n");
+
+    let known = f.run_at_home(&["stats", "known"]);
+    assert_success(&known);
+    assert_eq!(
+        stdout(&known),
+        "known\n  played      370 h on Steam, last Sep 4\n"
+    );
+    assert!(stderr(&known).is_empty(), "{}", stderr(&known));
+
+    let zero = f.run_at_home(&["stats", "zero"]);
+    assert_success(&zero);
+    assert_eq!(stdout(&zero), "zero\n  played      0 m on Steam\n");
+
+    let unknown = f.run_at_home(&["stats", "unknown"]);
+    assert_success(&unknown);
+    assert_eq!(
+        stdout(&unknown),
+        "unknown\n  played      unknown (Steam's playtime can't be read)\n"
+    );
+}
+
+#[test]
+fn steam_stats_json_marks_unavailable_session_fields_null() {
+    let f = Fixture::new();
+    steam_environment(&f, "known", "100", &[]);
+    steam_environment(&f, "zero", "200", &[]);
+    steam_environment(&f, "unknown", "300", &[]);
+    steam_playtime_files(&f, &[("100", "22200", "1788523200"), ("300", "bad", "0")]);
+
+    let known = json_output(&f.run_at_home(&["stats", "known", "--json"]));
+    assert_eq!(known["source"], "steam");
+    assert_eq!(known["seconds"], 1_332_000);
+    assert_eq!(known["last_played"], "2026-09-04T12:00:00Z");
+    for key in [
+        "sessions",
+        "average_seconds",
+        "longest",
+        "first_played",
+        "this_week_seconds",
+        "this_month_seconds",
+    ] {
+        assert_json_null(&known, key);
+    }
+
+    let unknown = json_output(&f.run_at_home(&["stats", "unknown", "--json"]));
+    assert_eq!(unknown["source"], "steam");
+    assert_json_null(&unknown, "seconds");
+    assert_json_null(&unknown, "last_played");
+
+    let zero = json_output(&f.run_at_home(&["stats", "zero", "--json", "--sessions"]));
+    assert_eq!(zero["source"], "steam");
+    assert_eq!(zero["seconds"], 0);
+    assert_json_null(&zero, "sessions");
+    assert!(zero.get("sessions_log").is_none());
+}
+
+#[test]
+fn steam_stats_choose_the_configured_install_when_both_are_present() {
+    let f = Fixture::new();
+    steam_environment(&f, "game", "100", &[]);
+    let native = f.root.path().join(".local/share/Steam");
+    let flatpak = f
+        .root
+        .path()
+        .join(".var/app/com.valvesoftware.Steam/.local/share/Steam");
+    steam_playtime_files_at(&native, &[("100", "10", "1788523200")]);
+    steam_playtime_files_at(&flatpak, &[("100", "30", "1788523200")]);
+
+    let native_output = json_output(&f.run_at_home(&["stats", "game", "--json"]));
+    assert_eq!(native_output["seconds"], 600);
+
+    f.global_config("schema_version = 1\nsteam = \"flatpak\"\n");
+    let flatpak_output = json_output(&f.run_at_home(&["stats", "game", "--json"]));
+    assert_eq!(flatpak_output["seconds"], 1_800);
+}
+
+#[test]
+fn steam_stats_are_unknown_when_no_install_is_found() {
+    let f = Fixture::new();
+    steam_environment(&f, "game", "100", &[]);
+
+    let output = f.run_at_home(&["stats", "game"]);
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output),
+        "game\n  played      unknown (Steam's playtime can't be read)\n"
+    );
+}
+
+#[test]
+fn unloadable_global_config_makes_steam_unknown_without_changing_wine_stats() {
+    let f = Fixture::new();
+    steam_environment(&f, "steam-game", "100", &[]);
+    let native = f.root.path().join(".local/share/Steam");
+    let flatpak = f
+        .root
+        .path()
+        .join(".var/app/com.valvesoftware.Steam/.local/share/Steam");
+    steam_playtime_files_at(&native, &[("100", "10", "1788523200")]);
+    steam_playtime_files_at(&flatpak, &[("100", "30", "1788523200")]);
+    f.global_config("schema_version = 2\nsteam = \"flatpak\"\n");
+    f.environment("wine", "");
+    f.write_stats_log(
+        "wine",
+        &session(
+            "game",
+            "2026-09-04T18:00:00Z",
+            "2026-09-04T19:00:00Z",
+            3600,
+            "exited",
+        ),
+    );
+
+    let steam_output = f.run_at_home(&["stats", "steam-game"]);
+    assert_success(&steam_output);
+    assert_eq!(
+        stdout(&steam_output),
+        "steam-game\n  played      unknown (Steam's playtime can't be read)\n"
+    );
+
+    let wine_output = f.run_at_home(&["stats", "wine"]);
+    assert_success(&wine_output);
+    assert!(stdout(&wine_output).contains("1 h over 1 session"));
+}
+
+#[test]
+fn overview_mixes_wine_native_and_steam_playtime_and_notes_unknown_games() {
+    let f = Fixture::new();
+    f.environment("wine", "");
+    fs::write(
+        f.config_dir().join("environments/wine.toml"),
+        format!("{}tags = [\"game\"]\n", f.created_config("wine")),
+    )
+    .unwrap();
+    let native = f.config_dir().join("environments/native.toml");
+    fs::write(
+        &native,
+        "schema_version = 1\nkind = \"native\"\ntags = [\"game\"]\n",
+    )
+    .unwrap();
+    steam_environment(&f, "steam", "100", &["game"]);
+    steam_environment(&f, "unknown-a", "300", &["game"]);
+    steam_environment(&f, "unknown-b", "301", &["game"]);
+    steam_playtime_files(
+        &f,
+        &[
+            ("100", "2", "1788523200"),
+            ("300", "bad", "0"),
+            ("301", "bad", "0"),
+        ],
+    );
+    f.write_stats_log(
+        "wine",
+        &session(
+            "game",
+            "2026-09-04T18:00:00Z",
+            "2026-09-04T19:00:00Z",
+            3600,
+            "exited",
+        ),
+    );
+    f.write_stats_log(
+        "native",
+        &session(
+            "game",
+            "2026-09-04T18:00:00Z",
+            "2026-09-04T18:30:00Z",
+            1800,
+            "exited",
+        ),
+    );
+
+    let overview = f.run_at_home(&["stats"]);
+    assert_success(&overview);
+    let overview_text = stdout(&overview);
+    assert!(overview_text.contains("Total 1 h 32 m."), "{overview_text}");
+    let steam_row = overview_text
+        .lines()
+        .find(|line| line.starts_with("steam"))
+        .unwrap();
+    assert_eq!(
+        steam_row.split_whitespace().take(4).collect::<Vec<_>>(),
+        ["steam", "2", "m", "-"]
+    );
+    assert!(
+        overview_text.contains("Steam games count Steam's total, without sessions."),
+        "{overview_text}"
+    );
+    assert!(
+        overview_text.contains("2 Steam games' playtime is unknown."),
+        "{overview_text}"
+    );
+
+    let by_tag = f.run_at_home(&["stats", "--by-tag"]);
+    assert_success(&by_tag);
+    let by_tag_text = stdout(&by_tag);
+    assert!(by_tag_text.contains("game  1 h 32 m"), "{by_tag_text}");
+    assert!(by_tag_text.contains("2  3 of 5"), "{by_tag_text}");
+    assert!(
+        by_tag_text.contains("2 Steam games' playtime is unknown."),
+        "{by_tag_text}"
+    );
+    assert!(
+        by_tag_text.contains("Steam games count Steam's total, without sessions."),
+        "{by_tag_text}"
+    );
+
+    let json = json_output(&f.run_at_home(&["stats", "--json"]));
+    for (name, source) in [("wine", "wineo"), ("native", "wineo"), ("steam", "steam")] {
+        let row = json["environments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["name"] == name)
+            .unwrap();
+        assert_eq!(row["source"], source, "{name}");
+    }
+}
+
+#[test]
+fn overview_reports_one_unknown_steam_game_with_singular_copy() {
+    let f = Fixture::new();
+    steam_environment(&f, "unknown", "300", &[]);
+    steam_playtime_files(&f, &[("300", "bad", "0")]);
+    let output = f.run_at_home(&["stats"]);
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output),
+        "0 never played. Total 0 m.\n1 Steam game's playtime is unknown.\n"
+    );
+}
+
+#[test]
+fn steam_status_uses_steam_copy_and_never_says_from_heroic() {
+    let f = Fixture::new();
+    steam_environment(&f, "known", "100", &[]);
+    steam_environment(&f, "unknown", "300", &[]);
+    steam_playtime_files(&f, &[("100", "22200", "1788523200"), ("300", "bad", "0")]);
+
+    let known = f.run_at_home(&["status", "known"]);
+    assert_success(&known);
+    let known_text = stdout(&known);
+    assert!(
+        known_text.contains("  played      370 h on Steam\n"),
+        "{known_text}"
+    );
+    assert!(!known_text.contains("from Heroic"), "{known_text}");
+
+    let unknown = f.run_at_home(&["status", "unknown"]);
+    assert_success(&unknown);
+    let unknown_text = stdout(&unknown);
+    assert!(
+        unknown_text.contains("  played      unknown\n"),
+        "{unknown_text}"
+    );
+    assert!(!unknown_text.contains("from Heroic"), "{unknown_text}");
 }
 
 /// A minimal Heroic install with `game_id`'s playtime in `store/timestamp.json`.
@@ -415,6 +730,11 @@ fn tag_filter_with_no_match_exits_successfully_and_joins_tags() {
 fn json_output(output: &std::process::Output) -> serde_json::Value {
     assert_success(output);
     serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn assert_json_null(value: &serde_json::Value, key: &str) {
+    assert!(value.get(key).is_some(), "missing JSON key {key}: {value}");
+    assert_eq!(value.get(key), Some(&serde_json::Value::Null), "{key}");
 }
 
 #[test]

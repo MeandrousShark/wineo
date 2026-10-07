@@ -105,6 +105,10 @@ pub struct Played {
     pub seconds: i64,
     pub sessions: usize,
     pub last_played: Option<Timestamp>,
+    #[serde(skip)]
+    pub source: stats::Source,
+    #[serde(skip)]
+    pub playtime_unknown: bool,
 }
 
 /// What `wineo list` and `wineo status` without a name need from every
@@ -232,11 +236,16 @@ impl EnvironmentReport {
             Timestamp::now(),
             &TimeZone::system(),
         )?;
-        let played = (summary.sessions > 0 || summary.imported_seconds > 0).then_some(Played {
-            seconds: summary.seconds,
-            sessions: summary.sessions,
-            last_played: summary.last_played,
-        });
+        let played = (summary.source == stats::Source::Steam
+            || summary.sessions > 0
+            || summary.imported_seconds > 0)
+            .then_some(Played {
+                seconds: summary.seconds,
+                sessions: summary.sessions,
+                last_played: summary.last_played,
+                source: summary.source,
+                playtime_unknown: summary.playtime_unknown,
+            });
         Ok(Self {
             dxvk: components.0,
             vkd3d: components.1,

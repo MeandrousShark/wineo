@@ -78,7 +78,7 @@ pub(super) struct Card {
     pub(super) unresolved: bool,
     pub(super) error: Option<String>,
     pub(super) playtime: String,
-    pub(super) sessions: usize,
+    pub(super) sessions: String,
     pub(super) last_played: String,
     pub(super) tags: Vec<String>,
     pub(super) targets: Vec<String>,
@@ -141,6 +141,21 @@ pub(super) fn playtime_label(seconds: i64) -> String {
     }
 }
 
+/// Playtime, sessions, and last played when no stats summary came back.
+/// Steam's playtime isn't known then, so it never shows as zero.
+fn fallback_stats(kind: Option<CardKind>) -> (String, String, String) {
+    let (playtime, sessions, last_played) = if kind == Some(CardKind::Proxied) {
+        ("unknown", "-", "unknown")
+    } else {
+        ("never played", "0", "never")
+    };
+    (
+        playtime.to_owned(),
+        sessions.to_owned(),
+        last_played.to_owned(),
+    )
+}
+
 pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
     let overview = report::overview(paths, OverviewFilter::default())?;
     let stats = stats::overview(paths)?;
@@ -152,7 +167,17 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
                 || "never".to_owned(),
                 |when| time::day_label(stats.now, when, &stats.tz),
             );
-            (name, (summary.seconds, summary.sessions, last))
+            let playtime = if summary.playtime_unknown {
+                "unknown".to_owned()
+            } else {
+                playtime_label(summary.seconds)
+            };
+            let sessions = if summary.source == wineo_core::stats::Source::Steam {
+                "-".to_owned()
+            } else {
+                summary.sessions.to_string()
+            };
+            (name, (playtime, sessions, last))
         })
         .collect();
     let mut cards = Vec::new();
@@ -196,13 +221,12 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
             }
             Err(error) => (Some(error.to_string()), None),
         };
-        let (seconds, sessions, last_played) =
-            played
-                .get(&item.name)
-                .cloned()
-                .unwrap_or((0, 0, "never".to_owned()));
+        let (playtime, sessions, last_played) = played
+            .get(&item.name)
+            .cloned()
+            .unwrap_or_else(|| fallback_stats(kind));
         cards.push(Card {
-            playtime: playtime_label(seconds),
+            playtime,
             sessions,
             last_played,
             tags: item.tags,
@@ -226,14 +250,13 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
         if cards.iter().any(|card| card.name == error.name) {
             continue;
         }
-        let (seconds, sessions, last_played) =
-            played
-                .get(&error.name)
-                .cloned()
-                .unwrap_or((0, 0, "never".to_owned()));
+        let (playtime, sessions, last_played) = played
+            .get(&error.name)
+            .cloned()
+            .unwrap_or_else(|| fallback_stats(None));
         let title = error.name.clone();
         cards.push(Card {
-            playtime: playtime_label(seconds),
+            playtime,
             sessions,
             last_played,
             tags: Vec::new(),
@@ -311,6 +334,18 @@ mod tests {
     }
 
     #[test]
+    fn missing_stats_use_the_kind_specific_fallback() {
+        let never = ("never played".into(), "0".into(), "never".into());
+        assert_eq!(fallback_stats(Some(CardKind::Wine)), never);
+        assert_eq!(fallback_stats(Some(CardKind::Native)), never);
+        assert_eq!(fallback_stats(None), never);
+        assert_eq!(
+            fallback_stats(Some(CardKind::Proxied)),
+            ("unknown".into(), "-".into(), "unknown".into())
+        );
+    }
+
+    #[test]
     fn launch_button_label_uses_the_exact_game_tag() {
         let card = |tags: Vec<&str>| Card {
             name: "env_id".into(),
@@ -324,7 +359,7 @@ mod tests {
             unresolved: false,
             error: None,
             playtime: "never played".into(),
-            sessions: 0,
+            sessions: "0".to_owned(),
             last_played: "never".into(),
             tags: tags.into_iter().map(str::to_owned).collect(),
             targets: Vec::new(),

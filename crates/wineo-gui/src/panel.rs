@@ -733,7 +733,7 @@ impl App {
         } else {
             inner = inner.push(detail_row("State", card.state_word(), palette));
             inner = inner.push(detail_row("Playtime", &card.playtime, palette));
-            inner = inner.push(detail_row("Sessions", &card.sessions.to_string(), palette));
+            inner = inner.push(detail_row("Sessions", &card.sessions, palette));
             inner = inner.push(detail_row("Last played", &card.last_played, palette));
             if !card.tags.is_empty() {
                 inner = inner.push(detail_row("Tags", &card.tags.join(", "), palette));
@@ -967,7 +967,7 @@ mod tests {
             unresolved: false,
             error: None,
             playtime: "never played".into(),
-            sessions: 0,
+            sessions: "0".to_owned(),
             last_played: "never".into(),
             tags: Vec::new(),
             targets: vec!["game".into()],

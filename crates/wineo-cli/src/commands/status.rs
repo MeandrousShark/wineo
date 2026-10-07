@@ -8,6 +8,7 @@ use wineo_core::error::Error;
 use wineo_core::paths::Paths;
 use wineo_core::report::{self, EnvironmentReport, KindReport, OverviewFilter};
 use wineo_core::runtime::{RunKind, RunMode, RunState, State};
+use wineo_core::stats::Source;
 use wineo_core::view::NamedOutput;
 
 use super::json;
@@ -259,6 +260,13 @@ fn target_value(run: &RunState, exe: Option<&str>) -> String {
 }
 
 fn played_value(played: &report::Played, now: Timestamp, tz: &TimeZone) -> String {
+    if played.source == Source::Steam {
+        return if played.playtime_unknown {
+            "unknown".to_owned()
+        } else {
+            format!("{} on Steam", duration_hm(played.seconds))
+        };
+    }
     let sessions = if played.sessions == 1 {
         "1 session".to_owned()
     } else {
@@ -612,6 +620,8 @@ mod tests {
             seconds: 65_100,
             sessions: 11,
             last_played: Some(now()),
+            source: Source::Wineo,
+            playtime_unknown: false,
         });
         let text = render(&report, now(), &TimeZone::UTC);
         assert!(
@@ -632,6 +642,8 @@ mod tests {
             seconds: 349_200,
             sessions: 0,
             last_played: Some(now()),
+            source: Source::Wineo,
+            playtime_unknown: false,
         });
         let text = render(&report, now(), &TimeZone::UTC);
         assert!(

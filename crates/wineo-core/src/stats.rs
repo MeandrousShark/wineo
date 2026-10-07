@@ -23,6 +23,7 @@ use crate::files::write_atomic;
 use crate::heroic::HeroicSource;
 use crate::paths::Paths;
 use crate::runtime::{Runtime, State};
+use crate::{config::GlobalConfig, steam};
 
 /// How a session came to an end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,8 +204,7 @@ pub struct Longest {
 /// Everything `wineo stats` shows for one environment, computed on read.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Summary {
-    /// Every logged session's time, an in-progress one's so far, and whatever
-    /// was carried over from Heroic.
+    /// This environment's total from Wineo sessions and imports, or Steam.
     pub seconds: i64,
     /// Logged sessions plus an in-progress one. Excludes the imported total.
     pub sessions: usize,
@@ -216,8 +216,28 @@ pub struct Summary {
     pub this_month_seconds: i64,
     pub running: bool,
     pub imported_seconds: i64,
+    /// Which source supplies the playtime total.
+    pub source: Source,
+    /// Steam has no readable total for this game.
+    pub playtime_unknown: bool,
     /// Sorted by time played, most first.
     pub targets: Vec<TargetSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    Wineo,
+    Steam,
+}
+
+impl Source {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Wineo => "wineo",
+            Self::Steam => "steam",
+        }
+    }
 }
 
 /// One environment whose stats could not be read for the overview.
@@ -238,6 +258,10 @@ pub struct Overview {
     pub played: Vec<usize>,
     pub total_seconds: i64,
     pub never_played: usize,
+    /// Known Steam totals included in the overview.
+    pub steam_games: usize,
+    /// Steam games whose playtime could not be read.
+    pub unknown_steam_games: usize,
     pub warnings: Vec<String>,
     pub errors: Vec<OverviewError>,
     pub now: Timestamp,
@@ -313,14 +337,28 @@ pub fn overview_with_options(paths: &Paths, options: OverviewOptions<'_>) -> Res
             .cmp(&rows[a].1.seconds)
             .then_with(|| rows[a].0.cmp(&rows[b].0))
     });
-    let never_played = rows.len() - played.len();
-    let total_seconds = rows.iter().map(|(_, summary)| summary.seconds).sum();
+    let steam_games = rows
+        .iter()
+        .filter(|(_, summary)| summary.source == Source::Steam && !summary.playtime_unknown)
+        .count();
+    let unknown_steam_games = rows
+        .iter()
+        .filter(|(_, summary)| summary.source == Source::Steam && summary.playtime_unknown)
+        .count();
+    let never_played = rows.len() - played.len() - unknown_steam_games;
+    let total_seconds = rows
+        .iter()
+        .filter(|(_, summary)| !summary.playtime_unknown)
+        .map(|(_, summary)| summary.seconds)
+        .sum();
     Ok(Overview {
         rows,
         tags,
         played,
         total_seconds,
         never_played,
+        steam_games,
+        unknown_steam_games,
         warnings,
         errors,
         now,
@@ -525,6 +563,8 @@ pub fn summarize(log: &Log, running: Option<&Running>, now: Timestamp, tz: &Time
         this_month_seconds,
         running: running.is_some(),
         imported_seconds,
+        source: Source::Wineo,
+        playtime_unknown: false,
         targets: by_target,
     }
 }
@@ -542,18 +582,77 @@ pub fn running_session(paths: &Paths, name: &str) -> Result<Option<Running>> {
         }))
 }
 
-/// Reads `name`'s log and folds in its live run, if any, as of `now`.
-/// Returns the summary alongside any warnings from unreadable lines.
+/// Reads `name`'s playtime and folds in its live run, if any, as of `now`.
+/// Steam-backed environments do not read their Wineo session log.
 pub fn summary(
     paths: &Paths,
     name: &str,
     now: Timestamp,
     tz: &TimeZone,
 ) -> Result<(Summary, Vec<String>)> {
+    let (summary, _, warnings) = summary_with_log(paths, name, now, tz)?;
+    Ok((summary, warnings))
+}
+
+/// Reads a Wineo session log with its summary, returning no log for Steam.
+pub fn summary_with_log(
+    paths: &Paths,
+    name: &str,
+    now: Timestamp,
+    tz: &TimeZone,
+) -> Result<(Summary, Option<Log>, Vec<String>)> {
+    let config_path = paths.environment_config(name);
+    if let Ok(text) = fs::read_to_string(&config_path)
+        && let Ok(config) = crate::config::EnvironmentConfig::parse(&config_path, &text)
+        && let crate::config::Kind::Proxied(proxied) = config.kind
+    {
+        let playtime = match GlobalConfig::load(paths) {
+            Ok(global) => steam::active_for(paths, &global)
+                .map(|install| steam::playtime(&install, &proxied.app_id))
+                .unwrap_or_else(|| steam::Playtime::Unknown("Steam was not found".to_owned())),
+            Err(error) => steam::Playtime::Unknown(format!("global config can't be read: {error}")),
+        };
+        return Ok((summarize_steam(playtime), None, Vec::new()));
+    }
     let log = read(&paths.stats_log(name))?;
     let running = running_session(paths, name)?;
     let warnings = log.warnings.clone();
-    Ok((summarize(&log, running.as_ref(), now, tz), warnings))
+    Ok((
+        summarize(&log, running.as_ref(), now, tz),
+        Some(log),
+        warnings,
+    ))
+}
+
+fn summarize_steam(playtime: steam::Playtime) -> Summary {
+    let (seconds, last_played, playtime_unknown) = match playtime {
+        steam::Playtime::Known {
+            seconds,
+            last_played,
+        } => (
+            seconds.min(i64::MAX as u64) as i64,
+            last_played
+                .and_then(|seconds| i64::try_from(seconds).ok())
+                .and_then(|seconds| Timestamp::from_second(seconds).ok()),
+            false,
+        ),
+        steam::Playtime::Unknown(_) => (0, None, true),
+    };
+    Summary {
+        seconds,
+        sessions: 0,
+        average_seconds: None,
+        longest: None,
+        first_played: None,
+        last_played,
+        this_week_seconds: 0,
+        this_month_seconds: 0,
+        running: false,
+        imported_seconds: 0,
+        source: Source::Steam,
+        playtime_unknown,
+        targets: Vec::new(),
+    }
 }
 
 fn local_date(ts: Timestamp, tz: &TimeZone) -> Date {
