@@ -205,6 +205,19 @@ Steps 1 and 2 can run in parallel. Step 3 needs 1, and step 4 needs 2.
   exits 0. Unix paths, and any path in an adopted prefix, are still checked,
   and a missing one fails as decided above.
 
+- `import heroic --all --dry-run` previews the run the same flags would
+  give, as the maintainer settled on 2026-10-06 after review:
+  - Without `--yes`, it previews accepting every offer: `Would offer to
+    download the latest DXVK for 1 game. Declining skips it.`
+  - With `--yes`, it mirrors the real run exactly. No Proton installed and
+    no `--runner` fails with the real error, and pending games just show
+    their `skip:` reason with no download line.
+  - With no Proton and no `--yes`, the Windows games it can't plan are
+    named: `1 Windows game not shown: it needs a Proton runner, which wineo
+    would offer to download. Pass --runner to preview it.`
+  - It's fail-soft like the real run: a game that would fail prints `NAME:
+    would fail: REASON`, the rest still preview, and it exits 1 at the end.
+
 ## Testing and acceptance
 
 - An integration test helper snapshots the temporary XDG roots (paths,

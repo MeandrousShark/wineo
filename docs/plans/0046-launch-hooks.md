@@ -273,6 +273,17 @@ step 2, and step 4 needs step 3.
   A stale file is ignored, since the lock must still be held.
 - `busy` stays a string in JSON: `hook-before` and `hook-after`, matching
   the other operation values.
+- `status --json` shows hooks as presence only, never the commands, like
+  saved launch arguments: `"hooks": {"before": true, "after": false}`, or
+  `null` when neither is set. Settled by the maintainer on 2026-10-06; it
+  lands with step 4.
+- Picking a template that carries hooks shows a `hooks: before, after`
+  line in `wineo new`'s summary and the GUI's Add flow, so commands that run
+  on every launch are never a surprise. Settled by the maintainer on
+  2026-10-06; it lands with step 4.
+- Heroic's script paths are shown as stored, with control characters
+  escaped so a path can't fake a review line, and bulk reviews mark a game
+  that `runs launch scripts`.
 - A hook that exits normally leaves any background process it started
   alone. Only cancel and `--force` kill the hook's group.
 - Notes for step 3 from review: `Guard::relabel` can't turn the shared
