@@ -12,8 +12,8 @@ use crate::heroic::{HeroicOrigin, HeroicSource};
 use crate::name;
 use crate::paths::Paths;
 use crate::runner::Runner;
+use crate::steam;
 
-const STEAM_FLATPAK: &str = "com.valvesoftware.Steam";
 const LUTRIS_FLATPAK: &str = "net.lutris.Lutris";
 
 /// Where a runner lives. The order is the priority when names collide.
@@ -60,20 +60,19 @@ pub fn folders(paths: &Paths) -> Vec<Folder> {
     let home = paths.home();
     let mut candidates = Vec::new();
 
-    let steam_roots = [
-        home.join(".steam/root"),
-        home.join(".steam/steam"),
-        home.join(".local/share/Steam"),
-        home.join(".var/app")
-            .join(STEAM_FLATPAK)
-            .join(".local/share/Steam"),
-    ];
-    for root in &steam_roots {
-        candidates.push((Source::Steam, root.join("compatibilitytools.d"), false));
+    // Every install counts, not just the active one, since the active install
+    // only applies to games.
+    let installs = steam::installs(home);
+    for install in &installs {
+        candidates.push((
+            Source::Steam,
+            install.root().join("compatibilitytools.d"),
+            false,
+        ));
     }
-    for root in &steam_roots {
-        for library in steam_libraries(root) {
-            candidates.push((Source::Steam, library.join("steamapps/common"), true));
+    for install in &installs {
+        for library in steam::libraries(install).entries {
+            candidates.push((Source::Steam, library.path.join("steamapps/common"), true));
         }
     }
 
@@ -132,41 +131,6 @@ pub(crate) fn root_owner(paths: &Paths, root: &Path) -> Option<Source> {
         .into_iter()
         .find(|folder| fs::canonicalize(&folder.path).is_ok_and(|path| root.starts_with(path)))
         .map(|folder| folder.source)
-}
-
-/// The Steam root itself, plus every library `libraryfolders.vdf` names.
-fn steam_libraries(root: &Path) -> Vec<PathBuf> {
-    let mut libraries = vec![root.to_owned()];
-    if let Ok(text) = fs::read_to_string(root.join("steamapps/libraryfolders.vdf")) {
-        libraries.extend(vdf_paths(&text).into_iter().map(PathBuf::from));
-    }
-    libraries
-}
-
-/// Every `"path"` value in a VDF file. The structure around them doesn't
-/// matter, since each library entry has exactly one.
-fn vdf_paths(text: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut chars = text.chars();
-    while let Some(character) = chars.next() {
-        if character != '"' {
-            continue;
-        }
-        let mut token = String::new();
-        while let Some(character) = chars.next() {
-            match character {
-                '"' => break,
-                '\\' => token.extend(chars.next()),
-                other => token.push(other),
-            }
-        }
-        tokens.push(token);
-    }
-    tokens
-        .windows(2)
-        .filter(|pair| pair[0].eq_ignore_ascii_case("path"))
-        .map(|pair| pair[1].clone())
-        .collect()
 }
 
 /// A runner name for a folder, so `Proton 9.0` can be `Proton-9.0`. A name

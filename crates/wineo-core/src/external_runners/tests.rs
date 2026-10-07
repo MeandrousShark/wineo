@@ -87,6 +87,15 @@ fn derived_names_replace_each_unusable_run_with_one_dash() {
     }
 }
 
+/// The library paths in a `libraryfolders.vdf`, as runner discovery reads them.
+fn vdf_paths(text: &str) -> Vec<String> {
+    steam::library_paths(text)
+        .unwrap()
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
+}
+
 #[test]
 fn library_paths_come_from_the_vdf() {
     let text = r#""libraryfolders"
@@ -718,4 +727,53 @@ fn the_display_owner_is_the_launcher_for_a_root_inside_its_folder() {
     let runners = Runners::new(&paths, &global).unwrap();
     let runner = runners.resolve("GE-Proton9-20").unwrap();
     assert_eq!(runner.owner(&paths), Source::Wineo);
+}
+
+#[test]
+fn both_steam_installs_are_scanned_whichever_is_active() {
+    const FLATPAK: &str = ".var/app/com.valvesoftware.Steam/.local/share/Steam";
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let flatpak = home.join(FLATPAK);
+    let games = home.join("games/SteamLibrary");
+    proton(
+        &home.join(STEAM).join("GE-Proton11-3"),
+        Some("GE-Proton11-3"),
+    );
+    proton(
+        &flatpak.join("compatibilitytools.d/GE-Proton10-2"),
+        Some("GE-Proton10-2"),
+    );
+    file(
+        &flatpak.join("steamapps/libraryfolders.vdf"),
+        &format!(
+            "\"libraryfolders\"\n{{\n\t\"0\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n\t\"1\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n}}\n",
+            flatpak.display(),
+            games.display()
+        ),
+        false,
+    );
+    proton(
+        &games.join("steamapps/common/Proton 9.0"),
+        Some("proton-9.0-4"),
+    );
+
+    // Native is the active install for games, and Flatpak's builds still count.
+    let installs = steam::installs(home);
+    assert_eq!(
+        steam::active_install(&installs, None).unwrap().kind(),
+        steam::InstallKind::Native
+    );
+
+    let listing = runners(home).list().unwrap();
+    let mut found = names(&listing);
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("GE-Proton10-2", Source::Steam),
+            ("GE-Proton11-3", Source::Steam),
+            ("Proton-9.0", Source::Steam),
+        ]
+    );
 }
