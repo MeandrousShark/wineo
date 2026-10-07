@@ -10,17 +10,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::config::{Hooks, HooksSetting};
 use crate::error::{Error, Result};
 use crate::gamescope::{Filter, Gamescope, GamescopeSetting, Scaler, Window};
 
 const FLATPAK_ID: &str = "com.heroicgameslauncher.hgl";
 /// The unsupported settings that still matter to a native game. The rest are
 /// about Wine or Proton, which a native game doesn't run on.
-const NATIVE_UNSUPPORTED: [&str; 3] = [
-    "wrapperOptions",
-    "beforeLaunchScriptPath",
-    "afterLaunchScriptPath",
-];
+const NATIVE_UNSUPPORTED: [&str; 1] = ["wrapperOptions"];
 pub(crate) const MANAGED_ENV: [&str; 5] = [
     "WINEPREFIX",
     "PROTONPATH",
@@ -400,6 +397,7 @@ impl HeroicSource {
         }
         let mangohud = imported_toggle(&effective, "showMangohud", &mut review);
         let gamescope = imported_gamescope(&effective, &mut issues, &mut review);
+        let hooks = imported_hooks(&effective, &mut review);
         collect_unsupported(
             &effective,
             global,
@@ -420,6 +418,7 @@ impl HeroicSource {
             gamemode,
             mangohud,
             gamescope,
+            hooks,
             issues,
             fingerprint: self.fingerprint(game_id)?,
             settings_review: review,
@@ -653,6 +652,7 @@ impl HeroicSource {
         }
         let mangohud = imported_toggle(&effective, "showMangohud", &mut review);
         let gamescope = imported_gamescope(&effective, &mut issues, &mut review);
+        let hooks = imported_hooks(&effective, &mut review);
         let enable_wine_wayland = bool_setting(&effective, "enableWineWayland") == Some(true);
         let enable_hdr = bool_setting(&effective, "enableHDR") == Some(true);
 
@@ -748,6 +748,7 @@ impl HeroicSource {
                 .then_some(false),
             mangohud,
             gamescope,
+            hooks,
             enable_wine_wayland,
             enable_hdr,
             dxvk: None,
@@ -906,6 +907,7 @@ pub struct HeroicImport {
     pub wayland: Option<bool>,
     pub mangohud: Option<bool>,
     pub gamescope: Option<GamescopeSetting>,
+    pub hooks: Option<HooksSetting>,
     pub enable_wine_wayland: bool,
     pub enable_hdr: bool,
     /// `dxvk`/`vkd3d` to carry into the environment config, filled in by the
@@ -932,6 +934,7 @@ pub struct HeroicNativeImport {
     pub gamemode: Option<bool>,
     pub mangohud: Option<bool>,
     pub gamescope: Option<GamescopeSetting>,
+    pub hooks: Option<HooksSetting>,
     pub issues: Vec<HeroicIssue>,
     pub fingerprint: InputFingerprint,
     pub settings_review: SettingsReview,
@@ -1588,6 +1591,29 @@ fn imported_gamescope(
     Some(GamescopeSetting::On(game))
 }
 
+fn imported_hooks(
+    settings: &Map<String, Value>,
+    review: &mut SettingsReview,
+) -> Option<HooksSetting> {
+    let path = |key: &str, label: &str, review: &mut SettingsReview| {
+        let path = settings
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|path| !path.trim().is_empty())?;
+        review.carried.push(review_item(label, path));
+        Some(quote_shell_path(path))
+    };
+    let hooks = Hooks {
+        before: path("beforeLaunchScriptPath", "before hook", review),
+        after: path("afterLaunchScriptPath", "after hook", review),
+    };
+    (hooks.before.is_some() || hooks.after.is_some()).then_some(HooksSetting::On(hooks))
+}
+
+fn quote_shell_path(path: &str) -> String {
+    format!("'{}'", path.replace('\'', "'\\''"))
+}
+
 fn collect_unsupported(
     settings: &Map<String, Value>,
     global: &Map<String, Value>,
@@ -1598,14 +1624,6 @@ fn collect_unsupported(
 ) {
     let unsupported = [
         ("wrapperOptions", "Heroic wrappers require manual setup"),
-        (
-            "beforeLaunchScriptPath",
-            "Heroic launch scripts are not executed during import",
-        ),
-        (
-            "afterLaunchScriptPath",
-            "Heroic launch scripts are not executed during import",
-        ),
         ("enableHDR", "HDR handling is runner-specific"),
         ("enableWoW64", "the runner's build decides WoW64"),
         (
@@ -1935,6 +1953,126 @@ mod tests {
                 .filter(|issue| issue.field.as_deref() == Some("gamescope.fpsLimiterNoFocus"))
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn shell_path_quoting_keeps_heroic_paths_as_one_word() {
+        let path = "script with 'quote'/$dollar;`tick`\nnext line";
+        assert_eq!(
+            quote_shell_path(path),
+            "'script with '\\''quote'\\''/$dollar;`tick`\nnext line'"
+        );
+    }
+
+    #[test]
+    fn a_quoted_heroic_script_path_runs_that_script() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let root = tempfile::tempdir().unwrap();
+        let script = root
+            .path()
+            .join("script with 'quote' $dollar;`tick`\nnext line.sh");
+        let marker = root.path().join("marker");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\nprintf 'ran' > '{}'\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(quote_shell_path(script.to_str().unwrap()))
+            .status()
+            .unwrap();
+
+        assert!(status.success());
+        assert_eq!(fs::read_to_string(marker).unwrap(), "ran");
+    }
+
+    #[test]
+    fn heroic_wine_and_native_scripts_become_quoted_hooks_and_review_rows() {
+        let (root, source) = fixture();
+        let before = "/scripts/before $dollar;`tick` 'quoted'.sh";
+        let after = "/scripts/after\nline.sh";
+        let settings = serde_json::json!({
+            "beforeLaunchScriptPath": before,
+            "afterLaunchScriptPath": after,
+        })
+        .to_string();
+
+        game_fixture(&source, root.path(), &settings, false);
+        let wine = source.inspect("hades").unwrap();
+        let hooks = wine.hooks.as_ref().unwrap().on().unwrap();
+        assert_eq!(
+            hooks.before.as_deref(),
+            Some(quote_shell_path(before).as_str())
+        );
+        assert_eq!(
+            hooks.after.as_deref(),
+            Some(quote_shell_path(after).as_str())
+        );
+        assert!(
+            wine.settings_review
+                .carried
+                .contains(&review_item("before hook", before))
+        );
+        assert!(
+            wine.settings_review
+                .carried
+                .contains(&review_item("after hook", after))
+        );
+        assert!(!wine.issues.iter().any(|issue| {
+            matches!(
+                issue.field.as_deref(),
+                Some("beforeLaunchScriptPath" | "afterLaunchScriptPath")
+            )
+        }));
+
+        let native_settings = settings
+            .strip_prefix('{')
+            .unwrap()
+            .strip_suffix('}')
+            .unwrap();
+        let (_root, source) = native_game(native_settings);
+        let native = source.inspect_native("hades").unwrap();
+        let hooks = native.hooks.as_ref().unwrap().on().unwrap();
+        assert_eq!(
+            hooks.before.as_deref(),
+            Some(quote_shell_path(before).as_str())
+        );
+        assert_eq!(
+            hooks.after.as_deref(),
+            Some(quote_shell_path(after).as_str())
+        );
+        assert!(
+            native
+                .settings_review
+                .carried
+                .contains(&review_item("before hook", before))
+        );
+        assert!(
+            native
+                .settings_review
+                .carried
+                .contains(&review_item("after hook", after))
+        );
+    }
+
+    #[test]
+    fn empty_heroic_script_paths_are_unset() {
+        let (_root, source) =
+            native_game(r#""beforeLaunchScriptPath":"  ","afterLaunchScriptPath":"""#);
+        let imported = source.inspect_native("hades").unwrap();
+        assert!(imported.hooks.is_none());
+        assert!(
+            !imported
+                .settings_review
+                .carried
+                .iter()
+                .any(|item| item.field.ends_with("hook"))
         );
     }
 

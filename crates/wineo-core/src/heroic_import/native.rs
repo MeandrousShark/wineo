@@ -219,6 +219,7 @@ impl NativePlan {
             gamemode: imported.gamemode,
             mangohud: imported.mangohud,
             gamescope: imported.gamescope.clone(),
+            hooks: imported.hooks.clone(),
             heroic_id: Some(imported.id.clone()),
             ..ImportedSettings::default()
         }
@@ -483,7 +484,7 @@ mod tests {
         assert!(warnings(&imported).is_empty());
         imported.issues = vec![
             issue(HeroicIssueKind::Unsupported, "wrapperOptions"),
-            issue(HeroicIssueKind::Unsupported, "beforeLaunchScriptPath"),
+            issue(HeroicIssueKind::Unsupported, "enableWoW64"),
         ];
         assert_eq!(warnings(&imported), vec![Warning::Omitted(2)]);
         imported.issues = vec![
@@ -520,6 +521,12 @@ mod tests {
         );
         assert_eq!(registered.playtime, Playtime::Imported);
         assert!(registered.runner().is_none() && registered.destination().is_none());
+        assert!(registered.environment.config.hooks.is_none());
+        assert!(
+            !fs::read_to_string(paths.environment_config("dusklight"))
+                .unwrap()
+                .contains("[hooks]")
+        );
         let log = fs::read_to_string(paths.stats_log("dusklight")).unwrap();
         assert!(log.contains("600"), "{log}");
         let changes = registered.finish(&paths, &global).unwrap();
@@ -531,6 +538,52 @@ mod tests {
         );
         // The same name can't be registered twice.
         assert!(apply_native(&paths, &source, &plan).is_err());
+    }
+
+    #[test]
+    fn apply_native_carries_heroic_scripts_into_validated_hooks() {
+        let root = tempdir().unwrap();
+        let before = "/Heroic scripts/before.sh";
+        let after = "/Heroic scripts/after.sh";
+        let source = dusklight(
+            root.path(),
+            &serde_json::json!({
+                "beforeLaunchScriptPath": before,
+                "afterLaunchScriptPath": after,
+            })
+            .to_string(),
+        );
+        let plan = plan_native(&source, "dusk", None).unwrap();
+        assert!(
+            plan.heroic()
+                .settings_review
+                .carried
+                .contains(&crate::heroic::ReviewItem {
+                    field: "before hook".to_owned(),
+                    detail: before.to_owned(),
+                })
+        );
+        assert!(
+            plan.heroic()
+                .settings_review
+                .carried
+                .contains(&crate::heroic::ReviewItem {
+                    field: "after hook".to_owned(),
+                    detail: after.to_owned(),
+                })
+        );
+
+        let paths = paths(root.path());
+        let registered = apply_native(&paths, &source, &plan).unwrap();
+        let hooks = registered
+            .environment
+            .config
+            .hooks
+            .as_ref()
+            .and_then(crate::config::HooksSetting::on)
+            .unwrap();
+        assert_eq!(hooks.before.as_deref(), Some("'/Heroic scripts/before.sh'"));
+        assert_eq!(hooks.after.as_deref(), Some("'/Heroic scripts/after.sh'"));
     }
 
     #[test]

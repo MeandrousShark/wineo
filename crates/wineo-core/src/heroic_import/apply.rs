@@ -319,6 +319,12 @@ mod tests {
         );
         assert_eq!(registered.playtime, Playtime::Imported);
         assert_eq!(registered.runner().unwrap().name(), "fake");
+        assert!(registered.environment.config.hooks.is_none());
+        assert!(
+            !fs::read_to_string(paths.environment_config("alpha"))
+                .unwrap()
+                .contains("[hooks]")
+        );
         let copy = root.path().join("prefixes/alpha");
         assert_eq!(registered.destination(), Some(copy.as_path()));
         assert!(copy.join("system.reg").is_file());
@@ -343,6 +349,101 @@ mod tests {
                 .iter()
                 .any(|change| matches!(change, Change::Wrote { .. })),
             "{changes:?}"
+        );
+    }
+
+    #[test]
+    fn apply_carries_heroic_scripts_into_validated_hooks() {
+        let root = tempdir().unwrap();
+        let (paths, global, source) = library(root.path());
+        let before = "/Heroic scripts/before.sh";
+        let after = "/Heroic scripts/after.sh";
+        fs::write(
+            source.config_dir().join("GamesConfig/a.json"),
+            serde_json::json!({
+                "a": {
+                    "beforeLaunchScriptPath": before,
+                    "afterLaunchScriptPath": after,
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let plan = plan(&paths, &global, &source);
+        assert!(
+            plan.heroic()
+                .settings_review
+                .carried
+                .contains(&crate::heroic::ReviewItem {
+                    field: "before hook".to_owned(),
+                    detail: before.to_owned(),
+                })
+        );
+        assert!(
+            plan.heroic()
+                .settings_review
+                .carried
+                .contains(&crate::heroic::ReviewItem {
+                    field: "after hook".to_owned(),
+                    detail: after.to_owned(),
+                })
+        );
+
+        let registered = apply(&paths, &global, &source, &plan, &Token::new(), |_| {}).unwrap();
+        let hooks = registered
+            .environment
+            .config
+            .hooks
+            .as_ref()
+            .and_then(crate::config::HooksSetting::on)
+            .unwrap();
+        assert_eq!(hooks.before.as_deref(), Some("'/Heroic scripts/before.sh'"));
+        assert_eq!(hooks.after.as_deref(), Some("'/Heroic scripts/after.sh'"));
+    }
+
+    #[test]
+    fn apply_reloads_and_runs_a_safely_quoted_heroic_script_path() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let root = tempdir().unwrap();
+        let (paths, global, source) = library(root.path());
+        let script = root.path().join("script ' $ ;\nname.sh");
+        let marker = root.path().join("script-ran");
+        fs::write(&script, "#!/bin/sh\nprintf ran > \"$MARKER\"\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(
+            source.config_dir().join("GamesConfig/a.json"),
+            serde_json::json!({
+                "a": {
+                    "beforeLaunchScriptPath": script.to_str().unwrap(),
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let plan = plan(&paths, &global, &source);
+        apply(&paths, &global, &source, &plan, &Token::new(), |_| {}).unwrap();
+        let reloaded = crate::environment::Environment::load(&paths, "alpha").unwrap();
+        let hook = reloaded
+            .config
+            .hooks
+            .as_ref()
+            .and_then(crate::config::HooksSetting::on)
+            .and_then(|hooks| hooks.before.as_deref())
+            .unwrap();
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(hook)
+            .env("MARKER", marker)
+            .status()
+            .unwrap();
+
+        assert!(status.success());
+        assert_eq!(
+            fs::read_to_string(root.path().join("script-ran")).unwrap(),
+            "ran"
         );
     }
 

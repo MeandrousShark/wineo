@@ -20,6 +20,7 @@ use wineo_core::environment::{self, Environment};
 use wineo_core::gamescope::{Filter, Gamescope, GamescopeSetting, Scaler, Window};
 use wineo_core::heroic::{
     HeroicCandidate, HeroicGameKind, HeroicListing, HeroicOrigin, HeroicSharedPrefix, HeroicSource,
+    SettingsReview,
 };
 use wineo_core::heroic_import::{
     self, Entry, Game, LibraryOptions, LibraryPlan, Options, Playtime, Policy, Registered,
@@ -73,6 +74,7 @@ pub(crate) struct Prepared {
     wayland: Option<bool>,
     mangohud: Option<bool>,
     gamescope: Option<GamescopeSetting>,
+    hook_paths: Vec<(&'static str, String)>,
     hdr: bool,
 }
 
@@ -2088,6 +2090,11 @@ impl Page {
                         button("Browse working directory...")
                             .on_press(Event::BrowseWorkingDirectory),
                     );
+                    if let Some(prepared) = &self.prepared {
+                        for (label, path) in &prepared.hook_paths {
+                            body = body.push(text(format!("{label}: {path}")));
+                        }
+                    }
                     let windows = self
                         .prepared
                         .as_ref()
@@ -2254,6 +2261,13 @@ impl Page {
                                 Game::Windows(plan) => plan.settings(),
                                 Game::Native(plan) => plan.settings(),
                             };
+                            let hook_review = match game.as_ref() {
+                                Game::Windows(plan) => &plan.heroic().settings_review,
+                                Game::Native(plan) => &plan.heroic().settings_review,
+                            };
+                            for (label, path) in hook_paths(hook_review) {
+                                body = body.push(text(format!("{label}: {path}")));
+                            }
                             body = body.push(text(format!(
                                 "GameMode: {}, MangoHud: {}",
                                 toggle_label(settings.gamemode),
@@ -2334,6 +2348,17 @@ impl Page {
                                 };
                                 body = body.push(text(line).size(13));
                                 if let Entry::Ready(game) = entry {
+                                    let hook_review = match game {
+                                        Game::Windows(plan) => &plan.heroic().settings_review,
+                                        Game::Native(plan) => &plan.heroic().settings_review,
+                                    };
+                                    if let Some(marker) = hook_marker(hook_review) {
+                                        body = body.push(
+                                            text(format!("  {marker}"))
+                                                .size(12)
+                                                .color(palette.muted),
+                                        );
+                                    }
                                     for warning in review_warnings(&game.warnings()) {
                                         body = body.push(
                                             text(format!("  {warning}"))
@@ -2797,10 +2822,12 @@ fn prepare_game(
         wayland,
         mangohud,
         gamescope,
+        hook_paths,
         hdr,
     ) = if candidate.kind == HeroicGameKind::Windows {
         let imported = source.inspect(&candidate.id).map_err(|e| e.to_string())?;
         let (suggestion, runner) = suggest(paths, &global, &runners, &names, &imported)?;
+        let hook_paths = hook_paths(&imported.settings_review);
         (
             Some(suggestion),
             runner,
@@ -2819,12 +2846,14 @@ fn prepare_game(
             Some(imported.enable_wine_wayland),
             imported.mangohud,
             imported.gamescope,
+            hook_paths,
             imported.enable_hdr,
         )
     } else {
         let imported = source
             .inspect_native(&candidate.id)
             .map_err(|e| e.to_string())?;
+        let hook_paths = hook_paths(&imported.settings_review);
         (
             None,
             String::new(),
@@ -2839,6 +2868,7 @@ fn prepare_game(
             None,
             imported.mangohud,
             imported.gamescope,
+            hook_paths,
             false,
         )
     };
@@ -2861,6 +2891,7 @@ fn prepare_game(
         wayland,
         mangohud,
         gamescope,
+        hook_paths,
         hdr,
     })
 }
@@ -3300,6 +3331,38 @@ fn origin_label(origin: HeroicOrigin) -> &'static str {
         HeroicOrigin::Flatpak => "Flatpak",
         HeroicOrigin::Explicit => "Folder",
     }
+}
+
+fn hook_paths(review: &SettingsReview) -> Vec<(&'static str, String)> {
+    [("before hook", "Before hook"), ("after hook", "After hook")]
+        .into_iter()
+        .filter_map(|(field, label)| {
+            review
+                .carried
+                .iter()
+                .find(|item| item.field == field)
+                .map(|item| (label, display_control_escaped(&item.detail)))
+        })
+        .collect()
+}
+
+fn hook_marker(review: &SettingsReview) -> Option<&'static str> {
+    ["before hook", "after hook"]
+        .into_iter()
+        .any(|field| review.carried.iter().any(|item| item.field == field))
+        .then_some("runs launch scripts")
+}
+
+fn display_control_escaped(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if character.is_control() {
+            escaped.extend(character.escape_debug());
+        } else {
+            escaped.push(character);
+        }
+    }
+    escaped
 }
 
 /// The review only calls out anti-cheat, once even when both EAC and
@@ -3983,6 +4046,38 @@ mod tests {
                 Warning::NeedsAttention(Vec::new()),
             ]),
             ["Heroic-managed anti-cheat runtime is not imported"]
+        );
+    }
+
+    #[test]
+    fn hook_review_labels_marker_and_display_paths_are_safe() {
+        let review = SettingsReview {
+            carried: vec![
+                wineo_core::heroic::ReviewItem {
+                    field: "before hook".to_owned(),
+                    detail: "/scripts/before\nreview 'game'.sh".to_owned(),
+                },
+                wineo_core::heroic::ReviewItem {
+                    field: "after hook".to_owned(),
+                    detail: "/scripts/after $game.sh".to_owned(),
+                },
+            ],
+            ..SettingsReview::default()
+        };
+        assert_eq!(
+            hook_paths(&review),
+            [
+                (
+                    "Before hook",
+                    "/scripts/before\\nreview 'game'.sh".to_owned()
+                ),
+                ("After hook", "/scripts/after $game.sh".to_owned()),
+            ]
+        );
+        assert_eq!(hook_marker(&review), Some("runs launch scripts"));
+        assert_eq!(
+            display_control_escaped("/scripts/a\r\u{1b} b.sh"),
+            "/scripts/a\\r\\u{1b} b.sh"
         );
     }
 

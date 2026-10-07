@@ -81,6 +81,7 @@ fn summary(paths: &Paths, imported: &HeroicNativeImport, name: &str) -> String {
             lines: vec![gamescope_display(gamescope)],
         });
     }
+    blocks.extend(super::hook_blocks(&imported.settings_review));
     let warnings: Vec<String> = imported
         .issues
         .iter()
@@ -371,6 +372,30 @@ mod tests {
                 .unwrap();
         let source = HeroicSource::from_config_dir_with_home(heroic, root.to_owned());
         (paths, source)
+    }
+
+    #[test]
+    fn native_summary_shows_heroic_hook_paths_as_stored() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, source) = dusklight(root.path());
+        fs::create_dir_all(source.config_dir().join("GamesConfig")).unwrap();
+        fs::write(
+            source.config_dir().join("GamesConfig/dusk.json"),
+            serde_json::json!({
+                "dusk": {
+                    "beforeLaunchScriptPath": "/Heroic scripts/before 'game'.sh",
+                    "afterLaunchScriptPath": "/Heroic scripts/after.sh",
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let imported = source.inspect_native("dusk").unwrap();
+        let printed = summary(&paths, &imported, "dusklight");
+
+        assert!(printed.contains("before hook  /Heroic scripts/before 'game'.sh"));
+        assert!(printed.contains("after hook   /Heroic scripts/after.sh"));
     }
 
     #[test]

@@ -633,6 +633,7 @@ struct BulkRow {
     name: String,
     title: String,
     status: RowStatus,
+    launch_scripts: bool,
 }
 
 enum RowStatus {
@@ -887,6 +888,7 @@ fn bulk_rows(library: &LibraryPlan) -> Vec<BulkRow> {
                 status: RowStatus::Ready {
                     warn: warnings_line(&plan.warnings(), plan.is_adopt()),
                 },
+                launch_scripts: has_hooks(&plan.heroic().settings_review),
             },
             Entry::Ready(Game::Native(plan)) => BulkRow {
                 name: plan.name().to_owned(),
@@ -894,16 +896,19 @@ fn bulk_rows(library: &LibraryPlan) -> Vec<BulkRow> {
                 status: RowStatus::ReadyNative {
                     warn: warnings_line(&plan.warnings(), false),
                 },
+                launch_scripts: has_hooks(&plan.heroic().settings_review),
             },
             Entry::Pending(game) => BulkRow {
                 name: game.plan().name().to_owned(),
                 title: game.plan().heroic().title.clone(),
                 status: RowStatus::Skipped(game.reason().to_owned()),
+                launch_scripts: false,
             },
             Entry::Skipped(skipped) => BulkRow {
                 name: skipped.name.clone(),
                 title: skipped.title.clone(),
                 status: RowStatus::Skipped(skip_text(&skipped.reason)),
+                launch_scripts: false,
             },
         })
         .collect()
@@ -983,6 +988,15 @@ fn render_bulk_table(
     let shared_warning = shared_ready_warning(rows);
     let name_width = rows.iter().map(|row| row.name.len()).max().unwrap_or(0);
     let title_width = rows.iter().map(|row| row.title.len()).max().unwrap_or(0);
+    let mode_width = rows
+        .iter()
+        .filter_map(|row| match row.status {
+            RowStatus::ReadyNative { .. } => Some("native".len()),
+            RowStatus::Ready { .. } => Some(mode_label.len()),
+            RowStatus::Skipped(_) => None,
+        })
+        .max()
+        .unwrap_or(0);
     let heading = if runner_name.is_empty() {
         format!("Import {} Heroic games:", rows.len())
     } else {
@@ -990,21 +1004,27 @@ fn render_bulk_table(
     };
     let mut out = format!("{}\n", style::title(heading));
     for row in rows {
-        let status = match &row.status {
-            RowStatus::Skipped(reason) => format!("skip: {reason}"),
-            RowStatus::ReadyNative { warn } => match warn {
-                None => "native".to_owned(),
-                Some(warning) => format!("native   {}", style::warning(format!("warn: {warning}"))),
-            },
-            RowStatus::Ready { warn } => {
-                match warn.as_deref().filter(|_| shared_warning.is_none()) {
-                    None => mode_label.to_owned(),
-                    Some(warning) => format!(
-                        "{mode_label}   {}",
-                        style::warning(format!("warn: {warning}"))
-                    ),
-                }
-            }
+        let (mode, warn) = match &row.status {
+            RowStatus::Skipped(reason) => (format!("skip: {reason}"), None),
+            RowStatus::ReadyNative { warn } => ("native".to_owned(), warn.as_deref()),
+            RowStatus::Ready { warn } => (
+                mode_label.to_owned(),
+                warn.as_deref().filter(|_| shared_warning.is_none()),
+            ),
+        };
+        let mut parts = Vec::new();
+        if row.launch_scripts && !matches!(row.status, RowStatus::Skipped(_)) {
+            parts.push("runs launch scripts".to_owned());
+        }
+        if let Some(warning) = warn {
+            parts.push(style::warning(format!("warn: {warning}")).to_string());
+        }
+        // Copy and native rows share the table, so the mode is padded for the
+        // notes after it to line up.
+        let status = if parts.is_empty() {
+            mode
+        } else {
+            format!("{mode:mode_width$}   {}", parts.join("   "))
         };
         let name = &row.name;
         let title = &row.title;
@@ -1767,6 +1787,40 @@ fn sync_block(review: &SettingsReview) -> Option<Block> {
     }
 }
 
+fn hook_blocks(review: &SettingsReview) -> Vec<Block> {
+    ["before hook", "after hook"]
+        .into_iter()
+        .filter_map(|label| {
+            review
+                .carried
+                .iter()
+                .find(|item| item.field == label)
+                .map(|item| Block {
+                    label,
+                    lines: vec![display_control_escaped(&item.detail)],
+                })
+        })
+        .collect()
+}
+
+fn has_hooks(review: &SettingsReview) -> bool {
+    ["before hook", "after hook"]
+        .into_iter()
+        .any(|field| review.carried.iter().any(|item| item.field == field))
+}
+
+fn display_control_escaped(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if character.is_control() {
+            escaped.extend(character.escape_debug());
+        } else {
+            escaped.push(character);
+        }
+    }
+    escaped
+}
+
 fn gamescope_display(setting: &GamescopeSetting) -> String {
     match setting {
         GamescopeSetting::Off => "off".to_owned(),
@@ -1856,6 +1910,7 @@ fn show_game_summary<I: Input, W: Write>(
             lines: vec![gamescope_display(gamescope)],
         });
     }
+    blocks.extend(hook_blocks(&imported.settings_review));
     if let Some(dxvk) = &imported.dxvk {
         blocks.push(Block {
             label: "dxvk",
@@ -2037,6 +2092,7 @@ fn final_facts_text(ctx: &ReviewContext, plan: &GamePlan, verbose: bool) -> Stri
             lines: vec![gamescope_display(gamescope)],
         });
     }
+    blocks.extend(hook_blocks(&imported.settings_review));
     if let Some(dxvk) = &imported.dxvk {
         blocks.push(Block {
             label: "dxvk",
@@ -2328,6 +2384,7 @@ mod tests {
             wayland: None,
             mangohud: None,
             gamescope: None,
+            hooks: None,
             enable_wine_wayland: false,
             enable_hdr: false,
             dxvk: None,
@@ -2892,7 +2949,7 @@ mod tests {
         )
         .unwrap();
         let exe = root.join("Games/Palworld/Palworld.exe");
-        let imported = HeroicImport {
+        let mut imported = HeroicImport {
             id: "kZXLzzKAFWBP4dpRatpPHu".to_owned(),
             title: "Palworld".to_owned(),
             prefix: root.join("Games/Heroic/Prefixes/default/Palworld"),
@@ -2916,6 +2973,7 @@ mod tests {
             wayland: None,
             mangohud: None,
             gamescope: None,
+            hooks: None,
             enable_wine_wayland: false,
             enable_hdr: false,
             dxvk: None,
@@ -2945,6 +3003,16 @@ mod tests {
             },
             settings_review: SettingsReview::default(),
         };
+        imported.settings_review.carried.extend([
+            wineo_core::heroic::ReviewItem {
+                field: "before hook".to_owned(),
+                detail: "/Heroic scripts/before\nreview: 'game'.sh".to_owned(),
+            },
+            wineo_core::heroic::ReviewItem {
+                field: "after hook".to_owned(),
+                detail: "/Heroic scripts/after.sh".to_owned(),
+            },
+        ]);
         let mut prompt = Prompt::new(Script::new(&[]), Vec::new());
         show_game_summary(&mut prompt, &paths, &imported, false).unwrap();
         let printed = String::from_utf8_lossy(prompt.output()).into_owned();
@@ -2952,6 +3020,8 @@ mod tests {
         assert!(printed.contains("Palworld (Heroic kZXLzzKAFWBP4dpRatpPHu)"));
         assert!(printed.contains("runner       Proton-CachyOS-latest (Heroic's copy)"));
         assert!(printed.contains("gamemode     on"));
+        assert!(printed.contains("before hook  /Heroic scripts/before\\nreview: 'game'.sh"));
+        assert!(printed.contains("after hook   /Heroic scripts/after.sh"));
         assert!(printed.contains("warning      EAC and BattlEye runtimes aren't imported"));
         assert!(!printed.contains("registry markers"), "{printed}");
     }
@@ -3015,6 +3085,7 @@ mod tests {
             wayland: None,
             mangohud: None,
             gamescope: None,
+            hooks: None,
             enable_wine_wayland: false,
             enable_hdr: false,
             dxvk: None,
@@ -3079,6 +3150,7 @@ mod tests {
                 name: "palworld".to_owned(),
                 title: "Palworld".to_owned(),
                 status: RowStatus::Ready { warn: None },
+                launch_scripts: false,
             },
             BulkRow {
                 name: "hades".to_owned(),
@@ -3086,11 +3158,13 @@ mod tests {
                 status: RowStatus::Ready {
                     warn: Some("EAC/BattlEye runtimes aren't imported".to_owned()),
                 },
+                launch_scripts: false,
             },
             BulkRow {
                 name: "celeste".to_owned(),
                 title: "Celeste".to_owned(),
                 status: RowStatus::Skipped("Wine runner, needs --runner".to_owned()),
+                launch_scripts: false,
             },
         ];
         let already = vec!["zomboid".to_owned()];
@@ -3111,6 +3185,47 @@ mod tests {
     }
 
     #[test]
+    fn render_bulk_table_marks_windows_and_native_games_with_scripts() {
+        let rows = vec![
+            BulkRow {
+                name: "palworld".to_owned(),
+                title: "Palworld".to_owned(),
+                status: RowStatus::Ready { warn: None },
+                launch_scripts: true,
+            },
+            BulkRow {
+                name: "native".to_owned(),
+                title: "Native Game".to_owned(),
+                status: RowStatus::ReadyNative { warn: None },
+                launch_scripts: true,
+            },
+        ];
+        let text = render_bulk_table("", "copy", &rows, &[]);
+        assert!(
+            text.lines()
+                .any(|line| line.ends_with("copy     runs launch scripts")),
+            "{text}"
+        );
+        assert!(
+            text.lines()
+                .any(|line| line.ends_with("native   runs launch scripts")),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn control_characters_are_escaped_only_for_hook_display() {
+        assert_eq!(
+            display_control_escaped("/Heroic scripts/a\nreview\r\u{1b}.sh"),
+            "/Heroic scripts/a\\nreview\\r\\u{1b}.sh"
+        );
+        assert_eq!(
+            display_control_escaped("/Heroic scripts/a 'quoted' $dollar; ok.sh"),
+            "/Heroic scripts/a 'quoted' $dollar; ok.sh"
+        );
+    }
+
+    #[test]
     fn render_bulk_table_collapses_a_warning_every_ready_row_shares() {
         let rows = vec![
             BulkRow {
@@ -3119,6 +3234,7 @@ mod tests {
                 status: RowStatus::Ready {
                     warn: Some("EAC/BattlEye runtimes aren't imported".to_owned()),
                 },
+                launch_scripts: false,
             },
             BulkRow {
                 name: "hades".to_owned(),
@@ -3126,11 +3242,13 @@ mod tests {
                 status: RowStatus::Ready {
                     warn: Some("EAC/BattlEye runtimes aren't imported".to_owned()),
                 },
+                launch_scripts: false,
             },
             BulkRow {
                 name: "celeste".to_owned(),
                 title: "Celeste".to_owned(),
                 status: RowStatus::Skipped("Wine runner, needs --runner".to_owned()),
+                launch_scripts: false,
             },
         ];
         let text = render_bulk_table("GE-Proton11-1", "copy", &rows, &[]);
@@ -3157,6 +3275,7 @@ mod tests {
             status: RowStatus::Ready {
                 warn: warn.map(str::to_owned),
             },
+            launch_scripts: false,
         };
         assert_eq!(
             shared_ready_warning(&[same("a", Some("x")), same("b", Some("x"))]),
@@ -3176,6 +3295,7 @@ mod tests {
                 name: "a".to_owned(),
                 title: "a".to_owned(),
                 status: RowStatus::Skipped("nope".to_owned()),
+                launch_scripts: false,
             }]),
             None
         );
