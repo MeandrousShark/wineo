@@ -258,7 +258,7 @@ first and compare after each if you want proof.
    -d --dry-run` prints the native review with a desktop entry line.
 6. With a SteamGridDB key set up: `wineo new --portable /tmp/acc-0044 -n
    hades --art --dry-run` lists three matches with one marked `<- would be
-   picked automatically`, and `wineo art list` shows nothing saved.
+   picked automatically`, and nothing new appears under /tmp/acc-0044.
 7. `wineo import prefix --portable /tmp/acc-0044 SOME_PREFIX -n acc-p
    --runner RUNNER --dry-run` prints the import review and `Dry run,
    nothing was imported.`
