@@ -3,6 +3,13 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.27.1 - 2026-10-07
+
+- In the desktop app, Stop turns into Force stop when a game is still
+  running 3 seconds after you pressed it. Force stop kills it right away,
+  like `wineo stop --force`. The wait keeps a double-click on Stop from
+  killing a game that was about to close.
+
 ## 0.27.0 - 2026-10-07
 
 - Launch hooks ([0046](docs/plans/0046-launch-hooks.md)). `[hooks]` with
