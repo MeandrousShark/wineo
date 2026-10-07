@@ -209,3 +209,36 @@ Nameless `wineo stats --json` returns the collection envelope, with every
 environment in `environments`, played or not, sorted by name. An environment
 whose log can't be read is left out and reported in `errors`, and the command
 exits 1.
+
+`wineo stats --tag TAG --json` returns the same envelope with only the
+environments that have every given tag.
+
+`wineo stats --by-tag --json` returns one row per tag:
+
+```json
+{
+  "tags": [
+    {
+      "tag": "game",
+      "seconds": 367800,
+      "sessions": 15,
+      "environments": 3,
+      "played_environments": 2,
+      "last_played": "2026-10-06T19:00:00Z"
+    }
+  ],
+  "untagged": {
+    "seconds": 10800,
+    "sessions": 1,
+    "environments": 1,
+    "played_environments": 1,
+    "last_played": "2026-09-17T22:00:00Z"
+  },
+  "errors": []
+}
+```
+
+`tags` is sorted by `seconds`, then by tag. `seconds` includes time imported
+from Heroic and `sessions` doesn't, as in the overview. `untagged` is `null`
+when every environment has a tag. A config that can't be read is reported in
+`errors`, and the command exits 1.

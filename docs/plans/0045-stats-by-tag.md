@@ -156,6 +156,23 @@ it later without the CLI.
   --tag`, and check that the `--by-tag` totals match the plain overview when
   nothing has two tags.
 
+## Acceptance checklist
+
+1. Tag a few real environments if they aren't already, with at least one
+   having two tags: `wineo set NAME 'tags=["game", "co-op"]'`.
+2. `wineo stats --tag game` lists the same environments as
+   `wineo list --tag game`, and its total is only theirs.
+3. `wineo stats --tag nope` prints `No environments are tagged nope` and
+   exits 0 (`echo $status` in fish).
+4. `wineo stats --by-tag`: one row per tag, most played first,
+   `(untagged)` last, and the "several tags" note at the bottom.
+5. `wineo stats --by-tag --tag game`: only environments tagged `game` count,
+   so `game`'s row matches step 2's total.
+6. `wineo stats --by-tag --json | jq .` has a `tags` array and `untagged`.
+7. `wineo stats` with no flags looks the same as before.
+8. `wineo stats hades --tag game` is refused, since the flags don't take a
+   name.
+
 ## Scope limits
 
 - No GUI changes.

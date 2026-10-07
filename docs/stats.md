@@ -4,6 +4,8 @@
 wineo stats
 wineo stats the-sims-4
 wineo stats --import-heroic
+wineo stats --tag game
+wineo stats --by-tag
 ```
 
 Wineo keeps a log of every time a target runs, so you can see how much each
@@ -24,6 +26,46 @@ palworld        3 h                1  Sep 17
 
 A game that's running now counts its time so far, and its last played day
 is marked `(running)`.
+
+## By tag
+
+`--tag` limits the overview to environments with that tag, like `list
+--tag`. Give it more than once to require every tag. The total and the
+"never played" count cover only those environments:
+
+```
+$ wineo stats --tag game
+         played    sessions  last played
+hades    97 h            12  Sep 4
+celeste  5 h 10 m         3  today
+1 never played. Total 102 h 10 m.
+```
+
+When nothing has the tag, it prints `No environments are tagged game` and
+exits 0.
+
+`--by-tag` shows one row per tag, most played first, with untagged
+environments last:
+
+```
+$ wineo stats --by-tag
+            played      sessions  played by  last played
+game        102 h 10 m        15  2 of 3     today
+co-op       97 h              12  1 of 1     Sep 4
+work        0 m                0  0 of 2
+(untagged)  3 h                1  1 of 1     Sep 17
+An environment with several tags counts under each.
+```
+
+`played by` is how many of the tag's environments have been played, out of
+how many have it. An environment with several tags counts under each one, so
+the rows can add up to more than the real total; the last line says so when
+that happens. `--by-tag --tag game` only counts environments tagged `game`,
+which shows how they split across their other tags.
+
+Both flags read each environment's config for its tags, so a config that
+can't be read is reported and the command exits 1. Plain `wineo stats` never
+reads configs. See [Tags](config-files.md#tags) for setting them.
 
 ## One environment
 
