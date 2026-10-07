@@ -525,6 +525,11 @@ In this plan (question 7).
   of the total, then `1 already imported: NAME` for ones found at apply
   time, then `1 failed: NAME`. Portable mode refuses with `Steam games can't
   be imported into a portable folder.`
+- Step 5 (2026-10-07): when the global config can't be loaded, a Steam
+  game's playtime is unknown rather than read from a guessed install. In the
+  desktop app, a card whose stats summary is missing shows `unknown`, `-`,
+  and `unknown` for a Steam game, and `never played` as before for Wine and
+  native.
 
 ## Questions
 
