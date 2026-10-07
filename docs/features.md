@@ -141,6 +141,9 @@ maintainer calls it stable, which these criteria are meant to inform.
    of the first guided question exits 130 like any cancel, `prune` with no
    selector is a usage error (2), a canceled direct or bulk Heroic import
    exits 130, and a closed pipe ends output quietly instead of panicking.
+   After review: a closed pipe exits 141, like a SIGPIPE death, so a
+   command cut short never looks successful, and Esc at the first question
+   of any guided flow cancels, with the hint `Esc or Ctrl+C to cancel.`
    The rest are documented as they are.
 3. Document a `--json` schema for every command that has `--json`, and say
    which changes count as compatible (new fields yes, renamed or removed
