@@ -169,6 +169,11 @@ Install gamescope, or turn it off with `wineo set palworld gamescope=false`
 and a runner without Wayland support. Desktop entries get the `Game;`
 category when gamemode, gamescope, or MangoHud is on.
 
+## Hooks
+
+To run your own command before a launch or after it ends, see
+[Hooks](hooks.md).
+
 ## Heroic import
 
 Importing a game from Heroic carries these settings over; see

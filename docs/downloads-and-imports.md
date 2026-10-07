@@ -225,6 +225,7 @@ launcher does:
 | Gamescope, with upscaling or the FPS limiter on | a `[gamescope]` table |
 | Enable Wine Wayland | `wayland = true`, when the chosen runner supports it |
 | Enable HDR, with Wine Wayland imported | `PROTON_ENABLE_HDR = "1"` on Proton or `DXVK_HDR = "1"` on Wine, in `[env]` |
+| Scripts to run before and after launch | `hooks.before` and `hooks.after`; see [Hooks](hooks.md) |
 
 Heroic only runs gamescope when upscaling or the limiter is on, so its
 gamescope settings are skipped otherwise. Game and upscale resolutions become
@@ -234,6 +235,10 @@ become `window`. The limiter's values become `fps_limit` and
 `fps_limit_unfocused`, the cursor grab becomes `grab_cursor`, and additional
 options are split into `args`. A value that isn't a number is skipped with a
 warning.
+
+Each script path is quoted so `sh` runs exactly that file, whatever
+characters its name has. The review lists the scripts as Heroic stored
+them, and the bulk table marks a game that `runs launch scripts`.
 
 MangoHud or Wine Wayland turned off in Heroic is written as `false`, so a
 global setting in wineo doesn't turn it back on. Wine Wayland on a runner

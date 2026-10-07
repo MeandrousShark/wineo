@@ -340,6 +340,60 @@ step 2, and step 4 needs step 3.
   plus a failing `before` hook, a slow `after` hook with `stop` and `stop
   --force`, and a Proton game's `WINEO_PREFIX`.
 
+## Acceptance checklist
+
+Everything but step 11 runs in a throwaway portable folder. In fish:
+`set -x WINEO_PORTABLE_DIR /tmp/acc-0046`, and `set -e WINEO_PORTABLE_DIR`
+at the end. The test game is a shell script that `before` creates, which
+also shows `before` running ahead of wineo's exe check.
+
+1. `printf '#!/bin/sh\nsleep 30\n' > /tmp/acc-0046-game.sh`,
+   `chmod +x /tmp/acc-0046-game.sh`, then
+   `wineo new -n acc --native --exe /tmp/acc-0046-game.sh`.
+2. `wineo set acc 'hooks.before=printf "#!/bin/sh\nsleep 30\n" > /tmp/acc-0046-game.sh && chmod +x /tmp/acc-0046-game.sh'`
+   and `wineo set acc 'hooks.after=env | grep WINEO_ > /tmp/acc-0046-env'`.
+   `wineo status acc` shows `hooks  before, after`, and `wineo status acc
+   --json` has `"hooks":{"before":true,"after":true}`.
+3. `rm /tmp/acc-0046-game.sh`, then `wineo start acc` starts it anyway,
+   since `before` recreates the script ahead of wineo's exe check.
+   `wineo stop acc`, then `/tmp/acc-0046-env` has `WINEO_END=stopped`,
+   `WINEO_HOOK=after`, and no `WINEO_PREFIX`.
+4. `wineo run acc` and let it finish (30 seconds): the env file now says
+   `WINEO_END=exited` and `WINEO_EXIT_CODE=0`. `wineo stats acc` counts the
+   30 seconds, not the hook time.
+5. `wineo set acc 'hooks.before=echo nope; exit 1'`. `wineo start acc`
+   prints `nope`, then `Launch canceled: the before hook exited with code
+   1.`, exits 1, and nothing runs.
+6. Put the step 2 `before` back, and `wineo set acc 'hooks.after=sleep 20'`.
+   Start and stop it: `stop` prints
+   `Waiting for the after hook.` In another terminal, `wineo status acc` says
+   `running its after hook`, and `wineo start acc` is refused as busy. Ctrl+C
+   the waiting `stop`, then `wineo stop --force acc` kills the hook right away.
+7. Start it again, then `wineo restart acc`: it waits for the 20-second
+   `after`, then starts again. Stop it with `--force`.
+8. `wineo run acc`, Ctrl+C once: it asks the game to close and says it's
+   waiting for the after hook. Ctrl+C again kills the hook.
+9. Set step 5's failing `before` again, then in the app (`wineo-gui`, from
+   the same shell) Play `acc`. The error shows `nope` under it. Put the step 2
+   `before` back, Play, then Stop: while the 20-second `after` runs, the
+   panel says `Running its after hook`, and Stop asks `Kill the after
+   hook?`.
+10. Add a template with hooks:
+    `mkdir -p /tmp/acc-0046/config/templates` and
+    `printf '[hooks]\nafter = "true"\n' > /tmp/acc-0046/config/templates/acc.toml`.
+    Pick `acc` in `wineo new` and in the app's Add flow: the `new` summary
+    lists `after hook` and the app shows a Hooks line. Back out without
+    creating anything.
+11. On one of your real Proton games:
+    `wineo set GAME 'hooks.after=echo $WINEO_PREFIX > /tmp/acc-0046-prefix'`,
+    play briefly, and check the path ends in `/pfx`. Then
+    `wineo set GAME --unset hooks`.
+12. If a Heroic game has before or after launch scripts set, `wineo import
+    heroic --dry-run --game ID -n NAME --runner RUNNER` lists them as
+    `before hook` and `after hook`.
+13. Clean up: `set -e WINEO_PORTABLE_DIR`, then
+    `rm -r /tmp/acc-0046 /tmp/acc-0046-*`.
+
 ## Scope limits
 
 - No global hooks.

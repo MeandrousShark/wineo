@@ -97,7 +97,7 @@ See [Trash](gui.md#trash) and [Checkup](gui.md#checkup) for the pages.
 |---|---|---:|---|---|---|
 | `--dry-run` for `import` and non-guided `new` | Automation | **2** | | Preview what would be created, copied, or registered without touching disk | [0044](plans/0044-dry-run.md) adds `--dry-run` to `new` and `import`, awaiting acceptance. See [Dry runs](dry-run.md). |
 | `--dry-run --json` | Automation | **4** | 0044 | Let a script read a dry run's plan instead of grepping review lines | Left out of [0044](plans/0044-dry-run.md) by the maintainer (2026-10-06). Add it if a script ever needs it. |
-| Pre-launch and post-exit hooks | Core | **2** | | Run a user command before a target starts or after it exits, e.g. mounting a drive or syncing saves | The supervisor already owns the process lifetime, so post-exit fits there. Needs decisions on failure handling, env vars passed in, and per-environment versus per-target hooks. |
+| Pre-launch and post-exit hooks | Core | **2** | | Run a user command before a target starts or after it exits, e.g. mounting a drive or syncing saves | [0046](plans/0046-launch-hooks.md) adds `[hooks]` with `before` and `after`, awaiting acceptance. See [Hooks](hooks.md). |
 | Global hooks | Core | **4** | 0046 | Run the same hook around every game, like turning notifications off while anything plays | Left out of [0046](plans/0046-launch-hooks.md) by the maintainer (2026-10-06): they'd surprise people using wineo for regular software, and templates carry hooks for new games. |
 | Edit hooks in GUI Settings | UX | **3** | 0046 | Set a game's hooks without editing TOML or using `wineo set` | Left out of [0046](plans/0046-launch-hooks.md) by the maintainer (2026-10-06). The GUI already runs hooks. |
 | ProtonDB lookup in the CLI | UX | **3** | | Check a game's compatibility information before launching or changing runners | Resolve a wineo environment to the right ProtonDB game, handle missing matches, and make the result reusable by the future GUI. The command shape and online behavior need a plan. |
@@ -144,7 +144,8 @@ maintainer calls it stable, which these criteria are meant to inform.
    After review: a closed pipe exits 141, like a SIGPIPE death, so a
    command cut short never looks successful, and Esc at the first question
    of any guided flow cancels, with the hint `Esc or Ctrl+C to cancel.`
-   The rest are documented as they are.
+   The rest are documented as they are. Done (2026-10-06): see
+   [Exit codes](exit-codes.md).
 3. Document a `--json` schema for every command that has `--json`, and say
    which changes count as compatible (new fields yes, renamed or removed
    fields no). [JSON output](json-output.md) covers most of this already.

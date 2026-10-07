@@ -110,6 +110,7 @@ Every command has `--help`. The common ones:
 | Run some other exe in the prefix | `wineo exec hades path/to/tool.exe` |
 | Install Windows components, once or on every launch | `wineo winetricks hades vcrun2022`, `wineo set hades 'winetricks=["vcrun2022"]'` |
 | Change settings | `wineo set hades key=value`, `wineo config hades` |
+| Run a command before a launch or after it ends | `wineo set hades 'hooks.before=mount /mnt/games'` |
 | Use gamescope, MangoHud, or Wine Wayland | `wineo set hades mangohud=true wayland=true gamescope.window=fullscreen` |
 | Manage runners and components | `wineo runners`, `wineo download`, `wineo dxvk`, `wineo vkd3d` |
 | Import a prefix or Heroic games | `wineo import` |
@@ -131,6 +132,7 @@ you pass `--portable DIR` or set it up for a portable folder.
 - [Config files](docs/config-files.md)
 - [Native Linux games](docs/native.md)
 - [Launch options](docs/launch-options.md)
+- [Hooks](docs/hooks.md)
 - [Downloads and imports](docs/downloads-and-imports.md)
 - [Dry runs](docs/dry-run.md)
 - [Clone an environment](docs/clone.md)

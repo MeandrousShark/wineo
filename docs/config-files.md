@@ -90,6 +90,13 @@ the same reason: an older wineo refuses a config using them with
 `unknown field` instead of launching without them. They can also go in a
 template. See [Launch options](launch-options.md).
 
+## Hooks
+
+`[hooks]` with `before` and `after` shell commands, on an environment, a
+target, or a template. A target's table replaces the environment's, and
+`hooks = false` on a target turns them off. An empty command is refused.
+Like the launch options, it needed no schema bump. See [Hooks](hooks.md).
+
 ## Tags
 
 `tags` groups environments, like `game`, `work`, or `creative`. Tags use the
