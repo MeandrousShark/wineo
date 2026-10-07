@@ -389,10 +389,12 @@ Installed and updating come from the manifest's `StateFlags` bits:
   Preallocating (524288), Downloading (1048576), Staging (2097152), or
   Committing (4194304) is set, whether or not FullyInstalled is.
 - **installed:** FullyInstalled (4) is set and none of those are.
-  UpdateRequired (2) alone still counts as installed, since Steam updates on
-  launch and the `starting` wait covers it.
-- **not installed:** Uninstalling (2048) is set, or FullyInstalled isn't
-  and no updating bit is.
+  UpdateRequired (2) alongside FullyInstalled (flags 6) still counts as
+  installed, since Steam updates on launch and the `starting` wait covers
+  it.
+- **not installed:** Uninstalling (2048) is set, even alongside an updating
+  bit, or FullyInstalled isn't set and no updating bit is. UpdateRequired
+  without FullyInstalled (flags 2) is not installed.
 - AppRunning (64) is always ignored. FilesMissing and FilesCorrupt don't
   change the state, since Steam repairs those on launch.
 - The title falls back to the config's `title` when there's no manifest.
