@@ -290,6 +290,14 @@ step 2, and step 4 needs step 3.
 - Hook locks cover only the environment's name, not its prefix. Hooks
   never touch the prefix, so two environments sharing one never block each
   other's hooks. Settled by the maintainer on 2026-10-06 during step 3.
+- From step 3's review (2026-10-06), following the rules already settled:
+  an environment without hooks behaves exactly as before, with the same
+  signals, messages, exit codes, recorded run state, and lock files, so the
+  new launch reservation and admission locks are only taken when a hook is
+  set. And `after` belongs to whichever run actually happens: if `before`
+  ran but the launch then finds the environment already running (only
+  possible with an older wineo holding the run), the live run owns cleanup
+  and this launch skips `after`. A lost run is refused before `before`.
 - Heroic's script paths are shown as stored, with control characters
   escaped so a path can't fake a review line, and bulk reviews mark a game
   that `runs launch scripts`.
