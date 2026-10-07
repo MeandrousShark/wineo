@@ -864,7 +864,9 @@ mod tests {
 
     use super::*;
     use crate::config::Defaults;
-    use crate::heroic_import::plan::tests::{fake_proton_runner, fake_wine_runner, paths};
+    use crate::heroic_import::plan::tests::{
+        fake_proton_runner, fake_wine_runner, paths, snapshot_tree,
+    };
 
     fn candidate(kind: HeroicGameKind, issues: Vec<HeroicIssue>) -> HeroicCandidate {
         HeroicCandidate {
@@ -1300,14 +1302,32 @@ mod tests {
         .unwrap();
         let before = fs::read_to_string(&legacy).unwrap();
 
+        let tree_before = snapshot_tree(root.path());
+        let explicit = listing.source.config_dir().to_string_lossy().into_owned();
+        let sources = super::sources(&paths, Some(&explicit)).unwrap();
+        assert_eq!(sources.len(), 1);
+        let refreshed = super::listing(&paths, &global, &sources[0]).unwrap();
+
         let plan = plan_library(
             &paths,
             &global,
-            &listing,
+            &refreshed,
             Some("fake"),
             &LibraryOptions::default(),
         )
         .unwrap();
+        let selected = BTreeSet::from(["f".to_owned()]);
+        let selected_plan = plan_selection(
+            &paths,
+            &global,
+            &refreshed,
+            &selected,
+            Some("fake"),
+            &LibraryOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(selected_plan.already(), ["fox"]);
+        assert_eq!(snapshot_tree(root.path()), tree_before);
         assert_eq!(plan.runner(), Some("fake"));
         assert_eq!(
             names(&plan),
@@ -1486,14 +1506,17 @@ mod tests {
         library.windows("c", "Charlie", "p3", r#""autoInstallDxvk":true"#);
         library.native("e", "Echo");
         let (paths, global, listing) = library.write();
+        let tree_before = snapshot_tree(root.path());
+        let refreshed = super::listing(&paths, &global, &listing.source).unwrap();
         let mut plan = plan_library(
             &paths,
             &global,
-            &listing,
+            &refreshed,
             Some("fake"),
             &LibraryOptions::default(),
         )
         .unwrap();
+        assert_eq!(snapshot_tree(root.path()), tree_before);
         assert_eq!(
             plan.pending_builds(),
             vec![BuildOffer {
@@ -1676,5 +1699,28 @@ mod tests {
         let sources = sources(&paths, Some("~/heroic")).unwrap();
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].config_dir(), root.path().join("heroic"));
+    }
+
+    #[test]
+    fn planning_a_game_and_checking_installed_builds_does_not_write_or_lock() {
+        let root = tempdir().unwrap();
+        let mut library = Library::new(root.path());
+        library.windows("a", "Alpha", "p1", r#""autoInstallDxvk":true"#);
+        let (paths, global, listing) = library.write();
+        install_dxvk(&paths, &global);
+        let tree_before = snapshot_tree(root.path());
+
+        let plan = crate::heroic_import::plan_game(
+            &paths,
+            &global,
+            &listing.source,
+            "a",
+            "fake",
+            crate::heroic_import::Options::default(),
+        )
+        .unwrap();
+        plan.check_builds(&paths, &global).unwrap();
+
+        assert_eq!(snapshot_tree(root.path()), tree_before);
     }
 }

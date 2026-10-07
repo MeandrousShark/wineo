@@ -280,7 +280,7 @@ mod tests {
 
     use super::*;
     use crate::heroic::HeroicIssue;
-    use crate::heroic_import::plan::tests::paths;
+    use crate::heroic_import::plan::tests::{paths, snapshot_tree};
     use crate::heroic_import::{ApplyError, Playtime, apply_native};
 
     /// A Heroic library holding one native sideload, Dusklight, whose script
@@ -308,6 +308,20 @@ mod tests {
         )
         .unwrap();
         HeroicSource::from_config_dir_with_home(heroic, root.to_owned())
+    }
+
+    #[test]
+    fn native_planning_and_exe_check_leave_the_roots_unchanged() {
+        let root = tempdir().unwrap();
+        let source = dusklight(root.path(), "{}");
+        let paths = paths(root.path());
+        let global = GlobalConfig::default();
+        let before = snapshot_tree(root.path());
+
+        let plan = plan_native(&source, "dusk", None).unwrap();
+        plan.check_exe(&paths, &global).unwrap();
+
+        assert_eq!(snapshot_tree(root.path()), before);
     }
 
     #[test]
