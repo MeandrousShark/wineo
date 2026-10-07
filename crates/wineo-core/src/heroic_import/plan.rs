@@ -1195,7 +1195,6 @@ fn take_unsupported_issue(
 pub(super) mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use std::time::SystemTime;
 
     use tempfile::tempdir;
 
@@ -1206,45 +1205,6 @@ pub(super) mod tests {
 
     pub(crate) fn paths(home: &Path) -> Paths {
         Paths::from_lookup(|key| (key == "HOME").then(|| home.as_os_str().to_owned())).unwrap()
-    }
-
-    #[derive(Debug, PartialEq, Eq)]
-    pub(crate) struct SnapshotEntry {
-        path: PathBuf,
-        size: u64,
-        modified: SystemTime,
-        is_dir: bool,
-        is_file: bool,
-        is_symlink: bool,
-    }
-
-    pub(crate) fn snapshot_tree(root: &Path) -> Vec<SnapshotEntry> {
-        fn visit(root: &Path, path: &Path, entries: &mut Vec<SnapshotEntry>) {
-            let metadata = fs::symlink_metadata(path).unwrap();
-            let kind = metadata.file_type();
-            entries.push(SnapshotEntry {
-                path: path.strip_prefix(root).unwrap().to_owned(),
-                size: metadata.len(),
-                modified: metadata.modified().unwrap(),
-                is_dir: kind.is_dir(),
-                is_file: kind.is_file(),
-                is_symlink: kind.is_symlink(),
-            });
-            if kind.is_dir() {
-                let mut children: Vec<_> = fs::read_dir(path)
-                    .unwrap()
-                    .map(|entry| entry.unwrap().path())
-                    .collect();
-                children.sort();
-                for child in children {
-                    visit(root, &child, entries);
-                }
-            }
-        }
-
-        let mut entries = Vec::new();
-        visit(root, root, &mut entries);
-        entries
     }
 
     /// A Heroic import of `Game` in a prefix at `root`, which is created.

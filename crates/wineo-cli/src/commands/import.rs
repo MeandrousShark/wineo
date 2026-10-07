@@ -51,6 +51,9 @@ struct PrefixArgs {
     /// Review and edit choices even when flags supply all required values
     #[arg(long)]
     interactive: bool,
+    /// Review the import without changing anything
+    #[arg(long, conflicts_with = "interactive")]
+    dry_run: bool,
 }
 
 pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
@@ -114,6 +117,11 @@ fn prefix(paths: &Paths, args: PrefixArgs, verbose: bool) -> anyhow::Result<Exit
             &inspection,
             &mut Prompt::new(NoInput, io::stdout()),
         )?;
+        if args.dry_run {
+            check_review(paths, &global, &request, &inspection)?;
+            println!("Dry run, nothing was imported.");
+            return Ok(ExitCode::SUCCESS);
+        }
         return match import_reviewed(paths, &global, request, &inspection, None) {
             Ok(environment) => {
                 println!(
@@ -130,7 +138,7 @@ fn prefix(paths: &Paths, args: PrefixArgs, verbose: bool) -> anyhow::Result<Exit
         };
     }
     anyhow::ensure!(
-        prompt::interactive(),
+        !args.dry_run && prompt::interactive(),
         "guided import needs a terminal; specify a source, -n <name>, and --runner <runner> for noninteractive import"
     );
     let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
@@ -142,6 +150,68 @@ fn prefix(paths: &Paths, args: PrefixArgs, verbose: bool) -> anyhow::Result<Exit
         }
         other => other,
     }
+}
+
+pub(super) fn check_name(paths: &Paths, name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        wineo_core::name::is_valid(name),
+        "invalid environment name `{name}`"
+    );
+    if paths.environment_config(name).symlink_metadata().is_ok() {
+        return Err(wineo_core::error::Error::EnvironmentExists(name.to_owned()).into());
+    }
+    Ok(())
+}
+
+// Apply repeats these checks under locks; a dry run must catch them without locks.
+pub(super) fn check_review(
+    paths: &Paths,
+    global: &GlobalConfig,
+    request: &ImportRequest,
+    inspection: &Inspection,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        wineo_core::name::is_valid(&request.name),
+        "invalid environment name `{}`",
+        request.name
+    );
+    let source = &inspection.source_root;
+    let destination = if request.adopt {
+        source.clone()
+    } else {
+        request
+            .destination
+            .clone()
+            .unwrap_or(global.prefix_root(paths)?.join(&request.name))
+    };
+    paths.check_prefix(&destination)?;
+    if !request.adopt {
+        let source = wineo_core::paths::resolve(source);
+        let destination = wineo_core::paths::resolve(&destination);
+        anyhow::ensure!(
+            source != destination
+                && !source.starts_with(&destination)
+                && !destination.starts_with(&source),
+            "import source {} overlaps destination {}",
+            source.display(),
+            destination.display()
+        );
+        anyhow::ensure!(
+            !destination.exists(),
+            "import destination already exists: {}",
+            destination.display()
+        );
+    }
+    check_name(paths, &request.name)?;
+    for prefix in [source, &destination] {
+        let sharing = wineo_core::environment::sharing_prefix(paths, &request.name, prefix)?;
+        anyhow::ensure!(
+            sharing.unreadable.is_empty(),
+            "could not inspect existing environments: {}",
+            sharing.unreadable.join(", ")
+        );
+    }
+    Ok(())
 }
 
 struct NoInput;

@@ -17,9 +17,8 @@ use wineo_core::runtime::Runtime;
 #[path = "../../../wineo-core/tests/common/runners.rs"]
 mod runners;
 pub use runners::{FAKE_GAMEMODERUN, FAKE_UMU, FAKE_WINE, FAKE_WINESERVER};
-mod snapshot;
 #[allow(unused_imports)]
-pub use snapshot::{EntryKind, TreeEntry, TreeSnapshot, snapshot};
+pub mod snapshot;
 
 pub struct Fixture {
     pub root: tempfile::TempDir,

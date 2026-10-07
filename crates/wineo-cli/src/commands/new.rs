@@ -549,8 +549,7 @@ fn installed(prefix: &Path) -> Option<Listing> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/common/snapshot.rs"]
-mod snapshot;
+use crate::snapshot;
 
 #[cfg(test)]
 mod tests {
@@ -614,14 +613,14 @@ mod tests {
             check_key: Box::new(|| saved_key(&paths)),
             transport: Box::new(|| Ok(Box::new(fake.clone()))),
         };
-        let before = snapshot::snapshot(root.path());
+        let before = snapshot::Snapshot::capture(root.path()).unwrap();
         let mut out = Vec::new();
         let mut err = Vec::new();
         assert_eq!(
             dry_run(&paths, args, &access, &mut out, &mut err).unwrap(),
             ExitCode::SUCCESS
         );
-        assert_eq!(before, snapshot::snapshot(root.path()));
+        before.assert_unchanged(root.path());
         assert_eq!(wineo_core::art::saved_game(&paths, "hades").unwrap(), None);
         (
             String::from_utf8(out).unwrap(),
@@ -695,14 +694,14 @@ mod tests {
                 }),
                 transport: Box::new(|| panic!("skipped art must not connect")),
             };
-            let before = snapshot::snapshot(root.path());
+            let before = snapshot::Snapshot::capture(root.path()).unwrap();
             let mut out = Vec::new();
             let mut err = Vec::new();
             assert_eq!(
                 dry_run(&paths, args(true), &access, &mut out, &mut err).unwrap(),
                 ExitCode::SUCCESS
             );
-            assert_eq!(before, snapshot::snapshot(root.path()));
+            before.assert_unchanged(root.path());
             assert_eq!(checked.get(), !disabled);
             assert_eq!(
                 String::from_utf8(err).unwrap(),

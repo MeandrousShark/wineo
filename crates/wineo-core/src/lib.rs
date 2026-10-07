@@ -47,6 +47,8 @@ pub mod supervisor;
 pub mod target_path;
 pub mod targets;
 pub mod templates;
+#[cfg(test)]
+pub(crate) mod test_snapshot;
 pub mod time;
 pub mod trash;
 pub mod validate;

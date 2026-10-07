@@ -34,6 +34,7 @@ use crate::picker;
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
 use crate::style;
 
+mod dry_run;
 mod native;
 
 #[derive(clap::Args, Default)]
@@ -77,6 +78,9 @@ pub struct Args {
     /// Fetch art from SteamGridDB, searching the Heroic title
     #[arg(long)]
     pub art: bool,
+    /// Review the import without changing anything
+    #[arg(long, conflicts_with_all = ["interactive", "list"])]
+    pub dry_run: bool,
 }
 
 impl Args {
@@ -189,11 +193,20 @@ fn fetch_art<I: Input, W: Write>(
 }
 
 pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
+    let access = Access::steamgriddb(paths);
+    run_with_access(paths, args, verbose, &access)
+}
+
+fn run_with_access(
+    paths: &Paths,
+    args: Args,
+    verbose: bool,
+    access: &Access,
+) -> anyhow::Result<ExitCode> {
     if args.desktop {
         wineo_core::desktop::supported(paths)?;
     }
     let global = GlobalConfig::load(paths)?;
-    let access = Access::steamgriddb(paths);
     if args.list {
         let sources = sources(paths, args.config_dir.as_deref())?;
         for (index, source) in sources.iter().enumerate() {
@@ -205,7 +218,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         return Ok(ExitCode::SUCCESS);
     }
     if args.all {
-        return match run_all(paths, &global, &access, args, verbose) {
+        return match run_all(paths, &global, access, args, verbose) {
             Ok(code) => Ok(code),
             Err(error) if error.is::<Canceled>() => {
                 eprintln!("Import canceled");
@@ -224,7 +237,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
             .iter()
             .any(|candidate| candidate.id == *game && candidate.kind == HeroicGameKind::Native);
         if is_native {
-            return native::direct(paths, &global, &access, &source, &args);
+            return native::direct(paths, &global, access, &source, &args);
         }
     }
     let needs_guided =
@@ -262,6 +275,12 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         output.say(final_facts_text(&ctx, &plan, verbose))?;
         plan.resolve(Policy::Strict);
         reject_unresolved(&plan)?;
+        if args.dry_run {
+            super::import::check_review(paths, &global, plan.request(), plan.inspection())?;
+            dry_run::art(access, &art, None, &mut io::stdout(), &mut io::stderr());
+            println!("Dry run, nothing was imported.");
+            return Ok(ExitCode::SUCCESS);
+        }
         let log_body = verbose.then(|| plan.log_text(&global, &source) + &art.log_line());
         let registered = apply_plan(paths, &global, &source, &plan)?;
         report_playtime(&registered.playtime);
@@ -278,7 +297,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         let fetched = fetch_art(
             paths,
             &global,
-            &access,
+            access,
             &environment.name,
             &art,
             pick,
@@ -300,7 +319,8 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         }
         return Ok(ExitCode::SUCCESS);
     }
-    if !prompt::interactive()
+    if !args.dry_run
+        && !prompt::interactive()
         && args.runner.is_none()
         && let Some(game) = args.game.as_deref()
     {
@@ -315,13 +335,13 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         }
     }
     anyhow::ensure!(
-        prompt::interactive(),
+        !args.dry_run && prompt::interactive(),
         "guided Heroic import needs a terminal; use --list or specify --game, -n, and --runner"
     );
     let mut prompt =
         Prompt::new(Terminal::open()?, io::stdout()).with_color(style::stdout_enabled());
     let source = source_guided(paths, args.config_dir.as_deref(), &mut prompt)?;
-    match guided(paths, &global, &access, source, args, &mut prompt, verbose) {
+    match guided(paths, &global, access, source, args, &mut prompt, verbose) {
         Ok(code) => Ok(code),
         Err(error) if error.is::<Canceled>() => {
             eprintln!("Import canceled");
@@ -655,46 +675,55 @@ fn run_all(
     verbose: bool,
 ) -> anyhow::Result<ExitCode> {
     anyhow::ensure!(
-        args.yes || prompt::interactive(),
+        args.dry_run || args.yes || prompt::interactive(),
         "bulk Heroic import needs a terminal; pass --yes to skip the confirmation"
     );
     let source = source(paths, args.config_dir.as_deref())?;
     let runners = Runners::new(paths, global)?;
-    let mut prompt = if args.yes {
+    let mut prompt = if args.yes || args.dry_run {
         None
     } else {
         Some(Prompt::new(Terminal::open()?, io::stdout()).with_color(style::stdout_enabled()))
     };
 
-    let listing = listing(paths, global, &source)?;
+    let mut listing = listing(paths, global, &source)?;
     // Native games need no runner, so a library of only those never asks for one.
     let has_windows = listing
         .candidates
         .iter()
         .any(|candidate| candidate.kind != HeroicGameKind::Native);
+    let candidate_count = listing.candidates.len();
     let runner = if !has_windows && args.runner.is_none() {
         None
     } else {
-        Some(match &args.runner {
+        match &args.runner {
             Some(name) => {
                 runners.resolve(name)?;
-                name.clone()
+                Some(name.clone())
             }
             None => match runners.newest_proton()? {
-                Some(runner) => runner.selection().to_owned(),
+                Some(runner) => Some(runner.selection().to_owned()),
+                None if args.dry_run => {
+                    println!("Would download the latest GE-Proton.");
+                    println!("Planning native games only; Windows games need a Proton runner.");
+                    listing
+                        .candidates
+                        .retain(|candidate| candidate.kind == HeroicGameKind::Native);
+                    None
+                }
                 None => {
                     anyhow::ensure!(
                         !args.yes,
                         "no Proton runner is installed; pass --runner or download one first"
                     );
                     let prompt = prompt.as_mut().expect("interactive was checked above");
-                    download_latest_ge_proton(paths, global, &runners, prompt)?
+                    Some(download_latest_ge_proton(paths, global, &runners, prompt)?)
                 }
             },
-        })
+        }
     };
 
-    println!("Checking {} Heroic games...", listing.candidates.len());
+    println!("Checking {candidate_count} Heroic games...");
     let mut library = plan_library(
         paths,
         global,
@@ -705,8 +734,10 @@ fn run_all(
             arch: args.arch,
         },
     )?;
-    library.record_backfills(paths)?;
-    resolve_pending(paths, global, &mut library, args.yes, prompt.as_mut())?;
+    if !args.dry_run {
+        library.record_backfills(paths)?;
+        resolve_pending(paths, global, &mut library, args.yes, prompt.as_mut())?;
+    }
     let runner_name = library.runner().unwrap_or_default();
 
     let mode_label = if args.adopt { "adopt" } else { "copy" };
@@ -719,6 +750,11 @@ fn run_all(
             library.already()
         )
     );
+    if args.dry_run {
+        dry_run::library(paths, global, access, &library, args.art)?;
+        println!("Dry run, nothing was imported.");
+        return Ok(ExitCode::SUCCESS);
+    }
     if library.ready_count() == 0 {
         println!("No Heroic games are ready to import.");
         return Ok(ExitCode::SUCCESS);

@@ -5,6 +5,11 @@ mod prompt;
 mod style;
 mod wizard;
 
+// Shared with the integration tests, which include the same file.
+#[cfg(test)]
+#[path = "../tests/common/snapshot.rs"]
+mod snapshot;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 

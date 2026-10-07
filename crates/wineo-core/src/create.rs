@@ -463,6 +463,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::test_snapshot::{assert_unchanged, snapshot_tree};
 
     fn paths(root: &Path) -> Paths {
         let home = root.join("home");
@@ -505,28 +506,6 @@ mod tests {
         }
     }
 
-    fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, (u64, std::time::SystemTime)> {
-        fn visit(
-            root: &Path,
-            path: &Path,
-            entries: &mut std::collections::BTreeMap<PathBuf, (u64, std::time::SystemTime)>,
-        ) {
-            let metadata = fs::symlink_metadata(path).unwrap();
-            entries.insert(
-                path.strip_prefix(root).unwrap().to_owned(),
-                (metadata.len(), metadata.modified().unwrap()),
-            );
-            if metadata.is_dir() {
-                for entry in fs::read_dir(path).unwrap() {
-                    visit(root, &entry.unwrap().path(), entries);
-                }
-            }
-        }
-        let mut entries = std::collections::BTreeMap::new();
-        visit(root, root, &mut entries);
-        entries
-    }
-
     fn prefix(dir: &Path, arch: Arch) {
         fs::create_dir_all(dir.join("drive_c")).unwrap();
         fs::write(
@@ -562,9 +541,9 @@ mod tests {
         request.exe = Some(exe.display().to_string());
         request.target_name = Some("Game Title".into());
         request.desktop = true;
-        let before = snapshot(root.path());
+        let before = snapshot_tree(root.path());
         let plan = plan(&paths, request).unwrap();
-        assert_eq!(snapshot(root.path()), before);
+        assert_unchanged(&before, &snapshot_tree(root.path()));
         assert_eq!(plan.name(), "game");
         assert!(!plan.adopted());
         assert!(!plan.prefix().exists());
@@ -590,9 +569,9 @@ mod tests {
         let mut request = request("game");
         request.dir = Some(dir.display().to_string());
         request.exe = Some(r"C:\game.exe".into());
-        let before = snapshot(root.path());
+        let before = snapshot_tree(root.path());
         let plan = plan(&paths, request).unwrap();
-        assert_eq!(snapshot(root.path()), before);
+        assert_unchanged(&before, &snapshot_tree(root.path()));
         assert!(plan.adopted());
         assert_eq!(plan.prefix(), dir);
         assert_eq!(plan.arch(), Arch::Win32);
@@ -620,9 +599,9 @@ mod tests {
             template_name: Some("custom".into()),
             ..Default::default()
         };
-        let before = snapshot(root.path());
+        let before = snapshot_tree(root.path());
         let plan = plan(&paths, request).unwrap();
-        assert_eq!(snapshot(root.path()), before);
+        assert_unchanged(&before, &snapshot_tree(root.path()));
         assert_eq!(plan.template_name(), Some("custom"));
         assert_eq!(plan.wanted().dxvk.as_deref(), Some("latest"));
         assert_eq!(plan.resolved_components().dxvk.as_deref(), Some("2.6"));
@@ -639,9 +618,9 @@ mod tests {
             dxvk: Some("missing".into()),
             ..Default::default()
         });
-        let before = snapshot(root.path());
+        let before = snapshot_tree(root.path());
         let error = plan(&paths, request).unwrap_err();
-        assert_eq!(snapshot(root.path()), before);
+        assert_unchanged(&before, &snapshot_tree(root.path()));
         assert!(matches!(
             error.downcast_ref::<Error>(),
             Some(Error::UnknownBuild { .. })
@@ -655,9 +634,9 @@ mod tests {
         fake_runner(&paths, "fake");
         let mut request = request("game");
         request.exe = Some(root.path().join("missing.exe").display().to_string());
-        let before = snapshot(root.path());
+        let before = snapshot_tree(root.path());
         let plan = plan(&paths, request).unwrap();
-        assert_eq!(snapshot(root.path()), before);
+        assert_unchanged(&before, &snapshot_tree(root.path()));
         assert_eq!(plan.exe_check(), Some(ExeCheck::Missing));
     }
 
@@ -788,7 +767,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let paths = paths(root.path());
         fake_proton(&paths, "GE-Proton11-7");
-        let before = snapshot(root.path());
+        let before = snapshot_tree(root.path());
         let plan = plan(
             &paths,
             CreateRequest {
@@ -799,7 +778,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(snapshot(root.path()), before);
+        assert_unchanged(&before, &snapshot_tree(root.path()));
         assert_eq!(plan.runner().name(), "GE-Proton11-7");
         assert!(plan.template_components_omitted());
         assert_eq!(plan.wanted(), &Wanted::default());
@@ -821,9 +800,9 @@ mod tests {
         let selected = fake_proton(&paths, "GE-Proton11-7");
         let mut request = request("game");
         request.runner = Some("GE-Proton-Latest".into());
-        let before = snapshot(root.path());
+        let before = snapshot_tree(root.path());
         let plan = plan(&paths, request).unwrap();
-        assert_eq!(snapshot(root.path()), before);
+        assert_unchanged(&before, &snapshot_tree(root.path()));
         assert_eq!(plan.runner().selection(), "GE-Proton-Latest");
         assert_eq!(plan.runner().name(), "GE-Proton11-7");
         fs::remove_dir_all(selected).unwrap();
@@ -844,7 +823,7 @@ mod tests {
         fake_runner(&paths, "fake");
         fs::create_dir_all(paths.environments_dir()).unwrap();
         fs::write(paths.environment_config("taken"), "invalid config").unwrap();
-        let before = snapshot(root.path());
+        let before = snapshot_tree(root.path());
         assert!(matches!(
             plan(&paths, request("bad name"))
                 .unwrap_err()
@@ -857,7 +836,7 @@ mod tests {
                 .downcast_ref::<Error>(),
             Some(Error::EnvironmentExists(_))
         ));
-        assert_eq!(snapshot(root.path()), before);
+        assert_unchanged(&before, &snapshot_tree(root.path()));
     }
 
     #[test]
@@ -871,22 +850,22 @@ mod tests {
         fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
         let mut global = GlobalConfig::default();
         global.env.insert("PATH".into(), bin.display().to_string());
-        let before = snapshot(root.path());
+        let before = snapshot_tree(root.path());
         let plan = Environment::plan_native(&paths, &global, "game", Some("game")).unwrap();
         assert_eq!(plan.name, "game");
         assert_eq!(plan.exe.as_deref(), Some("game"));
         assert_eq!(plan.resolved_exe, Some(exe));
         assert!(Environment::plan_native(&paths, &global, "game", Some("missing")).is_err());
         assert!(Environment::plan_native(&paths, &global, "bad name", None).is_err());
-        assert_eq!(snapshot(root.path()), before);
+        assert_unchanged(&before, &snapshot_tree(root.path()));
         fs::create_dir_all(paths.environments_dir()).unwrap();
         fs::write(paths.environment_config("taken"), "kind = 'native'\n").unwrap();
-        let before = snapshot(root.path());
+        let before = snapshot_tree(root.path());
         assert!(matches!(
             Environment::plan_native(&paths, &global, "taken", None),
             Err(Error::EnvironmentExists(_))
         ));
-        assert_eq!(snapshot(root.path()), before);
+        assert_unchanged(&before, &snapshot_tree(root.path()));
     }
 
     #[test]

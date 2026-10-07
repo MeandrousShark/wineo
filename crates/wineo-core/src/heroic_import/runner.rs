@@ -205,8 +205,9 @@ mod tests {
     use super::*;
     use crate::config::Defaults;
     use crate::heroic_import::plan::tests::{
-        fake_proton_runner, fake_wine_runner, paths, reviewed_import, snapshot_tree,
+        fake_proton_runner, fake_wine_runner, paths, reviewed_import,
     };
+    use crate::test_snapshot::{assert_unchanged, snapshot_tree};
 
     fn global(root: &Path) -> GlobalConfig {
         GlobalConfig {
@@ -245,7 +246,7 @@ mod tests {
         let before = snapshot_tree(root.path());
         let suggestion = suggest_runner(&paths, &global, &imported, None).unwrap();
         assert!(matches!(suggestion, RunnerSuggestion::Use(name) if name == "wine-tkg"));
-        assert_eq!(snapshot_tree(root.path()), before);
+        assert_unchanged(&before, &snapshot_tree(root.path()));
 
         // An installed runner of another family isn't Heroic's choice.
         fake_proton_runner(&root.path().join("wineo-runners"), "GE-Proton9-1");
@@ -260,7 +261,7 @@ mod tests {
                 copy_blocked: None
             }
         ));
-        assert_eq!(snapshot_tree(root.path()), before);
+        assert_unchanged(&before, &snapshot_tree(root.path()));
     }
 
     #[test]

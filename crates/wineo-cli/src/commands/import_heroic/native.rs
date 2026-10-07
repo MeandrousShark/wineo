@@ -132,6 +132,12 @@ pub(super) fn direct(
         ArtChoice::off()
     };
     println!("{}", summary(paths, plan.resolved(), plan.name()));
+    if args.dry_run {
+        super::super::import::check_name(paths, plan.name())?;
+        super::dry_run::art(access, &art, None, &mut io::stdout(), &mut io::stderr());
+        println!("Dry run, nothing was imported.");
+        return Ok(ExitCode::SUCCESS);
+    }
     let registered = apply_native(paths, source, &plan)?;
     super::report_playtime(&registered.playtime);
     let environment = &registered.environment;

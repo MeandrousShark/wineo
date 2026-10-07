@@ -282,8 +282,9 @@ mod tests {
 
     use super::*;
     use crate::heroic::HeroicIssue;
-    use crate::heroic_import::plan::tests::{paths, snapshot_tree};
+    use crate::heroic_import::plan::tests::paths;
     use crate::heroic_import::{ApplyError, Playtime, apply_native};
+    use crate::test_snapshot::{assert_unchanged, snapshot_tree};
 
     /// A Heroic library holding one native sideload, Dusklight, whose script
     /// is in the home directory `root`. `settings` is the game's own config.
@@ -323,7 +324,7 @@ mod tests {
         let plan = plan_native(&source, "dusk", None).unwrap();
         plan.check_exe(&paths, &global).unwrap();
 
-        assert_eq!(snapshot_tree(root.path()), before);
+        assert_unchanged(&before, &snapshot_tree(root.path()));
     }
 
     #[test]

@@ -1,78 +1,100 @@
+use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct TreeEntry {
-    pub path: PathBuf,
-    pub kind: EntryKind,
-    pub size: u64,
-    pub modified: Option<SystemTime>,
-    pub link_target: Option<PathBuf>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum EntryKind {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileKind {
     File,
     Directory,
     Symlink,
     Other,
 }
 
-pub type TreeSnapshot = Vec<TreeEntry>;
-
-pub fn snapshot(root: &Path) -> TreeSnapshot {
-    let mut entries = Vec::new();
-    collect(root, root, &mut entries);
-    entries.sort_by(|left, right| left.path.cmp(&right.path));
-    entries
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Entry {
+    size: u64,
+    modified: SystemTime,
+    kind: FileKind,
+    link_target: Option<PathBuf>,
 }
 
-fn collect(root: &Path, path: &Path, entries: &mut Vec<TreeEntry>) {
-    let metadata = fs::symlink_metadata(path)
-        .unwrap_or_else(|error| panic!("failed to inspect {}: {error}", path.display()));
-    let file_type = metadata.file_type();
-    let kind = if file_type.is_symlink() {
-        EntryKind::Symlink
-    } else if file_type.is_dir() {
-        EntryKind::Directory
-    } else if file_type.is_file() {
-        EntryKind::File
-    } else {
-        EntryKind::Other
-    };
-    let link_target = file_type.is_symlink().then(|| {
-        fs::read_link(path)
-            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
-    });
-    entries.push(TreeEntry {
-        path: path
-            .strip_prefix(root)
-            .unwrap_or_else(|error| {
-                panic!("{} is outside {}: {error}", path.display(), root.display())
-            })
-            .to_owned(),
-        kind,
-        size: metadata.len(),
-        modified: metadata.modified().ok(),
-        link_target,
-    });
-    if !file_type.is_dir() {
-        return;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot(BTreeMap<PathBuf, Entry>);
+
+impl Snapshot {
+    pub fn capture(root: &Path) -> io::Result<Self> {
+        let mut entries = BTreeMap::new();
+        record(root, root, &mut entries)?;
+        Ok(Self(entries))
     }
 
-    let mut children = fs::read_dir(path)
-        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
-        .map(|entry| {
-            entry
-                .unwrap_or_else(|error| {
-                    panic!("failed to inspect child of {}: {error}", path.display())
-                })
-                .path()
-        })
-        .collect::<Vec<_>>();
-    children.sort();
-    for child in children {
-        collect(root, &child, entries);
+    #[track_caller]
+    pub fn assert_unchanged(&self, root: &Path) {
+        let after = Self::capture(root).expect("capture XDG tree after command");
+        let mut added = Vec::new();
+        let mut removed = Vec::new();
+        let mut changed = Vec::new();
+
+        for (path, entry) in &after.0 {
+            match self.0.get(path) {
+                None => added.push(path.display().to_string()),
+                Some(before) if before != entry => changed.push(path.display().to_string()),
+                Some(_) => {}
+            }
+        }
+        for path in self.0.keys() {
+            if !after.0.contains_key(path) {
+                removed.push(path.display().to_string());
+            }
+        }
+
+        assert!(
+            added.is_empty() && removed.is_empty() && changed.is_empty(),
+            "XDG tree changed: added: {}; removed: {}; changed: {}",
+            added.join(", "),
+            removed.join(", "),
+            changed.join(", ")
+        );
     }
+}
+
+fn record(root: &Path, path: &Path, entries: &mut BTreeMap<PathBuf, Entry>) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+    let kind = if file_type.is_file() {
+        FileKind::File
+    } else if file_type.is_dir() {
+        FileKind::Directory
+    } else if file_type.is_symlink() {
+        FileKind::Symlink
+    } else {
+        FileKind::Other
+    };
+    let relative = if path == root {
+        PathBuf::from(".")
+    } else {
+        path.strip_prefix(root).unwrap_or(path).to_path_buf()
+    };
+    entries.insert(
+        relative,
+        Entry {
+            size: metadata.len(),
+            modified: metadata.modified()?,
+            kind,
+            link_target: if kind == FileKind::Symlink {
+                Some(fs::read_link(path)?)
+            } else {
+                None
+            },
+        },
+    );
+
+    if kind == FileKind::Directory {
+        for child in fs::read_dir(path)? {
+            record(root, &child?.path(), entries)?;
+        }
+    }
+    Ok(())
 }

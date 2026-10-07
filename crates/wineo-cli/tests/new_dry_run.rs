@@ -44,10 +44,9 @@ fn dry_run(f: &Fixture, args: &[&str]) -> Output {
 }
 
 fn dry_run_with_home(f: &Fixture, args: &[&str], at_home: bool) -> Output {
-    let before = snapshot(f.root.path());
+    let before = snapshot::Snapshot::capture(f.root.path()).unwrap();
     let result = command_with_home(f, args, at_home);
-    let after = snapshot(f.root.path());
-    assert_eq!(before, after, "dry run changed the fixture tree: {args:?}");
+    before.assert_unchanged(f.root.path());
     assert!(
         !f.root.path().join(RUNNER_MARKER).exists(),
         "dry run started Wine or umu: {args:?}"
@@ -473,7 +472,7 @@ fn dry_run_art_search_failure_warns_without_changing_the_exit_code() {
     let f = Fixture::new();
     guard_runners(&f);
 
-    let before = snapshot(f.root.path());
+    let before = snapshot::Snapshot::capture(f.root.path()).unwrap();
     let mut command = f.wineo();
     let result = command
         .args(["new", "-n", "art-search-failed", "--art", "--dry-run"])
@@ -487,8 +486,7 @@ fn dry_run_art_search_failure_warns_without_changing_the_exit_code() {
         .env("NO_PROXY", "")
         .output()
         .expect("wineo should start");
-    let after = snapshot(f.root.path());
-    assert_eq!(before, after, "failed art search changed the fixture tree");
+    before.assert_unchanged(f.root.path());
     assert!(!f.root.path().join(RUNNER_MARKER).exists());
     assert_success(&result);
     assert!(

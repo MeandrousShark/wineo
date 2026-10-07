@@ -864,9 +864,8 @@ mod tests {
 
     use super::*;
     use crate::config::Defaults;
-    use crate::heroic_import::plan::tests::{
-        fake_proton_runner, fake_wine_runner, paths, snapshot_tree,
-    };
+    use crate::heroic_import::plan::tests::{fake_proton_runner, fake_wine_runner, paths};
+    use crate::test_snapshot::{assert_unchanged, snapshot_tree};
 
     fn candidate(kind: HeroicGameKind, issues: Vec<HeroicIssue>) -> HeroicCandidate {
         HeroicCandidate {
@@ -1281,6 +1280,18 @@ mod tests {
         }
     }
 
+    fn install_vkd3d(paths: &Paths, global: &GlobalConfig) {
+        let root = crate::components::Builds::new(paths, global, Component::Vkd3d)
+            .unwrap()
+            .root()
+            .to_owned();
+        for arch in ["x64", "x86"] {
+            let dir = root.join("vkd3d-proton-2.14").join(arch);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("d3d12.dll"), b"fixture").unwrap();
+        }
+    }
+
     #[test]
     fn a_library_is_sorted_into_ready_pending_skipped_and_imported() {
         let root = tempdir().unwrap();
@@ -1327,7 +1338,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected_plan.already(), ["fox"]);
-        assert_eq!(snapshot_tree(root.path()), tree_before);
+        assert_unchanged(&tree_before, &snapshot_tree(root.path()));
         assert_eq!(plan.runner(), Some("fake"));
         assert_eq!(
             names(&plan),
@@ -1516,7 +1527,7 @@ mod tests {
             &LibraryOptions::default(),
         )
         .unwrap();
-        assert_eq!(snapshot_tree(root.path()), tree_before);
+        assert_unchanged(&tree_before, &snapshot_tree(root.path()));
         assert_eq!(
             plan.pending_builds(),
             vec![BuildOffer {
@@ -1705,9 +1716,15 @@ mod tests {
     fn planning_a_game_and_checking_installed_builds_does_not_write_or_lock() {
         let root = tempdir().unwrap();
         let mut library = Library::new(root.path());
-        library.windows("a", "Alpha", "p1", r#""autoInstallDxvk":true"#);
+        library.windows(
+            "a",
+            "Alpha",
+            "p1",
+            r#""autoInstallDxvk":true,"autoInstallVkd3d":true"#,
+        );
         let (paths, global, listing) = library.write();
         install_dxvk(&paths, &global);
+        install_vkd3d(&paths, &global);
         let tree_before = snapshot_tree(root.path());
 
         let plan = crate::heroic_import::plan_game(
@@ -1720,7 +1737,16 @@ mod tests {
         )
         .unwrap();
         plan.check_builds(&paths, &global).unwrap();
+        let library = plan_library(
+            &paths,
+            &global,
+            &listing,
+            Some("fake"),
+            &LibraryOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(library.ready_count(), 1);
 
-        assert_eq!(snapshot_tree(root.path()), tree_before);
+        assert_unchanged(&tree_before, &snapshot_tree(root.path()));
     }
 }
