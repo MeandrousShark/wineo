@@ -495,6 +495,19 @@ In this plan (question 7).
   portable, which work for them.
 - Settings shows tags, title, and the desktop entry switch.
 
+## Decisions during implementation
+
+- Step 2 (2026-10-07): a manifest without `StateFlags` is an error for its
+  app, not "not installed". A library is available only when its
+  `steamapps` folder is readable or absent. An unreadable
+  `libraryfolders.vdf` makes a game with no manifest unknown, not "not
+  installed". `compat_tool` reads an unreadable `config.vdf` as no tool,
+  since it's display-only. KeyValues conditions are evaluated for Linux
+  (`$LINUX` and `$POSIX` true, everything else false, `!` negates, joins
+  read left to right, every tag on an entry must hold), and unknown escapes
+  keep their backslash. Tool names match `Proton ` and `Steamworks ` with a
+  trailing space.
+
 ## Questions
 
 All ten were answered A by the maintainer on 2026-10-07; see the settled
