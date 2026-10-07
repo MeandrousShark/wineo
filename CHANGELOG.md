@@ -3,6 +3,33 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.25.0 - 2026-10-07
+
+- `--dry-run` for `wineo new` and `wineo import`
+  ([0044](docs/plans/0044-dry-run.md)). It prints the same review a real
+  run would, then stops without writing, downloading, starting Wine, or
+  asking anything, so it works without a terminal. Errors match the real
+  run's. A Windows path `--exe` shows `(checked once the prefix exists)`.
+  See [Dry runs](docs/dry-run.md).
+- `import heroic --all --dry-run` previews what the same flags would do.
+  Without `--yes` it assumes every download offer is accepted, and with
+  `--yes` it mirrors the real run, including `skip:` lines.
+- Reviews in `import prefix`, `clone`, `portable copy`, and `snapshot
+  create` count links that point outside the prefix instead of listing
+  them: `external links: 26, kept in place (-v to list them)`. `-v` lists
+  each one. Clone used to list the first 12.
+- Behavior change: exit codes are consistent across commands. See
+  [Exit codes](docs/exit-codes.md).
+  - 130 for anything canceled, including answering no at a final
+    confirmation, canceling a Heroic import, and Esc at the first question
+    of a guided flow, which now cancels. The key hint says `Esc or Ctrl+C
+    to cancel.`
+  - 2 for usage errors, including `prune` without a selector.
+  - 141, quietly, when whatever reads wineo's output goes away, like
+    `wineo list | head -1`.
+- Heroic import checks DXVK and vkd3d-proton builds again under their lock
+  before registering them.
+
 ## 0.24.0 - 2026-10-06
 
 - Runners from Steam, Heroic, and Lutris

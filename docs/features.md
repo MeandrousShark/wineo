@@ -8,7 +8,7 @@ own numbered plan in `docs/plans/`.
 The order the maintainer picked on 2026-10-06. Each item gets its own plan
 when it comes up, and the rows below have the details.
 
-1. `--dry-run` for import and non-guided `new`: approved as
+1. `--dry-run` for import and non-guided `new`: done in 0.25.0 as
    [0044](plans/0044-dry-run.md).
 2. Tag breakdown in `wineo stats`, before store games add their own playtime:
    approved as [0045](plans/0045-stats-by-tag.md).
@@ -95,7 +95,7 @@ See [Trash](gui.md#trash) and [Checkup](gui.md#checkup) for the pages.
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| `--dry-run` for `import` and non-guided `new` | Automation | **2** | | Preview what would be created, copied, or registered without touching disk | [0044](plans/0044-dry-run.md) adds `--dry-run` to `new` and `import`, awaiting acceptance. See [Dry runs](dry-run.md). |
+| `--dry-run` for `import` and non-guided `new` | Automation | **2** | | Preview what would be created, copied, or registered without touching disk | [0044](plans/0044-dry-run.md) is done (0.25.0): it adds `--dry-run` to `new` and `import`. See [Dry runs](dry-run.md). |
 | `--dry-run --json` | Automation | **4** | 0044 | Let a script read a dry run's plan instead of grepping review lines | Left out of [0044](plans/0044-dry-run.md) by the maintainer (2026-10-06). Add it if a script ever needs it. |
 | Pre-launch and post-exit hooks | Core | **2** | | Run a user command before a target starts or after it exits, e.g. mounting a drive or syncing saves | [0046](plans/0046-launch-hooks.md) adds `[hooks]` with `before` and `after`, awaiting acceptance. See [Hooks](hooks.md). |
 | Global hooks | Core | **4** | 0046 | Run the same hook around every game, like turning notifications off while anything plays | Left out of [0046](plans/0046-launch-hooks.md) by the maintainer (2026-10-06): they'd surprise people using wineo for regular software, and templates carry hooks for new games. |

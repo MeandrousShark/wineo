@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0044: `--dry-run` for import and non-guided `new`
 
