@@ -108,7 +108,7 @@ instead.
 
 ```text
 Art from SteamGridDB, searching "Hades":
-  1. Hades (2020), game 5248410 <- picked without a terminal
+  1. Hades (2020), game 5248410 <- would be picked automatically
   2. Hades II (2024), game 5370392
   3. Hades: Battle Out of Hell (2003), game 5250117
 ```
