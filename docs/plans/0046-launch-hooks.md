@@ -265,6 +265,22 @@ review lists them so the person sees what will run.
 Step 1 goes first. Steps 2 and 5 can run in parallel after it. Step 3 needs
 step 2, and step 4 needs step 3.
 
+## Decisions during implementation
+
+- Step 2 (2026-10-06): the hook's process group, boot ID, and leader start
+  time live in the `Hook` operation lock file, so `stop --force` in another
+  process can find and verify it with the same checks the supervisor uses.
+  A stale file is ignored, since the lock must still be held.
+- `busy` stays a string in JSON: `hook-before` and `hook-after`, matching
+  the other operation values.
+- A hook that exits normally leaves any background process it started
+  alone. Only cancel and `--force` kill the hook's group.
+- Notes for step 3 from review: `Guard::relabel` can't turn the shared
+  `Launch` guard into the exclusive `Hook` lock, so step 3 has to close the
+  gap between them without letting another launch in. The GUI's busy text
+  (`panel.rs`, `library.rs`) and `launch/stop.rs` print `Operation::as_str()`
+  and need proper wording for hooks.
+
 ## Testing and acceptance
 
 - Unit tests for the table rules: target replaces environment, `false`,
