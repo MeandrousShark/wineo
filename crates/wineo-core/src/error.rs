@@ -66,7 +66,7 @@ pub enum Error {
         source: Box<toml::de::Error>,
     },
 
-    #[error("{subject} is busy: {holder_label}")]
+    #[error("{}", busy_message(.subject, *.holder, .holder_label))]
     Busy {
         subject: String,
         holder: Option<Operation>,
@@ -366,6 +366,18 @@ pub enum Error {
         "vkd3d-proton uses DXVK's DXGI rather than shipping its own, so `vkd3d` needs `dxvk` set as well. Set one with `wineo set {0} dxvk=latest`"
     )]
     Vkd3dNeedsDxvk(String),
+}
+
+fn busy_message(subject: &str, holder: Option<Operation>, label: &str) -> String {
+    if matches!(holder, Some(Operation::Hook(_))) {
+        let subject = subject
+            .strip_prefix("environment `")
+            .and_then(|name| name.strip_suffix('`'))
+            .unwrap_or(subject);
+        format!("{subject} is busy {label}")
+    } else {
+        format!("{subject} is busy: {label}")
+    }
 }
 
 /// Formats an error followed by its sources, like anyhow's `{:#}`.

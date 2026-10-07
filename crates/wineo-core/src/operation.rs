@@ -14,6 +14,7 @@ use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, IoContext, Result};
+use crate::hooks::{Phase, Running};
 use crate::paths::{self, Paths, fnv1a, label};
 
 /// A probe holds a shared lock for a moment, so taking one retries for about
@@ -25,8 +26,7 @@ const LOCK_RETRY: Duration = Duration::from_millis(5);
 const CONFIG_ATTEMPTS: u32 = 1000;
 
 /// What a command is doing with an environment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
     /// Creating or adopting a prefix.
     Create,
@@ -48,6 +48,35 @@ pub enum Operation {
     Copy,
     /// Mutating or recovering a durable trash entry.
     Trash,
+    /// Running a launch hook.
+    Hook(Phase),
+}
+
+impl Serialize for Operation {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Operation {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Representation {
+            Word(String),
+            LegacyHook { hook: Phase },
+        }
+        match Representation::deserialize(deserializer)? {
+            Representation::Word(word) => Self::parse(&word)
+                .ok_or_else(|| serde::de::Error::custom(format!("unknown operation: {word}"))),
+            Representation::LegacyHook { hook } => Ok(Self::Hook(hook)),
+        }
+    }
 }
 
 impl Operation {
@@ -63,6 +92,8 @@ impl Operation {
             Operation::Snapshot => "snapshot",
             Operation::Copy => "copy",
             Operation::Trash => "trash",
+            Operation::Hook(Phase::Before) => "hook-before",
+            Operation::Hook(Phase::After) => "hook-after",
         }
     }
 
@@ -78,6 +109,8 @@ impl Operation {
             Operation::Snapshot,
             Operation::Copy,
             Operation::Trash,
+            Operation::Hook(Phase::Before),
+            Operation::Hook(Phase::After),
         ]
         .into_iter()
         .find(|operation| operation.as_str() == word)
@@ -102,6 +135,8 @@ impl Operation {
             Operation::Snapshot => "a snapshot operation is running",
             Operation::Copy => "it is being copied to a portable folder",
             Operation::Trash => "its trash entry is being changed",
+            Operation::Hook(Phase::Before) => "running its before hook",
+            Operation::Hook(Phase::After) => "running its after hook",
         }
     }
 }
@@ -124,6 +159,7 @@ pub struct Locks {
 pub struct Guard {
     files: Vec<(File, PathBuf)>,
     exclusive: bool,
+    operation: Operation,
 }
 
 impl Guard {
@@ -137,6 +173,30 @@ impl Guard {
         );
         for (file, path) in &self.files {
             record(file, path, operation)?;
+        }
+        self.operation = operation;
+        Ok(())
+    }
+
+    pub(crate) fn record_hook(&self, phase: Phase, running: Option<&Running>) -> Result<()> {
+        if self.operation != Operation::Hook(phase) {
+            return Err(Error::Unsettled(format!(
+                "{} hook requires its matching operation guard",
+                phase.as_str()
+            )));
+        }
+        for (file, path) in &self.files {
+            let mut line = format!("{} {}", self.operation.as_str(), std::process::id());
+            if let Some(running) = running {
+                line.push_str(&format!(
+                    " {} {} {}",
+                    running.group, running.boot_id, running.leader_start
+                ));
+            }
+            line.push('\n');
+            file.set_len(0)
+                .and_then(|()| file.write_all_at(line.as_bytes(), 0))
+                .context(|| format!("failed to write {}", path.display()))?;
         }
         Ok(())
     }
@@ -255,6 +315,7 @@ impl Locks {
         Ok(Guard {
             files,
             exclusive: !operation.is_shared(),
+            operation,
         })
     }
 
@@ -305,6 +366,33 @@ impl Locks {
         }
         self.holder(&path)
             .map(|holder| holder.filter(|operation| !operation.is_shared()))
+    }
+
+    /// Only active Hook holders expose a group; stale lock contents are ignored.
+    pub fn hook_group(&self, name: &str) -> Result<Option<(Phase, Running)>> {
+        let path = self.name_path(name);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let file = open(&path)?;
+        if probe(&file, &path)? {
+            return Ok(None);
+        }
+        let text =
+            fs::read_to_string(&path).context(|| format!("failed to read {}", path.display()))?;
+        let mut words = text.split_whitespace();
+        let Some(Operation::Hook(phase)) = words.next().and_then(Operation::parse) else {
+            return Ok(None);
+        };
+        let _holder = words.next();
+        let running = (|| {
+            Some(Running {
+                group: words.next()?.parse().ok()?,
+                boot_id: words.next()?.to_owned(),
+                leader_start: words.next()?.parse().ok()?,
+            })
+        })();
+        Ok(running.map(|running| (phase, running)))
     }
 
     fn busy(&self, target: &Target) -> Result<Error> {
@@ -418,6 +506,148 @@ mod tests {
 
     fn locks(root: &Path) -> Locks {
         Locks::at(root.join("locks"))
+    }
+
+    #[test]
+    fn operations_serialize_as_json_strings_and_round_trip() {
+        for operation in [
+            Operation::Create,
+            Operation::Remove,
+            Operation::Winetricks,
+            Operation::Configure,
+            Operation::Launch,
+            Operation::Install,
+            Operation::Cleanup,
+            Operation::Snapshot,
+            Operation::Copy,
+            Operation::Trash,
+            Operation::Hook(Phase::Before),
+            Operation::Hook(Phase::After),
+        ] {
+            let json = serde_json::to_string(&operation).unwrap();
+            assert_eq!(json, format!("\"{}\"", operation.as_str()));
+            assert_eq!(serde_json::from_str::<Operation>(&json).unwrap(), operation);
+            let state = crate::runtime::OperationState {
+                operation,
+                program: "setup.exe".to_owned(),
+                runner: crate::runner::Runner::fake("wine"),
+                prefix: PathBuf::from("/tmp/prefix"),
+                pid: None,
+                group: None,
+                boot_id: None,
+                leader_start: None,
+                started_at: jiff::Timestamp::now(),
+            };
+            let text = toml::to_string(&state).unwrap();
+            assert!(text.contains(&format!("operation = \"{}\"", operation.as_str())));
+            let restored: crate::runtime::OperationState = toml::from_str(&text).unwrap();
+            assert_eq!(restored.operation, operation);
+            assert_eq!(restored.program, state.program);
+            assert_eq!(restored.prefix, state.prefix);
+        }
+        assert!(serde_json::from_str::<Operation>("\"unknown\"").is_err());
+    }
+
+    #[test]
+    fn operation_state_reads_legacy_toml_representations() {
+        #[derive(Deserialize)]
+        struct Record {
+            operation: Operation,
+        }
+        assert_eq!(
+            toml::from_str::<Record>("operation = 'install'")
+                .unwrap()
+                .operation,
+            Operation::Install
+        );
+        for phase in [Phase::Before, Phase::After] {
+            let text = format!("[operation]\nhook = '{}'\n", phase.as_str());
+            assert_eq!(
+                toml::from_str::<Record>(&text).unwrap().operation,
+                Operation::Hook(phase)
+            );
+        }
+    }
+
+    #[test]
+    fn hook_locks_are_exclusive_and_busy_messages_name_the_phase() {
+        let root = tempfile::tempdir().unwrap();
+        let locks = locks(root.path());
+        let prefix = root.path().join("prefix");
+        for phase in [Phase::Before, Phase::After] {
+            let held = locks
+                .acquire(Operation::Hook(phase), "hades", &[&prefix])
+                .unwrap();
+            assert_eq!(
+                locks.busy_with("hades").unwrap(),
+                Some(Operation::Hook(phase))
+            );
+            for operation in [
+                Operation::Launch,
+                Operation::Install,
+                Operation::Hook(phase),
+            ] {
+                let err = locks.acquire(operation, "hades", &[&prefix]).unwrap_err();
+                assert_eq!(
+                    err.to_string(),
+                    format!("hades is busy running its {} hook", phase.as_str())
+                );
+                assert!(
+                    matches!(err, Error::Busy { holder: Some(Operation::Hook(found)), .. } if found == phase)
+                );
+            }
+            let alias = locks
+                .acquire(Operation::Launch, "other", &[&prefix])
+                .unwrap_err();
+            assert_eq!(
+                alias.to_string(),
+                format!(
+                    "prefix {} is busy running its {} hook",
+                    prefix.display(),
+                    phase.as_str()
+                )
+            );
+            drop(held);
+            assert_eq!(locks.busy_with("hades").unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn hook_group_records_identity_and_ignores_stale_contents() {
+        let root = tempfile::tempdir().unwrap();
+        let locks = locks(root.path());
+        let held = locks
+            .acquire(Operation::Hook(Phase::Before), "hades", &[])
+            .unwrap();
+        let running = Running {
+            group: 123,
+            boot_id: "boot".to_owned(),
+            leader_start: 456,
+        };
+        held.record_hook(Phase::Before, Some(&running)).unwrap();
+        assert_eq!(
+            locks.hook_group("hades").unwrap(),
+            Some((Phase::Before, running))
+        );
+        drop(held);
+        assert!(locks.hook_group("hades").unwrap().is_none());
+        fs::write(locks.name_path("hades"), "hook-before 1 123 boot 456\n").unwrap();
+        assert!(locks.hook_group("hades").unwrap().is_none());
+    }
+
+    #[test]
+    fn hook_operations_round_trip_in_toml() {
+        #[derive(Debug, PartialEq, Serialize, Deserialize)]
+        struct Record {
+            operation: Operation,
+        }
+        for phase in [Phase::Before, Phase::After] {
+            let record = Record {
+                operation: Operation::Hook(phase),
+            };
+            let text = toml::to_string(&record).unwrap();
+            assert_eq!(toml::from_str::<Record>(&text).unwrap(), record);
+        }
     }
 
     #[test]
