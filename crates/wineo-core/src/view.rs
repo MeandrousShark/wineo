@@ -38,6 +38,7 @@ pub struct StatusOutput<'a> {
     pub lost: bool,
     pub busy: Option<Operation>,
     pub unresolved: bool,
+    pub hooks: Option<HooksOutput>,
     pub run: Option<RunOutput<'a>>,
 }
 
@@ -56,6 +57,7 @@ impl<'a> StatusOutput<'a> {
             lost: status.lost,
             busy,
             unresolved,
+            hooks: None,
             run: status.run.as_ref().map(RunOutput::from),
         }
     }
@@ -90,6 +92,23 @@ pub struct NamedOutput<'a> {
     pub played: Option<PlayedOutput>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct HooksOutput {
+    pub before: bool,
+    pub after: bool,
+}
+
+impl HooksOutput {
+    pub fn presence(hooks: Option<&crate::config::Hooks>) -> Option<Self> {
+        hooks
+            .filter(|hooks| hooks.before.is_some() || hooks.after.is_some())
+            .map(|hooks| Self {
+                before: hooks.before.is_some(),
+                after: hooks.after.is_some(),
+            })
+    }
+}
+
 #[derive(Serialize)]
 pub struct PlayedOutput {
     pub seconds: i64,
@@ -110,13 +129,16 @@ impl From<&Played> for PlayedOutput {
 impl<'a> NamedOutput<'a> {
     pub fn new(report: &'a EnvironmentReport, configured_runner: Option<&'a str>) -> Self {
         Self {
-            status: StatusOutput::new(
-                &report.name,
-                &report.status,
-                report.busy,
-                report.unresolved,
-                &report.tags,
-            ),
+            status: StatusOutput {
+                hooks: HooksOutput::presence(report.hooks.as_ref()),
+                ..StatusOutput::new(
+                    &report.name,
+                    &report.status,
+                    report.busy,
+                    report.unresolved,
+                    &report.tags,
+                )
+            },
             kind: if report.native { "native" } else { "wine" },
             runner: configured_runner.map(|configured| RunnerOutput {
                 configured,

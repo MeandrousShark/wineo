@@ -17,6 +17,7 @@ pub struct Row {
     busy: Option<Operation>,
     unresolved: bool,
     tags: Vec<String>,
+    hooks: Option<wineo_core::view::HooksOutput>,
 }
 
 impl Row {
@@ -47,6 +48,7 @@ impl Row {
             busy,
             unresolved,
             tags: tags.to_vec(),
+            hooks: None,
         }
     }
 }
@@ -72,8 +74,9 @@ impl Gathered {
             environments: self
                 .rows
                 .iter()
-                .map(|row| {
-                    StatusOutput::new(&row.name, &row.status, row.busy, row.unresolved, &row.tags)
+                .map(|row| StatusOutput {
+                    hooks: row.hooks.clone(),
+                    ..StatusOutput::new(&row.name, &row.status, row.busy, row.unresolved, &row.tags)
                 })
                 .collect(),
             errors: &self.errors,
@@ -86,7 +89,7 @@ pub fn format_overview(overview: Overview, now: Timestamp, tz: &TimeZone) -> Gat
         .environments
         .iter()
         .map(|environment| {
-            Row::new(
+            let mut row = Row::new(
                 &environment.name,
                 &environment.status,
                 environment.busy,
@@ -94,7 +97,9 @@ pub fn format_overview(overview: Overview, now: Timestamp, tz: &TimeZone) -> Gat
                 &environment.tags,
                 now,
                 tz,
-            )
+            );
+            row.hooks = environment.hooks.clone();
+            row
         })
         .collect();
     let errors = overview
@@ -259,6 +264,7 @@ mod tests {
                 busy: None,
                 unresolved: false,
                 tags: Vec::new(),
+                hooks: None,
             },
             Row {
                 name: "photoshop".to_owned(),
@@ -273,6 +279,7 @@ mod tests {
                 busy: None,
                 unresolved: false,
                 tags: Vec::new(),
+                hooks: None,
             },
             Row {
                 name: "winecfg".to_owned(),
@@ -287,6 +294,7 @@ mod tests {
                 busy: None,
                 unresolved: false,
                 tags: Vec::new(),
+                hooks: None,
             },
         ];
         assert_eq!(

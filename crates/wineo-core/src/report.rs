@@ -11,7 +11,7 @@ use crate::install::{self, Wanted};
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::runners::Runners;
-use crate::runtime::{Runtime, Status};
+use crate::runtime::{RunStatus, Runtime, State, Status};
 use crate::stats;
 use crate::winetricks;
 
@@ -81,6 +81,7 @@ pub struct OverviewEnvironment {
     pub busy: Option<Operation>,
     pub unresolved: bool,
     pub tags: Vec<String>,
+    pub hooks: Option<crate::view::HooksOutput>,
 }
 
 /// An environment that could not be included in an overview.
@@ -138,7 +139,8 @@ impl EnvironmentReport {
         environment: &Environment,
         warnings: &mut Vec<String>,
     ) -> Result<Self> {
-        let status = Runtime::new(paths, &environment.name).status()?;
+        let busy = Locks::new(paths).busy_with(&environment.name)?;
+        let status = status(paths, &environment.name, busy)?;
         let wine = environment.config.wine();
         // An unresolvable runner is worth showing the rest of the status for.
         let operation_runner = Runtime::new(paths, &environment.name)
@@ -187,7 +189,6 @@ impl EnvironmentReport {
             .and_then(|run| environment.config.targets.get(&run.target));
         let target_exe = target.map(|target| target.exe.clone());
         let components = components(paths, global, environment);
-        let busy = Locks::new(paths).busy_with(&environment.name)?;
         let (summary, _) = stats::summary(
             paths,
             &environment.name,
@@ -240,6 +241,27 @@ pub fn unresolved(paths: &Paths, name: &str) -> bool {
     Runtime::new(paths, name).check_resolved(name).is_err()
 }
 
+fn status(paths: &Paths, name: &str, busy: Option<Operation>) -> Result<Status> {
+    let runtime = Runtime::new(paths, name);
+    let status = runtime.status()?;
+    if busy == Some(Operation::Hook(crate::hooks::Phase::After))
+        && let Some(run) = runtime.read_state()?
+    {
+        let state = match run.status {
+            RunStatus::Exited => State::Exited,
+            RunStatus::Failed => State::Failed,
+            RunStatus::Stopped => State::Stopped,
+            RunStatus::Running => return Ok(status),
+        };
+        return Ok(Status {
+            state,
+            run: Some(run),
+            lost: false,
+        });
+    }
+    Ok(status)
+}
+
 /// Reads the state, lock, installer record, and tags needed for every
 /// environment shown by `list` or `status` without a name.
 pub fn overview(paths: &Paths, filter: OverviewFilter<'_>) -> Result<Overview> {
@@ -248,7 +270,7 @@ pub fn overview(paths: &Paths, filter: OverviewFilter<'_>) -> Result<Overview> {
     for name in environment::names(paths)? {
         let busy = locks.busy_with(&name).unwrap_or(None);
         let unresolved = busy.is_none() && unresolved(paths, &name);
-        match Runtime::new(paths, &name).status() {
+        match status(paths, &name, busy) {
             Ok(status)
                 if !filter.running_only
                     || status.state == crate::runtime::State::Running
@@ -263,6 +285,12 @@ pub fn overview(paths: &Paths, filter: OverviewFilter<'_>) -> Result<Overview> {
                             .is_none_or(|filter| filter.iter().all(|tag| tags.contains(tag)))
                         {
                             overview.environments.push(OverviewEnvironment {
+                                hooks: crate::view::HooksOutput::presence(crate::launch::hooks(
+                                    &environment,
+                                    status.run.as_ref().and_then(|run| {
+                                        environment.config.targets.get(&run.target)
+                                    }),
+                                )),
                                 name,
                                 status,
                                 busy,
@@ -281,6 +309,7 @@ pub fn overview(paths: &Paths, filter: OverviewFilter<'_>) -> Result<Overview> {
                         busy,
                         unresolved,
                         tags: Vec::new(),
+                        hooks: None,
                     }),
                 }
             }

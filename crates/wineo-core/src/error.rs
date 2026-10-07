@@ -79,6 +79,12 @@ pub enum Error {
     #[error("{0} canceled")]
     Canceled(&'static str),
 
+    #[error("{0} is already running")]
+    AlreadyRunning(String),
+
+    #[error("Launch canceled: the before hook exited with code {0}.")]
+    BeforeHookFailed(i32),
+
     /// Keeps the underlying error's message and causes, so output matches
     /// what the transport reported.
     #[error(transparent)]

@@ -38,6 +38,6 @@ pub fn print_event(paths: &Paths, name: &str, event: LaunchEvent) {
         LaunchEvent::NoWaylandSession => {
             eprintln!("Not a Wayland session, starting {name} on X11.");
         }
-        LaunchEvent::Starting | LaunchEvent::Started => {}
+        LaunchEvent::Starting | LaunchEvent::Started | LaunchEvent::AfterHook(_) => {}
     }
 }

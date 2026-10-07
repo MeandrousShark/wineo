@@ -62,16 +62,39 @@ pub struct Cancellation {
 
 impl Cancellation {
     pub fn new() -> anyhow::Result<Self> {
+        Self::listen(Token::new(), false)
+    }
+
+    pub fn after_hook() -> anyhow::Result<Self> {
+        Self::listen(Token::new(), true)
+    }
+
+    pub fn with_token(token: &Token) -> anyhow::Result<Self> {
+        Self::listen(token.clone(), false)
+    }
+
+    pub fn after_hook_with(token: &Token) -> anyhow::Result<Self> {
+        Self::listen(token.clone(), true)
+    }
+
+    fn listen(token: Token, after: bool) -> anyhow::Result<Self> {
         let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP, SIGUSR1])?;
         let handle = signals.handle();
-        let token = Token::new();
         let listener = token.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let thread = thread::spawn(move || {
+            let mut waiting = false;
             while !thread_stop.load(Ordering::Relaxed) {
                 for signal in signals.pending() {
-                    if signal == SIGUSR1 || listener.is_canceled() {
+                    if after && signal != SIGUSR1 && !waiting {
+                        waiting = true;
+                        use std::io::Write;
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "Waiting for the after hook, press Ctrl+C again to kill it."
+                        );
+                    } else if after || signal == SIGUSR1 || listener.is_canceled() {
                         listener.force();
                     } else {
                         listener.cancel();

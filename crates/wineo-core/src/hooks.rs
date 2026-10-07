@@ -227,7 +227,13 @@ pub fn run(
     };
     guard.record_hook(context.hook.phase(), Some(&running))?;
     let pid = Pid::from_raw(group as i32).expect("a spawned child has a positive pid");
-    let stopped = wait_for_exit(pid, token, stop_timeout, process::group_has_live_members)?;
+    let stopped = wait_for_exit_requested(
+        pid,
+        token,
+        stop_timeout,
+        process::group_has_live_members,
+        || guard.hook_request(token),
+    )?;
     let status = spawned
         .child
         .wait()
@@ -241,15 +247,27 @@ pub fn run(
     })
 }
 
+#[cfg(test)]
 fn wait_for_exit(
     pid: Pid,
     token: &Token,
     stop_timeout: Duration,
     group_members: impl Fn(u32) -> Option<bool>,
 ) -> Result<bool> {
+    wait_for_exit_requested(pid, token, stop_timeout, group_members, || Ok(()))
+}
+
+fn wait_for_exit_requested(
+    pid: Pid,
+    token: &Token,
+    stop_timeout: Duration,
+    group_members: impl Fn(u32) -> Option<bool>,
+    mut request: impl FnMut() -> Result<()>,
+) -> Result<bool> {
     let mut stopping = None;
     let mut killed = false;
     loop {
+        request()?;
         // The unreaped child pins its PGID, so local signals need no /proc
         // identity checks and still work when process inspection is unavailable.
         if token.is_forced() && !killed {

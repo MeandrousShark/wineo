@@ -40,22 +40,36 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
     let exe = std::env::current_exe().context("failed to find the wineo binary")?;
     let mut cancellation = Some(Cancellation::new()?);
     let token = cancellation.as_ref().unwrap().token.clone();
+    let mut signal_error = None;
     let result = launch::start(
         paths,
         name,
         overrides.clone(),
         &exe,
         &token,
+        wineo_core::hooks::Output::Inherit,
         Output::Inherit,
         |event| {
             if matches!(event, LaunchEvent::Starting) {
                 // The supervisor reply does not use the token. Restore normal Ctrl+C first.
                 cancellation.take();
+            } else if let LaunchEvent::AfterHook(token) = event {
+                match Cancellation::after_hook_with(&token) {
+                    Ok(listener) => cancellation = Some(listener),
+                    Err(err) => {
+                        signal_error = Some(err);
+                        token.force();
+                    }
+                }
             } else {
                 build::print_event(paths, name, event);
             }
         },
-    )?;
+    );
+    if let Some(err) = signal_error {
+        return Err(err);
+    }
+    let result = result?;
     if result == StartOutcome::AlreadyRunning {
         already_running(name, &overrides);
     }

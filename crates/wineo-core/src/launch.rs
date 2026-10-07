@@ -22,13 +22,13 @@ mod orchestration;
 mod stop;
 pub use exec::{ExecEvent, exec};
 pub use orchestration::{
-    LaunchEvent, PreparedLaunch, StartOutcome, ensure_prefix, install_winetricks, prepare,
-    prepare_target, reconcile, runner, runner_locked, start,
+    AfterHook, LaunchEvent, PreparedLaunch, StartOutcome, ensure_prefix, install_winetricks,
+    prepare, prepare_target, reconcile, runner, runner_locked, start,
 };
 pub(crate) use stop::{
     LostRunOutcome, busy_with, clean_up_installer, clean_up_lost_run, stop_timeout,
 };
-pub use stop::{StopOutcome, stop, stop_run};
+pub use stop::{StopEvent, StopOutcome, stop, stop_run, stop_run_with, stop_with};
 
 /// The binary gamemode ships, which is not what the setting is called.
 pub(crate) const GAMEMODE: &str = "gamemoderun";
@@ -821,7 +821,7 @@ pub fn default_target(environment: &Environment) -> Result<&str> {
     resolve_target(environment, None).map(|(name, _)| name)
 }
 
-fn resolve_target<'a>(
+pub fn resolve_target<'a>(
     environment: &'a Environment,
     requested: Option<&str>,
 ) -> Result<(&'a str, &'a Target)> {

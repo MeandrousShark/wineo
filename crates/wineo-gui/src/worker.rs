@@ -52,6 +52,7 @@ pub(crate) fn start(
                     },
                     &exe,
                     &token,
+                    wineo_core::hooks::Output::Inherit,
                     Output::Log(&log),
                     |event| {
                         if let Some(status) = event_status(&event) {

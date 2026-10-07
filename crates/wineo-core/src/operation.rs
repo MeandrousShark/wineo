@@ -1,8 +1,13 @@
 //! Coordination between wineo commands that can't safely share an environment
 //! or a prefix. Kept separate from the run lock, so holding one never makes an
-//! environment look like it has a program running.
+//! environment look like it has a program running. Hooked launches reserve the
+//! name through preparation and cleanup. Admission gates close while a shared
+//! Launch guard hands off to an exclusive Hook guard, letting existing users
+//! drain without admitting new ones. Ordinary operations only join existing
+//! gates, so environments without hooks keep their original lock files.
 
 use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
@@ -160,9 +165,32 @@ pub struct Guard {
     files: Vec<(File, PathBuf)>,
     exclusive: bool,
     operation: Operation,
+    _reservation: Option<ConfigGuard>,
 }
 
 impl Guard {
+    pub(crate) fn hook_request(&self, token: &crate::cancel::Token) -> Result<()> {
+        for (_, path) in &self.files {
+            let text = fs::read_to_string(path)
+                .context(|| format!("failed to read {}", path.display()))?;
+            let phase = match self.operation {
+                Operation::Hook(phase) => phase,
+                _ => continue,
+            };
+            if text
+                .split_whitespace()
+                .any(|word| word == format!("force-{}", phase.as_str()))
+            {
+                token.force();
+            } else if text
+                .split_whitespace()
+                .any(|word| word == format!("cancel-{}", phase.as_str()))
+            {
+                token.cancel();
+            }
+        }
+        Ok(())
+    }
     /// Hands exclusive locks on to another exclusive operation without letting
     /// go of them, so nothing can slip in between. `new` does this to run an
     /// installer in the prefix it has just made.
@@ -234,6 +262,21 @@ impl Drop for ConfigGuard {
     }
 }
 
+/// Keeps exclusive operations out while the launcher prepares and cleans up.
+#[derive(Debug)]
+pub struct LaunchReservation {
+    _guard: ConfigGuard,
+    locks: Locks,
+    name: String,
+}
+
+impl LaunchReservation {
+    pub(crate) fn acquire(&self, operation: Operation, prefixes: &[&Path]) -> Result<Guard> {
+        let _admission = self.locks.admissions(&self.name, false, operation, true)?;
+        self.locks.acquire_inner(operation, &self.name, prefixes)
+    }
+}
+
 /// One lock to take, and how a message would name what it protects.
 struct Target {
     path: PathBuf,
@@ -241,6 +284,126 @@ struct Target {
 }
 
 impl Locks {
+    /// Prevents another launch or exclusive operation from entering preparation.
+    pub fn reserve_launch(&self, name: &str) -> Result<LaunchReservation> {
+        fs::create_dir_all(&self.dir)
+            .context(|| format!("failed to create {}", self.dir.display()))?;
+        let path = self.dir.join(format!("launch-{name}.lock"));
+        let file = open(&path)?;
+        if !take(&file, &path, false, LOCK_ATTEMPTS)? {
+            if let Some(holder) = self.busy_with(name)? {
+                return Err(Error::Busy {
+                    subject: format!("environment `{name}`"),
+                    holder: Some(holder),
+                    holder_label: holder.describe(),
+                });
+            }
+            return Err(Error::AlreadyRunning(name.to_owned()));
+        }
+        record(&file, &path, Operation::Launch)?;
+        Ok(LaunchReservation {
+            _guard: ConfigGuard { file },
+            locks: self.clone(),
+            name: name.to_owned(),
+        })
+    }
+
+    /// The hook owner observes requests even if the shell traps TERM successfully.
+    pub fn request_hook_stop(
+        &self,
+        name: &str,
+        expected: Phase,
+        force: bool,
+    ) -> Result<Option<Running>> {
+        let Some((phase, running)) = self.hook_group(name)? else {
+            return Ok(None);
+        };
+        if phase != expected {
+            return Ok(None);
+        }
+        let path = self.name_path(name);
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .context(|| format!("failed to open {}", path.display()))?;
+        // A phase-tagged request cannot cancel after if before ends during this write.
+        writeln!(
+            file,
+            "{}-{}",
+            if force { "force" } else { "cancel" },
+            expected.as_str()
+        )
+        .context(|| format!("failed to write {}", path.display()))?;
+        Ok(Some(running))
+    }
+
+    fn admissions(
+        &self,
+        name: &str,
+        exclusive: bool,
+        operation: Operation,
+        create: bool,
+    ) -> Result<Guard> {
+        let targets = [self.dir.join(format!("admit-{name}.lock"))];
+        let mut guard = Guard {
+            files: Vec::new(),
+            exclusive,
+            operation,
+            _reservation: None,
+        };
+        for path in targets {
+            if !create && !path.exists() {
+                continue;
+            }
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .context(|| format!("failed to create {}", parent.display()))?;
+            }
+            let file = open(&path)?;
+            // take uses shared access, so an exclusive gate passes false.
+            if !take(&file, &path, !exclusive, LOCK_ATTEMPTS)? {
+                return Err(self.busy(&Target {
+                    path,
+                    subject: format!("environment `{name}`"),
+                })?);
+            }
+            if exclusive {
+                record(&file, &path, operation)?;
+            }
+            guard.files.push((file, path));
+        }
+        Ok(guard)
+    }
+
+    /// Blocks new operations while existing shared users drain. The caller
+    /// retains the run lock until this returns its exclusive Hook guard.
+    pub fn after_launch(&self, guard: Guard, name: &str) -> Result<Guard> {
+        self.after_hook(Some(guard), name)
+    }
+
+    pub(crate) fn after_hook(&self, guard: Option<Guard>, name: &str) -> Result<Guard> {
+        let operation = Operation::Hook(Phase::After);
+        let prefixes = &[];
+        let _admission = loop {
+            match self.admissions(name, true, operation, true) {
+                Err(Error::Busy {
+                    holder: Some(Operation::Launch),
+                    ..
+                }) => thread::sleep(LOCK_RETRY),
+                result => break result?,
+            }
+        };
+        drop(guard);
+        loop {
+            match self.acquire_inner(operation, name, prefixes) {
+                Err(Error::Busy {
+                    holder: Some(Operation::Launch),
+                    ..
+                }) => thread::sleep(LOCK_RETRY),
+                result => return result,
+            }
+        }
+    }
     pub fn new(paths: &Paths) -> Self {
         Self {
             dir: paths.locks_dir(),
@@ -263,6 +426,38 @@ impl Locks {
     /// locked in a fixed order, so two commands can never take half of each
     /// other's locks. Nothing is held when this fails.
     pub fn acquire(&self, operation: Operation, name: &str, prefixes: &[&Path]) -> Result<Guard> {
+        let prefixes = if matches!(operation, Operation::Hook(_)) {
+            &[]
+        } else {
+            prefixes
+        };
+        let path = self.dir.join(format!("launch-{name}.lock"));
+        // Hooked launches create reservations. Joining only existing ones
+        // keeps hook-less operations from creating new coordination files.
+        let reservation = if !operation.is_shared() && path.exists() {
+            let file = open(&path)?;
+            // take's flag means shared, the inverse of exclusive admission.
+            if !take(&file, &path, true, LOCK_ATTEMPTS)? {
+                let holder = self.busy_with(name)?.unwrap_or(Operation::Launch);
+                return Err(Error::Busy {
+                    subject: format!("environment `{name}`"),
+                    holder: Some(holder),
+                    holder_label: holder.describe(),
+                });
+            }
+            Some(ConfigGuard { file })
+        } else {
+            None
+        };
+        // Only hook owners create admission gates. Ordinary operations join
+        // existing gates so they cannot enter during the after handoff.
+        let _admission = self.admissions(name, false, operation, false)?;
+        let mut guard = self.acquire_inner(operation, name, prefixes)?;
+        guard._reservation = reservation;
+        Ok(guard)
+    }
+
+    fn acquire_inner(&self, operation: Operation, name: &str, prefixes: &[&Path]) -> Result<Guard> {
         let mut targets = vec![Target {
             path: self.name_path(name),
             subject: format!("environment `{name}`"),
@@ -316,6 +511,7 @@ impl Locks {
             files,
             exclusive: !operation.is_shared(),
             operation,
+            _reservation: None,
         })
     }
 
@@ -360,12 +556,19 @@ impl Locks {
     /// momentary check, so the answer can be stale by the time it is used.
     /// Shared holders are left out, since a run already shows up on its own.
     pub fn busy_with(&self, name: &str) -> Result<Option<Operation>> {
-        let path = self.name_path(name);
-        if !path.exists() {
-            return Ok(None);
+        for path in [
+            self.name_path(name),
+            self.dir.join(format!("admit-{name}.lock")),
+        ] {
+            if path.exists()
+                && let Some(holder) = self
+                    .holder(&path)?
+                    .filter(|operation| !operation.is_shared())
+            {
+                return Ok(Some(holder));
+            }
         }
-        self.holder(&path)
-            .map(|holder| holder.filter(|operation| !operation.is_shared()))
+        Ok(None)
     }
 
     /// Only active Hook holders expose a group; stale lock contents are ignored.
@@ -598,18 +801,56 @@ mod tests {
             }
             let alias = locks
                 .acquire(Operation::Launch, "other", &[&prefix])
-                .unwrap_err();
-            assert_eq!(
-                alias.to_string(),
-                format!(
-                    "prefix {} is busy running its {} hook",
-                    prefix.display(),
-                    phase.as_str()
-                )
-            );
+                .unwrap();
+            let other_hook = locks
+                .acquire(Operation::Hook(phase), "third", &[&prefix])
+                .unwrap();
+            drop(other_hook);
+            drop(alias);
             drop(held);
             assert_eq!(locks.busy_with("hades").unwrap(), None);
         }
+    }
+
+    #[test]
+    fn after_handoff_does_not_wait_for_another_environment_sharing_the_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let locks = locks(root.path());
+        let prefix = root.path().join("prefix");
+        let other = locks
+            .acquire(Operation::Launch, "other", &[&prefix])
+            .unwrap();
+        let launch = locks
+            .acquire(Operation::Launch, "hades", &[&prefix])
+            .unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker_locks = locks.clone();
+        let worker = thread::spawn(move || {
+            let _ = sender.send(worker_locks.after_launch(launch, "hades"));
+        });
+        let result = receiver.recv_timeout(std::time::Duration::from_secs(5));
+        if result.is_err() {
+            drop(other);
+            worker.join().unwrap();
+            panic!("after handoff waited for another environment's prefix lock");
+        }
+        let after = result.unwrap().unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            locks.busy_with("hades").unwrap(),
+            Some(Operation::Hook(Phase::After))
+        );
+        assert!(
+            locks
+                .acquire(Operation::Launch, "hades", &[&prefix])
+                .is_err()
+        );
+        let alias = locks
+            .acquire(Operation::Launch, "alias", &[&prefix])
+            .unwrap();
+        drop(alias);
+        drop(after);
+        drop(other);
     }
 
     #[test]
@@ -633,6 +874,45 @@ mod tests {
         assert!(locks.hook_group("hades").unwrap().is_none());
         fs::write(locks.name_path("hades"), "hook-before 1 123 boot 456\n").unwrap();
         assert!(locks.hook_group("hades").unwrap().is_none());
+    }
+
+    #[test]
+    fn hook_stop_requests_match_the_phase_and_ignore_an_old_before_request() {
+        let root = tempfile::tempdir().unwrap();
+        let locks = locks(root.path());
+        let guard = locks
+            .acquire(Operation::Hook(Phase::After), "app", &[])
+            .unwrap();
+        let running = Running {
+            group: 123,
+            boot_id: "boot".to_owned(),
+            leader_start: 456,
+        };
+        guard.record_hook(Phase::After, Some(&running)).unwrap();
+        let path = locks.name_path("app");
+        let original = fs::read_to_string(&path).unwrap();
+        assert!(
+            locks
+                .request_hook_stop("app", Phase::Before, false)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        // Stand in for before finishing between the phase check and the append.
+        writeln!(
+            OpenOptions::new().append(true).open(&path).unwrap(),
+            "cancel-before"
+        )
+        .unwrap();
+        let token = crate::cancel::Token::new();
+        guard.hook_request(&token).unwrap();
+        assert!(!token.is_canceled());
+        assert_eq!(
+            locks.request_hook_stop("app", Phase::After, true).unwrap(),
+            Some(running)
+        );
+        guard.hook_request(&token).unwrap();
+        assert!(token.is_forced());
     }
 
     #[test]

@@ -15,7 +15,7 @@ use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
 use crate::installer::Output;
 use crate::name;
-use crate::operation::{Locks, Operation};
+use crate::operation::{LaunchReservation, Locks, Operation};
 use crate::paths::Paths;
 use crate::prefix::{self, BuildPlan, PrefixEvent};
 use crate::runner::Runner;
@@ -378,6 +378,30 @@ impl Environment {
         empty_confirmed: bool,
         token: &Token,
         output: Output<'_>,
+        events: impl FnMut(PrefixEvent),
+    ) -> Result<bool> {
+        self.build_prefix_reserved(
+            paths,
+            global,
+            runner,
+            empty_confirmed,
+            token,
+            output,
+            None,
+            events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_prefix_reserved(
+        &self,
+        paths: &Paths,
+        global: &GlobalConfig,
+        runner: &Runner,
+        empty_confirmed: bool,
+        token: &Token,
+        output: Output<'_>,
+        reservation: Option<&LaunchReservation>,
         mut events: impl FnMut(PrefixEvent),
     ) -> Result<bool> {
         let dir = self.prefix(paths)?;
@@ -387,7 +411,10 @@ impl Environment {
         if plan()? == BuildPlan::Ready {
             return Ok(false);
         }
-        let _guard = Locks::new(paths).acquire(Operation::Create, &self.name, &[&dir])?;
+        let _guard = match reservation {
+            Some(reservation) => reservation.acquire(Operation::Create, &[&dir])?,
+            None => Locks::new(paths).acquire(Operation::Create, &self.name, &[&dir])?,
+        };
         // Another command could have removed the environment or built the
         // prefix before the lock was taken.
         Self::ensure_exists(paths, &self.name)?;

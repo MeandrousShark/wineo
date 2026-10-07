@@ -2,9 +2,11 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 
+use crate::cancel::Token;
 use crate::config::{DEFAULT_STOP_TIMEOUT, GlobalConfig};
 use crate::environment::Environment;
 use crate::error::Result;
+use crate::hooks::Phase;
 use crate::installer::{self, Cleaned};
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
@@ -33,7 +35,23 @@ impl StopOutcome {
 
 /// Stops an environment, cleaning up a lost run or installer when needed.
 pub fn stop(paths: &Paths, name: &str, force: bool) -> anyhow::Result<StopOutcome> {
-    let outcome = stop_run(paths, name, force)?;
+    stop_with(paths, name, force, &Token::new(), |_| {})
+}
+
+#[derive(Debug)]
+pub enum StopEvent {
+    WaitingHook,
+    WaitingAfter,
+}
+
+pub fn stop_with(
+    paths: &Paths,
+    name: &str,
+    force: bool,
+    token: &Token,
+    events: impl FnMut(StopEvent),
+) -> anyhow::Result<StopOutcome> {
+    let outcome = stop_run_with(paths, name, force, token, events)?;
     let StopOutcome::NotRunning { mut messages } = outcome else {
         return Ok(outcome);
     };
@@ -68,8 +86,24 @@ pub fn stop(paths: &Paths, name: &str, force: bool) -> anyhow::Result<StopOutcom
 
 /// Stops an app run or cleans up after one that wineo lost track of.
 pub fn stop_run(paths: &Paths, name: &str, force: bool) -> anyhow::Result<StopOutcome> {
+    stop_run_with(paths, name, force, &Token::new(), |_| {})
+}
+
+pub fn stop_run_with(
+    paths: &Paths,
+    name: &str,
+    force: bool,
+    token: &Token,
+    mut events: impl FnMut(StopEvent),
+) -> anyhow::Result<StopOutcome> {
     Environment::ensure_exists(paths, name)?;
     if let Some(operation) = busy_with(paths, name)? {
+        if matches!(operation, Operation::Hook(_)) {
+            wait_hook(paths, name, force, false, token, &mut events)?;
+            return Ok(StopOutcome::Stopped {
+                messages: Vec::new(),
+            });
+        }
         bail!(
             "{name} is busy: {}, so there is no run to stop. Finish or cancel it in its terminal",
             operation.describe()
@@ -78,11 +112,31 @@ pub fn stop_run(paths: &Paths, name: &str, force: bool) -> anyhow::Result<StopOu
 
     let (stop_timeout, mut messages) = stop_timeout(paths);
     let runtime = Runtime::new(paths, name);
+    // Stop must still work with a broken config or state file. Only a known
+    // after hook can extend the wait beyond the ordinary run deadline.
+    let has_after = Environment::load(paths, name)
+        .ok()
+        .is_some_and(|environment| {
+            let Some(run) = runtime.read_state().ok().flatten() else {
+                return false;
+            };
+            let target = environment.config.targets.get(&run.target);
+            super::hooks(&environment, target).is_some_and(|hooks| hooks.after.is_some())
+        });
     let grace = if force { 0 } else { stop_timeout };
     let timeout = Duration::from_secs(u64::from(grace) + 10);
-    if supervisor::stop(&runtime, force, timeout)
+    if supervisor::stop_with_after(&runtime, force, timeout, has_after)
         .with_context(|| format!("failed to stop {name}"))?
     {
+        // A finished state precedes the Hook handoff, which still holds the
+        // run lock. Wait through it before checking the Hook lock.
+        while has_after && runtime.is_running()? {
+            if token.is_canceled() {
+                return Err(crate::error::Error::Canceled("stop").into());
+            }
+            token.wait_timeout(Duration::from_millis(20));
+        }
+        wait_hook(paths, name, false, true, token, &mut events)?;
         return Ok(StopOutcome::Stopped { messages });
     }
 
@@ -109,6 +163,47 @@ pub fn stop_run(paths: &Paths, name: &str, force: bool) -> anyhow::Result<StopOu
         }
     }
     Ok(StopOutcome::NotRunning { messages })
+}
+
+fn wait_hook(
+    paths: &Paths,
+    name: &str,
+    force: bool,
+    after_only: bool,
+    token: &Token,
+    events: &mut impl FnMut(StopEvent),
+) -> Result<()> {
+    let locks = Locks::new(paths);
+    let mut waiting = false;
+    let mut listening = false;
+    let mut requested = None;
+    while let Some(Operation::Hook(phase)) = locks.busy_with(name)? {
+        if after_only && phase != Phase::After {
+            break;
+        }
+        if !listening {
+            events(StopEvent::WaitingHook);
+            listening = true;
+        }
+        if token.is_canceled() {
+            return Err(crate::error::Error::Canceled("stop"));
+        }
+        if phase == Phase::After && !force && !waiting {
+            events(StopEvent::WaitingAfter);
+            waiting = true;
+        }
+        if (phase == Phase::Before || force)
+            && requested != Some(phase)
+            && let Some(running) = locks.request_hook_stop(name, phase, force)?
+        {
+            requested = Some(phase);
+            if force {
+                running.kill_now()?;
+            }
+        }
+        token.wait_timeout(Duration::from_millis(20));
+    }
+    Ok(())
 }
 
 /// Result of cleaning up state left behind by a lost app run.

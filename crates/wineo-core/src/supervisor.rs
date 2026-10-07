@@ -166,7 +166,7 @@ impl Supervisor {
     /// ended, and appending the finished session to `stats_log`.
     #[allow(clippy::too_many_arguments)]
     pub fn wait(
-        self,
+        &self,
         runtime: &Runtime,
         launch: &Launch,
         child: Child,
@@ -488,6 +488,8 @@ pub struct Spec {
     pub log_limit_mb: u32,
     pub launch: Launch,
     pub overrides: Overrides,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<crate::launch::AfterHook>,
 }
 
 /// What a detached supervisor needs to hold its own operation lock and confirm
@@ -622,7 +624,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
     // `start` holds a lock of its own until this one is taken, but it lets go
     // when it exits, so the run keeps its protection here instead.
     let held: Vec<&Path> = spec.launch.host.prefix().into_iter().collect();
-    let _claim = spec
+    let claim = spec
         .claim
         .locks
         .acquire(Operation::Launch, &spec.claim.name, &held)?;
@@ -664,7 +666,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
     };
     // Its own process group, so the whole tree can be signalled as one and a
     // signal to it never reaches this supervisor.
-    let child = spec
+    let spawned = spec
         .launch
         .command()
         .stdin(Stdio::null())
@@ -672,7 +674,8 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         .stderr(clone_log()?)
         .process_group(0)
         .spawn()
-        .context(|| format!("failed to start {}", spec.launch.host.launcher()))?;
+        .context(|| format!("failed to start {}", spec.launch.host.launcher()));
+    let child = spawned?;
     let mut state = RunState::running(
         RunMode::Detached,
         spec.launch.target.clone().unwrap_or_default(),
@@ -694,6 +697,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
     let cap = Cap::start(&session, clone_log()?, spec.log_limit_mb);
 
     let stop_timeout = Duration::from_secs(spec.stop_timeout.into());
+    let mut forced = false;
     let result = supervisor.wait(
         &runtime,
         &spec.launch,
@@ -701,13 +705,63 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         &mut state,
         stop_timeout,
         &spec.stats_log,
-        |notice| log_notice(&log, native, notice),
+        |notice| {
+            if matches!(notice, Notice::Killing) {
+                forced = true;
+            }
+            log_notice(&log, native, notice);
+        },
     );
     // One final check before the run lock goes, so whoever is following the
     // log can still see the last reset.
     drop(cap);
-    drop(lock);
+    if state.status != RunStatus::Running && spec.after.is_some() {
+        let mut hook_state = state.clone();
+        if forced {
+            hook_state.exit_code = None;
+        }
+        if let Err(err) = finish_after(&spec, claim, lock, &hook_state, &log, native) {
+            log_notice(&log, native, Notice::Warning(err));
+        }
+    }
     result
+}
+
+fn finish_after(
+    spec: &Spec,
+    claim: crate::operation::Guard,
+    lock: crate::runtime::RunLock,
+    state: &RunState,
+    log: &File,
+    native: bool,
+) -> Result<()> {
+    let Some(after) = &spec.after else {
+        return Ok(());
+    };
+    let guard = spec
+        .claim
+        .locks
+        .after_launch(claim, &spec.claim.name)
+        .map_err(|err| {
+            Error::StartFailed(format!(
+                "the after hook was skipped: {}",
+                error::chain(&err)
+            ))
+        })?;
+    drop(lock);
+    let output = log
+        .try_clone()
+        .context(|| "failed to clone hook output".to_owned())?;
+    if let Err(err) = after.run(
+        &guard,
+        state,
+        &Token::new(),
+        Duration::from_secs(spec.stop_timeout.into()),
+        crate::hooks::Output::File(output),
+    ) {
+        log_notice(log, native, Notice::Warning(err));
+    }
+    Ok(())
 }
 
 fn log_notice(mut log: &File, native: bool, notice: Notice) {
@@ -748,6 +802,15 @@ impl Reporter {
 /// Asks whatever owns a run to stop it, SIGTERM for a clean stop or SIGUSR1 to
 /// force it, then waits for the run to end. Returns false if nothing was running.
 pub fn stop(runtime: &Runtime, force: bool, timeout: Duration) -> Result<bool> {
+    stop_with_after(runtime, force, timeout, false)
+}
+
+pub(crate) fn stop_with_after(
+    runtime: &Runtime,
+    force: bool,
+    timeout: Duration,
+    has_after: bool,
+) -> Result<bool> {
     if !runtime.is_running()? {
         return Ok(false);
     }
@@ -778,6 +841,15 @@ pub fn stop(runtime: &Runtime, force: bool, timeout: Duration) -> Result<bool> {
         thread::sleep(Duration::from_millis(50));
     }
     while runtime.is_running()? {
+        // The after handoff retains the run lock only until its exclusive
+        // guard is ready. The program's deadline ends with its recorded end.
+        if has_after
+            && runtime
+                .read_state()?
+                .is_some_and(|run| run.status != RunStatus::Running)
+        {
+            return Ok(true);
+        }
         if Instant::now() >= deadline {
             return Err(timed_out());
         }
@@ -792,6 +864,54 @@ mod tests {
 
     use super::*;
     use crate::runner::Runner;
+
+    #[test]
+    fn stop_keeps_its_deadline_after_the_end_record_without_an_after_hook() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = Runtime::at(root.path().join("app"));
+        let _lock = runtime.try_lock().unwrap().unwrap();
+        let mut child = Command::new("sleep").arg("60").spawn().unwrap();
+        // Keep the lock held past the end record, but send stop's signal to
+        // a disposable child rather than the test process holding the lock.
+        std::fs::write(runtime.dir().join("lock"), child.id().to_string()).unwrap();
+        let mut state = RunState::running(
+            RunMode::Detached,
+            "app".to_owned(),
+            child.id(),
+            None,
+            &Overrides::default(),
+        );
+        state.finish(RunStatus::Exited);
+        runtime.write_state(&state).unwrap();
+        let timeout = Duration::from_millis(50);
+        let result = stop(&runtime, false, timeout);
+        let _ = child.kill();
+        child.wait().unwrap();
+        assert!(matches!(result, Err(Error::StillRunning(_))));
+    }
+
+    #[test]
+    fn stop_leaves_the_after_handoff_wait_to_the_caller() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = Runtime::at(root.path().join("app"));
+        let _lock = runtime.try_lock().unwrap().unwrap();
+        let mut child = Command::new("sleep").arg("60").spawn().unwrap();
+        std::fs::write(runtime.dir().join("lock"), child.id().to_string()).unwrap();
+        let mut state = RunState::running(
+            RunMode::Detached,
+            "app".to_owned(),
+            child.id(),
+            None,
+            &Overrides::default(),
+        );
+        state.finish(RunStatus::Exited);
+        runtime.write_state(&state).unwrap();
+        let result = stop_with_after(&runtime, false, Duration::from_millis(50), true);
+        let _ = child.kill();
+        child.wait().unwrap();
+        assert!(result.unwrap());
+        assert!(runtime.is_running().unwrap());
+    }
 
     #[test]
     fn reports_round_trip_as_single_lines() {
@@ -870,6 +990,7 @@ mod tests {
                 env: BTreeMap::from([("DXVK_HUD".to_owned(), "fps".to_owned())]),
                 args: vec!["-x".to_owned()],
             },
+            after: None,
         };
         let text = toml::to_string(&spec).unwrap();
         let parsed: Spec = toml::from_str(&text).unwrap();

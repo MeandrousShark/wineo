@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 
@@ -7,9 +8,10 @@ use crate::config::GlobalConfig;
 use crate::desktop;
 use crate::environment::Environment;
 use crate::error::Error;
+use crate::hooks::{self, Hook, Phase};
 use crate::install::{self, Wanted};
 use crate::installer::Output;
-use crate::operation::{Guard, Locks, Operation};
+use crate::operation::{Guard, LaunchReservation, Locks, Operation};
 use crate::paths::Paths;
 use crate::prefix::PrefixEvent;
 use crate::runner::Runner;
@@ -18,7 +20,89 @@ use crate::runtime::{RunStatus, Runtime};
 use crate::supervisor::{self, Claim, Spec, Started};
 use crate::winetricks::{self, WinetricksEvent};
 
-use super::{Host, Launch, Overrides, Wayland};
+use super::{Host, Launch, Overrides, Wayland, resolve_target};
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AfterHook {
+    paths: Paths,
+    environment: String,
+    target: String,
+    exe: String,
+    wine: Option<(Runner, PathBuf)>,
+    command: String,
+}
+
+impl AfterHook {
+    pub fn run(
+        &self,
+        guard: &Guard,
+        state: &crate::runtime::RunState,
+        token: &Token,
+        stop_timeout: Duration,
+        output: hooks::Output,
+    ) -> crate::error::Result<()> {
+        let end = match state.status {
+            RunStatus::Exited => hooks::End::Exited,
+            RunStatus::Failed => hooks::End::Failed,
+            RunStatus::Stopped => hooks::End::Stopped,
+            RunStatus::Running => return Ok(()),
+        };
+        let seconds = state
+            .ended_at
+            .unwrap_or(state.started_at)
+            .duration_since(state.started_at)
+            .as_secs()
+            .max(0) as u64;
+        self.run_ending(
+            guard,
+            hooks::Ending {
+                end,
+                exit_code: state.exit_code,
+                seconds,
+            },
+            token,
+            stop_timeout,
+            output,
+        )
+    }
+
+    fn run_ending(
+        &self,
+        guard: &Guard,
+        ending: hooks::Ending,
+        token: &Token,
+        stop_timeout: Duration,
+        output: hooks::Output,
+    ) -> crate::error::Result<()> {
+        let context = hooks::Context {
+            environment: &self.environment,
+            target: &self.target,
+            exe: &self.exe,
+            wine: self
+                .wine
+                .as_ref()
+                .map(|(runner, prefix)| (runner, prefix.as_path())),
+            hook: Hook::After(ending),
+        };
+        match hooks::run(
+            &self.command,
+            &self.paths,
+            &context,
+            guard,
+            token,
+            stop_timeout,
+            output,
+        )? {
+            hooks::Outcome::Finished(status) if !status.success() => {
+                Err(Error::StartFailed(format!(
+                    "the after hook exited with code {}.",
+                    crate::runtime::exit_code(status)
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum LaunchEvent {
@@ -32,6 +116,8 @@ pub enum LaunchEvent {
     NoWaylandSession,
     /// The caller can release temporary signal handlers before supervisor IPC.
     Starting,
+    /// Launcher-side cleanup uses a fresh token, even after a canceled before.
+    AfterHook(Token),
     Started,
 }
 
@@ -46,7 +132,81 @@ pub struct PreparedLaunch {
     pub global: GlobalConfig,
     pub environment: Environment,
     pub launch: Launch,
-    _guard: Guard,
+    pub after: Option<AfterHook>,
+    guard: Option<Guard>,
+    _reservation: Option<LaunchReservation>,
+}
+
+impl PreparedLaunch {
+    pub fn after_guard(&mut self, paths: &Paths) -> crate::error::Result<Option<Guard>> {
+        let Some(guard) = self.guard.take() else {
+            return Ok(None);
+        };
+        if self.after.is_none() {
+            return Ok(None);
+        }
+        Locks::new(paths)
+            .after_launch(guard, &self.environment.name)
+            .map(Some)
+            .map_err(|err| {
+                Error::StartFailed(format!(
+                    "the after hook was skipped: {}",
+                    crate::error::chain(&err)
+                ))
+            })
+    }
+
+    /// Cleans up a launch that got past before but never started its program.
+    pub fn failed(&mut self, paths: &Paths, lock: Option<crate::runtime::RunLock>, token: &Token) {
+        failed_after(
+            paths,
+            &self.environment.name,
+            self.after.as_ref(),
+            self.guard.take(),
+            self.global.stop_timeout,
+            lock,
+            token,
+        );
+    }
+}
+
+fn failed_after(
+    paths: &Paths,
+    name: &str,
+    after: Option<&AfterHook>,
+    guard: Option<Guard>,
+    stop_timeout: u32,
+    lock: Option<crate::runtime::RunLock>,
+    token: &Token,
+) {
+    let Some(after) = after else {
+        return;
+    };
+    let locks = Locks::new(paths);
+    let result = (|| {
+        let guard = locks.after_hook(guard, name).map_err(|err| {
+            Error::StartFailed(format!(
+                "the after hook was skipped: {}",
+                crate::error::chain(&err)
+            ))
+        })?;
+        drop(lock);
+        // A canceled preparation must still undo a successful before hook.
+        after.run_ending(
+            &guard,
+            hooks::Ending {
+                end: hooks::End::Failed,
+                exit_code: None,
+                seconds: 0,
+            },
+            token,
+            Duration::from_secs(stop_timeout.into()),
+            hooks::Output::Inherit,
+        )
+    })();
+    if let Err(err) = result {
+        eprintln!("warning: {}", crate::error::chain(&err));
+    }
 }
 
 pub fn prepare(
@@ -54,23 +214,186 @@ pub fn prepare(
     name: &str,
     overrides: &Overrides,
     token: &Token,
+    before_output: hooks::Output,
     mut events: impl FnMut(LaunchEvent),
 ) -> anyhow::Result<PreparedLaunch> {
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, name)?;
-    prepare_target(paths, &global, &environment, overrides, token, &mut events)?;
-    let launch = Launch::target(paths, &global, &environment, overrides)?;
-    let held: Vec<&Path> = launch.host.prefix().into_iter().collect();
-    let guard = Locks::new(paths).acquire(Operation::Launch, name, &held)?;
-    Environment::ensure_exists(paths, name)?;
-    Runtime::new(paths, name).check_resolved(name)?;
-    reconcile(paths, &global, &environment, &launch, events)?;
+    // Leave ordinary target errors to preparation, which checks the runner first.
+    let selected = if environment.config.hooks.is_some()
+        || environment
+            .config
+            .targets
+            .values()
+            .any(|target| target.hooks.is_some())
+    {
+        resolve_target(&environment, overrides.target.as_deref()).ok()
+    } else {
+        None
+    };
+    let locks = Locks::new(paths);
+    let runtime = Runtime::new(paths, name);
+    let configured = selected
+        .and_then(|(_, target)| super::hooks(&environment, Some(target)))
+        .filter(|hooks| hooks.before.is_some() || hooks.after.is_some());
+    let reservation = if configured.is_some() {
+        let (target_name, _) = selected.expect("hooks have a selected target");
+        check_not_running(&locks, &runtime, name, target_name)?;
+        runtime.check_resolved(name)?;
+        let reservation = locks.reserve_launch(name)?;
+        check_not_running(&locks, &runtime, name, target_name)?;
+        runtime.check_resolved(name)?;
+        Some(reservation)
+    } else {
+        None
+    };
+    let wine = if configured.is_some() && environment.config.wine().is_some() {
+        Some((
+            runner(paths, &global, &environment)?,
+            environment.prefix(paths)?,
+        ))
+    } else {
+        None
+    };
+    let after = configured
+        .and_then(|hooks| hooks.after.as_ref())
+        .map(|command| {
+            let (target_name, target) = selected.expect("hooks have a selected target");
+            AfterHook {
+                paths: paths.clone(),
+                environment: name.to_owned(),
+                target: target_name.to_owned(),
+                exe: target.exe.clone(),
+                wine: wine.clone(),
+                command: command.clone(),
+            }
+        });
+    if let Some(before) = configured.and_then(|hooks| hooks.before.as_deref()) {
+        let (target_name, target) = selected.expect("hooks have a selected target");
+        let prefixes: Vec<&Path> = wine
+            .as_ref()
+            .map(|(_, prefix)| prefix.as_path())
+            .into_iter()
+            .collect();
+        crate::trash::check_pending(paths, name, &prefixes)?;
+        let guard = reservation
+            .as_ref()
+            .expect("hooks reserved the launch")
+            .acquire(Operation::Hook(Phase::Before), &[])?;
+        runtime.check_resolved(name)?;
+        if runtime.is_running()? {
+            return Err(Error::AlreadyRunning(name.to_owned()).into());
+        }
+        let context = hooks::Context {
+            environment: name,
+            target: target_name,
+            exe: &target.exe,
+            wine: wine
+                .as_ref()
+                .map(|(runner, prefix)| (runner, prefix.as_path())),
+            hook: Hook::Before,
+        };
+        match hooks::run(
+            before,
+            paths,
+            &context,
+            &guard,
+            token,
+            Duration::from_secs(global.stop_timeout.into()),
+            before_output,
+        )? {
+            hooks::Outcome::Canceled(_) => return Err(Error::Canceled("launch").into()),
+            hooks::Outcome::Finished(status) if !status.success() => {
+                return Err(Error::BeforeHookFailed(crate::runtime::exit_code(status)).into());
+            }
+            _ => {}
+        }
+    }
+    let mut guard = None;
+    let result = (|| {
+        prepare_target_reserved(
+            paths,
+            &global,
+            &environment,
+            overrides,
+            token,
+            reservation.as_ref(),
+            &mut events,
+        )?;
+        let launch = Launch::target(paths, &global, &environment, overrides)?;
+        let held: Vec<&Path> = launch.host.prefix().into_iter().collect();
+        guard = Some(match &reservation {
+            Some(reservation) => reservation.acquire(Operation::Launch, &held)?,
+            None => locks.acquire(Operation::Launch, name, &held)?,
+        });
+        Environment::ensure_exists(paths, name)?;
+        runtime.check_resolved(name)?;
+        reconcile(paths, &global, &environment, &launch, &mut events)?;
+        Ok::<_, anyhow::Error>(launch)
+    })();
+    let launch = match result {
+        Ok(launch) => launch,
+        Err(err) => {
+            let cleanup = Token::new();
+            if matches!(
+                err.downcast_ref::<Error>(),
+                Some(Error::AlreadyRunning(_) | Error::DifferentTargetRunning { .. })
+            ) {
+                return Err(err);
+            }
+            if after.is_some() {
+                events(LaunchEvent::AfterHook(cleanup.clone()));
+            }
+            failed_after(
+                paths,
+                name,
+                after.as_ref(),
+                guard,
+                global.stop_timeout,
+                None,
+                &cleanup,
+            );
+            return Err(err);
+        }
+    };
     Ok(PreparedLaunch {
         global,
         environment,
         launch,
-        _guard: guard,
+        after,
+        guard,
+        _reservation: reservation,
     })
+}
+
+fn check_not_running(
+    locks: &Locks,
+    runtime: &Runtime,
+    name: &str,
+    requested: &str,
+) -> crate::error::Result<()> {
+    if let Some(holder) = locks.busy_with(name)? {
+        return Err(Error::Busy {
+            subject: format!("environment `{name}`"),
+            holder: Some(holder),
+            holder_label: holder.describe(),
+        });
+    }
+    if runtime.is_running()? {
+        if let Some(run) = runtime
+            .read_state()?
+            .filter(|run| run.status == RunStatus::Running)
+            && run.target != requested
+        {
+            return Err(Error::DifferentTargetRunning {
+                name: name.to_owned(),
+                running: run.target,
+                requested: requested.to_owned(),
+            });
+        }
+        return Err(Error::AlreadyRunning(name.to_owned()));
+    }
+    Ok(())
 }
 
 pub fn runner(
@@ -95,6 +418,18 @@ pub fn prepare_target(
     environment: &Environment,
     overrides: &Overrides,
     token: &Token,
+    events: impl FnMut(LaunchEvent),
+) -> anyhow::Result<()> {
+    prepare_target_reserved(paths, global, environment, overrides, token, None, events)
+}
+
+fn prepare_target_reserved(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    overrides: &Overrides,
+    token: &Token,
+    reservation: Option<&LaunchReservation>,
     mut events: impl FnMut(LaunchEvent),
 ) -> anyhow::Result<()> {
     if environment.config.wine().is_none() {
@@ -118,7 +453,15 @@ pub fn prepare_target(
     {
         winetricks::check_available(&runner)?;
     }
-    ensure_prefix(paths, global, environment, &runner, token, &mut events)
+    ensure_prefix_reserved(
+        paths,
+        global,
+        environment,
+        &runner,
+        token,
+        reservation,
+        &mut events,
+    )
 }
 
 pub fn ensure_prefix(
@@ -127,16 +470,29 @@ pub fn ensure_prefix(
     environment: &Environment,
     runner: &Runner,
     token: &Token,
+    events: impl FnMut(LaunchEvent),
+) -> anyhow::Result<()> {
+    ensure_prefix_reserved(paths, global, environment, runner, token, None, events)
+}
+
+fn ensure_prefix_reserved(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    runner: &Runner,
+    token: &Token,
+    reservation: Option<&LaunchReservation>,
     mut events: impl FnMut(LaunchEvent),
 ) -> anyhow::Result<()> {
     let log = paths.runtime_dir(&environment.name).join("create.log");
-    match environment.build_prefix(
+    match environment.build_prefix_reserved(
         paths,
         global,
         runner,
         false,
         token,
         Output::Log(&log),
+        reservation,
         |event| {
             if let PrefixEvent::Started { dir } = event {
                 events(LaunchEvent::BuildingPrefix {
@@ -223,12 +579,14 @@ pub fn install_winetricks(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     paths: &Paths,
     name: &str,
     overrides: Overrides,
     exe: &Path,
     token: &Token,
+    before_output: hooks::Output,
     winetricks_output: Output<'_>,
     mut events: impl FnMut(LaunchEvent),
 ) -> anyhow::Result<StartOutcome> {
@@ -236,68 +594,99 @@ pub fn start(
         global,
         environment,
         launch,
-        _guard,
-    } = prepare(paths, name, &overrides, token, &mut events)?;
-    let runtime = Runtime::new(paths, name);
-
-    if runtime.is_running()? {
-        let running = runtime
-            .read_state()
-            .ok()
-            .flatten()
-            .filter(|run| run.status == RunStatus::Running);
-        if let Some(run) = &running
-            && Some(run.target.as_str()) != launch.target.as_deref()
-        {
-            return Err(Error::DifferentTargetRunning {
-                name: name.to_owned(),
-                running: run.target.clone(),
-                requested: launch.target.clone().unwrap_or_default(),
-            }
-            .into());
+        after,
+        mut guard,
+        _reservation,
+    } = match prepare(paths, name, &overrides, token, before_output, &mut events) {
+        Err(err) if matches!(err.downcast_ref::<Error>(), Some(Error::AlreadyRunning(_))) => {
+            return Ok(StartOutcome::AlreadyRunning);
         }
-        return Ok(StartOutcome::AlreadyRunning);
-    }
-    install_winetricks(
-        &global,
-        &environment,
-        &launch,
-        &overrides,
-        token,
-        winetricks_output,
-        &mut events,
-    )?;
-    if launch.wayland == Wayland::NoSession {
-        events(LaunchEvent::NoWaylandSession);
-    }
-    let spec = Spec {
-        claim: Claim {
-            name: name.to_owned(),
-            locks: Locks::new(paths),
-            config: environment.path.clone(),
-            builds: launch
-                .build_guards
-                .iter()
-                .map(|guard| guard.lock().clone())
-                .collect(),
-        },
-        runtime_dir: runtime.dir().to_owned(),
-        stats_log: paths.stats_log(name),
-        stop_timeout: global.stop_timeout,
-        log_limit_mb: global.log_limit_mb,
-        launch,
-        overrides,
+        result => result?,
     };
-    events(LaunchEvent::Starting);
-    match supervisor::start(exe, paths.portable_root(), &spec)
-        .with_context(|| format!("failed to start {name}"))?
-    {
-        Started::Running(_) => {
-            events(LaunchEvent::Started);
-            Ok(StartOutcome::Started)
+    let result: anyhow::Result<StartOutcome> = (|| {
+        let runtime = Runtime::new(paths, name);
+
+        if runtime.is_running()? {
+            let running = runtime
+                .read_state()
+                .ok()
+                .flatten()
+                .filter(|run| run.status == RunStatus::Running);
+            if let Some(run) = &running
+                && Some(run.target.as_str()) != launch.target.as_deref()
+            {
+                return Err(Error::DifferentTargetRunning {
+                    name: name.to_owned(),
+                    running: run.target.clone(),
+                    requested: launch.target.clone().unwrap_or_default(),
+                }
+                .into());
+            }
+            return Ok(StartOutcome::AlreadyRunning);
         }
-        Started::AlreadyRunning => Ok(StartOutcome::AlreadyRunning),
+        install_winetricks(
+            &global,
+            &environment,
+            &launch,
+            &overrides,
+            token,
+            winetricks_output,
+            &mut events,
+        )?;
+        if launch.wayland == Wayland::NoSession {
+            events(LaunchEvent::NoWaylandSession);
+        }
+        let spec = Spec {
+            claim: Claim {
+                name: name.to_owned(),
+                locks: Locks::new(paths),
+                config: environment.path.clone(),
+                builds: launch
+                    .build_guards
+                    .iter()
+                    .map(|guard| guard.lock().clone())
+                    .collect(),
+            },
+            runtime_dir: runtime.dir().to_owned(),
+            stats_log: paths.stats_log(name),
+            stop_timeout: global.stop_timeout,
+            log_limit_mb: global.log_limit_mb,
+            launch,
+            overrides,
+            after: after.clone(),
+        };
+        events(LaunchEvent::Starting);
+        match supervisor::start(exe, paths.portable_root(), &spec)
+            .with_context(|| format!("failed to start {name}"))?
+        {
+            Started::Running(_) => {
+                events(LaunchEvent::Started);
+                Ok(StartOutcome::Started)
+            }
+            Started::AlreadyRunning => Ok(StartOutcome::AlreadyRunning),
+        }
+    })();
+    if result.as_ref().is_err_and(|err| {
+        !matches!(
+            err.downcast_ref::<Error>(),
+            Some(Error::AlreadyRunning(_) | Error::DifferentTargetRunning { .. })
+        )
+    }) {
+        let cleanup = Token::new();
+        if after.is_some() {
+            events(LaunchEvent::AfterHook(cleanup.clone()));
+        }
+        failed_after(
+            paths,
+            name,
+            after.as_ref(),
+            guard.take(),
+            global.stop_timeout,
+            None,
+            &cleanup,
+        );
     }
+    result
 }
 
 #[cfg(test)]
@@ -367,6 +756,186 @@ mod tests {
     }
 
     #[test]
+    fn failed_preparation_waits_for_same_name_shared_users_before_after() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        let locks = Locks::new(&paths);
+        let held = locks.acquire(Operation::Launch, "app", &[]).unwrap();
+        let captured = root.path().join("after");
+        let after = AfterHook {
+            paths: paths.clone(),
+            environment: "app".to_owned(),
+            target: "app".to_owned(),
+            exe: "missing".to_owned(),
+            wine: None,
+            command: format!("printf '%s\\n' \"$WINEO_END\" >> '{}'", captured.display()),
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            failed_after(&paths, "app", Some(&after), None, 1, None, &Token::new());
+            sender.send(()).unwrap();
+        });
+        let result = receiver.recv_timeout(Duration::from_millis(250));
+        let admission = locks.acquire(Operation::Launch, "app", &[]);
+        let blocked = matches!(
+            admission,
+            Err(Error::Busy {
+                holder: Some(Operation::Hook(Phase::After)),
+                ..
+            })
+        );
+        drop(admission);
+        drop(held);
+        worker.join().unwrap();
+        assert!(
+            matches!(result, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+            "after must wait for the existing shared user"
+        );
+        assert!(
+            blocked,
+            "new shared users must not enter while cleanup waits"
+        );
+        assert_eq!(fs::read_to_string(captured).unwrap(), "failed\n");
+    }
+
+    #[test]
+    fn launcher_reservation_blocks_exclusive_operations_between_before_and_failed_after() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        let locks = Locks::new(&paths);
+        let reservation = locks.reserve_launch("app").unwrap();
+        let before = reservation
+            .acquire(Operation::Hook(Phase::Before), &[])
+            .unwrap();
+        let context = hooks::Context {
+            environment: "app",
+            target: "app",
+            exe: "missing",
+            wine: None,
+            hook: Hook::Before,
+        };
+        assert!(matches!(
+            hooks::run(
+                "true",
+                &paths,
+                &context,
+                &before,
+                &Token::new(),
+                Duration::from_secs(1),
+                hooks::Output::Inherit,
+            ).unwrap(),
+            hooks::Outcome::Finished(status) if status.success()
+        ));
+        drop(before);
+        let config = paths.environment_config("app");
+        let environment = Environment {
+            name: "app".to_owned(),
+            path: config.clone(),
+            config: crate::config::EnvironmentConfig::parse(
+                &config,
+                &format!(
+                    "kind = 'native'\n[targets.app]\nexe = '{}'\n",
+                    root.path().join("missing").display()
+                ),
+            )
+            .unwrap(),
+        };
+        assert!(
+            prepare_target_reserved(
+                &paths,
+                &GlobalConfig::default(),
+                &environment,
+                &Overrides::default(),
+                &Token::new(),
+                Some(&reservation),
+                |_| {},
+            )
+            .is_err()
+        );
+        // Early preparation failures have no operation guard to protect cleanup.
+        for operation in [Operation::Snapshot, Operation::Winetricks] {
+            assert!(matches!(
+                locks.acquire(operation, "app", &[]),
+                Err(Error::Busy { .. })
+            ));
+        }
+        let captured = root.path().join("after");
+        let after = AfterHook {
+            paths: paths.clone(),
+            environment: "app".to_owned(),
+            target: "app".to_owned(),
+            exe: "missing".to_owned(),
+            wine: None,
+            command: format!("printf '%s\\n' \"$WINEO_END\" >> '{}'", captured.display()),
+        };
+        failed_after(&paths, "app", Some(&after), None, 1, None, &Token::new());
+        assert_eq!(fs::read_to_string(captured).unwrap(), "failed\n");
+        assert!(matches!(
+            locks.acquire(Operation::Snapshot, "app", &[]),
+            Err(Error::Busy { .. })
+        ));
+        drop(reservation);
+        locks.acquire(Operation::Snapshot, "app", &[]).unwrap();
+    }
+
+    #[test]
+    fn detached_supervisor_failures_run_after_once_in_the_launching_process() {
+        for reply in [None, Some("failed spawn failed"), Some("no report")] {
+            let root = tempfile::tempdir().unwrap();
+            let paths = Paths::from_lookup(|key| {
+                (key == "HOME").then(|| root.path().as_os_str().to_owned())
+            })
+            .unwrap();
+            let captured = root.path().join("after");
+            let command = format!(
+                "printf '%s|%s|%s|%s\\n' \"$WINEO_END\" \"$WINEO_EXIT_CODE\" \"$WINEO_SECONDS\" \"$PPID\" >> '{}'",
+                captured.display()
+            );
+            let config = paths.environment_config("app");
+            fs::create_dir_all(config.parent().unwrap()).unwrap();
+            fs::write(
+                &config,
+                format!(
+                    "kind = 'native'\n[hooks]\nbefore = 'true'\nafter = {}\n[targets.app]\nexe = '/bin/sh'\n",
+                    toml::Value::String(command)
+                ),
+            ).unwrap();
+            let exe = root.path().join("supervisor");
+            if let Some(reply) = reply {
+                fs::write(
+                    &exe,
+                    format!("#!/bin/sh\ncat >/dev/null\nprintf '{reply}\\n'\n"),
+                )
+                .unwrap();
+                fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            assert!(
+                start(
+                    &paths,
+                    "app",
+                    Overrides::default(),
+                    &exe,
+                    &Token::new(),
+                    hooks::Output::Inherit,
+                    Output::Inherit,
+                    |_| {},
+                )
+                .is_err()
+            );
+            assert_eq!(
+                fs::read_to_string(captured).unwrap(),
+                format!("failed||0|{}\n", std::process::id())
+            );
+            assert!(Locks::new(&paths).busy_with("app").unwrap().is_none());
+            assert!(!Runtime::new(&paths, "app").is_running().unwrap());
+        }
+    }
+
+    #[test]
     fn detached_start_reports_supervisor_outcomes_and_event_order() {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().to_owned();
@@ -396,6 +965,7 @@ mod tests {
                 Overrides::default(),
                 &exe,
                 &Token::new(),
+                hooks::Output::Inherit,
                 Output::Inherit,
                 |event| events.push(event),
             )
