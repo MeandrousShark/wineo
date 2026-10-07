@@ -1,7 +1,7 @@
 use crate::operation::Operation;
 use crate::report::{ComponentReport, EnvironmentReport, Played};
 use crate::runtime::{RunMode, RunState, State, Status};
-use crate::stats::{Longest, Session, Summary, TargetSummary};
+use crate::stats::{Longest, Session, Summary, TagBreakdown, TagTotals, TargetSummary};
 use jiff::Timestamp;
 use serde::Serialize;
 
@@ -194,4 +194,56 @@ impl<'a> StatsOutput<'a> {
 pub struct StatsCollectionOutput<'a> {
     pub environments: Vec<StatsOutput<'a>>,
     pub errors: &'a [CollectionError],
+}
+
+#[derive(Serialize)]
+pub struct TagTotalsOutput {
+    pub seconds: i64,
+    pub sessions: usize,
+    pub environments: usize,
+    pub played_environments: usize,
+    pub last_played: Option<Timestamp>,
+}
+
+impl From<&TagTotals> for TagTotalsOutput {
+    fn from(totals: &TagTotals) -> Self {
+        Self {
+            seconds: totals.seconds,
+            sessions: totals.sessions,
+            environments: totals.environments,
+            played_environments: totals.played_environments,
+            last_played: totals.last_played,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct TagStatsOutput<'a> {
+    pub tag: &'a str,
+    #[serde(flatten)]
+    pub totals: TagTotalsOutput,
+}
+
+#[derive(Serialize)]
+pub struct TagBreakdownOutput<'a> {
+    pub tags: Vec<TagStatsOutput<'a>>,
+    pub untagged: Option<TagTotalsOutput>,
+    pub errors: &'a [CollectionError],
+}
+
+impl<'a> TagBreakdownOutput<'a> {
+    pub fn new(breakdown: &'a TagBreakdown, errors: &'a [CollectionError]) -> Self {
+        Self {
+            tags: breakdown
+                .tags
+                .iter()
+                .map(|(tag, totals)| TagStatsOutput {
+                    tag,
+                    totals: totals.into(),
+                })
+                .collect(),
+            untagged: breakdown.untagged.as_ref().map(Into::into),
+            errors,
+        }
+    }
 }

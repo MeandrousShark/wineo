@@ -7,6 +7,7 @@
 //! `imported` line it sees. Totals are computed on read, so nothing has to
 //! stay in sync.
 
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -231,6 +232,8 @@ pub struct OverviewError {
 pub struct Overview {
     /// Environment name order, including never-played environments.
     pub rows: Vec<(String, Summary)>,
+    /// Tags for included environments, populated only when requested.
+    pub tags: BTreeMap<String, Vec<String>>,
     /// Indices into `rows`, sorted by time played and then name.
     pub played: Vec<usize>,
     pub total_seconds: i64,
@@ -241,17 +244,57 @@ pub struct Overview {
     pub tz: TimeZone,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OverviewOptions<'a> {
+    /// Every given tag must be present.
+    pub tags: Option<&'a [String]>,
+    /// Load tags even without a filter, for `by_tag`.
+    pub load_tags: bool,
+}
+
 /// Collects every environment's playtime without stopping for one bad log.
 pub fn overview(paths: &Paths) -> Result<Overview> {
+    overview_with_options(paths, OverviewOptions::default())
+}
+
+/// Loads configs only when filtering or collecting tags for a breakdown.
+pub fn overview_with_options(paths: &Paths, options: OverviewOptions<'_>) -> Result<Overview> {
     let now = Timestamp::now();
     let tz = TimeZone::system();
     let mut rows = Vec::new();
+    let mut tags = BTreeMap::new();
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
     for name in environment::names(paths)? {
+        let environment_tags = if options.tags.is_some() || options.load_tags {
+            match Environment::load(paths, &name) {
+                Ok(environment) => {
+                    let tags = environment.config.tags;
+                    if options
+                        .tags
+                        .is_some_and(|filter| !filter.iter().all(|tag| tags.contains(tag)))
+                    {
+                        continue;
+                    }
+                    Some(tags)
+                }
+                Err(err) => {
+                    errors.push(OverviewError {
+                        name,
+                        message: format!("{:#}", anyhow::Error::from(err)),
+                    });
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
         match summary(paths, &name, now, &tz) {
             Ok((summary, warns)) => {
                 warnings.extend(warns);
+                if let Some(environment_tags) = environment_tags {
+                    tags.insert(name.clone(), environment_tags);
+                }
                 rows.push((name, summary));
             }
             Err(err) => errors.push(OverviewError {
@@ -274,6 +317,7 @@ pub fn overview(paths: &Paths) -> Result<Overview> {
     let total_seconds = rows.iter().map(|(_, summary)| summary.seconds).sum();
     Ok(Overview {
         rows,
+        tags,
         played,
         total_seconds,
         never_played,
@@ -282,6 +326,52 @@ pub fn overview(paths: &Paths) -> Result<Overview> {
         now,
         tz,
     })
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TagTotals {
+    pub seconds: i64,
+    pub sessions: usize,
+    pub environments: usize,
+    pub played_environments: usize,
+    pub last_played: Option<Timestamp>,
+}
+
+impl TagTotals {
+    fn add(&mut self, summary: &Summary) {
+        self.seconds += summary.seconds;
+        self.sessions += summary.sessions;
+        self.environments += 1;
+        self.played_environments += usize::from(summary.seconds > 0);
+        self.last_played = self.last_played.max(summary.last_played);
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TagBreakdown {
+    /// Sorted by seconds descending, then tag name.
+    pub tags: Vec<(String, TagTotals)>,
+    pub untagged: Option<TagTotals>,
+}
+
+/// Groups included environments whose tags were loaded by `overview_with_options`.
+pub fn by_tag(overview: &Overview) -> TagBreakdown {
+    let mut tags = BTreeMap::<String, TagTotals>::new();
+    let mut untagged = None;
+    for (name, summary) in &overview.rows {
+        let Some(environment_tags) = overview.tags.get(name) else {
+            continue;
+        };
+        if environment_tags.is_empty() {
+            untagged.get_or_insert_with(TagTotals::default).add(summary);
+        }
+        for tag in environment_tags {
+            tags.entry(tag.clone()).or_default().add(summary);
+        }
+    }
+    let mut tags: Vec<_> = tags.into_iter().collect();
+    tags.sort_by(|a, b| b.1.seconds.cmp(&a.1.seconds).then_with(|| a.0.cmp(&b.0)));
+    TagBreakdown { tags, untagged }
 }
 
 /// The duration of the last played session, including a run still in progress.
@@ -832,6 +922,220 @@ mod tests {
         assert_eq!(overview.never_played, 1);
         assert_eq!(overview.total_seconds, 18_000);
         assert!(overview.errors.is_empty());
+    }
+
+    fn tag_paths(root: &Path) -> Paths {
+        let home = root.join("home");
+        Paths::from_lookup(move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())))
+            .unwrap()
+    }
+
+    fn tagged_environment(paths: &Paths, name: &str, tags: &[&str]) {
+        fs::create_dir_all(paths.environments_dir()).unwrap();
+        fs::write(
+            paths.environment_config(name),
+            format!("kind = 'native'\ntags = {tags:?}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn tag_breakdown_groups_membership_playtime_and_imports() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = tag_paths(root.path());
+        for (name, tags) in [
+            ("hades", vec!["game", "co-op"]),
+            ("celeste", vec!["game"]),
+            ("never", vec!["game"]),
+            ("editor", vec!["work"]),
+            ("browser", vec![]),
+            ("untouched", vec![]),
+        ] {
+            tagged_environment(&paths, name, &tags);
+        }
+        let start = ts("2026-09-20T19:00:00Z");
+        append(
+            &paths.stats_log("hades"),
+            &session(
+                "game",
+                "2026-09-20T19:00:00Z",
+                "2026-09-20T20:00:00Z",
+                End::Exited,
+            ),
+        )
+        .unwrap();
+        set_imported(
+            &paths,
+            "celeste",
+            Imported {
+                seconds: 7200,
+                last_played: Some(start),
+            },
+        )
+        .unwrap();
+        set_imported(
+            &paths,
+            "browser",
+            Imported {
+                seconds: 18_000,
+                last_played: None,
+            },
+        )
+        .unwrap();
+
+        let overview = overview_with_options(
+            &paths,
+            OverviewOptions {
+                load_tags: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(overview.errors.is_empty());
+        let breakdown = by_tag(&overview);
+        assert_eq!(
+            breakdown
+                .tags
+                .iter()
+                .map(|(tag, _)| tag.as_str())
+                .collect::<Vec<_>>(),
+            ["game", "co-op", "work"]
+        );
+        assert_eq!(
+            breakdown.tags[0].1,
+            TagTotals {
+                seconds: 10_800,
+                sessions: 1,
+                environments: 3,
+                played_environments: 2,
+                last_played: Some(start)
+            }
+        );
+        assert_eq!(
+            breakdown.tags[1].1,
+            TagTotals {
+                seconds: 3600,
+                sessions: 1,
+                environments: 1,
+                played_environments: 1,
+                last_played: Some(start)
+            }
+        );
+        assert_eq!(
+            breakdown.tags[2].1,
+            TagTotals {
+                environments: 1,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            breakdown.untagged,
+            Some(TagTotals {
+                seconds: 18_000,
+                sessions: 0,
+                environments: 2,
+                played_environments: 1,
+                last_played: None
+            })
+        );
+    }
+
+    #[test]
+    fn tag_filter_requires_every_tag_and_breakdown_sorts_ties_by_name() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = tag_paths(root.path());
+        tagged_environment(&paths, "both", &["game", "co-op"]);
+        tagged_environment(&paths, "game-only", &["game"]);
+        let tags = vec!["game".to_owned(), "co-op".to_owned()];
+        let overview = overview_with_options(
+            &paths,
+            OverviewOptions {
+                tags: Some(&tags),
+                load_tags: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(overview.rows.len(), 1);
+        assert_eq!(overview.rows[0].0, "both");
+        assert_eq!(overview.never_played, 1);
+        assert_eq!(overview.total_seconds, 0);
+        let breakdown = by_tag(&overview);
+        assert_eq!(
+            breakdown
+                .tags
+                .iter()
+                .map(|(tag, _)| tag.as_str())
+                .collect::<Vec<_>>(),
+            ["co-op", "game"]
+        );
+        assert!(breakdown.untagged.is_none());
+    }
+
+    #[test]
+    fn configs_are_required_only_for_tag_queries() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = tag_paths(root.path());
+        tagged_environment(&paths, "broken", &[]);
+        fs::write(paths.environment_config("broken"), "invalid = [").unwrap();
+        let plain = overview(&paths).unwrap();
+        assert_eq!(plain.rows.len(), 1);
+        assert!(plain.errors.is_empty());
+        assert!(plain.tags.is_empty());
+        let tags = vec!["game".to_owned()];
+        for options in [
+            OverviewOptions {
+                tags: Some(&tags),
+                load_tags: false,
+            },
+            OverviewOptions {
+                tags: None,
+                load_tags: true,
+            },
+        ] {
+            let overview = overview_with_options(&paths, options).unwrap();
+            assert!(overview.rows.is_empty());
+            assert_eq!(overview.errors.len(), 1);
+            assert_eq!(overview.errors[0].name, "broken");
+            assert!(overview.errors[0].message.contains("broken.toml"));
+        }
+    }
+
+    #[test]
+    fn tag_breakdown_includes_a_running_session() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = tag_paths(root.path());
+        tagged_environment(&paths, "live", &["game"]);
+        let runtime = Runtime::new(&paths, "live");
+        let _lock = runtime.try_lock().unwrap().unwrap();
+        let mut run = crate::runtime::RunState::running(
+            crate::runtime::RunMode::Detached,
+            "game".to_owned(),
+            std::process::id(),
+            None,
+            &Default::default(),
+        );
+        run.started_at = Timestamp::now() - jiff::SignedDuration::from_secs(7200);
+        runtime.write_state(&run).unwrap();
+        let overview = overview_with_options(
+            &paths,
+            OverviewOptions {
+                load_tags: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(overview.rows[0].1.running);
+        let breakdown = by_tag(&overview);
+        assert_eq!(
+            breakdown.tags[0].1,
+            TagTotals {
+                seconds: overview.now.duration_since(run.started_at).as_secs(),
+                sessions: 1,
+                environments: 1,
+                played_environments: 1,
+                last_played: Some(run.started_at)
+            }
+        );
     }
 
     #[test]
