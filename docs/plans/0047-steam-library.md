@@ -516,6 +516,15 @@ In this plan (question 7).
   lost proxied run reports unresolved instead of being cleaned up. Step 4's
   lost-run test must use a live process group, so it fails if the proxied
   branch is removed (QA note).
+- Step 3 (2026-10-07, decided by the primary while the maintainer was away;
+  confirm): apply rechecks already imported, install state, and the name
+  under an exclusive per-app lock (`steam-<appid>.lock`), using the install
+  it reselects for the title and art too, and returns `AlreadyImported`
+  instead of importing twice. `--all` mirrors Heroic's summary: `Imported 1
+  of 2 games.`, with games already imported at review or apply time left out
+  of the total, then `1 already imported: NAME` for ones found at apply
+  time, then `1 failed: NAME`. Portable mode refuses with `Steam games can't
+  be imported into a portable folder.`
 
 ## Questions
 
