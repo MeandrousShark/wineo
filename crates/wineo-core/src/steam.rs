@@ -32,7 +32,8 @@ const UNINSTALLING: u32 = 2048;
 const UPDATING: u32 =
     256 | 512 | 1024 | 131_072 | 262_144 | 524_288 | 1_048_576 | 2_097_152 | 4_194_304;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum InstallKind {
     Native,
     Flatpak,
@@ -86,6 +87,14 @@ pub fn installs(home: &Path) -> Vec<Install> {
 
 /// The install wineo uses for games. With one install, that one. With both,
 /// native, unless `preference` is Flatpak.
+/// The install wineo uses for games, following the global `steam` setting.
+pub fn active_for(
+    paths: &crate::paths::Paths,
+    global: &crate::config::GlobalConfig,
+) -> Option<Install> {
+    active_install(&installs(paths.home()), global.steam).cloned()
+}
+
 pub fn active_install(installs: &[Install], preference: Option<InstallKind>) -> Option<&Install> {
     let native = installs
         .iter()

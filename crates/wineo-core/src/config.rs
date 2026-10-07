@@ -75,6 +75,8 @@ pub struct GlobalConfig {
     /// Whether builds from Steam, Heroic, and Lutris count as runners too.
     /// Unset means nobody has been asked yet, which is why it isn't a bool.
     pub external_runners: Option<bool>,
+    /// Which Steam install games use when both native and Flatpak exist.
+    pub steam: Option<crate::steam::InstallKind>,
     #[serde(default)]
     pub defaults: Defaults,
     #[serde(default)]
@@ -671,6 +673,7 @@ impl Default for GlobalConfig {
             wayland: None,
             mangohud: None,
             external_runners: None,
+            steam: None,
             defaults: Defaults::default(),
             art: ArtConfig::default(),
             env: BTreeMap::new(),
@@ -955,6 +958,20 @@ mod tests {
 
     fn environment(text: &str) -> Result<EnvironmentConfig> {
         EnvironmentConfig::parse(Path::new(PATH), text)
+    }
+
+    #[test]
+    fn global_steam_picks_an_install() {
+        assert_eq!(global("").unwrap().steam, None);
+        assert_eq!(
+            global("steam = \"flatpak\"\n").unwrap().steam,
+            Some(crate::steam::InstallKind::Flatpak)
+        );
+        assert_eq!(
+            global("steam = \"native\"\n").unwrap().steam,
+            Some(crate::steam::InstallKind::Native)
+        );
+        assert!(global("steam = \"snap\"\n").is_err());
     }
 
     #[test]
