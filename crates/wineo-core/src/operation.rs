@@ -588,13 +588,29 @@ impl Locks {
     }
 
     fn config_lock(&self, path: &Path, attempts: u32) -> Result<ConfigGuard> {
+        self.write_lock(
+            &self.config_path(path),
+            format!("config {}", path.display()),
+            attempts,
+        )
+    }
+
+    /// Serializes registration of one Steam app across environment names.
+    pub(crate) fn steam_import(&self, app_id: &str) -> Result<ConfigGuard> {
+        self.write_lock(
+            &self.dir.join(format!("steam-{}.lock", label(app_id))),
+            format!("Steam app {app_id}"),
+            CONFIG_ATTEMPTS,
+        )
+    }
+
+    fn write_lock(&self, lock: &Path, subject: String, attempts: u32) -> Result<ConfigGuard> {
         fs::create_dir_all(&self.dir)
             .context(|| format!("failed to create {}", self.dir.display()))?;
-        let lock = self.config_path(path);
-        let file = open(&lock)?;
-        if !take(&file, &lock, false, attempts)? {
+        let file = open(lock)?;
+        if !take(&file, lock, false, attempts)? {
             return Err(Error::Busy {
-                subject: format!("config {}", path.display()),
+                subject,
                 holder: None,
                 holder_label: "another wineo command is changing it",
             });

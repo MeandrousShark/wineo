@@ -11,6 +11,7 @@ pub mod exec;
 pub mod external_runners;
 pub mod import;
 pub mod import_heroic;
+pub mod import_steam;
 mod json;
 pub mod list;
 pub mod logs;

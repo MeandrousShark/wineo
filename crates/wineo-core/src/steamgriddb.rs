@@ -306,6 +306,20 @@ impl<'a> Api<'a> {
         }
     }
 
+    /// Looks up one game by its Steam app ID.
+    pub fn steam_game(&self, app_id: u64) -> anyhow::Result<Option<Game>> {
+        let url = format!("{API}/games/steam/{app_id}");
+        let response = self.transport.request(&url, Some(self.key))?;
+        match response.status {
+            200 => Ok(Self::parse_answer(response.body)?
+                .get("data")
+                .and_then(game)),
+            404 => Ok(None),
+            401 | 403 => bail!("SteamGridDB rejected the key"),
+            status => bail!("SteamGridDB answered with status {status}"),
+        }
+    }
+
     /// The URL of one page of a game's images of `kind`, with or without the
     /// hard filters.
     pub fn images_url(game: u64, kind: Kind, page: u32, filters: Filters) -> String {
@@ -1092,6 +1106,30 @@ mod tests {
 
         let err = Api::new(&api, "k").game(1).unwrap_err();
         assert_eq!(err.to_string(), "SteamGridDB rejected the key");
+    }
+
+    #[test]
+    fn steam_game_looks_up_a_game_by_steam_app_id() {
+        let api = FakeApi::default();
+        api.json(
+            format!("{API}/games/steam/1086940"),
+            json!({
+                "id": 123,
+                "name": "Baldur's Gate 3",
+                "release_date": 1_660_780_800
+            }),
+        );
+
+        assert_eq!(
+            Api::new(&api, "k").steam_game(1086940).unwrap(),
+            Some(Game {
+                id: 123,
+                name: "Baldur's Gate 3".into(),
+                year: Some(2022),
+            })
+        );
+        assert_eq!(api.urls(), [format!("{API}/games/steam/1086940")]);
+        assert_eq!(api.seen.borrow()[0].1.as_deref(), Some("k"));
     }
 
     #[test]

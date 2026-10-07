@@ -1,6 +1,6 @@
 //! Fetching an environment's art from SteamGridDB, one kind at a time.
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 
 use crate::art::{self, Downloaded, Kind, Source, Stored, detect, find, spot_dir};
 use crate::cancel::Token;
@@ -63,6 +63,43 @@ pub fn fetch_kind(
         Choice::AssetNotFound => return Ok(Fetched::AssetNotFound),
     };
     publish(paths, env, target, kind, &image, mode)
+}
+
+/// Fetches SteamGridDB art for missing kinds, using Steam's app ID to find the
+/// corresponding SteamGridDB game. A per-kind failure is returned alongside
+/// that kind so later kinds can still be tried.
+pub fn fetch_steam(
+    paths: &Paths,
+    env: &str,
+    app_id: u64,
+    api: &Api<'_>,
+    language: &str,
+    kinds: &[Kind],
+) -> Result<Vec<(Kind, Result<Fetched>)>> {
+    let mut missing = Vec::new();
+    for &kind in kinds {
+        if existing(paths, env, None, kind)?.is_none() {
+            missing.push(kind);
+        }
+    }
+    if missing.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let game = api
+        .steam_game(app_id)?
+        .ok_or_else(|| anyhow!("SteamGridDB has no game for Steam app {app_id}"))?;
+    art::save_game(paths, env, game.id)?;
+
+    Ok(missing
+        .into_iter()
+        .map(|kind| {
+            (
+                kind,
+                fetch_kind(paths, env, None, kind, api, game.id, language, Mode::Fill),
+            )
+        })
+        .collect())
 }
 
 /// Chooses and downloads the best usable ranked image without an environment.
@@ -344,6 +381,87 @@ mod tests {
         assert_eq!(names(&art), ["art.toml", "grid.png"]);
         // Only the best candidate was downloaded.
         assert!(!api.urls().contains(&"https://cdn.example/3".to_owned()));
+    }
+
+    #[test]
+    fn fetch_steam_uses_the_app_id_and_only_requests_missing_kinds() {
+        let (_root, paths) = setup();
+        manual(&paths, "hero.png", PNG);
+        let api = FakeApi::default();
+        api.json(
+            format!("{}/games/steam/1086940", crate::steamgriddb::API),
+            json!({ "id": 77, "name": "Baldur's Gate 3" }),
+        );
+        api.json(
+            Api::images_url(77, Kind::Grid, 0, Filters::Ranked),
+            json!([{ "id": 9, "url": "https://cdn.example/9.png" }]),
+        );
+        api.json(
+            Api::images_url(77, Kind::Grid, 1, Filters::Ranked),
+            json!([]),
+        );
+        api.bytes("https://cdn.example/9.png", PNG);
+
+        let results = fetch_steam(
+            &paths,
+            "hades",
+            1086940,
+            &Api::new(&api, "k"),
+            "en",
+            &[Kind::Grid, Kind::Hero],
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(matches!(
+            &results[0].1,
+            Ok(Fetched::Stored { asset: 9, .. })
+        ));
+        assert_eq!(art::saved_game(&paths, "hades").unwrap(), Some(77));
+        assert_eq!(
+            fs::read(paths.art_dir("hades").join("grid.png")).unwrap(),
+            PNG
+        );
+        assert_eq!(
+            fs::read(paths.art_dir("hades").join("hero.png")).unwrap(),
+            PNG
+        );
+        assert_eq!(api.urls().len(), 4);
+        assert!(!api.urls().iter().any(|url| url.contains("/heroes/")));
+    }
+
+    #[test]
+    fn fetch_steam_keeps_trying_after_a_kind_fails() {
+        let (_root, paths) = setup();
+        let api = FakeApi::default();
+        api.json(
+            format!("{}/games/steam/1086940", crate::steamgriddb::API),
+            json!({ "id": 77, "name": "Baldur's Gate 3" }),
+        );
+        api.answer(
+            Api::images_url(77, Kind::Icon, 0, Filters::Ranked),
+            500,
+            || Box::new(io::empty()),
+        );
+        api.json(
+            Api::images_url(77, Kind::Grid, 0, Filters::Ranked),
+            json!([]),
+        );
+
+        let results = fetch_steam(
+            &paths,
+            "hades",
+            1086940,
+            &Api::new(&api, "k"),
+            "en",
+            &[Kind::Icon, Kind::Grid],
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0].1.is_err());
+        assert!(matches!(&results[1].1, Ok(Fetched::NoneFound)));
+        assert!(api.urls().iter().any(|url| url.contains("/grids/")));
     }
 
     #[test]

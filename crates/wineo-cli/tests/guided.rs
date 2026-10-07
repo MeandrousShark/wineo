@@ -2459,3 +2459,117 @@ fn plain_import_heroic_escape_returns_to_the_source_menu() {
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
 }
+
+fn steam_import_fixture(f: &Fixture) {
+    let apps = f.root.path().join(".local/share/Steam/steamapps");
+    fs::create_dir_all(&apps).unwrap();
+    fs::write(
+        apps.join("appmanifest_7.acf"),
+        r#""AppState" { "appid" "7" "name" "Alpha" "StateFlags" "4" "SizeOnDisk" "1024" }"#,
+    )
+    .unwrap();
+}
+
+fn steam_import_guided(f: &Fixture) -> Pty {
+    let mut command = f.wineo_at_home();
+    command.args(["import", "steam"]);
+    Pty::spawn(command)
+}
+
+#[test]
+fn guided_steam_import_reviews_and_writes_the_chosen_name() {
+    let f = Fixture::new();
+    steam_import_fixture(&f);
+    let mut pty = steam_import_guided(&f);
+    pty.expect("Which Steam game?");
+    pty.expect("Game: ");
+    pty.send("1");
+    pty.expect("Environment name [alpha]: ");
+    pty.send("custom");
+    pty.expect("Ready to import custom:");
+    pty.expect("Press Enter to import it, Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Import it? [Y/n]: ");
+    pty.send("");
+    pty.expect("Imported custom.");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(0), "{output}");
+    assert!(f.config("custom").contains("app_id = \"7\""));
+}
+
+#[test]
+fn guided_steam_import_esc_walks_back_through_review_name_and_game() {
+    let f = Fixture::new();
+    steam_import_fixture(&f);
+    let mut pty = steam_import_guided(&f);
+    pty.expect("Game: ");
+    pty.send("1");
+    pty.expect("Environment name [alpha]: ");
+    pty.send("");
+    pty.expect("Import it? [Y/n]: ");
+    pty.esc();
+    pty.expect("Environment name [alpha]: ");
+    pty.esc();
+    pty.expect("Which Steam game?");
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.esc();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(!f.config_dir().join("environments/alpha.toml").exists());
+}
+
+#[test]
+fn plain_import_steam_escape_returns_to_the_source_menu() {
+    let f = Fixture::new();
+    steam_import_fixture(&f);
+    let mut command = f.wineo_at_home();
+    command.arg("import");
+    let mut pty = Pty::spawn(command);
+    pty.expect("  3) An installed Steam game");
+    pty.expect("Source [1]: ");
+    pty.send("3");
+    pty.expect("Which Steam game?");
+    pty.esc();
+    pty.expect("Import from where?");
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.esc();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+}
+
+#[test]
+fn guided_steam_import_no_or_ctrl_c_cancels_without_writing() {
+    for ctrl_c in [false, true] {
+        let f = Fixture::new();
+        steam_import_fixture(&f);
+        let mut pty = steam_import_guided(&f);
+        pty.expect("Game: ");
+        pty.send("1");
+        pty.expect("Environment name [alpha]: ");
+        pty.send("");
+        pty.expect("Import it? [Y/n]: ");
+        if ctrl_c {
+            pty.ctrl_c();
+        } else {
+            pty.send("n");
+        }
+        let (status, output) = pty.finish();
+        assert_eq!(status.code(), Some(130), "{output}");
+        assert!(!f.config_dir().join("environments/alpha.toml").exists());
+    }
+}
+
+#[test]
+fn bulk_steam_import_no_cancels_and_yes_imports() {
+    for yes in [false, true] {
+        let f = Fixture::new();
+        steam_import_fixture(&f);
+        let mut command = f.wineo_at_home();
+        command.args(["import", "steam", "--all"]);
+        let mut pty = Pty::spawn(command);
+        pty.expect("Import 1 game? [Y/n]: ");
+        pty.send(if yes { "y" } else { "n" });
+        let (status, output) = pty.finish();
+        assert_eq!(status.code(), Some(if yes { 0 } else { 130 }), "{output}");
+        assert_eq!(f.config_dir().join("environments/alpha.toml").exists(), yes);
+    }
+}

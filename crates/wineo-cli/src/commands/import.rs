@@ -10,7 +10,7 @@ use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
 use super::transfer::{self, Cancellation};
-use super::{download, external_runners, import_heroic, setup};
+use super::{download, external_runners, import_heroic, import_steam, setup};
 use crate::picker;
 use crate::prompt::{self, Canceled, Choice, Input, Prompt, Reply, Terminal, numbered};
 
@@ -26,6 +26,8 @@ enum Source {
     Prefix(PrefixArgs),
     /// Import a manually added Heroic game
     Heroic(import_heroic::Args),
+    /// Import an installed Steam game
+    Steam(import_steam::Args),
 }
 
 #[derive(clap::Args, Default)]
@@ -70,11 +72,12 @@ impl std::error::Error for ReturnToSourceMenu {}
 pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
     match args.source {
         Some(Source::Heroic(args)) => import_heroic::run(paths, args, verbose, true),
+        Some(Source::Steam(args)) => import_steam::run(paths, args, true),
         Some(Source::Prefix(args)) => prefix(paths, args, verbose, true),
         None => {
             anyhow::ensure!(
                 prompt::interactive(),
-                "guided import needs a terminal; use `wineo import prefix <path> -n <name> --runner <runner>` or `wineo import heroic --list`"
+                "guided import needs a terminal; use `wineo import prefix <path> -n <name> --runner <runner>` or list games with `wineo import heroic --list` or `wineo import steam --list`"
             );
             loop {
                 let choice = {
@@ -84,27 +87,34 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
                         "Import from where?",
                         "Source",
                         &numbered([
-                            ("An existing prefix".to_owned(), false),
-                            ("A manually added Heroic game".to_owned(), true),
+                            ("An existing prefix".to_owned(), 1),
+                            ("A manually added Heroic game".to_owned(), 2),
+                            ("An installed Steam game".to_owned(), 3),
                         ]),
                         Some("1"),
                         true,
                     )
                 };
                 match choice {
-                    Ok(Reply::Value(false)) => {
+                    Ok(Reply::Value(1)) => {
                         match prefix(paths, PrefixArgs::default(), verbose, false) {
                             Err(error) if error.is::<ReturnToSourceMenu>() => continue,
                             result => return result,
                         }
                     }
-                    Ok(Reply::Value(true)) => {
+                    Ok(Reply::Value(2)) => {
                         match import_heroic::run(
                             paths,
                             import_heroic::Args::default(),
                             verbose,
                             false,
                         ) {
+                            Err(error) if error.is::<ReturnToSourceMenu>() => continue,
+                            result => return result,
+                        }
+                    }
+                    Ok(Reply::Value(_)) => {
+                        match import_steam::run(paths, import_steam::Args::default(), false) {
                             Err(error) if error.is::<ReturnToSourceMenu>() => continue,
                             result => return result,
                         }
