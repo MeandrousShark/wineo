@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0047: Steam installed games
 
@@ -61,6 +61,12 @@ each with its recommendation the same day:
    `starting` until the game appears. `run` waits through it.
 10. Import writes `title` to the config, and the live manifest name wins
     while it exists.
+
+A second review the same day tightened the launch: a recheck after `before`,
+a concrete handoff, staging progress, run state compatibility, and art. The
+maintainer kept the recheck's adopt-it behavior (a game Steam starts during
+`before` is claimed, with no second launch, and `after` runs once it exits)
+and approved the plan on 2026-10-07.
 
 ## Existing foundation
 
