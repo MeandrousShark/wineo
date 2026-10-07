@@ -507,6 +507,15 @@ In this plan (question 7).
   read left to right, every tag on an entry must hold), and unknown escapes
   keep their backslash. Tool names match `Proton ` and `Steamworks ` with a
   trailing space.
+- Step 1 (2026-10-07): a proxied-only key on a Wine or native config is
+  refused with `NAME isn't a Steam game, so it can't set KEY.`, and a bad
+  app id with `Invalid app_id: empty.` or `Invalid app_id: contains a NUL
+  byte.` JSON leaves `launcher` and `app_id` out for other kinds, and list
+  JSON's `kind` is `null` for an unreadable config. `wineo setup` refuses
+  Steam games. `Host` gets its proxied variant in step 4, and until then a
+  lost proxied run reports unresolved instead of being cleaned up. Step 4's
+  lost-run test must use a live process group, so it fails if the proxied
+  branch is removed (QA note).
 
 ## Questions
 
