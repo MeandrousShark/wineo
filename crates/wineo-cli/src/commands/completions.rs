@@ -1,4 +1,4 @@
-use std::io;
+use std::io::Write;
 use std::process::ExitCode;
 
 use clap_complete::Shell;
@@ -18,7 +18,9 @@ pub fn run(command: &mut clap::Command, args: Args) -> anyhow::Result<ExitCode> 
         ),
         shell => {
             let name = command.get_name().to_owned();
-            clap_complete::generate(shell, command, name, &mut io::stdout());
+            let mut script = Vec::new();
+            clap_complete::generate(shell, command, name, &mut script);
+            crate::output::stdout().write_all(&script)?;
         }
     }
     Ok(ExitCode::SUCCESS)

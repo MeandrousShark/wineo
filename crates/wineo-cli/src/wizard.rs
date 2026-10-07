@@ -164,9 +164,11 @@ pub fn run<I: Input, W: Write>(
     } else {
         Step::Kind
     };
+    let first_step = step;
     // Only a kind question that was asked can be gone back to.
     let kind_asked = step == Step::Kind;
     let chosen = loop {
+        prompt.set_first_question(step == first_step);
         let global = reloaded.as_ref().unwrap_or(loaded);
         match step {
             Step::Kind => {
@@ -1303,7 +1305,13 @@ fn fetch_art<I: Input, W: Write>(
         term,
         kinds: global.art.fetch,
     };
-    access.fetch(paths, key, &request, Pick::Ask(prompt), &mut io::stderr())?;
+    access.fetch(
+        paths,
+        key,
+        &request,
+        Pick::Ask(prompt),
+        &mut crate::output::stderr(),
+    )?;
     Ok(())
 }
 

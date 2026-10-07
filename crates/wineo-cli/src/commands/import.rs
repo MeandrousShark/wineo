@@ -56,42 +56,80 @@ struct PrefixArgs {
     dry_run: bool,
 }
 
+#[derive(Debug)]
+pub(crate) struct ReturnToSourceMenu;
+
+impl std::fmt::Display for ReturnToSourceMenu {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("return to the import source menu")
+    }
+}
+
+impl std::error::Error for ReturnToSourceMenu {}
+
 pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
     match args.source {
-        Some(Source::Heroic(args)) => import_heroic::run(paths, args, verbose),
-        Some(Source::Prefix(args)) => prefix(paths, args, verbose),
+        Some(Source::Heroic(args)) => import_heroic::run(paths, args, verbose, true),
+        Some(Source::Prefix(args)) => prefix(paths, args, verbose, true),
         None => {
             anyhow::ensure!(
                 prompt::interactive(),
                 "guided import needs a terminal; use `wineo import prefix <path> -n <name> --runner <runner>` or `wineo import heroic --list`"
             );
-            let choice = {
-                let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
-                prompt.choose(
-                    "Import from where?",
-                    "Source",
-                    &numbered([
-                        ("An existing prefix".to_owned(), false),
-                        ("A manually added Heroic game".to_owned(), true),
-                    ]),
-                    Some("1"),
-                    false,
-                )
-            };
-            match choice {
-                Ok(Reply::Value(false)) => prefix(paths, PrefixArgs::default(), verbose),
-                Ok(Reply::Value(true)) => {
-                    import_heroic::run(paths, import_heroic::Args::default(), verbose)
+            loop {
+                let choice = {
+                    let mut prompt = Prompt::new(Terminal::open()?, crate::output::stdout())
+                        .with_first_question(true);
+                    prompt.choose(
+                        "Import from where?",
+                        "Source",
+                        &numbered([
+                            ("An existing prefix".to_owned(), false),
+                            ("A manually added Heroic game".to_owned(), true),
+                        ]),
+                        Some("1"),
+                        true,
+                    )
+                };
+                match choice {
+                    Ok(Reply::Value(false)) => {
+                        match prefix(paths, PrefixArgs::default(), verbose, false) {
+                            Err(error) if error.is::<ReturnToSourceMenu>() => continue,
+                            result => return result,
+                        }
+                    }
+                    Ok(Reply::Value(true)) => {
+                        match import_heroic::run(
+                            paths,
+                            import_heroic::Args::default(),
+                            verbose,
+                            false,
+                        ) {
+                            Err(error) if error.is::<ReturnToSourceMenu>() => continue,
+                            result => return result,
+                        }
+                    }
+                    Ok(Reply::Back) => {
+                        eprintln!("Import canceled");
+                        return Ok(ExitCode::from(130));
+                    }
+                    Err(error) if error.is::<Canceled>() => {
+                        eprintln!("Import canceled");
+                        return Ok(ExitCode::from(130));
+                    }
+                    Err(error) => return Err(error),
                 }
-                Ok(Reply::Back) => Ok(ExitCode::SUCCESS),
-                Err(error) if error.is::<Canceled>() => Ok(ExitCode::from(130)),
-                Err(error) => Err(error),
             }
         }
     }
 }
 
-fn prefix(paths: &Paths, args: PrefixArgs, verbose: bool) -> anyhow::Result<ExitCode> {
+fn prefix(
+    paths: &Paths,
+    args: PrefixArgs,
+    verbose: bool,
+    first_question: bool,
+) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let guided =
         args.interactive || args.name.is_none() || args.runner.is_none() || args.source.is_none();
@@ -115,7 +153,7 @@ fn prefix(paths: &Paths, args: PrefixArgs, verbose: bool) -> anyhow::Result<Exit
             &global,
             &request,
             &inspection,
-            &mut Prompt::new(NoInput, io::stdout()),
+            &mut Prompt::new(NoInput, crate::output::stdout()),
         )?;
         if args.dry_run {
             check_review(paths, &global, &request, &inspection)?;
@@ -141,8 +179,9 @@ fn prefix(paths: &Paths, args: PrefixArgs, verbose: bool) -> anyhow::Result<Exit
         !args.dry_run && prompt::interactive(),
         "guided import needs a terminal; specify a source, -n <name>, and --runner <runner> for noninteractive import"
     );
-    let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
-    let result = guided_prefix(paths, &global, args, &mut prompt, verbose);
+    let mut prompt =
+        Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(first_question);
+    let result = guided_prefix(paths, &global, args, &mut prompt, verbose, first_question);
     match result {
         Err(error) if error.is::<Canceled>() => {
             eprintln!("Import canceled");
@@ -227,6 +266,7 @@ fn guided_prefix<I: Input, W: Write>(
     args: PrefixArgs,
     prompt: &mut Prompt<I, W>,
     verbose: bool,
+    first_question: bool,
 ) -> anyhow::Result<ExitCode> {
     let mut source = args.source.unwrap_or_default();
     let mut name = args.name.unwrap_or_default();
@@ -236,6 +276,7 @@ fn guided_prefix<I: Input, W: Write>(
     let mut arch = args.arch;
     let mut step = 0;
     loop {
+        prompt.set_first_question(step == 0 && first_question);
         match step {
             0 => {
                 match prompt.text("Existing prefix", Some(&source), |text| {
@@ -252,7 +293,8 @@ fn guided_prefix<I: Input, W: Write>(
                         source = value;
                         step = 1;
                     }
-                    Reply::Back => return Ok(ExitCode::SUCCESS),
+                    Reply::Back if first_question => return Err(Canceled.into()),
+                    Reply::Back => return Err(ReturnToSourceMenu.into()),
                 }
             }
             1 => {

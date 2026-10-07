@@ -199,7 +199,7 @@ impl Fixture {
 /// Answers the kind question guided `new` starts with, picking Wine.
 fn pick_wine(pty: &mut Pty) {
     pty.expect("What kind of environment?");
-    pty.expect("Press Enter to pick 1, or pick a number. Ctrl+C to cancel.");
+    pty.expect("Press Enter to pick 1, or pick a number. Esc or Ctrl+C to cancel.");
     pty.expect("Choice: ");
     pty.send("");
 }
@@ -844,6 +844,34 @@ fn esc_goes_back_from_the_guided_import_name_to_the_prefix() {
 }
 
 #[test]
+fn esc_at_the_first_import_source_question_cancels() {
+    let f = Fixture::new();
+    let mut command = f.wineo();
+    command.arg("import");
+    let mut pty = Pty::spawn(command);
+    pty.expect("Import from where?");
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.esc();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(output.contains("Import canceled"), "{output}");
+}
+
+#[test]
+fn esc_at_the_first_guided_prefix_question_cancels() {
+    let f = Fixture::new();
+    let mut command = f.wineo();
+    command.args(["import", "prefix"]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.expect("Existing prefix");
+    pty.esc();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(output.contains("Import canceled"), "{output}");
+}
+
+#[test]
 fn esc_backs_out_of_the_heroic_game_selection() {
     let f = Fixture::new();
     let prefix = f.root.path().join("heroic prefix");
@@ -858,12 +886,43 @@ fn esc_backs_out_of_the_heroic_game_selection() {
     command.args(["import", "heroic", "--config-dir", heroic.to_str().unwrap()]);
     let mut pty = Pty::spawn(command);
     pty.expect("Which Heroic game?");
-    pty.expect("Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Esc or Ctrl+C to cancel.");
     pty.esc();
     let (status, output) = pty.finish();
-    assert!(status.success(), "{output}");
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(output.contains("Import canceled"), "{output}");
     assert!(!f.registered("alpha"));
     assert!(!f.registered("beta"));
+}
+
+#[test]
+fn esc_at_the_first_heroic_windows_question_cancels() {
+    let f = Fixture::new();
+    let prefix = f.root.path().join("heroic prefix");
+    fs::create_dir_all(prefix.join("drive_c/Games")).unwrap();
+    fs::write(
+        prefix.join("system.reg"),
+        "WINE REGISTRY Version 2\n#arch=win64\n",
+    )
+    .unwrap();
+    let heroic = heroic_library(&f, &prefix);
+    let mut command = f.wineo();
+    command.args([
+        "import",
+        "heroic",
+        "--config-dir",
+        heroic.to_str().unwrap(),
+        "--game",
+        "a",
+    ]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.expect("Environment name [alpha]: ");
+    pty.esc();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(output.contains("Import canceled"), "{output}");
+    assert!(!f.registered("alpha"));
 }
 
 #[test]
@@ -1367,7 +1426,7 @@ fn setup_builds_a_missing_prefix_and_picks_from_it() {
     let prefix = f.root.path().join("data/wineo/prefixes/app");
     let text = hand_written(&f, &prefix);
     let mut pty = f.setup("app");
-    pty.expect("Its prefix doesn't exist yet.\n  1) Skip for now\n\nPress Enter to create it, or pick a number. Ctrl+C to cancel.\nChoice: ");
+    pty.expect("Its prefix doesn't exist yet.\n  1) Skip for now\n\nPress Enter to create it, or pick a number. Esc or Ctrl+C to cancel.\nChoice: ");
     pty.send("");
     pty.expect(&format!(
         "Creating a wine prefix for app in {}, this takes a few seconds",
@@ -1475,7 +1534,7 @@ fn guided_new_makes_a_native_environment_asking_only_what_it_needs() {
     let exe = native_game(&f);
     let mut pty = f.new_guided(&[]);
     pty.expect(
-        "What kind of environment?\n  1) Windows program (Wine or Proton)\n  2) Native Linux program\n\nPress Enter to pick 1, or pick a number. Ctrl+C to cancel.\nChoice: ",
+        "What kind of environment?\n  1) Windows program (Wine or Proton)\n  2) Native Linux program\n\nPress Enter to pick 1, or pick a number. Esc or Ctrl+C to cancel.\nChoice: ",
     );
     pty.send("2");
     pty.expect("Used in commands like `wineo start <name>`.\n");
@@ -1707,6 +1766,45 @@ fn guided_heroic_import_of_a_native_game_asks_no_prefix_questions() {
 }
 
 #[test]
+fn esc_at_the_first_heroic_native_question_cancels() {
+    let f = Fixture::new();
+    let heroic = f.root.path().join("heroic");
+    fs::create_dir_all(heroic.join("sideload_apps")).unwrap();
+    fs::create_dir_all(heroic.join("GamesConfig")).unwrap();
+    let exe = native_game(&f);
+    fs::write(
+        heroic.join("GamesConfig/dusk.json"),
+        r#"{"dusk":{"useGameMode":false}}"#,
+    )
+    .unwrap();
+    fs::write(
+        heroic.join("sideload_apps/library.json"),
+        format!(
+            r#"{{"games":[{{"app_name":"dusk","title":"Dusklight","runner":"sideload","install":{{"platform":"linux","executable":"{}"}}}}]}}"#,
+            exe.display()
+        ),
+    )
+    .unwrap();
+    let mut command = f.wineo();
+    command.args([
+        "import",
+        "heroic",
+        "--config-dir",
+        heroic.to_str().unwrap(),
+        "--game",
+        "dusk",
+    ]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.expect("Environment name [dusklight]: ");
+    pty.esc();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(output.contains("Import canceled"), "{output}");
+    assert!(!f.registered("dusklight"));
+}
+
+#[test]
 fn esc_at_the_template_goes_back_to_the_kind_question() {
     let f = Fixture::new();
     let mut pty = f.new_guided(&[]);
@@ -1716,25 +1814,24 @@ fn esc_at_the_template_goes_back_to_the_kind_question() {
     pty.expect("Template [1]: ");
     pty.esc();
     pty.expect("What kind of environment?");
+    pty.expect("Esc or Ctrl+C to cancel.");
     pty.expect("Choice: ");
-    pty.send("2");
-    pty.expect("Install name: ");
-    pty.ctrl_c();
+    pty.esc();
+    pty.expect("Canceled. Nothing was created.");
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
 }
 
 #[test]
-fn the_template_stays_the_first_question_when_a_flag_skips_the_kind() {
+fn esc_cancels_at_the_template_when_a_flag_skips_the_kind() {
     let f = Fixture::new();
     let dir = f.root.path().join("elsewhere");
     let mut pty = f.new_guided(&["--dir", dir.to_str().unwrap()]);
     pty.expect("Start from a template?");
+    pty.expect("Esc or Ctrl+C to cancel.");
     pty.expect("Template [1]: ");
     pty.esc();
-    pty.send("1");
-    pty.expect("Install name: ");
-    pty.ctrl_c();
+    pty.expect("Canceled. Nothing was created.");
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");
     assert!(!output.contains("What kind of environment?"), "{output}");
@@ -2254,4 +2351,111 @@ fn esc_and_ctrl_c_at_the_heroic_question_cancel_the_import_and_save_nothing() {
         assert!(output.contains("Import canceled"), "{output}");
         assert_eq!(f.global_text(), "");
     }
+}
+
+#[test]
+fn esc_at_the_first_new_question_cancels() {
+    let f = Fixture::new();
+    let mut pty = f.new_guided(&[]);
+    pty.expect("What kind of environment?");
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.esc();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(
+        output.contains("Canceled. Nothing was created."),
+        "{output}"
+    );
+}
+
+#[test]
+fn esc_at_the_first_setup_question_cancels_without_saving() {
+    let f = Fixture::new();
+    f.games("app", "");
+    let before = f.config("app");
+    let mut pty = f.setup("app");
+    pty.expect("What next?");
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.esc();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(
+        output.contains("Canceled. Unsaved changes were dropped."),
+        "{output}"
+    );
+    assert_eq!(f.config("app"), before);
+}
+
+#[test]
+fn setup_esc_after_add_back_to_the_menu_restores_first_question_cancel() {
+    let f = Fixture::new();
+    f.games("app", "");
+    let before = f.config("app");
+    let mut pty = f.setup("app");
+    pty.expect("No targets yet.");
+    pty.expect("Choice [1]: ");
+    pty.send("1");
+    pty.expect("Add which, like 1 3: ");
+    pty.esc();
+    pty.expect("What next?");
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.expect("Choice [1]: ");
+    pty.esc();
+    pty.expect("Canceled. Unsaved changes were dropped.");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert_eq!(f.config("app"), before);
+}
+
+#[test]
+fn plain_import_prefix_escape_returns_to_the_source_menu() {
+    let f = Fixture::new();
+    let mut command = f.wineo();
+    command.arg("import");
+    let mut pty = Pty::spawn(command);
+    pty.expect("Import from where?");
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.expect("Source [1]: ");
+    pty.send("1");
+    pty.expect("Existing prefix");
+    pty.esc();
+    pty.expect("Import from where?");
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.expect("Source [1]: ");
+    pty.esc();
+    pty.expect("Import canceled");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+}
+
+#[test]
+fn plain_import_heroic_escape_returns_to_the_source_menu() {
+    let f = Fixture::new();
+    let prefix = f.root.path().join("heroic prefix");
+    fs::create_dir_all(prefix.join("drive_c/Games")).unwrap();
+    fs::write(
+        prefix.join("system.reg"),
+        "WINE REGISTRY Version 2\n#arch=win64\n",
+    )
+    .unwrap();
+    let heroic = heroic_library(&f, &prefix);
+    let discoverable = f.root.path().join("config/heroic");
+    fs::create_dir_all(discoverable.parent().unwrap()).unwrap();
+    fs::rename(heroic, &discoverable).unwrap();
+
+    let mut command = f.wineo_at_home();
+    command.arg("import");
+    let mut pty = Pty::spawn(command);
+    pty.expect("Import from where?");
+    pty.expect("Source [1]: ");
+    pty.send("2");
+    pty.expect("Which Heroic game?");
+    pty.esc();
+    pty.expect("Import from where?");
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.expect("Source [1]: ");
+    pty.esc();
+    pty.expect("Import canceled");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
 }

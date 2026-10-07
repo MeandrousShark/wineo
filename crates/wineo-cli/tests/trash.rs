@@ -1,7 +1,7 @@
 mod common;
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 
 use rustix::fs::OFlags;
@@ -58,9 +58,12 @@ fn repeated_names_have_independent_ids_and_restore_collisions_do_not_overwrite()
 fn prune_needs_explicit_selection_and_confirmation() {
     let f = Fixture::new();
     let id = remove(&f, "game");
-    let help = f.run(&["prune"]);
-    assert_success(&help);
-    assert!(stdout(&help).contains("--older-than"));
+    let missing_selection = f.run(&["prune"]);
+    assert_eq!(missing_selection.status.code(), Some(2));
+    assert!(stderr(&missing_selection).contains("required arguments"));
+    assert!(stderr(&missing_selection).contains("--older-than"));
+    let conflicting_selection = f.run(&["prune", &id, "--all"]);
+    assert_eq!(conflicting_selection.status.code(), Some(2));
     let refused = f.run(&["prune", "--all"]);
     assert!(!refused.status.success());
     assert!(stderr(&refused).contains("--yes"));
@@ -190,25 +193,40 @@ fn rm_delete_prefix_help_matches_the_accepted_wording() {
 fn canceling_interactive_prune_keeps_the_entry() {
     let f = Fixture::new();
     let id = remove(&f, "game");
-    let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
-    grantpt(&master).unwrap();
-    unlockpt(&master).unwrap();
-    let slave_name = ptsname(&master, Vec::new()).unwrap();
-    let slave = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(OFlags::NOCTTY.bits() as i32)
-        .open(slave_name.to_str().unwrap())
-        .unwrap();
-    let mut command = f.wineo();
-    command
-        .args(["prune", &id])
-        .stdin(slave.try_clone().unwrap())
-        .stdout(slave.try_clone().unwrap())
-        .stderr(slave);
-    let mut child = command.spawn().unwrap();
-    let mut master = fs::File::from(master);
-    master.write_all(b"n\r").unwrap();
-    assert!(child.wait().unwrap().success());
+    for (response, input) in [("n", &b"n\r"[..]), ("Ctrl+D", &b"\x04"[..])] {
+        let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
+        grantpt(&master).unwrap();
+        unlockpt(&master).unwrap();
+        let slave_name = ptsname(&master, Vec::new()).unwrap();
+        let slave = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(OFlags::NOCTTY.bits() as i32)
+            .open(slave_name.to_str().unwrap())
+            .unwrap();
+        let mut command = f.wineo();
+        command
+            .args(["prune", &id])
+            .stdin(slave.try_clone().unwrap())
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave);
+        let mut child = command.spawn().unwrap();
+        drop(command);
+        let mut master = fs::File::from(master);
+        master.write_all(input).unwrap();
+        assert_eq!(child.wait().unwrap().code(), Some(130), "{response}");
+        let mut output = String::new();
+        let mut bytes = [0; 1024];
+        while let Ok(read) = master.read(&mut bytes) {
+            if read == 0 {
+                break;
+            }
+            output.push_str(&String::from_utf8_lossy(&bytes[..read]));
+        }
+        assert!(
+            output.contains("Canceled. Nothing was deleted."),
+            "{response}: {output}"
+        );
+    }
     assert!(stdout(&f.run(&["trash", "list"])).contains(&id));
 }

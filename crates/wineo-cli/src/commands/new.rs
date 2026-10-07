@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -90,8 +90,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             paths,
             args,
             &Access::steamgriddb(paths),
-            &mut io::stdout(),
-            &mut io::stderr(),
+            &mut crate::output::stdout(),
+            &mut crate::output::stderr(),
         );
     }
     let name = match args.name.clone() {
@@ -487,7 +487,8 @@ fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         native: args.native,
         exe: args.exe,
     };
-    let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
+    let mut prompt =
+        Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true);
     let mut guided = Guided { registered: None };
     let access = Access::steamgriddb(paths);
     match wizard::run(paths, &global, &prefill, &mut prompt, &mut guided, &access) {
@@ -526,19 +527,19 @@ fn fetch_art(paths: &Paths, global: &GlobalConfig, name: &str) -> Result<(), Can
     let mut prompt = prompt::interactive()
         .then(|| Terminal::open().ok())
         .flatten()
-        .map(|input| Prompt::new(input, io::stdout()));
-    let mut stdout = io::stdout();
+        .map(|input| Prompt::new(input, crate::output::stdout()));
+    let mut stdout = crate::output::stdout();
     let pick = match &mut prompt {
         Some(prompt) => Pick::Ask(prompt),
         None => Pick::Top(&mut stdout),
     };
-    access.fetch(paths, &key, &request, pick, &mut io::stderr())
+    access.fetch(paths, &key, &request, pick, &mut crate::output::stderr())
 }
 
 /// The terminal may already be gone after a SIGHUP, and a failed write must
 /// not abort what is left to report.
 fn note(message: &str) {
-    let _ = writeln!(io::stderr(), "{message}");
+    let _ = writeln!(crate::output::stderr(), "{message}");
 }
 
 /// What an installer left behind. A scan that fails is not worth failing `new`

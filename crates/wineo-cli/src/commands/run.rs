@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::process::{ExitCode, Stdio};
 use std::time::Duration;
@@ -239,7 +239,7 @@ fn after(
 /// The terminal may already be gone after a SIGHUP, and a failed write must
 /// not abort the shutdown.
 fn note(message: &str) {
-    let _ = writeln!(io::stderr(), "{message}");
+    let _ = writeln!(crate::output::stderr(), "{message}");
 }
 
 fn warn(err: anyhow::Error) {

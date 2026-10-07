@@ -74,7 +74,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         reader.seek_to_last_lines(lines)?;
     }
 
-    let mut stdout = io::stdout().lock();
+    let stdout = crate::output::stdout();
+    let mut stdout = stdout.lock();
     let open = reader.stream(&mut stdout)?;
 
     // Attached mode has no active detached run to follow, and this log is history.

@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::Write;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -59,8 +59,8 @@ fn run_inner(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCod
                     args.page,
                     verbose,
                     &cancellation,
-                    &mut io::stdout(),
-                    &mut io::stderr(),
+                    &mut crate::output::stdout(),
+                    &mut crate::output::stderr(),
                 )?;
                 return Ok(ExitCode::SUCCESS);
             }
@@ -76,8 +76,8 @@ fn run_inner(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCod
                 prompt::interactive(),
                 "guided download needs a terminal; use `wineo download <provider> [--version <tag>]`"
             );
-            let mut prompt =
-                Prompt::new(Terminal::open()?, io::stdout()).with_color(style::stdout_enabled());
+            let mut prompt = Prompt::new(Terminal::open()?, crate::output::stdout())
+                .with_color(style::stdout_enabled());
             choose_and_install(paths, &global, &mut prompt, &PROVIDERS, verbose).map(|_| ())
         }
     };
@@ -410,7 +410,7 @@ pub(crate) fn install_latest(
         },
         &client,
         &cancellation,
-        &mut io::stderr(),
+        &mut crate::output::stderr(),
     )
 }
 
@@ -432,7 +432,7 @@ pub(crate) fn install_component_version(
         },
         &client,
         &cancellation,
-        &mut io::stderr(),
+        &mut crate::output::stderr(),
     )
 }
 
@@ -466,7 +466,7 @@ fn install_selected<T: Transport, W: Write>(
 mod tests {
     use std::collections::BTreeMap;
     use std::ffi::OsString;
-    use std::io::{Cursor, Read};
+    use std::io::{self, Cursor, Read};
     use std::path::Path;
     use std::process::Command;
 

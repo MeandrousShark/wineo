@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -43,7 +43,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // A broken config is reported with its path, before anything is asked.
     Environment::load(paths, name)?;
     let global = GlobalConfig::load(paths)?;
-    let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
+    let mut prompt =
+        Prompt::new(Terminal::open()?, crate::output::stdout()).with_first_question(true);
     match setup(paths, &global, name, &mut prompt) {
         Err(err) if err.is::<Canceled>() => {
             eprintln!("Canceled. Unsaved changes were dropped.");
@@ -246,6 +247,7 @@ pub(crate) fn menu<I: Input, W: Write>(
             entries.len().to_string()
         };
         let choices = numbered(entries);
+        prompt.set_first_question(true);
         let Reply::Value(action) =
             prompt.choose("What next?", "Choice", &choices, Some(&default), false)?
         else {

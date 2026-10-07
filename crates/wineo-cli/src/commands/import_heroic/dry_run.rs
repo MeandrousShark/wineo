@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::Write;
 
 use wineo_core::components::{Builds, Component};
 use wineo_core::config::GlobalConfig;
@@ -149,8 +149,8 @@ pub(super) fn library(
                 term: title.to_owned(),
             },
             name,
-            &mut io::stdout(),
-            &mut io::stderr(),
+            &mut crate::output::stdout(),
+            &mut crate::output::stderr(),
         );
     }
     Ok(failed)
@@ -361,7 +361,7 @@ mod tests {
                     ..Args::default()
                 };
                 let before = snapshot::Snapshot::capture(root.path()).unwrap();
-                let code = run_with_access(&paths, args, false, &access).unwrap();
+                let code = run_with_access(&paths, args, false, &access, true).unwrap();
                 before.assert_unchanged(root.path());
                 assert!(!root.path().join("runner-started").exists());
                 assert_eq!(
@@ -549,7 +549,7 @@ mod tests {
                     };
                     let before = snapshot::Snapshot::capture(root.path()).unwrap();
                     assert_eq!(
-                        run_with_access(&paths, args, false, &access).unwrap(),
+                        run_with_access(&paths, args, false, &access, true).unwrap(),
                         std::process::ExitCode::SUCCESS
                     );
                     before.assert_unchanged(root.path());

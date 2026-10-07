@@ -2,7 +2,7 @@
 //! is no prefix or runner, so this skips everything about them and ignores
 //! the Wine settings Heroic keeps for native games too.
 
-use std::io::{self, Write};
+use std::io::Write;
 use std::process::ExitCode;
 
 use wineo_core::config::GlobalConfig;
@@ -138,8 +138,8 @@ pub(super) fn direct(
             access.review(
                 &plan.heroic().title,
                 global.art.fetch,
-                &mut io::stdout(),
-                &mut io::stderr(),
+                &mut crate::output::stdout(),
+                &mut crate::output::stderr(),
             );
         }
         println!("Dry run, nothing was imported.");
@@ -151,8 +151,8 @@ pub(super) fn direct(
     let mut prompt = (art.enabled && prompt::interactive())
         .then(|| Terminal::open().ok())
         .flatten()
-        .map(|input| Prompt::new(input, io::stdout()));
-    let mut stdout = io::stdout();
+        .map(|input| Prompt::new(input, crate::output::stdout()));
+    let mut stdout = crate::output::stdout();
     let pick = match &mut prompt {
         Some(prompt) => Pick::Ask(prompt),
         None => Pick::Top(&mut stdout),
@@ -164,7 +164,7 @@ pub(super) fn direct(
         &environment.name,
         &art,
         pick,
-        &mut io::stderr(),
+        &mut crate::output::stderr(),
     );
     drop(prompt);
     super::finish_registered(paths, global, &registered)?;
@@ -208,7 +208,7 @@ pub(super) fn guided<I: Input, W: Write>(
         |value| picker::name_problem(value).map_or_else(|| Ok(value.to_owned()), Err),
     )? {
         Reply::Value(value) => value,
-        Reply::Back => return Ok(ExitCode::SUCCESS),
+        Reply::Back => return Err(Canceled.into()),
     };
     plan.set_name(&name)?;
     plan.set_desktop_enabled(paths.portable_root().is_none());
@@ -283,7 +283,7 @@ pub(super) fn guided<I: Input, W: Write>(
         &environment.name,
         &art,
         Pick::Ask(prompt),
-        &mut io::stderr(),
+        &mut crate::output::stderr(),
     );
     super::finish_registered(paths, global, &registered)?;
     if fetched.is_err() {

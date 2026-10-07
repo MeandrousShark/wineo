@@ -2,13 +2,13 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use anyhow::bail;
-use clap::CommandFactory;
 use wineo_core::paths::Paths;
 use wineo_core::trash::{self, Selector};
 
 use crate::prompt;
 
 #[derive(clap::Args)]
+#[command(group(clap::ArgGroup::new("selection").required(true).args(["id", "older_than", "all"])))]
 pub struct Args {
     /// Delete one trash entry by ID
     #[arg(conflicts_with_all = ["older_than", "all"], add = clap_complete::ArgValueCompleter::new(crate::completion::trash_ids))]
@@ -46,12 +46,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         (Some(id), None, false) => Selector::Id(id),
         (None, Some(age), false) => Selector::OlderThan(parse_age(age)?),
         (None, None, true) => Selector::All,
-        _ => {
-            let mut command = crate::Cli::command();
-            command.find_subcommand_mut("prune").unwrap().print_help()?;
-            println!();
-            return Ok(ExitCode::SUCCESS);
-        }
+        _ => bail!("select a trash entry, --older-than, or --all"),
     };
     let review = trash::review_prune(paths, selection)?;
     for (id, error) in &review.errors {
@@ -84,12 +79,12 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             bail!("prune requires a terminal or --yes; nothing was deleted");
         }
         print!("Delete permanently? [y/N] ");
-        io::stdout().flush()?;
+        crate::output::stdout().flush()?;
         let mut answer = String::new();
         io::stdin().read_line(&mut answer)?;
         if !matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
             println!("Canceled. Nothing was deleted.");
-            return Ok(ExitCode::SUCCESS);
+            return Ok(ExitCode::from(130));
         }
     }
     let mut failed = review.errors.len();

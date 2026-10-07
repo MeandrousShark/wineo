@@ -81,6 +81,10 @@ impl Pty {
             .unwrap();
     }
 
+    fn send_eof(&mut self) {
+        self.master.write_all(b"\x04").unwrap();
+    }
+
     fn finish(mut self) -> (ExitStatus, String) {
         let status = self.child.wait().unwrap();
         if let Some(reader) = self.reader.take() {
@@ -297,12 +301,66 @@ fn empty_terminal_confirmation_keeps_the_build() {
     pty.expect(")? [y/N] ");
     pty.send("");
     let (status, output) = pty.finish();
-    assert!(status.success(), "{output}");
+    assert_eq!(status.code(), Some(130), "{output}");
     assert!(
         output.contains("Canceled. Nothing was removed."),
         "{output}"
     );
     assert!(f.root.path().join("data/wineo/runners/wine-tkg").exists());
+}
+
+#[test]
+fn declining_terminal_confirmation_keeps_all_builds() {
+    for (kind, name, args, path) in [
+        (
+            "runner",
+            "wine-tkg",
+            &["runners", "remove", "wine-tkg"][..],
+            "data/wineo/runners/wine-tkg",
+        ),
+        (
+            "dxvk",
+            "2.0",
+            &["dxvk", "remove", "2.0"][..],
+            "data/wineo/dxvk/2.0",
+        ),
+        (
+            "vkd3d",
+            "2.0",
+            &["vkd3d", "remove", "2.0"][..],
+            "data/wineo/vkd3d/2.0",
+        ),
+    ] {
+        for (response, eof) in [("n", false), ("Ctrl+D", true)] {
+            let f = Fixture::new();
+            match kind {
+                "runner" => f.install_runner(name),
+                "dxvk" => f.install_build(kind, name, &["x64", "x32"]),
+                "vkd3d" => f.install_build(kind, name, &["x64", "x86"]),
+                _ => unreachable!(),
+            }
+            let mut command = f.wineo();
+            command.args(args);
+            let mut pty = Pty::spawn(command);
+
+            pty.expect(")? [y/N] ");
+            if eof {
+                pty.send_eof();
+            } else {
+                pty.send(response);
+            }
+            let (status, output) = pty.finish();
+            assert_eq!(status.code(), Some(130), "{kind}, {response}: {output}");
+            assert!(
+                output.contains("Canceled. Nothing was removed."),
+                "{kind}, {response}: {output}"
+            );
+            assert!(
+                f.root.path().join(path).exists(),
+                "{kind}, {response}: {path} was removed"
+            );
+        }
+    }
 }
 
 #[test]

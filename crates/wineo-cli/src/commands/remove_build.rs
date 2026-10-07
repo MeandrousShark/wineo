@@ -32,12 +32,12 @@ pub fn run(
             &mut warned,
         );
         print!("Remove {kind} {name} ({})? [y/N] ", style::size(size));
-        io::stdout().flush()?;
+        crate::output::stdout().flush()?;
         let mut answer = String::new();
         io::stdin().read_line(&mut answer)?;
         if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
             println!("Canceled. Nothing was removed.");
-            return Ok(ExitCode::SUCCESS);
+            return Ok(ExitCode::from(130));
         }
     }
 

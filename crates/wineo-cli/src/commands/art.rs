@@ -236,7 +236,7 @@ fn fetch(paths: &Paths, request: &FetchRequest) -> anyhow::Result<bool> {
         game,
         &language,
         &mut icon,
-        &mut io::stdout(),
+        &mut crate::output::stdout(),
     );
     // An icon fetched before a later kind failed is still in the store.
     if icon {
@@ -572,7 +572,7 @@ fn pick_game(api: &Api, term: &str) -> anyhow::Result<Option<u64>> {
         }
         bail!("picking a game needs a terminal, pass --game instead");
     }
-    let mut prompt = Prompt::new(Terminal::open()?, io::stdout());
+    let mut prompt = Prompt::new(Terminal::open()?, crate::output::stdout());
     Ok(ask_game(api, term, &mut prompt, false)?.map(|(game, _)| game))
 }
 

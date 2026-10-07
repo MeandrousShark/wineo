@@ -95,7 +95,7 @@ pub fn secret(label: &str) -> anyhow::Result<Option<String>> {
     let mut guard = None;
     if let Some(saved) = &saved {
         print!("{label}");
-        io::stdout().flush()?;
+        crate::output::stdout().flush()?;
         let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP])?;
         guard = Some(signals.handle());
         let restore = saved.clone();
@@ -166,6 +166,7 @@ pub struct Prompt<I, W> {
     input: I,
     out: W,
     color: bool,
+    first_question: bool,
 }
 
 impl<I: Input, W: Write> Prompt<I, W> {
@@ -174,6 +175,7 @@ impl<I: Input, W: Write> Prompt<I, W> {
             input,
             out,
             color: false,
+            first_question: false,
         }
     }
 
@@ -182,6 +184,25 @@ impl<I: Input, W: Write> Prompt<I, W> {
     pub fn with_color(mut self, enabled: bool) -> Self {
         self.color = enabled;
         self
+    }
+
+    pub fn with_first_question(mut self, enabled: bool) -> Self {
+        self.first_question = enabled;
+        self
+    }
+
+    pub fn set_first_question(&mut self, enabled: bool) {
+        self.first_question = enabled;
+    }
+
+    fn key_hint(&self, back: bool) -> &'static str {
+        if self.first_question {
+            "Esc or Ctrl+C to cancel."
+        } else if back {
+            "Esc to go back, Ctrl+C to cancel."
+        } else {
+            "Ctrl+C to cancel."
+        }
     }
 
     pub fn input(&mut self) -> &mut I {
@@ -213,21 +234,27 @@ impl<I: Input, W: Write> Prompt<I, W> {
         default: Option<&str>,
         back: bool,
     ) -> anyhow::Result<Reply<T>> {
-        self.menu(heading, choices, back)?;
-        loop {
-            let answer = match self.ask(label, default)? {
-                Reply::Value(answer) => answer,
-                Reply::Back if back => return Ok(Reply::Back),
-                Reply::Back => continue,
-            };
-            if let Some(reply) = self.special(&answer, back)? {
-                return Ok(reply);
+        let result = (|| {
+            self.menu(heading, choices, back)?;
+            loop {
+                let answer = match self.ask(label, default)? {
+                    Reply::Value(answer) => answer,
+                    Reply::Back if back => return Ok(Reply::Back),
+                    Reply::Back => continue,
+                };
+                if let Some(reply) = self.special(&answer, back)? {
+                    return Ok(reply);
+                }
+                match choices.iter().find(|choice| choice.key == answer) {
+                    Some(choice) => return Ok(Reply::Value(choice.value.clone())),
+                    None => self.say(format!("`{answer}` is not one of the choices"))?,
+                }
             }
-            match choices.iter().find(|choice| choice.key == answer) {
-                Some(choice) => return Ok(Reply::Value(choice.value.clone())),
-                None => self.say(format!("`{answer}` is not one of the choices"))?,
-            }
+        })();
+        if result.is_ok() {
+            self.first_question = false;
         }
+        result
     }
 
     /// Any number of the numbered entries, like `1 3` or `2-4`, or a single
@@ -240,38 +267,44 @@ impl<I: Input, W: Write> Prompt<I, W> {
         default: Option<&str>,
         back: bool,
     ) -> anyhow::Result<Reply<Picked<T>>> {
-        self.menu(heading, choices, back)?;
-        loop {
-            let answer = match self.ask(label, default)? {
-                Reply::Value(answer) => answer,
-                Reply::Back if back => return Ok(Reply::Back),
-                Reply::Back => continue,
-            };
-            if let Some(reply) = self.special(&answer, back)? {
-                return Ok(reply);
-            }
-            if let Some(choice) = choices
-                .iter()
-                .find(|choice| choice.key == answer && !is_number(&choice.key))
-            {
-                return Ok(Reply::Value(Picked::One(choice.value.clone())));
-            }
-            let numbered: Vec<&Choice<T>> = choices
-                .iter()
-                .filter(|choice| is_number(&choice.key))
-                .collect();
-            match parse_numbers(&answer, numbered.len()) {
-                Ok(picked) => {
-                    return Ok(Reply::Value(Picked::Many(
-                        picked
-                            .into_iter()
-                            .map(|index| numbered[index].value.clone())
-                            .collect(),
-                    )));
+        let result = (|| {
+            self.menu(heading, choices, back)?;
+            loop {
+                let answer = match self.ask(label, default)? {
+                    Reply::Value(answer) => answer,
+                    Reply::Back if back => return Ok(Reply::Back),
+                    Reply::Back => continue,
+                };
+                if let Some(reply) = self.special(&answer, back)? {
+                    return Ok(reply);
                 }
-                Err(problem) => self.say(problem)?,
+                if let Some(choice) = choices
+                    .iter()
+                    .find(|choice| choice.key == answer && !is_number(&choice.key))
+                {
+                    return Ok(Reply::Value(Picked::One(choice.value.clone())));
+                }
+                let numbered: Vec<&Choice<T>> = choices
+                    .iter()
+                    .filter(|choice| is_number(&choice.key))
+                    .collect();
+                match parse_numbers(&answer, numbered.len()) {
+                    Ok(picked) => {
+                        return Ok(Reply::Value(Picked::Many(
+                            picked
+                                .into_iter()
+                                .map(|index| numbered[index].value.clone())
+                                .collect(),
+                        )));
+                    }
+                    Err(problem) => self.say(problem)?,
+                }
             }
+        })();
+        if result.is_ok() {
+            self.first_question = false;
         }
+        result
     }
 
     /// A review menu whose numbered entries are edited in place. Enter runs
@@ -284,8 +317,14 @@ impl<I: Input, W: Write> Prompt<I, W> {
         choices: &[Choice<T>],
         back: bool,
     ) -> anyhow::Result<Reply<Option<T>>> {
-        let label = self.review_menu(heading, note, enter_action, choices, back, "a number")?;
-        self.choose_or_enter(choices, back, &label)
+        let result = (|| {
+            let label = self.review_menu(heading, note, enter_action, choices, back, "a number")?;
+            self.choose_or_enter(choices, back, &label)
+        })();
+        if result.is_ok() {
+            self.first_question = false;
+        }
+        result
     }
 
     /// `review` taking any number of entries on one line, like `1 3 4` or
@@ -299,31 +338,37 @@ impl<I: Input, W: Write> Prompt<I, W> {
         choices: &[Choice<T>],
         back: bool,
     ) -> anyhow::Result<Reply<Option<Vec<T>>>> {
-        let label = self.review_menu(heading, note, enter_action, choices, back, "numbers")?;
-        loop {
-            let answer = match self.read(&label)? {
-                Reply::Value(answer) => answer,
-                Reply::Back if back => return Ok(Reply::Back),
-                Reply::Back => continue,
-            };
-            if answer.is_empty() {
-                return Ok(Reply::Value(None));
-            }
-            if let Some(reply) = self.special(&answer, back)? {
-                return Ok(reply.map(Some));
-            }
-            match parse_numbers(&answer, choices.len()) {
-                Ok(picked) => {
-                    return Ok(Reply::Value(Some(
-                        picked
-                            .into_iter()
-                            .map(|index| choices[index].value.clone())
-                            .collect(),
-                    )));
+        let result = (|| {
+            let label = self.review_menu(heading, note, enter_action, choices, back, "numbers")?;
+            loop {
+                let answer = match self.read(&label)? {
+                    Reply::Value(answer) => answer,
+                    Reply::Back if back => return Ok(Reply::Back),
+                    Reply::Back => continue,
+                };
+                if answer.is_empty() {
+                    return Ok(Reply::Value(None));
                 }
-                Err(problem) => self.say(problem)?,
+                if let Some(reply) = self.special(&answer, back)? {
+                    return Ok(reply.map(Some));
+                }
+                match parse_numbers(&answer, choices.len()) {
+                    Ok(picked) => {
+                        return Ok(Reply::Value(Some(
+                            picked
+                                .into_iter()
+                                .map(|index| choices[index].value.clone())
+                                .collect(),
+                        )));
+                    }
+                    Err(problem) => self.say(problem)?,
+                }
             }
+        })();
+        if result.is_ok() {
+            self.first_question = false;
         }
+        result
     }
 
     /// Prints a review menu and returns the label to ask with. `pick` is what
@@ -354,11 +399,7 @@ impl<I: Input, W: Write> Prompt<I, W> {
         } else {
             format!("Press Enter to {enter_action}, or pick {pick}.")
         };
-        let rest = if back {
-            "Esc to go back, Ctrl+C to cancel."
-        } else {
-            "Ctrl+C to cancel."
-        };
+        let rest = self.key_hint(back);
         self.say(format!("{enter} {rest}"))?;
         // "Choice:" with nothing numbered to choose reads like a missing list.
         Ok(if choices.is_empty() {
@@ -403,55 +444,91 @@ impl<I: Input, W: Write> Prompt<I, W> {
         default: Option<&str>,
         mut parse: impl FnMut(&str) -> Result<T, String>,
     ) -> anyhow::Result<Reply<T>> {
-        loop {
-            let answer = match self.ask(label, default)? {
-                Reply::Value(answer) => answer,
-                Reply::Back => return Ok(Reply::Back),
-            };
-            if answer == "<" {
-                return Ok(Reply::Back);
-            }
-            match parse(&answer) {
-                Ok(value) => return Ok(Reply::Value(value)),
-                Err(problem) => self.say(problem)?,
-            }
+        if self.first_question {
+            self.say(self.key_hint(false))?;
         }
+        let result = (|| {
+            loop {
+                let answer = match self.ask(label, default)? {
+                    Reply::Value(answer) => answer,
+                    Reply::Back => return Ok(Reply::Back),
+                };
+                if answer == "<" {
+                    return if self.first_question {
+                        Err(Canceled.into())
+                    } else {
+                        Ok(Reply::Back)
+                    };
+                }
+                match parse(&answer) {
+                    Ok(value) => return Ok(Reply::Value(value)),
+                    Err(problem) => self.say(problem)?,
+                }
+            }
+        })();
+        if result.is_ok() {
+            self.first_question = false;
+        }
+        result
     }
 
     /// Yes or no.
     pub fn confirm(&mut self, label: &str, default: bool) -> anyhow::Result<Reply<bool>> {
-        let shown = if default { "Y/n" } else { "y/N" };
-        loop {
-            let answer = match self.read(&format!("{label} [{shown}]: "))? {
-                Reply::Value(answer) => answer,
-                Reply::Back => return Ok(Reply::Back),
-            };
-            match answer.to_ascii_lowercase().as_str() {
-                "" => return Ok(Reply::Value(default)),
-                "y" | "yes" => return Ok(Reply::Value(true)),
-                "n" | "no" => return Ok(Reply::Value(false)),
-                "<" => return Ok(Reply::Back),
-                _ => self.say("Answer y or n")?,
-            }
+        if self.first_question {
+            self.say(self.key_hint(false))?;
         }
+        let result = (|| {
+            let shown = if default { "Y/n" } else { "y/N" };
+            loop {
+                let answer = match self.read(&format!("{label} [{shown}]: "))? {
+                    Reply::Value(answer) => answer,
+                    Reply::Back => return Ok(Reply::Back),
+                };
+                match answer.to_ascii_lowercase().as_str() {
+                    "" => return Ok(Reply::Value(default)),
+                    "y" | "yes" => return Ok(Reply::Value(true)),
+                    "n" | "no" => return Ok(Reply::Value(false)),
+                    "<" if self.first_question => return Err(Canceled.into()),
+                    "<" => return Ok(Reply::Back),
+                    _ => self.say("Answer y or n")?,
+                }
+            }
+        })();
+        if result.is_ok() {
+            self.first_question = false;
+        }
+        result
     }
 
     /// Values one per line, so each keeps its spaces, until an empty line.
     pub fn list(&mut self, item: &str) -> anyhow::Result<Reply<Vec<String>>> {
-        let mut values = Vec::new();
-        loop {
-            let answer = match self.read_raw(&format!("  {item} {}: ", values.len() + 1))? {
-                Reply::Value(answer) => answer,
-                Reply::Back => return Ok(Reply::Back),
-            };
-            if values.is_empty() && answer.trim() == "<" {
-                return Ok(Reply::Back);
-            }
-            if answer.is_empty() {
-                return Ok(Reply::Value(values));
-            }
-            values.push(answer);
+        if self.first_question {
+            self.say(self.key_hint(false))?;
         }
+        let result = (|| {
+            let mut values = Vec::new();
+            loop {
+                let answer = match self.read_raw(&format!("  {item} {}: ", values.len() + 1))? {
+                    Reply::Value(answer) => answer,
+                    Reply::Back => return Ok(Reply::Back),
+                };
+                if values.is_empty() && answer.trim() == "<" {
+                    return if self.first_question {
+                        Err(Canceled.into())
+                    } else {
+                        Ok(Reply::Back)
+                    };
+                }
+                if answer.is_empty() {
+                    return Ok(Reply::Value(values));
+                }
+                values.push(answer);
+            }
+        })();
+        if result.is_ok() {
+            self.first_question = false;
+        }
+        result
     }
 
     fn menu<T>(&mut self, heading: &str, choices: &[Choice<T>], back: bool) -> io::Result<()> {
@@ -463,17 +540,14 @@ impl<I: Input, W: Write> Prompt<I, W> {
         for choice in choices {
             writeln!(self.out, "  {}) {}", choice.key, choice.label)?;
         }
-        if back {
-            writeln!(self.out, "Esc to go back, Ctrl+C to cancel.")
-        } else {
-            writeln!(self.out, "Ctrl+C to cancel.")
-        }
+        writeln!(self.out, "{}", self.key_hint(back))
     }
 
     /// Back and cancel, which every menu answers the same way.
     fn special<T>(&mut self, answer: &str, back: bool) -> anyhow::Result<Option<Reply<T>>> {
         match answer {
             "q" => Err(Canceled.into()),
+            "b" if back && self.first_question => Err(Canceled.into()),
             "b" if back => Ok(Some(Reply::Back)),
             _ => Ok(None),
         }
@@ -509,6 +583,7 @@ impl<I: Input, W: Write> Prompt<I, W> {
         }
         match self.input.line(prompt)? {
             Line::Text(text) => Ok(Reply::Value(text)),
+            Line::Back if self.first_question => Err(Canceled.into()),
             Line::Back => Ok(Reply::Back),
             Line::End => {
                 // The cursor is still on the question.
@@ -615,7 +690,7 @@ impl Terminal {
                     },
                     None => {
                         print!("{prompt}");
-                        let _ = io::stdout().flush();
+                        let _ = crate::output::stdout().flush();
                         let mut line = String::new();
                         Event::Line(io::stdin().read_line(&mut line).map(|read| {
                             if read > 0 {
@@ -777,6 +852,57 @@ mod tests {
         ]);
         choices.push(Choice::letter('p', "enter a path", "path"));
         choices
+    }
+
+    #[test]
+    fn first_question_escape_cancels_even_after_invalid_answers() {
+        let mut p = lines([Line::Text("invalid".to_owned()), Line::Back]).with_first_question(true);
+        let error = p
+            .choose("Pick:", "Choice", &menu(), None, false)
+            .unwrap_err();
+        assert!(error.is::<Canceled>());
+        let output = String::from_utf8_lossy(p.output());
+        assert!(output.contains("Esc or Ctrl+C to cancel."));
+        assert!(!output.contains("Esc to go back"));
+    }
+
+    #[test]
+    fn first_question_mode_clears_after_an_answer_and_later_escape_goes_back() {
+        let mut p = lines([Line::Text("1".to_owned()), Line::Back]).with_first_question(true);
+        assert_eq!(
+            p.choose("First:", "Choice", &menu(), None, false).unwrap(),
+            Reply::Value("none")
+        );
+        assert_eq!(
+            p.choose("Next:", "Choice", &menu(), None, true).unwrap(),
+            Reply::Back
+        );
+        let output = String::from_utf8_lossy(p.output());
+        assert!(output.contains("Esc or Ctrl+C to cancel."));
+        assert!(output.contains("Esc to go back, Ctrl+C to cancel."));
+    }
+
+    #[test]
+    fn typed_back_fallbacks_cancel_at_the_first_question() {
+        let mut menu_prompt = prompt(&["b"]).with_first_question(true);
+        let error = menu_prompt
+            .choose("First:", "Choice", &menu(), None, true)
+            .unwrap_err();
+        assert!(error.is::<Canceled>());
+
+        let mut text = prompt(&["<"]).with_first_question(true);
+        let error = text
+            .text("First", None, |answer| Ok(answer.to_owned()))
+            .unwrap_err();
+        assert!(error.is::<Canceled>());
+
+        let mut confirm = prompt(&["<"]).with_first_question(true);
+        let error = confirm.confirm("First", false).unwrap_err();
+        assert!(error.is::<Canceled>());
+
+        let mut list = prompt(&["<"]).with_first_question(true);
+        let error = list.list("First").unwrap_err();
+        assert!(error.is::<Canceled>());
     }
 
     #[test]

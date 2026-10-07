@@ -1,5 +1,36 @@
+// Rust printing macros panic on closed pipes. These shadows handle output errors
+// quietly and are defined before the modules so they cover every CLI module.
+macro_rules! print {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let mut stdout = std::io::stdout().lock();
+        crate::output::handle(write!(stdout, $($arg)*));
+        crate::output::handle(stdout.flush());
+    }};
+}
+
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        crate::output::handle(writeln!(std::io::stdout().lock(), $($arg)*));
+    }};
+}
+
+macro_rules! eprint {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        crate::output::handle(write!(std::io::stderr().lock(), $($arg)*));
+    }};
+}
+
+macro_rules! eprintln {
+    () => { eprint!("\n") };
+    ($($arg:tt)*) => { eprint!("{}\n", format_args!($($arg)*)) };
+}
+
 mod commands;
 mod completion;
+mod output;
 mod picker;
 mod prompt;
 mod style;
@@ -104,11 +135,17 @@ enum Command {
 fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
-        Err(err) => {
-            eprintln!("{}", style::error_stderr(format!("error: {err:#}")));
-            ExitCode::FAILURE
-        }
+        Err(err) => report_error(&err),
     }
+}
+
+fn report_error(error: &anyhow::Error) -> ExitCode {
+    eprintln!("{}", style::error_stderr(error_message(error)));
+    ExitCode::FAILURE
+}
+
+fn error_message(error: &anyhow::Error) -> String {
+    format!("error: {error:#}")
 }
 
 fn run() -> anyhow::Result<ExitCode> {
@@ -118,9 +155,27 @@ fn run() -> anyhow::Result<ExitCode> {
         return result.map(|()| ExitCode::SUCCESS).map_err(Into::into);
     }
 
-    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
+    let completion = clap_complete::CompleteEnv::with_factory(Cli::command)
+        .try_complete(std::env::args_os(), std::env::current_dir().ok().as_deref());
+    match completion {
+        Ok(true) => return Ok(ExitCode::SUCCESS),
+        Ok(false) => {}
+        Err(error) => {
+            if output::is_clap_broken_pipe(&error) {
+                return Ok(ExitCode::from(output::CLOSED_PIPE));
+            }
+            output::handle(error.print());
+            return Ok(ExitCode::from(error.exit_code() as u8));
+        }
+    }
 
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            output::handle(error.print());
+            return Ok(ExitCode::from(error.exit_code() as u8));
+        }
+    };
     let paths = Paths::from_env(cli.portable.as_deref())?;
     let verbose = cli.verbose;
     match cli.command {
@@ -157,5 +212,21 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Winetricks(args) => commands::winetricks::run(&paths, args),
         Command::Completions(args) => commands::completions::run(&mut Cli::command(), args),
         Command::Manpages(args) => commands::manpages::run(Cli::command(), args),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_output_broken_pipe_keeps_the_error_exit_code() {
+        let error = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            .context("child pipe or socket failed");
+        assert_eq!(report_error(&error), ExitCode::FAILURE);
+        assert_eq!(
+            error_message(&error),
+            "error: child pipe or socket failed: broken pipe"
+        );
     }
 }

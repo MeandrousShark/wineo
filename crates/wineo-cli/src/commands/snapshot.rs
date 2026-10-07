@@ -118,12 +118,12 @@ fn restore(paths: &Paths, env: &str, label: &str, yes: bool) -> anyhow::Result<E
             bail!("restore needs an interactive terminal or --yes");
         }
         print!("Restore {env} from {label}? [y/N] ");
-        io::stdout().flush()?;
+        crate::output::stdout().flush()?;
         let mut answer = String::new();
         io::stdin().read_line(&mut answer)?;
         if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
             println!("Restore canceled");
-            return Ok(ExitCode::SUCCESS);
+            return Ok(ExitCode::from(130));
         }
     }
     let cancellation = Cancellation::new()?;

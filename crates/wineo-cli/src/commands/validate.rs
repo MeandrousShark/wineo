@@ -60,7 +60,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
     }
 
     let color = style::stdout_enabled();
-    let mut out = io::stdout();
+    let mut out = crate::output::stdout();
     print_report(
         paths,
         &report,
@@ -82,7 +82,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         writeln!(out, "{}", summary(&report))?;
         fixes
     } else if prompt::interactive() {
-        let mut prompt = Prompt::new(Terminal::open()?, io::stdout()).with_color(color);
+        let mut prompt = Prompt::new(Terminal::open()?, crate::output::stdout()).with_color(color);
         match review(&mut prompt, &summary(&report), fixes) {
             Err(err) if err.is::<Canceled>() => {
                 eprintln!("Canceled. Nothing was fixed.");

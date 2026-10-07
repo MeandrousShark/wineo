@@ -1,8 +1,11 @@
 mod common;
 
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::thread;
 
 use common::{Fixture, assert_success, heroic_library, stderr, stdout};
 
@@ -54,7 +57,7 @@ fn heroic_bulk_preserves_recorded_ids_and_imports_another_game_with_the_same_pat
     let output = bulk_heroic(&f, &heroic);
     assert_success(&output);
     assert!(stdout(&output).contains("Already imported: alpha"));
-    assert!(stdout(&output).contains("Imported 1 of 1 games."));
+    assert!(stdout(&output).contains("Imported 1 of 1 game."));
     assert!(
         stdout(&output).contains("Copying includes the whole prefix."),
         "{}",
@@ -96,7 +99,7 @@ fn heroic_bulk_backfills_a_legacy_environment_only_once_per_invocation() {
     let output = bulk_heroic(&f, &heroic);
     assert_success(&output);
     assert!(stdout(&output).contains("Already imported: legacy"));
-    assert!(stdout(&output).contains("Imported 1 of 1 games."));
+    assert!(stdout(&output).contains("Imported 1 of 1 game."));
     assert!(
         stdout(&output).contains("Copying includes the whole prefix."),
         "{}",
@@ -994,7 +997,7 @@ fn heroic_art_without_a_key_notes_it_once_and_succeeds() {
     assert_success(&bulk);
     assert_eq!(steamgriddb_lines(&bulk), [NOTE]);
     assert!(
-        stdout(&bulk).contains("Imported 1 of 1 games."),
+        stdout(&bulk).contains("Imported 1 of 1 game."),
         "{}",
         stdout(&bulk)
     );
@@ -1208,7 +1211,7 @@ fn heroic_all_imports_native_games_and_recognizes_them_again() {
         out.contains("skip: executable not found: /nonexistent/soh"),
         "{out}"
     );
-    assert!(out.contains("Imported 1 of 1 games."), "{out}");
+    assert!(out.contains("Imported 1 of 1 game."), "{out}");
     let text = fs::read_to_string(
         f.root
             .path()
@@ -1323,4 +1326,182 @@ fn a_native_heroic_import_keeps_wine_variables_and_carries_nvidia_prime() {
     assert_eq!(config.env["DRI_PRIME"], "1");
     assert_eq!(config.env["__NV_PRIME_RENDER_OFFLOAD"], "1");
     assert_eq!(config.env["__GLX_VENDOR_LIBRARY_NAME"], "nvidia");
+}
+
+fn slow_prefix(root: &Path) -> std::path::PathBuf {
+    let prefix = root.join("large prefix");
+    fs::create_dir_all(prefix.join("drive_c/Games")).unwrap();
+    fs::write(
+        prefix.join("system.reg"),
+        "WINE REGISTRY Version 2\n#arch=win64\n",
+    )
+    .unwrap();
+    fs::write(prefix.join("drive_c/Games/Game.exe"), b"game executable").unwrap();
+    for index in 0..10_000 {
+        fs::write(
+            prefix.join(format!("drive_c/Games/file-{index}")),
+            b"save data",
+        )
+        .unwrap();
+    }
+    prefix
+}
+
+fn interrupt_copy(mut command: Command) -> std::process::Output {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let pipe = child.stderr.take().unwrap();
+    let reader = thread::spawn(move || {
+        let mut captured = Vec::new();
+        let mut interrupted = false;
+        for line in BufReader::new(pipe).split(b'\n') {
+            let line = line.unwrap();
+            if !interrupted && line == b"Copied 500 entries" {
+                let status = Command::new("kill")
+                    .args(["-INT", &pid.to_string()])
+                    .status()
+                    .unwrap();
+                assert!(status.success());
+                interrupted = true;
+            }
+            captured.extend_from_slice(&line);
+            captured.push(b'\n');
+        }
+        (interrupted, captured)
+    });
+    let mut output = child.wait_with_output().unwrap();
+    let (interrupted, captured) = reader.join().unwrap();
+    assert!(interrupted, "Copy never reached its progress checkpoint");
+    output.stderr = captured;
+    output
+}
+
+#[test]
+fn heroic_direct_copy_interrupt_exits_130_and_removes_partial_import() {
+    let f = Fixture::new();
+    let prefix = slow_prefix(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    let mut command = f.wineo();
+    command.args([
+        "import",
+        "heroic",
+        "--config-dir",
+        heroic.to_str().unwrap(),
+        "--game",
+        "a",
+        "-n",
+        "canceled",
+        "--runner",
+        "wine",
+    ]);
+    let output = interrupt_copy(command);
+    assert_eq!(output.status.code(), Some(130), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("Import canceled"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(
+        !stderr(&output).contains("error: canceled"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!f.config_dir().join("environments/canceled.toml").exists());
+    assert!(!f.root.path().join("data/wineo/prefixes/canceled").exists());
+    assert!(prefix.join("drive_c/Games/file-9999").exists());
+}
+
+#[test]
+fn heroic_bulk_copy_interrupt_keeps_completed_games_and_cancels_the_rest() {
+    let f = Fixture::new();
+    let prefix = source(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    let large = slow_prefix(f.root.path());
+    let library_path = heroic.join("sideload_apps/library.json");
+    let mut library: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&library_path).unwrap()).unwrap();
+    library["games"][1]["install"]["executable"] = large
+        .join("drive_c/Games/Game.exe")
+        .to_str()
+        .unwrap()
+        .into();
+    let mut third = library["games"][0].clone();
+    third["app_name"] = "c".into();
+    third["title"] = "Gamma".into();
+    library["games"].as_array_mut().unwrap().push(third);
+    fs::write(&library_path, library.to_string()).unwrap();
+    fs::write(
+        heroic.join("GamesConfig/b.json"),
+        serde_json::json!({"b": {"winePrefix": large}}).to_string(),
+    )
+    .unwrap();
+    fs::write(heroic.join("GamesConfig/c.json"), r#"{"c":{}}"#).unwrap();
+    let mut command = f.wineo();
+    command.args([
+        "import",
+        "heroic",
+        "--config-dir",
+        heroic.to_str().unwrap(),
+        "--all",
+        "--yes",
+        "--runner",
+        "wine",
+    ]);
+    let output = interrupt_copy(command);
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    let out = stdout(&output);
+    assert!(out.contains("Importing beta... canceled"), "{out}");
+    assert!(out.contains("Imported 1 of 3 games."), "{out}");
+    assert!(out.contains("2 games canceled."), "{out}");
+    assert!(!out.contains("failed: canceled"), "{out}");
+    assert!(!out.contains("Importing gamma"), "{out}");
+    assert!(f.config_dir().join("environments/alpha.toml").exists());
+    assert!(!f.config_dir().join("environments/beta.toml").exists());
+    assert!(!f.config_dir().join("environments/gamma.toml").exists());
+    assert!(
+        f.root
+            .path()
+            .join("data/wineo/prefixes/alpha/drive_c/Games/save.dat")
+            .exists()
+    );
+    assert!(!f.root.path().join("data/wineo/prefixes/beta").exists());
+}
+
+#[test]
+fn heroic_bulk_cancel_summary_uses_singular_for_one_game() {
+    let f = Fixture::new();
+    let prefix = slow_prefix(f.root.path());
+    let heroic = heroic_library(&f, &prefix);
+    let path = heroic.join("sideload_apps/library.json");
+    let mut library: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    library["games"].as_array_mut().unwrap().truncate(1);
+    fs::write(path, library.to_string()).unwrap();
+    let mut command = f.wineo();
+    command.args([
+        "import",
+        "heroic",
+        "--config-dir",
+        heroic.to_str().unwrap(),
+        "--all",
+        "--yes",
+        "--runner",
+        "wine",
+    ]);
+    let output = interrupt_copy(command);
+    assert_eq!(output.status.code(), Some(130), "{}", stderr(&output));
+    let out = stdout(&output);
+    assert!(out.contains("Imported 0 of 1 game."), "{out}");
+    assert!(out.contains("1 game canceled."), "{out}");
+    assert!(!f.config_dir().join("environments/alpha.toml").exists());
 }

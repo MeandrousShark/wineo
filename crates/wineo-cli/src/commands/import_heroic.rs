@@ -28,7 +28,7 @@ use super::components;
 use super::desktop;
 use super::download;
 use super::external_runners;
-use super::import::{choose_runner, finish_guided};
+use super::import::{ReturnToSourceMenu, choose_runner, finish_guided};
 use super::transfer::Cancellation;
 use crate::picker;
 use crate::prompt::{self, Canceled, Input, Prompt, Reply, Terminal, numbered};
@@ -192,9 +192,14 @@ fn fetch_art<I: Input, W: Write>(
     access.fetch(paths, key, &request, pick, err)
 }
 
-pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
+pub fn run(
+    paths: &Paths,
+    args: Args,
+    verbose: bool,
+    first_question: bool,
+) -> anyhow::Result<ExitCode> {
     let access = Access::steamgriddb(paths);
-    run_with_access(paths, args, verbose, &access)
+    run_with_access(paths, args, verbose, &access, first_question)
 }
 
 fn run_with_access(
@@ -202,7 +207,9 @@ fn run_with_access(
     args: Args,
     verbose: bool,
     access: &Access,
+    first_question: bool,
 ) -> anyhow::Result<ExitCode> {
+    let return_to_source_menu = !first_question;
     if args.desktop {
         wineo_core::desktop::supported(paths)?;
     }
@@ -264,7 +271,7 @@ fn run_with_access(
         } else {
             ArtChoice::off()
         };
-        let mut output = Prompt::new(OutputOnly, io::stdout());
+        let mut output = Prompt::new(OutputOnly, crate::output::stdout());
         show_game_summary(&mut output, paths, plan.resolved(), verbose)?;
         let ctx = ReviewContext {
             paths,
@@ -281,22 +288,29 @@ fn run_with_access(
                 access.review(
                     &plan.heroic().title,
                     global.art.fetch,
-                    &mut io::stdout(),
-                    &mut io::stderr(),
+                    &mut crate::output::stdout(),
+                    &mut crate::output::stderr(),
                 );
             }
             println!("Dry run, nothing was imported.");
             return Ok(ExitCode::SUCCESS);
         }
         let log_body = verbose.then(|| plan.log_text(&global, &source) + &art.log_line());
-        let registered = apply_plan(paths, &global, &source, &plan)?;
+        let registered = match apply_plan(paths, &global, &source, &plan) {
+            Ok(registered) => registered,
+            Err(error) if error.is::<Canceled>() => {
+                eprintln!("Import canceled");
+                return Ok(ExitCode::from(130));
+            }
+            Err(error) => return Err(error),
+        };
         report_playtime(&registered.playtime);
         let environment = &registered.environment;
         let mut prompt = (art.enabled && prompt::interactive())
             .then(|| Terminal::open().ok())
             .flatten()
-            .map(|input| Prompt::new(input, io::stdout()));
-        let mut stdout = io::stdout();
+            .map(|input| Prompt::new(input, crate::output::stdout()));
+        let mut stdout = crate::output::stdout();
         let pick = match &mut prompt {
             Some(prompt) => Pick::Ask(prompt),
             None => Pick::Top(&mut stdout),
@@ -308,7 +322,7 @@ fn run_with_access(
             &environment.name,
             &art,
             pick,
-            &mut io::stderr(),
+            &mut crate::output::stderr(),
         );
         drop(prompt);
         finish_registered(paths, &global, &registered)?;
@@ -345,10 +359,17 @@ fn run_with_access(
         !args.dry_run && prompt::interactive(),
         "guided Heroic import needs a terminal; use --list or specify --game, -n, and --runner"
     );
-    let mut prompt =
-        Prompt::new(Terminal::open()?, io::stdout()).with_color(style::stdout_enabled());
-    let source = source_guided(paths, args.config_dir.as_deref(), &mut prompt)?;
-    match guided(paths, &global, access, source, args, &mut prompt, verbose) {
+    let mut prompt = Prompt::new(Terminal::open()?, crate::output::stdout())
+        .with_color(style::stdout_enabled())
+        .with_first_question(first_question);
+    let result = source_guided(
+        paths,
+        args.config_dir.as_deref(),
+        &mut prompt,
+        return_to_source_menu,
+    )
+    .and_then(|source| guided(paths, &global, access, source, args, &mut prompt, verbose));
+    match result {
         Ok(code) => Ok(code),
         Err(error) if error.is::<Canceled>() => {
             eprintln!("Import canceled");
@@ -375,14 +396,23 @@ fn source(paths: &Paths, explicit: Option<&str>) -> anyhow::Result<HeroicSource>
     Ok(sources.into_iter().next().unwrap())
 }
 
+struct GuidedSource {
+    source: HeroicSource,
+    return_to_source_menu: bool,
+}
+
 fn source_guided<I: Input, W: Write>(
     paths: &Paths,
     explicit: Option<&str>,
     prompt: &mut Prompt<I, W>,
-) -> anyhow::Result<HeroicSource> {
+    return_to_source_menu: bool,
+) -> anyhow::Result<GuidedSource> {
     let sources = sources(paths, explicit)?;
     if sources.len() == 1 {
-        return Ok(sources.into_iter().next().unwrap());
+        return Ok(GuidedSource {
+            source: sources.into_iter().next().unwrap(),
+            return_to_source_menu,
+        });
     }
     let choices = numbered(sources.iter().map(|source| {
         (
@@ -397,7 +427,11 @@ fn source_guided<I: Input, W: Write>(
         Some("1"),
         true,
     )? {
-        Reply::Value(source) => Ok(source),
+        Reply::Value(source) => Ok(GuidedSource {
+            source,
+            return_to_source_menu,
+        }),
+        Reply::Back if return_to_source_menu => Err(ReturnToSourceMenu.into()),
         Reply::Back => Err(anyhow::anyhow!(Canceled)),
     }
 }
@@ -438,11 +472,15 @@ fn guided<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
     access: &Access,
-    source: HeroicSource,
+    source: GuidedSource,
     args: Args,
     prompt: &mut Prompt<I, W>,
     verbose: bool,
 ) -> anyhow::Result<ExitCode> {
+    let GuidedSource {
+        source,
+        return_to_source_menu,
+    } = source;
     let listing = listing(paths, global, &source)?;
     let candidates: Vec<_> = listing
         .candidates
@@ -471,7 +509,11 @@ fn guided<I: Input, W: Write>(
         let Reply::Value(game_id) =
             prompt.choose("Which Heroic game?", "Game", &choices, None, true)?
         else {
-            return Ok(ExitCode::SUCCESS);
+            return if return_to_source_menu {
+                Err(ReturnToSourceMenu.into())
+            } else {
+                Err(Canceled.into())
+            };
         };
         candidates
             .into_iter()
@@ -496,7 +538,7 @@ fn guided<I: Input, W: Write>(
         }
     })? {
         Reply::Value(value) => value,
-        Reply::Back => return Ok(ExitCode::SUCCESS),
+        Reply::Back => return Err(Canceled.into()),
     };
 
     // Asking here, before the suggestion, lets Heroic's own build be used in
@@ -546,7 +588,7 @@ fn guided<I: Input, W: Write>(
         )? {
             Reply::Value(true) => plan.set_adopt(),
             Reply::Value(false) => {}
-            Reply::Back => return Ok(ExitCode::SUCCESS),
+            Reply::Back => return Err(Canceled.into()),
         }
     }
     plan.set_desktop_enabled(paths.portable_root().is_none());
@@ -569,7 +611,7 @@ fn guided<I: Input, W: Write>(
         &environment.name,
         &art,
         Pick::Ask(prompt),
-        &mut io::stderr(),
+        &mut crate::output::stderr(),
     );
     finish_registered(paths, global, &registered)?;
     if fetched.is_err() {
@@ -593,6 +635,16 @@ fn apply_plan(
     plan: &GamePlan,
 ) -> anyhow::Result<Registered> {
     let cancellation = Cancellation::new()?;
+    apply_plan_with_cancellation(paths, global, source, plan, &cancellation)
+}
+
+fn apply_plan_with_cancellation(
+    paths: &Paths,
+    global: &GlobalConfig,
+    source: &HeroicSource,
+    plan: &GamePlan,
+    cancellation: &Cancellation,
+) -> anyhow::Result<Registered> {
     let result = apply(
         paths,
         global,
@@ -690,7 +742,11 @@ fn run_all(
     let mut prompt = if args.yes || args.dry_run {
         None
     } else {
-        Some(Prompt::new(Terminal::open()?, io::stdout()).with_color(style::stdout_enabled()))
+        Some(
+            Prompt::new(Terminal::open()?, crate::output::stdout())
+                .with_color(style::stdout_enabled())
+                .with_first_question(true),
+        )
     };
 
     let mut listing = listing(paths, global, &source)?;
@@ -1128,26 +1184,34 @@ fn import_all(bulk: &Bulk, games: Vec<Game>) -> anyhow::Result<ExitCode> {
     let total = games.len();
     let mut done = 0usize;
     let mut failed = Vec::new();
+    let cancellation = Cancellation::new()?;
+    let mut canceled = false;
     for game in games {
+        if cancellation.token.is_canceled() {
+            canceled = true;
+            break;
+        }
         let name = game.name().to_owned();
         // Art lines wait for the progress line to end.
         let (mut art_out, mut art_err) = (Vec::new(), Vec::new());
         let imported = match &game {
             Game::Windows(plan) => {
                 if verbose {
-                    let mut output = Prompt::new(OutputOnly, io::stdout());
+                    let mut output = Prompt::new(OutputOnly, crate::output::stdout());
                     show_game_summary(&mut output, paths, plan.resolved(), verbose)?;
                 }
-                import_progress(&mut io::stdout().lock(), &name, || {
-                    import_one(bulk, plan, &mut art_out, &mut art_err)
+                import_progress(&mut crate::output::stdout().lock(), &name, || {
+                    import_one(bulk, plan, &cancellation, &mut art_out, &mut art_err)
                 })?
             }
-            Game::Native(plan) => import_progress(&mut io::stdout().lock(), &name, || {
-                native::import_one(bulk, plan, &mut art_out, &mut art_err).map(|()| None)
-            })?,
+            Game::Native(plan) => {
+                import_progress(&mut crate::output::stdout().lock(), &name, || {
+                    native::import_one(bulk, plan, &mut art_out, &mut art_err).map(|()| None)
+                })?
+            }
         };
-        io::stdout().write_all(&art_out)?;
-        io::stderr().write_all(&art_err)?;
+        crate::output::stdout().write_all(&art_out)?;
+        crate::output::stderr().write_all(&art_err)?;
         match imported {
             Ok(log_body) => {
                 if let Some(body) = log_body {
@@ -1155,17 +1219,28 @@ fn import_all(bulk: &Bulk, games: Vec<Game>) -> anyhow::Result<ExitCode> {
                 }
                 done += 1;
             }
+            Err(error) if error.is::<Canceled>() => {
+                canceled = true;
+                break;
+            }
             Err(_) => failed.push(name),
         }
     }
+    let noun = if total == 1 { "game" } else { "games" };
     if failed.is_empty() {
-        println!("Imported {done} of {total} games.");
+        println!("Imported {done} of {total} {noun}.");
     } else {
         println!(
-            "Imported {done} of {total} games. {} failed: {}",
+            "Imported {done} of {total} {noun}. {} failed: {}",
             failed.len(),
             failed.join(", ")
         );
+    }
+    if canceled {
+        let remaining = total - done - failed.len();
+        let noun = if remaining == 1 { "game" } else { "games" };
+        println!("{remaining} {noun} canceled.");
+        return Ok(ExitCode::from(130));
     }
     Ok(if failed.is_empty() {
         ExitCode::SUCCESS
@@ -1184,6 +1259,7 @@ fn import_progress<W: Write, T>(
     let result = operation();
     match &result {
         Ok(_) => writeln!(output, " done")?,
+        Err(error) if error.is::<Canceled>() => writeln!(output, " canceled")?,
         Err(error) => writeln!(output, " failed: {error:#}")?,
     }
     output.flush()?;
@@ -1195,6 +1271,7 @@ fn import_progress<W: Write, T>(
 fn import_one(
     bulk: &Bulk,
     game: &GamePlan,
+    cancellation: &Cancellation,
     out: &mut Vec<u8>,
     err: &mut Vec<u8>,
 ) -> anyhow::Result<Option<String>> {
@@ -1209,7 +1286,7 @@ fn import_one(
     let log_body = bulk
         .verbose
         .then(|| plan.log_text(global, bulk.source) + &art.log_line());
-    let registered = apply_plan(paths, global, bulk.source, &plan)?;
+    let registered = apply_plan_with_cancellation(paths, global, bulk.source, &plan, cancellation)?;
     report_playtime(&registered.playtime);
     let environment = &registered.environment;
     let top = Pick::<OutputOnly, Vec<u8>>::Top(out);
@@ -3897,7 +3974,8 @@ mod tests {
             verbose: false,
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let result = import_one(&bulk, &game, &mut out, &mut err);
+        let cancellation = Cancellation::new().unwrap();
+        let result = import_one(&bulk, &game, &cancellation, &mut out, &mut err);
         (
             result,
             String::from_utf8(out).unwrap(),

@@ -1,10 +1,14 @@
 mod common;
 
 use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 
 use common::{Fixture, assert_success, stderr, stdout};
+use rustix::fs::OFlags;
+use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 
 fn fixture() -> Option<Fixture> {
     let f = Fixture::new_in(Path::new(env!("CARGO_MANIFEST_DIR")));
@@ -129,6 +133,53 @@ fn create_restore_and_delete_keep_the_saved_state_independent() {
     let removed = f.run(&["rm", "game", "--delete-prefix"]);
     assert_success(&removed);
     assert!(!stdout(&removed).contains("Snapshots left"));
+}
+
+#[test]
+fn declining_restore_confirmation_keeps_the_prefix() {
+    let Some(f) = fixture() else { return };
+    let (prefix, _) = environment(&f);
+    assert_success(&f.run(&["snapshot", "create", "game", "before-update"]));
+    fs::write(prefix.join("drive_c/Games/save.dat"), b"after").unwrap();
+
+    for (response, input) in [("n", &b"n\r"[..]), ("Ctrl+D", &b"\x04"[..])] {
+        let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
+        grantpt(&master).unwrap();
+        unlockpt(&master).unwrap();
+        let slave_name = ptsname(&master, Vec::new()).unwrap();
+        let slave = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(OFlags::NOCTTY.bits() as i32)
+            .open(slave_name.to_str().unwrap())
+            .unwrap();
+        let mut command: Command = f.wineo();
+        command
+            .args(["snapshot", "restore", "game", "before-update"])
+            .stdin(slave.try_clone().unwrap())
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave);
+        let mut child = command.spawn().unwrap();
+        drop(command);
+        let mut master = File::from(master);
+        master.write_all(input).unwrap();
+
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), Some(130), "{response}");
+        let mut output = String::new();
+        let mut bytes = [0; 1024];
+        while let Ok(read) = master.read(&mut bytes) {
+            if read == 0 {
+                break;
+            }
+            output.push_str(&String::from_utf8_lossy(&bytes[..read]));
+        }
+        assert!(output.contains("Restore canceled"), "{response}: {output}");
+        assert_eq!(
+            fs::read(prefix.join("drive_c/Games/save.dat")).unwrap(),
+            b"after"
+        );
+    }
 }
 
 #[test]
