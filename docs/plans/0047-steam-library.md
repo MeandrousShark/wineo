@@ -30,6 +30,23 @@ From the "Store library import" backlog row (2026-10-02):
 - Freebies: Steam's cached art without a SteamGridDB key, store playtime, and
   SteamGridDB lookup by app id.
 
+On 2026-10-07 the maintainer answered the open questions below with each
+recommendation:
+
+1. Games come in through an explicit `wineo import steam`, one config per
+   game, with install state read live.
+2. The config uses flat keys: `kind = "proxied"`, `launcher = "steam"`,
+   `app_id = "..."`.
+3. Steam's live playtime total is the source of truth. Wineo records no
+   sessions for Steam games.
+4. Games started from the Steam client show as running, and Stop works on
+   them. Their `after` hooks don't run.
+5. Tools are filtered by known app ids and name prefixes, not by parsing
+   `appinfo.vdf`.
+6. Only arguments reach a Steam game. Editing Steam's launch options is a
+   backlog row.
+7. The desktop app is part of this plan.
+
 ## Existing foundation
 
 - **Kinds.** `Kind { Wine(WineConfig), Native }` in
@@ -91,7 +108,7 @@ Checked on a real install (native Steam, one library, 13 manifests):
 
 ### Getting games in
 
-Open question 1. Recommended: an explicit import, like Heroic.
+An explicit import, like Heroic (question 1).
 
 ```sh
 wineo import steam --list
@@ -114,7 +131,7 @@ wineo import steam --all --dry-run
 
 ### Config
 
-Open question 2. Recommended: flat keys, like `kind` and `heroic_id`.
+Flat keys, like `kind` and `heroic_id` (question 2).
 
 ```toml
 # environments/baldurs-gate-3.toml
@@ -147,7 +164,10 @@ after = 'notify-send "Saves synced"'
   `flatpak run com.valvesoftware.Steam -applaunch ...` for Flatpak Steam.
   It's spawned in its own session, never in wineo's process group, since it
   starts the Steam client when Steam isn't running.
-- Open question 6 covers what else can reach the game.
+- Only arguments reach the game (question 6). `-e`, `[env]`, gamemode,
+  MangoHud, and gamescope are refused and point to Steam's launch options:
+  `baldurs-gate-3 is a Steam game, so set environment variables in its Steam
+  launch options.`
 - `before` runs first, as for every kind. A detached supervisor then waits
   for the game's `reaper` process: about 60 seconds, longer while the
   manifest says Steam is updating or downloading the game. If it never
@@ -161,10 +181,12 @@ after = 'notify-send "Saves synced"'
 
 ### Running state and Stop
 
-Open question 4 covers games started from Steam itself.
+Games started from the Steam client show as running too (question 4).
 
 - `status` and `list` show a proxied environment as running while wineo's
-  supervisor holds its lock.
+  supervisor holds its lock, or while a reaper for its app id exists. A run
+  Steam started shows as `running (started from Steam)`, Stop works on it,
+  and no hooks run for it.
 - Stop sends SIGTERM to the reaper and the processes under it, then SIGKILL
   after `stop_timeout`. It never signals anything outside the reaper's tree,
   so the Steam client is safe. `--force` and the desktop app's Force stop
@@ -178,7 +200,7 @@ Open question 4 covers games started from Steam itself.
 
 ### Playtime
 
-Open question 3. Recommended: Steam's own total is the source of truth.
+Steam's own total is the source of truth (question 3).
 
 - `stats` reads `Playtime` and `LastPlayed` from `localconfig.vdf` for the
   account that owns the game (the manifest's `LastOwner`).
@@ -219,7 +241,9 @@ A new `crates/wineo-core/src/steam.rs` owns everything Steam-specific:
   which then uses it).
 - A small text KeyValues parser for `.vdf` and `.acf`, replacing
   `vdf_paths`.
-- Libraries, manifests, and the tools filter (open question 5).
+- Libraries, manifests, and the tools filter: known tool app ids plus the
+  name prefixes `Proton`, `Steam Linux Runtime`, and `Steamworks`
+  (question 5).
 - Account, playtime, `CompatToolMapping`, and art paths.
 - Finding a game's reaper.
 
@@ -227,7 +251,7 @@ It never writes to Steam's folders and never reads `registry.vdf`.
 
 ### Desktop app
 
-Open question 7. Recommended: in this plan.
+In this plan (question 7).
 
 - Add gets **Import from Steam**: a poster grid of installed games that
   aren't imported yet, like Heroic's, with select all.
@@ -240,7 +264,10 @@ Open question 7. Recommended: in this plan.
   portable for native ones, which core already refuses.
 - Settings shows only tags and the desktop entry switch.
 
-## Open questions
+## Questions
+
+All answered A by the maintainer on 2026-10-07; see the settled list above.
+The options are kept as a record of what was weighed.
 
 1. How Steam games get into wineo:
    - **A (recommended).** An explicit `wineo import steam`, one config per
