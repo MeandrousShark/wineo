@@ -359,8 +359,9 @@ also shows `before` running ahead of wineo's exe check.
    `wineo stop acc`, then `/tmp/acc-0046-env` has `WINEO_END=stopped`,
    `WINEO_HOOK=after`, and no `WINEO_PREFIX`.
 4. `wineo run acc` and let it finish (30 seconds): the env file now says
-   `WINEO_END=exited` and `WINEO_EXIT_CODE=0`. `wineo stats acc` counts the
-   30 seconds, not the hook time.
+   `WINEO_END=exited` and `WINEO_EXIT_CODE=0`. `wineo stats acc --json | jq
+   .seconds` counts the 30 seconds plus step 3's run, not the hook time (the
+   text view rounds down to whole minutes).
 5. `wineo set acc 'hooks.before=echo nope; exit 1'`. `wineo start acc`
    prints `nope`, then `Launch canceled: the before hook exited with code
    1.`, exits 1, and nothing runs.
