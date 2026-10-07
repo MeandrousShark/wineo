@@ -35,22 +35,38 @@ pub fn copy_progress() -> impl FnMut(ImportProgress) {
     }
 }
 
-pub fn print_external_links(links: &[ExternalDependency], verbose: bool, note: &str) {
-    let count = links.len();
-    if count > 0 {
-        if !verbose && count > 12 {
-            println!("  external links: {count} (showing first 12; use -v for all)");
-        } else {
-            println!("  external links: {count}");
-        }
+pub fn print_external_links(label: &str, links: &[ExternalDependency], verbose: bool, note: &str) {
+    for line in external_link_lines(label, links, verbose, note) {
+        println!("{line}");
     }
-    for link in links.iter().take(if verbose { count } else { 12 }) {
-        println!(
-            "  external: {} -> {} ({note})",
+}
+
+/// Review lines for links that point outside a prefix. Most are Wine's
+/// `dosdevices` drive mappings, so only the count shows unless `verbose`.
+pub fn external_link_lines(
+    label: &str,
+    links: &[ExternalDependency],
+    verbose: bool,
+    note: &str,
+) -> Vec<String> {
+    if links.is_empty() {
+        return Vec::new();
+    }
+    let count = links.len();
+    if !verbose {
+        return vec![format!(
+            "  {label} links: {count}, {note} (-v to list them)"
+        )];
+    }
+    let mut lines = vec![format!("  {label} links: {count}, {note}")];
+    lines.extend(links.iter().map(|link| {
+        format!(
+            "  {label}: {} -> {}",
             link.source.display(),
             link.target.display()
-        );
-    }
+        )
+    }));
+    lines
 }
 
 pub struct Cancellation {

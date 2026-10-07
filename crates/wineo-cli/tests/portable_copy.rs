@@ -302,11 +302,18 @@ fn links_in_snapshots_follow_the_copied_prefix() {
     std::os::unix::fs::symlink("/opt/external/thing", saved.join("outside")).unwrap();
     let dir = f.root.path().join("usb");
 
-    let copied = copy(&f, "game", &dir);
+    let copied = f
+        .wineo()
+        .args(["-v", "portable", "copy", "game", "--to"])
+        .arg(&dir)
+        .output()
+        .unwrap();
     assert_success(&copied);
     let review = stdout(&copied);
     assert!(
-        review.contains("snapshot external:") && review.contains("-> /opt/external/thing"),
+        review.contains("snapshot external links: 1, kept in place\n")
+            && review.contains("snapshot external:")
+            && review.contains("-> /opt/external/thing"),
         "{review}"
     );
     assert!(

@@ -124,7 +124,12 @@ fn print_review(reviewed: &CloneInspection, verbose: bool) {
     for path in &reviewed.external_target_paths {
         println!("  external target path: {path} (kept in place)");
     }
-    transfer::print_external_links(&reviewed.external_dependencies, verbose, "kept in place");
+    transfer::print_external_links(
+        "external",
+        &reviewed.external_dependencies,
+        verbose,
+        "kept in place",
+    );
     println!(
         "The source and any external launcher must be idle. External game files stay where they are."
     );

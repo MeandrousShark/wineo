@@ -163,7 +163,12 @@ fn print_create_review(reviewed: &CreateInspection, verbose: bool) {
         reviewed.runner,
         reviewed.layout
     );
-    transfer::print_external_links(&reviewed.external_dependencies, verbose, "not included");
+    transfer::print_external_links(
+        "external",
+        &reviewed.external_dependencies,
+        verbose,
+        "not included",
+    );
     println!("The prefix and any external launcher must be idle.");
 }
 

@@ -218,6 +218,16 @@ Steps 1 and 2 can run in parallel. Step 3 needs 1, and step 4 needs 2.
   - It's fail-soft like the real run: a game that would fail prints `NAME:
     would fail: REASON`, the rest still preview, and it exits 1 at the end.
 
+## Acceptance fixes
+
+- External links in reviews (2026-10-07). A real Heroic prefix printed a
+  long list of `external:` lines, mostly `dosdevices` drive mappings. The
+  maintainer chose to show only the count by default, with `-v` listing
+  each link, in every review that has them: `import prefix`, `clone`,
+  `portable copy` (including snapshot links), and `snapshot create`. The
+  default line reads `external links: 26, kept in place (-v to list them)`.
+  This replaces clone's old first-12 cap.
+
 ## Testing and acceptance
 
 - An integration test helper snapshots the temporary XDG roots (paths,

@@ -123,8 +123,9 @@ confirmation prompt.
 Wineo reviews the source and destination, runner, prefix layout, targets,
 snapshots, external dependencies, and settings that change before copying,
 including any literal source-prefix paths in arguments or environment
-variables that need manual review. Copied targets are always written with
-`desktop = false`, and the review lists that change. When `DIR/config/`
+variables that need manual review. External links are counted; add `-v` to
+list each one. Copied targets are always written with `desktop = false`, and
+the review lists that change. When `DIR/config/`
 does not exist yet, the copy also brings over the source's global config and
 user templates, rebasing a copied `defaults.prefix_root` into
 `DIR/prefixes/`; otherwise the portable folder's own global config and

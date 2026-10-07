@@ -116,13 +116,13 @@ fn clone_review_summarizes_external_links_unless_verbose() {
     let normal = f.run(&["clone", "zomboid", "normal"]);
     assert_success(&normal);
     let normal = stdout(&normal);
-    assert!(normal.contains("external links: 15 (showing first 12"));
-    assert_eq!(normal.matches("  external:").count(), 12);
+    assert!(normal.contains("external links: 15, kept in place (-v to list them)"));
+    assert_eq!(normal.matches("  external:").count(), 0);
 
     let verbose = f.run(&["-v", "clone", "zomboid", "verbose"]);
     assert_success(&verbose);
     let verbose = stdout(&verbose);
-    assert!(verbose.contains("external links: 15"));
+    assert!(verbose.contains("external links: 15, kept in place\n"));
     assert_eq!(verbose.matches("  external:").count(), 15);
 }
 

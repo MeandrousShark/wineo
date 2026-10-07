@@ -153,8 +153,9 @@ architecture marker.
 Import preserves prefix files and registry settings without running Wine.
 Symlinks are preserved, with internal absolute links rebased to the copy.
 External game folders, linked saves, and other external data stay where they
-are. Review lists those dependencies. Stop applications using the source before
-importing; a copy is not a live snapshot.
+are. Review counts the links that point to them, mostly Wine's drive mappings
+in `dosdevices`; add `-v` to list each one. Stop applications using the source
+before importing; a copy is not a live snapshot.
 
 Import checks that the source hasn't changed since review, before and after
 the copy. The check compares file metadata (size, times, inode, links), not

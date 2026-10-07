@@ -9,7 +9,7 @@ use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
-use super::transfer::Cancellation;
+use super::transfer::{self, Cancellation};
 use super::{download, external_runners, import_heroic, setup};
 use crate::picker;
 use crate::prompt::{self, Canceled, Choice, Input, Prompt, Reply, Terminal, numbered};
@@ -154,6 +154,7 @@ fn prefix(
             &request,
             &inspection,
             &mut Prompt::new(NoInput, crate::output::stdout()),
+            verbose,
         )?;
         if args.dry_run {
             check_review(paths, &global, &request, &inspection)?;
@@ -416,7 +417,7 @@ fn guided_prefix<I: Input, W: Write>(
                         continue;
                     }
                 };
-                print_review(paths, global, &request, &inspection, prompt)?;
+                print_review(paths, global, &request, &inspection, prompt, verbose)?;
                 #[derive(Clone)]
                 enum Review {
                     Import,
@@ -531,6 +532,7 @@ fn print_review<I: Input, W: Write>(
     request: &ImportRequest,
     inspection: &Inspection,
     prompt: &mut Prompt<I, W>,
+    verbose: bool,
 ) -> anyhow::Result<()> {
     let destination = if request.adopt {
         inspection.source_root.clone()
@@ -556,12 +558,13 @@ fn print_review<I: Input, W: Write>(
         inspection.layout,
         inspection.arch
     ))?;
-    for link in &inspection.external_dependencies {
-        prompt.say(format!(
-            "  external: {} -> {} (kept in place)",
-            link.source.display(),
-            link.target.display()
-        ))?;
+    for line in transfer::external_link_lines(
+        "external",
+        &inspection.external_dependencies,
+        verbose,
+        "kept in place",
+    ) {
+        prompt.say(line)?;
     }
     prompt.say("The source game and launcher must be idle. External game files and saves stay where they are.")?;
     prompt.say(if request.adopt {

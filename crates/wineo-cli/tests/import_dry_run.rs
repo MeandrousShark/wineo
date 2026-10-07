@@ -186,6 +186,47 @@ fn prefix_copy_and_adopt_dry_runs_print_the_review_without_writing() {
 }
 
 #[test]
+fn prefix_review_counts_external_links_unless_verbose() {
+    let f = Fixture::new();
+    install_guarded_wine(&f);
+    let prefix = source(f.root.path());
+    let elsewhere = f.root.path().join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    fs::create_dir(prefix.join("dosdevices")).unwrap();
+    for drive in ["s:", "t:", "z:"] {
+        std::os::unix::fs::symlink(&elsewhere, prefix.join("dosdevices").join(drive)).unwrap();
+    }
+    let args = [
+        "import",
+        "prefix",
+        prefix.to_str().unwrap(),
+        "-n",
+        "sample",
+        "--runner",
+        "test-wine",
+        "--dry-run",
+    ];
+
+    let normal = stdout(&dry_run(&f, &args));
+    assert!(
+        normal.contains("  external links: 3, kept in place (-v to list them)\n"),
+        "{normal}"
+    );
+    assert!(!normal.contains("  external:"), "{normal}");
+
+    let verbose = stdout(&dry_run(&f, &[&["-v"], &args[..]].concat()));
+    assert!(
+        verbose.contains("  external links: 3, kept in place\n"),
+        "{verbose}"
+    );
+    assert_eq!(verbose.matches("  external: ").count(), 3, "{verbose}");
+    assert!(
+        verbose.contains(&format!("dosdevices/s: -> {}\n", elsewhere.display())),
+        "{verbose}"
+    );
+}
+
+#[test]
 fn heroic_wine_game_dry_run_prints_the_game_review_without_writing() {
     let f = Fixture::new();
     install_guarded_wine(&f);

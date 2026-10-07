@@ -172,14 +172,18 @@ fn print_review(reviewed: &CopyInspection, verbose: bool) {
     for path in &reviewed.external_target_paths {
         println!("  external target path: {path} (kept in place)");
     }
-    transfer::print_external_links(&reviewed.external_dependencies, verbose, "kept in place");
-    for link in &reviewed.snapshot_links {
-        println!(
-            "  snapshot external: {} -> {} (kept in place)",
-            link.source.display(),
-            link.target.display()
-        );
-    }
+    transfer::print_external_links(
+        "external",
+        &reviewed.external_dependencies,
+        verbose,
+        "kept in place",
+    );
+    transfer::print_external_links(
+        "snapshot external",
+        &reviewed.snapshot_links,
+        verbose,
+        "kept in place",
+    );
     match reviewed.storage {
         Storage::Reflink => println!("  storage: reflinked, shares space with the source"),
         Storage::FullCopy => {
