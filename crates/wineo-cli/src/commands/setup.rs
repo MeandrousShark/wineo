@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::bail;
-use wineo_core::config::GlobalConfig;
+use wineo_core::config::{GlobalConfig, Kind, proxied_key_message};
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
 use wineo_core::installer::{self, Cleaned, Installer, Outcome, Output};
@@ -35,6 +35,9 @@ pub struct Args {
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let name = &args.name;
     Environment::ensure_exists(paths, name)?;
+    if let Ok(environment) = Environment::load(paths, name) {
+        refuse_proxied(&environment)?;
+    }
     if !prompt::interactive() {
         bail!(
             "wineo setup needs a terminal. Without one, use `wineo programs {name}` and `wineo set {name} targets.<target>.exe=<path>`"
@@ -51,6 +54,18 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::from(CANCELED))
         }
         other => other,
+    }
+}
+
+/// A proxied environment has no targets to set up, since its launcher owns
+/// the launch.
+fn refuse_proxied(environment: &Environment) -> anyhow::Result<()> {
+    match &environment.config.kind {
+        Kind::Wine(_) | Kind::Native => Ok(()),
+        Kind::Proxied(proxied) => bail!(
+            "{}",
+            proxied_key_message(&environment.name, proxied.launcher, "targets")
+        ),
     }
 }
 
@@ -109,8 +124,9 @@ pub(crate) fn setup<I: Input, W: Write>(
         return Ok(ExitCode::FAILURE);
     }
     let environment = Environment::load(paths, name)?;
+    refuse_proxied(&environment)?;
     // No prefix to scan or build, so targets are only ever added by path.
-    if environment.config.wine().is_none() {
+    if let Kind::Native = environment.config.kind {
         let mut native_env = global.env.clone();
         native_env.extend(environment.config.env.clone());
         let place = Place {
@@ -513,8 +529,11 @@ fn reconcile<I: Input, W: Write>(
     let reconciled = Environment::load(paths, name)
         .map_err(anyhow::Error::from)
         .and_then(|environment| {
-            if environment.config.wine().is_none() {
-                return desktop::reconcile_native(paths, global, &environment);
+            match &environment.config.kind {
+                Kind::Wine(_) => {}
+                Kind::Native => return desktop::reconcile_native(paths, global, &environment),
+                // Proxied environments get no entries yet.
+                Kind::Proxied(_) => return Ok(()),
             }
             let prefix = environment.prefix(paths)?;
             let runner = Runners::new(paths, global)

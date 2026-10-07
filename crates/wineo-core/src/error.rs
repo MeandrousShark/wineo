@@ -1,10 +1,44 @@
 use std::io;
 use std::path::PathBuf;
 
-use crate::config::Arch;
+use crate::config::{Arch, Launcher};
 use crate::operation::Operation;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// An environment that has no prefix of its own to work on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoPrefix {
+    pub name: String,
+    pub owner: PrefixOwner,
+}
+
+/// Who has the prefix an environment lacks, if anyone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefixOwner {
+    /// A native environment, which runs with no prefix at all.
+    None,
+    /// A proxied environment, whose launcher manages any prefix.
+    Launcher(Launcher),
+}
+
+impl std::fmt::Display for NoPrefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.owner {
+            PrefixOwner::None => write!(
+                f,
+                "{} is a native environment, so it has no prefix",
+                self.name
+            ),
+            PrefixOwner::Launcher(launcher) => write!(
+                f,
+                "{} manages {}'s prefix.",
+                launcher.display_name(),
+                self.name
+            ),
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -275,8 +309,11 @@ pub enum Error {
     #[error("{0}")]
     InvalidEnv(String),
 
-    #[error("{0} is a native environment, so it has no prefix")]
-    NoPrefix(String),
+    #[error("{0}")]
+    NoPrefix(NoPrefix),
+
+    #[error("Launching {} games isn't supported yet.", .0.display_name())]
+    ProxiedLaunch(Launcher),
 
     #[error("invalid prefix `{0}`: use an absolute path or one starting with ~/")]
     RelativePrefix(String),

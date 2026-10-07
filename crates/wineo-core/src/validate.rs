@@ -17,7 +17,7 @@ use serde::{Serialize, Serializer};
 
 use crate::art::{self, Kind as ArtKind};
 use crate::components::{Builds, Component, LATEST};
-use crate::config::{EnvironmentConfig, GlobalConfig};
+use crate::config::{EnvironmentConfig, GlobalConfig, Kind};
 use crate::desktop::{self, Entry, Pending};
 use crate::environment::{self, Environment};
 use crate::error::{Error, IoContext, Result, chain};
@@ -803,6 +803,16 @@ fn check_one(paths: &Paths, global: &GlobalConfig, name: &str, report: &mut Repo
         path,
         config,
     };
+    match &environment.config.kind {
+        Kind::Wine(_) | Kind::Native => {}
+        // No Wine or native checks apply, and its launcher's checks aren't
+        // written yet.
+        Kind::Proxied(_) => {
+            check_runtime(paths, name, report)?;
+            check_art(paths, name, report);
+            return Ok(());
+        }
+    }
     let wine = check_wine(paths, global, &environment, report);
     check_targets(paths, global, &environment, &wine, report);
     check_runtime(paths, name, report)?;
@@ -958,7 +968,11 @@ fn check_targets(
     report: &mut Report,
 ) {
     let name = environment.name.as_str();
-    let native = environment.config.wine().is_none();
+    let native = match &environment.config.kind {
+        Kind::Native => true,
+        Kind::Wine(_) => false,
+        Kind::Proxied(_) => return,
+    };
     let targets = &environment.config.targets;
     let mut push = |code, message| report.push(Problem::new(code, Some(name), message, None));
 
@@ -1117,13 +1131,15 @@ fn check_desktop(
         }
         return Ok(());
     }
-    let pending = match (environment.config.wine(), &wine.prefix) {
-        (None, _) => desktop::pending_native(paths, global, environment)?,
-        (Some(_), Some(dir)) => {
+    let pending = match (&environment.config.kind, &wine.prefix) {
+        (Kind::Native, _) => desktop::pending_native(paths, global, environment)?,
+        (Kind::Wine(_), Some(dir)) => {
             desktop::pending(paths, global, environment, wine.runner.as_ref(), dir)?
         }
         // No prefix to check against means no entries to compare either.
-        (Some(_), None) => return Ok(()),
+        (Kind::Wine(_), None) => return Ok(()),
+        // Proxied environments get no entries yet.
+        (Kind::Proxied(_), _) => return Ok(()),
     };
     if pending.is_empty() {
         return Ok(());
@@ -1536,11 +1552,16 @@ fn rewrite_desktop(paths: &Paths, name: &str) -> Result<()> {
     let environment = Environment::load(paths, name)?;
     let global = GlobalConfig::load_or_default(paths)?;
     let locks = Locks::new(paths);
-    let Some(wine) = environment.config.wine() else {
-        let _guard = locks.acquire(Operation::Launch, name, &[])?;
-        Environment::ensure_exists(paths, name)?;
-        desktop::reconcile_native(paths, &global, &environment)?;
-        return Ok(());
+    let wine = match &environment.config.kind {
+        Kind::Wine(wine) => wine,
+        Kind::Native => {
+            let _guard = locks.acquire(Operation::Launch, name, &[])?;
+            Environment::ensure_exists(paths, name)?;
+            desktop::reconcile_native(paths, &global, &environment)?;
+            return Ok(());
+        }
+        // Proxied environments get no entries yet.
+        Kind::Proxied(_) => return Ok(()),
     };
     let prefix = environment.prefix(paths)?;
     let _guard = locks.acquire(Operation::Launch, name, &[&prefix])?;

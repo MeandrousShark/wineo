@@ -1,7 +1,7 @@
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use wineo_core::operation::Operation;
-use wineo_core::report::Overview;
+use wineo_core::report::{KindReport, Overview};
 use wineo_core::runtime::{State, Status};
 use wineo_core::view::{CollectionError, CollectionOutput, StatusOutput};
 
@@ -18,6 +18,7 @@ pub struct Row {
     unresolved: bool,
     tags: Vec<String>,
     hooks: Option<wineo_core::view::HooksOutput>,
+    kind: Option<KindReport>,
 }
 
 impl Row {
@@ -50,6 +51,7 @@ impl Row {
             unresolved,
             tags: tags.to_vec(),
             hooks: None,
+            kind: None,
         }
     }
 }
@@ -77,7 +79,14 @@ impl Gathered {
                 .iter()
                 .map(|row| StatusOutput {
                     hooks: row.hooks.clone(),
-                    ..StatusOutput::new(&row.name, &row.status, row.busy, row.unresolved, &row.tags)
+                    ..StatusOutput::new(
+                        &row.name,
+                        &row.status,
+                        row.busy,
+                        row.unresolved,
+                        &row.tags,
+                        row.kind.as_ref(),
+                    )
                 })
                 .collect(),
             errors: &self.errors,
@@ -100,6 +109,7 @@ pub fn format_overview(overview: Overview, now: Timestamp, tz: &TimeZone) -> Gat
                 tz,
             );
             row.hooks = environment.hooks.clone();
+            row.kind = environment.kind.clone();
             row
         })
         .collect();
@@ -188,6 +198,7 @@ mod tests {
             runner: None,
             prefix: None,
             native: false,
+            launcher: None,
             status,
             mode: RunMode::Detached,
             target: target.to_owned(),
@@ -266,6 +277,7 @@ mod tests {
                 unresolved: false,
                 tags: Vec::new(),
                 hooks: None,
+                kind: None,
             },
             Row {
                 name: "photoshop".to_owned(),
@@ -281,6 +293,7 @@ mod tests {
                 unresolved: false,
                 tags: Vec::new(),
                 hooks: None,
+                kind: None,
             },
             Row {
                 name: "winecfg".to_owned(),
@@ -296,6 +309,7 @@ mod tests {
                 unresolved: false,
                 tags: Vec::new(),
                 hooks: None,
+                kind: None,
             },
         ];
         assert_eq!(

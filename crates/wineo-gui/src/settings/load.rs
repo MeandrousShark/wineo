@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use iced::Task;
 use wineo_core::components::{Builds, Component};
-use wineo_core::config::{Arch, GlobalConfig};
+use wineo_core::config::{Arch, GlobalConfig, Kind};
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
 use wineo_core::external_runners::Source;
@@ -148,6 +148,14 @@ pub(crate) fn snapshot_global(paths: &Paths) -> Snapshot {
 
 fn content(paths: &Paths, name: &str) -> anyhow::Result<Loaded> {
     let environment = Environment::load(paths, name)?;
+    // The form only knows Wine and native settings.
+    match &environment.config.kind {
+        Kind::Wine(_) | Kind::Native => {}
+        Kind::Proxied(proxied) => anyhow::bail!(
+            "Settings for {} games aren't supported yet.",
+            proxied.launcher.display_name()
+        ),
+    }
     // A broken global config shouldn't lock every environment's page, and
     // the tick reloads the page once it's fixed.
     let (global, global_warning) = match GlobalConfig::load(paths) {
@@ -181,7 +189,7 @@ fn content(paths: &Paths, name: &str) -> anyhow::Result<Loaded> {
         None => Vec::new(),
     };
     Ok(Loaded {
-        native: wine.is_none(),
+        native: matches!(environment.config.kind, Kind::Native),
         arch: wine.map(|wine| wine.arch).unwrap_or_default(),
         values,
         inherited,
@@ -302,7 +310,10 @@ pub(crate) fn resolve_exe(paths: &Paths, name: &str, typed: &str) -> Result<Stri
         typed
     };
     let environment = Environment::load(paths, name).map_err(|error| error.to_string())?;
-    if environment.config.wine().is_none() {
+    if let Kind::Proxied(_) = environment.config.kind {
+        return Err(environment.config.no_prefix(name).to_string());
+    }
+    if let Kind::Native = environment.config.kind {
         let global = GlobalConfig::load_or_default(paths).map_err(|error| error.to_string())?;
         let mut env = global.env;
         env.extend(environment.config.env);

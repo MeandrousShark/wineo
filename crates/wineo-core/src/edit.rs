@@ -64,12 +64,12 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
             store_value(root, "prefix", value);
             Ok(())
         }
-        "runner" | "gameid" | "store" | "dxvk" | "vkd3d" => {
+        "runner" | "gameid" | "store" | "dxvk" | "vkd3d" | "title" => {
             let value = parse_string_value(key, raw)?;
             store_value(root, key, value);
             Ok(())
         }
-        "gamemode" | "wayland" | "mangohud" => {
+        "gamemode" | "wayland" | "mangohud" | "desktop" => {
             store_value(root, key, Value::from(parse_bool(key, raw)?));
             Ok(())
         }
@@ -483,7 +483,7 @@ fn unset_gamescope_field(root: &mut Table, key: &str, field: &str) -> Result<boo
 fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
         "prefix" | "runner" | "gamemode" | "wayland" | "mangohud" | "gamescope" | "hooks"
-        | "gameid" | "tags" | "winetricks" | "store" | "dxvk" | "vkd3d" => {
+        | "gameid" | "tags" | "winetricks" | "store" | "dxvk" | "vkd3d" | "title" | "desktop" => {
             Ok(root.remove(key).is_some())
         }
         "arch" => Err(read_only_arch()),

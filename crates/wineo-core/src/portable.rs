@@ -10,10 +10,9 @@ use crate::art::StagedArt;
 use crate::build_lock;
 use crate::cancel::Token;
 use crate::clone::{self, ConfigReview};
-use crate::config::{self, EnvironmentConfig, GlobalConfig};
+use crate::config::{self, EnvironmentConfig, GlobalConfig, Kind};
 use crate::download::{InstallLock, publish};
 use crate::environment::{self, Environment};
-use crate::error::Error;
 use crate::import::{self, ExternalDependency, ImportLayout, ImportProgress, SourceFingerprint};
 use crate::operation::{Locks, Operation};
 use crate::paths::{self, Paths};
@@ -108,9 +107,7 @@ pub fn inspect_with(
         .with_context(|| format!("failed to read {}", source_path.display()))?;
     let config =
         EnvironmentConfig::parse(&source_path, &source_config).map_err(|err| anyhow!(err))?;
-    let wine = config
-        .wine()
-        .ok_or_else(|| anyhow!(Error::NoPrefix(name.to_owned())))?;
+    let wine = config.require_wine(name).map_err(|err| anyhow!(err))?;
     let configured_root = from.config_path(&wine.prefix).map_err(|err| anyhow!(err))?;
     let (runner, _runner_guard) = if import::root_layout_ambiguous(&configured_root) {
         let (runner, guard) = Runners::new(from, global)
@@ -615,8 +612,10 @@ pub fn inspect_native_with(
         .with_context(|| format!("failed to read {}", source_path.display()))?;
     let config =
         EnvironmentConfig::parse(&source_path, &source_config).map_err(|err| anyhow!(err))?;
-    if config.wine().is_some() {
-        bail!("{name} is not a native environment");
+    match &config.kind {
+        Kind::Native => {}
+        Kind::Wine(_) => bail!("{name} is not a native environment"),
+        Kind::Proxied(_) => return Err(anyhow!(config.no_prefix(name))),
     }
     let source_config_dir = from
         .environments_dir()

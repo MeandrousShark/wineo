@@ -15,6 +15,7 @@ use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 
+use crate::config::Launcher;
 use crate::error::{Error, IoContext, Result, chain};
 use crate::files::write_atomic;
 use crate::launch::{Host, Overrides};
@@ -39,6 +40,14 @@ pub enum RunMode {
     Attached,
 }
 
+/// What a recorded run ran on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunKind {
+    Wine,
+    Native,
+    Proxied(Launcher),
+}
+
 /// What `state.toml` records about the latest run of an environment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunState {
@@ -54,6 +63,10 @@ pub struct RunState {
     /// through its process group.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub native: bool,
+    /// The launcher of a proxied run. Never set in a file from an older wineo,
+    /// so those still read as Wine or native runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launcher: Option<Launcher>,
     pub pid: u32,
     /// The process group the run was spawned into, so what it left behind can
     /// still be killed once whatever owned it is gone. Missing in a state file
@@ -103,6 +116,7 @@ impl RunState {
             runner: None,
             prefix: None,
             native: false,
+            launcher: None,
             pid,
             group,
             boot_id: None,
@@ -126,6 +140,15 @@ impl RunState {
                 self.prefix = Some(prefix.clone());
             }
             Host::Native { .. } => self.native = true,
+        }
+    }
+
+    /// What the run ran on, from the fields `state.toml` has always had.
+    pub fn kind(&self) -> RunKind {
+        match (self.launcher, self.native) {
+            (Some(launcher), _) => RunKind::Proxied(launcher),
+            (None, true) => RunKind::Native,
+            (None, false) => RunKind::Wine,
         }
     }
 
@@ -500,9 +523,11 @@ impl Runtime {
             Err(err) => return unresolved(Some(chain(&err))),
         };
         // None for a native run, which is cleaned up through its group like Proton.
-        let wine = match (run.runner.clone(), run.prefix.clone(), run.native) {
-            (Some(runner), Some(prefix), false) => Some((runner, prefix)),
-            (None, None, true) => None,
+        let wine = match (run.kind(), run.runner.clone(), run.prefix.clone()) {
+            (RunKind::Wine, Some(runner), Some(prefix)) => Some((runner, prefix)),
+            (RunKind::Native, None, None) => None,
+            // Never signaled: its process group isn't wineo's to kill.
+            (RunKind::Proxied(_), ..) => return unresolved(None),
             _ => return unresolved(None),
         };
         let wineserver = wine.as_ref().is_some_and(|(runner, _)| !runner.is_proton());
@@ -712,6 +737,7 @@ mod tests {
             runner: None,
             prefix: None,
             native: false,
+            launcher: None,
             pid: 4242,
             group: Some(4242),
             boot_id: None,
@@ -899,6 +925,68 @@ mod tests {
         assert_eq!(state.status, RunStatus::Exited);
         assert_eq!(state.requested_target, None);
         assert_eq!(state.group, None);
+    }
+
+    /// `state.toml` files from before proxied runs read as the kind they
+    /// always were.
+    #[test]
+    fn older_state_files_keep_their_kind() {
+        let base = "status = \"running\"\nmode = \"detached\"\ntarget = \"game\"\npid = 1\nstarted_at = \"2026-09-16T21:02:11Z\"\n";
+        for (extra, kind) in [
+            ("native = true\n", RunKind::Native),
+            ("native = false\n", RunKind::Wine),
+            ("", RunKind::Wine),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let runtime = runtime(root.path());
+            fs::create_dir_all(runtime.dir()).unwrap();
+            fs::write(runtime.dir().join("state.toml"), format!("{base}{extra}")).unwrap();
+            let state = runtime.read_state().unwrap().unwrap();
+            assert_eq!(state.kind(), kind, "{extra:?}");
+            assert_eq!(state.launcher, None, "{extra:?}");
+        }
+    }
+
+    #[test]
+    fn a_proxied_run_round_trips_its_launcher() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime(root.path());
+        let state = RunState {
+            launcher: Some(Launcher::Steam),
+            ..run_state(RunStatus::Running)
+        };
+        runtime.write_state(&state).unwrap();
+        let text = fs::read_to_string(runtime.dir().join("state.toml")).unwrap();
+        assert!(text.contains("launcher = \"steam\""), "{text}");
+        assert!(!text.contains("native"), "{text}");
+        let read = runtime.read_state().unwrap().unwrap();
+        assert_eq!(read.kind(), RunKind::Proxied(Launcher::Steam));
+        assert_eq!(read, state);
+    }
+
+    /// Lost-run cleanup never signals anything for a proxied run, since its
+    /// process group belongs to the launcher.
+    #[test]
+    fn a_lost_proxied_run_is_left_unresolved() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime(root.path());
+        let mut run = run_state(RunStatus::Running);
+        run.launcher = Some(Launcher::Steam);
+        run.group = Some(1);
+        runtime.write_state(&run).unwrap();
+        let stats_log = root.path().join("stats.jsonl");
+        let cleaned = runtime
+            .clean_up_lost_run(Duration::from_secs(1), &stats_log)
+            .unwrap();
+        assert!(
+            matches!(cleaned, LostRunCleanup::Unresolved { warning: None }),
+            "{cleaned:?}"
+        );
+        assert_eq!(
+            runtime.read_state().unwrap().unwrap().status,
+            RunStatus::Running
+        );
+        assert!(!stats_log.exists());
     }
 
     #[test]

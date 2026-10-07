@@ -4,7 +4,8 @@ use std::process::ExitCode;
 use anyhow::bail;
 use clap::Subcommand;
 use clap_complete::ArgValueCompleter;
-use wineo_core::config::GlobalConfig;
+use wineo_core::config::{GlobalConfig, Kind};
+use wineo_core::environment::Environment;
 use wineo_core::paths::Paths;
 use wineo_core::snapshot::{self, CreateInspection, RestoreInspection};
 
@@ -55,6 +56,19 @@ enum Command {
 }
 
 pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
+    let name = match &args.command {
+        Command::Create { env, .. }
+        | Command::List { env }
+        | Command::Restore { env, .. }
+        | Command::Delete { env, .. }
+        | Command::Recover { env } => env,
+    };
+    // A launcher's prefix is never snapshotted, whatever the subcommand.
+    if let Ok(environment) = Environment::load(paths, name)
+        && let Kind::Proxied(_) = environment.config.kind
+    {
+        return Err(environment.config.no_prefix(name).into());
+    }
     match args.command {
         Command::Create { env, label } => create(paths, &env, &label, verbose),
         Command::List { env } => {

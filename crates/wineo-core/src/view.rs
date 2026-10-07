@@ -1,5 +1,5 @@
 use crate::operation::Operation;
-use crate::report::{ComponentReport, EnvironmentReport, Played};
+use crate::report::{ComponentReport, EnvironmentReport, KindReport, Played};
 use crate::runtime::{RunMode, RunState, State, Status};
 use crate::stats::{Longest, Session, Summary, TagBreakdown, TagTotals, TargetSummary};
 use jiff::Timestamp;
@@ -40,6 +40,12 @@ pub struct StatusOutput<'a> {
     pub unresolved: bool,
     pub hooks: Option<HooksOutput>,
     pub run: Option<RunOutput<'a>>,
+    /// `wine`, `native`, or `proxied`. None when the config can't be read.
+    pub kind: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launcher: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<&'a str>,
 }
 
 impl<'a> StatusOutput<'a> {
@@ -49,7 +55,14 @@ impl<'a> StatusOutput<'a> {
         busy: Option<Operation>,
         unresolved: bool,
         tags: &'a [String],
+        kind: Option<&'a KindReport>,
     ) -> Self {
+        let proxied = match kind {
+            Some(KindReport::Proxied {
+                launcher, app_id, ..
+            }) => Some((launcher.as_str(), app_id.as_str())),
+            Some(KindReport::Wine | KindReport::Native) | None => None,
+        };
         Self {
             name,
             tags,
@@ -59,6 +72,9 @@ impl<'a> StatusOutput<'a> {
             unresolved,
             hooks: None,
             run: status.run.as_ref().map(RunOutput::from),
+            kind: kind.map(KindReport::as_str),
+            launcher: proxied.map(|(launcher, _)| launcher),
+            app_id: proxied.map(|(_, app_id)| app_id),
         }
     }
 }
@@ -74,7 +90,6 @@ pub struct RunnerOutput<'a> {
 pub struct NamedOutput<'a> {
     #[serde(flatten)]
     pub status: StatusOutput<'a>,
-    pub kind: &'static str,
     pub runner: Option<RunnerOutput<'a>>,
     pub prefix: Option<&'a str>,
     pub winetricks: &'a [String],
@@ -137,9 +152,9 @@ impl<'a> NamedOutput<'a> {
                     report.busy,
                     report.unresolved,
                     &report.tags,
+                    Some(&report.kind),
                 )
             },
-            kind: if report.native { "native" } else { "wine" },
             runner: configured_runner.map(|configured| RunnerOutput {
                 configured,
                 resolved: report.runner_resolved.as_deref(),

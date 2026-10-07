@@ -1109,6 +1109,7 @@ impl App {
             }
             Message::CloneEnvironment(name) => {
                 if self.management_busy()
+                    || !self.transfer_actions(&name)
                     || self.operation.is_some()
                     || self.remove_reason(&name).is_some()
                     || self.settings.is_some()
@@ -1620,6 +1621,7 @@ mod tests {
     fn card(name: &str, state: State, seconds: i64) -> Card {
         Card {
             name: name.into(),
+            kind: None,
             display_title: name.into(),
             state,
             lost: false,
@@ -1669,6 +1671,63 @@ mod tests {
             tools_page::Event::OpenWinetricks,
         ));
         app
+    }
+
+    /// Snapshots, Run program, and Winetricks are Wine-only. Clone and Copy
+    /// to portable work for native environments too, but never for a proxied
+    /// one, whose launcher owns it.
+    #[test]
+    fn the_context_menu_follows_each_card_kind() {
+        use crate::library::CardKind;
+
+        let mut app = app();
+        app.cards = [
+            ("notes", Some(CardKind::Wine), true),
+            ("dusk", Some(CardKind::Native), false),
+            ("bg3", Some(CardKind::Proxied), false),
+            ("broken", None, false),
+        ]
+        .into_iter()
+        .map(|(name, kind, prefix)| {
+            let mut card = card(name, State::Inactive, 0);
+            card.kind = kind;
+            card.prefix = prefix.then(|| PathBuf::from("/tmp/notes-prefix"));
+            card
+        })
+        .collect();
+        for (name, wine, transfer) in [
+            ("notes", true, true),
+            ("dusk", false, true),
+            ("bg3", false, false),
+            ("broken", false, true),
+        ] {
+            assert_eq!(app.wine_actions(name), wine, "{name}");
+            assert_eq!(app.transfer_actions(name), transfer, "{name}");
+        }
+
+        let _ = app.update(Message::Section(sidebar::Section::Library));
+        let _ = app.update(Message::CloneEnvironment("bg3".into()));
+        assert!(app.flow.is_none());
+        let _ = app.update(Message::CopyPortable("bg3".into()));
+        assert!(app.portable_page.is_none());
+        let _ = app.update(Message::OpenTool("bg3".into(), tools_page::Kind::Exec));
+        assert!(app.tool_page.is_none());
+
+        let _ = app.update(Message::CopyPortable("dusk".into()));
+        assert_eq!(app.portable_page.as_deref(), Some("dusk"));
+    }
+
+    #[test]
+    fn native_cards_can_still_be_cloned() {
+        use crate::library::CardKind;
+
+        let mut app = app();
+        let mut native = card("dusk", State::Inactive, 0);
+        native.kind = Some(CardKind::Native);
+        app.cards = vec![native];
+        let _ = app.update(Message::Section(sidebar::Section::Library));
+        let _ = app.update(Message::CloneEnvironment("dusk".into()));
+        assert!(app.flow.is_some());
     }
 
     #[test]

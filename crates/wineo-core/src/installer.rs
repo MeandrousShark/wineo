@@ -81,10 +81,11 @@ impl Installer {
         program: &str,
     ) -> Result<Self> {
         // Resolved once to know which prefix to lock, then again under it.
-        let locked = launch(paths, global, &Environment::load(paths, name)?, program)?
+        let environment = Environment::load(paths, name)?;
+        let locked = launch(paths, global, &environment, program)?
             .host
             .prefix()
-            .ok_or_else(|| Error::NoPrefix(name.to_owned()))?
+            .ok_or_else(|| environment.config.no_prefix(name))?
             .to_owned();
         let guard = Locks::new(paths).acquire(Operation::Install, name, &[&locked])?;
         Self::claim(guard, paths, global, name, program, Some(&locked), None)
@@ -130,10 +131,7 @@ impl Installer {
     ) -> Result<Self> {
         let mut environment = Environment::load(paths, name)?;
         if let Some(runner) = fixed_runner {
-            let wine = environment
-                .config
-                .wine_mut()
-                .ok_or_else(|| Error::NoPrefix(name.to_owned()))?;
+            let wine = environment.config.require_wine_mut(name)?;
             wine.runner = runner.name().to_owned();
         }
         let (runner, build_guard) = if let Some(runner) = fixed_runner {
@@ -149,18 +147,14 @@ impl Installer {
         } else {
             Runners::new(paths, global)?.resolve_locked(paths, &environment.wine()?.runner)?
         };
-        environment
-            .config
-            .wine_mut()
-            .ok_or_else(|| Error::NoPrefix(name.to_owned()))?
-            .runner = runner.name().to_owned();
+        environment.config.require_wine_mut(name)?.runner = runner.name().to_owned();
         let mut launch = launch(paths, global, &environment, program)?;
         let Host::Wine {
             runner: launch_runner,
             prefix,
         } = &mut launch.host
         else {
-            return Err(Error::NoPrefix(name.to_owned()));
+            return Err(environment.config.no_prefix(name));
         };
         *launch_runner = runner;
         if locked

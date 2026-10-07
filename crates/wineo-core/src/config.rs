@@ -8,7 +8,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, Table, value};
 
-use crate::error::{Error, IoContext, Result};
+use crate::error::{Error, IoContext, NoPrefix, PrefixOwner, Result};
 pub use crate::gamescope::GamescopeSetting;
 use crate::name;
 use crate::paths::Paths;
@@ -254,6 +254,54 @@ pub struct EnvironmentConfig {
 pub enum Kind {
     Wine(WineConfig),
     Native,
+    /// A game another launcher owns, along with its prefix and its process.
+    Proxied(ProxiedConfig),
+}
+
+impl Kind {
+    /// The `kind` value as written in a config.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Kind::Wine(_) => "wine",
+            Kind::Native => "native",
+            Kind::Proxied(_) => "proxied",
+        }
+    }
+}
+
+/// The settings only a proxied environment has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxiedConfig {
+    pub launcher: Launcher,
+    /// A string, since not every store's ids are numbers.
+    pub app_id: String,
+    /// Shown when the launcher no longer knows the game.
+    pub title: Option<String>,
+    /// Whether the environment has a desktop entry.
+    pub desktop: bool,
+}
+
+/// Who launches a proxied environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Launcher {
+    Steam,
+}
+
+impl Launcher {
+    /// The `launcher` value as written in a config.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Launcher::Steam => "steam",
+        }
+    }
+
+    /// The launcher's name in messages.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Launcher::Steam => "Steam",
+        }
+    }
 }
 
 /// The settings only a Wine or Proton environment has.
@@ -277,6 +325,7 @@ pub struct WineConfig {
 enum KindName {
     Wine,
     Native,
+    Proxied,
 }
 
 /// The file as written, before the kind decides which keys it may have.
@@ -302,15 +351,23 @@ struct RawEnvironmentConfig {
     #[serde(default)]
     tags: Vec<String>,
     winetricks: Option<Vec<String>>,
-    #[serde(default)]
-    env: BTreeMap<String, String>,
-    #[serde(default)]
-    targets: BTreeMap<String, Target>,
+    env: Option<BTreeMap<String, String>>,
+    targets: Option<BTreeMap<String, Target>>,
+    launcher: Option<Launcher>,
+    app_id: Option<String>,
+    title: Option<String>,
+    desktop: Option<bool>,
 }
 
 impl RawEnvironmentConfig {
     fn into_config(self, name: &str) -> Result<EnvironmentConfig, String> {
-        let kind = match self.kind.unwrap_or(KindName::Wine) {
+        let kind_name = self.kind.unwrap_or(KindName::Wine);
+        if kind_name != KindName::Proxied
+            && let Some(key) = PROXIED_ONLY_KEYS.iter().find(|key| self.has(key))
+        {
+            return Err(proxied_only_key_message(name, key));
+        }
+        let kind = match kind_name {
             KindName::Wine => Kind::Wine(WineConfig {
                 prefix: self.prefix.ok_or_else(|| missing("prefix"))?,
                 runner: self.runner.ok_or_else(|| missing("runner"))?,
@@ -339,6 +396,7 @@ impl RawEnvironmentConfig {
                 if let Some(target) = self
                     .targets
                     .iter()
+                    .flatten()
                     .find_map(|(target, config)| config.wayland.is_some().then_some(target))
                 {
                     return Err(native_key_message(
@@ -347,6 +405,20 @@ impl RawEnvironmentConfig {
                     ));
                 }
                 Kind::Native
+            }
+            KindName::Proxied => {
+                let launcher = self.launcher.ok_or_else(|| missing("launcher"))?;
+                if let Some(key) = PROXIED_REFUSED_KEYS.iter().find(|key| self.has(key)) {
+                    return Err(proxied_key_message(name, launcher, key));
+                }
+                let app_id = self.app_id.clone().ok_or_else(|| missing("app_id"))?;
+                validate_app_id(&app_id)?;
+                Kind::Proxied(ProxiedConfig {
+                    launcher,
+                    app_id,
+                    title: self.title.clone(),
+                    desktop: self.desktop.unwrap_or(false),
+                })
             }
         };
         Ok(EnvironmentConfig {
@@ -360,14 +432,87 @@ impl RawEnvironmentConfig {
             heroic_id: self.heroic_id,
             tags: self.tags,
             winetricks: self.winetricks.unwrap_or_default(),
-            env: self.env,
-            targets: self.targets,
+            env: self.env.unwrap_or_default(),
+            targets: self.targets.unwrap_or_default(),
         })
+    }
+
+    /// Whether the file sets `key`, for the keys one kind refuses.
+    fn has(&self, key: &str) -> bool {
+        match key {
+            "prefix" => self.prefix.is_some(),
+            "runner" => self.runner.is_some(),
+            "arch" => self.arch.is_some(),
+            "gamemode" => self.gamemode.is_some(),
+            "wayland" => self.wayland.is_some(),
+            "mangohud" => self.mangohud.is_some(),
+            "gamescope" => self.gamescope.is_some(),
+            "gameid" => self.gameid.is_some(),
+            "store" => self.store.is_some(),
+            "dxvk" => self.dxvk.is_some(),
+            "vkd3d" => self.vkd3d.is_some(),
+            "heroic_id" => self.heroic_id.is_some(),
+            "winetricks" => self.winetricks.is_some(),
+            "env" => self.env.is_some(),
+            "targets" => self.targets.is_some(),
+            "launcher" => self.launcher.is_some(),
+            "app_id" => self.app_id.is_some(),
+            "title" => self.title.is_some(),
+            "desktop" => self.desktop.is_some(),
+            _ => unreachable!("not a kind-specific key: {key}"),
+        }
     }
 }
 
 fn missing(key: &str) -> String {
     format!("missing field `{key}`")
+}
+
+fn validate_app_id(app_id: &str) -> Result<(), String> {
+    if app_id.is_empty() {
+        return Err("Invalid app_id: empty.".to_owned());
+    }
+    if app_id.contains('\0') {
+        return Err("Invalid app_id: contains a NUL byte.".to_owned());
+    }
+    Ok(())
+}
+
+/// Keys only a proxied environment can have.
+pub const PROXIED_ONLY_KEYS: [&str; 4] = ["launcher", "app_id", "title", "desktop"];
+
+/// Keys a proxied environment can't have, since its launcher owns the prefix
+/// and the launch. Everything but `schema_version`, `kind`, `tags`, `hooks`,
+/// and the proxied-only keys.
+pub const PROXIED_REFUSED_KEYS: [&str; 15] = [
+    "prefix",
+    "runner",
+    "arch",
+    "gameid",
+    "store",
+    "dxvk",
+    "vkd3d",
+    "wayland",
+    "winetricks",
+    "gamemode",
+    "mangohud",
+    "gamescope",
+    "heroic_id",
+    "env",
+    "targets",
+];
+
+/// The refusal for a key a proxied environment can't have.
+pub fn proxied_key_message(name: &str, launcher: Launcher, key: &str) -> String {
+    format!(
+        "{name} is a {} game, so it can't set {key}.",
+        launcher.display_name()
+    )
+}
+
+/// The refusal for a proxied-only key on a Wine or native environment.
+pub fn proxied_only_key_message(name: &str, key: &str) -> String {
+    format!("{name} isn't a Steam game, so it can't set {key}.")
 }
 
 /// Keys only a Wine environment can have.
@@ -607,15 +752,56 @@ impl EnvironmentConfig {
     pub fn wine(&self) -> Option<&WineConfig> {
         match &self.kind {
             Kind::Wine(wine) => Some(wine),
-            Kind::Native => None,
+            Kind::Native | Kind::Proxied(_) => None,
         }
     }
 
     pub fn wine_mut(&mut self) -> Option<&mut WineConfig> {
         match &mut self.kind {
             Kind::Wine(wine) => Some(wine),
-            Kind::Native => None,
+            Kind::Native | Kind::Proxied(_) => None,
         }
+    }
+
+    pub fn proxied(&self) -> Option<&ProxiedConfig> {
+        match &self.kind {
+            Kind::Proxied(proxied) => Some(proxied),
+            Kind::Wine(_) | Kind::Native => None,
+        }
+    }
+
+    pub fn is_native(&self) -> bool {
+        matches!(self.kind, Kind::Native)
+    }
+
+    /// The Wine settings, or the error saying why `name` has no prefix.
+    pub fn require_wine(&self, name: &str) -> Result<&WineConfig> {
+        match &self.kind {
+            Kind::Wine(wine) => Ok(wine),
+            Kind::Native | Kind::Proxied(_) => Err(self.no_prefix(name)),
+        }
+    }
+
+    /// `require_wine` for changing the Wine settings.
+    pub fn require_wine_mut(&mut self, name: &str) -> Result<&mut WineConfig> {
+        let error = self.no_prefix(name);
+        match &mut self.kind {
+            Kind::Wine(wine) => Ok(wine),
+            Kind::Native | Kind::Proxied(_) => Err(error),
+        }
+    }
+
+    /// The error for a prefix operation on an environment that has none of
+    /// its own. Only meaningful for a native or proxied environment.
+    pub fn no_prefix(&self, name: &str) -> Error {
+        let owner = match &self.kind {
+            Kind::Proxied(proxied) => PrefixOwner::Launcher(proxied.launcher),
+            Kind::Wine(_) | Kind::Native => PrefixOwner::None,
+        };
+        Error::NoPrefix(NoPrefix {
+            name: name.to_owned(),
+            owner,
+        })
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -625,6 +811,8 @@ impl EnvironmentConfig {
         match self.kind {
             Kind::Wine(_) => validate_env(&self.env)?,
             Kind::Native => validate_env_vars(&self.env)?,
+            // Refused at parse time, so always empty.
+            Kind::Proxied(_) => {}
         }
         if let Some(bad) = self.targets.keys().find(|name| !name::is_valid(name)) {
             return Err(format!(
@@ -1506,6 +1694,176 @@ mod tests {
         let dusklight = &config.targets["dusklight"];
         assert_eq!(dusklight.exe, "dusklight");
         assert_eq!(dusklight.gamescope, Some(GamescopeSetting::Off));
+    }
+
+    const PROXIED_EXAMPLE: &str = include_str!("../../../docs/proxied-environment.toml.example");
+
+    #[test]
+    fn proxied_example_config_parses_as_shipped() {
+        let config = environment(PROXIED_EXAMPLE).unwrap();
+        assert_eq!(config.schema_version, 1);
+        let proxied = config.proxied().unwrap();
+        assert_eq!(proxied.launcher, Launcher::Steam);
+        assert_eq!(proxied.app_id, "1086940");
+        assert!(proxied.title.is_none());
+        assert!(!proxied.desktop);
+        assert!(config.tags.is_empty());
+        assert!(config.hooks.is_none());
+        assert!(config.wine().is_none());
+        assert!(!config.is_native());
+    }
+
+    /// Every optional field a proxied config can hold must have an example
+    /// line.
+    #[test]
+    fn proxied_example_config_parses_with_every_setting_uncommented() {
+        let text = uncommented_example(PROXIED_EXAMPLE);
+        let config = environment(&text)
+            .unwrap_or_else(|err| panic!("uncommented example did not parse: {err}\n---\n{text}"));
+        let proxied = config.proxied().unwrap();
+        assert!(proxied.title.is_some());
+        assert!(proxied.desktop);
+        assert!(!config.tags.is_empty());
+        let hooks = config.hooks.as_ref().and_then(HooksSetting::on).unwrap();
+        assert!(hooks.before.is_some());
+        assert!(hooks.after.is_some());
+    }
+
+    const PROXIED: &str = "kind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"1086940\"\n";
+
+    #[test]
+    fn a_proxied_config_parses() {
+        let config = named(
+            "bg3",
+            &format!(
+                "schema_version = 1\n{PROXIED}title = \"Baldur's Gate 3\"\ntags = [\"game\"]\ndesktop = true\n[hooks]\nafter = \"true\"\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(config.kind.as_str(), "proxied");
+        assert_eq!(
+            config.proxied(),
+            Some(&ProxiedConfig {
+                launcher: Launcher::Steam,
+                app_id: "1086940".to_owned(),
+                title: Some("Baldur's Gate 3".to_owned()),
+                desktop: true,
+            })
+        );
+        assert_eq!(config.tags, ["game"]);
+        assert!(config.targets.is_empty());
+        assert!(config.env.is_empty());
+        assert!(config.gamemode.is_none());
+    }
+
+    #[test]
+    fn a_proxied_config_needs_a_launcher_and_an_app_id() {
+        let err = named("bg3", "kind = \"proxied\"\napp_id = \"1\"\n").unwrap_err();
+        assert!(
+            err.to_string().ends_with("missing field `launcher`"),
+            "{err}"
+        );
+        let err = named("bg3", "kind = \"proxied\"\nlauncher = \"steam\"\n").unwrap_err();
+        assert!(err.to_string().ends_with("missing field `app_id`"), "{err}");
+        assert!(matches!(
+            named(
+                "bg3",
+                "kind = \"proxied\"\nlauncher = \"heroic\"\napp_id = \"1\"\n"
+            ),
+            Err(Error::ConfigSyntax { .. })
+        ));
+    }
+
+    #[test]
+    fn a_proxied_app_id_is_not_empty_and_has_no_nul() {
+        for (app_id, message) in [
+            ("\"\"", "Invalid app_id: empty."),
+            ("\"1\\u0000\"", "Invalid app_id: contains a NUL byte."),
+        ] {
+            let err = named(
+                "bg3",
+                &format!("kind = \"proxied\"\nlauncher = \"steam\"\napp_id = {app_id}\n"),
+            )
+            .unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("invalid config /test/bg3.toml: {message}")
+            );
+        }
+    }
+
+    #[test]
+    fn each_refused_key_is_refused_for_proxied() {
+        for (key, line) in [
+            ("prefix", "prefix = \"/p\""),
+            ("runner", "runner = \"wine\""),
+            ("arch", "arch = \"win64\""),
+            ("gameid", "gameid = \"umu-1\""),
+            ("store", "store = \"gog\""),
+            ("dxvk", "dxvk = \"latest\""),
+            ("vkd3d", "vkd3d = \"latest\""),
+            ("wayland", "wayland = true"),
+            ("winetricks", "winetricks = []"),
+            ("gamemode", "gamemode = true"),
+            ("mangohud", "mangohud = false"),
+            ("gamescope", "gamescope = false"),
+            ("heroic_id", "heroic_id = \"abc\""),
+            ("env", "[env]"),
+            ("targets", "[targets.game]\nexe = \"/bin/true\""),
+        ] {
+            let err = named("bg3", &format!("{PROXIED}{line}\n")).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "invalid config /test/bg3.toml: bg3 is a Steam game, so it can't set {key}."
+                ),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn proxied_only_keys_are_refused_for_wine_and_native() {
+        let wine = "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n";
+        let explicit_wine = format!("kind = \"wine\"\n{wine}");
+        for kind in [wine, "kind = \"native\"\n", explicit_wine.as_str()] {
+            for (key, line) in [
+                ("launcher", "launcher = \"steam\""),
+                ("app_id", "app_id = \"1\""),
+                ("title", "title = \"Dusk\""),
+                ("desktop", "desktop = false"),
+            ] {
+                let err = named("dusk", &format!("{kind}{line}\n")).unwrap_err();
+                assert_eq!(
+                    err.to_string(),
+                    format!(
+                        "invalid config /test/dusk.toml: dusk isn't a Steam game, so it can't set {key}."
+                    ),
+                    "{kind}{key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_prefix_names_the_owner() {
+        let native = named("dusk", "kind = \"native\"\n").unwrap();
+        assert_eq!(
+            native.require_wine("dusk").unwrap_err().to_string(),
+            "dusk is a native environment, so it has no prefix"
+        );
+        let proxied = named("bg3", PROXIED).unwrap();
+        assert_eq!(
+            proxied.require_wine("bg3").unwrap_err().to_string(),
+            "Steam manages bg3's prefix."
+        );
+        assert!(matches!(
+            proxied.no_prefix("bg3"),
+            Error::NoPrefix(NoPrefix {
+                owner: PrefixOwner::Launcher(Launcher::Steam),
+                ..
+            })
+        ));
     }
 
     #[test]

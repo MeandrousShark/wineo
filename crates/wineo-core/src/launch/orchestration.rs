@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 
 use crate::cancel::Token;
-use crate::config::GlobalConfig;
+use crate::config::{GlobalConfig, Kind};
 use crate::desktop;
 use crate::environment::Environment;
 use crate::error::Error;
@@ -223,6 +223,8 @@ pub fn prepare(
 ) -> anyhow::Result<PreparedLaunch> {
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, name)?;
+    // Before anything else, so no hook runs for a launch that can't happen.
+    super::refuse_proxied(&environment)?;
     // Leave ordinary target errors to preparation, which checks the runner first.
     let selected = if environment.config.hooks.is_some()
         || environment
@@ -443,13 +445,17 @@ fn prepare_target_reserved(
     reservation: Option<&LaunchReservation>,
     mut events: impl FnMut(LaunchEvent),
 ) -> anyhow::Result<()> {
-    if environment.config.wine().is_none() {
-        return Ok(Launch::check_native_target(
-            paths,
-            global,
-            environment,
-            overrides,
-        )?);
+    match &environment.config.kind {
+        Kind::Wine(_) => {}
+        Kind::Native => {
+            return Ok(Launch::check_native_target(
+                paths,
+                global,
+                environment,
+                overrides,
+            )?);
+        }
+        Kind::Proxied(proxied) => return Err(Error::ProxiedLaunch(proxied.launcher).into()),
     }
     let (runner, _build_guard) = runner_locked(paths, global, environment)?;
     Launch::check_target(paths, global, environment, &runner, overrides)?;
@@ -529,12 +535,15 @@ pub fn reconcile(
     launch: &Launch,
     mut events: impl FnMut(LaunchEvent),
 ) -> anyhow::Result<()> {
-    let Host::Wine { runner, prefix } = &launch.host else {
-        let changes = desktop::reconcile_native(paths, global, environment)?;
-        if !changes.is_empty() {
-            events(LaunchEvent::Desktop(changes));
+    let (runner, prefix) = match &launch.host {
+        Host::Wine { runner, prefix } => (runner, prefix),
+        Host::Native { .. } => {
+            let changes = desktop::reconcile_native(paths, global, environment)?;
+            if !changes.is_empty() {
+                events(LaunchEvent::Desktop(changes));
+            }
+            return Ok(());
         }
-        return Ok(());
     };
     let mut wanted = Wanted::from_config(&environment.config);
     // Keep component aliases on the builds this launch already locked.

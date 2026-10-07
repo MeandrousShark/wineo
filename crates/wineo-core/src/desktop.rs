@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 
 use crate::art::{self, ArtConfig};
 use crate::art_icon;
-use crate::config::{GlobalConfig, Target};
+use crate::config::{GlobalConfig, Kind, Target};
 use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
@@ -75,9 +75,14 @@ pub fn apply(paths: &Paths, name: &str, held: bool) -> Result<Vec<Change>> {
     let Ok(environment) = Environment::load(paths, name) else {
         return Ok(Vec::new());
     };
-    if environment.config.wine().is_none() {
-        let global = GlobalConfig::load_or_default(paths)?;
-        return reconcile_native(paths, &global, &environment);
+    match &environment.config.kind {
+        Kind::Wine(_) => {}
+        Kind::Native => {
+            let global = GlobalConfig::load_or_default(paths)?;
+            return reconcile_native(paths, &global, &environment);
+        }
+        // Proxied environments get no entries yet.
+        Kind::Proxied(_) => return Ok(Vec::new()),
     }
     let Ok(prefix) = environment.prefix(paths) else {
         return Ok(Vec::new());
@@ -265,6 +270,13 @@ fn plan(
     runner: Option<&Runner>,
     prefix: Option<&Path>,
 ) -> Result<Plan> {
+    // Proxied environments get no entries yet, and none are touched.
+    if let Kind::Proxied(_) = environment.config.kind {
+        return Ok(Plan {
+            wanted: Vec::new(),
+            leftover: Vec::new(),
+        });
+    }
     let mut wanted = Vec::new();
     for (target_name, target) in &environment.config.targets {
         if target.desktop {

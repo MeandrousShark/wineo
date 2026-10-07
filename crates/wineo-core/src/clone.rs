@@ -9,11 +9,10 @@ use toml_edit::{DocumentMut, TableLike, Value};
 use crate::art::StagedArt;
 use crate::build_lock;
 use crate::cancel::Token;
-use crate::config::{EnvironmentConfig, GlobalConfig};
+use crate::config::{EnvironmentConfig, GlobalConfig, Kind};
 use crate::download::{InstallLock, publish};
 use crate::edit;
 use crate::environment::Environment;
-use crate::error::Error;
 use crate::import::{self, ExternalDependency, ImportLayout, ImportProgress};
 use crate::name;
 use crate::operation::{Locks, Operation};
@@ -60,8 +59,8 @@ pub fn inspect(
     let config =
         EnvironmentConfig::parse(&source_path, &source_config).map_err(|err| anyhow!(err))?;
     let wine = config
-        .wine()
-        .ok_or_else(|| anyhow!(Error::NoPrefix(source_name.to_owned())))?;
+        .require_wine(source_name)
+        .map_err(|err| anyhow!(err))?;
     let configured_root = paths
         .config_path(&wine.prefix)
         .map_err(|err| anyhow!(err))?;
@@ -286,8 +285,8 @@ pub fn execute_reviewed(
     let config = EnvironmentConfig::parse(&config_path, &reviewed.config_text)
         .map_err(|err| anyhow!(err))?;
     let wine = config
-        .wine()
-        .ok_or_else(|| anyhow!(Error::NoPrefix(reviewed.new_name.clone())))?;
+        .require_wine(&reviewed.new_name)
+        .map_err(|err| anyhow!(err))?;
     let _build_guards = build_lock::config(
         paths,
         global,
@@ -477,8 +476,10 @@ pub fn inspect_native(
         .with_context(|| format!("failed to read {}", source_path.display()))?;
     let config =
         EnvironmentConfig::parse(&source_path, &source_config).map_err(|err| anyhow!(err))?;
-    if config.wine().is_some() {
-        bail!("{source_name} is not a native environment");
+    match &config.kind {
+        Kind::Native => {}
+        Kind::Wine(_) => bail!("{source_name} is not a native environment"),
+        Kind::Proxied(_) => return Err(anyhow!(config.no_prefix(source_name))),
     }
     if paths.environment_config(new_name).exists() {
         bail!("environment `{new_name}` already exists");

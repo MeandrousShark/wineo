@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Subcommand, ValueHint};
 use clap_complete::ArgValueCompleter;
-use wineo_core::config::GlobalConfig;
+use wineo_core::config::{GlobalConfig, Kind};
 use wineo_core::environment::Environment;
 use wineo_core::paths::Paths;
 use wineo_core::portable::{self, CopyInspection, Storage};
@@ -43,10 +43,12 @@ fn copy(
 ) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let folder = Paths::from_env(Some(to))?;
-    if let Ok(source) = Environment::load(paths, name)
-        && source.config.wine().is_none()
-    {
-        return copy_native(paths, &folder, name);
+    if let Ok(source) = Environment::load(paths, name) {
+        match &source.config.kind {
+            Kind::Wine(_) => {}
+            Kind::Native => return copy_native(paths, &folder, name),
+            Kind::Proxied(_) => return Err(source.config.no_prefix(name).into()),
+        }
     }
     transfer::wait_idle(paths, &global, name)?;
     let reviewed = portable::inspect(paths, &folder, &global, name)?;

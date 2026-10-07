@@ -3,7 +3,7 @@ use jiff::tz::TimeZone;
 use serde::Serialize;
 
 use crate::components::{Builds, Component, LATEST};
-use crate::config::GlobalConfig;
+use crate::config::{GlobalConfig, Kind, Launcher};
 use crate::desktop;
 use crate::environment::{self, Environment};
 use crate::error::Result;
@@ -24,9 +24,8 @@ pub struct EnvironmentReport {
     pub winetricks: Vec<String>,
     pub winetricks_missing: Vec<String>,
     pub status: Status,
-    /// A native environment, which has no runner or prefix.
-    pub native: bool,
-    /// None for a native environment, which has no runner or prefix.
+    pub kind: KindReport,
+    /// None for a native or proxied environment, which has no runner or prefix.
     pub runner: Option<String>,
     pub runner_resolved: Option<String>,
     pub runner_version: Option<String>,
@@ -62,6 +61,42 @@ pub struct EnvironmentReport {
     pub played: Option<Played>,
 }
 
+/// What an environment runs on, for `status` and `list`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum KindReport {
+    Wine,
+    Native,
+    Proxied {
+        launcher: Launcher,
+        app_id: String,
+        title: Option<String>,
+    },
+}
+
+impl KindReport {
+    pub fn new(kind: &Kind) -> Self {
+        match kind {
+            Kind::Wine(_) => Self::Wine,
+            Kind::Native => Self::Native,
+            Kind::Proxied(proxied) => Self::Proxied {
+                launcher: proxied.launcher,
+                app_id: proxied.app_id.clone(),
+                title: proxied.title.clone(),
+            },
+        }
+    }
+
+    /// The `kind` value as written in a config.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Wine => "wine",
+            Self::Native => "native",
+            Self::Proxied { .. } => "proxied",
+        }
+    }
+}
+
 /// The little of `stats::Summary` that `status` shows: enough to say how much
 /// was played and when, without the per-target and longest-session detail
 /// `wineo stats` has room for.
@@ -77,6 +112,8 @@ pub struct Played {
 #[derive(Debug, Clone)]
 pub struct OverviewEnvironment {
     pub name: String,
+    /// None when the config can't be read.
+    pub kind: Option<KindReport>,
     pub status: Status,
     pub busy: Option<Operation>,
     pub unresolved: bool,
@@ -214,7 +251,7 @@ impl EnvironmentReport {
             tags: environment.config.tags.clone(),
             winetricks: environment.config.winetricks.clone(),
             winetricks_missing,
-            native: wine.is_none(),
+            kind: KindReport::new(&environment.config.kind),
             runner: runner_name,
             runner_resolved,
             runner_version,
@@ -291,6 +328,7 @@ pub fn overview(paths: &Paths, filter: OverviewFilter<'_>) -> Result<Overview> {
                                         environment.config.targets.get(&run.target)
                                     }),
                                 )),
+                                kind: Some(KindReport::new(&environment.config.kind)),
                                 name,
                                 status,
                                 busy,
@@ -305,6 +343,7 @@ pub fn overview(paths: &Paths, filter: OverviewFilter<'_>) -> Result<Overview> {
                     }),
                     Err(_) => overview.environments.push(OverviewEnvironment {
                         name,
+                        kind: None,
                         status,
                         busy,
                         unresolved,

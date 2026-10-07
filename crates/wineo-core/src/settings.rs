@@ -8,7 +8,10 @@ use toml_edit::DocumentMut;
 
 use crate::art::TargetCleanup;
 use crate::build_lock;
-use crate::config::{self, EnvironmentConfig, GlobalConfig, WINE_ONLY_KEYS, native_key_message};
+use crate::config::{
+    self, EnvironmentConfig, GlobalConfig, Kind, Launcher, WINE_ONLY_KEYS, native_key_message,
+    proxied_key_message,
+};
 use crate::desktop;
 use crate::edit::{self, Scope};
 use crate::environment::Environment;
@@ -306,8 +309,10 @@ fn check_native(
     let Ok(environment) = Environment::load(paths, name) else {
         return Ok(());
     };
-    if environment.config.wine().is_some() {
-        return Ok(());
+    match &environment.config.kind {
+        Kind::Wine(_) => return Ok(()),
+        Kind::Proxied(proxied) => return check_proxied(name, proxied.launcher, pairs),
+        Kind::Native => {}
     }
     if let Some((key, _)) = pairs.iter().find(|(key, _)| WINE_ONLY_KEYS.contains(key)) {
         bail!("{}", native_key_message(name, key));
@@ -332,6 +337,21 @@ fn check_native(
     }
     Ok(())
 }
+
+/// Refuses every key a proxied environment can't have, with the same line
+/// its config would be refused with.
+fn check_proxied(name: &str, launcher: Launcher, pairs: &[(&str, &str)]) -> anyhow::Result<()> {
+    for (key, _) in pairs {
+        let top = key.split('.').next().unwrap_or(key);
+        if !PROXIED_SETTABLE.contains(&top) {
+            bail!("{}", proxied_key_message(name, launcher, top));
+        }
+    }
+    Ok(())
+}
+
+/// What `set` can change on a proxied environment.
+const PROXIED_SETTABLE: [&str; 4] = ["tags", "title", "hooks", "desktop"];
 
 pub fn changed_runner<'a>(pairs: &[(&'a str, &'a str)]) -> Option<&'a str> {
     pairs

@@ -225,11 +225,10 @@ impl Environment {
         Self::load(paths, &new.name)
     }
 
-    /// The Wine settings, or the no-prefix error for a native environment.
+    /// The Wine settings, or the no-prefix error for a native or proxied
+    /// environment.
     pub fn wine(&self) -> Result<&WineConfig> {
-        self.config
-            .wine()
-            .ok_or_else(|| Error::NoPrefix(self.name.clone()))
+        self.config.require_wine(&self.name)
     }
 
     /// Checks native creation choices without taking locks or writing config.

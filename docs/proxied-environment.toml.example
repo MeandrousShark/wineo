@@ -1,0 +1,35 @@
+# Example proxied environment config, for a game another launcher installs,
+# launches, and owns, like a Steam game. Copy it to
+# ~/.config/wineo/environments/<name>.toml and uncomment whatever applies.
+# For a Windows program wineo runs itself, start from environment.toml.example,
+# and for a Linux program, native-environment.toml.example.
+
+schema_version = 1
+
+# Required. Makes this a proxied environment. The launcher owns the prefix and
+# the launch, so prefix, runner, arch, gameid, store, dxvk, vkd3d, wayland,
+# winetricks, gamemode, mangohud, gamescope, heroic_id, [env], and [targets]
+# are refused.
+kind = "proxied"
+
+# Required. Who launches the game. Only steam for now.
+launcher = "steam"
+
+# Required. The game's id in its launcher, as a string.
+app_id = "1086940"
+
+# The game's title, shown when the launcher no longer knows the game.
+# Default: unset.
+# title = "Baldur's Gate 3"
+
+# Tags for filtering with `wineo list --tag`. Default: none.
+# tags = ["game"]
+
+# Whether the game gets a desktop entry. Default: false.
+# desktop = true
+
+# Commands run before the game starts and after it ends, or `hooks = false`
+# to turn them off. Default: none.
+# [hooks]
+# before = 'notify-send "Starting"'
+# after = 'notify-send "Saves synced"'

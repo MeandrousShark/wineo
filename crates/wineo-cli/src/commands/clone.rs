@@ -3,9 +3,8 @@ use std::process::ExitCode;
 
 use clap_complete::ArgValueCompleter;
 use wineo_core::clone::{self, CloneInspection};
-use wineo_core::config::GlobalConfig;
+use wineo_core::config::{GlobalConfig, Kind};
 use wineo_core::environment::Environment;
-use wineo_core::error::Error;
 use wineo_core::paths::Paths;
 
 use super::transfer::{self, Cancellation};
@@ -28,13 +27,17 @@ pub struct Args {
 
 pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
-    if let Ok(source) = Environment::load(paths, &args.source)
-        && source.config.wine().is_none()
-    {
-        if args.dir.is_some() {
-            return Err(Error::NoPrefix(args.source).into());
+    if let Ok(source) = Environment::load(paths, &args.source) {
+        match &source.config.kind {
+            Kind::Wine(_) => {}
+            Kind::Native => {
+                if args.dir.is_some() {
+                    return Err(source.config.no_prefix(&args.source).into());
+                }
+                return clone_native(paths, &args.source, &args.name);
+            }
+            Kind::Proxied(_) => return Err(source.config.no_prefix(&args.source).into()),
         }
-        return clone_native(paths, &args.source, &args.name);
     }
     let destination: Option<PathBuf> = args
         .dir

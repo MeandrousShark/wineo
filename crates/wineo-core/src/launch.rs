@@ -313,9 +313,14 @@ impl Launch {
         session: bool,
         find: impl Fn(&str) -> Option<PathBuf>,
     ) -> Result<Self> {
+        refuse_proxied(environment)?;
         let (name, target) = resolve_target(environment, overrides.target.as_deref())?;
-        let Kind::Wine(wine) = &environment.config.kind else {
-            return native_target(paths, global, environment, name, target, overrides, find);
+        let wine = match &environment.config.kind {
+            Kind::Wine(wine) => wine,
+            Kind::Native => {
+                return native_target(paths, global, environment, name, target, overrides, find);
+            }
+            Kind::Proxied(_) => unreachable!("refused above"),
         };
         let (runner, prefix, mut build_guards) = open(paths, global, environment)?;
         build_guards.extend(crate::build_lock::config(
@@ -388,8 +393,12 @@ impl Launch {
         runner: &Runner,
         overrides: &Overrides,
     ) -> Result<()> {
-        if environment.config.wine().is_none() {
-            return Self::check_native_target(paths, global, environment, overrides);
+        match &environment.config.kind {
+            Kind::Wine(_) => {}
+            Kind::Native => {
+                return Self::check_native_target(paths, global, environment, overrides);
+            }
+            Kind::Proxied(proxied) => return Err(Error::ProxiedLaunch(proxied.launcher)),
         }
         let (_, target) = resolve_target(environment, overrides.target.as_deref())?;
         check_unix_program(paths, &target.exe, false)?;
@@ -412,6 +421,7 @@ impl Launch {
         environment: &Environment,
         overrides: &Overrides,
     ) -> Result<()> {
+        refuse_proxied(environment)?;
         Self::target(paths, global, environment, overrides).map(|_| ())
     }
 
@@ -552,20 +562,22 @@ impl Launch {
 /// Whether a launch runs under gamemode: the target's setting wins over the
 /// environment's, which wins over the global one, and unset everywhere is off.
 pub fn gamemode(global: &GlobalConfig, environment: &Environment, target: Option<&Target>) -> bool {
-    target
-        .and_then(|target| target.gamemode)
-        .or(environment.config.gamemode)
-        .or(global.gamemode)
-        .unwrap_or(false)
+    !is_proxied(environment)
+        && target
+            .and_then(|target| target.gamemode)
+            .or(environment.config.gamemode)
+            .or(global.gamemode)
+            .unwrap_or(false)
 }
 
 /// Whether a launch shows MangoHud, decided like `gamemode`.
 pub fn mangohud(global: &GlobalConfig, environment: &Environment, target: Option<&Target>) -> bool {
-    target
-        .and_then(|target| target.mangohud)
-        .or(environment.config.mangohud)
-        .or(global.mangohud)
-        .unwrap_or(false)
+    !is_proxied(environment)
+        && target
+            .and_then(|target| target.mangohud)
+            .or(environment.config.mangohud)
+            .or(global.mangohud)
+            .unwrap_or(false)
 }
 
 /// Whether a launch asks for Wine's Wayland driver, decided like `gamemode`.
@@ -827,6 +839,7 @@ pub fn resolve_target<'a>(
     environment: &'a Environment,
     requested: Option<&str>,
 ) -> Result<(&'a str, &'a Target)> {
+    refuse_proxied(environment)?;
     let targets = &environment.config.targets;
     if let Some(requested) = requested {
         return targets
@@ -848,6 +861,23 @@ pub fn resolve_target<'a>(
             environment: environment.name.clone(),
             targets: targets.keys().cloned().collect(),
         }),
+    }
+}
+
+/// Global launch defaults never reach a proxied environment, whose launcher
+/// owns the launch.
+fn is_proxied(environment: &Environment) -> bool {
+    match environment.config.kind {
+        Kind::Proxied(_) => true,
+        Kind::Wine(_) | Kind::Native => false,
+    }
+}
+
+/// Refuses to launch a proxied environment, which has no wineo launch yet.
+pub fn refuse_proxied(environment: &Environment) -> Result<()> {
+    match &environment.config.kind {
+        Kind::Wine(_) | Kind::Native => Ok(()),
+        Kind::Proxied(proxied) => Err(Error::ProxiedLaunch(proxied.launcher)),
     }
 }
 
@@ -988,6 +1018,8 @@ fn merge(
     environment: &Environment,
     overrides: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>> {
+    // The global `[env]` never reaches a proxied environment.
+    refuse_proxied(environment)?;
     for (key, value) in overrides {
         check_override(runner.is_some(), key, value)?;
     }

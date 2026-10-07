@@ -1475,6 +1475,8 @@ fn reconcile_desktop(paths: &Paths, name: &str) -> Result<(), String> {
     let global = GlobalConfig::load_or_default(paths).map_err(|error| error.to_string())?;
     match &environment.config.kind {
         config::Kind::Native => desktop::reconcile_native(paths, &global, &environment),
+        // Proxied environments get no entries yet.
+        config::Kind::Proxied(_) => Ok(Vec::new()),
         config::Kind::Wine(wine) => {
             let runner = Runners::new(paths, &global)
                 .and_then(|runners| runners.resolve(&wine.runner))

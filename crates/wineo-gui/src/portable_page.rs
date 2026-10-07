@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use iced::widget::{button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Fill, Task};
 use wineo_core::cancel::Token;
-use wineo_core::config::GlobalConfig;
+use wineo_core::config::{GlobalConfig, Kind};
 use wineo_core::environment::Environment;
 use wineo_core::import::ImportProgress;
 use wineo_core::paths::Paths;
@@ -118,8 +118,14 @@ impl Page {
             async move {
                 tokio::task::spawn_blocking(move || {
                     Environment::load(&paths, &name)
-                        .map(|environment| environment.config.wine().is_none())
                         .map_err(|error| error.to_string())
+                        .and_then(|environment| match &environment.config.kind {
+                            Kind::Wine(_) => Ok(false),
+                            Kind::Native => Ok(true),
+                            Kind::Proxied(_) => {
+                                Err(environment.config.no_prefix(&name).to_string())
+                            }
+                        })
                 })
                 .await
                 .unwrap_or_else(|error| Err(error.to_string()))
@@ -607,6 +613,9 @@ fn inspect_copy(
     progress: impl FnMut(ImportProgress),
 ) -> anyhow::Result<Review> {
     let environment = Environment::load(paths, source)?;
+    if let Kind::Proxied(_) = environment.config.kind {
+        return Err(environment.config.no_prefix(source).into());
+    }
     if let Some(wine) = environment.config.wine() {
         let global = GlobalConfig::load(paths)?;
         let (runner, _build_guard) =

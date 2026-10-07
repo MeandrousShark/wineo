@@ -513,8 +513,8 @@ pub fn execute_reviewed(
     let config =
         EnvironmentConfig::parse(&config_path, &config_text).map_err(|err| anyhow!(err))?;
     let wine = config
-        .wine()
-        .ok_or_else(|| anyhow!(Error::NoPrefix(request.name.clone())))?;
+        .require_wine(&request.name)
+        .map_err(|err| anyhow!(err))?;
     let _build_guards = build_lock::config(
         paths,
         global,
@@ -2747,6 +2747,7 @@ mod tests {
             runner: None,
             prefix: None,
             native: false,
+            launcher: None,
             pid: 1,
             group: None,
             boot_id: None,

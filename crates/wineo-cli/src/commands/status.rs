@@ -6,8 +6,8 @@ use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
 use wineo_core::paths::Paths;
-use wineo_core::report::{self, EnvironmentReport, OverviewFilter};
-use wineo_core::runtime::{RunMode, RunState, State};
+use wineo_core::report::{self, EnvironmentReport, KindReport, OverviewFilter};
+use wineo_core::runtime::{RunKind, RunMode, RunState, State};
 use wineo_core::view::NamedOutput;
 
 use super::json;
@@ -112,8 +112,21 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
             &target_value(run, report.target_exe.as_deref()),
         ));
     }
-    if report.native {
-        lines.push(label_line("kind", "native"));
+    match &report.kind {
+        KindReport::Wine => {}
+        KindReport::Native => lines.push(label_line("kind", "native")),
+        KindReport::Proxied {
+            launcher,
+            app_id,
+            title,
+        } => {
+            lines.push(label_line("kind", "proxied"));
+            lines.push(label_line("launcher", launcher.as_str()));
+            lines.push(label_line("app id", app_id));
+            if let Some(title) = title {
+                lines.push(label_line("title", title));
+            }
+        }
     }
     if let Some(runner) = &report.runner {
         lines.push(label_line(
@@ -283,10 +296,11 @@ fn pid_lines(name: &str, run: &RunState, now: Timestamp) -> Vec<String> {
                     "pid",
                     &format!("{}, exited {}{code}", run.pid, relative(now, exited_at)),
                 ),
-                continuation_line(&if run.native {
-                    format!("other processes are keeping {name} running")
-                } else {
-                    "other processes are keeping the prefix running".to_owned()
+                continuation_line(&match run.kind() {
+                    RunKind::Native | RunKind::Proxied(_) => {
+                        format!("other processes are keeping {name} running")
+                    }
+                    RunKind::Wine => "other processes are keeping the prefix running".to_owned(),
                 }),
             ]
         }
@@ -328,6 +342,7 @@ mod tests {
             runner: None,
             prefix: None,
             native: false,
+            launcher: None,
             status,
             mode,
             target: "notepad".to_owned(),
@@ -353,7 +368,7 @@ mod tests {
             winetricks: Vec::new(),
             winetricks_missing: Vec::new(),
             status,
-            native: false,
+            kind: KindReport::Wine,
             runner: Some("wine".to_owned()),
             runner_resolved: Some("wine".to_owned()),
             runner_version: Some("wine-11.17".to_owned()),

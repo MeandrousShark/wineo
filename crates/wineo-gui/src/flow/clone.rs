@@ -4,7 +4,7 @@ use iced::widget::{button, column, container, row, scrollable, text, text_input}
 use iced::{Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::clone::{self, CloneInspection, NativeCloneInspection};
-use wineo_core::config::GlobalConfig;
+use wineo_core::config::{GlobalConfig, Kind};
 use wineo_core::environment::Environment;
 use wineo_core::import::{self, ImportProgress};
 use wineo_core::paths::Paths;
@@ -89,7 +89,11 @@ impl Page {
             async move {
                 tokio::task::spawn_blocking(move || {
                     let environment = Environment::load(&paths, &name)?;
-                    Ok::<_, anyhow::Error>(environment.config.wine().is_none())
+                    match &environment.config.kind {
+                        Kind::Wine(_) => Ok(false),
+                        Kind::Native => Ok(true),
+                        Kind::Proxied(_) => Err(environment.config.no_prefix(&name).into()),
+                    }
                 })
                 .await
                 .map_err(anyhow::Error::from)

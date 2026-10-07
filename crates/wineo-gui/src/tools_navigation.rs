@@ -2,6 +2,7 @@ use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use wineo_core::paths::resolve;
 
+use crate::library::CardKind;
 use crate::{App, Message, portable_page, sidebar::Section, snapshots_page, tools_page};
 
 impl App {
@@ -53,11 +54,29 @@ impl App {
             .any(|(key, page)| page.blocks_launch() && self.tool_matches_prefix(name, key))
     }
 
+    /// Whether the Wine-only actions apply: Snapshots, Run program, and
+    /// Winetricks. A pending restore keeps them, so it can be finished.
     pub(crate) fn wine_actions(&self, name: &str) -> bool {
-        self.cards
-            .iter()
-            .any(|card| card.name == name && card.prefix.is_some())
-            || self.restore_pending(name)
+        self.cards.iter().any(|card| {
+            card.name == name
+                && card.prefix.is_some()
+                && match card.kind {
+                    Some(CardKind::Wine) | None => true,
+                    Some(CardKind::Native | CardKind::Proxied) => false,
+                }
+        }) || self.restore_pending(name)
+    }
+
+    /// Whether Clone and Copy to portable apply. Native environments have
+    /// their own paths for both, but a proxied one's launcher owns it.
+    pub(crate) fn transfer_actions(&self, name: &str) -> bool {
+        !self.cards.iter().any(|card| {
+            card.name == name
+                && match card.kind {
+                    Some(CardKind::Proxied) => true,
+                    Some(CardKind::Wine | CardKind::Native) | None => false,
+                }
+        })
     }
 
     pub(crate) fn restore_pending(&self, name: &str) -> bool {
@@ -227,7 +246,7 @@ impl App {
     }
 
     pub(crate) fn open_portable(&mut self, name: String) -> Task<Message> {
-        if self.feature_navigation_blocked() {
+        if self.feature_navigation_blocked() || !self.transfer_actions(&name) {
             return Task::none();
         }
         self.enter_feature(Some(&name));

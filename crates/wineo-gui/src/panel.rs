@@ -957,6 +957,7 @@ mod tests {
     fn card(state: State) -> Card {
         Card {
             name: "game".into(),
+            kind: None,
             display_title: "game".into(),
             state,
             lost: false,

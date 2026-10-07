@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::build_lock;
-use crate::config::{EnvironmentConfig, GlobalConfig};
+use crate::config::{self, EnvironmentConfig, GlobalConfig};
 use crate::desktop;
 use crate::environment::{self, Environment};
 use crate::name;
@@ -761,9 +761,11 @@ fn read_manifest(paths: &Paths, id: &str) -> Result<Manifest> {
         if let Some(bytes) = bytes {
             let text = String::from_utf8(bytes)?;
             let parsed = EnvironmentConfig::parse(&source, &text)?;
-            let actual = parsed
-                .wine()
-                .ok_or_else(|| anyhow!("prefix payload belongs to a native config"))?;
+            let actual = match &parsed.kind {
+                config::Kind::Wine(wine) => wine,
+                config::Kind::Native => bail!("prefix payload belongs to a native config"),
+                config::Kind::Proxied(_) => bail!("prefix payload belongs to a proxied config"),
+            };
             if paths::resolve(&paths.config_path(&actual.prefix)?) != resolved(paths, reference)? {
                 bail!("trash entry {id} prefix differs from its saved config");
             }
@@ -1422,12 +1424,12 @@ pub fn remove_with(
         _ => {}
     }
     runtime.check_resolved(name)?;
-    if include_prefix
-        && current
-            .as_ref()
-            .is_some_and(|env| env.config.wine().is_none())
-    {
-        bail!("{name} has no prefix. Run wineo rm {name}");
+    if include_prefix && let Some(env) = &current {
+        match &env.config.kind {
+            config::Kind::Wine(_) => {}
+            config::Kind::Native => bail!("{name} has no prefix. Run wineo rm {name}"),
+            config::Kind::Proxied(_) => return Err(env.config.no_prefix(name).into()),
+        }
     }
     if include_prefix && prefix_path.is_none() {
         bail!("{name}'s config cannot identify its prefix; remove without --delete-prefix instead");
@@ -1839,9 +1841,11 @@ fn reconcile(paths: &Paths, name: &str) -> Result<()> {
         }
     }
     let global = GlobalConfig::load_or_default(paths)?;
-    let changes = match environment.config.wine() {
-        None => desktop::reconcile_native(paths, &global, &environment)?,
-        Some(_) => desktop::reconcile(
+    let changes = match &environment.config.kind {
+        config::Kind::Native => desktop::reconcile_native(paths, &global, &environment)?,
+        // Proxied environments get no entries yet.
+        config::Kind::Proxied(_) => Vec::new(),
+        config::Kind::Wine(_) => desktop::reconcile(
             paths,
             &global,
             &environment,

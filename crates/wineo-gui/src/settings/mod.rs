@@ -3055,6 +3055,23 @@ mod tests {
     }
 
     #[test]
+    fn a_proxied_environment_gets_no_form() {
+        let (_root, paths) = setup();
+        write(
+            &paths,
+            "kind = 'proxied'\nlauncher = 'steam'\napp_id = '1086940'\n",
+        );
+        let page = page(&paths);
+        match &page.view {
+            View::Error(error) => {
+                assert_eq!(error, "Settings for Steam games aren't supported yet.");
+            }
+            _ => panic!("expected the error page"),
+        }
+        assert!(!page.can_save());
+    }
+
+    #[test]
     fn an_unreadable_config_shows_its_error() {
         let (_root, paths) = setup();
         write(&paths, "this is [");

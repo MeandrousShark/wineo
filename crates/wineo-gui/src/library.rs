@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use iced::Color;
 use wineo_core::art::{self, ArtConfig};
-use wineo_core::config::Target;
+use wineo_core::config::{Kind, Target};
 use wineo_core::environment::Environment;
 use wineo_core::launch;
 use wineo_core::paths::Paths;
@@ -46,9 +46,29 @@ impl ArtFile {
     }
 }
 
+/// What a card's environment runs on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CardKind {
+    Wine,
+    Native,
+    Proxied,
+}
+
+impl CardKind {
+    fn new(kind: &Kind) -> Self {
+        match kind {
+            Kind::Wine(_) => Self::Wine,
+            Kind::Native => Self::Native,
+            Kind::Proxied(_) => Self::Proxied,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct Card {
     pub(super) name: String,
+    /// None when the config can't be read.
+    pub(super) kind: Option<CardKind>,
     pub(super) display_title: String,
     pub(super) state: State,
     pub(super) lost: bool,
@@ -138,12 +158,14 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
     let mut cards = Vec::new();
     for item in overview.environments {
         let mut prefix = None;
+        let mut kind = None;
         let mut targets = Vec::new();
         let mut default_target = None;
         let mut title = item.name.clone();
         let mut panel_art = HashMap::new();
         let (error, art) = match Environment::load(paths, &item.name) {
             Ok(env) => {
+                kind = Some(CardKind::new(&env.config.kind));
                 prefix = env.prefix(paths).ok();
                 targets = env.config.targets.keys().cloned().collect();
                 default_target = launch::default_target(&env).ok().map(str::to_owned);
@@ -185,6 +207,7 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
             last_played,
             tags: item.tags,
             name: item.name,
+            kind,
             display_title: title,
             state: item.status.state,
             lost: item.status.lost,
@@ -215,6 +238,7 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
             last_played,
             tags: Vec::new(),
             name: error.name,
+            kind: None,
             display_title: title,
             state: State::Inactive,
             lost: false,
@@ -290,6 +314,7 @@ mod tests {
     fn launch_button_label_uses_the_exact_game_tag() {
         let card = |tags: Vec<&str>| Card {
             name: "env_id".into(),
+            kind: None,
             display_title: "My App".into(),
             state: State::Inactive,
             lost: false,
@@ -311,6 +336,38 @@ mod tests {
         assert_eq!(card(vec!["game"]).launch_button_label(), "Play");
         assert_eq!(card(vec!["Game"]).launch_button_label(), "Launch");
         assert_eq!(card(vec!["work"]).launch_button_label(), "Launch");
+    }
+
+    #[test]
+    fn cards_know_their_kind() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        fs::create_dir_all(paths.environments_dir()).unwrap();
+        for (name, text) in [
+            (
+                "bg3",
+                "kind = 'proxied'\nlauncher = 'steam'\napp_id = '1086940'\n",
+            ),
+            ("dusk", "kind = 'native'\n"),
+            (
+                "notes",
+                "prefix = '/tmp/notes'\nrunner = 'wine'\narch = 'win64'\n",
+            ),
+            ("broken", "not toml ["),
+        ] {
+            fs::write(paths.environment_config(name), text).unwrap();
+        }
+        let cards = load_library(&paths).unwrap();
+        let kind = |name: &str| cards.iter().find(|card| card.name == name).unwrap().kind;
+        assert_eq!(kind("bg3"), Some(CardKind::Proxied));
+        assert_eq!(kind("dusk"), Some(CardKind::Native));
+        assert_eq!(kind("notes"), Some(CardKind::Wine));
+        assert_eq!(kind("broken"), None);
+        let bg3 = cards.iter().find(|card| card.name == "bg3").unwrap();
+        assert!(bg3.prefix.is_none());
+        assert!(bg3.default_target.is_none());
     }
 
     #[test]

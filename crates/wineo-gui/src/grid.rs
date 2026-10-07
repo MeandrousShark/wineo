@@ -302,8 +302,10 @@ impl App {
         if let Some(name) = &self.action_menu {
             let palette = self.palette;
             let wine_actions = self.wine_actions(name);
+            let transfer_actions = self.transfer_actions(name);
             let removal_reason = self.remove_reason(name);
-            let menu_buttons = 6 + usize::from(wine_actions) * 3;
+            let menu_buttons =
+                4 + usize::from(wine_actions) * 3 + usize::from(transfer_actions) * 2;
             let menu_dividers = 1 + usize::from(wine_actions);
             let body_content_height =
                 action_menu_body_height(menu_buttons, menu_dividers, removal_reason.as_deref());
@@ -332,12 +334,14 @@ impl App {
                     Some(Message::SnapshotsEnvironment(name.clone())),
                 ));
             }
-            scroll_items = scroll_items.push(context_menu_button(
-                "Copy to portable folder...",
-                palette,
-                false,
-                Some(Message::CopyPortable(name.clone())),
-            ));
+            if transfer_actions {
+                scroll_items = scroll_items.push(context_menu_button(
+                    "Copy to portable folder...",
+                    palette,
+                    false,
+                    Some(Message::CopyPortable(name.clone())),
+                ));
+            }
             if wine_actions {
                 scroll_items = scroll_items
                     .push(ui::separator(palette).padding([3, 0]))
@@ -369,22 +373,24 @@ impl App {
                         crate::checkup::Scope::Environment(name.clone()),
                     ))),
                 ))
-                .push(ui::separator(palette).padding([3, 0]))
-                .push(context_menu_button(
+                .push(ui::separator(palette).padding([3, 0]));
+            if transfer_actions {
+                scroll_items = scroll_items.push(context_menu_button(
                     "Clone",
                     palette,
                     false,
                     (!self.management_busy() && removal_reason.is_none())
                         .then(|| Message::CloneEnvironment(name.clone())),
-                ))
-                .push(context_menu_button(
-                    "Remove...",
-                    palette,
-                    true,
-                    removal_reason
-                        .is_none()
-                        .then(|| Message::Remove(name.clone())),
                 ));
+            }
+            scroll_items = scroll_items.push(context_menu_button(
+                "Remove...",
+                palette,
+                true,
+                removal_reason
+                    .is_none()
+                    .then(|| Message::Remove(name.clone())),
+            ));
             if let Some(reason) = removal_reason {
                 scroll_items = scroll_items.push(
                     text(reason)
