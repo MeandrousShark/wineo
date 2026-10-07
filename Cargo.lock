@@ -5383,7 +5383,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "wineo-cli"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -5404,7 +5404,7 @@ dependencies = [
 
 [[package]]
 name = "wineo-core"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "anyhow",
  "dbus-secret-service",
@@ -5429,7 +5429,7 @@ dependencies = [
 
 [[package]]
 name = "wineo-gui"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "anyhow",
  "ashpd",

@@ -3,6 +3,18 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.26.0 - 2026-10-07
+
+- Playtime by tag ([0045](docs/plans/0045-stats-by-tag.md)).
+  `wineo stats --tag game` limits the overview, its total, and the "never
+  played" count to environments with that tag; give `--tag` more than once
+  to require every tag. `--by-tag` shows one row per tag, most played
+  first, with `(untagged)` last. An environment with several tags counts
+  under each, and the output says so. Both work with `--json`. See
+  [By tag](docs/stats.md#by-tag).
+- Playtime under a minute shows as `< 1 m` instead of `0 m`, in `wineo
+  stats` and the desktop app. `--json` still has exact seconds.
+
 ## 0.25.0 - 2026-10-07
 
 - `--dry-run` for `wineo new` and `wineo import`

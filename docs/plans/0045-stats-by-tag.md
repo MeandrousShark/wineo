@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0045: Tag breakdown in `wineo stats`
 
