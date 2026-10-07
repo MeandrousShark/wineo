@@ -190,6 +190,21 @@ instead when it's set.
 
 Steps 1 and 2 can run in parallel. Step 3 needs 1, and step 4 needs 2.
 
+## Decisions during implementation
+
+- Step 2 shrank to an audit (2026-10-06). Core already exposed
+  `backfills()` and `pending_builds()` without writing. The only side effect
+  in Heroic planning was `GamePlan::check_builds` resolving builds through
+  `resolve_locked`, which left lock files behind. It now resolves without
+  locks, and apply still takes them.
+- A Windows path exe can't be checked before the prefix exists, since
+  `Z:` and the other drives are links Wine makes while building it.
+  `CreatePlan` reports it as unchecked instead of missing. The maintainer
+  settled the dry-run output on 2026-10-06: the review shows
+  `target: NAME -> PATH (checked once the prefix exists)` and the dry run
+  exits 0. Unix paths, and any path in an adopted prefix, are still checked,
+  and a missing one fails as decided above.
+
 ## Testing and acceptance
 
 - An integration test helper snapshots the temporary XDG roots (paths,
