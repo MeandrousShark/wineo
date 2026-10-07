@@ -19,6 +19,20 @@ From the backlog row:
 - The plan has to decide failure handling, the environment variables passed
   in, and whether hooks are per environment or per target.
 
+On 2026-10-06 the maintainer answered the open questions with each
+recommendation:
+
+1. A hook is a shell command, run with `sh -c`.
+2. No global hooks. Templates carry hooks, so the `gaming` template or a
+   custom one can give new games the same hooks. Global hooks are a backlog
+   row.
+3. No timeout on a `before` hook. Stop, Ctrl+C, and the GUI's Stop cancel it.
+4. `wineo stop` during `after` waits for it, and `--force` kills it.
+5. Heroic's `beforeLaunchScriptPath` and `afterLaunchScriptPath` are carried
+   over as hooks on import.
+6. The GUI runs hooks and shows a failed `before` hook as a launch error.
+   Editing hooks in GUI Settings is a backlog row.
+
 ## Existing foundation
 
 - Two launch paths end in the same `Supervisor::wait`
@@ -144,42 +158,6 @@ review lists them so the person sees what will run.
   without running it.
 - 0044's `--dry-run` doesn't run hooks (it launches nothing anyway).
 
-## Open questions
-
-1. How a hook is written. Recommendation: **A, a shell command**, run with
-   `sh -c`. It's what people write in Steam launch options and Lutris, and it
-   handles pipes, `&&`, and `~` without wineo inventing anything.
-
-   ```toml
-   # A: a shell command (recommended)
-   before = 'mount /mnt/games && notify-send "Mounted"'
-
-   # B: a program and its arguments, like a target's exe and args
-   before = ["mount", "/mnt/games"]
-
-   # C: a script path only, like Heroic
-   before = '~/bin/before-hades.sh'
-   ```
-
-2. Global hooks. Recommendation: **no global hooks** for now. Hooks in the
-   global config would run before every game, which is handy (notifications
-   off while anything plays) but surprising for regular software. A template
-   gets most of the way: the `gaming` template can carry hooks for new games.
-   Easy to add later as its own row.
-3. A slow `before` hook. Recommendation: **no timeout**. A mount might wait
-   for a password prompt or a network share. `wineo stop`, Ctrl+C, and the
-   GUI's Stop already cancel it.
-4. `wineo stop` during `after`. Recommendation: **wait for it**, with
-   `--force` to kill it, as described above. The alternative is treating it
-   like the program and giving it `stop_timeout` before killing.
-5. Heroic's launch scripts. Recommendation: **carry them over** as hooks.
-   They were skipped only because wineo couldn't run them. Re-importing an
-   environment that already exists doesn't change its config, so this only
-   affects new imports.
-6. GUI. Recommendation: **the GUI runs hooks** (it launches through core) and
-   shows a failed `before` hook like any other launch error, but **editing
-   hooks in GUI Settings is a backlog row**, not this plan.
-
 ## Implementation sequence
 
 1. Core config: `[hooks]` on environments, targets, and templates, with the
@@ -218,7 +196,7 @@ step 2.
 
 ## Scope limits
 
-- No global hooks (pending question 2).
+- No global hooks.
 - No hooks for `exec`, `winetricks`, `setup`, or installers.
 - No GUI editing of hooks.
 - No hook while the program runs (like "on focus"), and no per-hook timeout.
