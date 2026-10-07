@@ -5,9 +5,9 @@ Status: draft
 ## Goal
 
 Let a script or a careful person see what `wineo new` and `wineo import`
-would create, copy, adopt, or register, without touching disk, the network,
-or Wine. A dry run resolves everything the real run would resolve, prints it,
-and stops.
+would create, copy, adopt, or register, without touching disk or Wine. A dry
+run resolves everything the real run would resolve, prints it, and stops.
+The one network call it makes is a read-only SteamGridDB search for `--art`.
 
 ## Settled by the maintainer
 
@@ -18,6 +18,19 @@ From the backlog row in [features.md](../features.md):
   review and stop.
 
 Queued first on 2026-10-06, ahead of the stats, hooks, and store plans.
+
+On 2026-10-06 the maintainer answered the open questions:
+
+1. `--dry-run` only works when the flags answer everything. Otherwise it
+   fails with the same "needs ..." message the no-terminal case prints.
+2. Text output only. `--dry-run --json` gets a backlog row.
+3. `new --exe` with a missing program fails up front with the real run's
+   "was not found" message and exits 1.
+4. `--art --dry-run` searches SteamGridDB and lists the matches, instead of
+   only saying art would be fetched. See [Art](#art).
+5. "Would create environment NAME" for `new`, the existing "Import NAME"
+   review for import, and a closing "Dry run, nothing was created." or "Dry
+   run, nothing was imported."
 
 ## Existing foundation
 
@@ -65,8 +78,8 @@ form, since `-n` is already the name.
 
 - Write anything: configs, prefixes, desktop entries, icons, art, logs, lock
   files, run state, `heroic_id` backfills, or the external runners answer.
-- Use the network: no build downloads, no SteamGridDB search, no umu runtime
-  download.
+- Download anything: no builds, no art images, no umu runtime. The only
+  network use is the SteamGridDB search in [Art](#art).
 - Start Wine, umu, an installer, or winetricks.
 - Prompt. It runs the same with or without a terminal.
 
@@ -78,9 +91,34 @@ components are installed, the source is a prefix (import), the Heroic game
 exists and is importable, and the `--exe` and `--install-exe` paths exist.
 
 When a check fails, the dry run prints the same error the real run would and
-exits 1. Things the real run would download or fetch are reported as "would"
-lines instead of failing, except where the real run would fail too (a missing
+exits 1. Things the real run would download are reported as "would" lines
+instead of failing, except where the real run would fail too (a missing
 template component in `new` fails both).
+
+### Art
+
+With `--art`, a dry run reads the SteamGridDB key the way the real run does
+(`find_key`: variable, keyring, then key file) and searches the same term:
+the environment name for `new`, the Heroic title for Heroic imports. It
+never saves the game id, downloads images, or writes icons.
+
+For one environment, it lists the top three matches and marks the one a run
+without a terminal would take. A run with a terminal shows its pick list
+instead.
+
+```text
+Art from SteamGridDB, searching "Hades":
+  1. Hades (2020), game 5248410 <- picked without a terminal
+  2. Hades II (2024), game 5370392
+  3. Hades: Battle Out of Hell (2003), game 5250117
+```
+
+For `import heroic --all`, it prints one line per game with the top match,
+like the real bulk run does.
+
+A missing key prints the real run's skip message. A failed search (offline,
+bad key, no matches) prints the real run's warning. Neither fails the dry
+run, matching the real run, where art never fails an import.
 
 ### Output
 
@@ -135,26 +173,6 @@ does Heroic (`plan_game` and `plan_library`, then apply). Those only need
 their write-before-confirm steps moved behind the dry-run check, or reported
 instead when it's set.
 
-## Open questions
-
-1. Guided flows. Recommendation: `--dry-run` only works when the flags
-   answer everything, and otherwise fails with the same "needs ..." message
-   the no-terminal case prints. The guided flows already end at a review the
-   person can back out of.
-2. JSON. Recommendation: text only in this plan, and a backlog row for
-   `--dry-run --json` if a script ever needs it. The review lines are already
-   stable enough to grep.
-3. `new --exe` with a missing program. The real run creates the environment
-   and then exits 1 with "was not found". Recommendation: the dry run fails
-   up front with that message and exits 1, since that's what the result
-   would be.
-4. Art. Recommendation: `--art --dry-run` prints "Would fetch art for NAME"
-   without checking the key or searching, since both need the network or the
-   keyring.
-5. Wording. Recommendation: "Would create environment NAME" for `new`, the
-   existing "Import NAME" review for import, and a closing "Dry run, nothing
-   was created." or "Dry run, nothing was imported."
-
 ## Implementation sequence
 
 1. Core: split `create::run` into `plan` and `apply`, with `plan` resolving
@@ -164,7 +182,7 @@ instead when it's set.
 2. Core: let `plan_library` report backfills and pending builds without
    recording or downloading them, so the CLI can print them.
 3. CLI: `--dry-run` for `new`, both Wine and native, with the "Would create"
-   review.
+   review and the art search.
 4. CLI: `--dry-run` for `import prefix`, `import heroic --game`, native
    Heroic games, and `import heroic --all`.
 5. Docs: `downloads-and-imports.md`, the `new` usage in `README.md`, the
@@ -184,6 +202,10 @@ Steps 1 and 2 can run in parallel. Step 3 needs 1, and step 4 needs 2.
   missing `--exe`, checking the error matches the real run's.
 - Heroic `--all` tests cover a library with backfills and pending builds, run
   without a terminal and without `--yes`.
+- Art tests use the existing SteamGridDB test transport or local HTTP server:
+  matches listed with the right one marked, missing key, failed search, and
+  no game id saved afterward. The Codex sandbox can't bind sockets, so the
+  primary reruns any test that needs local HTTP.
 - The acceptance checklist uses a `WINEO_PORTABLE_DIR` folder: dry-run each
   command, confirm the folder is unchanged, then run it for real and compare
   the result with the review.
@@ -191,6 +213,7 @@ Steps 1 and 2 can run in parallel. Step 3 needs 1, and step 4 needs 2.
 ## Scope limits
 
 - No GUI changes. The GUI's Add and import flows already show a review.
+- `--dry-run --json` is a backlog row, not part of this plan.
 - No dry run for other writing commands (`clone`, `set`, `rm`, `snapshot`,
   `setup`). They can get their own row if wanted.
 - A dry run can't promise the real run will succeed: prefix creation,
