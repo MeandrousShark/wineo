@@ -309,6 +309,13 @@ step 2, and step 4 needs step 3.
   (`panel.rs`, `library.rs`) and `launch/stop.rs` print `Operation::as_str()`
   and need proper wording for hooks.
 
+## Acceptance fixes
+
+- Short playtime (2026-10-07). Step 4's 30-second run showed as `0 m` in
+  `wineo stats`. The maintainer chose `< 1 m` for any time under a minute,
+  in the shared `duration_hm` formatter, so the CLI and GUI both show it.
+  A true zero is still `0 m`.
+
 ## Testing and acceptance
 
 - Unit tests for the table rules: target replaces environment, `false`,
