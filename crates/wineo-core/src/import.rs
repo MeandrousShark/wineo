@@ -26,6 +26,7 @@ use crate::download::{InstallLock, publish};
 use crate::environment::Environment;
 use crate::error::Error;
 use crate::gamescope::GamescopeSetting;
+use crate::install::{self, Wanted};
 use crate::name;
 use crate::operation::{Locks, Operation};
 use crate::paths::{self, Paths};
@@ -518,6 +519,18 @@ pub fn execute_reviewed(
         wine.dxvk.as_deref(),
         wine.vkd3d.as_deref(),
     )?;
+    if let Err(err) = install::check_available(
+        paths,
+        global,
+        &request.name,
+        &runner,
+        &Wanted::from_config(&config),
+    ) {
+        bail!(
+            "prefix {} is ready, but registration failed: {err}\nThen retry this import with --adopt.",
+            destination.display(),
+        );
+    }
     if let Err(err) = write_config_once(&config_path, &config_text) {
         bail!(
             "prefix {} is ready but registration failed: {err}; retry this import with --adopt",
@@ -1941,6 +1954,7 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     use super::*;
+    use crate::components::Component;
     use crate::config::Defaults;
 
     fn paths(root: &Path) -> Paths {
@@ -2069,6 +2083,161 @@ mod tests {
             },
             ..GlobalConfig::default()
         }
+    }
+
+    fn component_build(root: &Path, component: Component, name: &str) {
+        let (wide, narrow) = component.arch_dirs();
+        let marker = match component {
+            Component::Dxvk => "dxgi.dll",
+            Component::Vkd3d => "d3d12.dll",
+        };
+        for arch in [wide, narrow] {
+            let dir = root.join(name).join(arch);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(marker), "build").unwrap();
+        }
+    }
+
+    fn import_fails_when_reviewed_component_disappears(component: Component) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let runner_root = root.path().join("runners");
+        let prefix_root = root.path().join("prefixes");
+        let dxvk_root = root.path().join("dxvk");
+        wine_runner(&runner_root, "wine-build");
+        let source = root.path().join("source");
+        prefix(&source, "win64");
+        let mut global = base_global(&runner_root, &prefix_root);
+        global.defaults.dxvk_root = Some(dxvk_root.to_string_lossy().into_owned());
+
+        let dxvk = "dxvk-2.7";
+        let vkd3d = "vkd3d-proton-2.14";
+        component_build(&dxvk_root, Component::Dxvk, dxvk);
+        let removed = match component {
+            Component::Dxvk => dxvk_root.join(dxvk),
+            Component::Vkd3d => {
+                let vkd3d_root = root.path().join("vkd3d");
+                global.defaults.vkd3d_root = Some(vkd3d_root.to_string_lossy().into_owned());
+                component_build(&vkd3d_root, Component::Vkd3d, vkd3d);
+                vkd3d_root.join(vkd3d)
+            }
+        };
+
+        let runners = Runners::new(&paths, &global).unwrap();
+        let runner = runners.resolve("wine-build").unwrap();
+        let reviewed = inspect(&source, Some(&runner), None).unwrap();
+        let settings = ImportedSettings {
+            dxvk: Some(dxvk.to_owned()),
+            vkd3d: (component == Component::Vkd3d).then(|| vkd3d.to_owned()),
+            ..ImportedSettings::default()
+        };
+        fs::remove_dir_all(removed).unwrap();
+
+        let error = execute_reviewed(
+            &paths,
+            &global,
+            ImportRequest {
+                source,
+                name: "copied".to_owned(),
+                runner: "wine-build".to_owned(),
+                destination: None,
+                adopt: false,
+                arch: None,
+            },
+            Some(&reviewed),
+            Some(&settings),
+            &Token::new(),
+            |_| {},
+        )
+        .unwrap_err()
+        .to_string();
+
+        let component_name = match component {
+            Component::Dxvk => dxvk,
+            Component::Vkd3d => vkd3d,
+        };
+        let build_root = match component {
+            Component::Dxvk => dxvk_root,
+            Component::Vkd3d => root.path().join("vkd3d"),
+        };
+        assert_eq!(
+            error,
+            format!(
+                "prefix {} is ready, but registration failed: {} build `{component_name}` is not installed, and nothing is installed in {}\nGet one with: wineo download {}\nThen retry this import with --adopt.",
+                prefix_root.join("copied").display(),
+                component.as_str(),
+                build_root.display(),
+                component.as_str(),
+            )
+        );
+        assert!(prefix_root.join("copied/system.reg").is_file());
+        assert!(!paths.environment_config("copied").exists());
+    }
+
+    #[test]
+    fn reviewed_dxvk_disappearance_does_not_register_the_import() {
+        import_fails_when_reviewed_component_disappears(Component::Dxvk);
+    }
+
+    #[test]
+    fn reviewed_vkd3d_disappearance_does_not_register_the_import() {
+        import_fails_when_reviewed_component_disappears(Component::Vkd3d);
+    }
+
+    #[test]
+    fn reviewed_import_registers_installed_dxvk_and_vkd3d_builds() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let runner_root = root.path().join("runners");
+        let prefix_root = root.path().join("prefixes");
+        let dxvk_root = root.path().join("dxvk");
+        let vkd3d_root = root.path().join("vkd3d");
+        wine_runner(&runner_root, "wine-build");
+        let source = root.path().join("source");
+        prefix(&source, "win64");
+        let mut global = base_global(&runner_root, &prefix_root);
+        global.defaults.dxvk_root = Some(dxvk_root.to_string_lossy().into_owned());
+        global.defaults.vkd3d_root = Some(vkd3d_root.to_string_lossy().into_owned());
+
+        let dxvk = "dxvk-2.7";
+        let vkd3d = "vkd3d-proton-2.14";
+        component_build(&dxvk_root, Component::Dxvk, dxvk);
+        component_build(&vkd3d_root, Component::Vkd3d, vkd3d);
+        let reviewed = inspect(&source, None, None).unwrap();
+        let settings = ImportedSettings {
+            dxvk: Some(dxvk.to_owned()),
+            vkd3d: Some(vkd3d.to_owned()),
+            ..ImportedSettings::default()
+        };
+
+        let env = execute_reviewed(
+            &paths,
+            &global,
+            ImportRequest {
+                source,
+                name: "copied".to_owned(),
+                runner: "wine-build".to_owned(),
+                destination: None,
+                adopt: false,
+                arch: None,
+            },
+            Some(&reviewed),
+            Some(&settings),
+            &Token::new(),
+            |_| {},
+        )
+        .unwrap();
+
+        let wine = env.config.wine().unwrap();
+        assert_eq!(wine.dxvk.as_deref(), Some(dxvk));
+        assert_eq!(wine.vkd3d.as_deref(), Some(vkd3d));
+        let config_path = paths.environment_config("copied");
+        assert!(config_path.is_file());
+        let config_text = fs::read_to_string(&config_path).unwrap();
+        let config = EnvironmentConfig::parse(&config_path, &config_text).unwrap();
+        let wine = config.wine().unwrap();
+        assert_eq!(wine.dxvk.as_deref(), Some(dxvk));
+        assert_eq!(wine.vkd3d.as_deref(), Some(vkd3d));
     }
 
     #[test]
