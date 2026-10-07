@@ -255,7 +255,10 @@ first and compare after each if you want proof.
 4. Same with `--exe 'Z:\home\you\setup.exe'`: the target line ends in
    `(checked once the prefix exists)`, exit 0.
 5. `wineo new --portable /tmp/acc-0044 -n acc-n --native --exe /usr/bin/true
-   -d --dry-run` prints the native review with a desktop entry line.
+   --dry-run` prints the native review. Portable environments never get
+   desktop entries, so check that line against the real library instead:
+   `wineo new -n acc-n --native --exe /usr/bin/true -d --dry-run` shows
+   `desktop entry: acc-n`, and `wineo list` has no `acc-n` afterward.
 6. With a SteamGridDB key set up: `wineo new --portable /tmp/acc-0044 -n
    hades --art --dry-run` lists three matches with one marked `<- would be
    picked automatically`, and nothing new appears under /tmp/acc-0044.
