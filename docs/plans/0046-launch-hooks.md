@@ -281,6 +281,15 @@ step 2, and step 4 needs step 3.
   line in `wineo new`'s summary and the GUI's Add flow, so commands that run
   on every launch are never a surprise. Settled by the maintainer on
   2026-10-06; it lands with step 4.
+- A launch that fails after `before` succeeded but before the program
+  starts (a missing exe, a failed winetricks or component install) still
+  runs `after`, in the launching process since no supervisor exists yet,
+  with `WINEO_END=failed` and an empty `WINEO_EXIT_CODE`. Its output goes
+  where `before`'s did. Settled by the maintainer on 2026-10-06 during
+  step 3.
+- Hook locks cover only the environment's name, not its prefix. Hooks
+  never touch the prefix, so two environments sharing one never block each
+  other's hooks. Settled by the maintainer on 2026-10-06 during step 3.
 - Heroic's script paths are shown as stored, with control characters
   escaped so a path can't fake a review line, and bulk reviews mark a game
   that `runs launch scripts`.
