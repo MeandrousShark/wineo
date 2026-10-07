@@ -136,6 +136,12 @@ maintainer calls it stable, which these criteria are meant to inform.
    `wineo-core`'s Rust API are not part of it.
 2. Document exit codes for every command in one place. Today they're spread
    across feature pages, and only [Validate](validate.md) has a section.
+   In progress (2026-10-06): an audit found 15 inconsistencies. The
+   maintainer settled them: declining a final confirmation or backing out
+   of the first guided question exits 130 like any cancel, `prune` with no
+   selector is a usage error (2), a canceled direct or bulk Heroic import
+   exits 130, and a closed pipe ends output quietly instead of panicking.
+   The rest are documented as they are.
 3. Document a `--json` schema for every command that has `--json`, and say
    which changes count as compatible (new fields yes, renamed or removed
    fields no). [JSON output](json-output.md) covers most of this already.
