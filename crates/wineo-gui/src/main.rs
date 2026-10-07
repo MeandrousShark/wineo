@@ -100,6 +100,8 @@ pub(crate) struct App {
     pub(crate) panel_error: Option<PanelError>,
     pub(crate) hook_stop_confirm: Option<String>,
     pub(crate) hook_stop_identity: Option<wineo_core::hooks::Running>,
+    /// When the panel's polite Stop may turn into Force stop, by name.
+    pub(crate) force_stop_at: Option<(String, Instant)>,
     pub(crate) panel_note: Option<String>,
     pub(crate) log_view: bool,
     log_error: Option<String>,
@@ -307,6 +309,7 @@ impl App {
             panel_error: None,
             hook_stop_confirm: None,
             hook_stop_identity: None,
+            force_stop_at: None,
             panel_note: None,
             log_view: false,
             log_error: None,
@@ -724,6 +727,13 @@ impl App {
                     operation.name == name && operation.kind == OperationKind::Stop
                 }) {
                     self.operation = None;
+                }
+                if self
+                    .force_stop_at
+                    .as_ref()
+                    .is_some_and(|(stopping, _)| *stopping == name)
+                {
+                    self.force_stop_at = None;
                 }
                 if self.selected.as_deref() == Some(&name) {
                     match result {
@@ -2783,6 +2793,55 @@ mod tests {
         let _ = app.update(Message::Stop);
         let _ = app.update(Message::Loaded(Ok(app.cards.clone())));
         assert_eq!(app.hook_stop_confirm.as_deref(), Some("game"));
+    }
+
+    #[test]
+    fn stop_turns_into_force_stop_only_after_the_delay() {
+        let mut app = selected_app(State::Running);
+        let task = app.update(Message::Stop);
+        assert!(task.units() > 0);
+        assert_eq!(app.operation.as_ref().unwrap().kind, OperationKind::Stop);
+        let (_, at) = app.force_stop_at.clone().unwrap();
+        let card = app.cards[0].clone();
+        assert!(!app.force_stop_ready(&card, at - Duration::from_millis(1)));
+        assert!(app.force_stop_ready(&card, at));
+
+        // A second click inside the delay, like a double-click, does nothing.
+        let task = app.update(Message::Stop);
+        assert_eq!(task.units(), 0);
+        assert!(!app.operation.as_ref().unwrap().cancelled);
+
+        app.force_stop_at = Some(("game".into(), Instant::now() - Duration::from_secs(1)));
+        let _ = iced::advanced::widget::Tree::new(app.view().as_widget());
+        let task = app.update(Message::Stop);
+        assert!(task.units() > 0);
+        let operation = app.operation.as_ref().unwrap();
+        assert!(operation.cancelled);
+        assert_eq!(operation.status, "Force stopping...");
+        assert!(app.force_stop_at.is_none());
+        assert_eq!(app.update(Message::Stop).units(), 0);
+
+        let _ = app.update(Message::StopFinished("game".into(), Ok(Vec::new())));
+        assert!(app.operation.is_none());
+    }
+
+    #[test]
+    fn force_stop_waits_for_the_after_hook_confirmation_instead() {
+        let mut app = hook_app(wineo_core::hooks::Phase::After);
+        app.operation = Some(Operation {
+            name: "game".into(),
+            kind: OperationKind::Stop,
+            token: None,
+            cancelled: false,
+            status: "Stopping...".into(),
+            install_done: None,
+            installing: false,
+            after_hook: false,
+        });
+        app.force_stop_at = Some(("game".into(), Instant::now() - Duration::from_secs(1)));
+        let _ = app.update(Message::Stop);
+        assert_eq!(app.hook_stop_confirm.as_deref(), Some("game"));
+        assert!(!app.operation.as_ref().unwrap().cancelled);
     }
 
     #[test]

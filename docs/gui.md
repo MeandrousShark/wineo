@@ -77,7 +77,9 @@ Switching cards while open changes the details without replaying the entrance.
   applications and games. New environments from the built-in `gaming`
   template receive the tag; existing environments can add it in Settings.
   An environment with more than one target has a **Launch target:** dropdown.
-- **Stop** stops it, like `wineo stop`.
+- **Stop** stops it, like `wineo stop`. If it's still running 3 seconds
+  later, the button turns into **Force stop**, which kills it right away like
+  `wineo stop --force`. The wait keeps a double-click from killing it.
 - **Log** shows the run's log, the one `wineo logs` shows, and follows it
   while the game runs. Drag to select text, or click into the log and use
   Ctrl+A and Ctrl+C. **Copy** copies the whole log. Scrolling up or

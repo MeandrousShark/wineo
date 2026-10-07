@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 use iced::widget::{
     Space, button, column, container, image, pick_list, row, scrollable, stack, text, text_editor,
@@ -37,6 +38,9 @@ const HOOK_CANCEL_ID: &str = "hook-stop-cancel";
 const HOOK_CONFIRM_ID: &str = "hook-stop-confirm";
 const HOOK_CONFIRM_TEXT: &str = "Kill the after hook?";
 const PANEL_CLEANUP_ID: &str = "panel-cleanup";
+/// Stop turns into Force stop only after this long, so a double-click on
+/// Stop can't kill a game that was about to close.
+pub(crate) const FORCE_STOP_DELAY: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PanelError {
@@ -304,6 +308,20 @@ impl App {
                 operation.name == card.name && operation.kind == OperationKind::Stop
             })
     }
+    /// Our own polite Stop has had `FORCE_STOP_DELAY` and the program still
+    /// hasn't closed. An after hook keeps its own Kill confirmation instead.
+    pub(crate) fn force_stop_ready(&self, card: &Card, now: Instant) -> bool {
+        !self.after_hook_active(card)
+            && self.operation.as_ref().is_some_and(|operation| {
+                operation.name == card.name
+                    && operation.kind == OperationKind::Stop
+                    && !operation.cancelled
+            })
+            && self
+                .force_stop_at
+                .as_ref()
+                .is_some_and(|(name, at)| *name == card.name && now >= *at)
+    }
     pub(crate) fn stop_selected(&mut self) -> Task<Message> {
         let Some(card) = self
             .selected
@@ -312,6 +330,15 @@ impl App {
         else {
             return Task::none();
         };
+        if self.force_stop_ready(card, Instant::now()) {
+            let name = card.name.clone();
+            if let Some(operation) = &mut self.operation {
+                operation.cancelled = true;
+                operation.status = "Force stopping...".to_owned();
+            }
+            self.force_stop_at = None;
+            return worker::stop(self.paths.clone(), name, true);
+        }
         let cleanup = card.busy_holder.is_none()
             && (card.unresolved || self.panel_error.as_ref().is_some_and(|error| error.cleanup));
         let own_start = self.operation.as_ref().is_some_and(|operation| {
@@ -355,6 +382,7 @@ impl App {
                 installing: false,
                 after_hook: false,
             });
+            self.force_stop_at = Some((name.clone(), Instant::now() + FORCE_STOP_DELAY));
             self.panel_error = None;
             self.panel_note = None;
         }
@@ -680,12 +708,14 @@ impl App {
             && self.operation.as_ref().is_some_and(|operation| {
                 operation.name == card.name && operation.kind == OperationKind::Start
             });
-        let enabled = (self.after_hook_active(card) && !operation_busy)
+        let force_ready = self.force_stop_ready(card, Instant::now());
+        let enabled = force_ready
+            || (self.after_hook_active(card) && !operation_busy)
             || self.own_stop_waiting_on_after(card)
             || own_hook
             || stop_enabled(card, operation_busy);
         actions = actions.push(panel_action_button(
-            "Stop",
+            if force_ready { "Force stop" } else { "Stop" },
             palette.danger,
             enabled,
             Message::Stop,
