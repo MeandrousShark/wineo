@@ -33,6 +33,12 @@ recommendation:
 6. The GUI runs hooks and shows a failed `before` hook as a launch error.
    Editing hooks in GUI Settings is a backlog row.
 
+On 2026-10-06, after the revision below, the maintainer took each
+recommendation on the new choices: a launch during `after` fails with the
+busy message while `restart` waits; the GUI shows `before`'s output only
+when it fails; and the GUI's Stop asks before killing an `after` hook. The
+plan was approved the same day.
+
 ## Existing foundation
 
 - Two launch paths end in the same `Supervisor::wait`
@@ -58,12 +64,6 @@ recommendation:
 - Heroic import lists `beforeLaunchScriptPath` and `afterLaunchScriptPath`
   as unsupported today (`crates/wineo-core/src/heroic.rs`), since wineo had
   nothing to run them with.
-
-On 2026-10-06, after the revision below, the maintainer took each
-recommendation on the new choices: a launch during `after` fails with the
-busy message while `restart` waits; the GUI shows `before`'s output only
-when it fails; and the GUI's Stop asks before killing an `after` hook. The
-plan was approved the same day.
 
 Found by the maintainer's review of the first draft (2026-10-06), each
 checked against the code:
