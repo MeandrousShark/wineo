@@ -764,6 +764,7 @@ impl GamePlan {
                 wayland: None,
                 mangohud: None,
                 gamescope: None,
+                hooks: None,
                 desktop: self.desktop.enabled,
                 name: self.desktop.enabled.then(|| self.desktop.name.clone()),
             },

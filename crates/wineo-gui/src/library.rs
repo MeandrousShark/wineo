@@ -247,6 +247,7 @@ mod tests {
             wayland: None,
             mangohud: None,
             gamescope: None,
+            hooks: None,
             desktop,
             name: name.map(str::to_owned),
         }

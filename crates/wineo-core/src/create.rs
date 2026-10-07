@@ -1079,4 +1079,38 @@ mod tests {
                 .exists()
         );
     }
+
+    #[test]
+    fn creating_from_a_template_carries_hooks() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        fake_runner(&paths, "fake");
+        fs::create_dir_all(paths.templates_dir()).unwrap();
+        fs::write(
+            paths.templates_dir().join("hooks.toml"),
+            "runner = 'fake'\n[hooks]\nbefore = 'mount /mnt/games'\nafter = 'sync'\n",
+        )
+        .unwrap();
+        let created = run(
+            &paths,
+            CreateRequest {
+                name: "game".to_owned(),
+                template_name: Some("hooks".to_owned()),
+                ..Default::default()
+            },
+            &Token::new(),
+            |event| build_registry(event, &mut Vec::new()),
+        )
+        .unwrap();
+        let hooks = created
+            .environment
+            .config
+            .hooks
+            .as_ref()
+            .unwrap()
+            .on()
+            .unwrap();
+        assert_eq!(hooks.before.as_deref(), Some("mount /mnt/games"));
+        assert_eq!(hooks.after.as_deref(), Some("sync"));
+    }
 }

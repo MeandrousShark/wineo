@@ -1968,6 +1968,7 @@ mod tests {
             wayland: None,
             mangohud: None,
             gamescope: None,
+            hooks: None,
             desktop: false,
             name: None,
         };
@@ -2476,6 +2477,7 @@ mod tests {
                     wayland: None,
                     mangohud: None,
                     gamescope: None,
+                    hooks: None,
                     desktop: false,
                     name: Some("Game".to_owned()),
                 },

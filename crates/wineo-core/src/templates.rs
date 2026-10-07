@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use toml_edit::{Array, DocumentMut, value};
 
-use crate::config::{self, Arch, GamescopeSetting};
+use crate::config::{self, Arch, GamescopeSetting, HooksSetting};
 use crate::error::{Error, Result};
 use crate::name;
 use crate::paths::Paths;
@@ -45,6 +45,7 @@ pub struct Template {
     pub wayland: Option<bool>,
     pub mangohud: Option<bool>,
     pub gamescope: Option<GamescopeSetting>,
+    pub hooks: Option<HooksSetting>,
     pub gameid: Option<String>,
     pub store: Option<String>,
     pub dxvk: Option<String>,
@@ -122,6 +123,9 @@ impl Template {
         }
         if let Some(gamescope) = &self.gamescope {
             doc["gamescope"] = gamescope.to_item();
+        }
+        if let Some(hooks) = &self.hooks {
+            doc["hooks"] = hooks.to_item();
         }
     }
 }
@@ -532,5 +536,48 @@ mod tests {
 
         write(root.path(), "on", "gamescope = true\n");
         assert!(templates(root.path()).resolve("on").is_err());
+    }
+
+    #[test]
+    fn hooks_carry_into_new_environment_documents() {
+        let root = tempfile::tempdir().unwrap();
+        for hooks in [
+            "[hooks]\nbefore = 'mount /mnt/games'\nafter = 'sync'\n",
+            "[hooks]\n",
+            "hooks = false\n",
+        ] {
+            write(root.path(), "hooks", hooks);
+            let path = root.path().join("templates/hooks.toml");
+            let before = fs::metadata(&path).unwrap().modified().unwrap();
+            let template = templates(root.path()).resolve("hooks").unwrap();
+            assert_eq!(fs::read_to_string(&path).unwrap(), hooks);
+            assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+            for base in [
+                "prefix = '/p'\nrunner = 'wine'\narch = 'win64'\n",
+                "kind = 'native'\n",
+            ] {
+                let mut doc: DocumentMut = base.parse().unwrap();
+                template.apply(&mut doc);
+                let config =
+                    crate::config::EnvironmentConfig::parse(Path::new("/t.toml"), &doc.to_string())
+                        .unwrap();
+                assert_eq!(config.hooks, template.hooks);
+            }
+        }
+    }
+
+    #[test]
+    fn templates_reject_invalid_hooks() {
+        let root = tempfile::tempdir().unwrap();
+        for text in [
+            "hooks = true\n",
+            "[hooks]\nbefore = ''\n",
+            "[hooks]\nafter = ''\n",
+            "[hooks]\nbefore = 1\n",
+            "[hooks]\nunknown = 'sync'\n",
+        ] {
+            write(root.path(), "bad", text);
+            assert!(templates(root.path()).resolve("bad").is_err(), "{text}");
+        }
     }
 }

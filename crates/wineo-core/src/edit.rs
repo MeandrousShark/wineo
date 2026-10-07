@@ -74,6 +74,7 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
             Ok(())
         }
         "gamescope" => set_gamescope(root, key, raw),
+        "hooks" => set_hooks(root, key, raw),
         "tags" | "winetricks" => {
             let value = parse_args_value(key, raw)?;
             let values: Vec<String> = value
@@ -102,6 +103,11 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
                 set_target(root, key, rest, raw)
             } else if let Some(field) = key.strip_prefix("gamescope.") {
                 set_gamescope_field(root, key, field, raw)
+            } else if let Some(field) = key.strip_prefix("hooks.") {
+                let value = parse_hooks_field(key, field, raw)?;
+                let table = ensure_hooks(root, key)?;
+                store_hooks_field(table, field, value);
+                Ok(())
             } else {
                 Err(EditError::UnknownKey(key.to_string()))
             }
@@ -214,6 +220,20 @@ fn set_target(root: &mut Table, key: &str, rest: &str, raw: &str) -> Result<(), 
         store_value(table, gamescope_field, value);
         return Ok(());
     }
+    if field == "hooks" {
+        parse_hooks_whole(key, raw)?;
+        let targets = ensure_table(root, "targets", "targets", true)?;
+        let target = ensure_table(targets, name, &format!("targets.{name}"), false)?;
+        return set_hooks(target, key, raw);
+    }
+    if let Some(hooks_field) = field.strip_prefix("hooks.") {
+        let value = parse_hooks_field(key, hooks_field, raw)?;
+        let targets = ensure_table(root, "targets", "targets", true)?;
+        let target = ensure_table(targets, name, &format!("targets.{name}"), false)?;
+        let table = ensure_hooks(target, key)?;
+        store_hooks_field(table, hooks_field, value);
+        return Ok(());
+    }
     let value = match field {
         "exe" | "cwd" | "name" => parse_string_value(key, raw)?,
         "args" => parse_args_value(key, raw)?,
@@ -266,6 +286,85 @@ fn set_target_default(root: &mut Table, name: &str, key: &str, raw: &str) -> Res
 enum Whole {
     Off,
     Empty,
+}
+
+fn parse_hooks_whole(key: &str, raw: &str) -> Result<Whole, EditError> {
+    if raw == "false" {
+        Ok(Whole::Off)
+    } else if raw.trim() == "{}" {
+        Ok(Whole::Empty)
+    } else {
+        Err(EditError::InvalidValue {
+            key: key.to_owned(),
+            reason: if raw == "true" {
+                "hooks takes a [hooks] table or false, not true".to_owned()
+            } else {
+                "hooks takes a [hooks] table or false".to_owned()
+            },
+        })
+    }
+}
+
+fn set_hooks(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
+    match parse_hooks_whole(key, raw)? {
+        Whole::Off => store_value(root, "hooks", Value::from(false)),
+        Whole::Empty => ensure_hooks(root, key)?.clear(),
+    }
+    Ok(())
+}
+
+fn ensure_hooks<'a>(root: &'a mut Table, key: &str) -> Result<&'a mut Table, EditError> {
+    let old_decor = root
+        .get("hooks")
+        .and_then(Item::as_value)
+        .filter(|value| value.as_bool() == Some(false))
+        .map(|value| value.decor().clone());
+    if old_decor.is_some() {
+        root.remove("hooks");
+    }
+    let table = ensure_table(root, "hooks", key, false)?;
+    // Only the comment carries over. The value's prefix is the space after
+    // `=`, which would indent the table header.
+    if let Some(suffix) = old_decor.and_then(|decor| decor.suffix().cloned()) {
+        table.decor_mut().set_suffix(suffix);
+    }
+    Ok(table)
+}
+
+fn store_hooks_field(table: &mut Table, field: &str, value: Value) {
+    // Preserve the original quoting too when the command has not changed.
+    if table.get(field).and_then(Item::as_str) != value.as_str() {
+        store_value(table, field, value);
+    }
+}
+
+fn known_hooks_field(field: &str) -> bool {
+    matches!(field, "before" | "after")
+}
+
+fn parse_hooks_field(key: &str, field: &str, raw: &str) -> Result<Value, EditError> {
+    if !known_hooks_field(field) {
+        return Err(EditError::UnknownKey(key.to_owned()));
+    }
+    if raw.trim().is_empty() {
+        return Err(EditError::InvalidValue {
+            key: key.to_owned(),
+            reason: "empty command".to_owned(),
+        });
+    }
+    parse_string_value(key, raw)
+}
+
+fn unset_hooks_field(root: &mut Table, key: &str, field: &str) -> Result<bool, EditError> {
+    if !known_hooks_field(field) {
+        return Err(EditError::UnknownKey(key.to_owned()));
+    }
+    // An empty target table must still override the environment's hooks.
+    match root.get_mut("hooks") {
+        Some(Item::Table(table)) => Ok(table.remove(field).is_some()),
+        None | Some(Item::Value(_)) => Ok(false),
+        Some(_) => Err(not_a_table(key)),
+    }
 }
 
 fn parse_gamescope_whole(key: &str, raw: &str) -> Result<Whole, EditError> {
@@ -383,8 +482,10 @@ fn unset_gamescope_field(root: &mut Table, key: &str, field: &str) -> Result<boo
 
 fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
-        "prefix" | "runner" | "gamemode" | "wayland" | "mangohud" | "gamescope" | "gameid"
-        | "tags" | "winetricks" | "store" | "dxvk" | "vkd3d" => Ok(root.remove(key).is_some()),
+        "prefix" | "runner" | "gamemode" | "wayland" | "mangohud" | "gamescope" | "hooks"
+        | "gameid" | "tags" | "winetricks" | "store" | "dxvk" | "vkd3d" => {
+            Ok(root.remove(key).is_some())
+        }
         "arch" => Err(read_only_arch()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
@@ -394,6 +495,8 @@ fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
                 unset_target(root, key, rest)
             } else if let Some(field) = key.strip_prefix("gamescope.") {
                 unset_gamescope_field(root, key, field)
+            } else if let Some(field) = key.strip_prefix("hooks.") {
+                unset_hooks_field(root, key, field)
             } else {
                 Err(EditError::UnknownKey(key.to_string()))
             }
@@ -461,12 +564,14 @@ fn unset_target(root: &mut Table, key: &str, rest: &str) -> Result<bool, EditErr
                 | "wayland"
                 | "mangohud"
                 | "gamescope"
+                | "hooks"
                 | "desktop"
                 | "name"
         )
         && !field
             .strip_prefix("gamescope.")
             .is_some_and(known_gamescope_field)
+        && !field.strip_prefix("hooks.").is_some_and(known_hooks_field)
     {
         return Err(EditError::UnknownKey(key.to_string()));
     }
@@ -490,6 +595,8 @@ fn unset_target(root: &mut Table, key: &str, rest: &str) -> Result<bool, EditErr
             };
             let removed = if let Some(gamescope_field) = field.strip_prefix("gamescope.") {
                 unset_gamescope_field(target, key, gamescope_field)?
+            } else if let Some(hooks_field) = field.strip_prefix("hooks.") {
+                unset_hooks_field(target, key, hooks_field)?
             } else {
                 target.remove(field).is_some()
             };
@@ -1241,5 +1348,85 @@ mod tests {
             );
             assert_eq!(doc.to_string(), "gamescope = false\n");
         }
+    }
+
+    #[test]
+    fn hooks_edits_keep_comments_and_empty_override_tables() {
+        for prefix in ["hooks", "targets.game.hooks"] {
+            let mut doc = parse(&format!(
+                "[targets.game]\nexe = 'game' # target\n\n[{prefix}] # hooks\nbefore = 'mount /old' # before\nafter = 'sync' # after\n"
+            ));
+            set(
+                &mut doc,
+                Scope::Environment,
+                &format!("{prefix}.before"),
+                "mount /mnt/games",
+            )
+            .unwrap();
+            let text = doc.to_string();
+            assert!(
+                text.contains("before = \"mount /mnt/games\" # before"),
+                "{text}"
+            );
+            assert!(text.contains("after = 'sync' # after"), "{text}");
+            assert!(text.contains("exe = 'game' # target"), "{text}");
+            assert!(unset(&mut doc, Scope::Environment, &format!("{prefix}.after")).unwrap());
+            assert!(!unset(&mut doc, Scope::Environment, &format!("{prefix}.after")).unwrap());
+            assert!(unset(&mut doc, Scope::Environment, &format!("{prefix}.before")).unwrap());
+            assert!(
+                doc.to_string().contains(&format!("[{prefix}] # hooks")),
+                "{doc}"
+            );
+            set(&mut doc, Scope::Environment, prefix, "false").unwrap();
+            set(
+                &mut doc,
+                Scope::Environment,
+                &format!("{prefix}.after"),
+                "notify-send done",
+            )
+            .unwrap();
+            let config = crate::config::EnvironmentConfig::parse(
+                std::path::Path::new("/x.toml"),
+                &format!("kind = 'native'\n{doc}"),
+            )
+            .unwrap();
+            let setting = if prefix.starts_with("targets") {
+                &config.targets["game"].hooks
+            } else {
+                &config.hooks
+            };
+            assert_eq!(
+                setting.as_ref().unwrap().on().unwrap().after.as_deref(),
+                Some("notify-send done")
+            );
+            set(&mut doc, Scope::Environment, prefix, "{}").unwrap();
+            assert!(!doc.to_string().contains("after ="), "{doc}");
+            assert!(unset(&mut doc, Scope::Environment, prefix).unwrap());
+        }
+    }
+
+    #[test]
+    fn invalid_hooks_edits_leave_the_document_unchanged() {
+        for (key, value) in [
+            ("hooks", "true"),
+            ("hooks", "{before = 'sync'}"),
+            ("hooks.before", ""),
+            ("hooks.after", ""),
+            ("hooks.unknown", "sync"),
+            ("targets.new.hooks", "true"),
+            ("targets.new.hooks.before", ""),
+            ("targets.new.hooks.unknown", "sync"),
+        ] {
+            let mut doc = parse("hooks = false # mine\n");
+            let before = doc.to_string();
+            assert!(set(&mut doc, Scope::Environment, key, value).is_err());
+            assert_eq!(doc.to_string(), before);
+        }
+        let mut doc = parse("");
+        assert!(set(&mut doc, Scope::Global, "hooks.before", "sync").is_err());
+        assert!(unset(&mut doc, Scope::Global, "hooks").is_err());
+        assert!(unset(&mut doc, Scope::Environment, "hooks.unknown").is_err());
+        assert!(unset(&mut doc, Scope::Environment, "targets.game.hooks.unknown").is_err());
+        assert_eq!(doc.to_string(), "");
     }
 }

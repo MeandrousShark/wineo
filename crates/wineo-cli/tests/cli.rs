@@ -2866,3 +2866,193 @@ fn rm_removes_desktop_entries_with_the_environment() {
         stderr(&out)
     );
 }
+
+#[test]
+fn set_hooks_round_trips_and_preserves_comments_for_wine_and_native() {
+    for base in [MINIMAL_ENVIRONMENT, "kind = 'native'\n"] {
+        let root = tempfile::tempdir().unwrap();
+        let path = write_environment(
+            root.path(),
+            "game",
+            &format!(
+                "# hand written\n{base}[hooks] # commands\nbefore = 'mount /old' # before\nafter = 'sync' # after\n\n[targets.x]\nexe = 'game' # target\nhooks = false # override\n"
+            ),
+        );
+        let set = output(wineo(root.path()).args([
+            "set",
+            "game",
+            "hooks.before=mount /mnt/games",
+            "targets.x.hooks.after=notify-send done",
+        ]));
+        assert!(set.status.success(), "{}", stderr(&set));
+        let text = fs::read_to_string(&path).unwrap();
+        for kept in [
+            "# hand written",
+            "[hooks] # commands",
+            "before = \"mount /mnt/games\" # before",
+            "after = 'sync' # after",
+            "exe = 'game' # target",
+            "[targets.x.hooks] # override",
+            "schema_version = 1",
+        ] {
+            assert!(text.contains(kept), "{kept}: {text}");
+        }
+        let config = wineo_core::config::EnvironmentConfig::parse(&path, &text).unwrap();
+        let hooks = config.targets["x"].hooks.as_ref().unwrap().on().unwrap();
+        assert_eq!(hooks.before, None);
+        assert_eq!(hooks.after.as_deref(), Some("notify-send done"));
+
+        let unset = output(wineo(root.path()).args([
+            "set",
+            "game",
+            "--unset",
+            "hooks.after",
+            "--unset",
+            "targets.x.hooks.after",
+        ]));
+        assert!(unset.status.success(), "{}", stderr(&unset));
+        let text = fs::read_to_string(&path).unwrap();
+        let config = wineo_core::config::EnvironmentConfig::parse(&path, &text).unwrap();
+        assert_eq!(config.hooks.as_ref().unwrap().on().unwrap().after, None);
+        assert_eq!(
+            config.targets["x"].hooks.as_ref().unwrap().on(),
+            Some(&wineo_core::config::Hooks::default())
+        );
+        assert!(text.contains("[targets.x.hooks] # override"), "{text}");
+
+        let off = output(wineo(root.path()).args(["set", "game", "targets.x.hooks=false"]));
+        assert!(off.status.success(), "{}", stderr(&off));
+        let config = wineo_core::config::EnvironmentConfig::parse(
+            &path,
+            &fs::read_to_string(&path).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            config.targets["x"].hooks,
+            Some(wineo_core::config::HooksSetting::Off)
+        );
+        let unset = output(wineo(root.path()).args([
+            "set",
+            "game",
+            "--unset",
+            "targets.x.hooks",
+            "--unset",
+            "hooks",
+        ]));
+        assert!(unset.status.success(), "{}", stderr(&unset));
+        let config = wineo_core::config::EnvironmentConfig::parse(
+            &path,
+            &fs::read_to_string(&path).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(config.hooks, None);
+        assert_eq!(config.targets["x"].hooks, None);
+    }
+}
+
+#[test]
+fn hooks_reads_and_no_op_edits_do_not_rewrite_legacy_files() {
+    let root = tempfile::tempdir().unwrap();
+    let text = "# legacy\nkind = 'native'\n[hooks] # mine\nbefore = 'sync' # command\n[targets.x]\nexe = 'game'\n[targets.x.hooks]\nafter = 'notify-send done' # target command\n";
+    let path = write_environment(root.path(), "game", text);
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    for args in [
+        vec!["status", "game"],
+        vec!["set", "game", "hooks.before=sync"],
+        vec!["set", "game", "targets.x.hooks.after=notify-send done"],
+        vec!["set", "game", "--unset", "hooks.after"],
+        vec!["set", "game", "--unset", "targets.absent.hooks.after"],
+    ] {
+        let out = output(wineo(root.path()).args(args));
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+    }
+}
+
+#[test]
+fn set_refuses_invalid_hooks_without_rewriting_the_file() {
+    let root = tempfile::tempdir().unwrap();
+    let text = "kind = 'native'\n[targets.x]\nexe = 'game'\n";
+    let path = write_environment(root.path(), "game", text);
+    for assignment in [
+        "hooks=true",
+        "targets.x.hooks=true",
+        "hooks.before=",
+        "hooks.after=",
+        "targets.x.hooks.before=",
+        "targets.x.hooks.after=",
+        "hooks.before=   ",
+        "hooks.unknown=sync",
+    ] {
+        let out = output(wineo(root.path()).args(["set", "game", assignment]));
+        assert!(!out.status.success(), "{assignment}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        if assignment.ends_with("=true") {
+            assert!(
+                stderr(&out).contains("hooks takes a [hooks] table or false, not true"),
+                "{}",
+                stderr(&out)
+            );
+        } else if assignment.trim_end().ends_with('=') {
+            let err = stderr(&out);
+            assert!(err.contains("empty command"), "{err}");
+            assert!(!err.contains("Invalid hooks"), "{err}");
+        }
+    }
+}
+
+#[test]
+fn status_hooks_shows_phases_and_resolves_the_last_targets_override() {
+    for base in [MINIMAL_ENVIRONMENT, "kind = 'native'\n"] {
+        let root = tempfile::tempdir().unwrap();
+        let path = write_environment(
+            root.path(),
+            "game",
+            &format!(
+                "{base}[hooks]\nbefore = 'mount /mnt/games'\nafter = 'sync'\n\
+             [targets.own]\nexe = 'editor'\n[targets.own.hooks]\nafter = 'notify-send done'\n\
+             [targets.off]\nexe = 'game'\nhooks = false\n\
+             [targets.empty]\nexe = 'game'\n[targets.empty.hooks]\n"
+            ),
+        );
+        let shown = output(wineo(root.path()).args(["status", "game"]));
+        assert!(shown.status.success(), "{}", stderr(&shown));
+        assert!(
+            stdout(&shown).contains("  hooks       before, after\n"),
+            "{}",
+            stdout(&shown)
+        );
+        assert!(!stdout(&shown).contains("mount /mnt/games"));
+        for (target, expected) in [("own", Some("after")), ("off", None), ("empty", None)] {
+            let mut run = RunState::running(
+                RunMode::Detached,
+                target.to_owned(),
+                42,
+                Some(42),
+                &Overrides::default(),
+            );
+            run.finish(RunStatus::Exited);
+            runtime(root.path(), "game").write_state(&run).unwrap();
+            let out = output(wineo(root.path()).args(["status", "game"]));
+            assert!(out.status.success(), "{}", stderr(&out));
+            let line = stdout(&out)
+                .lines()
+                .find(|line| line.starts_with("  hooks "))
+                .map(str::to_owned);
+            assert_eq!(
+                line,
+                expected.map(|phases| format!("  hooks       {phases}"))
+            );
+        }
+        let text = format!("{base}[hooks]\nbefore = 'sync'\n");
+        fs::write(&path, text).unwrap();
+        let out = output(wineo(root.path()).args(["status", "game"]));
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert!(
+            stdout(&out).contains("  hooks       before\n"),
+            "{}",
+            stdout(&out)
+        );
+    }
+}

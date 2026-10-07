@@ -589,6 +589,17 @@ pub fn gamescope<'a>(
         .and_then(GamescopeSetting::on)
 }
 
+/// A target's hooks replace the environment's whole table, including when off.
+pub fn hooks<'a>(
+    environment: &'a Environment,
+    target: Option<&'a Target>,
+) -> Option<&'a crate::config::Hooks> {
+    target
+        .and_then(|target| target.hooks.as_ref())
+        .or(environment.config.hooks.as_ref())
+        .and_then(crate::config::HooksSetting::on)
+}
+
 /// Whether wineo itself runs in a Wayland session, which a Wayland launch
 /// needs to have anything to connect to.
 pub fn wayland_session() -> bool {

@@ -6,7 +6,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
-use toml_edit::{DocumentMut, value};
+use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::error::{Error, IoContext, Result};
 pub use crate::gamescope::GamescopeSetting;
@@ -239,6 +239,7 @@ pub struct EnvironmentConfig {
     pub wayland: Option<bool>,
     pub mangohud: Option<bool>,
     pub gamescope: Option<GamescopeSetting>,
+    pub hooks: Option<HooksSetting>,
     /// The Heroic game id this environment was imported from. Only Heroic
     /// imports set this; older configs load fine without it.
     pub heroic_id: Option<String>,
@@ -292,6 +293,7 @@ struct RawEnvironmentConfig {
     wayland: Option<bool>,
     mangohud: Option<bool>,
     gamescope: Option<GamescopeSetting>,
+    hooks: Option<HooksSetting>,
     gameid: Option<String>,
     store: Option<String>,
     dxvk: Option<String>,
@@ -354,6 +356,7 @@ impl RawEnvironmentConfig {
             wayland: self.wayland,
             mangohud: self.mangohud,
             gamescope: self.gamescope,
+            hooks: self.hooks,
             heroic_id: self.heroic_id,
             tags: self.tags,
             winetricks: self.winetricks.unwrap_or_default(),
@@ -399,12 +402,106 @@ pub struct Target {
     pub mangohud: Option<bool>,
     /// Replaces the environment's whole, so `false` turns it off here.
     pub gamescope: Option<GamescopeSetting>,
+    pub hooks: Option<HooksSetting>,
     /// Whether this target has a desktop entry. Reconciled, so setting it
     /// writes the entry and clearing it takes the entry away.
     #[serde(default)]
     pub desktop: bool,
     /// What the desktop entry is called. Defaults to the target's own name.
     pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HooksSetting {
+    Off,
+    On(Hooks),
+}
+
+impl HooksSetting {
+    pub fn on(&self) -> Option<&Hooks> {
+        match self {
+            Self::Off => None,
+            Self::On(hooks) => Some(hooks),
+        }
+    }
+
+    pub fn to_item(&self) -> Item {
+        match self {
+            Self::Off => value(false),
+            Self::On(hooks) => {
+                let mut table = Table::new();
+                for (key, command) in [("before", &hooks.before), ("after", &hooks.after)] {
+                    if let Some(command) = command {
+                        table[key] = value(command.as_str());
+                    }
+                }
+                Item::Table(table)
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for HooksSetting {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{self, MapAccess, Visitor};
+
+        struct SettingVisitor;
+
+        impl<'de> Visitor<'de> for SettingVisitor {
+            type Value = HooksSetting;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a [hooks] table or false")
+            }
+
+            fn visit_bool<E: de::Error>(self, on: bool) -> Result<Self::Value, E> {
+                if on {
+                    Err(E::custom("hooks takes a [hooks] table or false, not true"))
+                } else {
+                    Ok(HooksSetting::Off)
+                }
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                Hooks::deserialize(de::value::MapAccessDeserializer::new(map)).map(HooksSetting::On)
+            }
+        }
+
+        deserializer.deserialize_any(SettingVisitor)
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "RawHooks")]
+pub struct Hooks {
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawHooks {
+    before: Option<String>,
+    after: Option<String>,
+}
+
+impl TryFrom<RawHooks> for Hooks {
+    type Error = String;
+
+    fn try_from(raw: RawHooks) -> Result<Self, Self::Error> {
+        for (key, command) in [("before", &raw.before), ("after", &raw.after)] {
+            if command
+                .as_ref()
+                .is_some_and(|command| command.trim().is_empty())
+            {
+                return Err(format!("Invalid hooks.{key}: empty command."));
+            }
+        }
+        Ok(Self {
+            before: raw.before,
+            after: raw.after,
+        })
+    }
 }
 
 fn default_stop_timeout() -> u32 {
@@ -1417,5 +1514,90 @@ mod tests {
         assert_eq!("win32".parse::<Arch>().unwrap(), Arch::Win32);
         assert!("x86".parse::<Arch>().is_err());
         assert_eq!(Arch::Win32.to_string(), "win32");
+    }
+
+    #[test]
+    fn hooks_parse_and_resolve_for_wine_and_native() {
+        for base in [ENV, "kind = 'native'\n"] {
+            let text = format!(
+                "{base}[hooks]\nbefore = 'mount /mnt/games'\nafter = 'sync'\n\
+                 [targets.inherit]\nexe = 'game'\n\
+                 [targets.own]\nexe = 'editor'\n[targets.own.hooks]\nafter = 'notify-send done'\n\
+                 [targets.off]\nexe = 'tool'\nhooks = false\n\
+                 [targets.empty]\nexe = 'tool'\n[targets.empty.hooks]\n"
+            );
+            let env = crate::environment::Environment {
+                name: "game".to_owned(),
+                path: "/x/game.toml".into(),
+                config: environment(&text).unwrap(),
+            };
+            let resolve = |name| crate::launch::hooks(&env, env.config.targets.get(name));
+            let inherited = resolve("inherit").unwrap();
+            assert_eq!(inherited.before.as_deref(), Some("mount /mnt/games"));
+            assert_eq!(inherited.after.as_deref(), Some("sync"));
+            assert_eq!(crate::launch::hooks(&env, None), Some(inherited));
+            let own = resolve("own").unwrap();
+            assert_eq!(own.before, None);
+            assert_eq!(own.after.as_deref(), Some("notify-send done"));
+            assert_eq!(resolve("off"), None);
+            assert_eq!(resolve("empty"), Some(&Hooks::default()));
+
+            let bare = crate::environment::Environment {
+                name: "bare".into(),
+                path: "/x/bare.toml".into(),
+                config: environment(base).unwrap(),
+            };
+            assert_eq!(crate::launch::hooks(&bare, None), None);
+            let target_only = crate::environment::Environment {
+                name: "only".into(),
+                path: "/x/only.toml".into(),
+                config: environment(&format!(
+                    "{base}hooks = false\n[targets.game]\nexe = 'g'\n[targets.game.hooks]\nbefore = 'sync'\n"
+                )).unwrap(),
+            };
+            assert_eq!(crate::launch::hooks(&target_only, None), None);
+            assert_eq!(
+                crate::launch::hooks(&target_only, target_only.config.targets.get("game"))
+                    .unwrap()
+                    .before
+                    .as_deref(),
+                Some("sync")
+            );
+        }
+        assert!(global("[hooks]\nbefore = 'sync'\n").is_err());
+    }
+
+    #[test]
+    fn hooks_reject_true_empty_commands_and_invalid_fields_at_load() {
+        for base in [ENV, "kind = 'native'\n"] {
+            for prefix in ["", "[targets.game]\nexe = 'g'\n"] {
+                let err = environment(&format!("{base}{prefix}hooks = true\n")).unwrap_err();
+                assert!(
+                    format!("{err:?}").contains("hooks takes a [hooks] table or false, not true"),
+                    "{err}"
+                );
+                let table = if prefix.is_empty() {
+                    "hooks"
+                } else {
+                    "targets.game.hooks"
+                };
+                for field in ["before", "after"] {
+                    let err = environment(&format!("{base}{prefix}[{table}]\n{field} = ''\n"))
+                        .unwrap_err();
+                    assert!(
+                        format!("{err:?}")
+                            .contains(&format!("Invalid hooks.{field}: empty command.")),
+                        "{err}"
+                    );
+                    assert!(
+                        environment(&format!("{base}{prefix}[{table}]\n{field} = false\n"))
+                            .is_err()
+                    );
+                }
+                assert!(
+                    environment(&format!("{base}{prefix}[{table}]\nunknown = 'sync'\n")).is_err()
+                );
+            }
+        }
     }
 }

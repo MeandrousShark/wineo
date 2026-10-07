@@ -44,6 +44,8 @@ pub struct EnvironmentReport {
     pub gamemode: bool,
     /// Whether the same target, or the environment, asks for these.
     pub gamescope: bool,
+    #[serde(skip)]
+    pub hooks: Option<crate::config::Hooks>,
     pub mangohud: bool,
     /// Whether Wine's Wayland driver is asked for. Always false for native.
     pub wayland: bool,
@@ -204,6 +206,7 @@ impl EnvironmentReport {
             busy,
             gamemode: crate::launch::gamemode(global, environment, target),
             gamescope: crate::launch::gamescope(environment, target).is_some(),
+            hooks: crate::launch::hooks(environment, target).cloned(),
             mangohud: crate::launch::mangohud(global, environment, target),
             wayland: crate::launch::wayland(global, environment, target),
             name: environment.name.clone(),

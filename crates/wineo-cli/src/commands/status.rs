@@ -154,6 +154,15 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
             lines.push(label_line(label, "on"));
         }
     }
+    if let Some(hooks) = &report.hooks {
+        let phases: Vec<_> = [("before", &hooks.before), ("after", &hooks.after)]
+            .into_iter()
+            .filter_map(|(phase, command)| command.as_ref().map(|_| phase))
+            .collect();
+        if !phases.is_empty() {
+            lines.push(label_line("hooks", &phases.join(", ")));
+        }
+    }
     if let Some(gameid) = &report.gameid {
         lines.push(label_line("gameid", gameid));
     }
@@ -354,6 +363,7 @@ mod tests {
             unresolved: false,
             gamemode: false,
             gamescope: false,
+            hooks: None,
             mangohud: false,
             wayland: false,
             gameid: None,
