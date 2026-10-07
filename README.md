@@ -113,6 +113,7 @@ Every command has `--help`. The common ones:
 | Use gamescope, MangoHud, or Wine Wayland | `wineo set hades mangohud=true wayland=true gamescope.window=fullscreen` |
 | Manage runners and components | `wineo runners`, `wineo download`, `wineo dxvk`, `wineo vkd3d` |
 | Import a prefix or Heroic games | `wineo import` |
+| Preview `new` or `import` without changing anything | `wineo new -n hades --exe ~/Games/Hades/Hades.exe --dry-run`, `wineo import heroic --all --dry-run` |
 | Copy, snapshot, or go portable | `wineo clone`, `wineo snapshot`, `wineo portable` |
 | Artwork | `wineo art fetch hades`, `wineo art list hades` |
 | Find and fix config problems | `wineo validate` |
@@ -131,6 +132,7 @@ you pass `--portable DIR` or set it up for a portable folder.
 - [Native Linux games](docs/native.md)
 - [Launch options](docs/launch-options.md)
 - [Downloads and imports](docs/downloads-and-imports.md)
+- [Dry runs](docs/dry-run.md)
 - [Clone an environment](docs/clone.md)
 - [Trash and removal](docs/trash.md)
 - [Prefix snapshots](docs/snapshots.md)

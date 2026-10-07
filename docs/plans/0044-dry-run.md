@@ -238,6 +238,38 @@ Steps 1 and 2 can run in parallel. Step 3 needs 1, and step 4 needs 2.
   command, confirm the folder is unchanged, then run it for real and compare
   the result with the review.
 
+## Acceptance checklist
+
+Run these with a throwaway portable folder, so nothing touches your real
+library: every command below takes `--portable /tmp/acc-0044`. Steps 2 to 9
+should leave the folder unchanged; `find /tmp/acc-0044 | sort > before.txt`
+first and compare after each if you want proof.
+
+1. `wineo runners --portable /tmp/acc-0044` to create the folder, and note a
+   runner name to use below.
+2. `wineo new --portable /tmp/acc-0044 -n acc-a --runner RUNNER --dry-run`
+   prints a "Would create environment acc-a" review and the closing line,
+   and `wineo list --portable /tmp/acc-0044` still shows nothing.
+3. Same with `--exe ~/does-not-exist.exe`: `... was not found.`, exit 1
+   (`echo $status`).
+4. Same with `--exe 'Z:\home\you\setup.exe'`: the target line ends in
+   `(checked once the prefix exists)`, exit 0.
+5. `wineo new --portable /tmp/acc-0044 -n acc-n --native --exe /usr/bin/true
+   -d --dry-run` prints the native review with a desktop entry line.
+6. With a SteamGridDB key set up: `wineo new --portable /tmp/acc-0044 -n
+   hades --art --dry-run` lists three matches with one marked `<- would be
+   picked automatically`, and `wineo art list` shows nothing saved.
+7. `wineo import prefix --portable /tmp/acc-0044 SOME_PREFIX -n acc-p
+   --runner RUNNER --dry-run` prints the import review and `Dry run,
+   nothing was imported.`
+8. `wineo import heroic --portable /tmp/acc-0044 --all --dry-run` against
+   your real Heroic library: the table, any "Would record" or "Would offer"
+   lines, and the closing line. No question is asked.
+9. The same with `--yes`: no "Would offer" lines, and games missing a build
+   show `skip:`.
+10. Run step 2 for real (without `--dry-run`) and check the result matches the
+    review. Then `rm -r /tmp/acc-0044`.
+
 ## Scope limits
 
 - No GUI changes. The GUI's Add and import flows already show a review.

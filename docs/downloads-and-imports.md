@@ -133,6 +133,9 @@ that root cleans up what's left.
 
 ## Import an existing prefix
 
+Add `--dry-run` to any non-guided import to see what it would do without
+changing anything. See [Dry runs](dry-run.md).
+
 ```sh
 wineo import
 wineo import prefix /path/to/prefix

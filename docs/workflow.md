@@ -96,6 +96,6 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
 - `docs/config-files.md`: config schema and versioning rules, with
   `docs/environment.toml.example` and `docs/native-environment.toml.example`.
 - Per-feature pages: `native.md`, `launch-options.md`,
-  `downloads-and-imports.md`, `clone.md`, `trash.md`, `snapshots.md`,
+  `downloads-and-imports.md`, `dry-run.md`, `clone.md`, `trash.md`, `snapshots.md`,
   `portable.md`, `art.md`, `validate.md`, `stats.md`, `json-output.md`,
   `shell-completion.md`.

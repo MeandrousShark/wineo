@@ -95,7 +95,7 @@ See [Trash](gui.md#trash) and [Checkup](gui.md#checkup) for the pages.
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| `--dry-run` for `import` and non-guided `new` | Automation | **2** | | Preview what would be created, copied, or registered without touching disk | Import already builds a review before writing, which a dry run could print and stop at. |
+| `--dry-run` for `import` and non-guided `new` | Automation | **2** | | Preview what would be created, copied, or registered without touching disk | [0044](plans/0044-dry-run.md) adds `--dry-run` to `new` and `import`, awaiting acceptance. See [Dry runs](dry-run.md). |
 | `--dry-run --json` | Automation | **4** | 0044 | Let a script read a dry run's plan instead of grepping review lines | Left out of [0044](plans/0044-dry-run.md) by the maintainer (2026-10-06). Add it if a script ever needs it. |
 | Pre-launch and post-exit hooks | Core | **2** | | Run a user command before a target starts or after it exits, e.g. mounting a drive or syncing saves | The supervisor already owns the process lifetime, so post-exit fits there. Needs decisions on failure handling, env vars passed in, and per-environment versus per-target hooks. |
 | Global hooks | Core | **4** | 0046 | Run the same hook around every game, like turning notifications off while anything plays | Left out of [0046](plans/0046-launch-hooks.md) by the maintainer (2026-10-06): they'd surprise people using wineo for regular software, and templates carry hooks for new games. |
