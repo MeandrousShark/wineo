@@ -5,10 +5,10 @@ use jiff::tz::TimeZone;
 use wineo_core::environment::Environment;
 use wineo_core::heroic::HeroicSource;
 use wineo_core::paths::Paths;
-use wineo_core::stats::{self, HeroicImportResult, Log, Overview, Summary};
-use wineo_core::view::{CollectionError, StatsCollectionOutput, StatsOutput};
+use wineo_core::stats::{self, HeroicImportResult, Log, Overview, OverviewOptions, Summary};
+use wineo_core::view::{CollectionError, StatsCollectionOutput, StatsOutput, TagBreakdownOutput};
 
-use super::json;
+use super::{json, table};
 use wineo_core::time::{day_label, duration_hm};
 
 /// Width of the label column in `stats <name>`'s detail lines, wide enough
@@ -22,6 +22,17 @@ pub struct Args {
     /// Environment to show, every environment's overview if left out
     #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::environments))]
     name: Option<String>,
+    /// Show environments with every given tag
+    #[arg(
+        long = "tag",
+        value_name = "TAG",
+        conflicts_with_all = ["name", "import_heroic"],
+        add = clap_complete::ArgValueCompleter::new(crate::completion::tags)
+    )]
+    tags: Vec<String>,
+    /// Show playtime and membership grouped by tag
+    #[arg(long, conflicts_with_all = ["name", "import_heroic"])]
+    by_tag: bool,
     /// Print machine-readable JSON
     #[arg(long)]
     json: bool,
@@ -46,21 +57,27 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             args.json,
             args.sessions,
         ),
-        None => overview(paths, args.json),
+        None => overview(paths, args.json, &args.tags, args.by_tag),
     }
 }
 
-fn overview(paths: &Paths, json_output: bool) -> anyhow::Result<ExitCode> {
-    let overview = stats::overview(paths)?;
+fn overview(
+    paths: &Paths,
+    json_output: bool,
+    tags: &[String],
+    by_tag: bool,
+) -> anyhow::Result<ExitCode> {
+    let overview = stats::overview_with_options(
+        paths,
+        OverviewOptions {
+            tags: (!tags.is_empty()).then_some(tags),
+            load_tags: by_tag,
+        },
+    )?;
     for warning in &overview.warnings {
         eprintln!("warning: {warning}");
     }
     if json_output {
-        let environments = overview
-            .rows
-            .iter()
-            .map(|(name, summary)| StatsOutput::new(name, summary, None))
-            .collect();
         let errors: Vec<CollectionError> = overview
             .errors
             .iter()
@@ -69,10 +86,20 @@ fn overview(paths: &Paths, json_output: bool) -> anyhow::Result<ExitCode> {
                 message: error.message.clone(),
             })
             .collect();
-        json::print(&StatsCollectionOutput {
-            environments,
-            errors: &errors,
-        })?;
+        if by_tag {
+            let breakdown = stats::by_tag(&overview);
+            json::print(&TagBreakdownOutput::new(&breakdown, &errors))?;
+        } else {
+            let environments = overview
+                .rows
+                .iter()
+                .map(|(name, summary)| StatsOutput::new(name, summary, None))
+                .collect();
+            json::print(&StatsCollectionOutput {
+                environments,
+                errors: &errors,
+            })?;
+        }
         return Ok(if overview.errors.is_empty() {
             ExitCode::SUCCESS
         } else {
@@ -82,12 +109,67 @@ fn overview(paths: &Paths, json_output: bool) -> anyhow::Result<ExitCode> {
     for error in &overview.errors {
         eprintln!("error: {}", error.message);
     }
-    print_overview(&overview, &overview.tz);
+    if overview.rows.is_empty() && !tags.is_empty() {
+        println!("No environments are tagged {}", tags.join(" and "));
+    } else if by_tag {
+        print_by_tag(&overview);
+    } else {
+        print_overview(&overview, &overview.tz);
+    }
     Ok(if overview.errors.is_empty() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     })
+}
+
+fn print_by_tag(overview: &Overview) {
+    let breakdown = stats::by_tag(overview);
+    let totals: Vec<_> = breakdown
+        .tags
+        .iter()
+        .map(|(tag, totals)| (tag.as_str(), totals))
+        .chain(
+            breakdown
+                .untagged
+                .as_ref()
+                .map(|totals| ("(untagged)", totals)),
+        )
+        .collect();
+    if totals.is_empty() {
+        return;
+    }
+    let sessions_w = totals
+        .iter()
+        .map(|(_, totals)| totals.sessions.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max("sessions".len());
+    let mut rows = vec![[
+        String::new(),
+        "played".to_owned(),
+        format!("{:>sessions_w$}", "sessions"),
+        "played by".to_owned(),
+        "last played".to_owned(),
+    ]];
+    rows.extend(totals.iter().map(|(tag, totals)| {
+        [
+            (*tag).to_owned(),
+            duration_hm(totals.seconds),
+            format!("{:>sessions_w$}", totals.sessions),
+            format!("{} of {}", totals.played_environments, totals.environments),
+            totals
+                .last_played
+                .map(|ts| day_label(overview.now, ts, &overview.tz))
+                .unwrap_or_default(),
+        ]
+    }));
+    for line in table::render_columns(&rows) {
+        println!("{line}");
+    }
+    if overview.tags.values().any(|tags| tags.len() > 1) {
+        println!("An environment with several tags counts under each.");
+    }
 }
 
 fn print_overview(overview: &Overview, tz: &TimeZone) {

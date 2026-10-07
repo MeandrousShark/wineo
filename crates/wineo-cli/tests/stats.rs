@@ -296,3 +296,238 @@ fn import_heroic_conflicts_with_name_json_and_sessions() {
         );
     }
 }
+
+fn tagged_library() -> Fixture {
+    let f = Fixture::new();
+    f.environment("hades", "tags = ['game', 'co-op']\n");
+    f.environment("celeste", "tags = ['game']\n");
+    f.environment("never", "tags = ['game']\n");
+    f.environment("editor", "tags = ['work']\n");
+    f.environment("office", "tags = ['work']\n");
+    f.environment("browser", "");
+    f.write_stats_log(
+        "hades",
+        &session(
+            "game",
+            "2026-09-04T18:00:00Z",
+            "2026-09-04T19:00:00Z",
+            3600,
+            "exited",
+        ),
+    );
+    f.write_stats_log(
+        "celeste",
+        "{\"imported\":{\"seconds\":7200,\"last_played\":\"2026-09-05T18:00:00Z\"}}\n",
+    );
+    f.write_stats_log(
+        "browser",
+        &session(
+            "app",
+            "2026-09-17T18:00:00Z",
+            "2026-09-17T23:00:00Z",
+            18_000,
+            "stopped",
+        ),
+    );
+    f
+}
+
+#[test]
+fn tag_filter_prints_the_overview_with_filtered_totals() {
+    let f = tagged_library();
+    let output = f.run(&["stats", "--tag", "game"]);
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output),
+        concat!(
+            "         played  sessions  last played\n",
+            "celeste  2 h            0  Sep 5\n",
+            "hades    1 h            1  Sep 4\n",
+            "1 never played. Total 3 h.\n",
+        )
+    );
+    let both = f.run(&["stats", "--tag", "game", "--tag", "co-op"]);
+    assert_success(&both);
+    assert!(stdout(&both).contains("0 never played. Total 1 h."));
+    assert!(!stdout(&both).contains("celeste"));
+}
+
+#[test]
+fn by_tag_prints_membership_sorted_totals_and_the_untagged_row_last() {
+    let f = tagged_library();
+    let output = f.run(&["stats", "--by-tag"]);
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output),
+        concat!(
+            "            played  sessions  played by  last played\n",
+            "game        3 h            1  2 of 3     Sep 5\n",
+            "co-op       1 h            1  1 of 1     Sep 4\n",
+            "work        0 m            0  0 of 2\n",
+            "(untagged)  5 h            1  1 of 1     Sep 17\n",
+            "An environment with several tags counts under each.\n",
+        )
+    );
+}
+
+#[test]
+fn by_tag_filter_limits_membership_and_the_note_to_included_environments() {
+    let f = tagged_library();
+    let work = f.run(&["stats", "--by-tag", "--tag", "work"]);
+    assert_success(&work);
+    assert_eq!(
+        stdout(&work),
+        concat!(
+            "      played  sessions  played by  last played\n",
+            "work  0 m            0  0 of 2\n",
+        )
+    );
+    let game = f.run(&["stats", "--by-tag", "--tag", "game"]);
+    assert_success(&game);
+    let text = stdout(&game);
+    assert!(text.contains("co-op"), "{text}");
+    assert!(
+        text.contains("An environment with several tags counts under each."),
+        "{text}"
+    );
+    assert!(!text.contains("work"), "{text}");
+    assert!(!text.contains("(untagged)"), "{text}");
+}
+
+#[test]
+fn tag_filter_with_no_match_exits_successfully_and_joins_tags() {
+    let f = tagged_library();
+    for extra in [vec![], vec!["--by-tag"]] {
+        let mut args = vec!["stats", "--tag", "game", "--tag", "work"];
+        args.extend(extra);
+        let output = f.run(&args);
+        assert_success(&output);
+        assert_eq!(
+            stdout(&output),
+            "No environments are tagged game and work\n"
+        );
+    }
+    let single = f.run(&["stats", "--tag", "absent"]);
+    assert_success(&single);
+    assert_eq!(stdout(&single), "No environments are tagged absent\n");
+}
+
+fn json_output(output: &std::process::Output) -> serde_json::Value {
+    assert_success(output);
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn tag_json_filters_the_existing_envelope_and_requires_all_tags() {
+    let f = tagged_library();
+    let json = json_output(&f.run(&["stats", "--tag", "game", "--json"]));
+    assert_eq!(
+        json["environments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["celeste", "hades", "never"]
+    );
+    assert_eq!(json["errors"], serde_json::json!([]));
+    assert!(json.get("tags").is_none());
+    let both = json_output(&f.run(&["stats", "--tag", "game", "--tag", "co-op", "--json"]));
+    assert_eq!(both["environments"].as_array().unwrap().len(), 1);
+    assert_eq!(both["environments"][0]["name"], "hades");
+    let empty = json_output(&f.run(&["stats", "--tag", "absent", "--json"]));
+    assert_eq!(empty, serde_json::json!({"environments": [], "errors": []}));
+}
+
+#[test]
+fn by_tag_json_matches_the_planned_shape_and_null_untagged_bucket() {
+    let f = tagged_library();
+    let json = json_output(&f.run(&["stats", "--by-tag", "--json"]));
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "tags": [
+                {"tag": "game", "seconds": 10800, "sessions": 1, "environments": 3, "played_environments": 2, "last_played": "2026-09-05T18:00:00Z"},
+                {"tag": "co-op", "seconds": 3600, "sessions": 1, "environments": 1, "played_environments": 1, "last_played": "2026-09-04T18:00:00Z"},
+                {"tag": "work", "seconds": 0, "sessions": 0, "environments": 2, "played_environments": 0, "last_played": null}
+            ],
+            "untagged": {"seconds": 18000, "sessions": 1, "environments": 1, "played_environments": 1, "last_played": "2026-09-17T18:00:00Z"},
+            "errors": []
+        })
+    );
+    let filtered = json_output(&f.run(&[
+        "stats", "--by-tag", "--tag", "game", "--tag", "co-op", "--json",
+    ]));
+    assert_eq!(filtered["untagged"], serde_json::Value::Null);
+    assert_eq!(filtered["tags"][0]["tag"], "co-op");
+    assert_eq!(filtered["tags"][1]["tag"], "game");
+    assert_eq!(filtered["tags"][0]["environments"], 1);
+    let empty = json_output(&f.run(&["stats", "--by-tag", "--tag", "absent", "--json"]));
+    assert_eq!(
+        empty,
+        serde_json::json!({"tags": [], "untagged": null, "errors": []})
+    );
+}
+
+#[test]
+fn tag_flags_conflict_with_name_import_heroic_and_sessions() {
+    let f = Fixture::new();
+    for flags in [vec!["--tag", "game"], vec!["--by-tag"]] {
+        for conflicting in [
+            vec!["game"],
+            vec!["--import-heroic"],
+            vec!["--sessions", "--json", "game"],
+        ] {
+            let mut args = vec!["stats"];
+            args.extend(&flags);
+            args.extend(conflicting);
+            let output = f.run(&args);
+            assert_eq!(output.status.code(), Some(2), "{args:?}");
+            assert!(
+                stderr(&output).contains("cannot be used with"),
+                "{args:?}: {}",
+                stderr(&output)
+            );
+        }
+    }
+}
+
+#[test]
+fn tag_queries_report_broken_configs_and_keep_readable_results() {
+    let f = tagged_library();
+    f.environment("broken", "");
+    fs::write(
+        f.config_dir().join("environments/broken.toml"),
+        "invalid = [",
+    )
+    .unwrap();
+    let plain = f.run(&["stats", "--json"]);
+    assert_success(&plain);
+    assert!(
+        json_output(&plain)["environments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["name"] == "broken")
+    );
+    for flags in [vec!["--tag", "game"], vec!["--by-tag"]] {
+        let mut args = vec!["stats"];
+        args.extend(&flags);
+        let text = f.run(&args);
+        assert_eq!(text.status.code(), Some(1));
+        assert!(stderr(&text).contains("broken.toml"), "{}", stderr(&text));
+        assert!(stdout(&text).contains("game") || stdout(&text).contains("hades"));
+        args.push("--json");
+        let output = f.run(&args);
+        assert_eq!(output.status.code(), Some(1));
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(json["errors"][0]["name"], "broken");
+        assert!(
+            json["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("broken.toml")
+        );
+    }
+}
