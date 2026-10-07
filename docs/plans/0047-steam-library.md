@@ -52,7 +52,15 @@ environments keep Clone and Copy to portable; claiming a game and Stop got
 identity rules; startup, cancellation, and lost runs got a contract; one
 Steam install is active; missing Steam data has states; stats say what Steam
 can't supply; and the implicit `steam` target covers desktop entries and hook
-variables. Questions 8 to 10 came out of it and are still open.
+variables. Questions 8 to 10 came out of it, and the maintainer answered
+each with its recommendation the same day:
+
+8. One active Steam install for everything: native, unless the global config
+   says `steam = "flatpak"`.
+9. `start` returns once Steam accepts the launch, and `status` shows
+   `starting` until the game appears. `run` waits through it.
+10. Import writes `title` to the config, and the live manifest name wins
+    while it exists.
 
 ## Existing foundation
 
@@ -431,9 +439,8 @@ In this plan (question 7).
 
 ## Questions
 
-Questions 1 to 7 were answered A by the maintainer on 2026-10-07; see the
-settled list above. The options are kept as a record of what was weighed.
-Questions 8 to 10 are open.
+All ten were answered A by the maintainer on 2026-10-07; see the settled
+list above. The options are kept as a record of what was weighed.
 
 1. How Steam games get into wineo:
    - **A (recommended).** An explicit `wineo import steam`, one config per
