@@ -372,18 +372,18 @@ also shows `before` running ahead of wineo's exe check.
 5. `wineo set acc 'hooks.before=echo nope; exit 1'`. `wineo start acc`
    prints `nope`, then `Launch canceled: the before hook exited with code
    1.`, exits 1, and nothing runs.
-6. Put the step 2 `before` back, and `wineo set acc 'hooks.after=sleep 20'`.
+6. Put the step 2 `before` back, and `wineo set acc 'hooks.after=sleep 60'`.
    Start and stop it: `stop` prints
    `Waiting for the after hook.` In another terminal, `wineo status acc` says
    `running its after hook`, and `wineo start acc` is refused as busy. Ctrl+C
    the waiting `stop`, then `wineo stop --force acc` kills the hook right away.
-7. Start it again, then `wineo restart acc`: it waits for the 20-second
+7. Start it again, then `wineo restart acc`: it waits for the 60-second
    `after`, then starts again. Stop it with `--force`.
 8. `wineo run acc`, Ctrl+C once: it asks the game to close and says it's
    waiting for the after hook. Ctrl+C again kills the hook.
 9. Set step 5's failing `before` again, then in the app (`wineo-gui`, from
    the same shell) Play `acc`. The error shows `nope` under it. Put the step 2
-   `before` back, Play, then Stop: while the 20-second `after` runs, the
+   `before` back, Play, then Stop: while the 60-second `after` runs, the
    panel says `Running its after hook`, and Stop asks `Kill the after
    hook?`.
 10. Add a template with hooks:
