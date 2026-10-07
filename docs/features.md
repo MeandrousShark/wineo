@@ -10,7 +10,8 @@ when it comes up, and the rows below have the details.
 
 1. `--dry-run` for import and non-guided `new`: approved as
    [0044](plans/0044-dry-run.md).
-2. Tag breakdown in `wineo stats`, before store games add their own playtime.
+2. Tag breakdown in `wineo stats`, before store games add their own playtime:
+   drafting as [0045](plans/0045-stats-by-tag.md).
 3. Pre-launch and post-exit hooks, while the supervisor is the only launch
    model.
 4. Store library import, Steam installed games first. It adds the proxied
