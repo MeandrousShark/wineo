@@ -8,7 +8,7 @@ own numbered plan in `docs/plans/`.
 The order the maintainer picked on 2026-10-06. Each item gets its own plan
 when it comes up, and the rows below have the details.
 
-1. `--dry-run` for import and non-guided `new`: drafting as
+1. `--dry-run` for import and non-guided `new`: approved as
    [0044](plans/0044-dry-run.md).
 2. Tag breakdown in `wineo stats`, before store games add their own playtime.
 3. Pre-launch and post-exit hooks, while the supervisor is the only launch
