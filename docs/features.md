@@ -123,6 +123,38 @@ See [Trash](gui.md#trash) and [Checkup](gui.md#checkup) for the pages.
 | macOS port | Compatibility | **4** | | Run wineo and wineo-gui on Apple Silicon Macs with Wine, CrossOver-style Wine builds, and Game Porting Toolkit | Requested by the maintainer (2026-09-30). An audit on 2026-09-26 found the build breaks on Linux-only calls: pidfd in process ownership, `statx` mount identity in trash, `ioctl_ficlone` in import and portable, and libdbus for the keyring. Rough order: a cfg-gated build with Keychain and Heroic's macOS paths, then process ownership (`kern.boottime`, `proc_pidinfo`, kqueue through a safe crate, since `unsafe_code` is forbidden) and trash mount identity. rustix's `fclonefileat` and `renameatx_np` keep the clone and exchange designs. umu/Proton, gamemode, DXVK/vkd3d, the Linux downloads, and `.desktop` entries don't apply; a Mac needs D3DMetal/DXMT runners and app bundles instead. iced already runs on macOS. Matching CrossOver (discussed 2026-10-01): its Wine changes are LGPL and published, and community macOS builds use them, so wineo should reuse existing builds like Heroic does instead of building Wine. D3DMetal comes from Apple's Game Porting Toolkit; point at the user's own install rather than bundling it until Apple's redistribution terms are checked. A per-game graphics backend choice (D3DMetal, DXMT, or DXVK over MoltenVK) fits templates and per-target settings. The real gap is per-game fixes: Linux gets protonfixes through umu, and macOS has no open equivalent, which is what CrossOver's recipes and testing provide. Risks to verify when planning: Rosetta 2's announced wind-down after macOS 27, and Whisky's 2025 discontinuation as a sign of the maintenance load. Needs a plan. |
 | Event-driven supervisor exit watch | Core | **4** | | Only if there's literally nothing else to do | The supervisor polls `waitid` every 20 ms while a game runs. A pidfd plus a wakeup fd would make it sleep until the exit or a release request. Overhead today is already negligible. |
 
+## 1.0 criteria
+
+Draft, for the maintainer to approve (2026-10-06). 1.0 is a promise, not a
+feature count: after it, anything that breaks the public contract waits for
+2.0, and features keep landing in 1.x. Wineo stays on 0.x until the
+maintainer calls it stable, which these criteria are meant to inform.
+
+1. Define the public contract in a doc page: config files, CLI commands and
+   flags, exit codes, `--json` output, and where wineo keeps its files
+   (including the portable layout). Human-readable output, the GUI, and
+   `wineo-core`'s Rust API are not part of it.
+2. Document exit codes for every command in one place. Today they're spread
+   across feature pages, and only [Validate](validate.md) has a section.
+3. Document a `--json` schema for every command that has `--json`, and say
+   which changes count as compatible (new fields yes, renamed or removed
+   fields no). [JSON output](json-output.md) covers most of this already.
+4. Make `schema_version` a guarantee: a config written by any 1.x release
+   loads in every later 1.x, and an older one either loads or migrates
+   cleanly. Add upgrade tests that load fixture configs and state written
+   by earlier releases.
+5. Add a deprecation path: a renamed or removed config key or flag keeps
+   working in 1.x with a warning, and `wineo validate` reports it as
+   deprecated. 2.0 is where those become errors.
+6. Close or explain the "Other lifecycle timing failures under load" row,
+   so a red test means a real regression.
+7. No known data-loss bugs in trash, snapshots, imports, clone, or portable
+   copies.
+8. Land, or decide against, the last big shape change in view: the proxied
+   environment kind from store library import (queue items 4 and 5).
+9. A stretch of daily use, across at least two releases, where upgrading a
+   real library needs no manual fixes.
+
 ## GUI entry criteria
 
 These change the config schema or core entry points the GUI builds on, so
