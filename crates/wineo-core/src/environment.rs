@@ -76,6 +76,13 @@ impl NewEnvironment {
     }
 }
 
+#[derive(Debug)]
+pub struct NativeCreatePlan {
+    pub name: String,
+    pub exe: Option<String>,
+    pub resolved_exe: Option<PathBuf>,
+}
+
 impl Environment {
     pub fn load_for_heroic_match(paths: &Paths, name: &str) -> Result<(Self, HeroicIdSnapshot)> {
         check_name(name)?;
@@ -158,11 +165,8 @@ impl Environment {
         output: Output<'_>,
         mut events: impl FnMut(PrefixEvent),
     ) -> Result<Self> {
-        check_name(&new.name)?;
+        check_new_name(paths, &new.name)?;
         let path = paths.environment_config(&new.name);
-        if path.exists() {
-            return Err(Error::EnvironmentExists(new.name.clone()));
-        }
         let _runner_guard = build_lock::runner(paths, runner)?;
         let dir = new.prefix_dir(paths, global)?;
         let prefix_value = paths.store_prefix(&dir)?;
@@ -228,6 +232,26 @@ impl Environment {
             .ok_or_else(|| Error::NoPrefix(self.name.clone()))
     }
 
+    /// Checks native creation choices without taking locks or writing config.
+    pub fn plan_native(
+        paths: &Paths,
+        global: &GlobalConfig,
+        name: &str,
+        exe: Option<&str>,
+    ) -> Result<NativeCreatePlan> {
+        check_new_name(paths, name)?;
+        let resolved_exe = exe
+            .map(|exe| {
+                crate::launch::check_native_exe(paths, global, name, &Default::default(), exe)
+            })
+            .transpose()?;
+        Ok(NativeCreatePlan {
+            name: name.to_owned(),
+            exe: exe.map(str::to_owned),
+            resolved_exe,
+        })
+    }
+
     /// Writes a native environment's config. With an `exe`, which is checked
     /// the way a launch resolves it, it gets one default target named after
     /// the environment, with a desktop entry when `desktop` is set.
@@ -251,15 +275,11 @@ impl Environment {
         title: Option<&str>,
         desktop: bool,
     ) -> Result<Self> {
-        check_name(name)?;
+        Self::plan_native(paths, global, name, exe)?;
         let path = paths.environment_config(name);
-        if path.exists() {
-            return Err(Error::EnvironmentExists(name.to_owned()));
-        }
         let mut doc = config::new_document();
         doc["kind"] = value("native");
         if let Some(exe) = exe {
-            crate::launch::check_native_exe(paths, global, name, &Default::default(), exe)?;
             let mut table = toml_edit::Table::new();
             table["exe"] = value(paths.store_value(exe)?);
             table["default"] = value(true);
@@ -535,6 +555,14 @@ pub fn checked_sharing(paths: &Paths, name: &str, prefix: &Path) -> Result<Shari
     Ok(sharing)
 }
 
+pub(crate) fn check_new_name(paths: &Paths, name: &str) -> Result<()> {
+    check_name(name)?;
+    if paths.environment_config(name).exists() {
+        return Err(Error::EnvironmentExists(name.to_owned()));
+    }
+    Ok(())
+}
+
 fn check_name(name: &str) -> Result<()> {
     if name::is_valid(name) {
         Ok(())
@@ -545,7 +573,7 @@ fn check_name(name: &str) -> Result<()> {
 
 /// An adopted prefix keeps the arch it was created with, so an explicit
 /// `--arch` that disagrees is an error rather than silently ignored.
-fn adopted_arch(dir: &Path, fallback: Arch, requested: Option<Arch>) -> Result<Arch> {
+pub(crate) fn adopted_arch(dir: &Path, fallback: Arch, requested: Option<Arch>) -> Result<Arch> {
     match (prefix::detect_arch(dir)?, requested) {
         (Some(actual), Some(requested)) if actual != requested => Err(Error::ArchMismatch {
             path: dir.to_owned(),

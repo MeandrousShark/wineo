@@ -245,6 +245,31 @@ pub fn check_available(
     Ok(())
 }
 
+/// Resolves component names for a review without creating build locks.
+pub fn resolve_available(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    runner: &Runner,
+    wanted: &Wanted,
+) -> Result<Wanted> {
+    check(name, runner, wanted)?;
+    let resolve = |component| {
+        wanted
+            .get(component)
+            .map(|asked| {
+                Builds::new(paths, global, component)?
+                    .resolve(asked)
+                    .map(|build| build.name().to_owned())
+            })
+            .transpose()
+    };
+    Ok(Wanted {
+        dxvk: resolve(Component::Dxvk)?,
+        vkd3d: resolve(Component::Vkd3d)?,
+    })
+}
+
 /// Whether the prefix already matches, without resolving or writing anything.
 /// `latest` still has to be resolved, so it is reported as a difference and
 /// `reconcile` decides.
