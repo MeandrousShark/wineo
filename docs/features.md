@@ -125,7 +125,7 @@ See [Trash](gui.md#trash) and [Checkup](gui.md#checkup) for the pages.
 
 ## 1.0 criteria
 
-Draft, for the maintainer to approve (2026-10-06). 1.0 is a promise, not a
+Approved by the maintainer on 2026-10-06. 1.0 is a promise, not a
 feature count: after it, anything that breaks the public contract waits for
 2.0, and features keep landing in 1.x. Wineo stays on 0.x until the
 maintainer calls it stable, which these criteria are meant to inform.
