@@ -257,7 +257,7 @@ fn run_with_access(
         )?;
         plan.check_builds(paths, &global)?;
         plan.set_desktop_enabled(args.desktop);
-        let art = if args.art && !global.art.fetch.kinds().is_empty() {
+        let art = if !args.dry_run && args.art && !global.art.fetch.kinds().is_empty() {
             let check = (access.check_key)();
             check.print_skip();
             ArtChoice::checked(check, &plan.resolved().title)
@@ -277,7 +277,14 @@ fn run_with_access(
         reject_unresolved(&plan)?;
         if args.dry_run {
             super::import::check_review(paths, &global, plan.request(), plan.inspection())?;
-            dry_run::art(access, &art, None, &mut io::stdout(), &mut io::stderr());
+            if args.art {
+                access.review(
+                    &plan.heroic().title,
+                    global.art.fetch,
+                    &mut io::stdout(),
+                    &mut io::stderr(),
+                );
+            }
             println!("Dry run, nothing was imported.");
             return Ok(ExitCode::SUCCESS);
         }
@@ -693,6 +700,9 @@ fn run_all(
         .iter()
         .any(|candidate| candidate.kind != HeroicGameKind::Native);
     let candidate_count = listing.candidates.len();
+    // Printed after the table, where it explains why fewer games are listed
+    // than were checked.
+    let mut hidden_note = None;
     let runner = if !has_windows && args.runner.is_none() {
         None
     } else {
@@ -703,9 +713,21 @@ fn run_all(
             }
             None => match runners.newest_proton()? {
                 Some(runner) => Some(runner.selection().to_owned()),
-                None if args.dry_run => {
-                    println!("Would download the latest GE-Proton.");
-                    println!("Planning native games only; Windows games need a Proton runner.");
+                None if args.dry_run && !args.yes => {
+                    println!("Would offer to download the latest GE-Proton.");
+                    let count = listing
+                        .candidates
+                        .iter()
+                        .filter(|candidate| candidate.kind != HeroicGameKind::Native)
+                        .count();
+                    let (noun, need, target) = if count == 1 {
+                        ("game", "it needs", "it")
+                    } else {
+                        ("games", "they need", "them")
+                    };
+                    hidden_note = Some(format!(
+                        "{count} Windows {noun} not shown: {need} a Proton runner, which wineo would offer to download. Pass --runner to preview {target}."
+                    ));
                     listing
                         .candidates
                         .retain(|candidate| candidate.kind == HeroicGameKind::Native);
@@ -737,6 +759,8 @@ fn run_all(
     if !args.dry_run {
         library.record_backfills(paths)?;
         resolve_pending(paths, global, &mut library, args.yes, prompt.as_mut())?;
+    } else if args.yes {
+        library.settle(paths, global);
     }
     let runner_name = library.runner().unwrap_or_default();
 
@@ -750,10 +774,17 @@ fn run_all(
             library.already()
         )
     );
+    if let Some(note) = hidden_note {
+        println!("{note}");
+    }
     if args.dry_run {
-        dry_run::library(paths, global, access, &library, args.art)?;
+        let failed = dry_run::library(paths, global, access, &library, args.art, args.yes)?;
         println!("Dry run, nothing was imported.");
-        return Ok(ExitCode::SUCCESS);
+        return Ok(if failed {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        });
     }
     if library.ready_count() == 0 {
         println!("No Heroic games are ready to import.");
@@ -1033,10 +1064,11 @@ fn render_bulk_table(
         })
         .max()
         .unwrap_or(0);
+    let noun = if rows.len() == 1 { "game" } else { "games" };
     let heading = if runner_name.is_empty() {
-        format!("Import {} Heroic games:", rows.len())
+        format!("Import {} Heroic {noun}:", rows.len())
     } else {
-        format!("Import {} Heroic games with {runner_name}:", rows.len())
+        format!("Import {} Heroic {noun} with {runner_name}:", rows.len())
     };
     let mut out = format!("{}\n", style::title(heading));
     for row in rows {
@@ -3262,6 +3294,33 @@ mod tests {
     }
 
     #[test]
+    fn render_bulk_table_pluralizes_with_and_without_a_runner() {
+        for count in [0, 1, 2] {
+            for runner in ["", "test-wine"] {
+                let rows: Vec<_> = (0..count)
+                    .map(|index| BulkRow {
+                        name: format!("game{index}"),
+                        title: format!("Game {index}"),
+                        status: RowStatus::ReadyNative { warn: None },
+                        launch_scripts: false,
+                    })
+                    .collect();
+                let noun = if count == 1 { "game" } else { "games" };
+                let suffix = if runner.is_empty() {
+                    String::new()
+                } else {
+                    format!(" with {runner}")
+                };
+                let text = render_bulk_table(runner, "copy", &rows, &[]);
+                assert_eq!(
+                    text.lines().next().unwrap(),
+                    format!("Import {count} Heroic {noun}{suffix}:")
+                );
+            }
+        }
+    }
+
+    #[test]
     fn render_bulk_table_collapses_a_warning_every_ready_row_shares() {
         let rows = vec![
             BulkRow {
@@ -3337,7 +3396,7 @@ mod tests {
         );
     }
 
-    fn pending_game_wanting(
+    pub(super) fn pending_game_wanting(
         root: &Path,
         component: Component,
         reason: &str,

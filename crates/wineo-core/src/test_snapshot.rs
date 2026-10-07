@@ -9,6 +9,7 @@ pub(crate) struct SnapshotEntry {
     size: u64,
     modified: SystemTime,
     kind: FileKind,
+    link_target: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -37,6 +38,11 @@ pub(crate) fn snapshot_tree(root: &Path) -> Vec<SnapshotEntry> {
             size: metadata.len(),
             modified: metadata.modified().unwrap(),
             kind,
+            link_target: if file_type.is_symlink() {
+                Some(fs::read_link(path).unwrap())
+            } else {
+                None
+            },
         });
         if file_type.is_dir() {
             let mut children: Vec<_> = fs::read_dir(path)
@@ -114,4 +120,24 @@ fn display_paths(paths: &[&Path]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_records_symlink_targets_without_following_them() {
+        let root = tempfile::tempdir().unwrap();
+        let target = PathBuf::from("missing-target");
+        std::os::unix::fs::symlink(&target, root.path().join("link")).unwrap();
+        let entries = snapshot_tree(root.path());
+        assert_eq!(entries.len(), 2);
+        let link = entries
+            .iter()
+            .find(|entry| entry.path == Path::new("link"))
+            .unwrap();
+        assert_eq!(link.kind, FileKind::Symlink);
+        assert_eq!(link.link_target.as_ref(), Some(&target));
+    }
 }

@@ -302,11 +302,13 @@ fn heroic_all_dry_run_reports_backfill_and_pending_build_without_a_terminal_or_y
         "{text}"
     );
     assert!(
-        text.contains("Would download the latest DXVK for 1 game."),
+        text.contains("Would offer to download the latest DXVK for 1 game. Declining skips it."),
         "{text}"
     );
     assert!(
-        text.contains("Would download the latest vkd3d-proton for 1 game."),
+        text.contains(
+            "Would offer to download the latest vkd3d-proton for 1 game. Declining skips it."
+        ),
         "{text}"
     );
     assert!(text.contains("Dry run, nothing was imported."), "{text}");
@@ -333,13 +335,15 @@ fn heroic_all_without_proton_dry_run_reports_native_only_planning() {
     assert_success(&output);
     let text = stdout(&output);
     assert!(
-        text.contains("Would download the latest GE-Proton."),
+        text.contains("Would offer to download the latest GE-Proton."),
         "{text}"
     );
     assert!(
-        text.contains("Planning native games only; Windows games need a Proton runner."),
+        text.contains("1 Windows game not shown: it needs a Proton runner, which wineo would offer to download. Pass --runner to preview it."),
         "{text}"
     );
+    assert!(text.contains("Checking 2 Heroic games..."), "{text}");
+    assert!(text.contains("Import 1 Heroic game:"), "{text}");
     assert!(text.contains("Dusklight"), "{text}");
     assert!(!text.contains("Alpha"), "{text}");
     assert!(text.contains("Dry run, nothing was imported."), "{text}");
@@ -654,4 +658,177 @@ fn heroic_art_with_a_saved_key_warns_on_search_failure_without_writing() {
     assert!(stdout(&output).contains("Dry run, nothing was imported."));
     assert!(key.is_file());
     assert!(!f.root.path().join("data/wineo/art").exists());
+}
+
+#[test]
+fn heroic_all_with_yes_and_no_proton_fails_like_the_real_run_without_writing() {
+    let f = Fixture::new();
+    install_guarded_wine(&f);
+    let prefix = source(f.root.path());
+    let (heroic, _) = heroic_with_native(&f, &prefix);
+    let args = [
+        "import",
+        "heroic",
+        "--config-dir",
+        heroic.to_str().unwrap(),
+        "--all",
+        "--yes",
+    ];
+    let mut dry_args = args.to_vec();
+    dry_args.push("--dry-run");
+    let error = assert_dry_run_error_matches_real(&f, &dry_args, &args);
+    assert!(
+        error.contains("no Proton runner is installed; pass --runner or download one first"),
+        "{error}"
+    );
+}
+
+#[test]
+fn heroic_all_without_proton_reports_multiple_hidden_windows_games() {
+    let f = Fixture::new();
+    install_guarded_wine(&f);
+    let prefix = source(f.root.path());
+    let heroic = heroic_windows(&f, &prefix, &[("a", "Alpha", ""), ("b", "Beta", "")]);
+    let output = dry_run(
+        &f,
+        &[
+            "import",
+            "heroic",
+            "--config-dir",
+            heroic.to_str().unwrap(),
+            "--all",
+            "--dry-run",
+        ],
+    );
+    assert_success(&output);
+    let text = stdout(&output);
+    assert!(
+        text.contains("Would offer to download the latest GE-Proton."),
+        "{text}"
+    );
+    assert!(text.contains("2 Windows games not shown: they need a Proton runner, which wineo would offer to download. Pass --runner to preview them."), "{text}");
+    assert!(
+        text.find("Import ").unwrap() < text.find("not shown").unwrap(),
+        "the hidden games note follows the table: {text}"
+    );
+    assert!(text.contains("Checking 2 Heroic games..."), "{text}");
+    assert!(text.contains("Dry run, nothing was imported."), "{text}");
+}
+
+#[test]
+fn heroic_all_pending_builds_follow_yes_and_pluralize_offers() {
+    for count in [1, 2] {
+        for yes in [false, true] {
+            let f = Fixture::new();
+            install_guarded_wine(&f);
+            let prefix = source(f.root.path());
+            let games = [
+                (
+                    "a",
+                    "Alpha",
+                    "\"autoInstallDxvk\":true,\"autoInstallVkd3d\":true",
+                ),
+                (
+                    "b",
+                    "Beta",
+                    "\"autoInstallDxvk\":true,\"autoInstallVkd3d\":true",
+                ),
+            ];
+            let heroic = heroic_windows(&f, &prefix, &games[..count]);
+            let mut args = vec![
+                "import",
+                "heroic",
+                "--config-dir",
+                heroic.to_str().unwrap(),
+                "--all",
+                "--runner",
+                "test-wine",
+                "--dry-run",
+            ];
+            if yes {
+                args.push("--yes");
+            }
+            let output = dry_run(&f, &args);
+            assert_success(&output);
+            let text = stdout(&output);
+            assert!(
+                text.contains(&format!("Checking {count} Heroic games...")),
+                "{text}"
+            );
+            assert!(
+                text.contains("skip: no dxvk builds are installed"),
+                "{text}"
+            );
+            let noun = if count == 1 { "game" } else { "games" };
+            assert!(
+                text.contains(&format!("Import {count} Heroic {noun} with test-wine:")),
+                "{text}"
+            );
+            if yes {
+                assert!(!text.contains("Would offer"), "{text}");
+                assert!(!text.contains("Would download"), "{text}");
+                let real_args: Vec<_> = args
+                    .iter()
+                    .copied()
+                    .filter(|arg| *arg != "--dry-run")
+                    .collect();
+                let before = Snapshot::capture(f.root.path()).unwrap();
+                let real = run(&f, &real_args);
+                assert_success(&real);
+                before.assert_unchanged(f.root.path());
+                assert!(!f.root.path().join("runner-started").exists());
+                assert_eq!(
+                    stdout(&real),
+                    text.replace(
+                        "Dry run, nothing was imported.",
+                        "No Heroic games are ready to import."
+                    )
+                );
+            } else {
+                let target = if count == 1 { "it" } else { "them" };
+                for component in ["DXVK", "vkd3d-proton"] {
+                    assert!(text.contains(&format!("Would offer to download the latest {component} for {count} {noun}. Declining skips {target}.")), "{text}");
+                }
+            }
+            assert!(text.contains("Dry run, nothing was imported."), "{text}");
+        }
+    }
+}
+
+#[test]
+fn heroic_all_conflicting_destination_is_fail_soft_with_and_without_yes() {
+    for yes in [false, true] {
+        let f = Fixture::new();
+        install_guarded_wine(&f);
+        let prefix = source(f.root.path());
+        let heroic = heroic_windows(&f, &prefix, &[("a", "Alpha", ""), ("b", "Beta", "")]);
+        let destination = f.root.path().join("data/wineo/prefixes/alpha");
+        fs::create_dir_all(&destination).unwrap();
+        let mut args = vec![
+            "import",
+            "heroic",
+            "--config-dir",
+            heroic.to_str().unwrap(),
+            "--all",
+            "--runner",
+            "test-wine",
+            "--dry-run",
+        ];
+        if yes {
+            args.push("--yes");
+        }
+        let output = dry_run(&f, &args);
+        assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+        let text = stdout(&output);
+        assert!(text.contains("Checking 2 Heroic games..."), "{text}");
+        assert!(
+            text.contains(&format!(
+                "alpha: would fail: import destination already exists: {}",
+                destination.display()
+            )),
+            "{text}"
+        );
+        assert!(text.contains("Beta"), "{text}");
+        assert!(text.ends_with("Dry run, nothing was imported.\n"), "{text}");
+    }
 }

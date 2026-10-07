@@ -16,7 +16,7 @@ use crate::snapshot;
 pub(super) fn art(
     access: &Access,
     choice: &ArtChoice,
-    env: Option<&str>,
+    env: &str,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) {
@@ -29,30 +29,12 @@ pub(super) fn art(
         let Some(top) = games.first() else {
             anyhow::bail!("no SteamGridDB games match `{}`", choice.term);
         };
-        if let Some(env) = env {
-            writeln!(
-                out,
-                "{env}: art from SteamGridDB game {}, {}",
-                top.id,
-                game_name(top)
-            )?;
-        } else {
-            writeln!(out, "Art from SteamGridDB, searching \"{}\":", choice.term)?;
-            for (index, game) in games.iter().take(3).enumerate() {
-                writeln!(
-                    out,
-                    "  {}. {}, game {}{}",
-                    index + 1,
-                    game_name(game),
-                    game.id,
-                    if index == 0 {
-                        " <- would be picked automatically"
-                    } else {
-                        ""
-                    }
-                )?;
-            }
-        }
+        writeln!(
+            out,
+            "{env}: art from SteamGridDB game {}, {}",
+            top.id,
+            game_name(top)
+        )?;
         Ok(())
     })();
     if let Err(error) = result {
@@ -77,7 +59,8 @@ pub(super) fn library(
     access: &Access,
     library: &LibraryPlan,
     fetch_art: bool,
-) -> anyhow::Result<()> {
+    yes: bool,
+) -> anyhow::Result<bool> {
     let backfills = library.backfills();
     if !backfills.is_empty() {
         let names = backfills
@@ -95,14 +78,21 @@ pub(super) fn library(
             backfills.len()
         );
     }
-    for (component, versions) in missing_builds(paths, global, library)? {
+    for (component, versions) in if yes {
+        Vec::new()
+    } else {
+        missing_builds(paths, global, library)?
+    } {
         for (version, count) in versions {
             let build = version.map_or_else(
                 || format!("the latest {}", component.label()),
                 |version| format!("{} {version}", component.label()),
             );
             let noun = if count == 1 { "game" } else { "games" };
-            println!("Would download {build} for {count} {noun}.");
+            let target = if count == 1 { "it" } else { "them" };
+            println!(
+                "Would offer to download {build} for {count} {noun}. Declining skips {target}."
+            );
         }
     }
     let key = if fetch_art && !global.art.fetch.kinds().is_empty() {
@@ -112,29 +102,45 @@ pub(super) fn library(
     } else {
         None
     };
+    let mut failed = false;
     for entry in library.entries() {
-        let (name, title) = match entry {
-            Entry::Ready(Game::Windows(_)) | Entry::Pending(_) => {
-                // Pending games still get an art search for the import after its build download.
-                let plan = match entry {
-                    Entry::Ready(Game::Windows(plan)) => plan,
-                    Entry::Pending(game) => game.plan(),
-                    _ => unreachable!(),
-                };
+        let (name, title, checked) = match entry {
+            Entry::Ready(Game::Windows(plan)) => (
+                plan.name(),
+                plan.heroic().title.as_str(),
                 super::super::import::check_review(
                     paths,
                     global,
                     plan.request(),
                     plan.inspection(),
-                )?;
-                (plan.name(), plan.heroic().title.as_str())
+                ),
+            ),
+            Entry::Pending(game) if !yes => {
+                // Accepting the build offer would make this game ready to import.
+                let plan = game.plan();
+                (
+                    plan.name(),
+                    plan.heroic().title.as_str(),
+                    super::super::import::check_review(
+                        paths,
+                        global,
+                        plan.request(),
+                        plan.inspection(),
+                    ),
+                )
             }
-            Entry::Ready(Game::Native(plan)) => {
-                super::super::import::check_name(paths, plan.name())?;
-                (plan.name(), plan.heroic().title.as_str())
-            }
-            Entry::Skipped(_) => continue,
+            Entry::Ready(Game::Native(plan)) => (
+                plan.name(),
+                plan.heroic().title.as_str(),
+                super::super::import::check_name(paths, plan.name()),
+            ),
+            Entry::Pending(_) | Entry::Skipped(_) => continue,
         };
+        if let Err(error) = checked {
+            println!("{name}: would fail: {error:#}");
+            failed = true;
+            continue;
+        }
         art(
             access,
             &ArtChoice {
@@ -142,12 +148,12 @@ pub(super) fn library(
                 enabled: key.is_some(),
                 term: title.to_owned(),
             },
-            Some(name),
+            name,
             &mut io::stdout(),
             &mut io::stderr(),
         );
     }
-    Ok(())
+    Ok(failed)
 }
 
 type BuildCounts = Vec<(Component, Vec<(Option<String>, usize)>)>;
@@ -295,6 +301,119 @@ mod tests {
         fs::write(file, "k\n").unwrap();
     }
 
+    fn bulk_fixture(root: &Path, pending: bool, conflict: bool) -> (Paths, std::path::PathBuf) {
+        let paths = paths(root);
+        save_key(&paths);
+        let heroic = root.join("heroic");
+        fs::create_dir_all(heroic.join("sideload_apps")).unwrap();
+        fs::create_dir_all(heroic.join("GamesConfig")).unwrap();
+        let prefix = root.join("source");
+        fs::create_dir_all(prefix.join("drive_c")).unwrap();
+        fs::write(
+            prefix.join("system.reg"),
+            "WINE REGISTRY Version 2\n#arch=win64\n",
+        )
+        .unwrap();
+        let exe = prefix.join("drive_c/game.exe");
+        fs::write(&exe, "game").unwrap();
+        let marker = root.join("runner-started");
+        let runner = paths.host_data().join("runners/test-wine/bin");
+        fs::create_dir_all(&runner).unwrap();
+        for program in ["wine", "wineserver"] {
+            let file = runner.join(program);
+            fs::write(&file, format!("#!/bin/sh\nif [ \"${{1-}}\" = --version ]; then echo wine-test; exit 0; fi\ntouch '{}'\nexit 1\n", marker.display())).unwrap();
+            fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::write(heroic.join("config.json"), format!(r#"{{"defaultSettings":{{"winePrefix":"{}","wineVersion":{{"type":"wine","name":"System","bin":"wine"}}}}}}"#, prefix.display())).unwrap();
+        let settings = if pending {
+            r#""autoInstallDxvk":true, "autoInstallVkd3d":true"#
+        } else {
+            ""
+        };
+        fs::write(
+            heroic.join("GamesConfig/a.json"),
+            format!(r#"{{"a":{{{}}}}}"#, settings),
+        )
+        .unwrap();
+        fs::write(heroic.join("GamesConfig/b.json"), r#"{"b":{}}"#).unwrap();
+        fs::write(heroic.join("sideload_apps/library.json"), format!(r#"{{"games":[{{"app_name":"a","title":"Alpha","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}},{{"app_name":"b","title":"Beta","runner":"sideload","install":{{"platform":"Windows","executable":"{}"}}}}]}}"#, exe.display(), exe.display())).unwrap();
+        if conflict {
+            fs::create_dir_all(paths.host_data().join("prefixes/alpha")).unwrap();
+        }
+        (paths, heroic)
+    }
+
+    #[test]
+    fn bulk_art_skips_pending_games_only_with_yes_and_continues_after_failures() {
+        for pending in [false, true] {
+            for yes in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let (paths, heroic) = bulk_fixture(root.path(), pending, !pending);
+                let calls = Rc::default();
+                let access = access(&paths, Answer::Matches, Rc::clone(&calls));
+                let args = Args {
+                    config_dir: Some(heroic.display().to_string()),
+                    runner: Some("test-wine".to_owned()),
+                    all: true,
+                    yes,
+                    art: true,
+                    dry_run: true,
+                    ..Args::default()
+                };
+                let before = snapshot::Snapshot::capture(root.path()).unwrap();
+                let code = run_with_access(&paths, args, false, &access).unwrap();
+                before.assert_unchanged(root.path());
+                assert!(!root.path().join("runner-started").exists());
+                assert_eq!(
+                    code,
+                    if pending {
+                        std::process::ExitCode::SUCCESS
+                    } else {
+                        std::process::ExitCode::FAILURE
+                    }
+                );
+                let mut expected = vec![format!("{}/search/autocomplete/Beta", steamgriddb::API)];
+                if pending && !yes {
+                    expected.insert(0, format!("{}/search/autocomplete/Alpha", steamgriddb::API));
+                }
+                assert_eq!(*calls.borrow(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn missing_builds_preserves_pinned_versions_and_counts_without_writing() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let pending = || {
+            super::super::tests::pending_game_wanting(
+                root.path(),
+                Component::Dxvk,
+                "missing",
+                Some("dxvk-2.7"),
+                Some("vkd3d-proton-2.14"),
+                Some("dxvk-2.7"),
+            )
+        };
+        let library = LibraryPlan::from_entries(
+            Some("wine-tkg".to_owned()),
+            Vec::new(),
+            vec![pending(), pending()],
+        );
+        let before = snapshot::Snapshot::capture(root.path()).unwrap();
+        assert_eq!(
+            missing_builds(&paths, &GlobalConfig::default(), &library).unwrap(),
+            vec![
+                (Component::Dxvk, vec![(Some("dxvk-2.7".to_owned()), 2)]),
+                (
+                    Component::Vkd3d,
+                    vec![(Some("vkd3d-proton-2.14".to_owned()), 2)]
+                ),
+            ]
+        );
+        before.assert_unchanged(root.path());
+    }
+
     #[test]
     fn art_lists_only_three_matches_and_marks_the_automatic_pick_without_writing() {
         let root = tempfile::tempdir().unwrap();
@@ -305,7 +424,12 @@ mod tests {
         let choice = ArtChoice::checked((access.check_key)(), "Heroic title");
         let before = snapshot::Snapshot::capture(root.path()).unwrap();
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        art(&access, &choice, None, &mut out, &mut err);
+        access.review(
+            &choice.term,
+            GlobalConfig::default().art.fetch,
+            &mut out,
+            &mut err,
+        );
         before.assert_unchanged(root.path());
         assert!(err.is_empty());
         assert_eq!(
@@ -331,7 +455,7 @@ mod tests {
         let choice = ArtChoice::checked((access.check_key)(), "Alpha");
         let before = snapshot::Snapshot::capture(root.path()).unwrap();
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        art(&access, &choice, Some("alpha"), &mut out, &mut err);
+        art(&access, &choice, "alpha", &mut out, &mut err);
         before.assert_unchanged(root.path());
         assert!(err.is_empty());
         assert_eq!(
@@ -354,7 +478,12 @@ mod tests {
             let choice = ArtChoice::checked((access.check_key)(), "Alpha");
             let before = snapshot::Snapshot::capture(root.path()).unwrap();
             let (mut out, mut err) = (Vec::new(), Vec::new());
-            art(&access, &choice, None, &mut out, &mut err);
+            access.review(
+                &choice.term,
+                GlobalConfig::default().art.fetch,
+                &mut out,
+                &mut err,
+            );
             before.assert_unchanged(root.path());
             assert!(out.is_empty());
             assert_eq!(

@@ -124,7 +124,7 @@ pub(super) fn direct(
     plan.reject_invalid()?;
     plan.check_exe(paths, global)?;
     plan.set_desktop_enabled(args.desktop);
-    let art = if args.art && !global.art.fetch.kinds().is_empty() {
+    let art = if !args.dry_run && args.art && !global.art.fetch.kinds().is_empty() {
         let check = (access.check_key)();
         check.print_skip();
         ArtChoice::checked(check, &plan.heroic().title)
@@ -134,7 +134,14 @@ pub(super) fn direct(
     println!("{}", summary(paths, plan.resolved(), plan.name()));
     if args.dry_run {
         super::super::import::check_name(paths, plan.name())?;
-        super::dry_run::art(access, &art, None, &mut io::stdout(), &mut io::stderr());
+        if args.art {
+            access.review(
+                &plan.heroic().title,
+                global.art.fetch,
+                &mut io::stdout(),
+                &mut io::stderr(),
+            );
+        }
         println!("Dry run, nothing was imported.");
         return Ok(ExitCode::SUCCESS);
     }
