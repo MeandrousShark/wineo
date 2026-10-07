@@ -26,6 +26,8 @@ palworld        3 h                1  Sep 17
 
 A game that's running now counts its time so far, and its last played day
 is marked `(running)`.
+Times are shown in hours and minutes, rounded down, and play under a minute
+shows as `< 1 m`. `--json` has exact seconds.
 
 ## By tag
 

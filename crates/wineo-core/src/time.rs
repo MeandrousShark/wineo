@@ -21,8 +21,12 @@ pub fn clock(now: Timestamp, ts: Timestamp, tz: &TimeZone) -> String {
 }
 
 /// A duration in hours and minutes, like `wineo stats` shows: `107 h 19 m`,
-/// `13 m` under an hour, or `95 h` when the minutes are exactly zero.
+/// `13 m` under an hour, or `95 h` when the minutes are exactly zero. Time
+/// under a minute is `< 1 m`, so a short session doesn't read as no play.
 pub fn duration_hm(seconds: i64) -> String {
+    if (1..60).contains(&seconds) {
+        return "< 1 m".to_owned();
+    }
     let minutes = seconds.max(0) / 60;
     let (hours, minutes) = (minutes / 60, minutes % 60);
     if hours == 0 {
@@ -109,6 +113,14 @@ mod tests {
         assert_eq!(duration_hm(13 * 60), "13 m");
         assert_eq!(duration_hm(95 * 3600), "95 h");
         assert_eq!(duration_hm(0), "0 m");
+    }
+
+    #[test]
+    fn duration_hm_shows_under_a_minute_as_less_than_one() {
+        assert_eq!(duration_hm(1), "< 1 m");
+        assert_eq!(duration_hm(59), "< 1 m");
+        assert_eq!(duration_hm(60), "1 m");
+        assert_eq!(duration_hm(-5), "0 m");
     }
 
     #[test]
