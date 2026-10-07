@@ -3,6 +3,28 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.27.0 - 2026-10-07
+
+- Launch hooks ([0046](docs/plans/0046-launch-hooks.md)). `[hooks]` with
+  `before` and `after` shell commands goes on an environment, a target, or
+  a template, and runs around `start`, `run`, `restart`, desktop entries,
+  and Play in the desktop app. `before` runs ahead of the exe check, so it
+  can mount the drive a game lives on, and a failing `before` cancels the
+  launch. `after` runs however the run ended, with `WINEO_END`,
+  `WINEO_EXIT_CODE`, and `WINEO_PREFIX` for Wine games. See
+  [Hooks](docs/hooks.md).
+- `wineo stop` waits for a running `after` hook, and `--force` kills it.
+  `stop --force` on a running game still runs `after` and says how to kill
+  it. In `wineo run`, Ctrl+C during `after` offers to kill it, right away
+  if Ctrl+C already stopped the game.
+- `wineo status` shows an environment's hooks and when it's running one,
+  and `status --json` and `list --json` have `hooks` with `before` and
+  `after` booleans. The desktop app shows a hook's state, shows a failed
+  `before` hook's output with the error, and asks before killing an
+  `after` hook.
+- Heroic import carries a game's before and after launch scripts over as
+  hooks, and template summaries in `wineo new` and the Add flow list them.
+
 ## 0.26.0 - 2026-10-07
 
 - Playtime by tag ([0045](docs/plans/0045-stats-by-tag.md)).

@@ -13,7 +13,7 @@ when it comes up, and the rows below have the details.
 2. Tag breakdown in `wineo stats`, before store games add their own playtime:
    done in 0.26.0 as [0045](plans/0045-stats-by-tag.md).
 3. Pre-launch and post-exit hooks, while the supervisor is the only launch
-   model: approved as [0046](plans/0046-launch-hooks.md).
+   model: done in 0.27.0 as [0046](plans/0046-launch-hooks.md).
 4. Store library import, Steam installed games first. It adds the proxied
    environment kind.
 5. Store library follow-ups: owned but uninstalled Steam games, then GOG and
@@ -97,7 +97,7 @@ See [Trash](gui.md#trash) and [Checkup](gui.md#checkup) for the pages.
 |---|---|---:|---|---|---|
 | `--dry-run` for `import` and non-guided `new` | Automation | **2** | | Preview what would be created, copied, or registered without touching disk | [0044](plans/0044-dry-run.md) is done (0.25.0): it adds `--dry-run` to `new` and `import`. See [Dry runs](dry-run.md). |
 | `--dry-run --json` | Automation | **4** | 0044 | Let a script read a dry run's plan instead of grepping review lines | Left out of [0044](plans/0044-dry-run.md) by the maintainer (2026-10-06). Add it if a script ever needs it. |
-| Pre-launch and post-exit hooks | Core | **2** | | Run a user command before a target starts or after it exits, e.g. mounting a drive or syncing saves | [0046](plans/0046-launch-hooks.md) adds `[hooks]` with `before` and `after`, awaiting acceptance. See [Hooks](hooks.md). |
+| Pre-launch and post-exit hooks | Core | **2** | | Run a user command before a target starts or after it exits, e.g. mounting a drive or syncing saves | [0046](plans/0046-launch-hooks.md) is done (0.27.0): it adds `[hooks]` with `before` and `after`. See [Hooks](hooks.md). |
 | Global hooks | Core | **4** | 0046 | Run the same hook around every game, like turning notifications off while anything plays | Left out of [0046](plans/0046-launch-hooks.md) by the maintainer (2026-10-06): they'd surprise people using wineo for regular software, and templates carry hooks for new games. |
 | Edit hooks in GUI Settings | UX | **3** | 0046 | Set a game's hooks without editing TOML or using `wineo set` | Left out of [0046](plans/0046-launch-hooks.md) by the maintainer (2026-10-06). The GUI already runs hooks. |
 | ProtonDB lookup in the CLI | UX | **3** | | Check a game's compatibility information before launching or changing runners | Resolve a wineo environment to the right ProtonDB game, handle missing matches, and make the result reusable by the future GUI. The command shape and online behavior need a plan. |
