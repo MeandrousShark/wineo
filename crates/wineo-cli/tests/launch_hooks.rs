@@ -1368,9 +1368,89 @@ fn ctrl_c_twice_during_after_waits_then_kills_the_hook_group() {
     signal(&run, "-INT");
     let output = run.wait_with_output().unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
+    let text = fs::read_to_string(&stderr_path).unwrap();
+    assert!(text.ends_with("The after hook was killed.\n"), "{text}");
+    assert_eq!(
+        text.matches("The after hook was killed.").count(),
+        1,
+        "{text}"
+    );
     wait_for("run after hook group to be killed", || {
         wineo_core::process::group_has_live_members(group) == Some(false)
     });
+}
+
+#[test]
+fn ctrl_c_during_the_program_announces_after_so_the_next_one_kills_it() {
+    let f = Fixture::new();
+    let active = f.root.path().join("after-active");
+    let after = format!(
+        "touch {}; while :; do sleep 0.02; done",
+        shell_quote(&active.display().to_string())
+    );
+    f.environment(
+        "app",
+        &hooked_targets("[targets.app]\nexe = 'game'\n", None, Some(&after)),
+    );
+    let stderr_path = f.root.path().join("run.stderr");
+    let run = spawn_wineo_with_stderr(&f, &["run", "app"], &stderr_path);
+    wait_for("game to run", || f.fake_program_running("app"));
+
+    signal(&run, "-INT");
+    wait_for("after hook to start", || active.exists());
+    wait_for_text(
+        &stderr_path,
+        "Waiting for the after hook, press Ctrl+C again to kill it.",
+    );
+    let group = hook_group(&f, "app");
+    signal(&run, "-INT");
+    run.wait_with_output().unwrap();
+    let text = fs::read_to_string(&stderr_path).unwrap();
+    assert_eq!(
+        text.matches("Waiting for the after hook").count(),
+        1,
+        "{text}"
+    );
+    assert!(text.ends_with("The after hook was killed.\n"), "{text}");
+    assert_eq!(
+        text.matches("The after hook was killed.").count(),
+        1,
+        "{text}"
+    );
+    wait_for("run after hook group to be killed", || {
+        wineo_core::process::group_has_live_members(group) == Some(false)
+    });
+}
+
+#[test]
+fn force_stop_of_the_program_says_how_to_kill_the_after_hook() {
+    let f = Fixture::new();
+    let active = f.root.path().join("after-active");
+    let release = f.root.path().join("release");
+    let after = gate_hook(&active, &release);
+    f.environment(
+        "app",
+        &hooked_targets("[targets.app]\nexe = 'game'\n", None, Some(&after)),
+    );
+    assert_success(&f.run(&["start", "app"]));
+    wait_for("game to run", || f.fake_program_running("app"));
+
+    let stop_output = f.root.path().join("stop.output");
+    let stop = f
+        .wineo()
+        .args(["stop", "--force", "app"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(File::create(&stop_output).unwrap()))
+        .spawn()
+        .unwrap();
+    wait_for_text(
+        &stop_output,
+        "Waiting for the after hook, run stop --force again to kill it.",
+    );
+    fs::write(release, "").unwrap();
+    let stopped = stop.wait_with_output().unwrap();
+    assert_success(&stopped);
+    assert_eq!(stdout(&stopped), "Stopped app\n");
 }
 
 #[test]

@@ -102,8 +102,12 @@ change.
   is worse than waiting: it prints `Waiting for the after hook.` Ctrl+C
   stops waiting and leaves the hook running. `wineo stop --force` kills it.
   The desktop app's Stop asks before killing it.
+- `wineo stop --force` while the program is still running kills the program,
+  but `after` still runs, so cleanup like turning notifications back on
+  still happens. It says so, and a second `stop --force` kills the hook.
 - In `wineo run`, the first Ctrl+C during `after` says it's waiting, and a
-  second one kills the hook.
+  second one kills the hook. If Ctrl+C already stopped the program, it says
+  it's waiting as soon as `after` starts, so the next one kills it.
 - A hook that exits normally leaves alone anything it started in the
   background.
 

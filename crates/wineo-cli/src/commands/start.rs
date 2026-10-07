@@ -53,12 +53,12 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
             if matches!(event, LaunchEvent::Starting) {
                 // The supervisor reply does not use the token. Restore normal Ctrl+C first.
                 cancellation.take();
-            } else if let LaunchEvent::AfterHook(token) = event {
-                match Cancellation::after_hook_with(&token) {
+            } else if let LaunchEvent::AfterHook(hook) = event {
+                match Cancellation::after_hook_with(&hook, token.is_canceled()) {
                     Ok(listener) => cancellation = Some(listener),
                     Err(err) => {
                         signal_error = Some(err);
-                        token.force();
+                        hook.force();
                     }
                 }
             } else {

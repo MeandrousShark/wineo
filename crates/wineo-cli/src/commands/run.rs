@@ -67,12 +67,12 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         &cancellation.token,
         wineo_core::hooks::Output::Inherit,
         |event| {
-            if let launch::LaunchEvent::AfterHook(token) = event {
-                match Cancellation::after_hook_with(&token) {
+            if let launch::LaunchEvent::AfterHook(hook) = event {
+                match Cancellation::after_hook_with(&hook, cancellation.token.is_canceled()) {
                     Ok(listener) => cleanup_listener = Some(listener),
                     Err(err) => {
                         signal_error = Some(err);
-                        token.force();
+                        hook.force();
                     }
                 }
             } else {
@@ -141,7 +141,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         Ok(ready) => ready,
         Err(err) => {
             if !already_running && prepared.after.is_some() {
-                let cleanup = Cancellation::after_hook()?;
+                let cleanup = Cancellation::after_hook(cancellation.token.is_canceled())?;
                 drop(cancellation);
                 prepared.failed(paths, lock.take(), &cleanup.token);
             }
@@ -172,6 +172,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 
     let name = &environment.name;
     let mut forced = false;
+    let mut stopping = false;
     let result = supervisor.wait(
         &runtime,
         launch,
@@ -180,7 +181,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         Duration::from_secs(global.stop_timeout.into()),
         &paths.stats_log(name),
         |notice| match notice {
-            Notice::Stopping => note(&format!("Stopping {name}, press Ctrl+C again to force it")),
+            Notice::Stopping => {
+                stopping = true;
+                note(&format!("Stopping {name}, press Ctrl+C again to force it"))
+            }
             Notice::Killing => forced = true,
             Notice::Warning(err) => warn(err.into()),
             Notice::Heartbeat => {}
@@ -188,7 +192,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     );
     drop(supervisor);
     let cleanup = if state.status != RunStatus::Running && prepared.after.is_some() {
-        Some(Cancellation::after_hook()?)
+        Some(Cancellation::after_hook(
+            stopping || forced || cancellation.token.is_canceled(),
+        )?)
     } else {
         None
     };

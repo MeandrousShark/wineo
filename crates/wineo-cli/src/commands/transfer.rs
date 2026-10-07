@@ -78,39 +78,50 @@ pub struct Cancellation {
 
 impl Cancellation {
     pub fn new() -> anyhow::Result<Self> {
-        Self::listen(Token::new(), false)
+        Self::listen(Token::new(), Mode::Normal)
     }
 
-    pub fn after_hook() -> anyhow::Result<Self> {
-        Self::listen(Token::new(), true)
+    /// Listens during an after hook. `announce` prints the waiting line up
+    /// front, for when Ctrl+C was already pressed and the user is waiting to
+    /// leave, so the next Ctrl+C kills the hook.
+    pub fn after_hook(announce: bool) -> anyhow::Result<Self> {
+        Self::listen(Token::new(), Mode::After { announce })
     }
 
     pub fn with_token(token: &Token) -> anyhow::Result<Self> {
-        Self::listen(token.clone(), false)
+        Self::listen(token.clone(), Mode::Normal)
     }
 
-    pub fn after_hook_with(token: &Token) -> anyhow::Result<Self> {
-        Self::listen(token.clone(), true)
+    pub fn after_hook_with(token: &Token, announce: bool) -> anyhow::Result<Self> {
+        Self::listen(token.clone(), Mode::After { announce })
     }
 
-    fn listen(token: Token, after: bool) -> anyhow::Result<Self> {
+    fn listen(token: Token, mode: Mode) -> anyhow::Result<Self> {
+        let after = matches!(mode, Mode::After { .. });
+        let announce = matches!(mode, Mode::After { announce: true });
         let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP, SIGUSR1])?;
+        // Only once the handler is in, so a quick Ctrl+C after the line counts.
+        if announce {
+            say_waiting_for_after();
+        }
         let handle = signals.handle();
         let listener = token.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let thread = thread::spawn(move || {
-            let mut waiting = false;
+            let mut waiting = announce;
             while !thread_stop.load(Ordering::Relaxed) {
                 for signal in signals.pending() {
                     if after && signal != SIGUSR1 && !waiting {
                         waiting = true;
-                        use std::io::Write;
-                        let _ = writeln!(
-                            std::io::stderr(),
-                            "Waiting for the after hook, press Ctrl+C again to kill it."
-                        );
-                    } else if after || signal == SIGUSR1 || listener.is_canceled() {
+                        say_waiting_for_after();
+                    } else if after {
+                        // Drop joins this thread, so the line is out before exit.
+                        if !listener.is_forced() {
+                            say("The after hook was killed.");
+                        }
+                        listener.force();
+                    } else if signal == SIGUSR1 || listener.is_canceled() {
                         listener.force();
                     } else {
                         listener.cancel();
@@ -141,6 +152,23 @@ impl Cancellation {
             Err(error) => self.result(Err(error)),
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum Mode {
+    Normal,
+    After { announce: bool },
+}
+
+fn say_waiting_for_after() {
+    say("Waiting for the after hook, press Ctrl+C again to kill it.");
+}
+
+/// The terminal may be gone after a SIGHUP, and a failed write must not
+/// abort the shutdown.
+fn say(message: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{message}");
 }
 
 impl Drop for Cancellation {

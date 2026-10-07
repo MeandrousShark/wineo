@@ -315,6 +315,16 @@ step 2, and step 4 needs step 3.
   `wineo stats`. The maintainer chose `< 1 m` for any time under a minute,
   in the shared `duration_hm` formatter, so the CLI and GUI both show it.
   A true zero is still `0 m`.
+- Waiting on `after` (2026-10-07). After step 7 and 8, the maintainer chose:
+  - `wineo stop --force` on a running program still runs `after`, as the
+    outcome table says, but now prints `Waiting for the after hook, run
+    stop --force again to kill it.`
+  - In `wineo run`, when Ctrl+C already stopped the program, the waiting
+    line prints as soon as `after` starts instead of after another Ctrl+C,
+    so the next Ctrl+C kills the hook. `wineo start`'s launcher-side
+    `after` does the same after a canceled launch.
+  - Killing the hook with Ctrl+C prints `The after hook was killed.`, the
+    same line `stop --force` prints.
 
 ## Testing and acceptance
 
@@ -378,9 +388,13 @@ also shows `before` running ahead of wineo's exe check.
    `running its after hook`, and `wineo start acc` is refused as busy. Ctrl+C
    the waiting `stop`, then `wineo stop --force acc` kills the hook right away.
 7. Start it again, then `wineo restart acc`: it waits for the 60-second
-   `after`, then starts again. Stop it with `--force`.
-8. `wineo run acc`, Ctrl+C once: it asks the game to close and says it's
-   waiting for the after hook. Ctrl+C again kills the hook.
+   `after`, then starts again. `wineo stop --force acc` kills the game but
+   still runs `after`, printing `Waiting for the after hook, run stop
+   --force again to kill it.` Run that second `stop --force` from another
+   terminal.
+8. `wineo run acc`, Ctrl+C once: it asks the game to close and, once the
+   game is gone, says it's waiting for the after hook. Ctrl+C again kills
+   the hook and prints `The after hook was killed.`
 9. Set step 5's failing `before` again, then in the app (`wineo-gui`, from
    the same shell) Play `acc`. The error shows `nope` under it. Put the step 2
    `before` back, Play, then Stop: while the 60-second `after` runs, the

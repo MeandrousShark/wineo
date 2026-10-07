@@ -28,6 +28,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 token.cancel();
             }
         },
+        // A forced program stop still runs after, so say how to kill it too.
+        launch::StopEvent::WaitingAfter if args.force => {
+            eprintln!("Waiting for the after hook, run stop --force again to kill it.")
+        }
         launch::StopEvent::WaitingAfter => eprintln!("Waiting for the after hook."),
     });
     drop(cancellation);
