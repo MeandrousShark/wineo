@@ -3,6 +3,25 @@
 Feature backlog and queued work. When a feature gets picked up, it gets its
 own numbered plan in `docs/plans/`.
 
+## Queue
+
+The order the maintainer picked on 2026-10-06. Each item gets its own plan
+when it comes up, and the rows below have the details.
+
+1. `--dry-run` for import and non-guided `new`: drafting as
+   [0044](plans/0044-dry-run.md).
+2. Tag breakdown in `wineo stats`, before store games add their own playtime.
+3. Pre-launch and post-exit hooks, while the supervisor is the only launch
+   model.
+4. Store library import, Steam installed games first. It adds the proxied
+   environment kind.
+5. Store library follow-ups: owned but uninstalled Steam games, then GOG and
+   Epic through Heroic.
+6. GUI library views, designed against a library that includes store games.
+7. GUI themes, last, so they cover palette roles the store work adds.
+
+## Backlog
+
 Completed: [0007: Guided game setup](plans/0007-guided-game-setup.md) and
 [0008: Downloads and prefix imports](plans/0008-downloads-and-imports.md),
 including launch settings for manually added Heroic games.
