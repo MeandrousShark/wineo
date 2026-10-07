@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::bail;
 use wineo_core::config::{Arch, GlobalConfig};
-use wineo_core::create::{self, CreateEvent, CreateRequest, TargetOutcome};
+use wineo_core::create::{self, CreateEvent, CreateRequest, ExeCheck, TargetOutcome};
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
 use wineo_core::installer::{Installer, Outcome, Output};
@@ -18,12 +18,13 @@ use wineo_core::supervisor::{Notice, Watched};
 
 use super::art::{Access, AutoFetch, KeyCheck, Pick};
 use super::transfer::Cancellation;
-use super::{components, desktop, programs, setup};
+use super::{components, desktop, external_runners, programs, setup};
 use crate::prompt::{self, Canceled, Prompt, Terminal};
 use crate::wizard::{self, Guided, Prefill};
 
 /// The shell's code for a command ended by Ctrl+C.
 const CANCELED: u8 = 130;
+const NEEDS_NAME: &str = "wineo new needs a terminal without -n. Use: wineo new -n <name> [-t <template>] [--native] [--exe <path> [-d]] [--install-exe <path>]";
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -34,6 +35,10 @@ pub struct Args {
     /// Ask for everything even with a name, starting from the flags given
     #[arg(long)]
     interactive: bool,
+
+    /// Review what would be created without changing anything
+    #[arg(long, conflicts_with = "interactive")]
+    dry_run: bool,
 
     /// Prefix directory, defaults to ~/.local/share/wineo/prefixes/<name>, or DIR/prefixes/<name> with --portable
     #[arg(long, value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
@@ -74,8 +79,20 @@ pub struct Args {
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
+    if args.dry_run && args.name.is_none() {
+        bail!(NEEDS_NAME);
+    }
     if args.desktop {
         wineo_core::desktop::supported(paths)?;
+    }
+    if args.dry_run {
+        return dry_run(
+            paths,
+            args,
+            &Access::steamgriddb(paths),
+            &mut io::stdout(),
+            &mut io::stderr(),
+        );
     }
     let name = match args.name.clone() {
         Some(name) if !args.interactive => name,
@@ -293,6 +310,117 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     }
 }
 
+fn dry_run(
+    paths: &Paths,
+    args: Args,
+    access: &Access<'_>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> anyhow::Result<ExitCode> {
+    let name = args.name.as_deref().expect("dry runs require a name");
+    if let Some(installer) = &args.install_exe {
+        launch::check_program_path(paths, installer)?;
+    }
+    let global = GlobalConfig::load(paths)?;
+    if args.native {
+        let plan = Environment::plan_native(paths, &global, name, args.exe.as_deref())?;
+        writeln!(out, "Would create native environment {}", plan.name)?;
+        if let Some(exe) = &plan.exe {
+            writeln!(
+                out,
+                "  target: {} -> {}",
+                plan.name,
+                paths.contract_text(exe)
+            )?;
+            if args.desktop {
+                writeln!(out, "  desktop entry: {}", plan.name)?;
+            }
+        }
+    } else {
+        let plan = create::plan(
+            paths,
+            CreateRequest {
+                name: name.to_owned(),
+                dir: args.dir,
+                runner: args.runner,
+                arch: args.arch,
+                template_name: args.template,
+                exe: args.exe,
+                desktop: args.desktop,
+                ..Default::default()
+            },
+        )?;
+        if plan.exe_check() == Some(ExeCheck::Missing) {
+            bail!("{} was not found.", plan.exe().unwrap());
+        }
+        let runner = plan.runner();
+        if plan.template_components_omitted() {
+            writeln!(
+                err,
+                "{} bundles its own DXVK and vkd3d-proton, so the template's are left out",
+                runner.name()
+            )?;
+        }
+        writeln!(out, "Would create environment {name}")?;
+        writeln!(
+            out,
+            "  prefix: {} ({})",
+            paths.contract(plan.prefix())?,
+            if plan.adopted() {
+                "existing prefix, adopted"
+            } else {
+                "new"
+            }
+        )?;
+        let resolved = external_runners::with_owner(paths, runner, runner.name().to_owned());
+        if runner.selection() == runner.name() {
+            writeln!(out, "  runner: {resolved}")?;
+        } else {
+            writeln!(out, "  runner: {} -> {resolved}", runner.selection())?;
+        }
+        match plan.template_name() {
+            Some(template) => writeln!(out, "  template: {template}, {}", plan.arch())?,
+            None => writeln!(out, "  arch: {}", plan.arch())?,
+        }
+        let components = plan.resolved_components();
+        let mut builds = Vec::new();
+        if let Some(build) = &components.dxvk {
+            builds.push(format!("dxvk {build}"));
+        }
+        if let Some(build) = &components.vkd3d {
+            builds.push(format!("vkd3d-proton {build}"));
+        }
+        if !builds.is_empty() {
+            writeln!(out, "  components: {}", builds.join(", "))?;
+        }
+        if let Some(exe) = plan.exe() {
+            let check = if plan.exe_check() == Some(ExeCheck::Unchecked) {
+                " (checked once the prefix exists)"
+            } else {
+                ""
+            };
+            writeln!(
+                out,
+                "  target: {name} -> {}{check}",
+                paths.contract_text(exe)
+            )?;
+        }
+        // Clap lets -d through with --install-exe, but the real run only
+        // makes an entry for an --exe target.
+        if plan.desktop() && plan.exe().is_some() {
+            writeln!(out, "  desktop entry: {}", plan.target_name())?;
+        }
+        if let Some(installer) = args.install_exe {
+            writeln!(out, "  installer: {}", paths.contract_text(&installer))?;
+        }
+    }
+    if args.art {
+        access.review(name, global.art.fetch, out, err);
+    }
+    writeln!(out, "Dry run, nothing was created.")?;
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Creates a native environment, with a default target named after it
 /// running `exe` when one is given.
 fn new_native(
@@ -346,9 +474,7 @@ fn created_message(
 /// Asks for everything, starting from whatever flags were given.
 fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     if !prompt::interactive() {
-        bail!(
-            "wineo new needs a terminal without -n. Use: wineo new -n <name> [-t <template>] [--native] [--exe <path> [-d]] [--install-exe <path>]"
-        );
+        bail!(NEEDS_NAME);
     }
     let global = GlobalConfig::load(paths)?;
     let prefill = Prefill {
@@ -420,4 +546,172 @@ fn note(message: &str) {
 fn installed(prefix: &Path) -> Option<Listing> {
     let wine_prefix = prefix::wine_prefix_in(prefix)?;
     wineo_core::programs::scan(&wine_prefix).ok()
+}
+
+#[cfg(test)]
+#[path = "../../tests/common/snapshot.rs"]
+mod snapshot;
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    use wineo_core::steamgriddb::{self, NoKeyring};
+
+    use super::super::art::fake::Fake;
+    use super::*;
+
+    fn paths(root: &Path) -> Paths {
+        Paths::from_lookup(|key| (key == "HOME").then(|| root.as_os_str().to_owned())).unwrap()
+    }
+
+    fn args(native: bool) -> Args {
+        Args {
+            name: Some("hades".to_owned()),
+            interactive: false,
+            dry_run: true,
+            dir: None,
+            runner: None,
+            template: None,
+            arch: None,
+            install_exe: None,
+            art: true,
+            native,
+            exe: None,
+            desktop: false,
+        }
+    }
+
+    fn saved_key(paths: &Paths) -> KeyCheck {
+        match steamgriddb::find_key(paths, |_| None, &NoKeyring) {
+            Ok(Some(key)) => KeyCheck::Found(key),
+            Ok(None) => KeyCheck::Missing,
+            Err(error) => KeyCheck::Failed(error.into()),
+        }
+    }
+
+    fn review(fake: Fake, native: bool) -> (String, String) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let key_file = steamgriddb::key_file(&paths);
+        fs::create_dir_all(key_file.parent().unwrap()).unwrap();
+        fs::write(&key_file, "test-key\n").unwrap();
+        // An installed runner avoids global PATH changes in these parallel tests.
+        let runner_dir = paths.default_runner_root().join("test-wine/bin");
+        fs::create_dir_all(&runner_dir).unwrap();
+        for exe in ["wine", "wineserver"] {
+            let path = runner_dir.join(exe);
+            fs::write(&path, "#!/bin/sh\nexit 1\n").unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut args = args(native);
+        if !native {
+            args.runner = Some("test-wine".to_owned());
+        }
+        let access = Access {
+            check_key: Box::new(|| saved_key(&paths)),
+            transport: Box::new(|| Ok(Box::new(fake.clone()))),
+        };
+        let before = snapshot::snapshot(root.path());
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        assert_eq!(
+            dry_run(&paths, args, &access, &mut out, &mut err).unwrap(),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(before, snapshot::snapshot(root.path()));
+        assert_eq!(wineo_core::art::saved_game(&paths, "hades").unwrap(), None);
+        (
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    #[test]
+    fn dry_run_art_lists_only_three_matches_without_saving_for_wine_and_native() {
+        let mut fake = Fake::default();
+        fake.0.insert(
+            format!("{}/search/autocomplete/hades", steamgriddb::API),
+            (200, br#"{"success":true,"data":[{"id":7,"name":"Hades","release_date":1600000000},{"id":8,"name":"Hades II"},{"id":9,"name":"Hades Demo"},{"id":10,"name":"Fourth"}]}"#.to_vec()),
+        );
+        for native in [false, true] {
+            let (out, err) = review(fake.clone(), native);
+            assert!(
+                out.ends_with(concat!(
+                    "Art from SteamGridDB, searching \"hades\":\n",
+                    "  1. Hades (2020), game 7 <- would be picked automatically\n",
+                    "  2. Hades II, game 8\n",
+                    "  3. Hades Demo, game 9\n",
+                    "Dry run, nothing was created.\n"
+                )),
+                "{out}"
+            );
+            assert!(!out.contains("Fourth"), "{out}");
+            assert_eq!(err, "");
+        }
+    }
+
+    #[test]
+    fn dry_run_art_search_failures_warn_without_failing_or_writing() {
+        let mut empty = Fake::default();
+        empty.search("hades", false);
+        let mut rejected = Fake::default();
+        rejected.0.insert(
+            format!("{}/search/autocomplete/hades", steamgriddb::API),
+            (401, Vec::new()),
+        );
+        for (fake, message) in [
+            (Fake::default(), "connection to"),
+            (empty, "no SteamGridDB games match `hades`"),
+            (rejected, "SteamGridDB rejected the key"),
+        ] {
+            let (out, err) = review(fake, true);
+            assert_eq!(
+                out,
+                "Would create native environment hades\nDry run, nothing was created.\n"
+            );
+            assert!(err.starts_with("warning: art fetch failed: "), "{err}");
+            assert!(err.contains(message), "{err}");
+        }
+    }
+
+    #[test]
+    fn dry_run_art_skips_connection_when_key_lookup_fails_or_is_disabled() {
+        for disabled in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let paths = paths(root.path());
+            if disabled {
+                let config = paths.global_config();
+                fs::create_dir_all(config.parent().unwrap()).unwrap();
+                fs::write(config, "[art]\nfetch = []\n").unwrap();
+            }
+            let checked = Cell::new(false);
+            let access = Access {
+                check_key: Box::new(|| {
+                    checked.set(true);
+                    KeyCheck::Failed(anyhow::anyhow!("the keyring failed: dismissed"))
+                }),
+                transport: Box::new(|| panic!("skipped art must not connect")),
+            };
+            let before = snapshot::snapshot(root.path());
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            assert_eq!(
+                dry_run(&paths, args(true), &access, &mut out, &mut err).unwrap(),
+                ExitCode::SUCCESS
+            );
+            assert_eq!(before, snapshot::snapshot(root.path()));
+            assert_eq!(checked.get(), !disabled);
+            assert_eq!(
+                String::from_utf8(err).unwrap(),
+                if disabled {
+                    ""
+                } else {
+                    "warning: the keyring failed: dismissed, skipping art\n"
+                }
+            );
+        }
+    }
 }

@@ -393,6 +393,54 @@ impl<'a> Access<'a> {
         }
     }
 
+    /// Reviews the automatic pick without saving it or fetching images.
+    pub fn review(&self, term: &str, kinds: ArtFetch, out: &mut dyn Write, err: &mut dyn Write) {
+        if kinds.kinds().is_empty() {
+            return;
+        }
+        let key = match (self.check_key)() {
+            KeyCheck::Found(key) => key,
+            check => {
+                match (&check, check.skip_line()) {
+                    (KeyCheck::Failed(_), Some(line)) => {
+                        let _ = writeln!(err, "{}", style::warning_stderr(line));
+                    }
+                    (_, Some(line)) => {
+                        let _ = writeln!(err, "{line}");
+                    }
+                    (_, None) => {}
+                }
+                return;
+            }
+        };
+        let result = (|| -> anyhow::Result<()> {
+            let transport = (self.transport)()?;
+            let games = Api::new(&*transport, &key.value).search(term)?;
+            if games.is_empty() {
+                bail!("no SteamGridDB games match `{term}`");
+            }
+            writeln!(out, "Art from SteamGridDB, searching \"{term}\":")?;
+            for (index, game) in games.iter().take(3).enumerate() {
+                writeln!(
+                    out,
+                    "  {}. {}, game {}{}",
+                    index + 1,
+                    game_name(game),
+                    game.id,
+                    if index == 0 {
+                        " <- would be picked automatically"
+                    } else {
+                        ""
+                    }
+                )?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            warn_failed(&error, err);
+        }
+    }
+
     /// `fetch_new` over this access's transport, which failing to set up is
     /// one more warning.
     pub fn fetch<I: Input, W: Write>(

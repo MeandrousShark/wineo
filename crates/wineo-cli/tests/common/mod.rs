@@ -17,6 +17,9 @@ use wineo_core::runtime::Runtime;
 #[path = "../../../wineo-core/tests/common/runners.rs"]
 mod runners;
 pub use runners::{FAKE_GAMEMODERUN, FAKE_UMU, FAKE_WINE, FAKE_WINESERVER};
+mod snapshot;
+#[allow(unused_imports)]
+pub use snapshot::{EntryKind, TreeEntry, TreeSnapshot, snapshot};
 
 pub struct Fixture {
     pub root: tempfile::TempDir,
@@ -101,6 +104,7 @@ impl Fixture {
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("XDG_DATA_HOME", root.join("data"))
             .env("XDG_STATE_HOME", root.join("state"))
+            .env("XDG_CACHE_HOME", root.join("cache"))
             .env_remove("WINEO_PORTABLE_DIR")
             .env_remove("WINEO_STEAMGRIDDB_KEY")
             // No session bus, so nothing a test runs can reach the real keyring.
