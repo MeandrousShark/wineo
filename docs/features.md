@@ -13,7 +13,7 @@ when it comes up, and the rows below have the details.
 2. Tag breakdown in `wineo stats`, before store games add their own playtime:
    approved as [0045](plans/0045-stats-by-tag.md).
 3. Pre-launch and post-exit hooks, while the supervisor is the only launch
-   model.
+   model: drafting as [0046](plans/0046-launch-hooks.md).
 4. Store library import, Steam installed games first. It adds the proxied
    environment kind.
 5. Store library follow-ups: owned but uninstalled Steam games, then GOG and
