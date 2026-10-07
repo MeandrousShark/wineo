@@ -17,6 +17,15 @@ From the backlog row (2026-09-27):
 - `stats [NAME]` already takes an environment name, so a bare `tags` word
   would clash with an environment called `tags`. The shape has to avoid that.
 
+On 2026-10-06 the maintainer answered the open questions with each
+recommendation:
+
+1. Both flags: `--tag` filters the overview, `--by-tag` gives one row per
+   tag.
+2. `--by-tag` shows an `(untagged)` row.
+3. `--by-tag` columns are played, sessions, played by, and last played.
+4. No GUI changes in this plan.
+
 ## Existing foundation
 
 - `wineo_core::stats::overview` (`crates/wineo-core/src/stats.rs`) reads each
@@ -125,20 +134,6 @@ the text rows.
 breakdown is asked for, loads each config for its tags. A new
 `stats::by_tag(&Overview) -> TagBreakdown` groups the rows, so the GUI can use
 it later without the CLI.
-
-## Open questions
-
-1. Shape. Recommendation: both flags as above. `--tag` matches `list`, and
-   `--by-tag` answers "how much time went into every tag" in one go.
-   Alternatives: only `--tag` (you'd run it once per tag), or only `--by-tag`.
-2. The `(untagged)` row. Recommendation: show it, since "how much do I play
-   things I never tagged" is useful, and it's how you'd notice something
-   missing a tag.
-3. Columns for `--by-tag`. Recommendation: played, sessions, played by, and
-   last played, as shown. An average per environment would be easy to add,
-   but it's noisy when most environments are never played.
-4. GUI. Recommendation: not in this plan. The core API is ready for a GUI
-   stats page later, which fits the library views item in the queue.
 
 ## Implementation sequence
 
