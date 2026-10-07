@@ -163,6 +163,13 @@ wineo import steam --all --dry-run
 - Import writes the config, copies Steam's cached art, and tags the
   environment `game`. It uses no template, and it never writes inside
   Steam's folders.
+- Art comes from `appcache/librarycache/<app_id>/`: `library_600x900.jpg` as
+  Grid, `library_hero.jpg` as Hero, and `logo.png` as Logo. Icons aren't
+  mapped, since Steam's icon is a hash-named file. A missing file is
+  skipped, and a file that isn't a valid image is skipped with a warning.
+  Art never fails an import.
+- `--art` fills in the rest from SteamGridDB by Steam app id
+  (`/games/steam/<app_id>`), not by a title search.
 
 ### Config
 
@@ -230,19 +237,35 @@ applies, to Stop.
 - Before anything runs, wineo checks for a running game: if a reaper for the
   app id already exists, `start` says `baldurs-gate-3 is already running
   (started from Steam).` and exits 0, like `start` on any running
-  environment, and `run` exits 1. No hooks run.
-- Then `before` runs, as for every kind, and the supervisor takes the run
-  lock and hands off to Steam.
+  environment, and `run` exits 1. No hooks run. This first check also takes
+  the claiming baseline (see below).
+- Then `before` runs, as for every kind.
+- The supervisor takes the run lock and checks again. If Steam started the
+  game while `before` ran, say from a click in Steam, that reaper is
+  eligible, since it started after the baseline. The supervisor claims it
+  without asking Steam for a second launch, prints `Started baldurs-gate-3
+  (Steam had already launched it).`, and the run goes straight to
+  `running`. `before` already ran for this game, so `after` runs when it
+  exits, as usual. No false timeout, and no `after` while the game is alive.
+- Otherwise it dispatches the request: the `steam` command is spawned
+  through an intermediate process that exits at once, so the request
+  process, which becomes the Steam client on a cold start, is never wineo's
+  child.
+- Steam has accepted the handoff once the request process has spawned.
+  Wineo never waits for it to exit, since on a cold start it doesn't. A
+  spawn failure, like a missing `steam` binary, fails the launch right away,
+  and `after` runs per the contract.
 - A run has three phases, which `status` and the desktop app show:
   `starting` (asked Steam, waiting for the game), `running`, and ended.
-- `start` returns once Steam has accepted the handoff, printing `Asked Steam
-  to start baldurs-gate-3.` and exiting 0 (question 9). `run` stays in the
+- `start` returns once the handoff is accepted, printing `Asked Steam to
+  start baldurs-gate-3.` and exiting 0 (question 9). `run` stays in the
   foreground through all three phases.
-- The game must appear within 60 seconds of the handoff. While the manifest
-  says Steam is downloading, updating, or staging the game, the wait goes on
-  as long as the downloaded bytes keep growing, and fails after 10 minutes
-  without progress. A run that never sees its game fails: `Steam didn't
-  start baldurs-gate-3.`
+- The game must appear within 60 seconds of dispatch. While Steam is working
+  on the game (the `updating` state below), the wait goes on as long as it
+  makes progress, and fails after 10 minutes without any. Progress is any
+  increase in `BytesDownloaded` or `BytesStaged`, or any change in
+  `StateFlags`, so staging counts even when nothing is downloading. A run
+  that never sees its game fails: `Steam didn't start baldurs-gate-3.`
 - Stop or Ctrl+C during `starting` ends the wait right away. The run ends
   `stopped`. Wineo can't take back a launch Steam has already queued, so a
   game that appears afterward isn't claimed by this run. It shows as
@@ -263,11 +286,15 @@ launch or runs hooks for it.
   line has the token `SteamLaunch` and exactly `AppId=<app_id>`, and whose
   ancestors include the active install's Steam client. The command line shape
   still needs checking with Steam running, before step 4 starts.
-- Before handing off, the supervisor records every matching reaper that
-  already exists (normally none, since `start` refused if one did). It only
-  claims a reaper that isn't on that list and started after the handoff.
+- The baseline is taken at the first running check, before `before`: its
+  time, and every matching reaper that exists then (normally none, since
+  `start` refused if one did). A run only claims a reaper that isn't in the
+  baseline and started after the baseline time.
+- Anchoring to the baseline, not to dispatch or the accepted handoff, means
+  a game that starts fast during dispatch, or one launched from Steam during
+  `before`, is never excluded.
 - Steam runs one instance of a game at a time, so a reaper that starts after
-  the handoff is the one wineo asked for, even if Play was also clicked in
+  the baseline belongs to this launch, even if Play was also clicked in
   Steam during that window. Claiming it is correct.
 - More than one candidate at once is ambiguous: the run claims none, ends
   `failed` with `More than one Steam process matches baldurs-gate-3.`, and
@@ -344,6 +371,24 @@ validate, and the desktop app:
 
 - Unavailable and unknown aren't uninstalled, so their cards aren't
   grayscaled. They show a warning instead.
+- A manifest that can't be read or parsed affects only its own app id. That
+  game is unknown, and every other game still lists and imports: `--list`
+  shows it as `unreadable manifest`, and `--all` reports it as failed
+  without stopping.
+
+Installed and updating come from the manifest's `StateFlags` bits:
+
+- **updating:** any of UpdateRunning (256), UpdatePaused (512),
+  UpdateStarted (1024), Validating (131072), AddingFiles (262144),
+  Preallocating (524288), Downloading (1048576), Staging (2097152), or
+  Committing (4194304) is set, whether or not FullyInstalled is.
+- **installed:** FullyInstalled (4) is set and none of those are.
+  UpdateRequired (2) alone still counts as installed, since Steam updates on
+  launch and the `starting` wait covers it.
+- **not installed:** Uninstalling (2048) is set, or FullyInstalled isn't
+  and no updating bit is.
+- AppRunning (64) is always ignored. FilesMissing and FilesCorrupt don't
+  change the state, since Steam repairs those on launch.
 - The title falls back to the config's `title` when there's no manifest.
 
 ### Playtime
@@ -398,7 +443,10 @@ Before anything Steam-specific, step 1 turns every "not Wine, so native"
 check into an explicit match on the kind, so a proxied environment can't fall
 into native code. That covers `Host`, `RunState`, `report.rs`, `view.rs`
 (`kind` becomes `"wine"`, `"native"`, or `"proxied"`), validate, desktop
-reconcile, and the GUI's `Card`. `NoPrefix` stops saying "native" for
+reconcile, and the GUI's `Card`. Old run state stays readable: a
+`state.toml` with `native = true` is a native run, and `native = false` or
+no `native` key is a Wine run. Proxied runs add a `launcher` field, which
+older files never have. `NoPrefix` stops saying "native" for
 every kind. `status --json` and `list --json` get `kind`, plus `launcher`
 and `app_id` for proxied environments. The GUI keeps showing Snapshots, Run
 program, and Winetricks while a restore is pending, as `wine_actions` does
@@ -409,7 +457,9 @@ today.
 A new `crates/wineo-core/src/steam.rs` owns everything Steam-specific:
 
 - Finding installs and choosing the active one (moved from
-  `external_runners.rs`, which then uses it).
+  `external_runners.rs`, which then uses it). Runner discovery from 0043
+  keeps scanning every Steam install it finds, native and Flatpak, since the
+  active install only applies to games.
 - A small text KeyValues parser for `.vdf` and `.acf`, replacing
   `vdf_paths`.
 - Libraries, their availability, manifests, and the tools filter: known tool
@@ -539,6 +589,22 @@ list above. The options are kept as a record of what was weighed.
 - Stats text and JSON for Steam games, with no session fields and no "from
   Heroic", and mixed `--by-tag` totals.
 - Native Clone and Copy to portable still work in the desktop app.
+- Launch ordering: a reaper that appears during `before` is claimed with no
+  second dispatch, and `after` runs only once it exits. A reaper that
+  appears during dispatch is claimed. A failed spawn fails the launch. A
+  request process that never exits, like a cold-started client, doesn't
+  block `start`.
+- Install states: a table test over `StateFlags` combinations, and a
+  staging-only wait where `BytesStaged` grows while `BytesDownloaded` doesn't,
+  which must not time out.
+- Compatibility: old `state.toml` files with `native = true`, `native =
+  false`, and no `native` key load as before. Runner discovery still finds
+  builds in both Steam installs when only one is active.
+- Art: the cache file mapping, missing files, an invalid image, and an
+  import that succeeds while every art file fails. SteamGridDB's lookup by
+  Steam app id gets its own test, separate from the existing game id lookup.
+- A malformed manifest beside healthy ones: the healthy games still list,
+  import, and launch.
 - Every refused command gets a test with the proxied message.
 - Tests from step 1 show Wine and native behavior is unchanged.
 - The acceptance checklist uses the maintainer's real Steam library: import
@@ -554,5 +620,5 @@ list above. The options are kept as a record of what was weighed.
 - Editing Steam launch options: backlog.
 - Non-Steam shortcuts in Steam (`shortcuts.vdf`): its own backlog row.
 - Steam Deck and Big Picture specifics.
-- Steam's family sharing and multiple Steam accounts beyond reading the
-  owner's playtime.
+- Family sharing and multiple Steam accounts, beyond reading the most
+  recent account's playtime.
