@@ -179,6 +179,10 @@ impl Supervisor {
         let mut next_scan = dispatched;
         let mut next_manifest = dispatched;
         let mut heartbeat = Instant::now();
+        let scan_interval = test_timeout(
+            "WINEO_TEST_STEAM_SCAN_INTERVAL_MS",
+            Duration::from_millis(250),
+        );
         let start_limit =
             test_timeout("WINEO_TEST_STEAM_START_TIMEOUT_MS", Duration::from_secs(60));
         let stall_limit = test_timeout(
@@ -199,7 +203,7 @@ impl Supervisor {
                 thread::sleep(Duration::from_millis(20));
                 continue;
             }
-            next_scan = now + Duration::from_millis(250);
+            next_scan = now + scan_interval;
             let candidates = steam::eligible_reapers(install, app_id, baseline)
                 .context(|| "failed to inspect Steam processes".to_owned())?;
             if candidates.len() > 1 {
@@ -240,7 +244,7 @@ impl Supervisor {
                 let mut announced = force;
                 steam::stop_tree(&reaper, timeout, force, || {
                     let forced = self.token.as_ref().is_some_and(Token::is_forced)
-                        || matches!(self.events.try_recv(), Ok(Event::Force));
+                        || matches!(self.events.try_recv(), Ok(Event::Stop | Event::Force));
                     if forced && !announced {
                         notify(Notice::Killing);
                         announced = true;

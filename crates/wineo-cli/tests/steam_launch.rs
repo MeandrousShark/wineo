@@ -245,7 +245,7 @@ fn a_missing_reaper_fails_after_short_test_timeout_and_runs_after() {
         "[hooks]\nafter = 'printf \"%s\" \"$WINEO_END\" > {}'\n",
         marker.display()
     ));
-    assert_success(&s.run(&["start", "civ"]));
+    assert_success(&s.run_with_start_timeout(&["start", "civ"], 500));
     s.f.wait_for_run_end("civ", "failed");
     wait_for("failed after hook", || marker.exists());
     assert_eq!(fs::read_to_string(marker).unwrap(), "failed");
@@ -269,7 +269,7 @@ fn missing_reaper_failure_is_logged_before_the_after_hook_starts() {
         captured.display(),
         finished.display()
     ));
-    assert_success(&s.run(&["start", "civ"]));
+    assert_success(&s.run_with_start_timeout(&["start", "civ"], 500));
     wait_for("after hook log capture", || finished.exists());
     let log = fs::read_to_string(captured).unwrap();
     assert!(log.contains("Steam didn't start civ."), "{log}");
@@ -281,7 +281,7 @@ fn attached_run_exits_one_when_steam_never_starts_the_game() {
     let s = SteamFixture::new();
     s.set_mode("none");
     s.config("");
-    let ran = s.run(&["run", "civ"]);
+    let ran = s.run_with_start_timeout(&["run", "civ"], 500);
     assert_eq!(ran.status.code(), Some(1), "{}", stderr(&ran));
     assert!(stderr(&ran).contains("Steam didn't start civ."));
     s.f.wait_for_run_end("civ", "failed");
@@ -348,7 +348,13 @@ fn stalled_update_fails_even_though_steam_still_says_updating() {
     s.add_game("289070", "Civilization VI", 1030);
     s.set_mode("none");
     s.config("");
-    assert_success(&s.run(&["start", "civ"]));
+    assert_success(
+        &s.wineo()
+            .env("WINEO_TEST_STEAM_STALL_TIMEOUT_MS", "500")
+            .args(["start", "civ"])
+            .output()
+            .unwrap(),
+    );
     s.f.wait_for_run_end("civ", "failed");
     assert!(s.f.log("civ").contains("Steam didn't start civ."));
     assert_eq!(s.dispatch_count(), 1);
@@ -415,7 +421,7 @@ fn claim_state_write_failure_does_not_fail_a_live_attached_run() {
     s.config("");
     let child = s
         .wineo()
-        .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "3000")
+        .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "5000")
         .args(["run", "civ"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -575,7 +581,7 @@ fn wrong_app_id_is_not_claimed() {
     s.config("");
     s.set_mode("none");
     s.launch_from_steam("2890");
-    assert_success(&s.run(&["start", "civ"]));
+    assert_success(&s.run_with_start_timeout(&["start", "civ"], 500));
     s.f.wait_for_run_end("civ", "failed");
     assert!(alive(s.client_pid()));
 }
@@ -597,7 +603,7 @@ fn a_reaper_from_the_other_install_is_not_claimed() {
             .is_empty()
     });
     assert!(stdout(&s.run(&["status", "civ"])).contains("inactive"));
-    assert_success(&s.run(&["start", "civ"]));
+    assert_success(&s.run_with_start_timeout(&["start", "civ"], 500));
     s.f.wait_for_run_end("civ", "failed");
     assert_eq!(s.dispatch_count(), 1);
     assert!(
@@ -633,7 +639,7 @@ fn a_matching_reaper_with_an_unrelated_parent_is_not_reported_claimed_or_stopped
         "Stop signaled a reaper with an unrelated parent"
     );
 
-    assert_success(&s.run(&["start", "civ"]));
+    assert_success(&s.run_with_start_timeout(&["start", "civ"], 500));
     s.f.wait_for_run_end("civ", "failed");
     assert_eq!(s.dispatch_count(), 1);
     assert!(

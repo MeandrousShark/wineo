@@ -85,7 +85,12 @@ fn reaper_candidate<R: ProcessReader>(
     let Some(mut process) = inspect_stat(reader, pid)? else {
         return Ok(None);
     };
-    let Some(arguments) = reader.arguments(pid)? else {
+    let arguments = match reader.arguments(pid) {
+        Ok(arguments) => arguments,
+        Err(error) if permission_denied(&error) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let Some(arguments) = arguments else {
         return Ok(None);
     };
     if process.stat.ppid <= 1
@@ -97,7 +102,11 @@ fn reaper_candidate<R: ProcessReader>(
     }
     process.arguments = arguments;
     if !matches_arguments(&process.arguments, app_arg, expected, canonical) {
-        process.exe = reader.exe(pid)?;
+        process.exe = match reader.exe(pid) {
+            Ok(exe) => exe,
+            Err(error) if permission_denied(&error) => return Ok(None),
+            Err(error) => return Err(error),
+        };
     }
     if !matches_reaper(&process, app_arg, expected, canonical) || !still_current(reader, &process)?
     {
@@ -113,12 +122,29 @@ fn client_candidate<R: ProcessReader>(
     let Some(mut process) = inspect_stat(reader, pid)? else {
         return Ok(None);
     };
-    process.exe = reader.exe(pid)?;
-    process.arguments = reader.arguments(pid)?.unwrap_or_default();
+    process.exe = match reader.exe(pid) {
+        Ok(exe) => exe,
+        Err(error) if permission_denied(&error) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    process.arguments = match reader.arguments(pid) {
+        Ok(arguments) => arguments.unwrap_or_default(),
+        Err(error) if permission_denied(&error) => return Ok(None),
+        Err(error) => return Err(error),
+    };
     if !still_current(reader, &process)? {
         return Ok(None);
     }
     Ok(Some(process))
+}
+
+fn permission_denied(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(code)
+            if code == rustix::io::Errno::ACCESS.raw_os_error()
+                || code == rustix::io::Errno::PERM.raw_os_error()
+    )
 }
 
 /// Capture the time before the first running check, plus every reaper seen at
@@ -714,8 +740,10 @@ mod tests {
         calls: RefCell<Vec<&'static str>>,
         open_error: Option<u32>,
         stat_error: Option<u32>,
-        arguments_error: Option<u32>,
-        exe_error: Option<u32>,
+        arguments_error: Option<(u32, i32)>,
+        exe_error: Option<(u32, i32)>,
+        missing_arguments: BTreeSet<u32>,
+        missing_exe: BTreeSet<u32>,
     }
 
     impl FakeProc {
@@ -733,6 +761,8 @@ mod tests {
                 stat_error: None,
                 arguments_error: None,
                 exe_error: None,
+                missing_arguments: BTreeSet::new(),
+                missing_exe: BTreeSet::new(),
             }
         }
     }
@@ -770,10 +800,14 @@ mod tests {
 
         fn arguments(&self, pid: u32) -> io::Result<Option<Vec<Vec<u8>>>> {
             self.calls.borrow_mut().push("cmdline");
-            if self.arguments_error == Some(pid) {
-                return Err(io::Error::from_raw_os_error(
-                    rustix::io::Errno::MFILE.raw_os_error(),
-                ));
+            if let Some((_, error)) = self
+                .arguments_error
+                .filter(|(error_pid, _)| *error_pid == pid)
+            {
+                return Err(io::Error::from_raw_os_error(error));
+            }
+            if self.missing_arguments.contains(&pid) {
+                return Ok(None);
             }
             Ok(Some(vec![
                 b"reaper".to_vec(),
@@ -784,10 +818,11 @@ mod tests {
 
         fn exe(&self, pid: u32) -> io::Result<Option<PathBuf>> {
             self.calls.borrow_mut().push("exe");
-            if self.exe_error == Some(pid) {
-                return Err(io::Error::from_raw_os_error(
-                    rustix::io::Errno::MFILE.raw_os_error(),
-                ));
+            if let Some((_, error)) = self.exe_error.filter(|(error_pid, _)| *error_pid == pid) {
+                return Err(io::Error::from_raw_os_error(error));
+            }
+            if self.missing_exe.contains(&pid) {
+                return Ok(None);
             }
             Ok(Some(PathBuf::from("reaper")))
         }
@@ -960,7 +995,7 @@ mod tests {
     fn reaper_candidate_reads_exe_only_after_positional_match() {
         let path = Path::new("/steam/ubuntu12_32/reaper");
         let mut reader = FakeProc::new(&[stat(10, 2, 20)]);
-        reader.exe_error = Some(10);
+        reader.exe_error = Some((10, rustix::io::Errno::MFILE.raw_os_error()));
         assert!(
             reaper_candidate(&reader, 10, "AppId=2890", path, path)
                 .unwrap()
@@ -980,7 +1015,7 @@ mod tests {
     fn candidate_metadata_errors_propagate() {
         let path = Path::new("/steam/ubuntu12_32/reaper");
         let mut reader = FakeProc::new(&[stat(10, 2, 20)]);
-        reader.arguments_error = Some(10);
+        reader.arguments_error = Some((10, rustix::io::Errno::MFILE.raw_os_error()));
         let error = reaper_candidate(&reader, 10, "AppId=289070", path, path)
             .err()
             .unwrap();
@@ -989,12 +1024,48 @@ mod tests {
             Some(rustix::io::Errno::MFILE.raw_os_error())
         );
         reader.arguments_error = None;
-        reader.exe_error = Some(10);
+        reader.exe_error = Some((10, rustix::io::Errno::MFILE.raw_os_error()));
         let error = client_candidate(&reader, 10).err().unwrap();
         assert_eq!(
             error.raw_os_error(),
             Some(rustix::io::Errno::MFILE.raw_os_error())
         );
+    }
+
+    #[test]
+    fn candidate_permission_errors_are_skipped() {
+        let path = Path::new("/steam/ubuntu12_32/reaper");
+        let mut reader = FakeProc::new(&[stat(10, 2, 20)]);
+        reader.arguments_error = Some((10, rustix::io::Errno::ACCESS.raw_os_error()));
+        assert!(
+            reaper_candidate(&reader, 10, "AppId=289070", path, path)
+                .unwrap()
+                .is_none()
+        );
+
+        reader.arguments_error = None;
+        reader.exe_error = Some((10, rustix::io::Errno::PERM.raw_os_error()));
+        assert!(
+            reaper_candidate(&reader, 10, "AppId=289070", path, path)
+                .unwrap()
+                .is_none()
+        );
+
+        reader.exe_error = Some((10, rustix::io::Errno::ACCESS.raw_os_error()));
+        assert!(client_candidate(&reader, 10).unwrap().is_none());
+
+        reader.exe_error = None;
+        reader.arguments_error = Some((10, rustix::io::Errno::PERM.raw_os_error()));
+        assert!(client_candidate(&reader, 10).unwrap().is_none());
+    }
+
+    #[test]
+    fn missing_client_exe_keeps_the_argv_fallback() {
+        let mut reader = FakeProc::new(&[stat(10, 2, 20)]);
+        reader.missing_exe.insert(10);
+        let client = client_candidate(&reader, 10).unwrap().unwrap();
+        assert!(client.exe.is_none());
+        assert!(!client.arguments.is_empty());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -112,35 +113,27 @@ impl Cancellation {
         let thread_stop = stop.clone();
         let thread = thread::spawn(move || {
             let mut waiting = announce;
-            let mut saw_interrupt = false;
-            let mut saw_stop = false;
             while !thread_stop.load(Ordering::Relaxed) {
+                // Only SIGINT counts every delivery; other signals keep their
+                // original once-per-batch behavior.
+                let mut seen = BTreeSet::new();
                 for received in signals.pending() {
                     let signal = received.si_signo;
-                    if signal == SIGUSR1 {
-                        if after && !listener.is_forced() {
+                    if signal != SIGINT && !seen.insert(signal) {
+                        continue;
+                    }
+                    if after && signal != SIGUSR1 && !waiting {
+                        waiting = true;
+                        say_waiting_for_after();
+                    } else if after {
+                        // Drop joins this thread, so the line is out before exit.
+                        if !listener.is_forced() {
                             say("The after hook was killed.");
                         }
                         listener.force();
-                    } else if after {
-                        if !waiting {
-                            waiting = true;
-                            say_waiting_for_after();
-                        } else if signal == SIGINT {
-                            if !listener.is_forced() {
-                                say("The after hook was killed.");
-                            }
-                            listener.force();
-                        }
-                    } else if signal == SIGINT {
-                        if saw_interrupt {
-                            listener.force();
-                        } else {
-                            saw_interrupt = true;
-                            listener.cancel();
-                        }
-                    } else if !saw_stop {
-                        saw_stop = true;
+                    } else if signal == SIGUSR1 || listener.is_canceled() {
+                        listener.force();
+                    } else {
                         listener.cancel();
                     }
                 }

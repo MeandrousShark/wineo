@@ -118,6 +118,32 @@ fn signal_pid(pid: u32, signal: &str) {
     assert!(sent.success());
 }
 
+fn signal_batch(pid: u32, signal_name: &str) {
+    signal_pid(pid, "-STOP");
+    wait_for("signal recipient to suspend", || {
+        fs::read_to_string(format!("/proc/{pid}/status"))
+            .is_ok_and(|status| status.lines().any(|line| line.starts_with("State:\tT")))
+    });
+    signal_pid(pid, signal_name);
+    signal_pid(pid, signal_name);
+    signal_pid(pid, "-CONT");
+}
+
+fn wait_for_forced_run(run: &mut Child) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if run.try_wait().unwrap().is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = run.kill();
+            panic!("second stop request did not force the run");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(run.wait().unwrap().code(), Some(137));
+}
+
 fn detached_supervisor_pid(f: &Fixture) -> Option<u32> {
     let expected_state = format!("XDG_STATE_HOME={}", f.root.path().join("state").display());
     let entries = fs::read_dir("/proc").ok()?;
@@ -1458,38 +1484,51 @@ fn ctrl_c_during_the_program_announces_after_so_the_next_one_kills_it() {
 }
 
 #[test]
-fn repeated_hangup_and_terminate_do_not_force_a_wine_run() {
+fn batched_stop_signals_are_polite_but_a_later_signal_forces_a_wine_run() {
     for signal_name in ["-HUP", "-TERM"] {
         let f = Fixture::new();
-        f.global_config("stop_timeout = 1\n");
+        f.global_config("stop_timeout = 10\n");
         f.environment("app", "[targets.app]\nexe = 'stubborn'\n");
         let stderr_path = f.root.path().join("run.stderr");
         let mut run = spawn_wineo_with_stderr(&f, &["run", "app"], &stderr_path);
         wait_for("stubborn game to run", || f.fake_program_running("app"));
 
-        signal(&run, signal_name);
+        signal_batch(run.id(), signal_name);
         wait_for_text(&stderr_path, "Stopping app, press Ctrl+C again to force it");
-        signal(&run, signal_name);
         thread::sleep(Duration::from_millis(200));
         assert!(
             run.try_wait().unwrap().is_none(),
-            "repeated {signal_name} forced the run"
+            "batched {signal_name} forced the run"
+        );
+        assert!(
+            !fs::read_to_string(&stderr_path)
+                .unwrap()
+                .contains("Killing")
         );
 
-        let deadline = Instant::now() + Duration::from_secs(4);
-        loop {
-            if run.try_wait().unwrap().is_some() {
-                break;
-            }
-            if Instant::now() >= deadline {
-                let _ = run.kill();
-                panic!("repeated {signal_name} did not finish its graceful stop");
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(run.wait().unwrap().code(), Some(137));
+        signal(&run, "-TERM");
+        wait_for_forced_run(&mut run);
         assert!(f.state("app").contains("status = \"stopped\""));
     }
+}
+
+#[test]
+fn a_second_stop_command_forces_a_wine_run() {
+    let f = Fixture::new();
+    f.global_config("stop_timeout = 10\n");
+    f.environment("app", "[targets.app]\nexe = 'stubborn'\n");
+    let stderr_path = f.root.path().join("run.stderr");
+    let mut run = spawn_wineo_with_stderr(&f, &["run", "app"], &stderr_path);
+    wait_for("stubborn game to run", || f.fake_program_running("app"));
+
+    let first = spawn_wineo(&f, &["stop", "app"]);
+    wait_for_text(&stderr_path, "Stopping app, press Ctrl+C again to force it");
+    assert!(run.try_wait().unwrap().is_none());
+    let second = spawn_wineo(&f, &["stop", "app"]);
+    wait_for_forced_run(&mut run);
+    assert_success(&first.wait_with_output().unwrap());
+    assert_success(&second.wait_with_output().unwrap());
+    assert!(f.state("app").contains("status = \"stopped\""));
 }
 
 #[test]
@@ -1520,41 +1559,159 @@ fn a_second_ctrl_c_forces_a_wine_run() {
 }
 
 #[test]
-fn repeated_stop_signals_do_not_force_a_detached_wine_supervisor() {
+fn batched_stop_signals_are_polite_but_a_later_signal_forces_a_detached_supervisor() {
     for signal_name in ["-HUP", "-TERM"] {
         let f = Fixture::new();
-        f.global_config("stop_timeout = 1\n");
+        f.global_config("stop_timeout = 10\n");
         f.environment("app", "[targets.app]\nexe = 'stubborn'\n");
         assert_success(&f.run(&["start", "app"]));
         wait_for("stubborn game to run", || f.fake_program_running("app"));
 
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let supervisor = loop {
-            if let Some(pid) = detached_supervisor_pid(&f) {
-                break pid;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "detached supervisor was not found"
-            );
-            thread::sleep(Duration::from_millis(20));
-        };
-        signal_pid(supervisor, signal_name);
-        wait_for("detached supervisor to begin stopping", || {
-            fs::read_to_string(f.runtime("app").log_path())
-                .is_ok_and(|text| text.contains("stopping, asking programs to close"))
+        let mut supervisor = None;
+        wait_for("detached supervisor to appear", || {
+            supervisor = detached_supervisor_pid(&f);
+            supervisor.is_some()
         });
-        signal_pid(supervisor, signal_name);
+        let supervisor = supervisor.unwrap();
+        signal_batch(supervisor, signal_name);
+        wait_for_text(
+            &f.runtime("app").log_path(),
+            "stopping, asking programs to close",
+        );
         thread::sleep(Duration::from_millis(200));
         assert!(
             f.runtime("app").is_running().unwrap(),
-            "repeated {signal_name} forced the detached run"
+            "batched {signal_name} forced the detached run"
         );
+        assert!(!f.log("app").contains("killing"));
 
-        wait_for("detached graceful stop to finish", || {
+        signal_pid(supervisor, "-TERM");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        wait_for("detached run to be forced", || {
+            assert!(
+                Instant::now() < deadline,
+                "second signal did not force the detached run"
+            );
             !f.runtime("app").is_running().unwrap()
         });
         assert!(f.state("app").contains("status = \"stopped\""));
+    }
+}
+
+#[test]
+fn a_second_stop_command_forces_a_detached_wine_supervisor() {
+    let f = Fixture::new();
+    f.global_config("stop_timeout = 10\n");
+    f.environment("app", "[targets.app]\nexe = 'stubborn'\n");
+    assert_success(&f.run(&["start", "app"]));
+    wait_for("stubborn game to run", || f.fake_program_running("app"));
+
+    let first = spawn_wineo(&f, &["stop", "app"]);
+    wait_for_text(
+        &f.runtime("app").log_path(),
+        "stopping, asking programs to close",
+    );
+    assert!(f.runtime("app").is_running().unwrap());
+    let second = spawn_wineo(&f, &["stop", "app"]);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    wait_for("detached run to be forced", || {
+        assert!(
+            Instant::now() < deadline,
+            "second stop did not force the detached run"
+        );
+        !f.runtime("app").is_running().unwrap()
+    });
+    assert_success(&first.wait_with_output().unwrap());
+    assert_success(&second.wait_with_output().unwrap());
+    assert!(f.state("app").contains("status = \"stopped\""));
+}
+
+#[test]
+fn batched_after_hook_signals_wait_but_a_later_signal_kills_the_hook() {
+    for signal_name in ["-HUP", "-TERM"] {
+        let f = Fixture::new();
+        let active = f.root.path().join("after-active");
+        let release = f.root.path().join("release");
+        f.environment(
+            "app",
+            &hooked_targets(
+                "[targets.app]\nexe = 'exit-0'\n",
+                None,
+                Some(&gate_hook(&active, &release)),
+            ),
+        );
+        let stderr_path = f.root.path().join("run.stderr");
+        let mut run = spawn_wineo_with_stderr(&f, &["run", "app"], &stderr_path);
+        wait_for("after hook to start", || active.exists());
+        let group = hook_group(&f, "app");
+
+        signal_batch(run.id(), signal_name);
+        wait_for_text(
+            &stderr_path,
+            "Waiting for the after hook, press Ctrl+C again to kill it.",
+        );
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            run.try_wait().unwrap().is_none(),
+            "batched {signal_name} killed the after hook"
+        );
+        assert_eq!(
+            wineo_core::process::group_has_live_members(group),
+            Some(true)
+        );
+
+        signal(&run, "-TERM");
+        wait_for("after hook group to be killed", || {
+            wineo_core::process::group_has_live_members(group) == Some(false)
+        });
+        let output = run.wait_with_output().unwrap();
+        assert_success(&output);
+        let text = fs::read_to_string(&stderr_path).unwrap();
+        assert_eq!(
+            text.matches("The after hook was killed.").count(),
+            1,
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_later_signal_kills_an_announced_after_hook() {
+    for signal_name in ["-HUP", "-TERM"] {
+        let f = Fixture::new();
+        let active = f.root.path().join("after-active");
+        let release = f.root.path().join("release");
+        f.environment(
+            "app",
+            &hooked_targets(
+                "[targets.app]\nexe = 'game'\n",
+                None,
+                Some(&gate_hook(&active, &release)),
+            ),
+        );
+        let stderr_path = f.root.path().join("run.stderr");
+        let run = spawn_wineo_with_stderr(&f, &["run", "app"], &stderr_path);
+        wait_for("game to run", || f.fake_program_running("app"));
+        signal(&run, "-INT");
+        wait_for("after hook to start", || active.exists());
+        wait_for_text(
+            &stderr_path,
+            "Waiting for the after hook, press Ctrl+C again to kill it.",
+        );
+        let group = hook_group(&f, "app");
+
+        signal(&run, signal_name);
+        wait_for("after hook group to be killed", || {
+            wineo_core::process::group_has_live_members(group) == Some(false)
+        });
+        let output = run.wait_with_output().unwrap();
+        assert_success(&output);
+        let text = fs::read_to_string(&stderr_path).unwrap();
+        assert_eq!(
+            text.matches("The after hook was killed.").count(),
+            1,
+            "{text}"
+        );
     }
 }
 

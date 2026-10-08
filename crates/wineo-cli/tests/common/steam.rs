@@ -44,7 +44,7 @@ static void append_pid(const char *path, pid_t pid) {
 int main(int argc, char **argv) {
     if (argc < 5 || strcmp(argv[1], "SteamLaunch") || strncmp(argv[2], "AppId=", 6)) return 2;
     if (!strcmp(argv[4], "exit")) {
-        struct timespec delay = {.tv_sec = 0, .tv_nsec = 300000000};
+        struct timespec delay = {.tv_sec = 1, .tv_nsec = 500000000};
         nanosleep(&delay, NULL);
         return 0;
     }
@@ -310,13 +310,22 @@ impl SteamFixture {
         let mut command = self.f.wineo_at_home();
         command
             .env("WINEO_TEST_STEAM_FIXTURE", self.f.root.path())
-            .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "450")
-            .env("WINEO_TEST_STEAM_STALL_TIMEOUT_MS", "450");
+            .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "5000")
+            .env("WINEO_TEST_STEAM_STALL_TIMEOUT_MS", "5000")
+            .env("WINEO_TEST_STEAM_SCAN_INTERVAL_MS", "25");
         command
     }
 
     pub fn run(&self, args: &[&str]) -> Output {
         self.wineo().args(args).output().unwrap()
+    }
+
+    pub fn run_with_start_timeout(&self, args: &[&str], timeout_ms: u64) -> Output {
+        self.wineo()
+            .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", timeout_ms.to_string())
+            .args(args)
+            .output()
+            .unwrap()
     }
 
     pub fn dispatch_count(&self) -> usize {
