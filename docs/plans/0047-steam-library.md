@@ -553,6 +553,17 @@ In this plan (question 7).
   desktop app, a card whose stats summary is missing shows `unknown`, `-`,
   and `unknown` for a Steam game, and `never played` as before for Wine and
   native.
+- Step 4 (2026-10-07, maintainer): `list` shows a Steam game's install
+  state in place of `inactive` when it isn't plainly installed (`not
+  installed`, `updating`, `unavailable`, `unknown`); a starting or running
+  run still shows as such. `status` says it the same way, with the reason:
+  `satisfactory: unavailable (Steam's library at /mnt/games isn't
+  available)`. JSON gets `install` (`installed`, `updating`,
+  `not_installed`, `unavailable`, `unknown`) and `install_problem` when
+  there's a reason, for proxied environments only. `wineo run` on a Steam
+  game exits 0 when the game exits on its own, 130 when it's stopped with
+  Ctrl+C or `wineo stop`, and 1 when Steam never starts it, since the
+  game's own exit code can't be collected.
 
 ## Questions
 
