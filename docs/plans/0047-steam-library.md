@@ -221,7 +221,8 @@ it expects one:
   `desktop` key, which defaults to `false`. Its title is the game's title.
 - Run state records target `steam`, and `status` shows `target  steam
   (Baldur's Gate 3)`.
-- `wineo start NAME steam` works, and any other target name is an error.
+- `wineo start NAME --target steam` works, and any other target name is an
+  error. No new positional target argument is added.
 
 ### Global defaults
 
@@ -292,7 +293,8 @@ launch or runs hooks for it.
   line has the token `SteamLaunch` and exactly `AppId=<app_id>`, and whose
   ancestors include the active install's Steam client.
 - Confirmed on 2026-10-07 with Civ VI under Proton: the reaper's argv is
-  exactly `reaper`, `SteamLaunch`, `AppId=289070`, `--`, then the command,
+  the full path `<install root>/ubuntu12_32/reaper`, then `SteamLaunch`,
+  `AppId=289070`, `--`, then the command,
   so matching compares whole arguments. Its parent is the Steam client
   itself. The reaper and the runtime's `srt-bwrap` share the Steam client's
   process group and session, while pressure-vessel's `pv-adverb` starts a
