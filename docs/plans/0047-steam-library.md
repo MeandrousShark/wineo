@@ -566,6 +566,22 @@ In this plan (question 7).
   game exits 0 when the game exits on its own, 130 when it's stopped with
   Ctrl+C or `wineo stop`, and 1 when Steam never starts it, since the
   game's own exit code can't be collected.
+- Step 4 implementation (2026-10-07): Steam processes are inspected
+  pidfd-first (open the pidfd, read `/proc`, re-confirm the same start time
+  through the pidfd), a child joins the tree only if its parent is alive by
+  pidfd and the child isn't older than it, and the reaper's parent must be
+  the active install's client (exe `<root>/ubuntu12_32/steam`). Tree capture
+  does a stat-only `/proc` pass and holds pidfds only for tree members and
+  one candidate at a time, so Stop works near the open-file limit, and read
+  errors other than "gone" fail the Stop loudly. While scanning for
+  candidates, a process wineo can't read (another user's) is just not a
+  match. The 60-second start window restarts when the game leaves the
+  updating state. The starting phase scans `/proc` every 250 ms and
+  manifests every second, and `status --json` shows `pid: null` while
+  starting. A launch failure is logged before the run is recorded as ended,
+  so an `after` hook can read it. Signals: two Ctrl+Cs are no longer merged
+  into one (a latent bug for every kind); all other signals keep main's
+  rules, where a batch counts once and a later separate stop request forces.
 
 ## Questions
 
