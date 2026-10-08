@@ -301,6 +301,14 @@ launch or runs hooks for it.
   the tree walk works. `pv-adverb` adopts Wine's processes, so the game and
   wineserver stay descendants of the reaper. There's no separate pid
   namespace, so host pids and pidfds work.
+- Steam's own Stop, watched the same day: the whole tree exited within
+  about 240 ms. `srt-bwrap` went first, every Wine process within about 10
+  ms of it, then `pv-adverb` and the game, and the reaper last. Steam gives
+  the game no grace period, so wineo's polite Stop (SIGTERM to the verified
+  tree, then SIGKILL after `stop_timeout`) is already gentler than Steam's,
+  and ending only the reaper isn't how Steam does it. After Steam's Stop,
+  nothing from the game is left while the Steam client's own runtime keeps
+  running, which is the baseline for acceptance.
 - The baseline is taken at the first running check, before `before`: its
   time, and every matching reaper that exists then (normally none, since
   `start` refused if one did). A run only claims a reaper that isn't in the
