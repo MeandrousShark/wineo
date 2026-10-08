@@ -414,6 +414,12 @@ Installed and updating come from the manifest's `StateFlags` bits:
   without FullyInstalled (flags 2) is not installed.
 - AppRunning (64) is always ignored. FilesMissing and FilesCorrupt don't
   change the state, since Steam repairs those on launch.
+- Watched on 2026-10-07 during a real Overwatch update: `StateFlags` was
+  1030 (FullyInstalled, UpdateRequired, and UpdateStarted) the whole time,
+  with no Downloading or Staging bits, then 4 when it finished.
+  `BytesStaged` kept growing after `BytesDownloaded` reached its total, so
+  staging-only progress is real. Steam rewrote the manifest about every 40
+  seconds, well inside the 10-minute stall limit.
 - The title falls back to the config's `title` when there's no manifest.
 
 ### Playtime
