@@ -89,7 +89,7 @@ pub enum Host {
     Proxied {
         install: crate::steam::Install,
         app_id: String,
-        baseline: crate::steam::Baseline,
+        baseline: Option<crate::steam::Baseline>,
     },
 }
 
@@ -974,16 +974,11 @@ fn steam_target(
         crate::steam::AppState::Unknown(reason) => return Err(Error::StartFailed(reason)),
     }
     let install = install.expect("an installed game has an install");
-    let (baseline, _) =
-        crate::steam::baseline(&install, &proxied.app_id).map_err(|source| Error::Io {
-            context: "failed to inspect Steam processes".to_owned(),
-            source,
-        })?;
     Ok(Launch {
         host: Host::Proxied {
             install,
             app_id: proxied.app_id.clone(),
-            baseline,
+            baseline: None,
         },
         target: Some("steam".to_owned()),
         args: overrides.args.clone(),

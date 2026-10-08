@@ -76,11 +76,12 @@ impl Supervisor {
         mode: RunMode,
         overrides: &Overrides,
         name: &str,
+        mut notify: impl FnMut(Notice),
     ) -> Result<(RunState, bool)> {
         let Host::Proxied {
             install,
             app_id,
-            baseline,
+            baseline: Some(baseline),
         } = &launch.host
         else {
             unreachable!()
@@ -102,7 +103,7 @@ impl Supervisor {
             request(launch)?;
             state.phase = Some(crate::runtime::RunPhase::Starting);
         }
-        runtime.write_state(&state)?;
+        write_state(runtime, &state, &mut notify);
         Ok((state, adopted))
     }
 
@@ -119,7 +120,7 @@ impl Supervisor {
         match result {
             Ok(status) => {
                 state.finish(status);
-                runtime.write_state(state)?;
+                write_state(runtime, state, &mut notify);
                 Ok(())
             }
             Err(err) => {
@@ -136,7 +137,7 @@ impl Supervisor {
                     }
                 }
                 state.finish(RunStatus::Failed);
-                runtime.write_state(state)?;
+                write_state(runtime, state, &mut notify);
                 Err(err)
             }
         }
@@ -168,14 +169,15 @@ impl Supervisor {
         let Host::Proxied {
             install,
             app_id,
-            baseline,
+            baseline: Some(baseline),
         } = &launch.host
         else {
             unreachable!()
         };
         let dispatched = Instant::now();
-        let mut previous_progress = progress(install, app_id);
-        let mut progressed_at = dispatched;
+        let mut waiting = StartingWait::new(dispatched);
+        let mut next_scan = dispatched;
+        let mut next_manifest = dispatched;
         let mut heartbeat = Instant::now();
         let start_limit =
             test_timeout("WINEO_TEST_STEAM_START_TIMEOUT_MS", Duration::from_secs(60));
@@ -192,6 +194,12 @@ impl Supervisor {
                 });
                 return Ok(RunStatus::Stopped);
             }
+            let now = Instant::now();
+            if now < next_scan {
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            next_scan = now + Duration::from_millis(250);
             let candidates = steam::eligible_reapers(install, app_id, baseline)
                 .context(|| "failed to inspect Steam processes".to_owned())?;
             if candidates.len() > 1 {
@@ -199,27 +207,18 @@ impl Supervisor {
             }
             if let Some(reaper) = candidates.first() {
                 claim(state, reaper);
-                runtime.write_state(state)?;
+                write_state(runtime, state, notify);
                 break;
             }
-            let next = progress(install, app_id);
-            if let Some(next) = next {
-                if previous_progress.is_some_and(|old| next.progressed_since(&old)) {
-                    progressed_at = Instant::now();
-                }
-                previous_progress = Some(next);
+            if now >= next_manifest {
+                let (app_state, progress) = steam::app_snapshot(Some(install), app_id);
+                waiting.observe(now, &app_state, progress);
+                next_manifest = now + Duration::from_secs(1);
             }
-            let updating = matches!(
-                steam::app_state(Some(install), app_id),
-                steam::AppState::Updating
-            );
-            if (updating && progressed_at.elapsed() >= stall_limit)
-                || (!updating && dispatched.elapsed() >= start_limit)
-            {
+            if waiting.expired(now, start_limit, stall_limit) {
                 return Err(Error::StartFailed(format!("Steam didn't start {name}.")));
             }
-            heartbeat_state(runtime, state, &mut heartbeat, notify)?;
-            thread::sleep(Duration::from_millis(20));
+            heartbeat_state(runtime, state, &mut heartbeat, notify);
         }
         let reaper = steam::Reaper {
             pid: state.pid,
@@ -241,7 +240,7 @@ impl Supervisor {
                 let mut announced = force;
                 steam::stop_tree(&reaper, timeout, force, || {
                     let forced = self.token.as_ref().is_some_and(Token::is_forced)
-                        || matches!(self.events.try_recv(), Ok(Event::Stop | Event::Force));
+                        || matches!(self.events.try_recv(), Ok(Event::Force));
                     if forced && !announced {
                         notify(Notice::Killing);
                         announced = true;
@@ -254,7 +253,7 @@ impl Supervisor {
             if steam::pidfd_exited(&fd).context(|| "failed to watch Steam process".to_owned())? {
                 return Ok(RunStatus::Exited);
             }
-            heartbeat_state(runtime, state, &mut heartbeat, notify)?;
+            heartbeat_state(runtime, state, &mut heartbeat, notify);
             thread::sleep(Duration::from_millis(20));
         }
     }
@@ -268,13 +267,59 @@ fn claim(state: &mut RunState, reaper: &steam::Reaper) {
     state.running_at = Some(jiff::Timestamp::now());
 }
 
-fn progress(install: &steam::Install, app_id: &str) -> Option<steam::Progress> {
-    steam::manifests(install)
-        .into_iter()
-        .find(|entry| entry.app_id == app_id)?
-        .manifest
-        .ok()
-        .map(|manifest| manifest.progress())
+struct StartingWait {
+    updating: bool,
+    start_window: Instant,
+    progressed_at: Instant,
+    previous_progress: Option<steam::Progress>,
+}
+
+impl StartingWait {
+    fn new(now: Instant) -> Self {
+        Self {
+            updating: false,
+            start_window: now,
+            progressed_at: now,
+            previous_progress: None,
+        }
+    }
+
+    fn observe(
+        &mut self,
+        now: Instant,
+        state: &steam::AppState,
+        progress: Option<steam::Progress>,
+    ) {
+        let updating = matches!(state, steam::AppState::Updating);
+        if self.updating && !updating {
+            // Steam still needs time to launch after an update or a transient bad read.
+            self.start_window = now;
+        }
+        self.updating = updating;
+        if let Some(next) = progress {
+            if self
+                .previous_progress
+                .is_none_or(|old| next.progressed_since(&old))
+            {
+                self.progressed_at = now;
+            }
+            self.previous_progress = Some(next);
+        }
+    }
+
+    fn expired(&self, now: Instant, start_limit: Duration, stall_limit: Duration) -> bool {
+        if self.updating {
+            now.duration_since(self.progressed_at) >= stall_limit
+        } else {
+            now.duration_since(self.start_window) >= start_limit
+        }
+    }
+}
+
+fn write_state(runtime: &Runtime, state: &RunState, notify: &mut impl FnMut(Notice)) {
+    if let Err(err) = runtime.write_state(state) {
+        notify(Notice::Warning(err));
+    }
 }
 
 fn heartbeat_state(
@@ -282,14 +327,13 @@ fn heartbeat_state(
     state: &mut RunState,
     last: &mut Instant,
     notify: &mut impl FnMut(Notice),
-) -> Result<()> {
+) {
     if last.elapsed() >= HEARTBEAT_INTERVAL {
         state.heartbeat();
-        runtime.write_state(state)?;
+        write_state(runtime, state, notify);
         *last = Instant::now();
         notify(Notice::Heartbeat);
     }
-    Ok(())
 }
 
 fn ambiguous(name: &str) -> Error {
@@ -305,5 +349,135 @@ fn test_timeout(variable: &str, fallback: Duration) -> Duration {
             .unwrap_or(fallback)
     } else {
         fallback
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn progress(flags: u32, staged: u64) -> steam::Progress {
+        steam::Progress {
+            state_flags: flags,
+            bytes_downloaded: 100,
+            bytes_staged: staged,
+        }
+    }
+
+    #[test]
+    fn finishing_an_update_restarts_the_launch_window() {
+        let now = Instant::now();
+        let start = Duration::from_secs(60);
+        let stall = Duration::from_secs(600);
+        let mut wait = StartingWait::new(now);
+        wait.observe(now, &steam::AppState::Updating, Some(progress(1030, 0)));
+        let finished = now + Duration::from_secs(120);
+        wait.observe(finished, &steam::AppState::Installed, Some(progress(4, 10)));
+        assert!(!wait.expired(finished + Duration::from_secs(59), start, stall));
+        assert!(wait.expired(finished + start, start, stall));
+    }
+
+    #[test]
+    fn unknown_manifest_after_updating_gets_a_launch_window() {
+        let now = Instant::now();
+        let mut wait = StartingWait::new(now);
+        wait.observe(now, &steam::AppState::Updating, Some(progress(1030, 0)));
+        let unreadable = now + Duration::from_secs(120);
+        wait.observe(
+            unreadable,
+            &steam::AppState::Unknown("rewriting".to_owned()),
+            None,
+        );
+        assert!(!wait.expired(
+            unreadable,
+            Duration::from_secs(60),
+            Duration::from_secs(600)
+        ));
+        wait.observe(
+            unreadable + Duration::from_secs(1),
+            &steam::AppState::Installed,
+            Some(progress(4, 1)),
+        );
+        assert!(!wait.expired(
+            unreadable + Duration::from_secs(59),
+            Duration::from_secs(60),
+            Duration::from_secs(600)
+        ));
+    }
+
+    #[test]
+    fn progress_recovers_after_an_unreadable_first_snapshot() {
+        let now = Instant::now();
+        let mut wait = StartingWait::new(now);
+        wait.observe(now, &steam::AppState::Unknown("rewriting".to_owned()), None);
+        let updating = now + Duration::from_secs(1);
+        wait.observe(updating, &steam::AppState::Updating, None);
+        wait.observe(
+            updating + Duration::from_secs(9),
+            &steam::AppState::Updating,
+            Some(progress(1030, 1)),
+        );
+        wait.observe(
+            updating + Duration::from_secs(18),
+            &steam::AppState::Updating,
+            Some(progress(1030, 2)),
+        );
+        assert!(!wait.expired(
+            updating + Duration::from_secs(20),
+            Duration::from_secs(60),
+            Duration::from_secs(10)
+        ));
+        assert!(wait.expired(
+            updating + Duration::from_secs(28),
+            Duration::from_secs(60),
+            Duration::from_secs(10)
+        ));
+    }
+
+    #[test]
+    fn transient_unknown_does_not_restart_the_update_stall_window() {
+        let now = Instant::now();
+        let mut wait = StartingWait::new(now);
+        wait.observe(now, &steam::AppState::Updating, Some(progress(1030, 0)));
+        wait.observe(
+            now + Duration::from_secs(540),
+            &steam::AppState::Unknown("rewriting".to_owned()),
+            None,
+        );
+        wait.observe(
+            now + Duration::from_secs(541),
+            &steam::AppState::Updating,
+            Some(progress(1030, 0)),
+        );
+        assert!(wait.expired(
+            now + Duration::from_secs(600),
+            Duration::from_secs(60),
+            Duration::from_secs(600)
+        ));
+    }
+
+    #[test]
+    fn heartbeat_write_failure_warns_and_keeps_the_run_live() {
+        let root = tempfile::tempdir().unwrap();
+        let blocked = root.path().join("blocked");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let runtime = Runtime::at(blocked);
+        let mut state = RunState::running(
+            RunMode::Attached,
+            "steam".to_owned(),
+            0,
+            None,
+            &Overrides::default(),
+        );
+        let mut last = Instant::now() - HEARTBEAT_INTERVAL;
+        let mut warnings = 0;
+        heartbeat_state(&runtime, &mut state, &mut last, &mut |notice| {
+            if matches!(notice, Notice::Warning(_)) {
+                warnings += 1;
+            }
+        });
+        assert_eq!(warnings, 1);
+        assert_eq!(state.status, RunStatus::Running);
+        assert!(state.heartbeat_at.is_some());
     }
 }

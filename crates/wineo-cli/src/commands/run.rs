@@ -36,10 +36,6 @@ pub struct LaunchArgs {
     #[arg(short, long = "env", value_name = "KEY=VALUE", value_parser = parse_launch_env_assignment)]
     env: Vec<(String, String)>,
 
-    /// Target name (also accepted as --target)
-    #[arg(value_name = "TARGET", conflicts_with = "target")]
-    positional_target: Option<String>,
-
     /// Extra arguments passed to the target
     #[arg(last = true)]
     args: Vec<String>,
@@ -47,15 +43,12 @@ pub struct LaunchArgs {
 
 impl LaunchArgs {
     pub fn is_empty(&self) -> bool {
-        self.target.is_none()
-            && self.positional_target.is_none()
-            && self.env.is_empty()
-            && self.args.is_empty()
+        self.target.is_none() && self.env.is_empty() && self.args.is_empty()
     }
 
     pub fn into_overrides(self) -> Overrides {
         Overrides {
-            target: self.target.or(self.positional_target),
+            target: self.target,
             env: self.env.into_iter().collect(),
             args: self.args,
         }
@@ -139,6 +132,11 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 RunMode::Attached,
                 &overrides,
                 &environment.name,
+                |notice| {
+                    if let Notice::Warning(err) = notice {
+                        warn(err.into());
+                    }
+                },
             )?;
             return Ok((runtime, supervisor, None, Some(state)));
         }

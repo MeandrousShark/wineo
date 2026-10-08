@@ -130,7 +130,7 @@ fn launching_a_proxied_environment_hands_off_to_steam_and_runs_hooks() {
         marker.display(),
         marker.display()
     ));
-    let started = s.run(&["start", "civ", "steam"]);
+    let started = s.run(&["start", "civ", "--target", "steam"]);
     assert_success(&started);
     assert!(stdout(&started).contains("Asked Steam to start civ."));
     wait_for("claimed Steam game", || {

@@ -9,7 +9,7 @@ use serde::Serialize;
 pub struct RunOutput<'a> {
     pub target: &'a str,
     pub mode: RunMode,
-    pub pid: u32,
+    pub pid: Option<u32>,
     pub started_at: Timestamp,
     pub program_exited_at: Option<Timestamp>,
     pub ended_at: Option<Timestamp>,
@@ -21,7 +21,7 @@ impl<'a> From<&'a RunState> for RunOutput<'a> {
         Self {
             target: &run.target,
             mode: run.mode,
-            pid: run.pid,
+            pid: run.phase.is_none().then_some(run.pid),
             started_at: run.started_at,
             program_exited_at: run.program_exited_at,
             ended_at: run.ended_at,
@@ -300,5 +300,26 @@ impl<'a> TagBreakdownOutput<'a> {
             untagged: breakdown.untagged.as_ref().map(Into::into),
             errors,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_starting_run_has_a_null_pid_in_json() {
+        let mut run = RunState::running(
+            RunMode::Detached,
+            "steam".to_owned(),
+            0,
+            None,
+            &crate::launch::Overrides::default(),
+        );
+        run.starting();
+
+        let output = serde_json::to_value(RunOutput::from(&run)).unwrap();
+
+        assert_eq!(output["pid"], serde_json::Value::Null);
     }
 }

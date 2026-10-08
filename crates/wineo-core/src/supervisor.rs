@@ -119,10 +119,10 @@ pub struct Supervisor {
 
 impl Supervisor {
     /// Starts listening for stop signals, before wine starts so an early one
-    /// still stops it cleanly. SIGINT, SIGTERM, and SIGHUP ask for a clean stop
-    /// and force it when repeated. SIGUSR1 forces it right away.
+    /// still stops it cleanly. A second SIGINT forces the run; SIGTERM and
+    /// SIGHUP each ask for a clean stop once. SIGUSR1 forces it right away.
     pub fn listen() -> Result<Self> {
-        // A repeated stop request must survive arriving before the listener polls.
+        // A quick second Ctrl+C must survive arriving before the listener polls.
         let mut signals = SignalsInfo::<WithRawSiginfo>::new([SIGINT, SIGTERM, SIGHUP, SIGUSR1])
             .context(|| "failed to set up signal handling".to_owned())?;
         let handle = signals.handle();
@@ -131,15 +131,30 @@ impl Supervisor {
         let signal_stop = Arc::new(AtomicBool::new(false));
         let thread_stop = signal_stop.clone();
         let signal_thread = thread::spawn(move || {
+            let mut saw_interrupt = false;
+            let mut saw_stop = false;
             while !thread_stop.load(Ordering::Relaxed) {
                 for received in signals.pending() {
                     let signal = received.si_signo;
                     let event = if signal == SIGUSR1 {
-                        Event::Force
+                        Some(Event::Force)
+                    } else if signal == SIGINT {
+                        let event = if saw_interrupt {
+                            Event::Force
+                        } else {
+                            Event::Stop
+                        };
+                        saw_interrupt = true;
+                        Some(event)
+                    } else if !saw_stop {
+                        saw_stop = true;
+                        Some(Event::Stop)
                     } else {
-                        Event::Stop
+                        None
                     };
-                    if signal_sender.send(event).is_err() {
+                    if let Some(event) = event
+                        && signal_sender.send(event).is_err()
+                    {
                         return;
                     }
                 }
@@ -400,7 +415,8 @@ impl Supervisor {
                         let _ = done.send(());
                     });
                 }
-                Event::Stop | Event::Force | Event::StopTimeout => {
+                Event::Stop => continue,
+                Event::Force | Event::StopTimeout => {
                     stopping = true;
                     let since = *killing_since.get_or_insert_with(|| {
                         watched(Watched::Notice(Notice::Killing));
@@ -696,6 +712,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
             RunMode::Detached,
             &spec.overrides,
             &spec.claim.name,
+            |notice| log_notice(&log, false, notice),
         )?;
         reporter.send(if adopted {
             Report::SteamAdopted

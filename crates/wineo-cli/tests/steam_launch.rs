@@ -1,6 +1,7 @@
 mod common;
 
 use std::fs;
+use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -57,6 +58,18 @@ fn parent_pid(pid: u32) -> Option<u32> {
         .ok()
 }
 
+fn process_group(pid: u32) -> u32 {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    stat.rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(2)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
 /// Waits for the supervisor to record its claim, since the reaper's child can
 /// exist while the run state is still in its starting phase.
 fn claimed_pid(s: &SteamFixture) -> u32 {
@@ -80,14 +93,14 @@ fn claimed_pid(s: &SteamFixture) -> u32 {
 fn start_claims_reaper_and_stop_leaves_steam_client_alive() {
     let s = SteamFixture::new();
     s.config("");
-    let started = s.run(&["start", "civ", "steam", "--", "--windowed"]);
+    let started = s.run(&["start", "civ", "--target", "steam", "--", "--windowed"]);
     assert_success(&started);
     assert!(
         stdout(&started).contains("Asked Steam to start civ."),
         "{}",
         stdout(&started)
     );
-    assert_eq!(s.dispatch_count(), 1);
+    wait_for("Steam dispatch", || s.dispatch_count() == 1);
     assert!(
         fs::read_to_string(&s.dispatches)
             .unwrap()
@@ -97,6 +110,8 @@ fn start_claims_reaper_and_stop_leaves_steam_client_alive() {
         let state = s.f.state("civ");
         state.contains("target = \"steam\"") && state.contains("running_at = ")
     });
+    let reaper = claimed_pid(&s);
+    assert_eq!(process_group(reaper), process_group(s.client_pid()));
     let status = s.run(&["status", "civ"]);
     assert_success(&status);
     assert!(
@@ -282,7 +297,7 @@ fn staging_progress_keeps_a_steam_launch_starting_past_the_normal_limit() {
     let started = s
         .wineo()
         .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "250")
-        .env("WINEO_TEST_STEAM_STALL_TIMEOUT_MS", "800")
+        .env("WINEO_TEST_STEAM_STALL_TIMEOUT_MS", "1800")
         .args(["start", "civ"])
         .output()
         .unwrap();
@@ -298,7 +313,12 @@ fn staging_progress_keeps_a_steam_launch_starting_past_the_normal_limit() {
     );
     let listed = s.run(&["list"]);
     assert!(stdout(&listed).contains("starting"), "{}", stdout(&listed));
-    for staged in 1..=6 {
+    let json = s.run(&["status", "--json", "civ"]);
+    assert_success(&json);
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(json["state"], "starting");
+    assert!(json["run"]["pid"].is_null());
+    for staged in 1..=16 {
         thread::sleep(Duration::from_millis(150));
         s.set_game_progress("289070", "Civilization VI", 1030, 100, staged);
         assert!(
@@ -335,6 +355,88 @@ fn stalled_update_fails_even_though_steam_still_says_updating() {
 }
 
 #[test]
+fn completed_update_gets_a_fresh_start_window_and_the_run_succeeds() {
+    let s = SteamFixture::new();
+    s.set_game_progress("289070", "Civilization VI", 1030, 100, 0);
+    s.set_mode("none");
+    s.config("");
+    let child = s
+        .wineo()
+        .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "1200")
+        .env("WINEO_TEST_STEAM_STALL_TIMEOUT_MS", "5000")
+        .args(["run", "civ"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for("update launch dispatch", || s.dispatch_count() == 1);
+    thread::sleep(Duration::from_millis(1800));
+    s.set_game_progress("289070", "Civilization VI", 4, 100, 100);
+    thread::sleep(Duration::from_millis(500));
+    let mut request = fs::OpenOptions::new().write(true).open(&s.fifo).unwrap();
+    writeln!(request, "AppId=289070 exit").unwrap();
+    drop(request);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    s.f.wait_for_run_end("civ", "exited");
+    assert!(!s.f.stats_log("civ").exists());
+}
+
+#[test]
+fn transient_unknown_manifest_after_updating_does_not_end_the_run() {
+    let s = SteamFixture::new();
+    s.set_game_progress("289070", "Civilization VI", 1030, 100, 0);
+    s.set_mode("none");
+    s.config("");
+    assert_success(
+        &s.wineo()
+            .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "1500")
+            .env("WINEO_TEST_STEAM_STALL_TIMEOUT_MS", "5000")
+            .args(["start", "civ"])
+            .output()
+            .unwrap(),
+    );
+    wait_for("updating dispatch", || s.dispatch_count() == 1);
+    thread::sleep(Duration::from_millis(1700));
+    fs::write(s.root.join("steamapps/appmanifest_289070.acf"), "rewriting").unwrap();
+    thread::sleep(Duration::from_millis(700));
+    assert!(!s.f.state("civ").contains("status = \"failed\""));
+    s.set_game_progress("289070", "Civilization VI", 4, 100, 100);
+    s.launch_from_steam("289070");
+    claimed_pid(&s);
+    assert_success(&s.run(&["stop", "civ"]));
+    s.f.wait_for_run_end("civ", "stopped");
+}
+
+#[test]
+fn claim_state_write_failure_does_not_fail_a_live_attached_run() {
+    let s = SteamFixture::new();
+    s.set_mode("none");
+    s.config("");
+    let child = s
+        .wineo()
+        .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "3000")
+        .args(["run", "civ"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for("starting state", || {
+        s.f.state("civ").contains("phase = \"starting\"")
+    });
+    let state = s.f.runtime("civ").dir().join("state.toml");
+    fs::remove_file(&state).unwrap();
+    fs::create_dir(&state).unwrap();
+    let mut request = fs::OpenOptions::new().write(true).open(&s.fifo).unwrap();
+    writeln!(request, "AppId=289070 exit").unwrap();
+    drop(request);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stderr(&output).contains("warning:"), "{}", stderr(&output));
+    assert!(!s.f.stats_log("civ").exists());
+}
+
+#[test]
 fn a_failed_steam_spawn_fails_the_run_and_runs_after() {
     let s = SteamFixture::new();
     let marker = s.f.root.path().join("after");
@@ -356,6 +458,79 @@ fn a_failed_steam_spawn_fails_the_run_and_runs_after() {
     );
     assert_eq!(fs::read_to_string(marker).unwrap(), "failed");
     assert_eq!(s.dispatch_count(), 0);
+    assert!(!s.f.stats_log("civ").exists());
+}
+
+#[test]
+fn detached_spawn_failure_fails_start_and_runs_after_once() {
+    let s = SteamFixture::new();
+    let marker = s.f.root.path().join("after");
+    s.config(&format!(
+        "[hooks]\nafter = 'printf \"%s\\n\" \"$WINEO_END\" >> {}'\n",
+        marker.display()
+    ));
+    let started = s
+        .wineo()
+        .env("PATH", &s.f.sandbox)
+        .args(["start", "civ"])
+        .output()
+        .unwrap();
+    assert_eq!(started.status.code(), Some(1), "{}", stderr(&started));
+    assert!(
+        stderr(&started).contains("failed to start Steam"),
+        "{}",
+        stderr(&started)
+    );
+    wait_for("failed launch after hook", || marker.exists());
+    assert_eq!(fs::read_to_string(marker).unwrap(), "failed\n");
+    assert_eq!(s.dispatch_count(), 0);
+    assert!(!s.f.stats_log("civ").exists());
+}
+
+#[test]
+fn two_steam_started_reapers_show_running_but_stop_refuses_and_signals_nothing() {
+    let s = SteamFixture::new();
+    let marker = s.f.root.path().join("hooks");
+    s.config(&format!(
+        "[hooks]\nbefore = 'touch {0}'\nafter = 'touch {0}'\n",
+        marker.display()
+    ));
+    s.launch_from_steam("289070");
+    s.launch_from_steam("289070");
+    let install = wineo_core::steam::installs(s.f.root.path()).remove(0);
+    wait_for("two Steam reapers", || {
+        wineo_core::steam::matching_reapers(&install, "289070")
+            .unwrap()
+            .len()
+            == 2
+    });
+    let reapers = wineo_core::steam::matching_reapers(&install, "289070").unwrap();
+    let status = s.run(&["status", "civ"]);
+    assert_success(&status);
+    assert!(
+        stdout(&status).contains("running (started from Steam)"),
+        "{}",
+        stdout(&status)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&s.run(&["status", "--json", "civ"]).stdout).unwrap();
+    assert_eq!(json["state"], "running");
+    assert!(json["run"].is_null());
+    for args in [
+        ["stop", "civ"].as_slice(),
+        ["stop", "--force", "civ"].as_slice(),
+    ] {
+        let stopped = s.run(args);
+        assert_eq!(stopped.status.code(), Some(1));
+        assert!(
+            stderr(&stopped).contains("More than one Steam process matches civ."),
+            "{}",
+            stderr(&stopped)
+        );
+        assert!(reapers.iter().all(|reaper| alive(reaper.pid)));
+        assert!(alive(s.client_pid()));
+    }
+    assert!(!marker.exists());
     assert!(!s.f.stats_log("civ").exists());
 }
 
@@ -562,6 +737,7 @@ fn force_stop_kills_reparented_child_but_not_steam_client() {
     wait_for("reaper child", || read_pid(&s.child_pid).is_some());
     let child = read_pid(&s.child_pid).unwrap();
     assert!(alive(child));
+    claimed_pid(&s);
     assert_success(&s.run(&["stop", "--force", "civ"]));
     wait_for("reparented child killed", || !alive(child));
     assert!(alive(s.client_pid()), "Stop signaled the fake Steam client");

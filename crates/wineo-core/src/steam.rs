@@ -386,11 +386,22 @@ pub enum AppState {
 /// are checked first. A game found in one is answered from its manifest, and
 /// a game in none of them is `Unavailable` when a library was unreadable.
 pub fn app_state(install: Option<&Install>, app_id: &str) -> AppState {
+    app_snapshot(install, app_id).0
+}
+
+/// Reads state and progress together so launch polling uses one manifest snapshot.
+pub(crate) fn app_snapshot(
+    install: Option<&Install>,
+    app_id: &str,
+) -> (AppState, Option<Progress>) {
     let Some(install) = install else {
-        return AppState::Unknown("Steam isn't found".to_owned());
+        return (AppState::Unknown("Steam isn't found".to_owned()), None);
     };
     if !valid_app_id(app_id) {
-        return AppState::Unknown(format!("`{app_id}` isn't a Steam app id"));
+        return (
+            AppState::Unknown(format!("`{app_id}` isn't a Steam app id")),
+            None,
+        );
     }
 
     let listing = libraries(install);
@@ -408,26 +419,35 @@ pub fn app_state(install: Option<&Install>, app_id: &str) -> AppState {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => {
-                return AppState::Unknown(format!("{} can't be read: {error}", path.display()));
+                return (
+                    AppState::Unknown(format!("{} can't be read: {error}", path.display())),
+                    None,
+                );
             }
         };
         return match parse_manifest(&text, app_id) {
-            Ok(manifest) => match manifest.state() {
-                InstallState::Installed => AppState::Installed,
-                InstallState::Updating => AppState::Updating,
-                InstallState::NotInstalled => AppState::NotInstalled,
-            },
-            Err(error) => AppState::Unknown(format!("{}: {error}", path.display())),
+            Ok(manifest) => {
+                let state = match manifest.state() {
+                    InstallState::Installed => AppState::Installed,
+                    InstallState::Updating => AppState::Updating,
+                    InstallState::NotInstalled => AppState::NotInstalled,
+                };
+                (state, Some(manifest.progress()))
+            }
+            Err(error) => (
+                AppState::Unknown(format!("{}: {error}", path.display())),
+                None,
+            ),
         };
     }
 
     if let Some(library) = unavailable {
-        return AppState::Unavailable(library);
+        return (AppState::Unavailable(library), None);
     }
     if let Some(problem) = listing.problem {
-        return AppState::Unknown(problem);
+        return (AppState::Unknown(problem), None);
     }
-    AppState::NotInstalled
+    (AppState::NotInstalled, None)
 }
 
 /// Steam's cached art for an app, mapped to wineo's kinds. Only files that

@@ -100,7 +100,7 @@ impl Cancellation {
     fn listen(token: Token, mode: Mode) -> anyhow::Result<Self> {
         let after = matches!(mode, Mode::After { .. });
         let announce = matches!(mode, Mode::After { announce: true });
-        // Keep repeated signals queued so a quick second Ctrl+C still forces Stop.
+        // Keep repeated Ctrl+C signals queued so a quick second one forces Stop.
         let mut signals = SignalsInfo::<WithRawSiginfo>::new([SIGINT, SIGTERM, SIGHUP, SIGUSR1])?;
         // Only once the handler is in, so a quick Ctrl+C after the line counts.
         if announce {
@@ -112,21 +112,35 @@ impl Cancellation {
         let thread_stop = stop.clone();
         let thread = thread::spawn(move || {
             let mut waiting = announce;
+            let mut saw_interrupt = false;
+            let mut saw_stop = false;
             while !thread_stop.load(Ordering::Relaxed) {
                 for received in signals.pending() {
                     let signal = received.si_signo;
-                    if after && signal != SIGUSR1 && !waiting {
-                        waiting = true;
-                        say_waiting_for_after();
-                    } else if after {
-                        // Drop joins this thread, so the line is out before exit.
-                        if !listener.is_forced() {
+                    if signal == SIGUSR1 {
+                        if after && !listener.is_forced() {
                             say("The after hook was killed.");
                         }
                         listener.force();
-                    } else if signal == SIGUSR1 || listener.is_canceled() {
-                        listener.force();
-                    } else {
+                    } else if after {
+                        if !waiting {
+                            waiting = true;
+                            say_waiting_for_after();
+                        } else if signal == SIGINT {
+                            if !listener.is_forced() {
+                                say("The after hook was killed.");
+                            }
+                            listener.force();
+                        }
+                    } else if signal == SIGINT {
+                        if saw_interrupt {
+                            listener.force();
+                        } else {
+                            saw_interrupt = true;
+                            listener.cancel();
+                        }
+                    } else if !saw_stop {
+                        saw_stop = true;
                         listener.cancel();
                     }
                 }

@@ -373,8 +373,8 @@ pub fn prepare(
             &mut events,
         )?;
         let mut launch = Launch::target(paths, &global, &environment, overrides)?;
-        if let (Host::Proxied { baseline, .. }, Some(first)) = (&mut launch.host, &steam_baseline) {
-            *baseline = first.clone();
+        if let Host::Proxied { baseline, .. } = &mut launch.host {
+            *baseline = steam_baseline.clone();
         }
         let held: Vec<&Path> = launch.host.prefix().into_iter().collect();
         guard = Some(match &reservation {

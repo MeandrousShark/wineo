@@ -107,11 +107,46 @@ fn spawn_wineo_with_stderr(f: &Fixture, args: &[&str], stderr: &std::path::Path)
 }
 
 fn signal(child: &Child, signal: &str) {
+    signal_pid(child.id(), signal);
+}
+
+fn signal_pid(pid: u32, signal: &str) {
     let sent = Command::new("kill")
-        .args([signal, &child.id().to_string()])
+        .args([signal, &pid.to_string()])
         .status()
         .unwrap();
     assert!(sent.success());
+}
+
+fn detached_supervisor_pid(f: &Fixture) -> Option<u32> {
+    let expected_state = format!("XDG_STATE_HOME={}", f.root.path().join("state").display());
+    let entries = fs::read_dir("/proc").ok()?;
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(command_line) = fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let args: Vec<_> = command_line.split(|byte| *byte == 0).collect();
+        if !args.get(1).is_some_and(|arg| *arg == b"__supervise") {
+            continue;
+        }
+        let Ok(environment) = fs::read(entry.path().join("environ")) else {
+            continue;
+        };
+        if environment
+            .split(|byte| *byte == 0)
+            .any(|value| value == expected_state.as_bytes())
+        {
+            return Some(pid);
+        }
+    }
+    None
 }
 
 fn gate_hook(marker: &std::path::Path, release: &std::path::Path) -> String {
@@ -1420,6 +1455,107 @@ fn ctrl_c_during_the_program_announces_after_so_the_next_one_kills_it() {
     wait_for("run after hook group to be killed", || {
         wineo_core::process::group_has_live_members(group) == Some(false)
     });
+}
+
+#[test]
+fn repeated_hangup_and_terminate_do_not_force_a_wine_run() {
+    for signal_name in ["-HUP", "-TERM"] {
+        let f = Fixture::new();
+        f.global_config("stop_timeout = 1\n");
+        f.environment("app", "[targets.app]\nexe = 'stubborn'\n");
+        let stderr_path = f.root.path().join("run.stderr");
+        let mut run = spawn_wineo_with_stderr(&f, &["run", "app"], &stderr_path);
+        wait_for("stubborn game to run", || f.fake_program_running("app"));
+
+        signal(&run, signal_name);
+        wait_for_text(&stderr_path, "Stopping app, press Ctrl+C again to force it");
+        signal(&run, signal_name);
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            run.try_wait().unwrap().is_none(),
+            "repeated {signal_name} forced the run"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            if run.try_wait().unwrap().is_some() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = run.kill();
+                panic!("repeated {signal_name} did not finish its graceful stop");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(run.wait().unwrap().code(), Some(137));
+        assert!(f.state("app").contains("status = \"stopped\""));
+    }
+}
+
+#[test]
+fn a_second_ctrl_c_forces_a_wine_run() {
+    let f = Fixture::new();
+    f.global_config("stop_timeout = 10\n");
+    f.environment("app", "[targets.app]\nexe = 'stubborn'\n");
+    let stderr_path = f.root.path().join("run.stderr");
+    let mut run = spawn_wineo_with_stderr(&f, &["run", "app"], &stderr_path);
+    wait_for("stubborn game to run", || f.fake_program_running("app"));
+
+    signal(&run, "-INT");
+    wait_for_text(&stderr_path, "Stopping app, press Ctrl+C again to force it");
+    signal(&run, "-INT");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if run.try_wait().unwrap().is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = run.kill();
+            panic!("second Ctrl+C did not force the run");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(run.wait().unwrap().code(), Some(137));
+    assert!(f.state("app").contains("status = \"stopped\""));
+}
+
+#[test]
+fn repeated_stop_signals_do_not_force_a_detached_wine_supervisor() {
+    for signal_name in ["-HUP", "-TERM"] {
+        let f = Fixture::new();
+        f.global_config("stop_timeout = 1\n");
+        f.environment("app", "[targets.app]\nexe = 'stubborn'\n");
+        assert_success(&f.run(&["start", "app"]));
+        wait_for("stubborn game to run", || f.fake_program_running("app"));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let supervisor = loop {
+            if let Some(pid) = detached_supervisor_pid(&f) {
+                break pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "detached supervisor was not found"
+            );
+            thread::sleep(Duration::from_millis(20));
+        };
+        signal_pid(supervisor, signal_name);
+        wait_for("detached supervisor to begin stopping", || {
+            fs::read_to_string(f.runtime("app").log_path())
+                .is_ok_and(|text| text.contains("stopping, asking programs to close"))
+        });
+        signal_pid(supervisor, signal_name);
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            f.runtime("app").is_running().unwrap(),
+            "repeated {signal_name} forced the detached run"
+        );
+
+        wait_for("detached graceful stop to finish", || {
+            !f.runtime("app").is_running().unwrap()
+        });
+        assert!(f.state("app").contains("status = \"stopped\""));
+    }
 }
 
 #[test]

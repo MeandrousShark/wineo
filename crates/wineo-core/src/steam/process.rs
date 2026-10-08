@@ -54,15 +54,10 @@ pub fn matching_reapers(install: &Install, app_id: &str) -> io::Result<Vec<Reape
     let reader = Proc;
 
     for pid in proc_pids()? {
-        let Some(process) = inspect(&reader, pid)? else {
+        let Some(process) = reaper_candidate(&reader, pid, &app_arg, &expected, &canonical)? else {
             continue;
         };
-        if !matches_arguments(&process.arguments, &app_arg, &expected, &canonical)
-            || process.stat.ppid <= 1
-        {
-            continue;
-        }
-        let Some(parent) = inspect(&reader, process.stat.ppid)? else {
+        let Some(parent) = client_candidate(&reader, process.stat.ppid)? else {
             continue;
         };
         if !matches_client(install, &parent)
@@ -78,6 +73,52 @@ pub fn matching_reapers(install: &Install, app_id: &str) -> io::Result<Vec<Reape
     }
     found.sort_by_key(|reaper| reaper.pid);
     Ok(found)
+}
+
+fn reaper_candidate<R: ProcessReader>(
+    reader: &R,
+    pid: u32,
+    app_arg: &str,
+    expected: &Path,
+    canonical: &Path,
+) -> io::Result<Option<Inspected<R::Fd>>> {
+    let Some(mut process) = inspect_stat(reader, pid)? else {
+        return Ok(None);
+    };
+    let Some(arguments) = reader.arguments(pid)? else {
+        return Ok(None);
+    };
+    if process.stat.ppid <= 1
+        || arguments.len() < 3
+        || arguments[1] != b"SteamLaunch"
+        || arguments[2] != app_arg.as_bytes()
+    {
+        return Ok(None);
+    }
+    process.arguments = arguments;
+    if !matches_arguments(&process.arguments, app_arg, expected, canonical) {
+        process.exe = reader.exe(pid)?;
+    }
+    if !matches_reaper(&process, app_arg, expected, canonical) || !still_current(reader, &process)?
+    {
+        return Ok(None);
+    }
+    Ok(Some(process))
+}
+
+fn client_candidate<R: ProcessReader>(
+    reader: &R,
+    pid: u32,
+) -> io::Result<Option<Inspected<R::Fd>>> {
+    let Some(mut process) = inspect_stat(reader, pid)? else {
+        return Ok(None);
+    };
+    process.exe = reader.exe(pid)?;
+    process.arguments = reader.arguments(pid)?.unwrap_or_default();
+    if !still_current(reader, &process)? {
+        return Ok(None);
+    }
+    Ok(Some(process))
 }
 
 /// Capture the time before the first running check, plus every reaper seen at
@@ -118,7 +159,7 @@ pub fn open_reaper(reaper: &Reaper) -> io::Result<Option<OwnedFd>> {
     if current_boot_id()? != reaper.boot_id {
         return Ok(None);
     }
-    let Some(process) = inspect(&Proc, reaper.pid)? else {
+    let Some(process) = inspect_stat(&Proc, reaper.pid)? else {
         return Ok(None);
     };
     if process.stat.start_time != reaper.start_time {
@@ -222,8 +263,8 @@ fn capture_tree(reaper: &Reaper, seen: &mut BTreeMap<(u32, u64), Member>) -> io:
     }
     let mut processes = Vec::new();
     for pid in proc_pids()? {
-        if let Some(process) = inspect(&Proc, pid)? {
-            processes.push(process);
+        if let Some(stat) = Proc.stat(pid)? {
+            processes.push(stat);
         }
     }
     capture_members(&Proc, processes, seen)
@@ -231,7 +272,7 @@ fn capture_tree(reaper: &Reaper, seen: &mut BTreeMap<(u32, u64), Member>) -> io:
 
 fn capture_members<R: ProcessReader>(
     reader: &R,
-    processes: Vec<Inspected<R::Fd>>,
+    processes: Vec<ProcStat>,
     seen: &mut BTreeMap<(u32, u64), Member<R::Fd>>,
 ) -> io::Result<()> {
     let mut queue = VecDeque::new();
@@ -240,14 +281,24 @@ fn capture_members<R: ProcessReader>(
             queue.push_back(key);
         }
     }
-    let mut candidates = processes.into_iter().map(Some).collect::<Vec<_>>();
+    let mut candidates = BTreeMap::<u32, Vec<ProcStat>>::new();
+    for stat in processes {
+        if live(stat.state) {
+            candidates.entry(stat.ppid).or_default().push(stat);
+        }
+    }
     while let Some((pid, start_time)) = queue.pop_front() {
-        for candidate in &mut candidates {
-            let Some(process) = candidate.as_ref() else {
+        for candidate in candidates.remove(&pid).unwrap_or_default() {
+            let key = (candidate.pid, candidate.start_time);
+            if seen.contains_key(&key) || candidate.start_time < start_time {
+                continue;
+            }
+            let Some(process) = inspect_stat(reader, candidate.pid)? else {
                 continue;
             };
-            let key = (process.stat.pid, process.stat.start_time);
-            if seen.contains_key(&key) || process.stat.ppid != pid {
+            if process.stat.start_time != candidate.start_time
+                || process.stat.ppid != candidate.ppid
+            {
                 continue;
             }
             let parent = ProcStat {
@@ -258,10 +309,9 @@ fn capture_members<R: ProcessReader>(
             };
             // Exited members retain their pidfds for signalling survivors, but
             // their numeric pids can never anchor another ancestry edge.
-            if !current_child(reader, process, parent, &seen[&(pid, start_time)].fd)? {
+            if !current_child(reader, &process, parent, &seen[&(pid, start_time)].fd)? {
                 continue;
             }
-            let process = candidate.take().expect("candidate checked above");
             seen.insert(
                 key,
                 Member {
@@ -284,7 +334,7 @@ fn current_child<R: ProcessReader>(
     Ok(child.stat.ppid == parent.pid
         && child.stat.start_time >= parent.start_time
         && !reader.exited(&child.fd)?
-        && reader.stat(child.stat.pid).is_some_and(|stat| {
+        && reader.stat(child.stat.pid)?.is_some_and(|stat| {
             stat.start_time == child.stat.start_time && stat.ppid == parent.pid && live(stat.state)
         })
         && !reader.exited(parent_fd)?)
@@ -317,9 +367,9 @@ trait ProcessReader {
     type Fd;
 
     fn open(&self, pid: u32) -> io::Result<Self::Fd>;
-    fn stat(&self, pid: u32) -> Option<ProcStat>;
-    fn arguments(&self, pid: u32) -> Option<Vec<Vec<u8>>>;
-    fn exe(&self, pid: u32) -> Option<PathBuf>;
+    fn stat(&self, pid: u32) -> io::Result<Option<ProcStat>>;
+    fn arguments(&self, pid: u32) -> io::Result<Option<Vec<Vec<u8>>>>;
+    fn exe(&self, pid: u32) -> io::Result<Option<PathBuf>>;
     fn exited(&self, fd: &Self::Fd) -> io::Result<bool>;
 }
 
@@ -332,16 +382,20 @@ impl ProcessReader for Proc {
         open_pidfd(pid)
     }
 
-    fn stat(&self, pid: u32) -> Option<ProcStat> {
+    fn stat(&self, pid: u32) -> io::Result<Option<ProcStat>> {
         read_stat(pid)
     }
 
-    fn arguments(&self, pid: u32) -> Option<Vec<Vec<u8>>> {
+    fn arguments(&self, pid: u32) -> io::Result<Option<Vec<Vec<u8>>>> {
         read_arguments(pid)
     }
 
-    fn exe(&self, pid: u32) -> Option<PathBuf> {
-        fs::read_link(format!("/proc/{pid}/exe")).ok()
+    fn exe(&self, pid: u32) -> io::Result<Option<PathBuf>> {
+        match fs::read_link(format!("/proc/{pid}/exe")) {
+            Ok(path) => Ok(Some(path)),
+            Err(error) if process_gone(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     fn exited(&self, fd: &OwnedFd) -> io::Result<bool> {
@@ -356,41 +410,53 @@ struct Inspected<F> {
     exe: Option<PathBuf>,
 }
 
+#[cfg(test)]
 fn inspect<R: ProcessReader>(reader: &R, pid: u32) -> io::Result<Option<Inspected<R::Fd>>> {
+    inspect_with_metadata(reader, pid, true)
+}
+
+fn inspect_stat<R: ProcessReader>(reader: &R, pid: u32) -> io::Result<Option<Inspected<R::Fd>>> {
+    inspect_with_metadata(reader, pid, false)
+}
+
+fn inspect_with_metadata<R: ProcessReader>(
+    reader: &R,
+    pid: u32,
+    metadata: bool,
+) -> io::Result<Option<Inspected<R::Fd>>> {
     let fd = match reader.open(pid) {
         Ok(fd) => fd,
-        Err(error)
-            if matches!(
-                error.raw_os_error(),
-                Some(code) if code == rustix::io::Errno::SRCH.raw_os_error()
-                    || code == rustix::io::Errno::PERM.raw_os_error()
-                    || code == rustix::io::Errno::ACCESS.raw_os_error()
-            ) =>
-        {
-            return Ok(None);
-        }
+        Err(error) if process_gone(&error) => return Ok(None),
         Err(error) => return Err(error),
     };
-    let Some(stat) = reader.stat(pid).filter(|stat| live(stat.state)) else {
+    let Some(stat) = reader.stat(pid)?.filter(|stat| live(stat.state)) else {
         return Ok(None);
     };
-    let arguments = reader.arguments(pid).unwrap_or_default();
-    let exe = reader.exe(pid);
-    if reader.exited(&fd)?
-        || !reader.stat(pid).is_some_and(|current| {
-            current.start_time == stat.start_time
-                && current.ppid == stat.ppid
-                && live(current.state)
-        })
-    {
-        return Ok(None);
-    }
-    Ok(Some(Inspected {
+    let arguments = if metadata {
+        reader.arguments(pid)?.unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let exe = if metadata { reader.exe(pid)? } else { None };
+    let process = Inspected {
         fd,
         stat,
         arguments,
         exe,
-    }))
+    };
+    if !still_current(reader, &process)? {
+        return Ok(None);
+    }
+    Ok(Some(process))
+}
+
+fn still_current<R: ProcessReader>(reader: &R, process: &Inspected<R::Fd>) -> io::Result<bool> {
+    Ok(!reader.exited(&process.fd)?
+        && reader.stat(process.stat.pid)?.is_some_and(|current| {
+            current.start_time == process.stat.start_time
+                && current.ppid == process.stat.ppid
+                && live(current.state)
+        }))
 }
 
 fn matches_client<F>(install: &Install, process: &Inspected<F>) -> bool {
@@ -429,8 +495,28 @@ fn matches_arguments(args: &[Vec<u8>], app_arg: &str, expected: &Path, canonical
     }
 }
 
-fn read_arguments(pid: u32) -> Option<Vec<Vec<u8>>> {
-    let bytes = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+fn matches_reaper<F>(
+    process: &Inspected<F>,
+    app_arg: &str,
+    expected: &Path,
+    canonical: &Path,
+) -> bool {
+    matches_arguments(&process.arguments, app_arg, expected, canonical)
+        || (process.arguments.len() >= 3
+            && process.arguments[1] == b"SteamLaunch"
+            && process.arguments[2] == app_arg.as_bytes()
+            && process
+                .exe
+                .as_deref()
+                .is_some_and(|path| matches_path(path, expected, canonical)))
+}
+
+fn read_arguments(pid: u32) -> io::Result<Option<Vec<Vec<u8>>>> {
+    let bytes = match fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(bytes) => bytes,
+        Err(error) if process_gone(&error) => return Ok(None),
+        Err(error) => return Err(error),
+    };
     let mut args = bytes
         .split(|byte| *byte == 0)
         .map(Vec::from)
@@ -438,11 +524,25 @@ fn read_arguments(pid: u32) -> Option<Vec<Vec<u8>>> {
     if args.last().is_some_and(Vec::is_empty) {
         args.pop();
     }
-    Some(args)
+    Ok(Some(args))
 }
 
-fn read_stat(pid: u32) -> Option<ProcStat> {
-    parse_stat(pid, &fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+fn read_stat(pid: u32) -> io::Result<Option<ProcStat>> {
+    match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(text) => parse_stat(pid, &text)
+            .map(Some)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid process stat")),
+        Err(error) if process_gone(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn process_gone(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(code) if code == rustix::io::Errno::SRCH.raw_os_error()
+            || code == rustix::io::Errno::NOENT.raw_os_error()
+    )
 }
 
 fn parse_stat(pid: u32, text: &str) -> Option<ProcStat> {
@@ -461,10 +561,22 @@ fn live(state: char) -> bool {
 }
 
 fn proc_pids() -> io::Result<Vec<u32>> {
-    Ok(fs::read_dir("/proc")?
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
-        .collect())
+    let mut pids = Vec::new();
+    for entry in fs::read_dir("/proc")? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) if process_gone(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        if let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse().ok())
+        {
+            pids.push(pid);
+        }
+    }
+    Ok(pids)
 }
 
 fn current_boot_id() -> io::Result<String> {
@@ -559,10 +671,51 @@ mod tests {
         assert!(matches_arguments(&aliased, "AppId=289070", &path, &path));
     }
 
+    #[test]
+    fn reaper_match_accepts_verified_exe_when_argv_path_differs() {
+        let root = tempfile::tempdir().unwrap();
+        let expected = root.path().join("ubuntu12_32/reaper");
+        fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        fs::write(&expected, "").unwrap();
+        let mut process = Inspected {
+            fd: (),
+            stat: stat(10, 1, 20),
+            arguments: vec![
+                b"reaper".to_vec(),
+                b"SteamLaunch".to_vec(),
+                b"AppId=289070".to_vec(),
+            ],
+            exe: Some(expected.clone()),
+        };
+        assert!(matches_reaper(
+            &process,
+            "AppId=289070",
+            &expected,
+            &expected
+        ));
+        assert!(!matches_reaper(
+            &process,
+            "AppId=2890",
+            &expected,
+            &expected
+        ));
+        process.exe = Some(root.path().join("other/reaper"));
+        assert!(!matches_reaper(
+            &process,
+            "AppId=289070",
+            &expected,
+            &expected
+        ));
+    }
+
     struct FakeProc {
         stats: RefCell<BTreeMap<u32, VecDeque<ProcStat>>>,
         exited: BTreeSet<u32>,
         calls: RefCell<Vec<&'static str>>,
+        open_error: Option<u32>,
+        stat_error: Option<u32>,
+        arguments_error: Option<u32>,
+        exe_error: Option<u32>,
     }
 
     impl FakeProc {
@@ -576,6 +729,10 @@ mod tests {
                 ),
                 exited: BTreeSet::new(),
                 calls: RefCell::new(Vec::new()),
+                open_error: None,
+                stat_error: None,
+                arguments_error: None,
+                exe_error: None,
             }
         }
     }
@@ -585,32 +742,54 @@ mod tests {
 
         fn open(&self, pid: u32) -> io::Result<u32> {
             self.calls.borrow_mut().push("open");
+            if self.open_error == Some(pid) {
+                return Err(io::Error::from_raw_os_error(
+                    rustix::io::Errno::MFILE.raw_os_error(),
+                ));
+            }
             Ok(pid)
         }
 
-        fn stat(&self, pid: u32) -> Option<ProcStat> {
+        fn stat(&self, pid: u32) -> io::Result<Option<ProcStat>> {
             self.calls.borrow_mut().push("stat");
+            if self.stat_error == Some(pid) {
+                return Err(io::Error::from_raw_os_error(
+                    rustix::io::Errno::MFILE.raw_os_error(),
+                ));
+            }
             let mut stats = self.stats.borrow_mut();
-            let reads = stats.get_mut(&pid)?;
-            if reads.len() > 1 {
+            let Some(reads) = stats.get_mut(&pid) else {
+                return Ok(None);
+            };
+            Ok(if reads.len() > 1 {
                 reads.pop_front()
             } else {
                 reads.front().copied()
-            }
+            })
         }
 
-        fn arguments(&self, _pid: u32) -> Option<Vec<Vec<u8>>> {
+        fn arguments(&self, pid: u32) -> io::Result<Option<Vec<Vec<u8>>>> {
             self.calls.borrow_mut().push("cmdline");
-            Some(vec![
+            if self.arguments_error == Some(pid) {
+                return Err(io::Error::from_raw_os_error(
+                    rustix::io::Errno::MFILE.raw_os_error(),
+                ));
+            }
+            Ok(Some(vec![
                 b"reaper".to_vec(),
                 b"SteamLaunch".to_vec(),
                 b"AppId=289070".to_vec(),
-            ])
+            ]))
         }
 
-        fn exe(&self, _pid: u32) -> Option<PathBuf> {
+        fn exe(&self, pid: u32) -> io::Result<Option<PathBuf>> {
             self.calls.borrow_mut().push("exe");
-            Some(PathBuf::from("reaper"))
+            if self.exe_error == Some(pid) {
+                return Err(io::Error::from_raw_os_error(
+                    rustix::io::Errno::MFILE.raw_os_error(),
+                ));
+            }
+            Ok(Some(PathBuf::from("reaper")))
         }
 
         fn exited(&self, pid: &u32) -> io::Result<bool> {
@@ -634,10 +813,7 @@ mod tests {
         root: u32,
         start_time: u64,
     ) -> Vec<ProcStat> {
-        let processes = stats
-            .iter()
-            .filter_map(|stat| inspect(reader, stat.pid).unwrap())
-            .collect();
+        let processes = stats.to_vec();
         let mut seen = BTreeMap::new();
         if let Some(process) = inspect(reader, root).unwrap()
             && process.stat.start_time == start_time
@@ -715,10 +891,7 @@ mod tests {
     fn tree_walk_never_anchors_children_to_an_exited_retained_pidfd() {
         let stats = [stat(10, 1, 20), stat(11, 10, 30)];
         let mut reader = FakeProc::new(&stats);
-        let processes = stats
-            .iter()
-            .map(|stat| inspect(&reader, stat.pid).unwrap().unwrap())
-            .collect();
+        let processes = stats.to_vec();
         let mut seen = BTreeMap::from([(
             (10, 20),
             Member {
@@ -737,9 +910,91 @@ mod tests {
     fn tree_walk_rechecks_parent_pidfd_when_linking_a_child() {
         let stats = [stat(10, 1, 20), stat(11, 10, 30)];
         let mut reader = FakeProc::new(&stats);
-        let child = inspect(&reader, 11).unwrap().unwrap();
+        let child = inspect_stat(&reader, 11).unwrap().unwrap();
         reader.exited.insert(10);
         assert!(!current_child(&reader, &child, stats[0], &10).unwrap());
+    }
+
+    #[test]
+    fn tree_walk_opens_only_descendants_and_propagates_pidfd_errors() {
+        let stats = [stat(10, 1, 20), stat(11, 10, 30), stat(12, 1, 40)];
+        let mut reader = FakeProc::new(&stats);
+        reader.open_error = Some(12);
+        let mut seen = BTreeMap::from([(
+            (10, 20),
+            Member {
+                fd: 10,
+                term_sent: false,
+            },
+        )]);
+        capture_members(&reader, stats.to_vec(), &mut seen).unwrap();
+        assert!(seen.contains_key(&(11, 30)));
+        assert!(!seen.contains_key(&(12, 40)));
+        reader.open_error = Some(11);
+        let mut seen = BTreeMap::from([(
+            (10, 20),
+            Member {
+                fd: 10,
+                term_sent: false,
+            },
+        )]);
+        let error = capture_members(&reader, stats.to_vec(), &mut seen).unwrap_err();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(rustix::io::Errno::MFILE.raw_os_error())
+        );
+    }
+
+    #[test]
+    fn stat_errors_are_not_treated_as_process_exits() {
+        let mut reader = FakeProc::new(&[stat(10, 1, 20)]);
+        reader.stat_error = Some(10);
+        let error = inspect_stat(&reader, 10).err().unwrap();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(rustix::io::Errno::MFILE.raw_os_error())
+        );
+    }
+
+    #[test]
+    fn reaper_candidate_reads_exe_only_after_positional_match() {
+        let path = Path::new("/steam/ubuntu12_32/reaper");
+        let mut reader = FakeProc::new(&[stat(10, 2, 20)]);
+        reader.exe_error = Some(10);
+        assert!(
+            reaper_candidate(&reader, 10, "AppId=2890", path, path)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!reader.calls.borrow().contains(&"exe"));
+        let error = reaper_candidate(&reader, 10, "AppId=289070", path, path)
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(rustix::io::Errno::MFILE.raw_os_error())
+        );
+    }
+
+    #[test]
+    fn candidate_metadata_errors_propagate() {
+        let path = Path::new("/steam/ubuntu12_32/reaper");
+        let mut reader = FakeProc::new(&[stat(10, 2, 20)]);
+        reader.arguments_error = Some(10);
+        let error = reaper_candidate(&reader, 10, "AppId=289070", path, path)
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(rustix::io::Errno::MFILE.raw_os_error())
+        );
+        reader.arguments_error = None;
+        reader.exe_error = Some(10);
+        let error = client_candidate(&reader, 10).err().unwrap();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(rustix::io::Errno::MFILE.raw_os_error())
+        );
     }
 
     #[test]
@@ -780,7 +1035,7 @@ mod tests {
     #[test]
     fn uptime_ticks_track_current_process_start() {
         let ticks = uptime_ticks().unwrap();
-        let own = read_stat(std::process::id()).unwrap().start_time;
+        let own = read_stat(std::process::id()).unwrap().unwrap().start_time;
         assert!(ticks >= own);
     }
 
@@ -819,7 +1074,7 @@ mod tests {
         let child_fd = open_pidfd(child_pid).unwrap();
         let reaper = Reaper {
             pid: root.id(),
-            start_time: read_stat(root.id()).unwrap().start_time,
+            start_time: read_stat(root.id()).unwrap().unwrap().start_time,
             boot_id: current_boot_id().unwrap(),
         };
         stop_tree(&reaper, Duration::from_millis(100), false, || false).unwrap();
