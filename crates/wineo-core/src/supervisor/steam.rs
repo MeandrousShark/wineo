@@ -123,6 +123,18 @@ impl Supervisor {
                 Ok(())
             }
             Err(err) => {
+                // The after hook releases the run lock before CLI error reporting.
+                if state.mode == RunMode::Detached {
+                    let path = runtime.log_path();
+                    if let Err(log_err) = OpenOptions::new()
+                        .append(true)
+                        .open(&path)
+                        .and_then(|mut log| writeln!(log, "error: {}", error::chain(&err)))
+                        .context(|| format!("failed to write {}", path.display()))
+                    {
+                        notify(Notice::Warning(log_err));
+                    }
+                }
                 state.finish(RunStatus::Failed);
                 runtime.write_state(state)?;
                 Err(err)

@@ -105,14 +105,19 @@ pub struct Steam {
 
 impl Steam {
     pub fn new(install: &crate::steam::Install, app_id: &str) -> Self {
-        let prefix = install
-            .root()
-            .join("steamapps/compatdata")
-            .join(app_id)
-            .join("pfx");
+        let prefix = crate::steam::manifests(install)
+            .into_iter()
+            .find(|entry| entry.app_id == app_id)
+            .map(|entry| {
+                entry
+                    .library
+                    .join("steamapps/compatdata")
+                    .join(app_id)
+                    .join("pfx")
+            });
         Self {
             app_id: app_id.to_owned(),
-            prefix: Some(prefix),
+            prefix,
         }
     }
 }

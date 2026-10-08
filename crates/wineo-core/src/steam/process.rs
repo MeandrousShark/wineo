@@ -2,7 +2,7 @@
 //! contains the Steam client, so every signal here goes through a verified
 //! pidfd for a member of the reaper's process tree.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
@@ -15,7 +15,7 @@ use rustix::fd::OwnedFd;
 use rustix::param::clock_ticks_per_second;
 use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 
-use super::Install;
+use super::{Install, InstallKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct Reaper {
@@ -46,37 +46,33 @@ struct ProcStat {
 pub fn matching_reapers(install: &Install, app_id: &str) -> io::Result<Vec<Reaper>> {
     let boot_id = current_boot_id()?;
     let expected = install.root().join("ubuntu12_32/reaper");
-    let canonical = fs::canonicalize(&expected).unwrap_or_else(|_| expected.clone());
+    let canonical = fs::canonicalize(install.root())
+        .unwrap_or_else(|_| install.root().to_owned())
+        .join("ubuntu12_32/reaper");
     let app_arg = format!("AppId={app_id}");
     let mut found = Vec::new();
+    let reader = Proc;
 
     for pid in proc_pids()? {
-        let Some(arguments) = read_arguments(pid) else {
+        let Some(process) = inspect(&reader, pid)? else {
             continue;
         };
-        if !matches_arguments(&arguments, &app_arg, &expected, &canonical) {
+        if !matches_arguments(&process.arguments, &app_arg, &expected, &canonical)
+            || process.stat.ppid <= 1
+        {
             continue;
         }
-        let Some(stat) = read_stat(pid) else {
+        let Some(parent) = inspect(&reader, process.stat.ppid)? else {
             continue;
         };
-        if !live(stat.state) || stat.ppid <= 1 {
-            continue;
-        }
-        let Some(parent) = read_stat(stat.ppid) else {
-            continue;
-        };
-        if !live(parent.state) {
-            continue;
-        }
-        // A reparented orphan is no longer anchored to Steam. Reading again
-        // also catches a parent change while cmdline and stat were inspected.
-        if read_stat(pid) != Some(stat) {
+        if !matches_client(install, &parent)
+            || !current_child(&reader, &process, parent.stat, &parent.fd)?
+        {
             continue;
         }
         found.push(Reaper {
             pid,
-            start_time: stat.start_time,
+            start_time: process.stat.start_time,
             boot_id: boot_id.clone(),
         });
     }
@@ -122,26 +118,13 @@ pub fn open_reaper(reaper: &Reaper) -> io::Result<Option<OwnedFd>> {
     if current_boot_id()? != reaper.boot_id {
         return Ok(None);
     }
-    let Some(stat) = read_stat(reaper.pid) else {
+    let Some(process) = inspect(&Proc, reaper.pid)? else {
         return Ok(None);
     };
-    if stat.start_time != reaper.start_time || !live(stat.state) {
+    if process.stat.start_time != reaper.start_time {
         return Ok(None);
     }
-    let fd = match open_pidfd(reaper.pid) {
-        Ok(fd) => fd,
-        Err(error) if error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()) => {
-            return Ok(None);
-        }
-        Err(error) => return Err(error),
-    };
-    if !read_stat(reaper.pid)
-        .is_some_and(|current| current.start_time == reaper.start_time && live(current.state))
-        || pidfd_exited(&fd)?
-    {
-        return Ok(None);
-    }
-    Ok(Some(fd))
+    Ok(Some(process.fd))
 }
 
 pub fn reaper_alive(reaper: &Reaper) -> bool {
@@ -228,8 +211,8 @@ fn all_exited(seen: &BTreeMap<(u32, u64), Member>) -> io::Result<bool> {
     Ok(true)
 }
 
-struct Member {
-    fd: OwnedFd,
+struct Member<F = OwnedFd> {
+    fd: F,
     term_sent: bool,
 }
 
@@ -237,48 +220,74 @@ fn capture_tree(reaper: &Reaper, seen: &mut BTreeMap<(u32, u64), Member>) -> io:
     if current_boot_id()? != reaper.boot_id {
         return Ok(());
     }
-    let stats = proc_pids()?
-        .into_iter()
-        .filter_map(read_stat)
-        .filter(|stat| live(stat.state))
-        .collect::<Vec<_>>();
-    let seeds = seen
-        .iter()
-        .filter(|(_, member)| !pidfd_exited(&member.fd).unwrap_or(true))
-        .map(|(key, _)| *key)
-        .collect::<Vec<_>>();
-    for stat in tree_members_from_seeds(&stats, &seeds) {
-        let key = (stat.pid, stat.start_time);
-        if seen.contains_key(&key) {
-            continue;
+    let mut processes = Vec::new();
+    for pid in proc_pids()? {
+        if let Some(process) = inspect(&Proc, pid)? {
+            processes.push(process);
         }
-        let Some(current) = read_stat(stat.pid) else {
-            continue;
-        };
-        if current != stat {
-            continue;
+    }
+    capture_members(&Proc, processes, seen)
+}
+
+fn capture_members<R: ProcessReader>(
+    reader: &R,
+    processes: Vec<Inspected<R::Fd>>,
+    seen: &mut BTreeMap<(u32, u64), Member<R::Fd>>,
+) -> io::Result<()> {
+    let mut queue = VecDeque::new();
+    for (&key, member) in seen.iter() {
+        if !reader.exited(&member.fd)? {
+            queue.push_back(key);
         }
-        let fd = match open_pidfd(stat.pid) {
-            Ok(fd) => fd,
-            Err(error) if error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()) => {
+    }
+    let mut candidates = processes.into_iter().map(Some).collect::<Vec<_>>();
+    while let Some((pid, start_time)) = queue.pop_front() {
+        for candidate in &mut candidates {
+            let Some(process) = candidate.as_ref() else {
+                continue;
+            };
+            let key = (process.stat.pid, process.stat.start_time);
+            if seen.contains_key(&key) || process.stat.ppid != pid {
                 continue;
             }
-            Err(error) => return Err(error),
-        };
-        if read_stat(stat.pid)
-            .is_some_and(|current| current.start_time == stat.start_time && live(current.state))
-            && !pidfd_exited(&fd)?
-        {
+            let parent = ProcStat {
+                pid,
+                ppid: 0,
+                start_time,
+                state: 'S',
+            };
+            // Exited members retain their pidfds for signalling survivors, but
+            // their numeric pids can never anchor another ancestry edge.
+            if !current_child(reader, process, parent, &seen[&(pid, start_time)].fd)? {
+                continue;
+            }
+            let process = candidate.take().expect("candidate checked above");
             seen.insert(
                 key,
                 Member {
-                    fd,
+                    fd: process.fd,
                     term_sent: false,
                 },
             );
+            queue.push_back(key);
         }
     }
     Ok(())
+}
+
+fn current_child<R: ProcessReader>(
+    reader: &R,
+    child: &Inspected<R::Fd>,
+    parent: ProcStat,
+    parent_fd: &R::Fd,
+) -> io::Result<bool> {
+    Ok(child.stat.ppid == parent.pid
+        && child.stat.start_time >= parent.start_time
+        && !reader.exited(&child.fd)?
+        && reader.stat(child.stat.pid).is_some_and(|stat| {
+            stat.start_time == child.stat.start_time && stat.ppid == parent.pid && live(stat.state)
+        })
+        && !reader.exited(parent_fd)?)
 }
 
 fn signal_members(
@@ -302,40 +311,121 @@ fn signal_members(
     Ok(())
 }
 
-#[cfg(test)]
-fn tree_members(stats: &[ProcStat], root: u32, start_time: u64) -> Vec<ProcStat> {
-    tree_members_from_seeds(stats, &[(root, start_time)])
+// All metadata reads belong to the process held by this pidfd. Checking
+// again after the reads rejects exits and PID reuse during a /proc scan.
+trait ProcessReader {
+    type Fd;
+
+    fn open(&self, pid: u32) -> io::Result<Self::Fd>;
+    fn stat(&self, pid: u32) -> Option<ProcStat>;
+    fn arguments(&self, pid: u32) -> Option<Vec<Vec<u8>>>;
+    fn exe(&self, pid: u32) -> Option<PathBuf>;
+    fn exited(&self, fd: &Self::Fd) -> io::Result<bool>;
 }
 
-fn tree_members_from_seeds(stats: &[ProcStat], seeds: &[(u32, u64)]) -> Vec<ProcStat> {
-    let mut result = Vec::new();
-    let mut queue = VecDeque::new();
-    let mut visited = BTreeSet::new();
-    for &(pid, start_time) in seeds {
-        if let Some(stat) = stats
-            .iter()
-            .find(|stat| stat.pid == pid && stat.start_time == start_time)
-            && visited.insert(pid)
+struct Proc;
+
+impl ProcessReader for Proc {
+    type Fd = OwnedFd;
+
+    fn open(&self, pid: u32) -> io::Result<OwnedFd> {
+        open_pidfd(pid)
+    }
+
+    fn stat(&self, pid: u32) -> Option<ProcStat> {
+        read_stat(pid)
+    }
+
+    fn arguments(&self, pid: u32) -> Option<Vec<Vec<u8>>> {
+        read_arguments(pid)
+    }
+
+    fn exe(&self, pid: u32) -> Option<PathBuf> {
+        fs::read_link(format!("/proc/{pid}/exe")).ok()
+    }
+
+    fn exited(&self, fd: &OwnedFd) -> io::Result<bool> {
+        pidfd_exited(fd)
+    }
+}
+
+struct Inspected<F> {
+    fd: F,
+    stat: ProcStat,
+    arguments: Vec<Vec<u8>>,
+    exe: Option<PathBuf>,
+}
+
+fn inspect<R: ProcessReader>(reader: &R, pid: u32) -> io::Result<Option<Inspected<R::Fd>>> {
+    let fd = match reader.open(pid) {
+        Ok(fd) => fd,
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(code) if code == rustix::io::Errno::SRCH.raw_os_error()
+                    || code == rustix::io::Errno::PERM.raw_os_error()
+                    || code == rustix::io::Errno::ACCESS.raw_os_error()
+            ) =>
         {
-            result.push(*stat);
-            queue.push_back(pid);
+            return Ok(None);
         }
+        Err(error) => return Err(error),
+    };
+    let Some(stat) = reader.stat(pid).filter(|stat| live(stat.state)) else {
+        return Ok(None);
+    };
+    let arguments = reader.arguments(pid).unwrap_or_default();
+    let exe = reader.exe(pid);
+    if reader.exited(&fd)?
+        || !reader.stat(pid).is_some_and(|current| {
+            current.start_time == stat.start_time
+                && current.ppid == stat.ppid
+                && live(current.state)
+        })
+    {
+        return Ok(None);
     }
-    while let Some(parent) = queue.pop_front() {
-        for stat in stats.iter().filter(|stat| stat.ppid == parent) {
-            if visited.insert(stat.pid) {
-                result.push(*stat);
-                queue.push_back(stat.pid);
-            }
+    Ok(Some(Inspected {
+        fd,
+        stat,
+        arguments,
+        exe,
+    }))
+}
+
+fn matches_client<F>(install: &Install, process: &Inspected<F>) -> bool {
+    let expected = install.root().join("ubuntu12_32/steam");
+    let canonical = fs::canonicalize(install.root())
+        .unwrap_or_else(|_| install.root().to_owned())
+        .join("ubuntu12_32/steam");
+    let argv_matches = || {
+        process.arguments.first().is_some_and(|argument| {
+            matches_path(
+                Path::new(OsStr::from_bytes(argument)),
+                &expected,
+                &canonical,
+            )
+        })
+    };
+    match &process.exe {
+        Some(exe) => {
+            matches_path(exe, &expected, &canonical)
+                || (install.kind() == InstallKind::Flatpak && argv_matches())
         }
+        None => argv_matches(),
     }
-    result
+}
+
+fn matches_path(path: &Path, expected: &Path, canonical: &Path) -> bool {
+    path == expected
+        || path == canonical
+        || fs::canonicalize(path).is_ok_and(|path| path == canonical)
 }
 
 fn matches_arguments(args: &[Vec<u8>], app_arg: &str, expected: &Path, canonical: &Path) -> bool {
     args.len() >= 3 && args[1] == b"SteamLaunch" && args[2] == app_arg.as_bytes() && {
         let path = PathBuf::from(OsStr::from_bytes(&args[0]));
-        path == expected || fs::canonicalize(path).is_ok_and(|path| path == canonical)
+        matches_path(&path, expected, canonical)
     }
 }
 
@@ -416,6 +506,8 @@ fn open_pidfd(pid: u32) -> io::Result<OwnedFd> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::collections::BTreeSet;
     use std::os::unix::fs::symlink;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -467,14 +559,136 @@ mod tests {
         assert!(matches_arguments(&aliased, "AppId=289070", &path, &path));
     }
 
-    #[test]
-    fn tree_walk_follows_parent_chain_without_process_groups() {
-        let stat = |pid, ppid, start_time| ProcStat {
+    struct FakeProc {
+        stats: RefCell<BTreeMap<u32, VecDeque<ProcStat>>>,
+        exited: BTreeSet<u32>,
+        calls: RefCell<Vec<&'static str>>,
+    }
+
+    impl FakeProc {
+        fn new(stats: &[ProcStat]) -> Self {
+            Self {
+                stats: RefCell::new(
+                    stats
+                        .iter()
+                        .map(|stat| (stat.pid, VecDeque::from([*stat])))
+                        .collect(),
+                ),
+                exited: BTreeSet::new(),
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ProcessReader for FakeProc {
+        type Fd = u32;
+
+        fn open(&self, pid: u32) -> io::Result<u32> {
+            self.calls.borrow_mut().push("open");
+            Ok(pid)
+        }
+
+        fn stat(&self, pid: u32) -> Option<ProcStat> {
+            self.calls.borrow_mut().push("stat");
+            let mut stats = self.stats.borrow_mut();
+            let reads = stats.get_mut(&pid)?;
+            if reads.len() > 1 {
+                reads.pop_front()
+            } else {
+                reads.front().copied()
+            }
+        }
+
+        fn arguments(&self, _pid: u32) -> Option<Vec<Vec<u8>>> {
+            self.calls.borrow_mut().push("cmdline");
+            Some(vec![
+                b"reaper".to_vec(),
+                b"SteamLaunch".to_vec(),
+                b"AppId=289070".to_vec(),
+            ])
+        }
+
+        fn exe(&self, _pid: u32) -> Option<PathBuf> {
+            self.calls.borrow_mut().push("exe");
+            Some(PathBuf::from("reaper"))
+        }
+
+        fn exited(&self, pid: &u32) -> io::Result<bool> {
+            self.calls.borrow_mut().push("exited");
+            Ok(self.exited.contains(pid))
+        }
+    }
+
+    fn stat(pid: u32, ppid: u32, start_time: u64) -> ProcStat {
+        ProcStat {
             pid,
             ppid,
             start_time,
             state: 'S',
-        };
+        }
+    }
+
+    fn tree_members(
+        reader: &FakeProc,
+        stats: &[ProcStat],
+        root: u32,
+        start_time: u64,
+    ) -> Vec<ProcStat> {
+        let processes = stats
+            .iter()
+            .filter_map(|stat| inspect(reader, stat.pid).unwrap())
+            .collect();
+        let mut seen = BTreeMap::new();
+        if let Some(process) = inspect(reader, root).unwrap()
+            && process.stat.start_time == start_time
+        {
+            seen.insert(
+                (root, start_time),
+                Member {
+                    fd: process.fd,
+                    term_sent: false,
+                },
+            );
+        }
+        capture_members(reader, processes, &mut seen).unwrap();
+        stats
+            .iter()
+            .filter(|stat| seen.contains_key(&(stat.pid, stat.start_time)))
+            .copied()
+            .collect()
+    }
+
+    #[test]
+    fn inspection_opens_pidfd_before_metadata_and_confirms_identity_afterwards() {
+        let reader = FakeProc::new(&[stat(11, 10, 20)]);
+        assert!(inspect(&reader, 11).unwrap().is_some());
+        assert_eq!(
+            *reader.calls.borrow(),
+            ["open", "stat", "cmdline", "exe", "exited", "stat"]
+        );
+    }
+
+    #[test]
+    fn inspection_rejects_pid_reused_between_metadata_reads() {
+        let original = stat(11, 10, 20);
+        let stranger = stat(11, 10, 30);
+        let reader = FakeProc::new(&[original]);
+        reader
+            .stats
+            .borrow_mut()
+            .insert(11, VecDeque::from([original, stranger]));
+        assert!(inspect(&reader, 11).unwrap().is_none());
+    }
+
+    #[test]
+    fn inspection_rejects_an_exited_pidfd_even_if_stat_still_matches() {
+        let mut reader = FakeProc::new(&[stat(11, 10, 20)]);
+        reader.exited.insert(11);
+        assert!(inspect(&reader, 11).unwrap().is_none());
+    }
+
+    #[test]
+    fn tree_walk_follows_parent_chain_without_process_groups() {
         let stats = [
             stat(10, 1, 9),
             stat(11, 10, 10),
@@ -482,11 +696,85 @@ mod tests {
             stat(13, 1, 12),
             stat(14, 12, 13),
         ];
+        let reader = FakeProc::new(&stats);
         assert_eq!(
-            tree_members(&stats, 11, 10),
+            tree_members(&reader, &stats, 11, 10),
             vec![stats[1], stats[2], stats[4]]
         );
-        assert!(tree_members(&stats, 11, 999).is_empty());
+        assert!(tree_members(&reader, &stats, 11, 999).is_empty());
+    }
+
+    #[test]
+    fn tree_walk_rejects_stale_edge_when_child_predates_parent() {
+        let stats = [stat(10, 1, 20), stat(11, 10, 10), stat(12, 11, 30)];
+        let reader = FakeProc::new(&stats);
+        assert_eq!(tree_members(&reader, &stats, 10, 20), vec![stats[0]]);
+    }
+
+    #[test]
+    fn tree_walk_never_anchors_children_to_an_exited_retained_pidfd() {
+        let stats = [stat(10, 1, 20), stat(11, 10, 30)];
+        let mut reader = FakeProc::new(&stats);
+        let processes = stats
+            .iter()
+            .map(|stat| inspect(&reader, stat.pid).unwrap().unwrap())
+            .collect();
+        let mut seen = BTreeMap::from([(
+            (10, 20),
+            Member {
+                fd: 10,
+                term_sent: true,
+            },
+        )]);
+        // Numeric PID 10 may now belong to a stranger. The retained pidfd
+        // remains exited, even if a later /proc snapshot has the same ppid.
+        reader.exited.insert(10);
+        capture_members(&reader, processes, &mut seen).unwrap();
+        assert_eq!(seen.keys().copied().collect::<Vec<_>>(), [(10, 20)]);
+    }
+
+    #[test]
+    fn tree_walk_rechecks_parent_pidfd_when_linking_a_child() {
+        let stats = [stat(10, 1, 20), stat(11, 10, 30)];
+        let mut reader = FakeProc::new(&stats);
+        let child = inspect(&reader, 11).unwrap().unwrap();
+        reader.exited.insert(10);
+        assert!(!current_child(&reader, &child, stats[0], &10).unwrap());
+    }
+
+    #[test]
+    fn client_match_requires_install_exe_with_limited_argv_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut install = Install {
+            kind: InstallKind::Native,
+            root: temp.path().to_owned(),
+        };
+        let path = install.root().join("ubuntu12_32/steam");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "").unwrap();
+        let mut client = Inspected {
+            fd: (),
+            stat: stat(10, 1, 10),
+            arguments: vec![path.as_os_str().as_bytes().to_vec()],
+            exe: Some(path.clone()),
+        };
+        assert!(matches_client(&install, &client));
+        client.exe = Some(PathBuf::from("/unrelated/steam"));
+        assert!(!matches_client(&install, &client));
+        client.exe = None;
+        assert!(matches_client(&install, &client));
+        client.arguments[0] = b"/unrelated/steam".to_vec();
+        assert!(!matches_client(&install, &client));
+        install.kind = InstallKind::Flatpak;
+        client.exe = Some(PathBuf::from("/sandbox/steam"));
+        client.arguments[0] = path.as_os_str().as_bytes().to_vec();
+        assert!(matches_client(&install, &client));
+        let alias = temp.path().join("alias");
+        symlink(temp.path(), &alias).unwrap();
+        install.kind = InstallKind::Native;
+        install.root = alias;
+        client.exe = Some(path);
+        assert!(matches_client(&install, &client));
     }
 
     #[test]

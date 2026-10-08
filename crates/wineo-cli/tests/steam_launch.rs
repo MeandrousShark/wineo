@@ -1,11 +1,12 @@
 mod common;
 
 use std::fs;
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::steam::SteamFixture;
+use common::steam::{SteamFixture, read_pid};
 use common::{assert_success, stderr, stdout, wait_for};
 
 fn signal(pid: u32, kind: &str) {
@@ -23,6 +24,27 @@ fn alive(pid: u32) -> bool {
         .ok()
         .and_then(|stat| stat.rsplit_once(") ").map(|(_, fields)| fields.to_owned()))
         .is_some_and(|fields| !fields.starts_with('Z'))
+}
+
+fn fixture_supervisors(s: &SteamFixture) -> Vec<u32> {
+    let marker = format!("WINEO_TEST_STEAM_FIXTURE={}", s.f.root.path().display());
+    fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
+        .filter(|pid| {
+            let root = format!("/proc/{pid}");
+            let command = fs::read(format!("{root}/cmdline")).unwrap_or_default();
+            let environment = fs::read(format!("{root}/environ")).unwrap_or_default();
+            command
+                .split(|byte| *byte == 0)
+                .any(|argument| argument == b"__supervise")
+                && environment
+                    .split(|byte| *byte == 0)
+                    .any(|entry| entry == marker.as_bytes())
+        })
+        .collect()
 }
 
 fn parent_pid(pid: u32) -> Option<u32> {
@@ -119,6 +141,33 @@ fn run_waits_for_natural_exit_and_sets_hook_variables() {
 }
 
 #[test]
+fn hook_prefix_comes_from_the_library_with_the_game_manifest() {
+    let s = SteamFixture::new();
+    let library = s.f.root.path().join("second-library");
+    let root_pfx = s.root.join("steamapps/compatdata/289070/pfx");
+    fs::remove_file(s.root.join("steamapps/appmanifest_289070.acf")).unwrap();
+    fs::create_dir_all(&root_pfx).unwrap();
+    s.add_library(&library);
+    s.set_game_progress_in(&library, "289070", "Civilization VI", 4, 0, 0);
+    s.set_mode("exit");
+    let hook_log = s.f.root.path().join("hooks.log");
+    let pfx = library.join("steamapps/compatdata/289070/pfx");
+    fs::create_dir_all(&pfx).unwrap();
+    s.config(&format!(
+        "[hooks]\nbefore = 'printf \"%s\\n\" \"$WINEO_PREFIX\" > {}'\n",
+        hook_log.display()
+    ));
+
+    let ran = s.run(&["run", "civ"]);
+
+    assert_eq!(ran.status.code(), Some(0), "{}", stderr(&ran));
+    assert_eq!(
+        fs::read_to_string(hook_log).unwrap().trim(),
+        pfx.display().to_string()
+    );
+}
+
+#[test]
 fn steam_started_game_is_visible_and_stop_runs_no_hooks() {
     let s = SteamFixture::new();
     let marker = s.f.root.path().join("hooks");
@@ -191,6 +240,25 @@ fn a_missing_reaper_fails_after_short_test_timeout_and_runs_after() {
         s.f.log("civ")
     );
     assert!(!s.f.stats_log("civ").exists());
+}
+
+#[test]
+fn missing_reaper_failure_is_logged_before_the_after_hook_starts() {
+    let s = SteamFixture::new();
+    s.set_mode("none");
+    let captured = s.f.root.path().join("log-at-after");
+    let finished = s.f.root.path().join("after-finished");
+    s.config(&format!(
+        "[hooks]\nafter = 'cat {} > {}; touch {}; sleep 0.3'\n",
+        s.f.runtime("civ").log_path().display(),
+        captured.display(),
+        finished.display()
+    ));
+    assert_success(&s.run(&["start", "civ"]));
+    wait_for("after hook log capture", || finished.exists());
+    let log = fs::read_to_string(captured).unwrap();
+    assert!(log.contains("Steam didn't start civ."), "{log}");
+    s.f.wait_for_run_end("civ", "failed");
 }
 
 #[test]
@@ -365,18 +433,134 @@ fn a_reaper_from_the_other_install_is_not_claimed() {
 }
 
 #[test]
+fn a_matching_reaper_with_an_unrelated_parent_is_not_reported_claimed_or_stopped() {
+    let mut s = SteamFixture::new();
+    s.config("");
+    s.set_mode("none");
+    let reaper = s.launch_from_unrelated_parent("289070");
+    wait_for("unrelated reaper", || alive(reaper));
+
+    let status = s.run(&["status", "civ"]);
+    assert_success(&status);
+    assert!(
+        stdout(&status).contains("civ: inactive"),
+        "{}",
+        stdout(&status)
+    );
+    let listed = s.run(&["list"]);
+    assert_success(&listed);
+    assert!(!stdout(&listed).contains("running"), "{}", stdout(&listed));
+    let stop = s.run(&["stop", "civ"]);
+    assert_success(&stop);
+    assert!(stderr(&stop).contains("not running"), "{}", stderr(&stop));
+    assert!(
+        alive(reaper),
+        "Stop signaled a reaper with an unrelated parent"
+    );
+
+    assert_success(&s.run(&["start", "civ"]));
+    s.f.wait_for_run_end("civ", "failed");
+    assert_eq!(s.dispatch_count(), 1);
+    assert!(
+        alive(reaper),
+        "launch claimed or stopped the unrelated reaper"
+    );
+    let status = s.run(&["status", "civ"]);
+    assert_success(&status);
+    assert!(stdout(&status).contains("failed"), "{}", stdout(&status));
+    assert!(
+        !stdout(&status).contains("started from Steam"),
+        "{}",
+        stdout(&status)
+    );
+    assert!(!stdout(&status).contains("running"), "{}", stdout(&status));
+    let stop = s.run(&["stop", "civ"]);
+    assert_success(&stop);
+    assert!(stderr(&stop).contains("not running"), "{}", stderr(&stop));
+    assert!(
+        alive(reaper),
+        "Stop signaled a reaper with an unrelated parent"
+    );
+}
+
+#[test]
+fn dropping_the_fixture_kills_every_tracked_process() {
+    let mut s = SteamFixture::new();
+    s.config("");
+    s.set_mode("child");
+    s.launch_from_other_install("289070");
+    let installs = wineo_core::steam::installs(s.f.root.path());
+    let other = installs
+        .iter()
+        .find(|install| install.kind() == wineo_core::steam::InstallKind::Flatpak)
+        .unwrap();
+    wait_for("tracked other-install reaper", || {
+        !wineo_core::steam::matching_reapers(other, "289070")
+            .unwrap()
+            .is_empty()
+    });
+    let unrelated = s.launch_from_unrelated_parent("289070");
+    assert!(alive(unrelated));
+    fs::write(s.f.root.path().join("steam-linger"), "").unwrap();
+    assert_success(&s.run(&["start", "civ"]));
+    wait_for("claimed run and lingering Steam request", || {
+        s.f.state("civ").contains("running_at = ")
+            && read_pid(&s.request_pids).is_some()
+            && read_pid(&s.child_pid).is_some()
+    });
+    let mut tracked = s.tracked_pids();
+    tracked.extend(fixture_supervisors(&s));
+    tracked.sort_unstable();
+    tracked.dedup();
+    let request = read_pid(&s.request_pids).unwrap();
+    assert!(tracked.contains(&request));
+    assert!(alive(request));
+    assert!(tracked.contains(&unrelated));
+    assert!(
+        !fixture_supervisors(&s).is_empty(),
+        "supervisor wasn't tracked"
+    );
+
+    drop(s);
+
+    wait_for("fixture processes exited", || {
+        tracked.iter().all(|pid| !alive(*pid))
+    });
+    assert!(tracked.iter().all(|pid| !alive(*pid)));
+}
+
+#[test]
+fn fixture_cleanup_spares_a_foreign_process_with_a_stale_logged_pid() {
+    let s = SteamFixture::new();
+    s.config("");
+    let mut foreign = Command::new("sleep")
+        .arg("30")
+        .process_group(s.client_pid() as i32)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // A historical PID can now name a stranger, even in the client's group.
+    fs::write(&s.request_pids, format!("{}\n", foreign.id())).unwrap();
+
+    drop(s);
+
+    let survived = foreign.try_wait().unwrap().is_none();
+    let _ = foreign.kill();
+    let _ = foreign.wait();
+    assert!(survived, "fixture cleanup signaled a foreign process");
+}
+
+#[test]
 fn force_stop_kills_reparented_child_but_not_steam_client() {
     let s = SteamFixture::new();
     s.f.global_config("stop_timeout = 1\n");
     s.set_mode("child");
     s.config("");
     assert_success(&s.run(&["start", "civ"]));
-    wait_for("reaper child", || s.child_pid.exists());
-    let child: u32 = fs::read_to_string(&s.child_pid)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    wait_for("reaper child", || read_pid(&s.child_pid).is_some());
+    let child = read_pid(&s.child_pid).unwrap();
     assert!(alive(child));
     assert_success(&s.run(&["stop", "--force", "civ"]));
     wait_for("reparented child killed", || !alive(child));
@@ -390,12 +574,8 @@ fn polite_stop_kills_a_child_reparented_away_from_the_reaper() {
     s.set_mode("child");
     s.config("");
     assert_success(&s.run(&["start", "civ"]));
-    wait_for("reaper child", || s.child_pid.exists());
-    let child: u32 = fs::read_to_string(&s.child_pid)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    wait_for("reaper child", || read_pid(&s.child_pid).is_some());
+    let child = read_pid(&s.child_pid).unwrap();
     let reaper = claimed_pid(&s);
     assert_eq!(parent_pid(child), Some(reaper));
     let stop = s
@@ -490,12 +670,8 @@ fn second_ctrl_c_forces_a_steam_run_without_waiting_for_stop_timeout() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    wait_for("reaper child", || s.child_pid.exists());
-    let survivor: u32 = fs::read_to_string(&s.child_pid)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    wait_for("reaper child", || read_pid(&s.child_pid).is_some());
+    let survivor = read_pid(&s.child_pid).unwrap();
     let reaper = claimed_pid(&s);
     let began = Instant::now();
     signal(child.id(), "-INT");
@@ -544,13 +720,9 @@ fn force_stop_escalates_a_detached_steam_run_after_the_reaper_exits() {
     s.config("");
     assert_success(&s.run(&["start", "civ"]));
     wait_for("claimed run with reaper child", || {
-        s.child_pid.exists() && s.f.state("civ").contains("running_at = ")
+        read_pid(&s.child_pid).is_some() && s.f.state("civ").contains("running_at = ")
     });
-    let survivor: u32 = fs::read_to_string(&s.child_pid)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let survivor = read_pid(&s.child_pid).unwrap();
     let reaper = claimed_pid(&s);
     let stop = s
         .wineo()
