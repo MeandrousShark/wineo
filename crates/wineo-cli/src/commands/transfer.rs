@@ -4,7 +4,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
-use signal_hook::iterator::{Handle, Signals};
+use signal_hook::iterator::exfiltrator::raw::WithRawSiginfo;
+use signal_hook::iterator::{Handle, SignalsInfo};
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
@@ -99,7 +100,8 @@ impl Cancellation {
     fn listen(token: Token, mode: Mode) -> anyhow::Result<Self> {
         let after = matches!(mode, Mode::After { .. });
         let announce = matches!(mode, Mode::After { announce: true });
-        let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP, SIGUSR1])?;
+        // Keep repeated signals queued so a quick second Ctrl+C still forces Stop.
+        let mut signals = SignalsInfo::<WithRawSiginfo>::new([SIGINT, SIGTERM, SIGHUP, SIGUSR1])?;
         // Only once the handler is in, so a quick Ctrl+C after the line counts.
         if announce {
             say_waiting_for_after();
@@ -111,7 +113,8 @@ impl Cancellation {
         let thread = thread::spawn(move || {
             let mut waiting = announce;
             while !thread_stop.load(Ordering::Relaxed) {
-                for signal in signals.pending() {
+                for received in signals.pending() {
+                    let signal = received.si_signo;
                     if after && signal != SIGUSR1 && !waiting {
                         waiting = true;
                         say_waiting_for_after();

@@ -202,7 +202,14 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             stopping = true;
             note(&format!("Stopping {name}, press Ctrl+C again to force it"))
         }
-        Notice::Killing => forced = true,
+        Notice::Killing => {
+            // Both interrupts can arrive before the Steam watcher polls the token.
+            if proxied && !stopping {
+                stopping = true;
+                note(&format!("Stopping {name}, press Ctrl+C again to force it"));
+            }
+            forced = true;
+        }
         Notice::Warning(err) => warn(err.into()),
         Notice::Heartbeat => {}
     };

@@ -17,7 +17,8 @@ use rustix::io::Errno;
 use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process, setsid, waitid};
 use serde::{Deserialize, Serialize};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
-use signal_hook::iterator::{Handle, Signals};
+use signal_hook::iterator::exfiltrator::raw::WithRawSiginfo;
+use signal_hook::iterator::{Handle, SignalsInfo};
 
 use crate::cancel::Token;
 use crate::error::{self, Error, IoContext, Result};
@@ -121,7 +122,8 @@ impl Supervisor {
     /// still stops it cleanly. SIGINT, SIGTERM, and SIGHUP ask for a clean stop
     /// and force it when repeated. SIGUSR1 forces it right away.
     pub fn listen() -> Result<Self> {
-        let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP, SIGUSR1])
+        // A repeated stop request must survive arriving before the listener polls.
+        let mut signals = SignalsInfo::<WithRawSiginfo>::new([SIGINT, SIGTERM, SIGHUP, SIGUSR1])
             .context(|| "failed to set up signal handling".to_owned())?;
         let handle = signals.handle();
         let (sender, events) = mpsc::channel();
@@ -130,7 +132,8 @@ impl Supervisor {
         let thread_stop = signal_stop.clone();
         let signal_thread = thread::spawn(move || {
             while !thread_stop.load(Ordering::Relaxed) {
-                for signal in signals.pending() {
+                for received in signals.pending() {
+                    let signal = received.si_signo;
                     let event = if signal == SIGUSR1 {
                         Event::Force
                     } else {

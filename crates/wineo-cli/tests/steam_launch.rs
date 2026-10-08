@@ -527,6 +527,45 @@ fn two_reapers_started_during_before_are_not_claimed() {
 }
 
 #[test]
+fn force_stop_escalates_a_detached_steam_run_after_the_reaper_exits() {
+    let s = SteamFixture::new();
+    s.f.global_config("stop_timeout = 4\n");
+    s.set_mode("child");
+    s.config("");
+    assert_success(&s.run(&["start", "civ"]));
+    wait_for("claimed run with reaper child", || {
+        s.child_pid.exists() && s.f.state("civ").contains("running_at = ")
+    });
+    let survivor: u32 = fs::read_to_string(&s.child_pid)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let reaper = claimed_pid(&s);
+    let stop = s
+        .wineo()
+        .args(["stop", "civ"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for("reaper exited during polite Stop", || {
+        !alive(reaper) && alive(survivor) && parent_pid(survivor) != Some(reaper)
+    });
+    let began = Instant::now();
+    assert_success(&s.run(&["stop", "--force", "civ"]));
+    assert_success(&stop.wait_with_output().unwrap());
+    assert!(
+        began.elapsed() < Duration::from_secs(3),
+        "force Stop waited for stop_timeout"
+    );
+    wait_for("forced child kill", || !alive(survivor));
+    s.f.wait_for_run_end("civ", "stopped");
+    assert!(alive(s.client_pid()), "Stop signaled the fake Steam client");
+    assert!(!s.f.stats_log("civ").exists());
+}
+
+#[test]
 fn attached_run_exits_one_when_two_reapers_appear_during_before() {
     let s = SteamFixture::new();
     s.config(&format!(
