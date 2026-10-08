@@ -64,6 +64,9 @@ pub enum Error {
     #[error("desktop entries aren't supported for portable environments")]
     PortableDesktop,
 
+    #[error("unrelated desktop shortcut at {} was not overwritten", .0.display())]
+    DesktopEntryConflict(PathBuf),
+
     #[error("{} is not valid UTF-8, which config files require", .0.display())]
     NonUtf8Path(PathBuf),
 

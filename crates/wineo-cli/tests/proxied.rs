@@ -200,8 +200,14 @@ fn setup_refuses_a_proxied_environment() {
 #[test]
 fn plain_rm_moves_a_proxied_environment_to_trash() {
     let f = Fixture::new();
-    f.write_config("bg3", BG3);
-    let removed = f.run(&["rm", "bg3"]);
+    f.write_config("bg3", &format!("{BG3}desktop = true\n"));
+    let entry = f
+        .root
+        .path()
+        .join("data/applications/wineo-bg3-steam.desktop");
+    assert_success(&f.run_at_home(&["set", "bg3", "desktop=true"]));
+    assert!(entry.is_file());
+    let removed = f.run_at_home(&["rm", "bg3"]);
     assert_success(&removed);
     assert!(
         stdout(&removed).starts_with("Removed environment bg3 to trash "),
@@ -209,6 +215,18 @@ fn plain_rm_moves_a_proxied_environment_to_trash() {
         stdout(&removed)
     );
     assert!(!f.config_dir().join("environments/bg3.toml").exists());
+    assert!(!entry.exists());
+    let removed_text = stdout(&removed);
+    let id = removed_text
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .last()
+        .unwrap()
+        .to_owned();
+    assert_success(&f.run_at_home(&["restore", &id]));
+    assert!(entry.is_file());
 }
 
 #[test]
@@ -221,9 +239,24 @@ fn set_changes_only_what_a_proxied_environment_has() {
         "desktop=true",
         "hooks.after=true",
     ] {
-        assert_success(&f.run(&["set", "bg3", setting]));
+        assert_success(&f.run_at_home(&["set", "bg3", setting]));
     }
     let text = f.config_text("bg3");
+    let entry = f
+        .root
+        .path()
+        .join("data/applications/wineo-bg3-steam.desktop");
+    assert!(entry.is_file());
+    assert!(
+        fs::read_to_string(&entry)
+            .unwrap()
+            .contains("Exec=wineo start bg3\n")
+    );
+    let desktop = f.run_at_home(&["desktop"]);
+    assert_success(&desktop);
+    let listed = stdout(&desktop);
+    assert!(listed.contains("steam"), "{listed}");
+    assert!(listed.contains("Baldur's Gate 3"), "{listed}");
     assert!(text.starts_with("# mine\n"), "{text}");
     for line in [
         "tags = ['game']",
@@ -233,7 +266,8 @@ fn set_changes_only_what_a_proxied_environment_has() {
     ] {
         assert!(text.contains(line), "{line} in {text}");
     }
-    assert_success(&f.run(&["set", "bg3", "--unset", "title", "--unset", "desktop"]));
+    assert_success(&f.run_at_home(&["set", "bg3", "--unset", "title", "--unset", "desktop"]));
+    assert!(!entry.exists());
     let unset = f.config_text("bg3");
     assert!(!unset.contains("title"), "{unset}");
     assert!(!unset.contains("desktop"), "{unset}");
@@ -287,9 +321,15 @@ fn proxied_only_keys_are_refused_on_wine_and_native() {
 }
 
 #[test]
-fn validate_skips_wine_and_native_checks_for_a_proxied_environment() {
+fn validate_checks_steam_for_a_proxied_environment() {
     let f = Fixture::new();
     f.write_config("bg3", BG3);
-    let checked = f.run(&["validate", "bg3"]);
-    assert_success(&checked);
+    let checked = f.run_at_home(&["validate", "bg3"]);
+    assert!(!checked.status.success());
+    assert!(
+        stdout(&checked).contains("Steam isn't installed"),
+        "stdout: {}\nstderr: {}",
+        stdout(&checked),
+        stderr(&checked)
+    );
 }

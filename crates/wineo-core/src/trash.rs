@@ -1821,10 +1821,7 @@ fn reconcile(paths: &Paths, name: &str) -> Result<()> {
     };
     if desktop::supported(paths).is_ok() {
         let owned = desktop::list(paths)?;
-        for (target, config) in &environment.config.targets {
-            if !config.desktop {
-                continue;
-            }
+        for target in desktop::requested_targets(&environment) {
             let shortcut = paths
                 .applications_dir()
                 .join(format!("wineo-{name}-{target}.desktop"));
@@ -1843,8 +1840,7 @@ fn reconcile(paths: &Paths, name: &str) -> Result<()> {
     let global = GlobalConfig::load_or_default(paths)?;
     let changes = match &environment.config.kind {
         config::Kind::Native => desktop::reconcile_native(paths, &global, &environment)?,
-        // Proxied environments get no entries yet.
-        config::Kind::Proxied(_) => Vec::new(),
+        config::Kind::Proxied(_) => desktop::reconcile_proxied(paths, &global, &environment)?,
         config::Kind::Wine(_) => desktop::reconcile(
             paths,
             &global,

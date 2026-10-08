@@ -664,7 +664,7 @@ pub fn drop_unknown_target(paths: &Paths, env: &str, target: &str) -> Result<boo
     let art_dir = paths.art_dir(env);
     let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
     let environment = Environment::load(paths, env)?;
-    if environment.config.targets.contains_key(target) {
+    if has_target(&environment, target) {
         return Ok(false);
     }
     let mut art = ArtFile::open(&art_dir)?;
@@ -803,7 +803,13 @@ pub fn list(paths: &Paths, env: &str) -> Result<Listing> {
         kinds.push((kind, resolved));
     }
     let mut targets = Vec::new();
-    for target in environment.config.targets.keys() {
+    let mut known_targets: Vec<String> = environment.config.targets.keys().cloned().collect();
+    if let config::Kind::Proxied(proxied) = &environment.config.kind {
+        known_targets.push(proxied.launcher.as_str().to_owned());
+    }
+    known_targets.sort();
+    known_targets.dedup();
+    for target in &known_targets {
         let mut overrides = Vec::new();
         for kind in Kind::ALL {
             let dir = target_dir(&art_dir, target);
@@ -830,7 +836,7 @@ pub fn list(paths: &Paths, env: &str) -> Result<Listing> {
         }
     }
     for target in config.targets.keys() {
-        if !environment.config.targets.contains_key(target) {
+        if !has_target(&environment, target) {
             warnings.push(Warning::UnknownTarget(target.clone()));
         }
     }
@@ -880,7 +886,7 @@ pub fn check_spot(paths: &Paths, env: &str, target: Option<&str>) -> Result<()> 
         None => Environment::ensure_exists(paths, env),
         Some(target) => {
             let environment = Environment::load(paths, env)?;
-            if environment.config.targets.contains_key(target) {
+            if has_target(&environment, target) {
                 Ok(())
             } else {
                 Err(Error::UnknownTarget {
@@ -890,6 +896,14 @@ pub fn check_spot(paths: &Paths, env: &str, target: Option<&str>) -> Result<()> 
             }
         }
     }
+}
+
+fn has_target(environment: &Environment, target: &str) -> bool {
+    environment.config.targets.contains_key(target)
+        || matches!(
+            &environment.config.kind,
+            config::Kind::Proxied(proxied) if proxied.launcher.as_str() == target
+        )
 }
 
 /// Reads an art file, refusing one over the cap without reading all of it.

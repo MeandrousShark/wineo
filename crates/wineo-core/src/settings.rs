@@ -271,10 +271,19 @@ fn check_desktop(
     unset: &[&str],
 ) -> anyhow::Result<()> {
     let enabled = enabled_desktops(pairs);
-    if enabled.is_empty() {
+    let proxied_enabled = pairs.iter().any(|(key, raw)| {
+        *key == "desktop"
+            && unquote(raw) == "true"
+            && Environment::load(paths, name)
+                .is_ok_and(|environment| matches!(environment.config.kind, Kind::Proxied(_)))
+    });
+    if enabled.is_empty() && !proxied_enabled {
         return Ok(());
     }
     desktop::supported(paths)?;
+    if proxied_enabled {
+        return Ok(());
+    }
     let environment = Environment::load(paths, name).ok();
     let Some(prefix) = environment.as_ref().and_then(|env| env.prefix(paths).ok()) else {
         return Ok(());

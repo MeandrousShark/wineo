@@ -30,6 +30,7 @@ use crate::programs;
 use crate::runner::Runner;
 use crate::runners::Runners;
 use crate::runtime::Runtime;
+use crate::steam;
 use crate::winpath;
 
 const ENVIRONMENT_KEY: &str = "X-Wineo-Environment";
@@ -81,8 +82,10 @@ pub fn apply(paths: &Paths, name: &str, held: bool) -> Result<Vec<Change>> {
             let global = GlobalConfig::load_or_default(paths)?;
             return reconcile_native(paths, &global, &environment);
         }
-        // Proxied environments get no entries yet.
-        Kind::Proxied(_) => return Ok(Vec::new()),
+        Kind::Proxied(_) => {
+            let global = GlobalConfig::load_or_default(paths)?;
+            return reconcile_proxied(paths, &global, &environment);
+        }
     }
     let Ok(prefix) = environment.prefix(paths) else {
         return Ok(Vec::new());
@@ -152,6 +155,16 @@ pub fn reconcile_native(
     reconcile_with(paths, global, environment, None, None)
 }
 
+/// Reconciles the implicit target of a proxied environment. Its icon can only
+/// come from wineo's art store, and its launch goes through wineo so hooks run.
+pub fn reconcile_proxied(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+) -> Result<Vec<Change>> {
+    reconcile_with(paths, global, environment, None, None)
+}
+
 /// What reconciling would change, worked out without writing anything or
 /// running wine, so `validate` can say whether the entries are out of date.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +188,15 @@ pub fn pending(
 
 /// `pending` for a native environment.
 pub fn pending_native(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+) -> Result<Vec<Pending>> {
+    pending_with(paths, global, environment, None, None)
+}
+
+/// `pending` for a proxied environment.
+pub fn pending_proxied(
     paths: &Paths,
     global: &GlobalConfig,
     environment: &Environment,
@@ -217,13 +239,10 @@ fn reconcile_with(
     // The entries on the host belong to XDG environments, even one with the
     // same name, so a portable one only reports what it asked for.
     if supported(paths).is_err() {
-        return Ok(environment
-            .config
-            .targets
-            .iter()
-            .filter(|(_, target)| target.desktop)
-            .map(|(target, _)| Change::Skipped {
-                target: target.clone(),
+        return Ok(requested_targets(environment)
+            .into_iter()
+            .map(|target| Change::Skipped {
+                target,
                 reason: Error::PortableDesktop.to_string(),
             })
             .collect());
@@ -270,31 +289,42 @@ fn plan(
     runner: Option<&Runner>,
     prefix: Option<&Path>,
 ) -> Result<Plan> {
-    // Proxied environments get no entries yet, and none are touched.
-    if let Kind::Proxied(_) = environment.config.kind {
-        return Ok(Plan {
-            wanted: Vec::new(),
-            leftover: Vec::new(),
-        });
-    }
     let mut wanted = Vec::new();
-    for (target_name, target) in &environment.config.targets {
-        if target.desktop {
-            let draft = draft(
-                paths,
-                global,
-                environment,
-                runner,
-                prefix,
-                target_name,
-                target,
-            );
-            wanted.push((target_name.clone(), draft));
+    match &environment.config.kind {
+        Kind::Wine(_) | Kind::Native => {
+            for (target_name, target) in &environment.config.targets {
+                if target.desktop {
+                    let draft = draft(
+                        paths,
+                        global,
+                        environment,
+                        runner,
+                        prefix,
+                        target_name,
+                        target,
+                    );
+                    wanted.push((target_name.clone(), draft));
+                }
+            }
         }
+        Kind::Proxied(proxied) if proxied.desktop => {
+            wanted.push((
+                proxied.launcher.as_str().to_owned(),
+                draft_proxied(paths, global, environment, proxied),
+            ));
+        }
+        Kind::Proxied(_) => {}
     }
+    let proxied_target = match &environment.config.kind {
+        Kind::Proxied(proxied) => Some(proxied.launcher.as_str()),
+        Kind::Wine(_) | Kind::Native => None,
+    };
     let leftover = owned_by(paths, &environment.name)?
         .into_iter()
-        .filter(|entry| !wanted.iter().any(|(target, _)| *target == entry.target))
+        .filter(|entry| {
+            proxied_target.is_none_or(|target| entry.target == target)
+                && !wanted.iter().any(|(target, _)| *target == entry.target)
+        })
         .collect();
     Ok(Plan { wanted, leftover })
 }
@@ -338,6 +368,23 @@ pub fn supported(paths: &Paths) -> Result<()> {
     match paths.portable_root() {
         Some(_) => Err(Error::PortableDesktop),
         None => Ok(()),
+    }
+}
+
+/// The desktop targets the config currently asks wineo to reconcile.
+pub(crate) fn requested_targets(environment: &Environment) -> Vec<String> {
+    match &environment.config.kind {
+        Kind::Wine(_) | Kind::Native => environment
+            .config
+            .targets
+            .iter()
+            .filter(|(_, target)| target.desktop)
+            .map(|(name, _)| name.clone())
+            .collect(),
+        Kind::Proxied(proxied) if proxied.desktop => {
+            vec![proxied.launcher.as_str().to_owned()]
+        }
+        Kind::Proxied(_) => Vec::new(),
     }
 }
 
@@ -385,6 +432,21 @@ fn read_entry(path: &Path) -> Option<Entry> {
     })
 }
 
+fn ensure_entry_available(path: &Path, environment: &str, target: &str) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_)
+            if read_entry(path).is_some_and(|entry| {
+                entry.environment == environment && entry.target == target
+            }) =>
+        {
+            Ok(())
+        }
+        Ok(_) => Err(Error::DesktopEntryConflict(path.to_owned())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(Error::DesktopEntryConflict(path.to_owned())),
+    }
+}
+
 /// Everything about a target's entry that is known without writing it.
 struct Draft {
     path: PathBuf,
@@ -392,22 +454,26 @@ struct Draft {
     existing_stamp: Option<String>,
     name: String,
     exe: String,
+    exec: String,
+    wine: bool,
     gaming: bool,
     art: Option<IconArt>,
     art_stamp: Option<String>,
     had_icon: bool,
     stale_art: bool,
+    art_only: bool,
 }
 
 impl Draft {
-    fn render(&self, environment: &str, target: &str, wine: bool, icon: bool) -> String {
+    fn render(&self, environment: &str, target: &str, icon: bool) -> String {
         let stamp = self.stamp(icon);
         render(&Desired {
             environment,
             target,
             name: &self.name,
             exe: &self.exe,
-            wine,
+            exec: &self.exec,
+            wine: self.wine,
             gaming: self.gaming,
             icon,
             stamp,
@@ -472,18 +538,76 @@ fn draft(
         existing_stamp,
         name,
         exe: target.exe.clone(),
+        exec: format!("wineo start {} --target {target_name}", environment.name),
+        wine: prefix.is_some(),
         gaming,
         art,
         art_stamp,
         had_icon,
         stale_art,
+        art_only: false,
     };
     // With an icon already there, the text below matches and nothing runs.
     let current = !draft.stale_art
         && draft.existing.as_deref()
             == Some(
                 draft
-                    .render(&environment.name, target_name, prefix.is_some(), had_icon)
+                    .render(&environment.name, target_name, had_icon)
+                    .as_str(),
+            );
+    Ok((!current).then_some(draft))
+}
+
+fn draft_proxied(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    proxied: &crate::config::ProxiedConfig,
+) -> Result<Option<Draft>> {
+    let target_name = proxied.launcher.as_str();
+    let live_title = steam::active_for(paths, global).and_then(|install| {
+        steam::manifests(&install)
+            .into_iter()
+            .find(|entry| entry.app_id == proxied.app_id)
+            .and_then(|entry| entry.manifest.ok())
+            .map(|manifest| manifest.name)
+            .filter(|title| !title.is_empty())
+    });
+    let name = live_title
+        .or_else(|| proxied.title.clone())
+        .unwrap_or_else(|| environment.name.clone());
+    let path = entry_path(paths, &environment.name, target_name);
+    ensure_entry_available(&path, &environment.name, target_name)?;
+    let existing = fs::read_to_string(&path).ok();
+    let existing_stamp = existing.as_deref().and_then(stamp_of).map(str::to_owned);
+    let art = icon_art(paths, &environment.name, target_name)?;
+    let art_stamp = art.as_ref().map(|art| format!("art:{}", art.hash));
+    let had_icon = has_icon(paths, &environment.name, target_name);
+    let stale_art = art.is_none()
+        && existing_stamp
+            .as_deref()
+            .is_some_and(|stamp| stamp.starts_with("art:"));
+    let draft = Draft {
+        path,
+        existing,
+        existing_stamp,
+        name,
+        exe: String::new(),
+        exec: format!("wineo start {}", environment.name),
+        wine: false,
+        gaming: true,
+        art,
+        art_stamp,
+        had_icon,
+        stale_art,
+        art_only: true,
+    };
+    let current = !draft.stale_art
+        && !(draft.art_only && draft.art.is_none() && draft.had_icon)
+        && draft.existing.as_deref()
+            == Some(
+                draft
+                    .render(&environment.name, target_name, had_icon)
                     .as_str(),
             );
     Ok((!current).then_some(draft))
@@ -497,6 +621,9 @@ fn write(
     target_name: &str,
     draft: Draft,
 ) -> Result<Vec<Change>> {
+    if matches!(&environment.config.kind, Kind::Proxied(_)) {
+        ensure_entry_available(&draft.path, &environment.name, target_name)?;
+    }
     let extract = || {
         runner.zip(prefix).is_some_and(|(runner, prefix)| {
             extract_icon(
@@ -540,10 +667,10 @@ fn write(
                         unreadable = changed;
                         let art_made =
                             existing_stamp.is_some_and(|stamp| stamp.starts_with("art:"));
-                        if art_made {
+                        if art_made || draft.art_only {
                             remove_icons(paths, &environment.name, target_name)?;
                         }
-                        (had_icon && !art_made) || extract()
+                        !draft.art_only && (had_icon && !art_made || extract())
                     }
                     Err(err) => return Err(err),
                 }
@@ -552,16 +679,16 @@ fn write(
             }
         }
         None => {
-            if stale_art {
+            if stale_art || draft.art_only {
                 remove_icons(paths, &environment.name, target_name)?;
             }
             // Only attempted when the entry is being written anyway, so a
             // target with no icon to find does not pay for wine starting up
             // on every launch.
-            (had_icon && !stale_art) || extract()
+            !draft.art_only && (had_icon && !stale_art || extract())
         }
     };
-    let text = draft.render(&environment.name, target_name, prefix.is_some(), icon);
+    let text = draft.render(&environment.name, target_name, icon);
     write_atomic(&draft.path, text)?;
 
     let mut changes = vec![match draft.existing {
@@ -621,6 +748,7 @@ struct Desired<'a> {
     target: &'a str,
     name: &'a str,
     exe: &'a str,
+    exec: &'a str,
     /// Whether wine runs it, which decides the window class.
     wine: bool,
     gaming: bool,
@@ -634,6 +762,7 @@ fn render(desired: &Desired) -> String {
         target,
         name,
         exe,
+        exec,
         wine,
         gaming,
         icon,
@@ -652,9 +781,7 @@ fn render(desired: &Desired) -> String {
     text.push_str(&format!(
         "Comment=Runs in the wineo environment {environment}\n"
     ));
-    text.push_str(&format!(
-        "Exec=wineo start {environment} --target {target}\n"
-    ));
+    text.push_str(&format!("Exec={exec}\n"));
     if *icon {
         text.push_str(&format!("Icon={}\n", icon_name(environment, target)));
     }
@@ -975,6 +1102,37 @@ mod tests {
             );
             fs::write(&path, text).unwrap();
             Environment::load(&self.paths, "hades").unwrap()
+        }
+
+        fn proxied(&self, config: &str) -> Environment {
+            let path = self.paths.environment_config("hades");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                format!("kind = 'proxied'\nlauncher = 'steam'\napp_id = '1086940'\n{config}"),
+            )
+            .unwrap();
+            Environment::load(&self.paths, "hades").unwrap()
+        }
+
+        fn steam_game(&self, title: &str) -> PathBuf {
+            let manifest = self
+                ._root
+                .path()
+                .join(".local/share/Steam/steamapps/appmanifest_1086940.acf");
+            fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            fs::write(
+                &manifest,
+                format!(
+                    "\"AppState\" {{ \"appid\" \"1086940\" \"name\" \"{title}\" \"StateFlags\" \"4\" }}"
+                ),
+            )
+            .unwrap();
+            manifest
+        }
+
+        fn reconcile_proxied(&self, environment: &Environment) -> Vec<Change> {
+            reconcile_proxied(&self.paths, &GlobalConfig::default(), environment).unwrap()
         }
 
         /// Reconciles with no runner, so nothing tries to start wine for an icon.
@@ -1760,5 +1918,234 @@ mod tests {
         let environment = fixture
             .environment("\n[targets.hades]\nexe = 'C:\\Hades\\Missing.exe'\ndesktop = true\n");
         assert!(pending_for(&fixture, &environment).is_empty());
+    }
+
+    #[test]
+    fn proxied_entries_use_the_implicit_target_and_title_fallbacks() {
+        let fixture = Fixture::new();
+        let manifest = fixture.steam_game("Live title");
+        let environment = fixture.proxied("title = 'Stored title'\ndesktop = true\n");
+        assert_eq!(
+            fixture.reconcile_proxied(&environment),
+            [Change::Wrote {
+                target: "steam".to_owned(),
+                icon: false,
+            }]
+        );
+        let entry = fixture.entry("steam").unwrap();
+        assert!(entry.contains("Name=Live title\n"), "{entry}");
+        assert!(entry.contains("Exec=wineo start hades\n"), "{entry}");
+        assert!(entry.contains("Categories=Game;\n"), "{entry}");
+        assert!(entry.contains("X-Wineo-Target=steam\n"), "{entry}");
+        assert!(!entry.lines().any(|line| line.starts_with("Icon=")));
+
+        fs::remove_file(manifest).unwrap();
+        let environment = fixture.proxied("title = 'Stored title'\ndesktop = true\n");
+        assert_eq!(
+            fixture.reconcile_proxied(&environment),
+            [Change::Updated {
+                target: "steam".to_owned()
+            }]
+        );
+        assert!(
+            fixture
+                .entry("steam")
+                .unwrap()
+                .contains("Name=Stored title\n")
+        );
+
+        let environment = fixture.proxied("desktop = true\n");
+        fixture.reconcile_proxied(&environment);
+        assert!(fixture.entry("steam").unwrap().contains("Name=hades\n"));
+    }
+
+    #[test]
+    fn proxied_entry_does_not_replace_or_remove_a_native_name_collision() {
+        let fixture = Fixture::new();
+        let native_config = fixture.paths.environment_config("x");
+        fs::create_dir_all(native_config.parent().unwrap()).unwrap();
+        fs::write(
+            &native_config,
+            "kind = 'native'\n[targets.foo-steam]\nexe = '/bin/true'\ndesktop = true\n",
+        )
+        .unwrap();
+        let native = Environment::load(&fixture.paths, "x").unwrap();
+        assert_eq!(
+            reconcile_native(&fixture.paths, &GlobalConfig::default(), &native).unwrap(),
+            [Change::Wrote {
+                target: "foo-steam".to_owned(),
+                icon: false,
+            }]
+        );
+        let path = entry_path(&fixture.paths, "x", "foo-steam");
+        let native_entry = fs::read(&path).unwrap();
+
+        let proxied_config = fixture.paths.environment_config("x-foo");
+        fs::write(
+            &proxied_config,
+            "kind = 'proxied'\nlauncher = 'steam'\napp_id = '77'\ndesktop = true\n",
+        )
+        .unwrap();
+        let proxied = Environment::load(&fixture.paths, "x-foo").unwrap();
+        assert_eq!(
+            reconcile_proxied(&fixture.paths, &GlobalConfig::default(), &proxied).unwrap(),
+            [Change::Skipped {
+                target: "steam".to_owned(),
+                reason: Error::DesktopEntryConflict(path.clone()).to_string(),
+            }]
+        );
+        assert_eq!(fs::read(&path).unwrap(), native_entry);
+
+        fs::write(
+            &proxied_config,
+            "kind = 'proxied'\nlauncher = 'steam'\napp_id = '77'\ndesktop = false\n",
+        )
+        .unwrap();
+        let disabled = Environment::load(&fixture.paths, "x-foo").unwrap();
+        assert!(
+            reconcile_proxied(&fixture.paths, &GlobalConfig::default(), &disabled)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(remove_all(&fixture.paths, "x-foo").unwrap().is_empty());
+        assert_eq!(fs::read(&path).unwrap(), native_entry);
+    }
+
+    #[test]
+    fn proxied_entry_does_not_replace_an_unowned_file() {
+        let fixture = Fixture::new();
+        let environment = fixture.proxied("desktop = true\n");
+        let path = entry_path(&fixture.paths, "hades", "steam");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "unowned shortcut\n").unwrap();
+
+        assert_eq!(
+            fixture.reconcile_proxied(&environment),
+            [Change::Skipped {
+                target: "steam".to_owned(),
+                reason: Error::DesktopEntryConflict(path.clone()).to_string(),
+            }]
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"unowned shortcut\n");
+    }
+
+    #[test]
+    fn proxied_reconcile_drops_a_leftover_exe_icon() {
+        let fixture = Fixture::new();
+        let environment = fixture.proxied("desktop = true\n");
+        fixture.reconcile_proxied(&environment);
+        let path = entry_path(&fixture.paths, "hades", "steam");
+        let mut entry = fs::read_to_string(&path).unwrap();
+        entry = entry.replace(
+            "Terminal=false\n",
+            "Icon=wineo-hades-steam\nX-Wineo-Icon=exe\nTerminal=false\n",
+        );
+        fs::write(&path, entry).unwrap();
+        let icon = fixture
+            .paths
+            .icons_dir()
+            .join("hicolor/48x48/apps/wineo-hades-steam.png");
+        fs::create_dir_all(icon.parent().unwrap()).unwrap();
+        fs::write(&icon, b"old exe icon").unwrap();
+
+        assert_eq!(
+            fixture.reconcile_proxied(&environment),
+            [Change::Updated {
+                target: "steam".to_owned()
+            }]
+        );
+        let entry = fs::read_to_string(path).unwrap();
+        assert!(!entry.lines().any(|line| line.starts_with("Icon=")));
+        assert!(!entry.lines().any(|line| line == "X-Wineo-Icon=exe"));
+        assert!(!icon.exists());
+    }
+
+    #[test]
+    fn proxied_entry_uses_wineo_art_and_removes_entry_and_icon() {
+        let fixture = Fixture::new();
+        fixture.art(Some("steam"), "icon.png", &png(64, 1));
+        let environment = fixture.proxied("desktop = true\n");
+        assert_eq!(
+            fixture.reconcile_proxied(&environment),
+            [Change::Wrote {
+                target: "steam".to_owned(),
+                icon: true,
+            }]
+        );
+        assert!(
+            fixture
+                .entry("steam")
+                .unwrap()
+                .contains("Icon=wineo-hades-steam\n")
+        );
+        let icon = fixture
+            .paths
+            .icons_dir()
+            .join("hicolor/64x64/apps/wineo-hades-steam.png");
+        assert!(icon.is_file());
+
+        assert_eq!(remove_all(&fixture.paths, "hades").unwrap(), ["steam"]);
+        assert!(fixture.entry("steam").is_none());
+        assert!(!icon.exists());
+    }
+
+    #[test]
+    fn proxied_pending_reports_write_and_removal() {
+        let fixture = Fixture::new();
+        let environment = fixture.proxied("desktop = true\n");
+        assert_eq!(
+            pending_proxied(&fixture.paths, &GlobalConfig::default(), &environment).unwrap(),
+            [Pending::Write {
+                target: "steam".to_owned()
+            }]
+        );
+        fixture.reconcile_proxied(&environment);
+        let disabled = fixture.proxied("");
+        assert_eq!(
+            pending_proxied(&fixture.paths, &GlobalConfig::default(), &disabled).unwrap(),
+            [Pending::Remove {
+                target: "steam".to_owned()
+            }]
+        );
+        fixture.reconcile_proxied(&disabled);
+        assert!(fixture.entry("steam").is_none());
+    }
+
+    #[test]
+    fn proxied_entries_are_skipped_in_portable_mode() {
+        let fixture = Fixture::new();
+        let home = fixture._root.path().to_owned();
+        let portable_root = home.join("portable");
+        let paths = Paths::select(
+            move |key| {
+                let path = match key {
+                    "HOME" => home.clone(),
+                    "XDG_CONFIG_HOME" => home.join("config"),
+                    "XDG_DATA_HOME" => home.join("data"),
+                    "XDG_STATE_HOME" => home.join("state"),
+                    _ => return None,
+                };
+                Some(OsString::from(path.as_os_str()))
+            },
+            Some(&portable_root),
+        )
+        .unwrap();
+        let config = paths.environment_config("hades");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        fs::write(
+            &config,
+            "kind = 'proxied'\nlauncher = 'steam'\napp_id = '1086940'\ndesktop = true\n",
+        )
+        .unwrap();
+        let environment = Environment::load(&paths, "hades").unwrap();
+
+        assert_eq!(
+            reconcile_proxied(&paths, &GlobalConfig::default(), &environment).unwrap(),
+            [Change::Skipped {
+                target: "steam".to_owned(),
+                reason: Error::PortableDesktop.to_string(),
+            }]
+        );
+        assert!(!entry_path(&paths, "hades", "steam").exists());
     }
 }

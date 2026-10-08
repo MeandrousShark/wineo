@@ -32,6 +32,7 @@ use crate::runner::{self, Runner};
 use crate::runners::Runners;
 use crate::runtime::Runtime;
 use crate::snapshot;
+use crate::steam::{self, AppState};
 use crate::templates::{Template, Templates};
 use crate::trash::{self, Phase};
 use crate::winetricks;
@@ -75,6 +76,7 @@ pub enum Area {
     Environment,
     Runtime,
     Desktop,
+    Steam,
     Art,
     Trash,
 }
@@ -91,6 +93,7 @@ impl Area {
             Area::Environment => "environment",
             Area::Runtime => "runtime",
             Area::Desktop => "desktop",
+            Area::Steam => "steam",
             Area::Art => "art",
             Area::Trash => "trash",
         }
@@ -133,6 +136,11 @@ pub enum Code {
     DesktopEntryStray,
     DesktopOutdated,
     DesktopPortable,
+    SteamNotFound,
+    SteamInstallMissing,
+    SteamGameNotInstalled,
+    SteamLibraryUnavailable,
+    SteamDataUnknown,
     ArtConfigInvalid,
     ArtFileMissing,
     ArtTargetUnknown,
@@ -144,7 +152,7 @@ pub enum Code {
 }
 
 impl Code {
-    pub const ALL: [Code; 33] = [
+    pub const ALL: [Code; 38] = [
         Code::GlobalConfigInvalid,
         Code::TemplateInvalid,
         Code::TemplateUnresolved,
@@ -170,6 +178,11 @@ impl Code {
         Code::DesktopEntryStray,
         Code::DesktopOutdated,
         Code::DesktopPortable,
+        Code::SteamNotFound,
+        Code::SteamInstallMissing,
+        Code::SteamGameNotInstalled,
+        Code::SteamLibraryUnavailable,
+        Code::SteamDataUnknown,
         Code::ArtConfigInvalid,
         Code::ArtFileMissing,
         Code::ArtTargetUnknown,
@@ -207,6 +220,11 @@ impl Code {
             Code::DesktopEntryStray => "desktop_entry_stray",
             Code::DesktopOutdated => "desktop_outdated",
             Code::DesktopPortable => "desktop_portable",
+            Code::SteamNotFound => "steam_not_found",
+            Code::SteamInstallMissing => "steam_install_missing",
+            Code::SteamGameNotInstalled => "steam_game_not_installed",
+            Code::SteamLibraryUnavailable => "steam_library_unavailable",
+            Code::SteamDataUnknown => "steam_data_unknown",
             Code::ArtConfigInvalid => "art_config_invalid",
             Code::ArtFileMissing => "art_file_missing",
             Code::ArtTargetUnknown => "art_target_unknown",
@@ -235,6 +253,10 @@ impl Code {
             | Code::MangohudMissing
             | Code::WaylandUnsupported
             | Code::NativeExeInvalid
+            | Code::SteamNotFound
+            | Code::SteamInstallMissing
+            | Code::SteamGameNotInstalled
+            | Code::SteamDataUnknown
             | Code::RestoreInterrupted
             | Code::ArtConfigInvalid => Level::Error,
             Code::TrashInterrupted | Code::TrashInvalid => Level::Error,
@@ -252,7 +274,8 @@ impl Code {
             | Code::ArtTargetUnknown
             | Code::ArtDuplicates
             | Code::ArtDirStray
-            | Code::StatsStray => Level::Warning,
+            | Code::StatsStray
+            | Code::SteamLibraryUnavailable => Level::Warning,
         }
     }
 
@@ -283,6 +306,11 @@ impl Code {
             Code::DesktopEntryStray | Code::DesktopOutdated | Code::DesktopPortable => {
                 Area::Desktop
             }
+            Code::SteamNotFound
+            | Code::SteamInstallMissing
+            | Code::SteamGameNotInstalled
+            | Code::SteamLibraryUnavailable
+            | Code::SteamDataUnknown => Area::Steam,
             Code::ArtConfigInvalid
             | Code::ArtFileMissing
             | Code::ArtTargetUnknown
@@ -805,10 +833,10 @@ fn check_one(paths: &Paths, global: &GlobalConfig, name: &str, report: &mut Repo
     };
     match &environment.config.kind {
         Kind::Wine(_) | Kind::Native => {}
-        // No Wine or native checks apply, and its launcher's checks aren't
-        // written yet.
         Kind::Proxied(_) => {
             check_runtime(paths, name, report)?;
+            check_proxied_steam(paths, global, &environment, report);
+            check_desktop(paths, global, &environment, &WineState::default(), report)?;
             check_art(paths, name, report);
             return Ok(());
         }
@@ -819,6 +847,52 @@ fn check_one(paths: &Paths, global: &GlobalConfig, name: &str, report: &mut Repo
     check_desktop(paths, global, &environment, &wine, report)?;
     check_art(paths, name, report);
     Ok(())
+}
+
+fn check_proxied_steam(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    report: &mut Report,
+) {
+    let Kind::Proxied(proxied) = &environment.config.kind else {
+        return;
+    };
+    let name = environment.name.as_str();
+    let active = steam::active_for(paths, global);
+    let Some(install) = active.as_ref() else {
+        let (code, message) = if global.steam.is_some() {
+            (
+                Code::SteamInstallMissing,
+                "The configured Steam install isn't available.".to_owned(),
+            )
+        } else {
+            (Code::SteamNotFound, "Steam isn't installed.".to_owned())
+        };
+        report.push(Problem::new(code, Some(name), message, None));
+        return;
+    };
+    match steam::app_state(Some(install), &proxied.app_id) {
+        AppState::Installed | AppState::Updating => {}
+        AppState::NotInstalled => report.push(Problem::new(
+            Code::SteamGameNotInstalled,
+            Some(name),
+            format!("Steam does not have {name} installed."),
+            None,
+        )),
+        AppState::Unavailable(library) => report.push(Problem::new(
+            Code::SteamLibraryUnavailable,
+            Some(name),
+            format!("Steam library at {} is unavailable.", library.display()),
+            None,
+        )),
+        AppState::Unknown(_) => report.push(Problem::new(
+            Code::SteamDataUnknown,
+            Some(name),
+            format!("Steam data for {name} is unreadable or invalid."),
+            None,
+        )),
+    }
 }
 
 fn check_wine(
@@ -1115,12 +1189,7 @@ fn check_desktop(
 ) -> Result<()> {
     let name = environment.name.as_str();
     if paths.portable_root().is_some() {
-        if environment
-            .config
-            .targets
-            .values()
-            .any(|target| target.desktop)
-        {
+        if !desktop::requested_targets(environment).is_empty() {
             report.push(Problem::new(
                 Code::DesktopPortable,
                 Some(name),
@@ -1133,13 +1202,12 @@ fn check_desktop(
     }
     let pending = match (&environment.config.kind, &wine.prefix) {
         (Kind::Native, _) => desktop::pending_native(paths, global, environment)?,
+        (Kind::Proxied(_), _) => desktop::pending_proxied(paths, global, environment)?,
         (Kind::Wine(_), Some(dir)) => {
             desktop::pending(paths, global, environment, wine.runner.as_ref(), dir)?
         }
         // No prefix to check against means no entries to compare either.
         (Kind::Wine(_), None) => return Ok(()),
-        // Proxied environments get no entries yet.
-        (Kind::Proxied(_), _) => return Ok(()),
     };
     if pending.is_empty() {
         return Ok(());
@@ -1560,8 +1628,12 @@ fn rewrite_desktop(paths: &Paths, name: &str) -> Result<()> {
             desktop::reconcile_native(paths, &global, &environment)?;
             return Ok(());
         }
-        // Proxied environments get no entries yet.
-        Kind::Proxied(_) => return Ok(()),
+        Kind::Proxied(_) => {
+            let _guard = locks.acquire(Operation::Launch, name, &[])?;
+            Environment::ensure_exists(paths, name)?;
+            desktop::reconcile_proxied(paths, &global, &environment)?;
+            return Ok(());
+        }
     };
     let prefix = environment.prefix(paths)?;
     let _guard = locks.acquire(Operation::Launch, name, &[&prefix])?;
@@ -1825,6 +1897,29 @@ mod tests {
 
         fn native(&self, name: &str, targets: &str) {
             self.write_config(name, &format!("kind = 'native'\n{targets}"));
+        }
+
+        fn proxied(&self, name: &str, app_id: &str, desktop: bool) {
+            self.write_config(
+                name,
+                &format!(
+                    "kind = 'proxied'\nlauncher = 'steam'\napp_id = '{app_id}'\ndesktop = {desktop}\n"
+                ),
+            );
+        }
+
+        fn steam_root(&self) -> PathBuf {
+            let root = self.root.join(".local/share/Steam");
+            fs::create_dir_all(root.join("steamapps")).unwrap();
+            root
+        }
+
+        fn steam_manifest(&self, app_id: &str, text: &str) {
+            let path = self
+                .steam_root()
+                .join("steamapps")
+                .join(format!("appmanifest_{app_id}.acf"));
+            fs::write(path, text).unwrap();
         }
 
         fn global(&self, text: &str) {
@@ -2353,6 +2448,110 @@ mod tests {
 
         f.wine("game", &format!("{two}default = true\n"));
         assert_eq!(f.codes(), []);
+    }
+
+    #[test]
+    fn proxied_validate_reports_steam_not_found_and_a_missing_selected_install() {
+        let f = Fixture::new();
+        f.proxied("game", "77", false);
+        let problem = f.only(Code::SteamNotFound);
+        assert_eq!(problem.level, Level::Error);
+        assert_eq!(problem.area, Area::Steam);
+
+        f.global("steam = 'flatpak'\n");
+        let problem = f.only(Code::SteamInstallMissing);
+        assert_eq!(problem.level, Level::Error);
+        assert_eq!(problem.area, Area::Steam);
+    }
+
+    #[test]
+    fn proxied_validate_reports_a_game_that_is_not_installed() {
+        let f = Fixture::new();
+        f.proxied("game", "77", false);
+        f.steam_root();
+        let problem = f.only(Code::SteamGameNotInstalled);
+        assert_eq!(problem.level, Level::Error);
+        assert_eq!(problem.area, Area::Steam);
+    }
+
+    #[test]
+    fn proxied_validate_warns_when_a_steam_library_is_unavailable() {
+        let f = Fixture::new();
+        f.proxied("game", "77", false);
+        let root = f.steam_root();
+        let missing = f.root.join("missing-library");
+        fs::write(
+            root.join("steamapps/libraryfolders.vdf"),
+            format!(
+                "\"libraryfolders\" {{ \"0\" {{ \"path\" \"{}\" }} }}",
+                missing.display()
+            ),
+        )
+        .unwrap();
+        let problem = f.only(Code::SteamLibraryUnavailable);
+        assert_eq!(problem.level, Level::Warning);
+        assert_eq!(problem.area, Area::Steam);
+        assert!(problem.message.ends_with("missing-library is unavailable."));
+    }
+
+    #[test]
+    fn proxied_validate_reports_an_unreadable_manifest() {
+        let f = Fixture::new();
+        f.proxied("game", "77", false);
+        f.steam_manifest(
+            "77",
+            "\"AppState\" { \"appid\" \"77\" \"StateFlags\" \"bad\" }",
+        );
+        let problem = f.only(Code::SteamDataUnknown);
+        assert_eq!(problem.level, Level::Error);
+        assert_eq!(problem.area, Area::Steam);
+    }
+
+    #[test]
+    fn a_healthy_proxied_environment_validates_cleanly() {
+        let f = Fixture::new();
+        f.proxied("game", "77", false);
+        f.steam_manifest(
+            "77",
+            "\"AppState\" { \"appid\" \"77\" \"name\" \"Game\" \"StateFlags\" \"4\" }",
+        );
+        assert_eq!(f.codes(), []);
+    }
+
+    #[test]
+    fn implicit_steam_target_art_validates_cleanly() {
+        let f = Fixture::new();
+        f.proxied("game", "77", false);
+        f.steam_manifest(
+            "77",
+            "\"AppState\" { \"appid\" \"77\" \"name\" \"Game\" \"StateFlags\" \"4\" }",
+        );
+        let art = f.art_dir("game");
+        fs::create_dir_all(art.join("steam")).unwrap();
+        fs::write(
+            art.join("art.toml"),
+            "schema_version = 1\n[targets.steam.icon]\nfile = 'icon.png'\nmanual = 'icon.png'\n",
+        )
+        .unwrap();
+        fs::write(art.join("steam/icon.png"), b"icon").unwrap();
+
+        assert_eq!(f.codes(), []);
+    }
+
+    #[test]
+    fn proxied_validate_checks_pending_desktop_entries_and_fixes_them() {
+        let f = Fixture::new();
+        f.proxied("game", "77", true);
+        let problem = f.only(Code::DesktopOutdated);
+        assert_eq!(problem.level, Level::Warning);
+        assert_eq!(problem.area, Area::Desktop);
+        apply(&f.paths, fix(&problem), no_download).unwrap();
+        let entry = f.paths.applications_dir().join("wineo-game-steam.desktop");
+        assert!(
+            fs::read_to_string(entry)
+                .unwrap()
+                .contains("Exec=wineo start game\n")
+        );
     }
 
     #[test]
