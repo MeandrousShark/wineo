@@ -35,13 +35,23 @@ fn parent_pid(pid: u32) -> Option<u32> {
         .ok()
 }
 
+/// Waits for the supervisor to record its claim, since the reaper's child can
+/// exist while the run state is still in its starting phase.
 fn claimed_pid(s: &SteamFixture) -> u32 {
-    s.f.state("civ")
-        .lines()
-        .find_map(|line| line.strip_prefix("pid = "))
-        .unwrap()
-        .parse()
-        .unwrap()
+    let mut pid = 0;
+    wait_for("the run to claim its reaper", || {
+        let state = s.f.state("civ");
+        if state.contains("phase = \"starting\"") {
+            return false;
+        }
+        pid = state
+            .lines()
+            .find_map(|line| line.strip_prefix("pid = "))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        pid != 0
+    });
+    pid
 }
 
 #[test]
