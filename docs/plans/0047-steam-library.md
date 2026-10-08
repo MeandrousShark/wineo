@@ -516,8 +516,8 @@ In this plan (question 7).
   lost proxied run reports unresolved instead of being cleaned up. Step 4's
   lost-run test must use a live process group, so it fails if the proxied
   branch is removed (QA note).
-- Step 3 (2026-10-07, decided by the primary while the maintainer was away;
-  confirm): apply rechecks already imported, install state, and the name
+- Step 3 (2026-10-07, decided while the maintainer was away and confirmed
+  by them the same day): apply rechecks already imported, install state, and the name
   under an exclusive per-app lock (`steam-<appid>.lock`), using the install
   it reselects for the title and art too, and returns `AlreadyImported`
   instead of importing twice. `--all` mirrors Heroic's summary: `Imported 1
@@ -525,7 +525,7 @@ In this plan (question 7).
   of the total, then `1 already imported: NAME` for ones found at apply
   time, then `1 failed: NAME`. Portable mode refuses with `Steam games can't
   be imported into a portable folder.`
-- Step 5 (2026-10-07): when the global config can't be loaded, a Steam
+- Step 5 (2026-10-07, confirmed by the maintainer): when the global config can't be loaded, a Steam
   game's playtime is unknown rather than read from a guessed install. In the
   desktop app, a card whose stats summary is missing shows `unknown`, `-`,
   and `unknown` for a Steam game, and `never played` as before for Wine and
