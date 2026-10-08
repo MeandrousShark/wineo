@@ -290,8 +290,17 @@ launch or runs hooks for it.
 
 - A reaper matches an environment when it's a `reaper` process whose command
   line has the token `SteamLaunch` and exactly `AppId=<app_id>`, and whose
-  ancestors include the active install's Steam client. The command line shape
-  still needs checking with Steam running, before step 4 starts.
+  ancestors include the active install's Steam client.
+- Confirmed on 2026-10-07 with Civ VI under Proton: the reaper's argv is
+  exactly `reaper`, `SteamLaunch`, `AppId=289070`, `--`, then the command,
+  so matching compares whole arguments. Its parent is the Steam client
+  itself. The reaper and the runtime's `srt-bwrap` share the Steam client's
+  process group and session, while pressure-vessel's `pv-adverb` starts a
+  new session and each Wine process (wineserver, explorer, the game) gets
+  its own. So a group signal would hit Steam and miss the game, and only
+  the tree walk works. `pv-adverb` adopts Wine's processes, so the game and
+  wineserver stay descendants of the reaper. There's no separate pid
+  namespace, so host pids and pidfds work.
 - The baseline is taken at the first running check, before `before`: its
   time, and every matching reaper that exists then (normally none, since
   `start` refused if one did). A run only claims a reaper that isn't in the
