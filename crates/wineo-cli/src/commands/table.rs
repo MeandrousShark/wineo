@@ -110,6 +110,17 @@ pub fn format_overview(overview: Overview, now: Timestamp, tz: &TimeZone) -> Gat
             );
             row.hooks = environment.hooks.clone();
             row.kind = environment.kind.clone();
+            if environment.busy.is_none()
+                && !environment.unresolved
+                && !matches!(
+                    environment.status.state,
+                    State::Starting | State::Running | State::SteamRunning
+                )
+                && let Some(KindReport::Proxied { install, .. }) = &row.kind
+                && install.state != "installed"
+            {
+                row.state = install.display().to_owned();
+            }
             row
         })
         .collect();
@@ -129,7 +140,7 @@ fn time_column(status: &Status, now: Timestamp, tz: &TimeZone) -> String {
         return String::new();
     };
     match status.state {
-        State::Running => format!(
+        State::Running | State::Starting => format!(
             "since {} ({})",
             clock(now, run.started_at, tz),
             relative(now, run.started_at)
@@ -139,7 +150,7 @@ fn time_column(status: &Status, now: Timestamp, tz: &TimeZone) -> String {
             let ended = run.ended_at.unwrap_or(run.started_at);
             format!("ended {}", relative(now, ended))
         }
-        State::Inactive => String::new(),
+        State::Inactive | State::SteamRunning => String::new(),
     }
 }
 
@@ -200,6 +211,8 @@ mod tests {
             native: false,
             launcher: None,
             status,
+            lost: false,
+            phase: None,
             mode: RunMode::Detached,
             target: target.to_owned(),
             pid: 1,
@@ -207,6 +220,7 @@ mod tests {
             boot_id: None,
             leader_start: None,
             started_at: ts("2026-09-16T14:02:00Z"),
+            running_at: None,
             heartbeat_at: None,
             program_exited_at: None,
             ended_at: None,

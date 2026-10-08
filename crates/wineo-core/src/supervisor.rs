@@ -27,11 +27,16 @@ use crate::operation::{Locks, Operation};
 use crate::prefix;
 use crate::runtime::{RunMode, RunState, RunStatus, Runtime, exit_code};
 
+mod steam;
+
 /// The hidden command a detached supervisor runs as.
 pub const SUPERVISE_COMMAND: &str = "__supervise";
 
 /// Runs the private supervisor entrypoint before a caller parses arguments.
 pub fn dispatch_if_supervise() -> Option<Result<()>> {
+    if let Some(result) = steam::dispatch_request_entry() {
+        return Some(result);
+    }
     std::env::args_os()
         .nth(1)
         .is_some_and(|arg| arg == SUPERVISE_COMMAND)
@@ -510,6 +515,8 @@ pub enum Started {
     Running(u32),
     /// Something else started the environment first.
     AlreadyRunning,
+    SteamRequested,
+    SteamAdopted,
 }
 
 /// The single line a supervisor sends back to `start`.
@@ -517,6 +524,8 @@ pub enum Started {
 enum Report {
     Started(u32),
     AlreadyRunning,
+    SteamRequested,
+    SteamAdopted,
     Failed(String),
 }
 
@@ -524,6 +533,8 @@ impl Report {
     fn to_line(&self) -> String {
         match self {
             Report::Started(pid) => format!("started {pid}\n"),
+            Report::SteamRequested => "steam-requested\n".to_owned(),
+            Report::SteamAdopted => "steam-adopted\n".to_owned(),
             Report::AlreadyRunning => "already-running\n".to_owned(),
             Report::Failed(message) => format!("failed {}\n", message.replace('\n', " ")),
         }
@@ -536,6 +547,8 @@ impl Report {
         match word {
             "started" => rest.parse().ok().map(Report::Started),
             "already-running" => Some(Report::AlreadyRunning),
+            "steam-requested" => Some(Report::SteamRequested),
+            "steam-adopted" => Some(Report::SteamAdopted),
             "failed" => Some(Report::Failed(rest.to_owned())),
             _ => None,
         }
@@ -570,6 +583,15 @@ pub fn start(exe: &Path, portable: Option<&Path>, spec: &Spec) -> Result<Started
             // Reaps the supervisor when it's done, for callers that outlive it.
             thread::spawn(move || child.wait());
             Ok(Started::Running(pid))
+        }
+        Some(Report::SteamRequested | Report::SteamAdopted) => {
+            let adopted = matches!(report, Some(Report::SteamAdopted));
+            thread::spawn(move || child.wait());
+            Ok(if adopted {
+                Started::SteamAdopted
+            } else {
+                Started::SteamRequested
+            })
         }
         Some(Report::AlreadyRunning) => {
             let _ = child.wait();
@@ -664,6 +686,37 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         log.try_clone()
             .context(|| format!("failed to open {}", log_path.display()))
     };
+    if matches!(spec.launch.host, Host::Proxied { .. }) {
+        let (mut state, adopted) = supervisor.begin_steam(
+            &runtime,
+            &spec.launch,
+            RunMode::Detached,
+            &spec.overrides,
+            &spec.claim.name,
+        )?;
+        reporter.send(if adopted {
+            Report::SteamAdopted
+        } else {
+            Report::SteamRequested
+        });
+        let cap = Cap::start(&session, clone_log()?, spec.log_limit_mb);
+        let result = supervisor.wait_steam(
+            &runtime,
+            &spec.launch,
+            &mut state,
+            &spec.claim.name,
+            Duration::from_secs(spec.stop_timeout.into()),
+            |notice| log_notice(&log, false, notice),
+        );
+        drop(cap);
+        if state.status != RunStatus::Running
+            && spec.after.is_some()
+            && let Err(err) = finish_after(&spec, claim, lock, &state, &log, false)
+        {
+            log_notice(&log, false, Notice::Warning(err));
+        }
+        return result;
+    }
     // Its own process group, so the whole tree can be signalled as one and a
     // signal to it never reaches this supervisor.
     let spawned = spec

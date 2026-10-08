@@ -17,7 +17,9 @@ use crate::process::{self, GroupOwnership};
 use crate::runner::Runner;
 
 const POLL: Duration = Duration::from_millis(20);
-const VARIABLES: [&str; 9] = [
+const VARIABLES: [&str; 11] = [
+    "WINEO_LAUNCHER",
+    "WINEO_APP_ID",
     "WINEPREFIX",
     "WINEO_ENVIRONMENT",
     "WINEO_TARGET",
@@ -91,7 +93,28 @@ pub struct Context<'a> {
     pub target: &'a str,
     pub exe: &'a str,
     pub wine: Option<(&'a Runner, &'a Path)>,
+    pub steam: Option<&'a Steam>,
     pub hook: Hook,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Steam {
+    pub app_id: String,
+    pub prefix: Option<std::path::PathBuf>,
+}
+
+impl Steam {
+    pub fn new(install: &crate::steam::Install, app_id: &str) -> Self {
+        let prefix = install
+            .root()
+            .join("steamapps/compatdata")
+            .join(app_id)
+            .join("pfx");
+        Self {
+            app_id: app_id.to_owned(),
+            prefix: Some(prefix),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -161,8 +184,19 @@ fn configure(command: &mut Command, paths: &Paths, context: &Context<'_>, text: 
     command
         .env("WINEO_ENVIRONMENT", context.environment)
         .env("WINEO_TARGET", context.target)
-        .env("WINEO_EXE", context.exe)
         .env("WINEO_HOOK", context.hook.phase().as_str());
+    if let Some(steam) = context.steam {
+        command
+            .env("WINEO_LAUNCHER", "steam")
+            .env("WINEO_APP_ID", &steam.app_id);
+        if let Some(prefix) = &steam.prefix
+            && prefix.is_dir()
+        {
+            command.env("WINEO_PREFIX", prefix);
+        }
+    } else {
+        command.env("WINEO_EXE", context.exe);
+    }
     if let Some((runner, prefix)) = context.wine {
         command.env("WINEO_PREFIX", runner.wine_prefix(prefix));
     }
@@ -354,6 +388,7 @@ mod tests {
 
     fn context<'a>(wine: Option<(&'a Runner, &'a Path)>, hook: Hook) -> Context<'a> {
         Context {
+            steam: None,
             environment: "hades",
             target: "editor",
             exe: "C:\\Games\\Hades.exe",

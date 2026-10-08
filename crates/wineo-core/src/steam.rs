@@ -4,6 +4,7 @@
 //! can build fixture trees under a temporary directory.
 
 mod account;
+pub mod process;
 pub mod vdf;
 
 #[cfg(test)]
@@ -17,6 +18,10 @@ use std::path::{Path, PathBuf};
 use crate::art;
 
 pub use account::{Playtime, active_account, compat_tool, playtime};
+pub use process::{
+    Baseline, Reaper, baseline, eligible_reapers, matching_reapers, open_reaper, pidfd_exited,
+    reaper_alive, stop_tree,
+};
 use vdf::{Object, Value};
 
 const FLATPAK_ID: &str = "com.valvesoftware.Steam";
@@ -41,7 +46,7 @@ pub enum InstallKind {
 
 /// A Steam client folder. `root` is the path it was found at, so a symlinked
 /// `~/.steam/root` stays as `~/.steam/root`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct Install {
     kind: InstallKind,
     root: PathBuf,

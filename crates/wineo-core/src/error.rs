@@ -315,8 +315,8 @@ pub enum Error {
     #[error("{0}")]
     NoPrefix(NoPrefix),
 
-    #[error("Launching {} games isn't supported yet.", .0.display_name())]
-    ProxiedLaunch(Launcher),
+    #[error("{0} is already running (started from Steam).")]
+    SteamAlreadyRunning(String),
 
     #[error("invalid prefix `{0}`: use an absolute path or one starting with ~/")]
     RelativePrefix(String),

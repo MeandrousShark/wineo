@@ -6,7 +6,7 @@ use crate::components::{Builds, Component, LATEST};
 use crate::config::{GlobalConfig, Kind, Launcher};
 use crate::desktop;
 use crate::environment::{self, Environment};
-use crate::error::Result;
+use crate::error::{IoContext, Result};
 use crate::install::{self, Wanted};
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
@@ -71,6 +71,7 @@ pub enum KindReport {
         launcher: Launcher,
         app_id: String,
         title: Option<String>,
+        install: InstallReport,
     },
 }
 
@@ -83,6 +84,9 @@ impl KindReport {
                 launcher: proxied.launcher,
                 app_id: proxied.app_id.clone(),
                 title: proxied.title.clone(),
+                install: InstallReport::from(crate::steam::AppState::Unknown(
+                    "Steam isn't found".to_owned(),
+                )),
             },
         }
     }
@@ -95,6 +99,65 @@ impl KindReport {
             Self::Proxied { .. } => "proxied",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InstallReport {
+    pub state: &'static str,
+    pub problem: Option<String>,
+}
+
+impl InstallReport {
+    pub fn display(&self) -> &'static str {
+        if self.state == "not_installed" {
+            "not installed"
+        } else {
+            self.state
+        }
+    }
+}
+
+impl From<crate::steam::AppState> for InstallReport {
+    fn from(state: crate::steam::AppState) -> Self {
+        use crate::steam::AppState;
+        let (state, problem) = match state {
+            AppState::Installed => ("installed", None),
+            AppState::Updating => ("updating", None),
+            AppState::NotInstalled => ("not_installed", None),
+            AppState::Unavailable(path) => (
+                "unavailable",
+                Some(format!(
+                    "Steam's library at {} isn't available",
+                    path.display()
+                )),
+            ),
+            AppState::Unknown(reason) => ("unknown", Some(reason)),
+        };
+        Self { state, problem }
+    }
+}
+
+fn kind_report(paths: &Paths, global: &GlobalConfig, kind: &Kind) -> KindReport {
+    let mut report = KindReport::new(kind);
+    if let KindReport::Proxied {
+        app_id,
+        title,
+        install,
+        ..
+    } = &mut report
+    {
+        let active = crate::steam::active_for(paths, global);
+        *install = crate::steam::app_state(active.as_ref(), app_id).into();
+        if let Some(active) = active
+            && let Some(manifest) = crate::steam::manifests(&active)
+                .into_iter()
+                .find(|entry| entry.app_id == *app_id)
+                .and_then(|entry| entry.manifest.ok())
+        {
+            *title = Some(manifest.name);
+        }
+    }
+    report
 }
 
 /// The little of `stats::Summary` that `status` shows: enough to say how much
@@ -181,7 +244,13 @@ impl EnvironmentReport {
         warnings: &mut Vec<String>,
     ) -> Result<Self> {
         let busy = Locks::new(paths).busy_with(&environment.name)?;
-        let status = status(paths, &environment.name, busy)?;
+        let status = status(
+            paths,
+            &environment.name,
+            busy,
+            Some(environment),
+            Some(global),
+        )?;
         let wine = environment.config.wine();
         // An unresolvable runner is worth showing the rest of the status for.
         let operation_runner = Runtime::new(paths, &environment.name)
@@ -251,16 +320,20 @@ impl EnvironmentReport {
             vkd3d: components.1,
             unresolved: busy.is_none() && unresolved(paths, &environment.name),
             busy,
-            gamemode: crate::launch::gamemode(global, environment, target),
-            gamescope: crate::launch::gamescope(environment, target).is_some(),
+            gamemode: !matches!(environment.config.kind, Kind::Proxied(_))
+                && crate::launch::gamemode(global, environment, target),
+            gamescope: !matches!(environment.config.kind, Kind::Proxied(_))
+                && crate::launch::gamescope(environment, target).is_some(),
             hooks: crate::launch::hooks(environment, target).cloned(),
-            mangohud: crate::launch::mangohud(global, environment, target),
-            wayland: crate::launch::wayland(global, environment, target),
+            mangohud: !matches!(environment.config.kind, Kind::Proxied(_))
+                && crate::launch::mangohud(global, environment, target),
+            wayland: !matches!(environment.config.kind, Kind::Proxied(_))
+                && crate::launch::wayland(global, environment, target),
             name: environment.name.clone(),
             tags: environment.config.tags.clone(),
             winetricks: environment.config.winetricks.clone(),
             winetricks_missing,
-            kind: KindReport::new(&environment.config.kind),
+            kind: kind_report(paths, global, &environment.config.kind),
             runner: runner_name,
             runner_resolved,
             runner_version,
@@ -287,9 +360,23 @@ pub fn unresolved(paths: &Paths, name: &str) -> bool {
     Runtime::new(paths, name).check_resolved(name).is_err()
 }
 
-fn status(paths: &Paths, name: &str, busy: Option<Operation>) -> Result<Status> {
+fn status(
+    paths: &Paths,
+    name: &str,
+    busy: Option<Operation>,
+    environment: Option<&Environment>,
+    global: Option<&GlobalConfig>,
+) -> Result<Status> {
     let runtime = Runtime::new(paths, name);
-    let status = runtime.status()?;
+    let mut status = runtime.status()?;
+    let proxied = environment.and_then(|environment| match &environment.config.kind {
+        Kind::Proxied(config) => Some(config),
+        Kind::Wine(_) | Kind::Native => None,
+    });
+    if proxied.is_some() && status.lost {
+        runtime.clean_up_lost_run(std::time::Duration::ZERO, &paths.stats_log(name))?;
+        status = runtime.status()?;
+    }
     if busy == Some(Operation::Hook(crate::hooks::Phase::After))
         && let Some(run) = runtime.read_state()?
     {
@@ -305,6 +392,17 @@ fn status(paths: &Paths, name: &str, busy: Option<Operation>) -> Result<Status> 
             lost: false,
         });
     }
+    if let (Some(proxied), Some(global)) = (proxied, global)
+        && busy.is_none()
+        && !matches!(status.state, State::Running | State::Starting)
+        && let Some(install) = crate::steam::active_for(paths, global)
+        && !crate::steam::matching_reapers(&install, &proxied.app_id)
+            .context(|| format!("failed to scan Steam processes for {name}"))?
+            .is_empty()
+    {
+        status.state = State::SteamRunning;
+        status.run = None;
+    }
     Ok(status)
 }
 
@@ -312,18 +410,30 @@ fn status(paths: &Paths, name: &str, busy: Option<Operation>) -> Result<Status> 
 /// environment shown by `list` or `status` without a name.
 pub fn overview(paths: &Paths, filter: OverviewFilter<'_>) -> Result<Overview> {
     let locks = Locks::new(paths);
+    let global = GlobalConfig::load(paths).ok();
     let mut overview = Overview::default();
     for name in environment::names(paths)? {
         let busy = locks.busy_with(&name).unwrap_or(None);
+        let environment = Environment::load(paths, &name);
+        let current = status(
+            paths,
+            &name,
+            busy,
+            environment.as_ref().ok(),
+            global.as_ref(),
+        );
         let unresolved = busy.is_none() && unresolved(paths, &name);
-        match status(paths, &name, busy) {
+        match current {
             Ok(status)
                 if !filter.running_only
-                    || status.state == crate::runtime::State::Running
+                    || matches!(
+                        status.state,
+                        State::Running | State::Starting | State::SteamRunning
+                    )
                     || busy.is_some()
                     || unresolved =>
             {
-                match Environment::load(paths, &name) {
+                match environment {
                     Ok(environment) => {
                         let tags = &environment.config.tags;
                         if filter
@@ -337,7 +447,12 @@ pub fn overview(paths: &Paths, filter: OverviewFilter<'_>) -> Result<Overview> {
                                         environment.config.targets.get(&run.target)
                                     }),
                                 )),
-                                kind: Some(KindReport::new(&environment.config.kind)),
+                                kind: Some(match &global {
+                                    Some(global) => {
+                                        kind_report(paths, global, &environment.config.kind)
+                                    }
+                                    None => KindReport::new(&environment.config.kind),
+                                }),
                                 name,
                                 status,
                                 busy,
@@ -428,6 +543,7 @@ pub fn component_value(report: &ComponentReport) -> String {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::fs;
     use std::path::Path;
 
     use super::*;
@@ -464,6 +580,28 @@ mod tests {
         assert_eq!(report.runner.as_deref(), Some("proton-ge"));
         assert_eq!(report.runner_version, None);
         assert_eq!(report.prefix.as_deref(), Some("~/prefix"));
+    }
+
+    #[test]
+    fn live_manifest_title_wins_over_imported_title() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let steamapps = paths.home().join(".steam/root/steamapps");
+        fs::create_dir_all(&steamapps).unwrap();
+        fs::write(
+            steamapps.join("appmanifest_289070.acf"),
+            "\"AppState\" { \"appid\" \"289070\" \"name\" \"Civilization VI\" \"StateFlags\" \"4\" }",
+        )
+        .unwrap();
+        let config = EnvironmentConfig::parse(
+            Path::new("/civ.toml"),
+            "kind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"289070\"\ntitle = \"Old title\"\n",
+        )
+        .unwrap();
+        let kind = kind_report(&paths, &GlobalConfig::default(), &config.kind);
+        assert!(
+            matches!(kind, KindReport::Proxied { title: Some(title), .. } if title == "Civilization VI")
+        );
     }
 
     #[test]

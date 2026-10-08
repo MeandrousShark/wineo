@@ -46,6 +46,10 @@ pub struct StatusOutput<'a> {
     pub launcher: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_problem: Option<&'a str>,
 }
 
 impl<'a> StatusOutput<'a> {
@@ -59,22 +63,27 @@ impl<'a> StatusOutput<'a> {
     ) -> Self {
         let proxied = match kind {
             Some(KindReport::Proxied {
-                launcher, app_id, ..
-            }) => Some((launcher.as_str(), app_id.as_str())),
+                launcher,
+                app_id,
+                install,
+                ..
+            }) => Some((launcher.as_str(), app_id.as_str(), install)),
             Some(KindReport::Wine | KindReport::Native) | None => None,
         };
         Self {
             name,
             tags,
             state: status.state,
-            lost: status.lost,
+            lost: status.lost || status.run.as_ref().is_some_and(|run| run.lost),
             busy,
             unresolved,
             hooks: None,
             run: status.run.as_ref().map(RunOutput::from),
             kind: kind.map(KindReport::as_str),
-            launcher: proxied.map(|(launcher, _)| launcher),
-            app_id: proxied.map(|(_, app_id)| app_id),
+            launcher: proxied.map(|(launcher, _, _)| launcher),
+            app_id: proxied.map(|(_, app_id, _)| app_id),
+            install: proxied.map(|(_, _, install)| install.state),
+            install_problem: proxied.and_then(|(_, _, install)| install.problem.as_deref()),
         }
     }
 }

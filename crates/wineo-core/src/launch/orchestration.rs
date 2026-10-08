@@ -30,6 +30,8 @@ pub struct AfterHook {
     exe: String,
     wine: Option<(Runner, PathBuf)>,
     command: String,
+    #[serde(default)]
+    steam: Option<hooks::Steam>,
 }
 
 impl AfterHook {
@@ -47,12 +49,17 @@ impl AfterHook {
             RunStatus::Stopped => hooks::End::Stopped,
             RunStatus::Running => return Ok(()),
         };
-        let seconds = state
-            .ended_at
-            .unwrap_or(state.started_at)
-            .duration_since(state.started_at)
-            .as_secs()
-            .max(0) as u64;
+        let running_at = state.running_at.unwrap_or(state.started_at);
+        let seconds = if self.steam.is_some() && state.running_at.is_none() {
+            0
+        } else {
+            state
+                .ended_at
+                .unwrap_or(running_at)
+                .duration_since(running_at)
+                .as_secs()
+                .max(0) as u64
+        };
         self.run_ending(
             guard,
             hooks::Ending {
@@ -82,6 +89,7 @@ impl AfterHook {
                 .wine
                 .as_ref()
                 .map(|(runner, prefix)| (runner, prefix.as_path())),
+            steam: self.steam.as_ref(),
             hook: Hook::After(ending),
         };
         match hooks::run(
@@ -125,6 +133,9 @@ pub enum LaunchEvent {
 pub enum StartOutcome {
     Started,
     AlreadyRunning,
+    SteamAlreadyRunning,
+    SteamRequested,
+    SteamAdopted,
 }
 
 /// A checked launch that keeps its environment and prefix locked.
@@ -224,7 +235,35 @@ pub fn prepare(
     let global = GlobalConfig::load(paths)?;
     let environment = Environment::load(paths, name)?;
     // Before anything else, so no hook runs for a launch that can't happen.
-    super::refuse_proxied(&environment)?;
+    let steam_baseline = if let Kind::Proxied(proxied) = &environment.config.kind {
+        super::check_steam_overrides(&environment, overrides)?;
+        Runtime::new(paths, name).clean_up_lost_run(
+            Duration::from_secs(global.stop_timeout.into()),
+            &paths.stats_log(name),
+        )?;
+        if Runtime::new(paths, name).is_running()? {
+            return Err(Error::AlreadyRunning(name.to_owned()).into());
+        }
+        if let Some(install) = crate::steam::active_for(paths, &global) {
+            let (baseline, matching) = crate::steam::baseline(&install, &proxied.app_id)?;
+            if !matching.is_empty() {
+                return Err(Error::SteamAlreadyRunning(name.to_owned()).into());
+            }
+            Launch::target(paths, &global, &environment, overrides)?;
+            Some(baseline)
+        } else {
+            Launch::target(paths, &global, &environment, overrides)?;
+            None
+        }
+    } else {
+        None
+    };
+    let steam_hook = if let Kind::Proxied(proxied) = &environment.config.kind {
+        crate::steam::active_for(paths, &global)
+            .map(|install| hooks::Steam::new(&install, &proxied.app_id))
+    } else {
+        None
+    };
     // Leave ordinary target errors to preparation, which checks the runner first.
     let selected = if environment.config.hooks.is_some()
         || environment
@@ -272,6 +311,7 @@ pub fn prepare(
                 exe: target.exe.clone(),
                 wine: wine.clone(),
                 command: command.clone(),
+                steam: steam_hook.clone(),
             }
         });
     if let Some(before) = configured.and_then(|hooks| hooks.before.as_deref()) {
@@ -297,6 +337,7 @@ pub fn prepare(
             wine: wine
                 .as_ref()
                 .map(|(runner, prefix)| (runner, prefix.as_path())),
+            steam: steam_hook.as_ref(),
             hook: Hook::Before,
         };
         match hooks::run(
@@ -331,7 +372,10 @@ pub fn prepare(
             reservation.as_ref(),
             &mut events,
         )?;
-        let launch = Launch::target(paths, &global, &environment, overrides)?;
+        let mut launch = Launch::target(paths, &global, &environment, overrides)?;
+        if let (Host::Proxied { baseline, .. }, Some(first)) = (&mut launch.host, &steam_baseline) {
+            *baseline = first.clone();
+        }
         let held: Vec<&Path> = launch.host.prefix().into_iter().collect();
         guard = Some(match &reservation {
             Some(reservation) => reservation.acquire(Operation::Launch, &held)?,
@@ -455,7 +499,9 @@ fn prepare_target_reserved(
                 overrides,
             )?);
         }
-        Kind::Proxied(proxied) => return Err(Error::ProxiedLaunch(proxied.launcher).into()),
+        Kind::Proxied(_) => {
+            return Ok(Launch::target(paths, global, environment, overrides).map(|_| ())?);
+        }
     }
     let (runner, _build_guard) = runner_locked(paths, global, environment)?;
     Launch::check_target(paths, global, environment, &runner, overrides)?;
@@ -537,6 +583,7 @@ pub fn reconcile(
 ) -> anyhow::Result<()> {
     let (runner, prefix) = match &launch.host {
         Host::Wine { runner, prefix } => (runner, prefix),
+        Host::Proxied { .. } => return Ok(()),
         Host::Native { .. } => {
             let changes = desktop::reconcile_native(paths, global, environment)?;
             if !changes.is_empty() {
@@ -619,6 +666,14 @@ pub fn start(
         hook_output,
         _reservation,
     } = match prepare(paths, name, &overrides, token, hook_output, &mut events) {
+        Err(err)
+            if matches!(
+                err.downcast_ref::<Error>(),
+                Some(Error::SteamAlreadyRunning(_))
+            ) =>
+        {
+            return Ok(StartOutcome::SteamAlreadyRunning);
+        }
         Err(err) if matches!(err.downcast_ref::<Error>(), Some(Error::AlreadyRunning(_))) => {
             return Ok(StartOutcome::AlreadyRunning);
         }
@@ -685,6 +740,8 @@ pub fn start(
                 Ok(StartOutcome::Started)
             }
             Started::AlreadyRunning => Ok(StartOutcome::AlreadyRunning),
+            Started::SteamRequested => Ok(StartOutcome::SteamRequested),
+            Started::SteamAdopted => Ok(StartOutcome::SteamAdopted),
         }
     })();
     if result.as_ref().is_err_and(|err| {
@@ -859,6 +916,7 @@ mod tests {
         let held = locks.acquire(Operation::Launch, "app", &[]).unwrap();
         let captured = root.path().join("after");
         let after = AfterHook {
+            steam: None,
             paths: paths.clone(),
             environment: "app".to_owned(),
             target: "app".to_owned(),
@@ -915,6 +973,7 @@ mod tests {
             .acquire(Operation::Hook(Phase::Before), &[])
             .unwrap();
         let context = hooks::Context {
+            steam: None,
             environment: "app",
             target: "app",
             exe: "missing",
@@ -968,6 +1027,7 @@ mod tests {
         }
         let captured = root.path().join("after");
         let after = AfterHook {
+            steam: None,
             paths: paths.clone(),
             environment: "app".to_owned(),
             target: "app".to_owned(),

@@ -86,20 +86,25 @@ pub enum Host {
     /// A Linux program, run directly. Everything it starts shares its process
     /// group, which is how the run is tracked and ended.
     Native { exe: PathBuf },
+    Proxied {
+        install: crate::steam::Install,
+        app_id: String,
+        baseline: crate::steam::Baseline,
+    },
 }
 
 impl Host {
     pub fn runner(&self) -> Option<&Runner> {
         match self {
             Host::Wine { runner, .. } => Some(runner),
-            Host::Native { .. } => None,
+            Host::Native { .. } | Host::Proxied { .. } => None,
         }
     }
 
     pub fn prefix(&self) -> Option<&Path> {
         match self {
             Host::Wine { prefix, .. } => Some(prefix),
-            Host::Native { .. } => None,
+            Host::Native { .. } | Host::Proxied { .. } => None,
         }
     }
 
@@ -108,6 +113,7 @@ impl Host {
         match self {
             Host::Wine { runner, .. } => runner.launcher().to_owned(),
             Host::Native { exe } => exe.display().to_string(),
+            Host::Proxied { .. } => "steam".to_owned(),
         }
     }
 
@@ -117,6 +123,7 @@ impl Host {
         match self {
             Host::Wine { runner, .. } => runner.outlives_program(),
             Host::Native { .. } => true,
+            Host::Proxied { .. } => false,
         }
     }
 
@@ -131,6 +138,9 @@ impl Host {
         match self {
             Host::Wine { runner, prefix } => runner.wait_idle(prefix),
             Host::Native { .. } => runner::wait_for_live_group(group, boot_id, leader_start),
+            Host::Proxied { .. } => Err(Error::Unsettled(
+                "Steam runs require a reaper watch".to_owned(),
+            )),
         }
     }
 
@@ -145,6 +155,9 @@ impl Host {
                 runner.wait_settled_live(prefix, group, boot_id, leader_start)
             }
             Host::Native { .. } => runner::wait_for_live_group(group, boot_id, leader_start),
+            Host::Proxied { .. } => Err(Error::Unsettled(
+                "Steam runs require a reaper watch".to_owned(),
+            )),
         }
     }
 
@@ -159,6 +172,9 @@ impl Host {
             Host::Wine { runner, prefix } => {
                 runner.end_session_live(prefix, group, boot_id, leader_start)
             }
+            Host::Proxied { .. } => Err(Error::Unsettled(
+                "Steam runs require a tree stop".to_owned(),
+            )),
             Host::Native { .. } => runner::signal_live_group(
                 group,
                 boot_id,
@@ -177,6 +193,9 @@ impl Host {
     ) -> Result<GroupOwnership> {
         match self {
             Host::Wine { runner, prefix } => runner.kill_live(prefix, group, boot_id, leader_start),
+            Host::Proxied { .. } => Err(Error::Unsettled(
+                "Steam runs require a tree stop".to_owned(),
+            )),
             Host::Native { .. } => runner::signal_live_group(
                 group,
                 boot_id,
@@ -313,7 +332,9 @@ impl Launch {
         session: bool,
         find: impl Fn(&str) -> Option<PathBuf>,
     ) -> Result<Self> {
-        refuse_proxied(environment)?;
+        if is_proxied(environment) {
+            return steam_target(paths, global, environment, overrides);
+        }
         let (name, target) = resolve_target(environment, overrides.target.as_deref())?;
         let wine = match &environment.config.kind {
             Kind::Wine(wine) => wine,
@@ -398,7 +419,9 @@ impl Launch {
             Kind::Native => {
                 return Self::check_native_target(paths, global, environment, overrides);
             }
-            Kind::Proxied(proxied) => return Err(Error::ProxiedLaunch(proxied.launcher)),
+            Kind::Proxied(_) => {
+                return Self::target(paths, global, environment, overrides).map(|_| ());
+            }
         }
         let (_, target) = resolve_target(environment, overrides.target.as_deref())?;
         check_unix_program(paths, &target.exe, false)?;
@@ -421,7 +444,6 @@ impl Launch {
         environment: &Environment,
         overrides: &Overrides,
     ) -> Result<()> {
-        refuse_proxied(environment)?;
         Self::target(paths, global, environment, overrides).map(|_| ())
     }
 
@@ -538,6 +560,20 @@ impl Launch {
                 .command(prefix, &wrappers)
                 .expect("the runner was resolved when this launch was built"),
             Host::Native { exe } => runner::wrapped(exe, &wrappers),
+            Host::Proxied {
+                install, app_id, ..
+            } => {
+                let mut command = match install.kind() {
+                    crate::steam::InstallKind::Native => Command::new("steam"),
+                    crate::steam::InstallKind::Flatpak => {
+                        let mut command = Command::new("flatpak");
+                        command.args(["run", "com.valvesoftware.Steam"]);
+                        command
+                    }
+                };
+                command.args(["-applaunch", app_id]);
+                command
+            }
         };
         command
             .args(&self.args)
@@ -839,7 +875,30 @@ pub fn resolve_target<'a>(
     environment: &'a Environment,
     requested: Option<&str>,
 ) -> Result<(&'a str, &'a Target)> {
-    refuse_proxied(environment)?;
+    if is_proxied(environment) {
+        if let Some(target) = requested
+            && target != "steam"
+        {
+            return Err(Error::UnknownTarget {
+                environment: environment.name.clone(),
+                target: target.to_owned(),
+            });
+        }
+        static TARGET: std::sync::LazyLock<Target> = std::sync::LazyLock::new(|| Target {
+            exe: String::new(),
+            args: Vec::new(),
+            cwd: None,
+            default: true,
+            gamemode: None,
+            wayland: None,
+            mangohud: None,
+            gamescope: None,
+            hooks: None,
+            desktop: false,
+            name: None,
+        });
+        return Ok(("steam", &TARGET));
+    }
     let targets = &environment.config.targets;
     if let Some(requested) = requested {
         return targets
@@ -873,12 +932,69 @@ fn is_proxied(environment: &Environment) -> bool {
     }
 }
 
-/// Refuses to launch a proxied environment, which has no wineo launch yet.
-pub fn refuse_proxied(environment: &Environment) -> Result<()> {
-    match &environment.config.kind {
-        Kind::Wine(_) | Kind::Native => Ok(()),
-        Kind::Proxied(proxied) => Err(Error::ProxiedLaunch(proxied.launcher)),
+pub(crate) fn check_steam_overrides(
+    environment: &Environment,
+    overrides: &Overrides,
+) -> Result<()> {
+    resolve_target(environment, overrides.target.as_deref())?;
+    if !overrides.env.is_empty() || !environment.config.env.is_empty() {
+        return Err(Error::StartFailed(format!(
+            "{} is a Steam game, so set environment variables in its Steam launch options.",
+            environment.name
+        )));
     }
+    Ok(())
+}
+
+fn steam_target(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    overrides: &Overrides,
+) -> Result<Launch> {
+    check_steam_overrides(environment, overrides)?;
+    let Kind::Proxied(proxied) = &environment.config.kind else {
+        unreachable!()
+    };
+    let install = crate::steam::active_for(paths, global);
+    match crate::steam::app_state(install.as_ref(), &proxied.app_id) {
+        crate::steam::AppState::Installed | crate::steam::AppState::Updating => {}
+        crate::steam::AppState::NotInstalled => {
+            return Err(Error::StartFailed(format!(
+                "Steam lists {} as not installed.",
+                environment.name
+            )));
+        }
+        crate::steam::AppState::Unavailable(path) => {
+            return Err(Error::StartFailed(format!(
+                "Steam's library at {} isn't available.",
+                path.display()
+            )));
+        }
+        crate::steam::AppState::Unknown(reason) => return Err(Error::StartFailed(reason)),
+    }
+    let install = install.expect("an installed game has an install");
+    let (baseline, _) =
+        crate::steam::baseline(&install, &proxied.app_id).map_err(|source| Error::Io {
+            context: "failed to inspect Steam processes".to_owned(),
+            source,
+        })?;
+    Ok(Launch {
+        host: Host::Proxied {
+            install,
+            app_id: proxied.app_id.clone(),
+            baseline,
+        },
+        target: Some("steam".to_owned()),
+        args: overrides.args.clone(),
+        cwd: paths.home().to_owned(),
+        env: BTreeMap::new(),
+        wrappers: Wrappers::default(),
+        wayland: Wayland::Off,
+        gameid: None,
+        store: None,
+        build_guards: Vec::new(),
+    })
 }
 
 #[derive(Debug, PartialEq)]
@@ -1019,7 +1135,16 @@ fn merge(
     overrides: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>> {
     // The global `[env]` never reaches a proxied environment.
-    refuse_proxied(environment)?;
+    if is_proxied(environment) {
+        check_steam_overrides(
+            environment,
+            &Overrides {
+                env: overrides.clone(),
+                ..Overrides::default()
+            },
+        )?;
+        return Ok(BTreeMap::new());
+    }
     for (key, value) in overrides {
         check_override(runner.is_some(), key, value)?;
     }
@@ -2127,7 +2252,7 @@ mod tests {
         };
         let exe_of = |host: Result<Host>| match host.unwrap() {
             Host::Native { exe } => exe,
-            Host::Wine { .. } => panic!("not native"),
+            Host::Wine { .. } | Host::Proxied { .. } => panic!("not native"),
         };
         assert_eq!(exe_of(launch(None, None, "dusk")), from_global.join("dusk"));
         assert_eq!(

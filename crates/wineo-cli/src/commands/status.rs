@@ -108,10 +108,11 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
         ));
     }
     if let Some(run) = &report.status.run {
-        lines.push(label_line(
-            "target",
-            &target_value(run, report.target_exe.as_deref()),
-        ));
+        let target_detail = match &report.kind {
+            KindReport::Proxied { title, .. } => title.as_deref(),
+            KindReport::Wine | KindReport::Native => report.target_exe.as_deref(),
+        };
+        lines.push(label_line("target", &target_value(run, target_detail)));
     }
     match &report.kind {
         KindReport::Wine => {}
@@ -120,6 +121,7 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
             launcher,
             app_id,
             title,
+            ..
         } => {
             lines.push(label_line("kind", "proxied"));
             lines.push(label_line("launcher", launcher.as_str()));
@@ -205,8 +207,26 @@ fn render(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
 fn header(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
     let name = &report.name;
     let status = &report.status;
+    if !matches!(
+        status.state,
+        State::Starting | State::Running | State::SteamRunning
+    ) && let KindReport::Proxied { install, .. } = &report.kind
+        && install.state != "installed"
+    {
+        return match &install.problem {
+            Some(reason) => format!("{name}: {} ({reason})", install.display()),
+            None => format!("{name}: {}", install.display()),
+        };
+    }
     match (status.state, &status.run) {
         (State::Inactive, _) => format!("{name}: inactive"),
+        (State::SteamRunning, _) => format!("{name}: running (started from Steam)"),
+        (State::Starting, None) => format!("{name}: starting"),
+        (State::Starting, Some(run)) => format!(
+            "{name}: starting since {} ({})",
+            absolute(run.started_at, tz),
+            relative(now, run.started_at)
+        ),
         (State::Running, None) => format!("{name}: running"),
         (State::Running, Some(run)) => {
             let attached = if run.mode == RunMode::Attached {
@@ -225,13 +245,23 @@ fn header(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
             absolute(run.started_at, tz),
             relative(now, run.started_at)
         ),
+        (State::Stopped, Some(run)) if run.lost => {
+            let ended = run.ended_at.unwrap_or(run.started_at);
+            format!(
+                "{name}: stopped, wineo lost track of the run at {} ({})",
+                absolute(ended, tz),
+                relative(now, ended)
+            )
+        }
         (state, Some(run)) => {
             let ended = run.ended_at.unwrap_or(run.started_at);
             let verb = match state {
                 State::Exited => "exited",
                 State::Failed => "failed",
                 State::Stopped => "stopped",
-                State::Running | State::Inactive => unreachable!("handled above"),
+                State::Running | State::Starting | State::SteamRunning | State::Inactive => {
+                    unreachable!("handled above")
+                }
             };
             // `stopped` never shows a code: it can carry one from a program that
             // happened to exit right as the stop was requested.
@@ -352,6 +382,8 @@ mod tests {
             native: false,
             launcher: None,
             status,
+            lost: false,
+            phase: None,
             mode,
             target: "notepad".to_owned(),
             pid: 48213,
@@ -359,6 +391,7 @@ mod tests {
             boot_id: None,
             leader_start: None,
             started_at: ts("2026-09-16T14:02:11Z"),
+            running_at: None,
             heartbeat_at: None,
             program_exited_at: None,
             ended_at: None,
@@ -445,6 +478,43 @@ mod tests {
             "notepad: running\n\
              \x20\x20runner      wine (wine-11.17)\n\
              \x20\x20prefix      ~/.local/share/wineo/prefixes/notepad\n"
+        );
+    }
+
+    #[test]
+    fn steam_starting_and_client_runs_have_distinct_headers() {
+        let mut run = run(RunStatus::Running, RunMode::Detached);
+        run.launcher = Some(wineo_core::config::Launcher::Steam);
+        run.target = "steam".to_owned();
+        run.phase = Some(wineo_core::runtime::RunPhase::Starting);
+        let mut starting = report(Status {
+            state: State::Starting,
+            run: Some(run),
+            lost: false,
+        });
+        starting.kind = KindReport::Proxied {
+            launcher: wineo_core::config::Launcher::Steam,
+            app_id: "289070".to_owned(),
+            title: Some("Civilization VI".to_owned()),
+            install: wineo_core::steam::AppState::Installed.into(),
+        };
+        let text = render(&starting, now(), &TimeZone::UTC);
+        assert!(text.starts_with("notepad: starting since "), "{text}");
+        assert!(
+            text.contains("target      steam (Civilization VI)"),
+            "{text}"
+        );
+        assert!(!text.contains("pid "), "{text}");
+
+        starting.status = Status {
+            state: State::SteamRunning,
+            run: None,
+            lost: false,
+        };
+        let text = render(&starting, now(), &TimeZone::UTC);
+        assert!(
+            text.starts_with("notepad: running (started from Steam)\n"),
+            "{text}"
         );
     }
 

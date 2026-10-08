@@ -36,6 +36,10 @@ pub struct LaunchArgs {
     #[arg(short, long = "env", value_name = "KEY=VALUE", value_parser = parse_launch_env_assignment)]
     env: Vec<(String, String)>,
 
+    /// Target name (also accepted as --target)
+    #[arg(value_name = "TARGET", conflicts_with = "target")]
+    positional_target: Option<String>,
+
     /// Extra arguments passed to the target
     #[arg(last = true)]
     args: Vec<String>,
@@ -43,12 +47,15 @@ pub struct LaunchArgs {
 
 impl LaunchArgs {
     pub fn is_empty(&self) -> bool {
-        self.target.is_none() && self.env.is_empty() && self.args.is_empty()
+        self.target.is_none()
+            && self.positional_target.is_none()
+            && self.env.is_empty()
+            && self.args.is_empty()
     }
 
     pub fn into_overrides(self) -> Overrides {
         Overrides {
-            target: self.target,
+            target: self.target.or(self.positional_target),
             env: self.env.into_iter().collect(),
             args: self.args,
         }
@@ -125,6 +132,16 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
 
         let supervisor = Supervisor::with_token(&cancellation.token);
+        if matches!(launch.host, launch::Host::Proxied { .. }) {
+            let (state, _) = supervisor.begin_steam(
+                &runtime,
+                launch,
+                RunMode::Attached,
+                &overrides,
+                &environment.name,
+            )?;
+            return Ok((runtime, supervisor, None, Some(state)));
+        }
         // A separate process group keeps the terminal's Ctrl+C away from wine, so
         // wineo can ask the app to close instead of it being cut off. It is also
         // what a Proton run is signalled through, so it is recorded with the pid.
@@ -135,9 +152,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             .spawn()
             .with_context(|| format!("failed to start {}", launch.host.launcher()));
         let child = spawned?;
-        Ok::<_, anyhow::Error>((runtime, supervisor, child))
+        Ok::<_, anyhow::Error>((runtime, supervisor, Some(child), None))
     })();
-    let (runtime, supervisor, child) = match preflight {
+    let (runtime, supervisor, child, steam_state) = match preflight {
         Ok(ready) => ready,
         Err(err) => {
             if !already_running && prepared.after.is_some() {
@@ -155,16 +172,23 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let global = &prepared.global;
     let environment = &prepared.environment;
     let launch = &prepared.launch;
-    let mut state = RunState::running(
-        RunMode::Attached,
-        launch.target.clone().unwrap_or_default(),
-        child.id(),
-        Some(child.id()),
-        &overrides,
-    );
-    state.record_host(&launch.host);
-    state.boot_id = process::boot_id();
-    state.leader_start = process::start_time(child.id());
+    let proxied = steam_state.is_some();
+    let mut state = if let Some(state) = steam_state {
+        state
+    } else {
+        let child = child.as_ref().expect("ordinary run child");
+        let mut state = RunState::running(
+            RunMode::Attached,
+            launch.target.clone().unwrap_or_default(),
+            child.id(),
+            Some(child.id()),
+            &overrides,
+        );
+        state.record_host(&launch.host);
+        state.boot_id = process::boot_id();
+        state.leader_start = process::start_time(child.id());
+        state
+    };
     // Wine is already running, so bailing out here would orphan it and free the lock.
     if let Err(err) = runtime.write_state(&state) {
         warn(err.into());
@@ -173,23 +197,29 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let name = &environment.name;
     let mut forced = false;
     let mut stopping = false;
-    let result = supervisor.wait(
-        &runtime,
-        launch,
-        child,
-        &mut state,
-        Duration::from_secs(global.stop_timeout.into()),
-        &paths.stats_log(name),
-        |notice| match notice {
-            Notice::Stopping => {
-                stopping = true;
-                note(&format!("Stopping {name}, press Ctrl+C again to force it"))
-            }
-            Notice::Killing => forced = true,
-            Notice::Warning(err) => warn(err.into()),
-            Notice::Heartbeat => {}
-        },
-    );
+    let mut notify = |notice| match notice {
+        Notice::Stopping => {
+            stopping = true;
+            note(&format!("Stopping {name}, press Ctrl+C again to force it"))
+        }
+        Notice::Killing => forced = true,
+        Notice::Warning(err) => warn(err.into()),
+        Notice::Heartbeat => {}
+    };
+    let timeout = Duration::from_secs(global.stop_timeout.into());
+    let result = if proxied {
+        supervisor.wait_steam(&runtime, launch, &mut state, name, timeout, &mut notify)
+    } else {
+        supervisor.wait(
+            &runtime,
+            launch,
+            child.expect("ordinary run child"),
+            &mut state,
+            timeout,
+            &paths.stats_log(name),
+            &mut notify,
+        )
+    };
     drop(supervisor);
     let cleanup = if state.status != RunStatus::Running && prepared.after.is_some() {
         Some(Cancellation::after_hook(
@@ -209,6 +239,13 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
     }
     result?;
+    if proxied {
+        return Ok(ExitCode::from(match state.status {
+            RunStatus::Exited => 0,
+            RunStatus::Stopped => 130,
+            RunStatus::Failed | RunStatus::Running => 1,
+        }));
+    }
     Ok(ExitCode::from(
         state
             .exit_code

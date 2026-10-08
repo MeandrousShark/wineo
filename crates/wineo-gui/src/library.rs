@@ -402,7 +402,7 @@ mod tests {
         assert_eq!(kind("broken"), None);
         let bg3 = cards.iter().find(|card| card.name == "bg3").unwrap();
         assert!(bg3.prefix.is_none());
-        assert!(bg3.default_target.is_none());
+        assert_eq!(bg3.default_target.as_deref(), Some("steam"));
     }
 
     #[test]

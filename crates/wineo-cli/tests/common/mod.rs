@@ -19,6 +19,7 @@ mod runners;
 pub use runners::{FAKE_GAMEMODERUN, FAKE_UMU, FAKE_WINE, FAKE_WINESERVER};
 #[allow(unused_imports)]
 pub mod snapshot;
+pub mod steam;
 
 pub struct Fixture {
     pub root: tempfile::TempDir,

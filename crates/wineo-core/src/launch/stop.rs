@@ -11,6 +11,7 @@ use crate::installer::{self, Cleaned};
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::runtime::{LostRunCleanup, Runtime};
+use crate::steam;
 use crate::supervisor;
 
 /// The result of stopping an environment.
@@ -190,6 +191,7 @@ pub fn stop_run_with(
         });
     }
 
+    let mut cleaned_proxied_run = false;
     match clean_up_lost_run(paths, name, timeout)? {
         LostRunOutcome::NotLost => {}
         LostRunOutcome::Unresolved { warning, message } => {
@@ -199,10 +201,18 @@ pub fn stop_run_with(
         }
         LostRunOutcome::Gone { warning } => {
             append_warning(&mut messages, warning);
-            messages.push(format!(
-                "wineo lost track of {name}'s last run, and what it started had already exited"
-            ));
-            return Ok(StopOutcome::CleanedUp { messages });
+            if !Environment::load(paths, name)
+                .ok()
+                .is_some_and(|environment| {
+                    matches!(environment.config.kind, crate::config::Kind::Proxied(_))
+                })
+            {
+                messages.push(format!(
+                    "wineo lost track of {name}'s last run, and what it started had already exited"
+                ));
+                return Ok(StopOutcome::CleanedUp { messages });
+            }
+            cleaned_proxied_run = true;
         }
         LostRunOutcome::Killed { warning } => {
             append_warning(&mut messages, warning);
@@ -212,7 +222,36 @@ pub fn stop_run_with(
             return Ok(StopOutcome::CleanedUp { messages });
         }
     }
-    Ok(StopOutcome::NotRunning { messages })
+    if let Ok(environment) = Environment::load(paths, name)
+        && let crate::config::Kind::Proxied(proxied) = environment.config.kind
+        && let Ok(global) = GlobalConfig::load(paths)
+        && let Some(install) = steam::active_for(paths, &global)
+    {
+        let mut reapers = steam::matching_reapers(&install, &proxied.app_id)
+            .with_context(|| format!("failed to scan Steam processes for {name}"))?;
+        if reapers.len() > 1 {
+            bail!("More than one Steam process matches {name}.");
+        }
+        if let Some(reaper) = reapers.pop() {
+            steam::stop_tree(
+                &reaper,
+                Duration::from_secs(u64::from(stop_timeout)),
+                force,
+                || token.is_canceled(),
+            )
+            .with_context(|| format!("failed to stop {name}"))?;
+            return Ok(StopOutcome::Stopped {
+                messages,
+                action: StopAction::Run,
+            });
+        }
+    }
+    if cleaned_proxied_run {
+        messages.push(format!("wineo lost track of {name}'s last run"));
+        Ok(StopOutcome::CleanedUp { messages })
+    } else {
+        Ok(StopOutcome::NotRunning { messages })
+    }
 }
 
 fn wait_hook(

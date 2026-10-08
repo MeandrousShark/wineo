@@ -35,6 +35,12 @@ pub enum RunStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+pub enum RunPhase {
+    Starting,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum RunMode {
     Detached,
     Attached,
@@ -52,6 +58,11 @@ pub enum RunKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunState {
     pub status: RunStatus,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lost: bool,
+    /// Present only while Steam has accepted a launch but its reaper has not appeared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<RunPhase>,
     pub mode: RunMode,
     pub target: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,6 +90,9 @@ pub struct RunState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leader_start: Option<u64>,
     pub started_at: Timestamp,
+    /// Steam play time begins when its reaper is claimed, not at dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_at: Option<Timestamp>,
     /// Stamped about once a minute while the run is live, so a lost run's
     /// session can end here instead of whenever it is cleaned up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -111,6 +125,8 @@ impl RunState {
     ) -> Self {
         Self {
             status: RunStatus::Running,
+            lost: false,
+            phase: None,
             mode,
             target,
             runner: None,
@@ -122,6 +138,7 @@ impl RunState {
             boot_id: None,
             leader_start: None,
             started_at: Timestamp::now(),
+            running_at: None,
             heartbeat_at: None,
             program_exited_at: None,
             ended_at: None,
@@ -140,7 +157,23 @@ impl RunState {
                 self.prefix = Some(prefix.clone());
             }
             Host::Native { .. } => self.native = true,
+            Host::Proxied { .. } => {
+                self.launcher = Some(Launcher::Steam);
+                self.group = None;
+            }
         }
+    }
+
+    pub fn starting(&mut self) {
+        self.phase = Some(RunPhase::Starting);
+    }
+
+    pub fn claimed(&mut self, pid: u32, boot_id: String, start_time: u64) {
+        self.phase = None;
+        self.pid = pid;
+        self.boot_id = Some(boot_id);
+        self.leader_start = Some(start_time);
+        self.running_at = Some(Timestamp::now());
     }
 
     /// What the run ran on, from the fields `state.toml` has always had.
@@ -169,6 +202,7 @@ impl RunState {
 
     pub fn finish(&mut self, status: RunStatus) {
         self.status = status;
+        self.phase = None;
         self.ended_at = Some(Timestamp::now());
     }
 
@@ -226,6 +260,9 @@ impl RunState {
 #[serde(rename_all = "lowercase")]
 pub enum State {
     Running,
+    Starting,
+    #[serde(rename = "running")]
+    SteamRunning,
     Exited,
     Failed,
     Stopped,
@@ -237,6 +274,8 @@ impl State {
     pub fn as_str(self) -> &'static str {
         match self {
             State::Running => "running",
+            State::Starting => "starting",
+            State::SteamRunning => "running (started from Steam)",
             State::Exited => "exited",
             State::Failed => "failed",
             State::Stopped => "stopped",
@@ -379,7 +418,14 @@ impl Runtime {
         let run = self.read_state()?;
         if self.is_running()? {
             return Ok(Status {
-                state: State::Running,
+                state: if run
+                    .as_ref()
+                    .is_some_and(|run| run.phase == Some(RunPhase::Starting))
+                {
+                    State::Starting
+                } else {
+                    State::Running
+                },
                 run: run.filter(|run| run.status == RunStatus::Running),
                 lost: false,
             });
@@ -522,12 +568,18 @@ impl Runtime {
             Ok(_) => return Ok(LostRunCleanup::NotLost),
             Err(err) => return unresolved(Some(chain(&err))),
         };
+        if matches!(run.kind(), RunKind::Proxied(_)) {
+            run.finish(RunStatus::Stopped);
+            run.lost = true;
+            run.ended_at = Some(run.heartbeat_at.unwrap_or(run.started_at));
+            self.write_state(&run)?;
+            return Ok(LostRunCleanup::Gone { warning: None });
+        }
         // None for a native run, which is cleaned up through its group like Proton.
         let wine = match (run.kind(), run.runner.clone(), run.prefix.clone()) {
             (RunKind::Wine, Some(runner), Some(prefix)) => Some((runner, prefix)),
             (RunKind::Native, None, None) => None,
-            // Never signaled: its process group isn't wineo's to kill.
-            (RunKind::Proxied(_), ..) => return unresolved(None),
+            (RunKind::Proxied(_), ..) => unreachable!("handled above"),
             _ => return unresolved(None),
         };
         let wineserver = wine.as_ref().is_some_and(|(runner, _)| !runner.is_proton());
@@ -714,6 +766,7 @@ mod tests {
     use std::ffi::OsString;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Instant;
@@ -732,6 +785,8 @@ mod tests {
     fn run_state(status: RunStatus) -> RunState {
         RunState {
             status,
+            lost: false,
+            phase: None,
             mode: RunMode::Detached,
             target: "notepad".to_owned(),
             runner: None,
@@ -743,6 +798,7 @@ mod tests {
             boot_id: None,
             leader_start: None,
             started_at: "2026-09-16T21:02:11Z".parse().unwrap(),
+            running_at: None,
             heartbeat_at: None,
             program_exited_at: None,
             ended_at: None,
@@ -964,29 +1020,69 @@ mod tests {
         assert_eq!(read, state);
     }
 
-    /// Lost-run cleanup never signals anything for a proxied run, since its
-    /// process group belongs to the launcher.
+    /// A lost Steam supervisor releases the run while leaving Steam's live tree alone.
     #[test]
-    fn a_lost_proxied_run_is_left_unresolved() {
+    fn a_lost_proxied_run_is_released_without_signaling() {
         let root = tempfile::tempdir().unwrap();
         let runtime = runtime(root.path());
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
         let mut run = run_state(RunStatus::Running);
         run.launcher = Some(Launcher::Steam);
-        run.group = Some(1);
+        run.pid = pid;
+        run.group = Some(pid);
+        run.boot_id = process::boot_id();
+        run.leader_start = process::start_time(pid);
+        run.heartbeat_at = Some("2026-09-16T21:03:00Z".parse().unwrap());
+        assert_eq!(
+            process::group_ownership(run.group, run.boot_id.as_deref(), run.leader_start),
+            GroupOwnership::Owned
+        );
         runtime.write_state(&run).unwrap();
+        assert!(!runtime.is_running().unwrap());
         let stats_log = root.path().join("stats.jsonl");
         let cleaned = runtime
             .clean_up_lost_run(Duration::from_secs(1), &stats_log)
             .unwrap();
         assert!(
-            matches!(cleaned, LostRunCleanup::Unresolved { warning: None }),
+            matches!(cleaned, LostRunCleanup::Gone { warning: None }),
             "{cleaned:?}"
         );
         assert_eq!(
             runtime.read_state().unwrap().unwrap().status,
-            RunStatus::Running
+            RunStatus::Stopped
         );
+        assert_eq!(
+            runtime.read_state().unwrap().unwrap().ended_at,
+            run.heartbeat_at
+        );
+        assert!(runtime.read_state().unwrap().unwrap().lost);
+        assert!(child.try_wait().unwrap().is_none());
+        assert!(runtime.try_lock().unwrap().is_some());
+        runtime.check_quiet("game").unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
         assert!(!stats_log.exists());
+    }
+
+    #[test]
+    fn a_starting_steam_run_keeps_the_legacy_running_status_on_disk() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime(root.path());
+        let mut run = run_state(RunStatus::Running);
+        run.launcher = Some(Launcher::Steam);
+        run.starting();
+        let lock = runtime.try_lock().unwrap().unwrap();
+        runtime.write_state(&run).unwrap();
+        let text = fs::read_to_string(runtime.state_path()).unwrap();
+        assert!(text.contains("status = \"running\""), "{text}");
+        assert!(text.contains("phase = \"starting\""), "{text}");
+        assert_eq!(runtime.status().unwrap().state, State::Starting);
+        drop(lock);
     }
 
     #[test]

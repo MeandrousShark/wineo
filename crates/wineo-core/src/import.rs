@@ -2742,6 +2742,8 @@ mod tests {
 
         let state = crate::runtime::RunState {
             status: crate::runtime::RunStatus::Running,
+            lost: false,
+            phase: None,
             mode: crate::runtime::RunMode::Attached,
             target: "game".to_owned(),
             runner: None,
@@ -2753,6 +2755,7 @@ mod tests {
             boot_id: None,
             leader_start: None,
             started_at: "2026-09-21T00:00:00Z".parse().unwrap(),
+            running_at: None,
             heartbeat_at: None,
             program_exited_at: None,
             ended_at: None,

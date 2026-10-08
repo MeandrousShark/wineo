@@ -70,6 +70,14 @@ pub fn start(paths: &Paths, name: &str, overrides: Overrides) -> anyhow::Result<
         return Err(err);
     }
     let result = result?;
+    match result {
+        StartOutcome::SteamAlreadyRunning => {
+            eprintln!("{name} is already running (started from Steam).")
+        }
+        StartOutcome::SteamRequested => println!("Asked Steam to start {name}."),
+        StartOutcome::SteamAdopted => println!("Started {name} (Steam had already launched it)."),
+        _ => {}
+    }
     if result == StartOutcome::AlreadyRunning {
         already_running(name, &overrides);
     }
