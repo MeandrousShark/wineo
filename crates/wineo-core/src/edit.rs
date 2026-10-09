@@ -117,6 +117,18 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
 
 fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
     match key {
+        "steam" => {
+            if !matches!(raw, "native" | "flatpak") {
+                return Err(EditError::InvalidValue {
+                    key: key.to_owned(),
+                    reason: format!("expected `native` or `flatpak`, got `{raw}`"),
+                });
+            }
+            if root.get(key).and_then(Item::as_str) != Some(raw) {
+                store_value(root, key, Value::from(raw));
+            }
+            Ok(())
+        }
         "stop_timeout" | "log_limit_mb" => {
             let value = parse_count_value(key, raw)?;
             store_value(root, key, value);
@@ -507,7 +519,7 @@ fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
 fn unset_global(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
         "stop_timeout" | "log_limit_mb" | "gamemode" | "wayland" | "mangohud"
-        | "external_runners" => Ok(root.remove(key).is_some()),
+        | "external_runners" | "steam" => Ok(root.remove(key).is_some()),
         "defaults.runner" => unset_field(root, "defaults", "defaults", "runner"),
         "defaults.arch" => unset_field(root, "defaults", "defaults", "arch"),
         "defaults.prefix_root" => unset_field(root, "defaults", "defaults", "prefix_root"),
@@ -764,6 +776,49 @@ mod tests {
 
     fn parse(s: &str) -> DocumentMut {
         s.parse().expect("valid toml")
+    }
+
+    #[test]
+    fn global_steam_sets_and_unsets_without_losing_comments() {
+        let mut doc = parse("# mine\nsteam = \"native\" # preferred\nstop_timeout = 3 # short\n");
+        set(&mut doc, Scope::Global, "steam", "flatpak").unwrap();
+        assert_eq!(
+            doc.to_string(),
+            "# mine\nsteam = \"flatpak\" # preferred\nstop_timeout = 3 # short\n"
+        );
+        let config: crate::config::GlobalConfig = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(config.steam, Some(crate::steam::InstallKind::Flatpak));
+        set(&mut doc, Scope::Global, "steam", "native").unwrap();
+        let config: crate::config::GlobalConfig = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(config.steam, Some(crate::steam::InstallKind::Native));
+        assert!(unset(&mut doc, Scope::Global, "steam").unwrap());
+        assert!(doc.get("steam").is_none());
+        assert!(doc.to_string().contains("stop_timeout = 3 # short"));
+        let before = doc.to_string();
+        assert!(!unset(&mut doc, Scope::Global, "steam").unwrap());
+        assert_eq!(doc.to_string(), before);
+    }
+
+    #[test]
+    fn global_steam_rejects_invalid_values_without_changing_the_document() {
+        for original in ["", "steam = 'flatpak' # preferred\n"] {
+            for value in ["snap", "", "Flatpak"] {
+                let mut doc = parse(original);
+                assert!(matches!(
+                    set(&mut doc, Scope::Global, "steam", value),
+                    Err(EditError::InvalidValue { key, .. }) if key == "steam"
+                ));
+                assert_eq!(doc.to_string(), original);
+            }
+        }
+    }
+
+    #[test]
+    fn global_steam_no_op_preserves_string_formatting() {
+        let original = "# mine\nsteam  =  'flatpak' # preferred\n";
+        let mut doc = parse(original);
+        set(&mut doc, Scope::Global, "steam", "flatpak").unwrap();
+        assert_eq!(doc.to_string(), original);
     }
 
     #[test]

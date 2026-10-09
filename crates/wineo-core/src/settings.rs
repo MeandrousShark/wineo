@@ -1050,6 +1050,41 @@ mod tests {
     }
 
     #[test]
+    fn steam_no_op_and_invalid_edits_never_write_the_global_config() {
+        let (_root, paths) = setup();
+        let original = "# mine\nsteam  =  'flatpak' # preferred\n";
+        fs::create_dir_all(paths.global_config().parent().unwrap()).unwrap();
+        fs::write(paths.global_config(), original).unwrap();
+        update_with_writer(
+            &paths,
+            ConfigFile::Global,
+            &[("steam", "flatpak")],
+            &[],
+            |_, _| panic!("a no-op must not write"),
+        )
+        .unwrap();
+        assert!(
+            update_with_writer(
+                &paths,
+                ConfigFile::Global,
+                &[("stop_timeout", "3"), ("steam", "snap")],
+                &[],
+                |_, _| panic!("an invalid edit must not write"),
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_to_string(paths.global_config()).unwrap(), original);
+
+        fs::remove_file(paths.global_config()).unwrap();
+        let missing = update_with_writer(&paths, ConfigFile::Global, &[], &["steam"], |_, _| {
+            panic!("unsetting an absent key must not write")
+        })
+        .unwrap();
+        assert_eq!(missing, ["steam"]);
+        assert!(!paths.global_config().exists());
+    }
+
+    #[test]
     fn the_external_runners_answer_keeps_the_rest_of_the_file() {
         let (_root, paths) = setup();
         assert_eq!(GlobalConfig::load(&paths).unwrap().external_runners, None);

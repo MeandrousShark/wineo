@@ -125,6 +125,42 @@ fn write_global(root: &Path, text: &str) -> PathBuf {
 }
 
 #[test]
+fn set_global_steam_validates_and_preserves_comments() {
+    let root = tempfile::tempdir().unwrap();
+    let original = "# mine\nsteam  =  'flatpak' # preferred\nstop_timeout = 3 # short\n";
+    let path = write_global(root.path(), original);
+    let result = output(wineo(root.path()).args(["set", "--global", "steam=flatpak"]));
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    let result =
+        output(wineo(root.path()).args(["set", "--global", "stop_timeout=5", "steam=snap"]));
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("invalid value for `steam`"));
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    for install in ["native", "flatpak"] {
+        let setting = format!("steam={install}");
+        let result = output(wineo(root.path()).args(["set", "--global", &setting]));
+        assert!(result.status.success(), "{}", stderr(&result));
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(&format!("steam  =  \"{install}\" # preferred")),
+            "{text}"
+        );
+        assert!(text.contains("stop_timeout = 3 # short"), "{text}");
+    }
+    let result = output(wineo(root.path()).args(["set", "--global", "--unset", "steam"]));
+    assert!(result.status.success(), "{}", stderr(&result));
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("steam"), "{text}");
+    assert!(text.contains("stop_timeout = 3 # short"), "{text}");
+    let result = output(wineo(root.path()).args(["set", "--global", "--unset", "steam"]));
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+}
+
+#[test]
 fn set_refuses_to_use_defaults_for_an_unsupported_global_config() {
     let root = tempfile::tempdir().unwrap();
     let global = write_global(root.path(), "schema_version = 2\n");
