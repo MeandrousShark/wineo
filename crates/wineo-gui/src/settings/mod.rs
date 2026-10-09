@@ -3140,6 +3140,35 @@ mod tests {
     }
 
     #[test]
+    fn clearing_a_proxied_title_unsets_the_config_key() {
+        let (_root, paths) = setup();
+        write(
+            &paths,
+            "kind = 'proxied'\nlauncher = 'steam'\napp_id = '1086940'\ntitle = 'Old title'\n",
+        );
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::ProxiedTitle(String::new()));
+        assert_eq!(page.changes(), 1);
+        assert!(page.can_save());
+        assert_eq!(
+            editor(&page).form.draft.proxied.as_ref().unwrap().title,
+            None
+        );
+        let edits = editor(&page).form.edits();
+        assert!(edits.pairs.is_empty());
+        assert_eq!(edits.unset, ["title"]);
+        let report = load::save(&paths, "game", &edits).unwrap();
+        assert_eq!(report.failed, None);
+
+        let saved = fs::read_to_string(paths.environment_config("game")).unwrap();
+        let config =
+            wineo_core::config::EnvironmentConfig::parse(&paths.environment_config("game"), &saved)
+                .unwrap();
+        assert_eq!(config.proxied().unwrap().title, None);
+        assert!(!saved.contains("title ="));
+    }
+
+    #[test]
     fn an_unreadable_config_shows_its_error() {
         let (_root, paths) = setup();
         write(&paths, "this is [");

@@ -138,6 +138,11 @@ impl From<crate::steam::AppState> for InstallReport {
 }
 
 fn kind_report(paths: &Paths, global: &GlobalConfig, kind: &Kind) -> KindReport {
+    let steam = matches!(kind, Kind::Proxied(_)).then(|| steam_overview(paths, global));
+    kind_report_with_steam(kind, steam.as_ref())
+}
+
+fn kind_report_with_steam(kind: &Kind, steam: Option<&SteamOverview>) -> KindReport {
     let mut report = KindReport::new(kind);
     if let KindReport::Proxied {
         app_id,
@@ -146,18 +151,27 @@ fn kind_report(paths: &Paths, global: &GlobalConfig, kind: &Kind) -> KindReport 
         ..
     } = &mut report
     {
-        let active = crate::steam::active_for(paths, global);
-        *install = crate::steam::app_state(active.as_ref(), app_id).into();
-        if let Some(active) = active
-            && let Some(manifest) = crate::steam::manifests(&active)
-                .into_iter()
-                .find(|entry| entry.app_id == *app_id)
-                .and_then(|entry| entry.manifest.ok())
+        let active = steam.and_then(|steam| steam.install.as_ref());
+        *install = crate::steam::app_state(active, app_id).into();
+        if let Some(manifest) = steam
+            .into_iter()
+            .flat_map(|steam| &steam.manifests)
+            .find(|entry| entry.app_id == *app_id)
+            .and_then(|entry| entry.manifest.as_ref().ok())
         {
-            *title = Some(manifest.name);
+            *title = Some(manifest.name.clone());
         }
     }
     report
+}
+
+fn steam_overview(paths: &Paths, global: &GlobalConfig) -> SteamOverview {
+    let install = crate::steam::active_for(paths, global);
+    let manifests = install
+        .as_ref()
+        .map(crate::steam::manifests)
+        .unwrap_or_default();
+    SteamOverview { install, manifests }
 }
 
 /// The little of `stats::Summary` that `status` shows: enough to say how much
@@ -200,6 +214,15 @@ pub struct OverviewError {
 pub struct Overview {
     pub environments: Vec<OverviewEnvironment>,
     pub errors: Vec<OverviewError>,
+    /// Steam data shared by proxied environments in this overview.
+    pub steam: Option<SteamOverview>,
+}
+
+/// The active Steam install and its manifests, scanned at most once per overview.
+#[derive(Debug, Clone)]
+pub struct SteamOverview {
+    pub install: Option<crate::steam::Install>,
+    pub manifests: Vec<crate::steam::ManifestEntry>,
 }
 
 /// Optional filters shared by the list and running-status queries.
@@ -448,9 +471,18 @@ pub fn overview(paths: &Paths, filter: OverviewFilter<'_>) -> Result<Overview> {
                                     }),
                                 )),
                                 kind: Some(match &global {
-                                    Some(global) => {
-                                        kind_report(paths, global, &environment.config.kind)
-                                    }
+                                    Some(global) => match &environment.config.kind {
+                                        Kind::Proxied(_) => {
+                                            let steam = overview.steam.get_or_insert_with(|| {
+                                                steam_overview(paths, global)
+                                            });
+                                            kind_report_with_steam(
+                                                &environment.config.kind,
+                                                Some(steam),
+                                            )
+                                        }
+                                        _ => KindReport::new(&environment.config.kind),
+                                    },
                                     None => KindReport::new(&environment.config.kind),
                                 }),
                                 name,
@@ -602,6 +634,31 @@ mod tests {
         assert!(
             matches!(kind, KindReport::Proxied { title: Some(title), .. } if title == "Civilization VI")
         );
+    }
+
+    #[test]
+    fn overview_does_not_scan_steam_without_proxied_environments() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let steamapps = paths.home().join(".local/share/Steam/steamapps");
+        fs::create_dir_all(&steamapps).unwrap();
+        fs::write(
+            steamapps.join("appmanifest_289070.acf"),
+            "\"AppState\" { \"appid\" \"289070\" \"name\" \"Civilization VI\" \"StateFlags\" \"4\" }",
+        )
+        .unwrap();
+        assert!(crate::steam::active_for(&paths, &GlobalConfig::default()).is_some());
+
+        fs::create_dir_all(paths.environments_dir()).unwrap();
+        fs::write(
+            paths.environment_config("notepad"),
+            "prefix = \"~/prefix\"\nrunner = \"proton-ge\"\narch = \"win64\"\n",
+        )
+        .unwrap();
+
+        let overview = overview(&paths, OverviewFilter::default()).unwrap();
+        assert_eq!(overview.environments.len(), 1);
+        assert!(overview.steam.is_none());
     }
 
     #[test]

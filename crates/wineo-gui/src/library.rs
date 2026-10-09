@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use iced::Color;
 use wineo_core::art::{self, ArtConfig};
-use wineo_core::config::{GlobalConfig, Kind, Target};
+use wineo_core::config::{Kind, Target};
 use wineo_core::environment::Environment;
 use wineo_core::launch;
 use wineo_core::paths::Paths;
@@ -207,10 +207,12 @@ fn fallback_stats(kind: Option<CardKind>) -> (String, String, String) {
 
 pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
     let overview = report::overview(paths, OverviewFilter::default())?;
-    let active = GlobalConfig::load(paths)
-        .ok()
-        .and_then(|global| steam::active_for(paths, &global));
-    let manifests = active.as_ref().map(steam::manifests).unwrap_or_default();
+    let tools = overview
+        .steam
+        .as_ref()
+        .and_then(|steam| steam.install.as_ref())
+        .map(steam::compat_tools)
+        .unwrap_or_default();
     let stats = stats::overview(paths)?;
     let played: HashMap<_, _> = stats
         .rows
@@ -241,12 +243,14 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
         {
             Some(SteamDetails {
                 install: install.clone(),
-                proton: active
+                proton: [app_id.to_ascii_lowercase(), "0".to_owned()]
+                    .into_iter()
+                    .find_map(|key| tools.get(&key).filter(|name| !name.is_empty()))
+                    .cloned(),
+                size: overview
+                    .steam
                     .as_ref()
-                    .and_then(|active| steam::compat_tool(active, app_id)),
-                size: manifests
-                    .iter()
-                    .find(|entry| entry.app_id == *app_id)
+                    .and_then(|steam| steam.manifests.iter().find(|entry| entry.app_id == *app_id))
                     .and_then(|entry| entry.manifest.as_ref().ok())
                     .map(|manifest| manifest.size_on_disk),
             })
@@ -566,6 +570,35 @@ mod tests {
         assert!(!card.not_installed());
         assert!(!card.install_allows_play());
         assert!(card.install_warning().is_some());
+    }
+
+    #[test]
+    fn steam_card_compatibility_tool_lookup_ignores_case() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        let steam = root.path().join(".local/share/Steam");
+        fs::create_dir_all(steam.join("steamapps")).unwrap();
+        fs::create_dir_all(steam.join("config")).unwrap();
+        fs::create_dir_all(paths.environments_dir()).unwrap();
+        fs::write(
+            paths.environment_config("game"),
+            "kind = 'proxied'\nlauncher = 'steam'\napp_id = 'AbC'\n",
+        )
+        .unwrap();
+        fs::write(
+            steam.join("config/config.vdf"),
+            r#""InstallConfigStore" { "Software" { "Valve" { "Steam" { "CompatToolMapping" { "aBc" { "name" "GE-Proton" } "0" { "name" "proton_default" } } } } } }"#,
+        )
+        .unwrap();
+
+        let cards = load_library(&paths).unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(
+            cards[0].steam.as_ref().unwrap().proton.as_deref(),
+            Some("GE-Proton")
+        );
     }
 
     #[test]

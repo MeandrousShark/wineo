@@ -1,6 +1,7 @@
 //! Steam's accounts and what they played: `config/loginusers.vdf`,
 //! `userdata/<account>/config/localconfig.vdf`, and `config/config.vdf`.
 
+use std::collections::HashMap;
 use std::fs;
 
 use super::vdf;
@@ -101,28 +102,46 @@ fn read_playtime(install: &Install, app_id: &str) -> Result<Playtime, String> {
     })
 }
 
-/// The Proton build a game is set to, or the `"0"` default when the game has
-/// no entry of its own. None when neither is set, or `config.vdf` can't be
-/// read.
-pub fn compat_tool(install: &Install, app_id: &str) -> Option<String> {
-    let text = fs::read_to_string(install.root().join("config/config.vdf")).ok()?;
-    let document = vdf::parse(&text).ok()?;
-    let mapping = document
+/// The configured compatibility tools by app ID. Keys are lowercase because
+/// VDF keys are case-insensitive. Empty names retain malformed entries so
+/// they don't shadow the default differently from Steam's first-key lookup.
+pub fn compat_tools(install: &Install) -> HashMap<String, String> {
+    let mut tools = HashMap::new();
+    let Ok(text) = fs::read_to_string(install.root().join("config/config.vdf")) else {
+        return tools;
+    };
+    let Ok(document) = vdf::parse(&text) else {
+        return tools;
+    };
+    let Some(mapping) = document
         .path(&[
             "InstallConfigStore",
             "Software",
             "Valve",
             "Steam",
             "CompatToolMapping",
-        ])?
-        .as_object()?;
-    [app_id, "0"]
+        ])
+        .and_then(|value| value.as_object())
+    else {
+        return tools;
+    };
+    for (app_id, value) in mapping.entries() {
+        let name = value
+            .as_object()
+            .and_then(|entry| entry.text("name"))
+            .unwrap_or_default()
+            .to_owned();
+        tools.entry(app_id.to_ascii_lowercase()).or_insert(name);
+    }
+    tools
+}
+
+/// The Proton build a game is set to, or the `"0"` default when the game has
+/// no entry of its own. None when neither is set, or `config.vdf` can't be
+/// read.
+pub fn compat_tool(install: &Install, app_id: &str) -> Option<String> {
+    let tools = compat_tools(install);
+    [app_id.to_ascii_lowercase(), "0".to_owned()]
         .into_iter()
-        .find_map(|key| {
-            mapping
-                .object(key)?
-                .text("name")
-                .filter(|name| !name.is_empty())
-        })
-        .map(str::to_owned)
+        .find_map(|key| tools.get(&key).filter(|name| !name.is_empty()).cloned())
 }

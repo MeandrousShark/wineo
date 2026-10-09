@@ -323,7 +323,8 @@ impl Page {
         let Some(review) = self.review.clone() else {
             return Task::none();
         };
-        if self.busy() || self.waiting() {
+        if self.busy() || self.waiting() || (review.ready.is_empty() && review.failures.is_empty())
+        {
             return Task::none();
         }
         let token = Token::new();
@@ -430,7 +431,9 @@ impl Page {
                 self.step = Step::Review;
                 Task::none()
             }
-            Event::Progress(generation, message) if generation == self.generation => {
+            Event::Progress(generation, message)
+                if generation == self.generation && self.step == Step::Working =>
+            {
                 if self.token.as_ref().is_some_and(Token::is_canceled) {
                     return Task::none();
                 }
@@ -885,6 +888,124 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn page_import_flow_drops_stale_results() {
+        let temp = TempDir::new().unwrap();
+        let paths = paths(temp.path(), false);
+        let steam = temp.path().join("home/.local/share/Steam");
+        fs::create_dir_all(steam.join("steamapps")).unwrap();
+        manifest(&steam, "1", "Alpha", 4);
+        let (mut page, _) = Page::new(paths.clone());
+        let listed_generation = page.generation;
+
+        let _ = page.update(Event::Listed(listed_generation - 1, Ok(Listing::default())));
+        assert!(page.listing.is_none());
+        assert!(page.waiting());
+        let _ = page.update(Event::Listed(listed_generation, load_listing(&paths)));
+        assert_eq!(page.step, Step::Games);
+        assert!(!page.waiting());
+        assert_eq!(page.listing.as_ref().unwrap().games.len(), 1);
+
+        let _ = page.update(Event::Toggle(0));
+        let _ = page.update(Event::ImportSelected);
+        assert_eq!(page.step, Step::Details);
+        assert_eq!(page.name, "alpha");
+        let _ = page.update(Event::Review);
+        let planned_generation = page.generation;
+        assert!(page.waiting());
+        let _ = page.update(Event::Planned(listed_generation, Review::default()));
+        assert_eq!(page.step, Step::Details);
+        assert!(page.review.is_none());
+        assert!(page.waiting());
+        let review = plan_review(
+            &paths,
+            page.listing.as_ref().unwrap().games.clone(),
+            Some(page.name.clone()),
+        );
+        let _ = page.update(Event::Planned(planned_generation, review));
+        assert_eq!(page.step, Step::Review);
+        assert!(!page.waiting());
+        assert_eq!(page.review.as_ref().unwrap().ready.len(), 1);
+
+        let _ = page.update(Event::Import);
+        let finished_generation = page.generation;
+        assert_eq!(page.step, Step::Working);
+        assert!(page.busy());
+        assert!(page.waiting());
+        let _ = page.update(Event::Finished(planned_generation, Ok(Report::default())));
+        assert_eq!(page.step, Step::Working);
+        assert!(page.busy());
+        assert!(page.report.is_none());
+        let _ = page.update(Event::Progress(
+            finished_generation,
+            "Importing Alpha...".into(),
+        ));
+        assert_eq!(page.status, "Importing Alpha...");
+        let report = run_import(
+            &paths,
+            page.review.clone().unwrap(),
+            page.token.as_ref().unwrap(),
+            |_| {},
+        );
+        let _ = page.update(Event::Finished(finished_generation, report));
+        assert_eq!(page.step, Step::Finished);
+        assert!(!page.busy());
+        assert!(!page.waiting());
+        assert_eq!(
+            page.report.as_ref().unwrap().lines(),
+            ["Imported 1 of 1 game."]
+        );
+        assert!(paths.environment_config("alpha").is_file());
+        let _ = page.update(Event::BackToLibrary);
+        assert!(matches!(
+            page.take_action(),
+            Some(Action::Library {
+                name: None,
+                launch: false
+            })
+        ));
+    }
+
+    #[test]
+    fn page_ignores_progress_after_finished() {
+        let temp = TempDir::new().unwrap();
+        let (mut page, _) = Page::new(paths(temp.path(), false));
+        page.step = Step::Working;
+        page.token = Some(Token::new());
+        let generation = page.generation;
+        let _ = page.update(Event::Finished(generation, Ok(Report::default())));
+        let _ = page.update(Event::Progress(generation, "Importing Alpha...".into()));
+        assert_eq!(page.step, Step::Finished);
+        assert!(!page.busy());
+        assert!(!page.waiting());
+        assert!(page.status.is_empty());
+        assert!(page.report.is_some());
+    }
+
+    #[test]
+    fn page_does_not_import_an_empty_or_already_imported_review() {
+        let temp = TempDir::new().unwrap();
+        for already in [Vec::new(), vec!["alpha".to_owned()]] {
+            let (mut page, _) = Page::new(paths(temp.path(), false));
+            let _ = page.update(Event::Planned(
+                page.generation,
+                Review {
+                    already: already.clone(),
+                    ..Review::default()
+                },
+            ));
+            let generation = page.generation;
+            let _ = page.submit();
+            let _ = page.update(Event::Import);
+            assert_eq!(page.step, Step::Review);
+            assert_eq!(page.generation, generation);
+            assert!(!page.busy());
+            assert!(!page.waiting());
+            assert!(page.report.is_none());
+            assert_eq!(page.review.as_ref().unwrap().already, already);
+        }
     }
 
     #[test]

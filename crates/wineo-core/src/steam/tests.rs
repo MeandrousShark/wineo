@@ -771,6 +771,41 @@ fn playtime_keys_ignore_case() {
 }
 
 #[test]
+fn compatibility_tools_lists_mappings_and_keeps_empty_entries() {
+    let home = tempfile::tempdir().unwrap();
+    let root = native(home.path());
+    let install = only(home.path());
+    write(
+        &root.join("config/config.vdf"),
+        "\"InstallConfigStore\" { \"Software\" { \"Valve\" { \"Steam\" { \"CompatToolMapping\" { \"0\" { \"name\" \"proton_default\" } \"AbC\" { \"name\" \"GE-Proton\" } \"1245620\" { \"config\" \"\" } \"broken\" \"not a block\" } } } } }",
+    );
+
+    let tools = compat_tools(&install);
+    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.get("0").map(String::as_str), Some("proton_default"));
+    assert_eq!(tools.get("abc").map(String::as_str), Some("GE-Proton"));
+    assert_eq!(tools.get("1245620").map(String::as_str), Some(""));
+    assert_eq!(tools.get("broken").map(String::as_str), Some(""));
+}
+
+#[test]
+fn compatibility_tools_keep_the_first_duplicate_entry() {
+    let home = tempfile::tempdir().unwrap();
+    let root = native(home.path());
+    let install = only(home.path());
+    write(
+        &root.join("config/config.vdf"),
+        "\"InstallConfigStore\" { \"Software\" { \"Valve\" { \"Steam\" { \"CompatToolMapping\" { \"42\" \"malformed\" \"42\" { \"name\" \"GE-Proton\" } } } } } }",
+    );
+
+    assert_eq!(
+        compat_tools(&install).get("42").map(String::as_str),
+        Some("")
+    );
+    assert_eq!(compat_tool(&install, "42"), None);
+}
+
+#[test]
 fn the_compatibility_tool_falls_back_to_the_default() {
     let home = tempfile::tempdir().unwrap();
     let home = home.path();
