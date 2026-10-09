@@ -10,6 +10,7 @@ use wineo_core::art::{self, Kind, Listing, Resolved, Source, Warning};
 use wineo_core::art_fetch::{self, Fetched, Mode};
 use wineo_core::config::ArtFetch;
 use wineo_core::download::{Https, Transport};
+use wineo_core::environment::Environment;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game, KEY_VAR, Key, Keyring, Saved};
@@ -214,14 +215,8 @@ fn fetch(paths: &Paths, request: &FetchRequest) -> anyhow::Result<bool> {
     let key = steamgriddb::require_key(paths, |var| std::env::var_os(var), &*keyring())?;
     let transport = Https::new()?;
     let api = Api::new(&transport, &key.value);
-    let game = match (request.game, request.search, art::saved_game(paths, env)?) {
-        (Some(game), ..) => game,
-        (None, None, Some(saved)) => saved,
-        (None, search, _) => match pick_game(&api, search.unwrap_or(env))? {
-            Some(game) => game,
-            // Backed out of an empty search: nothing to fetch.
-            None => return Ok(true),
-        },
+    let Some(game) = fetch_game(paths, env, request, &api)? else {
+        return Ok(true);
     };
     if art::saved_game(paths, env)? != Some(game) {
         art::save_game(paths, env, game)?;
@@ -243,6 +238,32 @@ fn fetch(paths: &Paths, request: &FetchRequest) -> anyhow::Result<bool> {
         apply_desktop(paths, env)?;
     }
     fetched
+}
+
+fn fetch_game(
+    paths: &Paths,
+    env: &str,
+    request: &FetchRequest,
+    api: &Api,
+) -> anyhow::Result<Option<u64>> {
+    if let Some(game) = request.game {
+        return Ok(Some(game));
+    }
+    // Art commands can still work when the environment config can't be read.
+    if request.search.is_none()
+        && let Ok(environment) = Environment::load(paths, env)
+        && let Some(proxied) = environment.config.proxied()
+    {
+        let app_id = proxied.app_id.parse()?;
+        let game = api
+            .steam_game(app_id)?
+            .ok_or_else(|| anyhow::anyhow!("SteamGridDB has no game for Steam app {app_id}"))?;
+        return Ok(Some(game.id));
+    }
+    match (request.search, art::saved_game(paths, env)?) {
+        (None, Some(saved)) => Ok(Some(saved)),
+        (search, _) => pick_game(api, search.unwrap_or(env)),
+    }
 }
 
 /// Where fetched art goes.
@@ -862,6 +883,133 @@ mod tests {
         )
         .unwrap();
         (root, paths)
+    }
+
+    fn fetch_request() -> FetchRequest<'static> {
+        FetchRequest {
+            spot: "hades",
+            search: None,
+            game: None,
+            only: Some(Kind::Icon),
+            kinds: ArtFetch::All,
+            mode: Mode::Fill,
+        }
+    }
+
+    #[test]
+    fn steam_fetch_uses_the_app_id_even_with_a_saved_game() {
+        let (_root, paths) = paths();
+        fs::write(
+            paths.environment_config("hades"),
+            "kind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"1145360\"\n",
+        )
+        .unwrap();
+        let mut fake = Fake::default();
+        fake.0.insert(
+            format!("{}/games/steam/1145360", steamgriddb::API),
+            (
+                200,
+                br#"{"success":true,"data":{"id":7,"name":"Hades"}}"#.to_vec(),
+            ),
+        );
+        fake.icon_only();
+        let request = fetch_request();
+        let api = Api::new(&fake, "k");
+        for saved in [None, Some(99)] {
+            if let Some(saved) = saved {
+                art::save_game(&paths, "hades", saved).unwrap();
+            }
+            assert_eq!(
+                fetch_game(&paths, "hades", &request, &api).unwrap(),
+                Some(7)
+            );
+        }
+        let game = fetch_game(&paths, "hades", &request, &api)
+            .unwrap()
+            .unwrap();
+        let spot = Spot {
+            paths: &paths,
+            env: "hades",
+            target: None,
+        };
+        let mut icon = false;
+        let mut out = Vec::new();
+        assert!(fetch_kinds(&spot, &request, &api, game, "en", &mut icon, &mut out).unwrap());
+        assert!(icon);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "icon: fetched SteamGridDB 1\n"
+        );
+        assert!(paths.art_dir("hades").join("icon.png").exists());
+    }
+
+    #[test]
+    fn steam_fetch_honors_explicit_game_and_search_overrides() {
+        let (_root, paths) = paths();
+        fs::write(
+            paths.environment_config("hades"),
+            "kind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"1145360\"\n",
+        )
+        .unwrap();
+        art::save_game(&paths, "hades", 99).unwrap();
+        let mut request = fetch_request();
+        request.game = Some(42);
+        let fake = Fake::default();
+        assert_eq!(
+            fetch_game(&paths, "hades", &request, &Api::new(&fake, "k")).unwrap(),
+            Some(42)
+        );
+
+        let mut fake = Fake::default();
+        fake.search("other", false);
+        request.game = None;
+        request.search = Some("other");
+        let err = fetch_game(&paths, "hades", &request, &Api::new(&fake, "k")).unwrap_err();
+        assert_eq!(err.to_string(), "no SteamGridDB games match `other`");
+    }
+
+    #[test]
+    fn steam_fetch_reports_a_missing_app_id_match_without_searching() {
+        let (_root, paths) = paths();
+        fs::write(
+            paths.environment_config("hades"),
+            "kind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"1145360\"\n",
+        )
+        .unwrap();
+        let mut fake = Fake::default();
+        fake.0.insert(
+            format!("{}/games/steam/1145360", steamgriddb::API),
+            (404, Vec::new()),
+        );
+        let err = fetch_game(&paths, "hades", &fetch_request(), &Api::new(&fake, "k")).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "SteamGridDB has no game for Steam app 1145360"
+        );
+    }
+
+    #[test]
+    fn non_steam_fetches_keep_saved_games_and_title_searches() {
+        let (_root, paths) = paths();
+        for config in [
+            "prefix = \"~/p\"\nrunner = \"wine\"\narch = \"win64\"\n",
+            "kind = \"native\"\n",
+            "invalid config",
+        ] {
+            fs::write(paths.environment_config("hades"), config).unwrap();
+            let request = fetch_request();
+            let mut fake = Fake::default();
+            fake.search("hades", false);
+            let api = Api::new(&fake, "k");
+            let err = fetch_game(&paths, "hades", &request, &api).unwrap_err();
+            assert_eq!(err.to_string(), "no SteamGridDB games match `hades`");
+            art::save_game(&paths, "hades", 99).unwrap();
+            assert_eq!(
+                fetch_game(&paths, "hades", &request, &api).unwrap(),
+                Some(99)
+            );
+            fs::remove_dir_all(paths.art_dir("hades")).unwrap();
+        }
     }
 
     fn run(paths: &Paths, fake: &Fake, only: Option<Kind>) -> (anyhow::Result<bool>, String) {
