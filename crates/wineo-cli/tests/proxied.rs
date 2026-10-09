@@ -66,11 +66,13 @@ fn list_and_status_show_a_proxied_environment() {
     assert_eq!(bg3["kind"], "proxied");
     assert_eq!(bg3["launcher"], "steam");
     assert_eq!(bg3["app_id"], "1086940");
+    assert_eq!(bg3.get("started_by"), Some(&serde_json::Value::Null));
     for (name, kind) in [("dusk", "native"), ("notepad", "wine")] {
         let environment = by_name(name);
         assert_eq!(environment["kind"], kind, "{name}");
         assert!(environment.get("launcher").is_none(), "{name}");
         assert!(environment.get("app_id").is_none(), "{name}");
+        assert!(environment.get("started_by").is_none(), "{name}");
     }
 
     let status = f.run_at_home(&["status", "bg3"]);
@@ -93,6 +95,7 @@ fn list_and_status_show_a_proxied_environment() {
     assert_eq!(status["kind"], "proxied");
     assert_eq!(status["launcher"], "steam");
     assert_eq!(status["app_id"], "1086940");
+    assert_eq!(status.get("started_by"), Some(&serde_json::Value::Null));
     assert_eq!(status["runner"], serde_json::Value::Null);
     assert_eq!(status["prefix"], serde_json::Value::Null);
 
@@ -101,6 +104,7 @@ fn list_and_status_show_a_proxied_environment() {
         assert_eq!(status["kind"], kind, "{name}");
         assert!(status.get("launcher").is_none(), "{name}");
         assert!(status.get("app_id").is_none(), "{name}");
+        assert!(status.get("started_by").is_none(), "{name}");
     }
 }
 
@@ -343,7 +347,7 @@ fn validate_checks_steam_for_a_proxied_environment() {
     let checked = f.run_at_home(&["validate", "bg3"]);
     assert!(!checked.status.success());
     assert!(
-        stdout(&checked).contains("Steam isn't installed"),
+        stdout(&checked).contains("Steam isn't found."),
         "stdout: {}\nstderr: {}",
         stdout(&checked),
         stderr(&checked)

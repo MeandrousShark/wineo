@@ -47,6 +47,8 @@ pub struct StatusOutput<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<Option<&'static str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub install: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install_problem: Option<&'a str>,
@@ -82,6 +84,11 @@ impl<'a> StatusOutput<'a> {
             kind: kind.map(KindReport::as_str),
             launcher: proxied.map(|(launcher, _, _)| launcher),
             app_id: proxied.map(|(_, app_id, _)| app_id),
+            started_by: proxied.map(|_| match status.state {
+                State::SteamRunning => Some("steam"),
+                State::Starting | State::Running => Some("wineo"),
+                State::Exited | State::Failed | State::Stopped | State::Inactive => None,
+            }),
             install: proxied.map(|(_, _, install)| install.state),
             install_problem: proxied.and_then(|(_, _, install)| install.problem.as_deref()),
         }
@@ -136,7 +143,7 @@ impl HooksOutput {
 #[derive(Serialize)]
 pub struct PlayedOutput {
     pub seconds: i64,
-    pub sessions: usize,
+    pub sessions: Option<usize>,
     pub last_played: Option<Timestamp>,
 }
 
@@ -144,7 +151,7 @@ impl From<&Played> for PlayedOutput {
     fn from(played: &Played) -> Self {
         Self {
             seconds: played.seconds,
-            sessions: played.sessions,
+            sessions: (played.source != crate::stats::Source::Steam).then_some(played.sessions),
             last_played: played.last_played,
         }
     }
@@ -306,6 +313,80 @@ impl<'a> TagBreakdownOutput<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxied_json_reports_who_started_only_active_runs() {
+        let kind = KindReport::Proxied {
+            launcher: crate::config::Launcher::Steam,
+            app_id: "289070".to_owned(),
+            title: None,
+            install: crate::report::InstallReport {
+                state: "installed",
+                problem: None,
+            },
+        };
+        for (state, started_by) in [
+            (State::SteamRunning, Some("steam")),
+            (State::Starting, Some("wineo")),
+            (State::Running, Some("wineo")),
+            (State::Exited, None),
+            (State::Failed, None),
+            (State::Stopped, None),
+            (State::Inactive, None),
+        ] {
+            let status = Status {
+                state,
+                run: None,
+                lost: false,
+            };
+            let output = StatusOutput::new("civ", &status, None, false, &[], Some(&kind));
+            let json = serde_json::to_value(&output).unwrap();
+            assert_eq!(json.get("started_by"), Some(&serde_json::json!(started_by)));
+            let collection = CollectionOutput {
+                environments: vec![output],
+                errors: &[],
+            };
+            let json = serde_json::to_value(collection).unwrap();
+            assert_eq!(
+                json["environments"][0]["started_by"],
+                serde_json::json!(started_by)
+            );
+        }
+    }
+
+    #[test]
+    fn other_kinds_omit_started_by_even_while_running() {
+        for kind in [Some(KindReport::Wine), Some(KindReport::Native), None] {
+            for state in [State::Running, State::Inactive] {
+                let status = Status {
+                    state,
+                    run: None,
+                    lost: false,
+                };
+                let output = StatusOutput::new("game", &status, None, false, &[], kind.as_ref());
+                let json = serde_json::to_value(output).unwrap();
+                assert!(json.get("started_by").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn played_sessions_are_null_only_for_steam() {
+        for (source, sessions) in [
+            (crate::stats::Source::Steam, None),
+            (crate::stats::Source::Wineo, Some(2)),
+        ] {
+            let played = Played {
+                seconds: 120,
+                sessions: 2,
+                last_played: None,
+                source,
+                playtime_unknown: false,
+            };
+            let json = serde_json::to_value(PlayedOutput::from(&played)).unwrap();
+            assert_eq!(json.get("sessions"), Some(&serde_json::json!(sessions)));
+        }
+    }
 
     #[test]
     fn a_starting_run_has_a_null_pid_in_json() {

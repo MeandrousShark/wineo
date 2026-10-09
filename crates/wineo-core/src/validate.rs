@@ -867,7 +867,7 @@ fn check_proxied_steam(
                 "The configured Steam install isn't available.".to_owned(),
             )
         } else {
-            (Code::SteamNotFound, "Steam isn't installed.".to_owned())
+            (Code::SteamNotFound, "Steam isn't found.".to_owned())
         };
         report.push(Problem::new(code, Some(name), message, None));
         return;
@@ -877,7 +877,7 @@ fn check_proxied_steam(
         AppState::NotInstalled => report.push(Problem::new(
             Code::SteamGameNotInstalled,
             Some(name),
-            format!("Steam does not have {name} installed."),
+            format!("Steam lists {name} as not installed."),
             None,
         )),
         AppState::Unavailable(library) => report.push(Problem::new(
@@ -2457,6 +2457,7 @@ mod tests {
         let problem = f.only(Code::SteamNotFound);
         assert_eq!(problem.level, Level::Error);
         assert_eq!(problem.area, Area::Steam);
+        assert_eq!(problem.message, "Steam isn't found.");
 
         f.global("steam = 'flatpak'\n");
         let problem = f.only(Code::SteamInstallMissing);
@@ -2472,6 +2473,7 @@ mod tests {
         let problem = f.only(Code::SteamGameNotInstalled);
         assert_eq!(problem.level, Level::Error);
         assert_eq!(problem.area, Area::Steam);
+        assert_eq!(problem.message, "Steam lists game as not installed.");
     }
 
     #[test]

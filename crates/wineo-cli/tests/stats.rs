@@ -229,6 +229,12 @@ fn steam_stats_json_marks_unavailable_session_fields_null() {
     assert_eq!(zero["seconds"], 0);
     assert_json_null(&zero, "sessions");
     assert!(zero.get("sessions_log").is_none());
+
+    for (name, seconds) in [("known", 1_332_000), ("zero", 0)] {
+        let status = json_output(&f.run_at_home(&["status", name, "--json"]));
+        assert_eq!(status["played"]["seconds"], seconds);
+        assert_json_null(&status["played"], "sessions");
+    }
 }
 
 #[test]
@@ -391,6 +397,12 @@ fn overview_mixes_wine_native_and_steam_playtime_and_notes_unknown_games() {
             .find(|row| row["name"] == name)
             .unwrap();
         assert_eq!(row["source"], source, "{name}");
+        let status = json_output(&f.run_at_home(&["status", name, "--json"]));
+        if source == "steam" {
+            assert_json_null(&status["played"], "sessions");
+        } else {
+            assert_eq!(status["played"]["sessions"], 1, "{name}");
+        }
     }
 }
 
