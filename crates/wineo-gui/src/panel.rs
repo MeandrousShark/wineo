@@ -201,14 +201,14 @@ pub(crate) fn winetricks_status(event: &WinetricksEvent) -> Option<String> {
 pub(crate) fn play_enabled(card: &Card, operation_busy: bool, target: Option<&str>) -> bool {
     card.error.is_none()
         && !card.busy
-        && card.state != State::Running
+        && !card.active()
+        && card.install_allows_play()
         && !operation_busy
         && target.is_some()
 }
 
 pub(crate) fn stop_enabled(card: &Card, operation_busy: bool) -> bool {
-    (!card.busy && card.state == State::Running
-        || matches!(card.busy_holder, Some(CoreOperation::Hook(_))))
+    (!card.busy && card.active() || matches!(card.busy_holder, Some(CoreOperation::Hook(_))))
         && !operation_busy
 }
 
@@ -368,10 +368,11 @@ impl App {
         if own_start && matches!(card.busy_holder, Some(CoreOperation::Hook(_))) {
             return self.update(Message::CancelStart);
         }
-        if own_start {
+        if own_start && card.state != State::Starting {
             return Task::none();
         }
-        if !own_start {
+        // Steam's start handoff has returned, so Stop can replace Start while waiting for the game.
+        if !own_start || card.state == State::Starting {
             self.operation = Some(Operation {
                 name: name.clone(),
                 kind: OperationKind::Stop,
@@ -703,6 +704,10 @@ impl App {
                 );
             }
         }
+        let own_starting = card.state == State::Starting
+            && self.operation.as_ref().is_some_and(|operation| {
+                operation.name == card.name && operation.kind == OperationKind::Start
+            });
         let own_hook = (matches!(card.busy_holder, Some(CoreOperation::Hook(_)))
             || self.after_hook_active(card))
             && self.operation.as_ref().is_some_and(|operation| {
@@ -713,6 +718,7 @@ impl App {
             || (self.after_hook_active(card) && !operation_busy)
             || self.own_stop_waiting_on_after(card)
             || own_hook
+            || own_starting
             || stop_enabled(card, operation_busy);
         actions = actions.push(panel_action_button(
             if force_ready { "Force stop" } else { "Stop" },
@@ -732,6 +738,25 @@ impl App {
             inner = inner.push(error_box(error, palette));
         } else {
             inner = inner.push(detail_row("State", card.state_word(), palette));
+            if let Some(steam) = &card.steam {
+                inner = inner.push(detail_row("Launcher", "Steam", palette));
+                if let Some(proton) = &steam.proton {
+                    inner = inner.push(detail_row("Proton", proton, palette));
+                }
+                if let Some(size) = steam.size {
+                    inner = inner.push(detail_row(
+                        "Install size",
+                        &crate::size::format_bytes(size),
+                        palette,
+                    ));
+                }
+                if card.state == State::Starting {
+                    inner = inner.push(text("Waiting for Steam...").size(14).color(palette.muted));
+                }
+                if let Some(warning) = card.install_warning() {
+                    inner = inner.push(text(warning).size(14).color(palette.warning));
+                }
+            }
             inner = inner.push(detail_row("Playtime", &card.playtime, palette));
             inner = inner.push(detail_row("Sessions", &card.sessions, palette));
             inner = inner.push(detail_row("Last played", &card.last_played, palette));
@@ -786,6 +811,7 @@ impl App {
                 .align_y(Center),
             );
             if operation.kind == OperationKind::Start
+                && card.state != State::Starting
                 && card.busy_holder != Some(CoreOperation::Hook(Phase::After))
                 && !operation.after_hook
             {
@@ -959,6 +985,7 @@ mod tests {
             name: "game".into(),
             kind: None,
             display_title: "game".into(),
+            steam: None,
             state,
             lost: false,
             prefix: None,
@@ -995,6 +1022,44 @@ mod tests {
         let mut broken = card(State::Inactive);
         broken.error = Some("broken".into());
         assert!(!play_enabled(&broken, false, Some("game")));
+    }
+
+    #[test]
+    fn steam_starting_and_client_runs_can_stop_and_cannot_play() {
+        for state in [State::Starting, State::Running, State::SteamRunning] {
+            let mut card = card(state);
+            card.kind = Some(crate::library::CardKind::Proxied);
+            assert!(!play_enabled(&card, false, Some("steam")));
+            assert!(stop_enabled(&card, false));
+            assert!(!stop_enabled(&card, true));
+        }
+    }
+
+    #[test]
+    fn steam_play_requires_an_installed_or_updating_game() {
+        for (state, enabled) in [
+            ("installed", true),
+            ("updating", true),
+            ("not_installed", false),
+            ("unavailable", false),
+            ("unknown", false),
+        ] {
+            let mut card = card(State::Inactive);
+            card.kind = Some(crate::library::CardKind::Proxied);
+            card.steam = Some(crate::library::SteamDetails {
+                install: wineo_core::report::InstallReport {
+                    state,
+                    problem: None,
+                },
+                proton: None,
+                size: None,
+            });
+            assert_eq!(
+                play_enabled(&card, false, Some("steam")),
+                enabled,
+                "{state}"
+            );
+        }
     }
 
     #[test]

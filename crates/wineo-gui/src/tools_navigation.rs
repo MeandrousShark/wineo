@@ -186,7 +186,14 @@ impl App {
     }
 
     pub(crate) fn open_snapshots(&mut self, name: Option<String>) -> Task<Message> {
-        if self.feature_navigation_blocked() {
+        if self.feature_navigation_blocked()
+            || name.as_deref().is_some_and(|name| {
+                self.cards
+                    .iter()
+                    .any(|card| card.name == name && card.kind == Some(CardKind::Proxied))
+                    && !self.restore_pending(name)
+            })
+        {
             return Task::none();
         }
         self.enter_feature(name.as_deref());

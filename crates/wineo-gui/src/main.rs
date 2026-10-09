@@ -81,6 +81,7 @@ pub(crate) struct App {
     card_click_target: Option<(String, Option<String>)>,
     pub(crate) hovered: Option<String>,
     pub(crate) images: HashMap<ArtKey, image::Handle>,
+    pub(crate) dimmed_images: HashMap<ArtKey, image::Handle>,
     loading: HashSet<ArtKey>,
     /// Caps concurrent art decodes, since a huge source costs far more memory
     /// than its thumbnail.
@@ -293,6 +294,7 @@ impl App {
             card_click_target: None,
             hovered: None,
             images: HashMap::new(),
+            dimmed_images: HashMap::new(),
             loading: HashSet::new(),
             decodes: Arc::new(tokio::sync::Semaphore::new(MAX_DECODES)),
             thumbnails: Arc::new(Mutex::new(art_picker::ThumbnailCache::default())),
@@ -851,6 +853,7 @@ impl App {
                 match result {
                     Ok(handle) => {
                         self.images.insert(key, handle);
+                        self.refresh_dimmed_images();
                     }
                     Err(_) => {
                         self.failed_images.insert(key);
@@ -991,6 +994,7 @@ impl App {
                                 "1" => flow::Event::New,
                                 "2" => flow::Event::Prefix,
                                 "3" => flow::Event::Heroic,
+                                "4" => flow::Event::Steam,
                                 _ => return Task::none(),
                             };
                             self.flow_update(self.flow_generation, event)
@@ -1417,7 +1421,25 @@ impl App {
             .retain(|(art, _)| self.current_art.get(&art.path) == Some(&art.identity));
         self.failed_images
             .retain(|(art, _)| self.current_art.get(&art.path) == Some(&art.identity));
+        self.refresh_dimmed_images();
         self.error = None;
+    }
+    fn refresh_dimmed_images(&mut self) {
+        let keys: HashSet<_> = self
+            .cards
+            .iter()
+            .filter(|card| card.not_installed())
+            .filter_map(|card| card.art.clone())
+            .map(|art| (art, artwork::Kind::Grid))
+            .collect();
+        self.dimmed_images.retain(|key, _| keys.contains(key));
+        for key in keys {
+            if !self.dimmed_images.contains_key(&key)
+                && let Some(handle) = self.images.get(&key).and_then(artwork::grayscale)
+            {
+                self.dimmed_images.insert(key, handle);
+            }
+        }
     }
     pub(crate) fn filtered(&self) -> Vec<&Card> {
         let needle = self.search.to_lowercase();
@@ -1623,6 +1645,7 @@ mod tests {
             name: name.into(),
             kind: None,
             display_title: name.into(),
+            steam: None,
             state,
             lost: false,
             prefix: None,
@@ -1712,6 +1735,13 @@ mod tests {
         assert!(app.portable_page.is_none());
         let _ = app.update(Message::OpenTool("bg3".into(), tools_page::Kind::Exec));
         assert!(app.tool_page.is_none());
+        let _ = app.update(Message::OpenTool(
+            "bg3".into(),
+            tools_page::Kind::Winetricks,
+        ));
+        assert!(app.tool_page.is_none());
+        let _ = app.update(Message::SnapshotsEnvironment("bg3".into()));
+        assert!(app.snapshots_page.is_none());
 
         let _ = app.update(Message::CopyPortable("dusk".into()));
         assert_eq!(app.portable_page.as_deref(), Some("dusk"));
@@ -2328,6 +2358,37 @@ mod tests {
     }
 
     #[test]
+    fn steam_install_changes_reuse_art_and_update_the_grayscale_cache() {
+        let mut app = app();
+        let art = art_file("/tmp/steam-grid.png", 10);
+        let key = (art.clone(), artwork::Kind::Grid);
+        let mut card = card_with_art(art);
+        card.kind = Some(crate::library::CardKind::Proxied);
+        card.steam = Some(crate::library::SteamDetails {
+            install: wineo_core::steam::AppState::Installed.into(),
+            proton: None,
+            size: None,
+        });
+        app.merge(vec![card.clone()]);
+        let _ = app.update(Message::ArtLoaded(
+            key.clone(),
+            Ok(image::Handle::from_rgba(1, 1, vec![10, 80, 240, 255])),
+        ));
+        assert!(app.dimmed_images.is_empty());
+        card.steam.as_mut().unwrap().install = wineo_core::steam::AppState::NotInstalled.into();
+        app.merge(vec![card.clone()]);
+        assert!(app.dimmed_images.contains_key(&key));
+        assert!(app.images.contains_key(&key));
+        card.steam.as_mut().unwrap().install =
+            wineo_core::steam::AppState::Unknown("Missing Steam".to_owned()).into();
+        app.merge(vec![card]);
+        assert!(app.dimmed_images.is_empty());
+        assert!(app.images.contains_key(&key));
+        app.merge(Vec::new());
+        assert!(app.images.is_empty());
+    }
+
+    #[test]
     fn failed_art_retries_only_after_identity_changes() {
         let mut app = app();
         let old = art_file("/tmp/broken.png", 10);
@@ -2901,6 +2962,45 @@ mod tests {
         let _ = app.update(Message::Stop);
         assert_eq!(app.hook_stop_confirm.as_deref(), Some("game"));
         assert!(!app.operation.as_ref().unwrap().cancelled);
+    }
+
+    #[test]
+    fn steam_waiting_and_client_runs_use_stop_and_force_stop() {
+        for state in [State::Starting, State::SteamRunning] {
+            let mut app = selected_app(state);
+            let card = &mut app.cards[0];
+            card.kind = Some(crate::library::CardKind::Proxied);
+            card.steam = Some(crate::library::SteamDetails {
+                install: wineo_core::steam::AppState::Installed.into(),
+                proton: Some("proton_experimental".to_owned()),
+                size: Some(2048),
+            });
+            card.default_target = Some("steam".into());
+            card.targets = vec!["steam".into()];
+            app.target = Some("steam".into());
+            let _ = iced::advanced::widget::Tree::new(app.view().as_widget());
+            assert_eq!(app.update(Message::Play).units(), 0);
+            assert_eq!(app.remove_reason("game").as_deref(), Some("Stop it first"));
+            assert!(app.update(Message::Stop).units() > 0);
+            assert_eq!(app.operation.as_ref().unwrap().kind, OperationKind::Stop);
+            app.force_stop_at = Some(("game".into(), Instant::now() - Duration::from_secs(1)));
+            assert!(app.update(Message::Stop).units() > 0);
+            assert_eq!(app.operation.as_ref().unwrap().status, "Force stopping...");
+        }
+    }
+
+    #[test]
+    fn steam_stop_during_handoff_switches_to_the_stop_worker() {
+        let mut app = selected_app(State::Starting);
+        app.cards[0].kind = Some(crate::library::CardKind::Proxied);
+        app.operation = Some(installing_start("game", false));
+        assert!(app.update(Message::Stop).units() > 0);
+        assert_eq!(app.operation.as_ref().unwrap().kind, OperationKind::Stop);
+        let _ = app.update(Message::StartFinished(
+            "game".into(),
+            Ok(wineo_core::launch::StartOutcome::SteamRequested),
+        ));
+        assert_eq!(app.operation.as_ref().unwrap().kind, OperationKind::Stop);
     }
 
     #[test]

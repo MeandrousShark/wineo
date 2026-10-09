@@ -44,6 +44,8 @@ pub(crate) enum Event {
     ListInput(List, String),
     ListAdd(List),
     ListRemove(List, usize),
+    ProxiedTitle(String),
+    ProxiedDesktop(bool),
     EnvKey(usize, String),
     EnvValue(usize, String),
     EnvRemove(usize),
@@ -188,6 +190,8 @@ impl Event {
                 | Event::ListInput(..)
                 | Event::ListAdd(_)
                 | Event::ListRemove(..)
+                | Event::ProxiedTitle(_)
+                | Event::ProxiedDesktop(_)
                 | Event::EnvKey(..)
                 | Event::EnvValue(..)
                 | Event::EnvRemove(_)
@@ -1027,6 +1031,25 @@ impl Page {
             Event::ListInput(list, value) => {
                 if let Some(editor) = self.editor_mut() {
                     *editor.list_input_mut(list) = value;
+                }
+                Step::none()
+            }
+            Event::ProxiedTitle(title) => {
+                if let Some(proxied) = self.draft().and_then(|draft| draft.proxied.as_mut()) {
+                    let title = (!title.is_empty()).then_some(title);
+                    if proxied.title != title {
+                        proxied.title = title;
+                        self.edited();
+                    }
+                }
+                Step::none()
+            }
+            Event::ProxiedDesktop(desktop) => {
+                if let Some(proxied) = self.draft().and_then(|draft| draft.proxied.as_mut())
+                    && proxied.desktop != desktop
+                {
+                    proxied.desktop = desktop;
+                    self.edited();
                 }
                 Step::none()
             }
@@ -3055,20 +3078,94 @@ mod tests {
     }
 
     #[test]
-    fn a_proxied_environment_gets_no_form() {
+    fn a_proxied_environment_gets_the_reduced_form() {
+        let (_root, paths) = setup();
+        write_global(&paths, "mangohud = [");
+        write(
+            &paths,
+            "# Imported Steam game\nkind = 'proxied' # launcher-owned\nlauncher = 'steam'\napp_id = '1086940'\ntitle = 'Old title' # keep title note\ntags = ['rpg'] # keep tag note\ndesktop = false # keep switch note\n",
+        );
+        let mut page = page(&paths);
+        assert!(page.global_warning().is_none());
+        let original = fs::read_to_string(paths.environment_config("game")).unwrap();
+        let no_op = form::Edits::default();
+        load::save(&paths, "game", &no_op).unwrap();
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("game")).unwrap(),
+            original
+        );
+
+        let draft = &editor(&page).form.draft;
+        assert_eq!(draft.tags, ["rpg"]);
+        let proxied = draft.proxied.as_ref().expect("proxied settings");
+        assert_eq!(proxied.title.as_deref(), Some("Old title"));
+        assert!(!proxied.desktop);
+
+        for event in [
+            Event::ProxiedTitle("New title".to_owned()),
+            Event::ListInput(List::Tags, "coop".to_owned()),
+            Event::ListAdd(List::Tags),
+            Event::ProxiedDesktop(true),
+        ] {
+            let _ = page.update(&paths, event);
+        }
+        assert_eq!(page.changes(), 3);
+        assert!(page.can_save());
+        let edits = editor(&page).form.edits();
+        assert_eq!(
+            edits.pairs,
+            [
+                ("tags".to_owned(), "[\"rpg\", \"coop\"]".to_owned()),
+                ("title".to_owned(), "New title".to_owned()),
+                ("desktop".to_owned(), "true".to_owned()),
+            ]
+        );
+        assert!(edits.unset.is_empty());
+        let report = load::save(&paths, "game", &edits).unwrap();
+        assert_eq!(report.failed, None);
+
+        let saved = fs::read_to_string(paths.environment_config("game")).unwrap();
+        assert!(saved.contains("# Imported Steam game"));
+        assert!(saved.contains("kind = 'proxied' # launcher-owned"));
+        assert!(saved.contains("# keep title note"));
+        assert!(saved.contains("# keep tag note"));
+        assert!(saved.contains("# keep switch note"));
+        let config =
+            wineo_core::config::EnvironmentConfig::parse(&paths.environment_config("game"), &saved)
+                .unwrap();
+        assert_eq!(config.tags, ["rpg", "coop"]);
+        let proxied = config.proxied().unwrap();
+        assert_eq!(proxied.title.as_deref(), Some("New title"));
+        assert!(proxied.desktop);
+    }
+
+    #[test]
+    fn clearing_a_proxied_title_unsets_the_config_key() {
         let (_root, paths) = setup();
         write(
             &paths,
-            "kind = 'proxied'\nlauncher = 'steam'\napp_id = '1086940'\n",
+            "kind = 'proxied'\nlauncher = 'steam'\napp_id = '1086940'\ntitle = 'Old title'\n",
         );
-        let page = page(&paths);
-        match &page.view {
-            View::Error(error) => {
-                assert_eq!(error, "Settings for Steam games aren't supported yet.");
-            }
-            _ => panic!("expected the error page"),
-        }
-        assert!(!page.can_save());
+        let mut page = page(&paths);
+        let _ = page.update(&paths, Event::ProxiedTitle(String::new()));
+        assert_eq!(page.changes(), 1);
+        assert!(page.can_save());
+        assert_eq!(
+            editor(&page).form.draft.proxied.as_ref().unwrap().title,
+            None
+        );
+        let edits = editor(&page).form.edits();
+        assert!(edits.pairs.is_empty());
+        assert_eq!(edits.unset, ["title"]);
+        let report = load::save(&paths, "game", &edits).unwrap();
+        assert_eq!(report.failed, None);
+
+        let saved = fs::read_to_string(paths.environment_config("game")).unwrap();
+        let config =
+            wineo_core::config::EnvironmentConfig::parse(&paths.environment_config("game"), &saved)
+                .unwrap();
+        assert_eq!(config.proxied().unwrap().title, None);
+        assert!(!saved.contains("title ="));
     }
 
     #[test]

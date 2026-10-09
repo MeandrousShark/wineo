@@ -148,13 +148,22 @@ pub(crate) fn snapshot_global(paths: &Paths) -> Snapshot {
 
 fn content(paths: &Paths, name: &str) -> anyhow::Result<Loaded> {
     let environment = Environment::load(paths, name)?;
-    // The form only knows Wine and native settings.
-    match &environment.config.kind {
-        Kind::Wine(_) | Kind::Native => {}
-        Kind::Proxied(proxied) => anyhow::bail!(
-            "Settings for {} games aren't supported yet.",
-            proxied.launcher.display_name()
-        ),
+    if matches!(&environment.config.kind, Kind::Proxied(_)) {
+        return Ok(Loaded {
+            values: Values::from_config(&environment.config),
+            native: false,
+            arch: Arch::default(),
+            inherited: Inherited::default(),
+            runners: Vec::new(),
+            current: None,
+            dxvk_builds: Vec::new(),
+            vkd3d_builds: Vec::new(),
+            heroic_id: environment.config.heroic_id.clone(),
+            global_warning: None,
+            portable: paths.portable_root().is_some(),
+            target_art: target_art(paths, name, environment.config.targets.keys()),
+            wine_prefix: None,
+        });
     }
     // A broken global config shouldn't lock every environment's page, and
     // the tick reloads the page once it's fixed.

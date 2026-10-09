@@ -67,6 +67,26 @@ pub fn decode(path: &Path, kind: Kind, cache: Option<&Path>) -> Result<iced_imag
     Ok(iced_image::Handle::from_rgba(width, height, pixels))
 }
 
+pub(crate) fn grayscale(handle: &iced_image::Handle) -> Option<iced_image::Handle> {
+    let iced_image::Handle::Rgba {
+        width,
+        height,
+        pixels,
+        ..
+    } = handle
+    else {
+        return None;
+    };
+    let mut pixels = pixels.to_vec();
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        let gray =
+            ((u32::from(pixel[0]) * 2126 + u32::from(pixel[1]) * 7152 + u32::from(pixel[2]) * 722)
+                / 10_000) as u8;
+        pixel[..3].fill(gray);
+    }
+    Some(iced_image::Handle::from_rgba(*width, *height, pixels))
+}
+
 /// Serves `render` from the thumbnail cache when the output is a shrunk copy.
 /// Cache trouble never fails a decode, it only costs the speedup.
 fn cached(entry: Option<Entry>, render: impl FnOnce() -> Result<Pixels>) -> Result<Pixels> {
@@ -380,6 +400,16 @@ mod tests {
             } => (*width, *height, pixels.to_vec()),
             other => panic!("unexpected handle {other:?}"),
         }
+    }
+
+    #[test]
+    fn grayscale_keeps_dimensions_alpha_and_the_original_pixels() {
+        let original = iced_image::Handle::from_rgba(1, 1, vec![20, 100, 180, 123]);
+        let converted = grayscale(&original).unwrap();
+        let (width, height, pixels) = pixel(&converted);
+        assert_eq!((width, height), (1, 1));
+        assert_eq!(pixels, [88, 88, 88, 123]);
+        assert_eq!(pixel(&original).2, [20, 100, 180, 123]);
     }
 
     #[test]

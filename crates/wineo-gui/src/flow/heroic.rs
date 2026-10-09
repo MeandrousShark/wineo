@@ -1884,14 +1884,15 @@ impl Page {
             .map(|(index, candidate)| {
                 tile(
                     Tile {
-                        index,
                         title: &candidate.title,
                         poster: self.poster(&candidate.id),
                         reason: self.ineligible(index),
+                        note: None,
                         chosen: self.chosen.contains(&candidate.id),
                         focused: self.focus == Some(index),
                     },
                     palette,
+                    Event::Toggle(index),
                 )
             })
             .collect();
@@ -2655,18 +2656,23 @@ const TILE_POSTER_HEIGHT: f32 = 180.0;
 /// Room under the poster for the title and two lines of reason, fixed so
 /// every row is the same height.
 const TILE_HEIGHT: f32 = 244.0;
-const TILE_GAP: f32 = 12.0;
+pub(super) const TILE_GAP: f32 = 12.0;
 
 /// How many tiles fit across a flow dialog `width` wide, after the page's
 /// max width, padding, and the scrollbar.
-fn grid_columns(width: f32) -> usize {
+pub(super) fn grid_columns(width: f32) -> usize {
     let content = width.min(780.0) - 48.0 - 16.0;
     ((content + TILE_GAP) / (TILE_OUTER_WIDTH + TILE_GAP))
         .floor()
         .max(1.0) as usize
 }
 
-fn move_focus(focus: Option<usize>, key: Named, columns: usize, count: usize) -> Option<usize> {
+pub(super) fn move_focus(
+    focus: Option<usize>,
+    key: Named,
+    columns: usize,
+    count: usize,
+) -> Option<usize> {
     if count == 0 {
         return None;
     }
@@ -2686,7 +2692,7 @@ fn move_focus(focus: Option<usize>, key: Named, columns: usize, count: usize) ->
     })
 }
 
-fn import_label(count: usize) -> String {
+pub(super) fn import_label(count: usize) -> String {
     if count == 1 {
         "Import 1 game".to_owned()
     } else {
@@ -2694,18 +2700,22 @@ fn import_label(count: usize) -> String {
     }
 }
 
-struct Tile<'a> {
-    index: usize,
-    title: &'a str,
-    poster: Option<&'a image::Handle>,
-    reason: Option<String>,
-    chosen: bool,
-    focused: bool,
+pub(super) struct Tile<'a> {
+    pub title: &'a str,
+    pub poster: Option<&'a image::Handle>,
+    pub reason: Option<String>,
+    pub note: Option<String>,
+    pub chosen: bool,
+    pub focused: bool,
 }
 
-fn tile(tile: Tile<'_>, palette: Palette) -> Element<'_, Event> {
+pub(super) fn tile<'a, Message: Clone + 'a>(
+    tile: Tile<'a>,
+    palette: Palette,
+    on_press: Message,
+) -> Element<'a, Message> {
     let dimmed = tile.reason.is_some();
-    let art: Element<'_, Event> = match tile.poster {
+    let art: Element<'_, Message> = match tile.poster {
         Some(handle) => image(handle.clone())
             .width(Fill)
             .height(Fill)
@@ -2782,6 +2792,9 @@ fn tile(tile: Tile<'_>, palette: Palette) -> Element<'_, Event> {
     if let Some(reason) = tile.reason {
         content = content.push(text(reason).size(11).color(palette.warning));
     }
+    if let Some(note) = tile.note {
+        content = content.push(text(note).size(11).color(palette.muted));
+    }
     let focused = tile.focused;
     let framed = container(content)
         .width(TILE_OUTER_WIDTH)
@@ -2799,7 +2812,7 @@ fn tile(tile: Tile<'_>, palette: Palette) -> Element<'_, Event> {
     if dimmed {
         area.into()
     } else {
-        area.on_press(Event::Toggle(tile.index))
+        area.on_press(on_press)
             .interaction(mouse::Interaction::Pointer)
             .into()
     }
