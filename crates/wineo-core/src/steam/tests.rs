@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
@@ -803,6 +804,38 @@ fn compatibility_tools_keep_the_first_duplicate_entry() {
         Some("")
     );
     assert_eq!(compat_tool(&install, "42"), None);
+}
+
+#[test]
+fn compatibility_tool_in_falls_back_to_the_default() {
+    let tools = HashMap::from([("0".to_owned(), "proton_default".to_owned())]);
+    assert_eq!(
+        compat_tool_in(&tools, "42").as_deref(),
+        Some("proton_default")
+    );
+}
+
+#[test]
+fn compatibility_tool_in_empty_name_falls_back_to_the_default() {
+    let tools = HashMap::from([
+        ("0".to_owned(), "proton_default".to_owned()),
+        ("42".to_owned(), String::new()),
+    ]);
+    assert_eq!(
+        compat_tool_in(&tools, "42").as_deref(),
+        Some("proton_default")
+    );
+}
+
+#[test]
+fn compatibility_tool_in_app_ids_ignore_case() {
+    let tools = HashMap::from([
+        ("0".to_owned(), "proton_default".to_owned()),
+        ("abc".to_owned(), "GE-Proton".to_owned()),
+    ]);
+    for app_id in ["abc", "AbC", "ABC"] {
+        assert_eq!(compat_tool_in(&tools, app_id).as_deref(), Some("GE-Proton"));
+    }
 }
 
 #[test]

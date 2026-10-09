@@ -368,10 +368,11 @@ impl App {
         if own_start && matches!(card.busy_holder, Some(CoreOperation::Hook(_))) {
             return self.update(Message::CancelStart);
         }
+        // While Steam is Starting, its handoff has returned, so Stop can replace Start.
+        // Other in-flight starts must finish first.
         if own_start && card.state != State::Starting {
             return Task::none();
         }
-        // Steam's start handoff has returned, so Stop can replace Start while waiting for the game.
         if !own_start || card.state == State::Starting {
             self.operation = Some(Operation {
                 name: name.clone(),
