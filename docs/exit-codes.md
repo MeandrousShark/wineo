@@ -65,6 +65,9 @@ A few things to know:
 - An installer's own exit code is passed through, so an installer that exits
   1 or 130 looks like a wineo failure or cancel. The message on stderr says
   which it was.
+- `run` on a [Steam game](steam.md) exits 0 when the game exits on its own,
+  130 when it's stopped, and 1 when Steam never starts it, since the game's
+  own exit code can't be collected.
 - The process wineo starts for a detached run never reports the game's exit
   code. It's recorded with the run instead: see `status NAME`.
 

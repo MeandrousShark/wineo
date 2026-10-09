@@ -69,6 +69,8 @@ package() {
     "$pkgdir/usr/share/doc/wineo/environment.toml.example"
   install -Dm644 docs/native-environment.toml.example \
     "$pkgdir/usr/share/doc/wineo/native-environment.toml.example"
+  install -Dm644 docs/proxied-environment.toml.example \
+    "$pkgdir/usr/share/doc/wineo/proxied-environment.toml.example"
 
   "$pkgdir/usr/bin/wineo" completions bash > "$srcdir/wineo.bash"
   "$pkgdir/usr/bin/wineo" completions zsh > "$srcdir/wineo.zsh"

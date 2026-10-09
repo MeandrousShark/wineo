@@ -175,6 +175,17 @@ wineo setup my-game
 If registration fails after copying, the completed copy is retained. The error
 reports its location so it can be registered with `--adopt`.
 
+## Import installed Steam games
+
+```sh
+wineo import steam --list
+wineo import steam --game 1086940
+wineo import steam --all
+```
+
+Steam games import as proxied environments that Steam keeps launching and
+owning. See [Steam games](steam.md).
+
 ## Import a manually added Heroic game
 
 ```sh

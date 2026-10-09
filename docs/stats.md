@@ -129,6 +129,26 @@ since then is picked up without counting anything twice. If an environment
 can't be updated, `--import-heroic` warns, goes on with the rest, and exits
 1.
 
+## Steam playtime
+
+[Steam games](steam.md) use Steam's own total, read live from the most
+recently logged in account. Wineo records no sessions for them, so play
+started from the Steam client counts too and nothing is counted twice:
+
+```
+$ wineo stats bg3
+bg3
+  played      370 h on Steam, last Sep 4
+```
+
+Steam keeps no sessions, so there are no session, average, longest, first
+played, or weekly lines, and the overview shows `-` under sessions. Steam's
+totals count toward the overview and `--by-tag` played columns, with a note:
+`Steam games count Steam's total, without sessions.` When Steam's files
+can't be read, the game's playtime is unknown rather than zero (`played
+unknown (Steam's playtime can't be read)`), and it's left out of totals with
+`1 Steam game's playtime is unknown.`
+
 ## Where it's kept
 
 Each environment's log is `$XDG_DATA_HOME/wineo/stats/<name>.jsonl`, or

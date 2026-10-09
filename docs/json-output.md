@@ -44,7 +44,7 @@ nullable. `busy` is a lowercase operation value such as `launch` or
 `winetricks`. `state` reports runtime state independently of `busy` and
 `unresolved`.
 
-Named status also includes `kind`, `wine` or `native`; `runner` with
+Named status also includes `kind`, `wine`, `native`, or `proxied`; `runner` with
 `configured`, `resolved`, and `version`; `prefix`; nullable `target_exe`, `gameid`, and `store`; `gamemode`, `gamescope`, `mangohud`, and `wayland` (see [Launch options](launch-options.md));
 `winetricks`, the configured verbs, and `winetricks_missing`, those not yet in
 the prefix's `winetricks.log`, both arrays (see
@@ -65,6 +65,20 @@ nullable `last_played`. See [Playtime](stats.md).
 A [native environment](native.md) has no runner or prefix, so `runner` and
 `prefix` are `null`, along with `gameid`, `store`, `dxvk`, and `vkd3d`.
 
+A [Steam game](steam.md) has `"kind": "proxied"` and three more fields:
+`launcher` (`steam`), `app_id`, and `install`, one of `installed`,
+`updating`, `not_installed`, `unavailable`, or `unknown`. `install_problem`
+gives the reason when there is one, like `Steam's library at /mnt/games
+isn't available`. Other kinds leave these four fields out. `runner`,
+`prefix`, `target_exe`, `gameid`, `store`, `dxvk`, and `vkd3d` are `null`,
+and `desktop` is `["steam"]` when the game has a desktop entry.
+
+`state` can also be `starting`, while Steam is asked to launch the game and
+it hasn't appeared yet, with a `null` `pid`. A game started from the Steam
+client, with no wineo run, is `running` with no wineo `run` of its own (an
+older finished run may still be there). Its `played` is Steam's total, with
+`sessions` 0.
+
 ## Collections
 
 Nameless `status --json` and `list --json` return the same envelope:
@@ -76,7 +90,9 @@ Nameless `status --json` and `list --json` return the same envelope:
 }
 ```
 
-Each item in `environments` contains the common status fields shown above.
+Each item in `environments` contains the common status fields shown above,
+plus `kind`, which is `null` for a config that can't be read, and a Steam
+game's `launcher`, `app_id`, `install`, and `install_problem`.
 `list` includes every environment whose runtime status can be read, and
 `list --tag` only those with every given tag. Nameless `status` includes
 running, busy, or unresolved environments. Both sort by environment name.
@@ -146,6 +162,7 @@ The codes are stable:
 | `environment` | `target_ambiguous` |
 | `runtime` | `lost_run`, `installer_unresolved`, `restore_interrupted`, `state_dir_stray`, `stats_stray` |
 | `desktop` | `desktop_entry_stray`, `desktop_outdated`, `desktop_portable` |
+| `steam` | `steam_not_found`, `steam_install_missing`, `steam_game_not_installed`, `steam_library_unavailable`, `steam_data_unknown` |
 | `art` | `art_config_invalid`, `art_file_missing`, `art_target_unknown`, `art_duplicates`, `art_dir_stray` |
 
 A native target's working dir, gamemode, gamescope, and MangoHud problems use the `target` area.
@@ -186,7 +203,14 @@ total carried over from Heroic, while `sessions`, `average_seconds`, and
 `longest` count only wineo's own sessions. `average_seconds`, `longest`,
 `first_played`, and `last_played` are `null` when there's nothing to base
 them on. A running session counts its time so far, and `running` is `true`.
-`targets` is sorted by time played.
+`targets` is sorted by time played. `source` is `wineo` for Wine and native
+environments.
+
+A [Steam game](steam.md#playtime) has `"source": "steam"`. `seconds` and
+`last_played` are Steam's, or `null` when Steam's playtime can't be read.
+Steam keeps no sessions, so `sessions`, `average_seconds`, `longest`,
+`first_played`, `this_week_seconds`, and `this_month_seconds` are `null`,
+`targets` is empty, and `--sessions` adds no `sessions_log`.
 
 `--sessions` adds `sessions_log`, the environment's finished sessions as
 they're stored, for charts:
@@ -239,6 +263,6 @@ environments that have every given tag.
 ```
 
 `tags` is sorted by `seconds`, then by tag. `seconds` includes time imported
-from Heroic and `sessions` doesn't, as in the overview. `untagged` is `null`
+from Heroic and Steam's totals, and `sessions` doesn't, as in the overview. `untagged` is `null`
 when every environment has a tag. A config that can't be read is reported in
 `errors`, and the command exits 1.

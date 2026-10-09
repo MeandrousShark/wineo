@@ -83,6 +83,35 @@ configs never get the key written. `docs/native-environment.toml.example`
 (installed next to the Wine example) lists every key a native config can
 hold. See [Native Linux games](native.md).
 
+## Proxied environments
+
+`kind = "proxied"` makes an environment a game another launcher installs,
+launches, and owns. `launcher` names the launcher, only `steam` for now, and
+`app_id` is the game's id there, as a string. A proxied config can also hold
+`title`, `tags`, `[hooks]`, and a top-level `desktop` switch, which defaults
+to `false`. Every Wine and native key is refused, as is `[targets]`:
+
+```
+bg3 is a Steam game, so it can't set runner.
+```
+
+`launcher` and `app_id` are refused the other way around, on Wine and native
+configs (`hades isn't a Steam game, so it can't set app_id.`), and an empty
+`app_id` is `Invalid app_id: empty.` A new `kind` value needed no schema
+bump, for the same reason as `native`. Install state, size, and Proton build
+are read from the launcher each time and never stored.
+`docs/proxied-environment.toml.example` lists every key. See
+[Steam games](steam.md).
+
+The global config's `steam` key picks the Steam install for games when both
+native and Flatpak Steam are installed: `"native"`, the default, or
+`"flatpak"`. It needed no schema bump either.
+
+```toml
+# config.toml
+steam = "flatpak"
+```
+
 ## Launch options
 
 `mangohud`, `wayland`, and `[gamescope]` needed no schema bump either, for

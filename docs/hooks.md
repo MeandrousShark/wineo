@@ -125,13 +125,14 @@ Hooks get your environment, minus `WINEPREFIX`, plus:
 | Variable | Value |
 |---|---|
 | `WINEO_ENVIRONMENT` | The environment name |
-| `WINEO_TARGET` | The target name |
-| `WINEO_EXE` | The target's exe as configured |
-| `WINEO_PREFIX` | Wine only: the prefix the game runs in, so the `pfx` folder for Proton |
+| `WINEO_TARGET` | The target name, `steam` for a [Steam game](steam.md) |
+| `WINEO_EXE` | The target's exe as configured. Not set for a Steam game |
+| `WINEO_PREFIX` | The prefix the game runs in, so the `pfx` folder for Proton. For a Steam game, Steam's `compatdata/<app_id>/pfx` when it exists. Not set for native |
+| `WINEO_LAUNCHER`, `WINEO_APP_ID` | Steam games only: `steam` and the game's app id |
 | `WINEO_HOOK` | `before` or `after` |
 | `WINEO_END` | `after` only: `exited`, `failed`, or `stopped` |
-| `WINEO_EXIT_CODE` | `after` only: the game's exit code, empty if it's unknown |
-| `WINEO_SECONDS` | `after` only: how long the run lasted |
+| `WINEO_EXIT_CODE` | `after` only: the game's exit code, empty if it's unknown, which it always is for a Steam game |
+| `WINEO_SECONDS` | `after` only: how long the run lasted. For a Steam game, only once the game appeared |
 | `WINEO_PORTABLE_DIR` | For a [portable](portable.md) environment, so a hook that runs `wineo` sees the same folder |
 
 Variables that don't apply are removed rather than left empty. The

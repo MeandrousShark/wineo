@@ -28,6 +28,8 @@ wineo stop hades
   terminal.
 - **Imports.** Adopt or copy an existing prefix, or import games from Heroic
   with their launch settings.
+- **Steam games.** Bring installed [Steam games](docs/steam.md) into the
+  library to tag, launch, stop, and count, while Steam keeps owning them.
 - **Clones, snapshots, and portable folders.** Copy an environment, snapshot
   and restore its prefix on a filesystem with reflinks (Btrfs, XFS), or keep
   everything in a folder you can move to another drive.
@@ -114,6 +116,7 @@ Every command has `--help`. The common ones:
 | Use gamescope, MangoHud, or Wine Wayland | `wineo set hades mangohud=true wayland=true gamescope.window=fullscreen` |
 | Manage runners and components | `wineo runners`, `wineo download`, `wineo dxvk`, `wineo vkd3d` |
 | Import a prefix or Heroic games | `wineo import` |
+| Import installed Steam games | `wineo import steam --all` |
 | Preview `new` or `import` without changing anything | `wineo new -n hades --exe ~/Games/Hades/Hades.exe --dry-run`, `wineo import heroic --all --dry-run` |
 | Copy, snapshot, or go portable | `wineo clone`, `wineo snapshot`, `wineo portable` |
 | Artwork | `wineo art fetch hades`, `wineo art list hades` |
@@ -131,6 +134,7 @@ you pass `--portable DIR` or set it up for a portable folder.
 - [GUI style guide](docs/gui-style.md)
 - [Config files](docs/config-files.md)
 - [Native Linux games](docs/native.md)
+- [Steam games](docs/steam.md)
 - [Launch options](docs/launch-options.md)
 - [Hooks](docs/hooks.md)
 - [Downloads and imports](docs/downloads-and-imports.md)
