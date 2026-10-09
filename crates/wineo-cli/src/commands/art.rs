@@ -254,7 +254,11 @@ fn fetch_game(
         && let Ok(environment) = Environment::load(paths, env)
         && let Some(proxied) = environment.config.proxied()
     {
-        let app_id = proxied.app_id.parse()?;
+        // The exact app id outranks a saved game from an old title search unless --game or --search is given.
+        let app_id = proxied
+            .app_id
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid app_id: not a number."))?;
         let game = api
             .steam_game(app_id)?
             .ok_or_else(|| anyhow::anyhow!("SteamGridDB has no game for Steam app {app_id}"))?;
@@ -986,6 +990,22 @@ mod tests {
             err.to_string(),
             "SteamGridDB has no game for Steam app 1145360"
         );
+    }
+
+    #[test]
+    fn steam_fetch_reports_invalid_app_ids() {
+        let (_root, paths) = paths();
+        let fake = Fake::default();
+        for app_id in ["abc", "18446744073709551616"] {
+            fs::write(
+                paths.environment_config("hades"),
+                format!("kind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"{app_id}\"\n"),
+            )
+            .unwrap();
+            let err =
+                fetch_game(&paths, "hades", &fetch_request(), &Api::new(&fake, "k")).unwrap_err();
+            assert_eq!(err.to_string(), "Invalid app_id: not a number.");
+        }
     }
 
     #[test]

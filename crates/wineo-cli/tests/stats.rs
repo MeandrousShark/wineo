@@ -235,6 +235,9 @@ fn steam_stats_json_marks_unavailable_session_fields_null() {
         assert_eq!(status["played"]["seconds"], seconds);
         assert_json_null(&status["played"], "sessions");
     }
+    let status = json_output(&f.run_at_home(&["status", "unknown", "--json"]));
+    assert_json_null(&status["played"], "seconds");
+    assert_json_null(&status["played"], "sessions");
 }
 
 #[test]

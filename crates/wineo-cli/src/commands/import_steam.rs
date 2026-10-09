@@ -202,7 +202,9 @@ fn fetch_art(
         wineo_core::art_fetch::fetch_steam(
             paths,
             plan.name(),
-            plan.app_id().parse()?,
+            plan.app_id()
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid app_id: not a number."))?,
             &api,
             &language,
             &global.art.fetch.kinds(),

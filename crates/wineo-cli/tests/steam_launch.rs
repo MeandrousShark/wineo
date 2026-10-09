@@ -317,6 +317,7 @@ fn staging_progress_keeps_a_steam_launch_starting_past_the_normal_limit() {
     assert_success(&json);
     let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(json["state"], "starting");
+    assert_eq!(json["started_by"], "wineo");
     assert!(json["run"]["pid"].is_null());
     for staged in 1..=16 {
         thread::sleep(Duration::from_millis(150));

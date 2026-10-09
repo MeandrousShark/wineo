@@ -142,7 +142,7 @@ impl HooksOutput {
 
 #[derive(Serialize)]
 pub struct PlayedOutput {
-    pub seconds: i64,
+    pub seconds: Option<i64>,
     pub sessions: Option<usize>,
     pub last_played: Option<Timestamp>,
 }
@@ -150,7 +150,7 @@ pub struct PlayedOutput {
 impl From<&Played> for PlayedOutput {
     fn from(played: &Played) -> Self {
         Self {
-            seconds: played.seconds,
+            seconds: (!played.playtime_unknown).then_some(played.seconds),
             sessions: (played.source != crate::stats::Source::Steam).then_some(played.sessions),
             last_played: played.last_played,
         }
@@ -384,8 +384,22 @@ mod tests {
                 playtime_unknown: false,
             };
             let json = serde_json::to_value(PlayedOutput::from(&played)).unwrap();
+            assert_eq!(json["seconds"], 120);
             assert_eq!(json.get("sessions"), Some(&serde_json::json!(sessions)));
         }
+    }
+
+    #[test]
+    fn unknown_steam_playtime_has_null_seconds() {
+        let played = Played {
+            seconds: 0,
+            sessions: 0,
+            last_played: None,
+            source: crate::stats::Source::Steam,
+            playtime_unknown: true,
+        };
+        let json = serde_json::to_value(PlayedOutput::from(&played)).unwrap();
+        assert_eq!(json.get("seconds"), Some(&serde_json::Value::Null));
     }
 
     #[test]
