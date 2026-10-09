@@ -3,6 +3,7 @@ mod clone;
 mod heroic;
 pub(crate) mod new;
 mod prefix;
+mod steam;
 
 use iced::widget::{button, column, container, text};
 use iced::{Element, Fill, Task, keyboard};
@@ -22,12 +23,14 @@ pub(crate) enum Event {
     New,
     Prefix,
     Heroic,
+    Steam,
     Back,
     AfterSubmit,
     Create(Box<new::Event>),
     Import(Box<prefix::Event>),
     Copy(Box<clone::Event>),
     HeroicMessage(Box<heroic::Event>),
+    SteamMessage(Box<steam::Event>),
 }
 
 pub(crate) enum Page {
@@ -36,6 +39,7 @@ pub(crate) enum Page {
     Prefix(Box<prefix::Page>),
     Clone(Box<clone::Page>),
     Heroic(Box<heroic::Page>),
+    Steam(Box<steam::Page>),
 }
 
 impl Page {
@@ -85,6 +89,14 @@ impl Page {
                 *page = Self::Heroic(Box::new(next));
                 task.map(|event| Event::HeroicMessage(Box::new(event)))
             }
+            (page @ Self::Choose(_), Event::Steam) => {
+                let Self::Choose(paths) = page else {
+                    unreachable!()
+                };
+                let (next, task) = steam::Page::new(paths.clone());
+                *page = Self::Steam(Box::new(next));
+                task.map(|event| Event::SteamMessage(Box::new(event)))
+            }
             (Self::New(page), Event::Create(event)) => page
                 .update_with_key_availability(*event, key_available)
                 .map(|event| Event::Create(Box::new(event))),
@@ -97,6 +109,9 @@ impl Page {
             (Self::Heroic(page), Event::HeroicMessage(event)) => page
                 .update_with_key_availability(*event, key_available)
                 .map(|event| Event::HeroicMessage(Box::new(event))),
+            (Self::Steam(page), Event::SteamMessage(event)) => page
+                .update(*event)
+                .map(|event| Event::SteamMessage(Box::new(event))),
             (page, Event::Back) => page.back(),
             _ => Task::none(),
         }
@@ -104,7 +119,11 @@ impl Page {
 
     /// Background work that should show the spinner.
     pub(crate) fn spinning(&self) -> bool {
-        matches!(self, Self::Heroic(page) if page.waiting())
+        match self {
+            Self::Heroic(page) => page.waiting(),
+            Self::Steam(page) => page.waiting(),
+            _ => false,
+        }
     }
 
     #[cfg(test)]
@@ -132,6 +151,9 @@ impl Page {
             Self::Heroic(page) => page
                 .view_with_key_availability(palette, width, spin, key_available)
                 .map(|event| Event::HeroicMessage(Box::new(event))),
+            Self::Steam(page) => page
+                .view(palette, width, spin)
+                .map(|event| Event::SteamMessage(Box::new(event))),
             Self::Choose(_) => container(
                 column![
                     button("Back").on_press(Event::Back),
@@ -148,6 +170,10 @@ impl Page {
                         .on_press(Event::Heroic)
                         .padding(12),
                     text("Manually added Windows and native Linux games"),
+                    button("4 - Import from Steam")
+                        .on_press(Event::Steam)
+                        .padding(12),
+                    text("Installed Steam games"),
                 ]
                 .spacing(16),
             )
@@ -170,6 +196,9 @@ impl Page {
             Self::Heroic(page) => page
                 .key(key, modifiers, width)
                 .map(|task| task.map(|event| Event::HeroicMessage(Box::new(event)))),
+            Self::Steam(page) => page
+                .key(key, modifiers, width)
+                .map(|task| task.map(|event| Event::SteamMessage(Box::new(event)))),
             _ => None,
         }
     }
@@ -180,6 +209,7 @@ impl Page {
             Self::Prefix(page) => page.busy(),
             Self::Clone(page) => page.busy(),
             Self::Heroic(page) => page.busy(),
+            Self::Steam(page) => page.busy(),
             Self::Choose(_) => false,
         }
     }
@@ -190,6 +220,7 @@ impl Page {
             Self::Prefix(page) => page.cancel(force),
             Self::Clone(page) => page.cancel(force),
             Self::Heroic(page) => page.cancel(force),
+            Self::Steam(page) => page.cancel(force),
             Self::Choose(_) => {}
         }
     }
@@ -202,6 +233,9 @@ impl Page {
             Self::Heroic(page) => page
                 .submit()
                 .map(|event| Event::HeroicMessage(Box::new(event))),
+            Self::Steam(page) => page
+                .submit()
+                .map(|event| Event::SteamMessage(Box::new(event))),
             Self::Choose(_) => self.update(Event::New),
         }
     }
@@ -214,6 +248,9 @@ impl Page {
             Self::Heroic(page) => page
                 .back()
                 .map(|event| Event::HeroicMessage(Box::new(event))),
+            Self::Steam(page) => page
+                .back()
+                .map(|event| Event::SteamMessage(Box::new(event))),
             Self::Choose(_) => Task::none(),
         }
     }
@@ -224,6 +261,7 @@ impl Page {
             Self::Prefix(page) => page.take_action(),
             Self::Clone(page) => page.take_action(),
             Self::Heroic(page) => page.take_action(),
+            Self::Steam(page) => page.take_action(),
             Self::Choose(_) => None,
         }
     }

@@ -5,13 +5,13 @@ use std::time::SystemTime;
 
 use iced::Color;
 use wineo_core::art::{self, ArtConfig};
-use wineo_core::config::{Kind, Target};
+use wineo_core::config::{GlobalConfig, Kind, Target};
 use wineo_core::environment::Environment;
 use wineo_core::launch;
 use wineo_core::paths::Paths;
 use wineo_core::report::{self, OverviewFilter};
 use wineo_core::runtime::State;
-use wineo_core::{stats, time};
+use wineo_core::{stats, steam, time};
 
 use crate::theme::Palette;
 
@@ -65,11 +65,19 @@ impl CardKind {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct SteamDetails {
+    pub(super) install: report::InstallReport,
+    pub(super) proton: Option<String>,
+    pub(super) size: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct Card {
     pub(super) name: String,
     /// None when the config can't be read.
     pub(super) kind: Option<CardKind>,
     pub(super) display_title: String,
+    pub(super) steam: Option<SteamDetails>,
     pub(super) state: State,
     pub(super) lost: bool,
     pub(super) prefix: Option<PathBuf>,
@@ -96,19 +104,60 @@ impl Card {
         }
     }
 
+    pub(super) fn active(&self) -> bool {
+        matches!(
+            self.state,
+            State::Starting | State::Running | State::SteamRunning
+        )
+    }
+
+    pub(super) fn not_installed(&self) -> bool {
+        self.steam
+            .as_ref()
+            .is_some_and(|steam| steam.install.state == "not_installed")
+    }
+
+    pub(super) fn install_allows_play(&self) -> bool {
+        self.steam
+            .as_ref()
+            .is_none_or(|steam| matches!(steam.install.state, "installed" | "updating"))
+    }
+
+    pub(super) fn install_warning(&self) -> Option<&str> {
+        self.steam
+            .as_ref()
+            .filter(|steam| matches!(steam.install.state, "unavailable" | "unknown"))
+            .map(|steam| {
+                steam
+                    .install
+                    .problem
+                    .as_deref()
+                    .unwrap_or(steam.install.display())
+            })
+    }
+
     pub(super) fn state_word(&self) -> &'static str {
         if self.error.is_some() {
             "error"
         } else if self.busy {
             "busy"
+        } else if !self.active()
+            && let Some(steam) = &self.steam
+            && steam.install.state != "installed"
+        {
+            steam.install.display()
         } else {
             self.state.as_str()
         }
     }
     pub(super) fn dot(&self, palette: Palette) -> Color {
-        if self.error.is_some() || self.busy || self.state == State::Failed {
+        if self.error.is_some()
+            || self.busy
+            || self.state == State::Failed
+            || self.install_warning().is_some()
+        {
             palette.warning
-        } else if self.state == State::Running {
+        } else if self.active() {
             palette.success
         } else {
             palette.muted
@@ -158,6 +207,10 @@ fn fallback_stats(kind: Option<CardKind>) -> (String, String, String) {
 
 pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
     let overview = report::overview(paths, OverviewFilter::default())?;
+    let active = GlobalConfig::load(paths)
+        .ok()
+        .and_then(|global| steam::active_for(paths, &global));
+    let manifests = active.as_ref().map(steam::manifests).unwrap_or_default();
     let stats = stats::overview(paths)?;
     let played: HashMap<_, _> = stats
         .rows
@@ -182,6 +235,24 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
         .collect();
     let mut cards = Vec::new();
     for item in overview.environments {
+        let steam = if let Some(report::KindReport::Proxied {
+            app_id, install, ..
+        }) = &item.kind
+        {
+            Some(SteamDetails {
+                install: install.clone(),
+                proton: active
+                    .as_ref()
+                    .and_then(|active| steam::compat_tool(active, app_id)),
+                size: manifests
+                    .iter()
+                    .find(|entry| entry.app_id == *app_id)
+                    .and_then(|entry| entry.manifest.as_ref().ok())
+                    .map(|manifest| manifest.size_on_disk),
+            })
+        } else {
+            None
+        };
         let mut prefix = None;
         let mut kind = None;
         let mut targets = Vec::new();
@@ -195,6 +266,16 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
                 targets = env.config.targets.keys().cloned().collect();
                 default_target = launch::default_target(&env).ok().map(str::to_owned);
                 title = display_title(&item.name, &env.config.targets, default_target.as_deref());
+                if let Some(report::KindReport::Proxied {
+                    title: live_title, ..
+                }) = &item.kind
+                {
+                    title = live_title
+                        .clone()
+                        .filter(|title| !title.is_empty())
+                        .unwrap_or_else(|| item.name.clone());
+                    targets = vec!["steam".to_owned()];
+                }
                 let dir = paths.art_dir(&item.name);
                 let resolved = (|| {
                     let config = ArtConfig::load(&dir)?;
@@ -233,6 +314,7 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
             name: item.name,
             kind,
             display_title: title,
+            steam,
             state: item.status.state,
             lost: item.status.lost,
             prefix,
@@ -263,6 +345,7 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
             name: error.name,
             kind: None,
             display_title: title,
+            steam: None,
             state: State::Inactive,
             lost: false,
             prefix: None,
@@ -351,6 +434,7 @@ mod tests {
             name: "env_id".into(),
             kind: None,
             display_title: "My App".into(),
+            steam: None,
             state: State::Inactive,
             lost: false,
             prefix: None,
@@ -403,6 +487,85 @@ mod tests {
         let bg3 = cards.iter().find(|card| card.name == "bg3").unwrap();
         assert!(bg3.prefix.is_none());
         assert_eq!(bg3.default_target.as_deref(), Some("steam"));
+    }
+
+    #[test]
+    fn steam_cards_read_live_state_title_size_proton_and_implicit_art() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        let steam = root.path().join(".local/share/Steam");
+        let steamapps = steam.join("steamapps");
+        fs::create_dir_all(&steamapps).unwrap();
+        fs::create_dir_all(steam.join("config")).unwrap();
+        fs::create_dir_all(paths.environments_dir()).unwrap();
+        fs::write(paths.environment_config("game"),
+            "kind = 'proxied'\nlauncher = 'steam'\napp_id = '123'\ntitle = 'Saved title'\ntags = ['game']\n").unwrap();
+        fs::write(steam.join("config/config.vdf"),
+            r#""InstallConfigStore" { "Software" { "Valve" { "Steam" { "CompatToolMapping" { "123" { "name" "proton_experimental" } } } } } }"#).unwrap();
+        let art_dir = paths.art_dir("game");
+        fs::create_dir_all(&art_dir).unwrap();
+        for name in ["grid.png", "hero.png", "logo.png"] {
+            fs::write(art_dir.join(name), b"art").unwrap();
+        }
+        for (flags, state, playable, dimmed) in [
+            (4, "installed", true, false),
+            (1030, "updating", true, false),
+            (2, "not installed", false, true),
+        ] {
+            fs::write(steamapps.join("appmanifest_123.acf"), format!(
+                r#""AppState" {{ "appid" "123" "name" "Live title" "installdir" "Game" "StateFlags" "{flags}" "SizeOnDisk" "2048" }}"#)).unwrap();
+            let cards = load_library(&paths).unwrap();
+            let card = &cards[0];
+            assert_eq!(card.display_title, "Live title");
+            assert_eq!(
+                card.state_word(),
+                if state == "installed" {
+                    "inactive"
+                } else {
+                    state
+                }
+            );
+            assert_eq!(card.install_allows_play(), playable);
+            assert_eq!(card.not_installed(), dimmed);
+            assert!(card.install_warning().is_none());
+            let details = card.steam.as_ref().unwrap();
+            assert_eq!(details.size, Some(2048));
+            assert_eq!(details.proton.as_deref(), Some("proton_experimental"));
+            assert_eq!(card.targets, ["steam"]);
+            assert!(card.art.is_some());
+            assert!(card.panel_art["steam"].hero.is_some());
+            assert!(card.panel_art["steam"].logo.is_some());
+        }
+        fs::remove_file(steamapps.join("appmanifest_123.acf")).unwrap();
+        let card = load_library(&paths).unwrap().remove(0);
+        assert_eq!(card.display_title, "Saved title");
+        assert_eq!(card.state_word(), "not installed");
+        assert!(card.not_installed());
+        assert!(!card.install_allows_play());
+        assert_eq!(card.steam.unwrap().size, None);
+
+        fs::write(
+            steamapps.join("libraryfolders.vdf"),
+            format!(
+                r#""libraryfolders" {{ "1" {{ "path" "{}" }} }}"#,
+                root.path().join("missing-library").display()
+            ),
+        )
+        .unwrap();
+        let card = load_library(&paths).unwrap().remove(0);
+        assert_eq!(card.state_word(), "unavailable");
+        assert!(!card.not_installed());
+        assert!(!card.install_allows_play());
+        assert!(card.install_warning().unwrap().contains("isn't available"));
+
+        fs::write(steamapps.join("appmanifest_123.acf"), "broken {").unwrap();
+        let card = load_library(&paths).unwrap().remove(0);
+        assert_eq!(card.state_word(), "unknown");
+        assert!(!card.not_installed());
+        assert!(!card.install_allows_play());
+        assert!(card.install_warning().is_some());
     }
 
     #[test]

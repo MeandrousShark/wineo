@@ -1,6 +1,7 @@
 use iced::advanced::text::Paragraph as _;
 use iced::widget::{
-    Space, button, column, container, image, mouse_area, row, scrollable, stack, text, text_input,
+    Space, button, column, container, image, mouse_area, row, scrollable, stack, svg, text,
+    text_input,
 };
 use iced::{Center, Color, ContentFit, Element, Fill, Font, Size, Theme, border, font, mouse};
 
@@ -28,17 +29,28 @@ impl App {
         let palette = self.palette;
         let hovered = self.hovered.as_ref() == Some(&card.name);
         let selected = self.selected.as_ref() == Some(&card.name);
-        let art = card
-            .art
-            .as_ref()
-            .and_then(|art| self.images.get(&(art.clone(), crate::artwork::Kind::Grid)));
+        let dimmed = card.not_installed();
+        let art = card.art.as_ref().and_then(|art| {
+            let key = (art.clone(), crate::artwork::Kind::Grid);
+            if dimmed {
+                self.dimmed_images.get(&key)
+            } else {
+                self.images.get(&key)
+            }
+        });
         let poster: Element<'_, Message> = match art {
             Some(handle) => image(handle.clone())
                 .width(Fill)
                 .height(Fill)
                 .content_fit(ContentFit::Cover)
                 .border_radius(4)
-                .opacity(if hovered { 0.85_f32 } else { 1.0_f32 })
+                .opacity(if dimmed {
+                    0.45_f32
+                } else if hovered {
+                    0.85_f32
+                } else {
+                    1.0_f32
+                })
                 .into(),
             None => container(
                 text(&card.display_title)
@@ -51,7 +63,9 @@ impl App {
             .padding(12)
             .center(Fill)
             .style(move |_| {
-                container::Style::default().background(palette.surface.scale_alpha(if hovered {
+                container::Style::default().background(palette.surface.scale_alpha(if dimmed {
+                    0.45
+                } else if hovered {
                     0.85
                 } else {
                     1.0
@@ -59,7 +73,24 @@ impl App {
             })
             .into(),
         };
-        let framed = container(container(poster).clip(true))
+        let mut layers = stack![poster];
+        if card.kind == Some(crate::library::CardKind::Proxied) {
+            let mark = svg(svg::Handle::from_memory(include_bytes!(
+                "../assets/steam.svg"
+            )))
+            .width(20)
+            .height(20)
+            .opacity(if dimmed { 0.45_f32 } else { 1.0_f32 });
+            layers = layers.push(
+                container(mark)
+                    .width(Fill)
+                    .height(Fill)
+                    .align_right(Fill)
+                    .align_bottom(Fill)
+                    .padding(8),
+            );
+        }
+        let framed = container(container(layers).clip(true))
             .width(CARD_WIDTH)
             .height(240)
             .padding(2)
@@ -92,7 +123,11 @@ impl App {
                     weight: font::Weight::Semibold,
                     ..Font::DEFAULT
                 })
-                .color(palette.foreground)
+                .color(if dimmed {
+                    palette.muted
+                } else {
+                    palette.foreground
+                })
                 .wrapping(iced::widget::text::Wrapping::None),
         ]
         .spacing(4)

@@ -185,6 +185,9 @@ fn editor_view<'a>(
 ) -> Element<'a, Message> {
     let info = &editor.info;
     let draft = &editor.form.draft;
+    if let Some(proxied) = &draft.proxied {
+        return proxied_editor_view(editor, proxied, locked, palette);
+    }
     let mut sections = column![].spacing(24).width(Fill);
     if !info.native {
         let runner = super::runner_picker::picker(
@@ -303,6 +306,49 @@ fn editor_view<'a>(
         palette,
     ));
     sections.into()
+}
+
+fn proxied_editor_view<'a>(
+    editor: &'a Editor,
+    proxied: &'a form::ProxiedValues,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let game = column![
+        setting_row(
+            "Title",
+            text_field(
+                "Steam game title",
+                proxied.title.as_deref().unwrap_or_default(),
+                locked,
+                |title| send(Event::ProxiedTitle(title)),
+                palette,
+            ),
+            None,
+            palette,
+        ),
+        switch_row(
+            "Desktop entry",
+            proxied.desktop,
+            None,
+            |on| send(Event::ProxiedDesktop(on)),
+            None,
+            locked,
+            palette,
+        ),
+    ]
+    .spacing(12);
+    column![
+        section("Game", game.into(), palette),
+        section(
+            "Tags",
+            list_chips(editor, List::Tags, locked, palette),
+            palette
+        ),
+    ]
+    .spacing(24)
+    .width(Fill)
+    .into()
 }
 
 fn global_view<'a>(

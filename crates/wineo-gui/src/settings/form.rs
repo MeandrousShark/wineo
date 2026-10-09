@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use wineo_core::components::{Component, LATEST};
-use wineo_core::config::{self, EnvironmentConfig, Target};
+use wineo_core::config::{self, EnvironmentConfig, Kind, Target};
 use wineo_core::gamescope::{self, GamescopeSetting};
 use wineo_core::{name, targets, winpath};
 
@@ -357,6 +357,14 @@ pub(crate) struct Values {
     pub(crate) targets: BTreeMap<String, TargetValues>,
     /// The target marked `default`. Core allows only one.
     pub(crate) default_target: Option<String>,
+    /// Settings that exist only on a proxied environment.
+    pub(crate) proxied: Option<ProxiedValues>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProxiedValues {
+    pub(crate) title: Option<String>,
+    pub(crate) desktop: bool,
 }
 
 impl Values {
@@ -366,6 +374,13 @@ impl Values {
             None | Some(GamescopeSetting::Off) => (false, GamescopeFields::default()),
         };
         let wine = config.wine();
+        let proxied = match &config.kind {
+            Kind::Proxied(proxied) => Some(ProxiedValues {
+                title: proxied.title.clone(),
+                desktop: proxied.desktop,
+            }),
+            Kind::Wine(_) | Kind::Native => None,
+        };
         let text = |value: Option<&String>| value.cloned().unwrap_or_default();
         Self {
             runner: wine.map(|wine| wine.runner.clone()),
@@ -399,6 +414,7 @@ impl Values {
                 .iter()
                 .find(|(_, target)| target.default)
                 .map(|(name, _)| name.clone()),
+            proxied,
         }
     }
     /// A native environment has no runner.
@@ -752,6 +768,10 @@ impl Form {
         .into_iter()
         .filter(|changed| *changed)
         .count();
+        if let (Some(before), Some(after)) = (&loaded.proxied, &draft.proxied) {
+            count += usize::from(before.title != after.title);
+            count += usize::from(before.desktop != after.desktop);
+        }
         let (before, after) = (loaded.env_map(), draft.env_map());
         count += before
             .keys()
@@ -1118,6 +1138,17 @@ impl Form {
                 edits.write(
                     list.key().to_owned(),
                     (!items.is_empty()).then(|| toml_array(items)),
+                );
+            }
+        }
+        if let (Some(before), Some(after)) = (&loaded.proxied, &draft.proxied) {
+            if before.title != after.title {
+                edits.write("title".to_owned(), after.title.clone());
+            }
+            if before.desktop != after.desktop {
+                edits.write(
+                    "desktop".to_owned(),
+                    after.desktop.then(|| "true".to_owned()),
                 );
             }
         }

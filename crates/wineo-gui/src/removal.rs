@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use iced::widget::{Space, button, checkbox, column, container, mouse_area, row, text};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::cancel::Token;
+#[cfg(test)]
 use wineo_core::runtime::State;
 use wineo_core::trash::{Entry, RemoveEvent};
 
@@ -312,7 +313,7 @@ impl App {
         if let Some(other) = self.cards.iter().find(|card| {
             card.name != name
                 && self.same_prefix(name, &card.name)
-                && (card.lost || card.unresolved || card.state == State::Running || card.busy)
+                && (card.lost || card.unresolved || card.active() || card.busy)
         }) {
             return Some(if other.lost || other.unresolved {
                 "Stop it first. Use Clean up in the panel.".into()
@@ -330,7 +331,7 @@ impl App {
         let card = self.cards.iter().find(|card| card.name == name)?;
         if card.lost || card.unresolved {
             Some("Stop it first. Use Clean up in the panel.".into())
-        } else if card.state == State::Running
+        } else if card.active()
             || card.busy
             || self
                 .operation
