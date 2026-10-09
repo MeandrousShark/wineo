@@ -15,7 +15,8 @@ when it comes up, and the rows below have the details.
 3. Pre-launch and post-exit hooks, while the supervisor is the only launch
    model: done in 0.27.0 as [0046](plans/0046-launch-hooks.md).
 4. Store library import, Steam installed games first. It adds the proxied
-   environment kind. Approved as [0047](plans/0047-steam-library.md).
+   environment kind. [0047](plans/0047-steam-library.md) is implemented and
+   awaiting acceptance.
 5. Store library follow-ups: owned but uninstalled Steam games, then GOG and
    Epic through Heroic.
 6. GUI library views, designed against a library that includes store games.

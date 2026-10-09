@@ -107,9 +107,9 @@ The global config's `steam` key picks the Steam install for games when both
 native and Flatpak Steam are installed: `"native"`, the default, or
 `"flatpak"`. It needed no schema bump either.
 
-```toml
-# config.toml
-steam = "flatpak"
+```sh
+wineo set --global steam=flatpak
+wineo set --global --unset steam
 ```
 
 ## Launch options

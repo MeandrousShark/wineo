@@ -52,6 +52,12 @@ Under the art are the environment's state and playtime, the same numbers
 `wineo list` and `wineo stats` show. An environment whose config can't be
 read gets a warning dot, and its panel shows the error.
 
+[Steam games](steam.md) have a small Steam mark on their card. One Steam
+lists as not installed is grayed out and dimmed, and Play is disabled. One
+whose library is unavailable, or whose Steam files can't be read, gets a
+warning dot instead, since it may still be on disk. A Steam game's title is
+the one Steam has, and its playtime is Steam's total, with `-` for sessions.
+
 The library refreshes every 2 seconds, so a game started or stopped from
 the CLI shows up without doing anything.
 
@@ -96,6 +102,13 @@ install log, labeled **Install log**; once the game runs, **Log** shows its
 Creation and imports work the same way: **Force stop** replaces **Cancel**
 only after you cancel.
 
+A [Steam game](steam.md) starts through Steam, so the panel says
+**Waiting for Steam...** until the game appears, with **Stop** available.
+Steam may be starting or updating first. A game started from the Steam
+client shows as running too, and **Stop** and **Force stop** work on it. The
+panel also shows **Launcher** (Steam), the game's **Proton** build when it
+has one, and its **Install size**.
+
 Games keep running after you close the app, the same as games started with
 `wineo start`. Reopen it to see or stop them.
 
@@ -110,7 +123,9 @@ The detail actions menu and each card's right-click menu also offer
 **Remove...**. Cloning
 has a review page; Wine clones copy the prefix and art, while native clones
 share the game files. Both keep external game paths, disable desktop
-entries, clear the Heroic id, and reset playtime.
+entries, clear the Heroic id, and reset playtime. Steam games don't offer
+Snapshots, Run program, Winetricks, Clone, or Copy to portable, since Steam
+owns their prefix.
 
 ### Removing
 
@@ -358,7 +373,7 @@ as applicable, with warnings and missing prerequisites below. Long paths
 remain complete, and Back/Create stay outside the scrolling summary.
 
 **Add** opens a compact overlay for **New environment**, **Import prefix**,
-or **Import from Heroic**, keeping the library visible behind it. The same
+**Import from Heroic**, or **Import from Steam**, keeping the library visible behind it. The same
 choices are available when the library is empty. Back preserves entries;
 leaving an initial draft returns to Add choices and asks before discarding
 edits.
@@ -393,6 +408,16 @@ the prefix when it's used in place. While importing, the status names the
 game and its phase, such as checking or copying the prefix with a file count,
 with "(2 of 5)" in front during a batch. Imports and clones do not launch
 automatically.
+
+Steam import shows the installed Steam games that aren't imported yet as a
+poster grid, using Steam's cached posters, with the same selection controls
+as Heroic import. Steam's own tools are left out, and a game Steam is
+updating is marked **Updating in Steam**. Importing one game asks for its
+environment name, which defaults to a slug of the title. The review lists
+each game with its source, `game` tag, and Steam's cached art, and the
+finish page counts the results like `wineo import steam --all`: `Imported 1
+of 2 games.` In a portable folder it refuses: `Steam games can't be imported
+into a portable folder.`
 
 New and import flows show clickable poster, icon, hero, and logo previews.
 New environment previews the game's page: the hero is a banner across the
@@ -484,7 +509,9 @@ button, and the page reloads once the file is fixed.
 - **Advanced:** the prefix path, and the game id and store protonfixes use
   (Proton only). The Heroic id and the kind are shown but can't change.
 
-Native environments only show what they can use. Paths typed on the page
+Native environments only show what they can use. A Steam game's page has
+only **Tags**, **Title**, and **Desktop entry**, since Steam owns
+everything else. Paths typed on the page
 have to be absolute or start with `~/`, except inside a portable folder.
 
 Long runner names shorten in the middle to keep dropdowns on one row.

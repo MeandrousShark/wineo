@@ -65,19 +65,21 @@ nullable `last_played`. See [Playtime](stats.md).
 A [native environment](native.md) has no runner or prefix, so `runner` and
 `prefix` are `null`, along with `gameid`, `store`, `dxvk`, and `vkd3d`.
 
-A [Steam game](steam.md) has `"kind": "proxied"` and three more fields:
-`launcher` (`steam`), `app_id`, and `install`, one of `installed`,
-`updating`, `not_installed`, `unavailable`, or `unknown`. `install_problem`
-gives the reason when there is one, like `Steam's library at /mnt/games
-isn't available`. Other kinds leave these four fields out. `runner`,
+A [Steam game](steam.md) has `"kind": "proxied"` and more fields:
+`launcher` (`steam`), `app_id`, `install`, one of `installed`, `updating`,
+`not_installed`, `unavailable`, or `unknown`, and `started_by`. `started_by`
+is `wineo` while a wineo run is starting or running, `steam` when the game
+was started from the Steam client, and `null` when it isn't running.
+`install_problem` gives the reason when there is one, like `Steam's library
+at /mnt/games isn't available`. Other kinds leave these fields out. `runner`,
 `prefix`, `target_exe`, `gameid`, `store`, `dxvk`, and `vkd3d` are `null`,
 and `desktop` is `["steam"]` when the game has a desktop entry.
 
 `state` can also be `starting`, while Steam is asked to launch the game and
 it hasn't appeared yet, with a `null` `pid`. A game started from the Steam
-client, with no wineo run, is `running` with no wineo `run` of its own (an
-older finished run may still be there). Its `played` is Steam's total, with
-`sessions` 0.
+client is `running`, with `"started_by": "steam"`. Its `played` is Steam's
+total, with `sessions` `null`, since Steam keeps no sessions, and `seconds`
+`null` when Steam's playtime can't be read.
 
 ## Collections
 
@@ -92,7 +94,7 @@ Nameless `status --json` and `list --json` return the same envelope:
 
 Each item in `environments` contains the common status fields shown above,
 plus `kind`, which is `null` for a config that can't be read, and a Steam
-game's `launcher`, `app_id`, `install`, and `install_problem`.
+game's `launcher`, `app_id`, `install`, `install_problem`, and `started_by`.
 `list` includes every environment whose runtime status can be read, and
 `list --tag` only those with every given tag. Nameless `status` includes
 running, busy, or unresolved environments. Both sort by environment name.

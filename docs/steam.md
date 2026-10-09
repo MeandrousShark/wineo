@@ -108,10 +108,11 @@ the schema.
 Wineo finds native Steam (`~/.local/share/Steam`, which `~/.steam/steam` and
 `~/.steam/root` point at) and Flatpak Steam. It uses one of them for
 everything: import, launch, art, playtime, and finding running games. With
-both installed, native wins unless the global `config.toml` says otherwise:
+both installed, native wins unless the global config says otherwise:
 
-```toml
-steam = "flatpak"
+```sh
+wineo set --global steam=flatpak
+wineo set --global --unset steam
 ```
 
 A game only the other install has counts as not installed, so the two are
@@ -249,7 +250,7 @@ a Proton game's saves. `WINEO_EXIT_CODE` is always empty, and
 |---|---|
 | `start`, `run`, `restart`, `stop`, `status`, `list`, `stats` | Work |
 | `set` | `tags`, `title`, `hooks`, and `desktop` only |
-| `art` | Works like any environment's |
+| `art` | Works, and `art fetch` looks the game up on SteamGridDB by app id unless `--game` or `--search` says otherwise |
 | `desktop` | `desktop = true` adds `wineo-NAME-steam.desktop`, which runs `wineo start NAME` so hooks run |
 | `rm` | Removes wineo's config and art. It never uninstalls the game |
 | `validate` | Adds Steam checks: Steam not found, no active install, game not installed, library unavailable, unreadable files |
@@ -261,4 +262,5 @@ gamescope, Wayland, and template defaults are skipped. Only `stop_timeout`
 applies, to Stop.
 
 `status --json` and `list --json` have `"kind": "proxied"`, plus `launcher`,
-`app_id`, and `install`. See [JSON output](json-output.md).
+`app_id`, `install`, and `started_by`, which says whether a running game was
+started by `wineo` or `steam`. See [JSON output](json-output.md).

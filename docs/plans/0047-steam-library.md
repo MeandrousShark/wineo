@@ -582,6 +582,20 @@ In this plan (question 7).
   so an `after` hook can read it. Signals: two Ctrl+Cs are no longer merged
   into one (a latent bug for every kind); all other signals keep main's
   rules, where a batch counts once and a later separate stop request forces.
+- Step 6 and step 7 follow-ups (2026-10-09, maintainer): `set --global
+  steam=native|flatpak` and `--unset steam` work like the other global keys.
+  `art fetch` on a Steam game looks it up on SteamGridDB by app id unless
+  `--game` or `--search` is given, and the app id outranks a saved game. A
+  Steam `app_id` that isn't a number fails art lookups with `Invalid app_id:
+  not a number.` `status --json` and `list --json` get `started_by` for
+  proxied environments only: `wineo` while a wineo run is starting or
+  running, `steam` for a game started from the Steam client, `null`
+  otherwise. In `status --json`, a Steam game's `played.sessions` is `null`,
+  and `played.seconds` is `null` when Steam's playtime is unknown, matching
+  `stats --json`. Validate says `Steam lists NAME as not installed.` and
+  `Steam isn't found.`, matching `start` and `status`. The desktop app reads
+  Steam's manifests and `config.vdf` once per library load, and not at all
+  when nothing is proxied.
 
 ## Questions
 
@@ -707,6 +721,74 @@ list above. The options are kept as a record of what was weighed.
   a few games, play one from wineo and one from Steam, stop both, check
   `stats` against Steam's own numbers, and remove one without touching
   Steam.
+
+## Acceptance checklist
+
+Steam games can't live in a portable folder, so wineo gets throwaway XDG
+dirs instead, while Steam is still found through your real home. In fish:
+
+```fish
+set -x XDG_CONFIG_HOME /tmp/acc-0047/config
+set -x XDG_DATA_HOME /tmp/acc-0047/data
+set -x XDG_STATE_HOME /tmp/acc-0047/state
+set -x XDG_CACHE_HOME /tmp/acc-0047/cache
+```
+
+Run `wineo-gui` from the same shell when a step uses the app. Pick two
+installed Proton games, called GAME1 and GAME2 below (Civ VI, 289070, worked
+during step 4), and note what Steam shows for their playtime first.
+
+1. `wineo import steam --list` lists your installed games with sizes, and no
+   Proton, Steam Linux Runtime, or Steamworks rows.
+2. `wineo import steam --game GAME1 -n acc1`: the review shows the title, size,
+   and `art  Steam cache`, then `Imported acc1.`. Running it again says
+   `Already imported as acc1.`. `wineo art list acc1` shows grid, hero, and
+   logo from Steam's cache.
+3. `wineo import steam --all --dry-run` reviews every other game and ends
+   with `Dry run, nothing was imported.`
+4. `wineo stats acc1` matches Steam's playtime and last played date.
+   `wineo status acc1 --json` has `"kind":"proxied"`, `"install":"installed"`,
+   and `"started_by":null`.
+5. `wineo start acc1`: `Asked Steam to start acc1.`, and `wineo status acc1`
+   says `starting`, then `running` once the game is up, with
+   `"started_by":"wineo"` in the JSON. `wineo stop acc1` closes the game,
+   and the Steam client keeps running.
+6. Start GAME1 from the Steam client instead. `wineo status acc1` says
+   `running (started from Steam)`, with `"started_by":"steam"`, and `wineo
+   start acc1` says it's already running. `wineo stop acc1` closes it.
+7. Hooks: `wineo set acc1 'hooks.after=env | grep WINEO_ > /tmp/acc-0047-env'`,
+   then `wineo run acc1` and quit the game normally. `run` exits 0, and the
+   file has `WINEO_LAUNCHER=steam`, `WINEO_APP_ID`, `WINEO_TARGET=steam`,
+   `WINEO_END=exited`, and `WINEO_PREFIX` ending in `compatdata/ID/pfx`.
+8. `wineo run acc1`, then Ctrl+C while it's `starting`: the run ends
+   stopped and exits 130. If Steam still brings the game up, `status` shows
+   it as started from Steam. Stop it.
+9. Refusals: `wineo set acc1 runner=proton`, `wineo start acc1 -e A=1`,
+   `wineo exec acc1 x`, and `wineo snapshot create acc1 x` each refuse with
+   one short line and exit 1.
+10. In the app, **Add**, **Import from Steam**: GAME2 is in the grid and
+    GAME1 isn't. Import GAME2 as `acc2`. Its card has the Steam mark, and its
+    panel shows Launcher, Proton, and Install size. Play shows
+    **Waiting for Steam...**, then running. **Stop**, and if the game hangs,
+    **Force stop** after 3 seconds.
+11. Right-click `acc2`: no Snapshots, Run program, Winetricks, Clone, or
+    Copy to portable. **Settings** has only Tags, Title, and Desktop entry.
+    Turn on the desktop entry and save: `wineo-acc2-steam.desktop` appears
+    in `/tmp/acc-0047/data/applications` and launches the game through
+    wineo.
+12. Not installed: copy `acc1`'s config to `acc3.toml` with `app_id` set to
+    a game you own but haven't installed. `wineo list` shows `acc3  not
+    installed`, `wineo start acc3` refuses, and its card in the app is
+    grayed out with Play disabled.
+13. If you have Flatpak Steam too, `wineo set --global steam=flatpak`, and
+    `import steam --list` now shows Flatpak's games. Then `wineo set
+    --global --unset steam`.
+14. `wineo art fetch acc1 --only icon` with a SteamGridDB key finds the game
+    by its app id, without a title search.
+15. `wineo rm acc1` removes it from wineo, and GAME1 is still installed and
+    playable in Steam.
+16. Clean up: `set -e XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME
+    XDG_CACHE_HOME`, then `rm -r /tmp/acc-0047 /tmp/acc-0047-*`.
 
 ## Scope limits
 
