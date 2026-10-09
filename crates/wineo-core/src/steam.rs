@@ -90,8 +90,6 @@ pub fn installs(home: &Path) -> Vec<Install> {
         .collect()
 }
 
-/// The install wineo uses for games. With one install, that one. With both,
-/// native, unless `preference` is Flatpak.
 /// The install wineo uses for games, following the global `steam` setting.
 pub fn active_for(
     paths: &crate::paths::Paths,
