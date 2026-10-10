@@ -18,7 +18,8 @@ when it comes up, and the rows below have the details.
    environment kind. [0047](plans/0047-steam-library.md) is implemented and
    awaiting acceptance.
 5. Store library follow-ups, as two plans: owned but uninstalled Steam
-   games, then GOG directly without Heroic. Epic is a backlog row.
+   games ([0048](plans/0048-steam-owned-games.md), drafted), then GOG
+   directly without Heroic. Epic is a backlog row.
 6. GUI library views, designed against a library that includes store games.
 7. GUI themes, last, so they cover palette roles the store work adds.
 
