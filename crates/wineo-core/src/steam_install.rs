@@ -165,8 +165,9 @@ pub enum Update {
     Queued,
     Installing {
         percent: Option<u8>,
-        downloaded: u64,
-        /// 0 until Steam writes the byte totals.
+        /// Bytes done and in all for the phase `percent` comes from, so the
+        /// pair always agrees with it. `total` is 0 until Steam writes totals.
+        done: u64,
         total: u64,
     },
     /// Uninstalling, and the game isn't gone yet.
@@ -244,10 +245,13 @@ impl Follow {
         {
             self.title.clone_from(&manifest.name);
         }
-        let installing = |manifest: Option<&steam::Manifest>| Update::Installing {
-            percent: manifest.and_then(steam::Manifest::install_percent),
-            downloaded: manifest.map_or(0, |manifest| manifest.bytes_downloaded),
-            total: manifest.map_or(0, |manifest| manifest.bytes_to_download),
+        let installing = |manifest: Option<&steam::Manifest>| {
+            let bytes = manifest.and_then(steam::Manifest::install_bytes);
+            Update::Installing {
+                percent: bytes.map(|(done, total)| steam::percent(done, total)),
+                done: bytes.map_or(0, |(done, _)| done),
+                total: bytes.map_or(0, |(_, total)| total),
+            }
         };
         match (self.action, state) {
             (_, AppState::Unavailable(path)) => Update::Unreadable(format!(
@@ -689,7 +693,7 @@ mod tests {
             follow.poll(),
             Update::Installing {
                 percent: None,
-                downloaded: 0,
+                done: 0,
                 total: 0
             }
         );
@@ -698,7 +702,7 @@ mod tests {
             follow.poll(),
             Update::Installing {
                 percent: Some(25),
-                downloaded: 100,
+                done: 100,
                 total: 400
             }
         );
@@ -708,7 +712,7 @@ mod tests {
             follow.poll(),
             Update::Installing {
                 percent: None,
-                downloaded: 0,
+                done: 0,
                 total: 0
             }
         );
@@ -727,6 +731,44 @@ mod tests {
         let end = follow.poll();
         assert_eq!(end, Update::Finished);
         assert!(end.is_final());
+    }
+
+    #[test]
+    fn the_bytes_match_the_phase_the_percent_comes_from() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        let root = steam_root(&paths);
+        game(&paths, "witcher");
+        let mut follow = follower(&paths, Action::Install);
+        let staging = |downloaded: u64, staged: u64| {
+            fs::write(
+                root.join("steamapps/appmanifest_42.acf"),
+                format!(
+                    "\"AppState\" {{ \"appid\" \"42\" \"StateFlags\" \"1026\" \"BytesToDownload\" \"400\" \"BytesDownloaded\" \"{downloaded}\" \"BytesToStage\" \"800\" \"BytesStaged\" \"{staged}\" }}"
+                ),
+            )
+            .unwrap();
+        };
+        // Downloading: the download bytes.
+        staging(100, 100);
+        assert_eq!(
+            follow.poll(),
+            Update::Installing {
+                percent: Some(25),
+                done: 100,
+                total: 400
+            }
+        );
+        // Download complete, staging partial: the staged bytes.
+        staging(400, 200);
+        assert_eq!(
+            follow.poll(),
+            Update::Installing {
+                percent: Some(25),
+                done: 200,
+                total: 800
+            }
+        );
     }
 
     #[test]

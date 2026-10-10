@@ -230,16 +230,25 @@ impl Manifest {
         }
     }
 
-    /// How far an install is, from 0 to 100. Downloading counts first, then
-    /// staging once the download is done, as the launch watcher reads it.
-    /// None when Steam hasn't written any totals.
+    /// How far an install is, from 0 to 100. See `install_bytes`.
     pub fn install_percent(&self) -> Option<u8> {
+        self.install_bytes()
+            .map(|(done, total)| percent(done, total))
+    }
+
+    /// Bytes done and bytes in all for the phase an install is in: downloading
+    /// first, then staging once the download is done, as the launch watcher
+    /// reads it. None when Steam hasn't written any totals.
+    pub fn install_bytes(&self) -> Option<(u64, u64)> {
         if self.bytes_to_download > 0 && self.bytes_downloaded < self.bytes_to_download {
-            Some(percent(self.bytes_downloaded, self.bytes_to_download))
+            Some((self.bytes_downloaded, self.bytes_to_download))
         } else if self.bytes_to_stage > 0 {
-            Some(percent(self.bytes_staged, self.bytes_to_stage))
+            Some((
+                self.bytes_staged.min(self.bytes_to_stage),
+                self.bytes_to_stage,
+            ))
         } else if self.bytes_to_download > 0 {
-            Some(100)
+            Some((self.bytes_to_download, self.bytes_to_download))
         } else {
             None
         }
@@ -399,7 +408,7 @@ impl Progress {
     }
 }
 
-fn percent(done: u64, total: u64) -> u8 {
+pub(crate) fn percent(done: u64, total: u64) -> u8 {
     // Widened so a huge total can't overflow the multiplication.
     u8::try_from((u128::from(done) * 100 / u128::from(total)).min(100)).unwrap_or(100)
 }
