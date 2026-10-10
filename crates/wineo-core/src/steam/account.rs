@@ -24,6 +24,11 @@ pub enum Playtime {
 /// The account id whose playtime Steam shows: the one marked `MostRecent`, or
 /// the only account listed.
 pub fn active_account(install: &Install) -> Result<u64, String> {
+    active_steam_id(install).map(|steam_id| steam_id - ACCOUNT_BASE)
+}
+
+/// The SteamID64 of the same account, which the Web API takes.
+pub fn active_steam_id(install: &Install) -> Result<u64, String> {
     let path = install.root().join("config/loginusers.vdf");
     let text = fs::read_to_string(&path)
         .map_err(|error| format!("{} can't be read: {error}", path.display()))?;
@@ -50,9 +55,10 @@ pub fn active_account(install: &Install) -> Result<u64, String> {
         (None, []) => return Err("Steam has no logged-in account".to_owned()),
         (None, _) => return Err("Steam doesn't say which account was used last".to_owned()),
     };
-    steam_id
-        .checked_sub(ACCOUNT_BASE)
-        .ok_or_else(|| format!("{steam_id} isn't a SteamID64"))
+    if steam_id < ACCOUNT_BASE {
+        return Err(format!("{steam_id} isn't a SteamID64"));
+    }
+    Ok(steam_id)
 }
 
 /// Steam's own playtime for an app, from the active account's

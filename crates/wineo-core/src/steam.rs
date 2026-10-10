@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use crate::art;
 
-pub use account::{Playtime, active_account, compat_tool, compat_tools, playtime};
+pub use account::{Playtime, active_account, active_steam_id, compat_tool, compat_tools, playtime};
 pub use process::{
     Baseline, Reaper, baseline, eligible_reapers, matching_reapers, open_reaper, pidfd_exited,
     reaper_alive, stop_tree,

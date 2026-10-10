@@ -657,6 +657,22 @@ fn a_single_account_is_used_without_a_flag() {
 }
 
 #[test]
+fn the_steam_id_comes_from_the_same_account_choice() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let root = native(home);
+    let install = only(home);
+    loginusers(&root, &[(BASE + 1, false), (BASE + 2, true)]);
+    assert_eq!(active_steam_id(&install).unwrap(), BASE + 2);
+
+    loginusers(&root, &[(BASE + 1, false), (BASE + 2, false)]);
+    assert_eq!(
+        active_steam_id(&install).unwrap_err(),
+        active_account(&install).unwrap_err()
+    );
+}
+
+#[test]
 fn accounts_that_cannot_be_told_apart_are_unknown() {
     let home = tempfile::tempdir().unwrap();
     let home = home.path();
