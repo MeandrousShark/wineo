@@ -200,6 +200,12 @@ impl Paths {
         self.cache.join("art")
     }
 
+    /// The cached list of Steam games an account owns. Always on the host,
+    /// like any cache.
+    pub fn steam_owned_cache(&self, steam_id: u64) -> PathBuf {
+        self.cache.join(format!("steam-owned-{steam_id}.json"))
+    }
+
     /// An environment's playtime log. A portable folder carries it, so it
     /// moves with the folder, like art.
     pub fn stats_log(&self, name: &str) -> PathBuf {

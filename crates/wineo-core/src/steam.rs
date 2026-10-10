@@ -6,6 +6,7 @@
 mod account;
 pub mod api;
 pub mod key;
+pub mod owned;
 pub mod process;
 pub mod vdf;
 
