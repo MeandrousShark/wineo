@@ -1,0 +1,217 @@
+//! Poster titles, wrapped to at most two balanced lines.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+use iced::advanced::text::{self, Paragraph as _};
+use iced::{Font, Pixels, Size};
+
+const ELLIPSIS: &str = "...";
+
+/// The title's lines for a poster `width` wide, measured in the font its text
+/// widget draws with. Shaping is too slow to repeat for every title on every
+/// frame while something animates, so results are kept per title and style.
+pub(crate) fn lines(title: &str, width: f32, size: f32, font: Font) -> Vec<String> {
+    type Key = (String, u32, u32, Font);
+    thread_local! {
+        static CACHE: RefCell<HashMap<Key, Vec<String>>> = RefCell::new(HashMap::new());
+    }
+    let key = (title.to_owned(), width.to_bits(), size.to_bits(), font);
+    if let Some(lines) = CACHE.with_borrow(|cache| cache.get(&key).cloned()) {
+        return lines;
+    }
+    let lines = balance(title, width, |content| measure(content, size, font));
+    CACHE.with_borrow_mut(|cache| cache.insert(key, lines.clone()));
+    lines
+}
+
+/// Two lines' height at `size` with the default line height, reserved under
+/// every poster so rows line up whether a title wraps or not.
+pub(crate) fn two_line_height(size: f32) -> f32 {
+    2.0 * text::LineHeight::default().to_absolute(Pixels(size)).0
+}
+
+/// The rendered width of one unwrapped line, shaped as a text widget with
+/// default settings shapes it.
+fn measure(content: &str, size: f32, font: Font) -> f32 {
+    <iced::Renderer as text::Renderer>::Paragraph::with_text(text::Text {
+        content,
+        bounds: Size::INFINITE,
+        size: Pixels(size),
+        line_height: text::LineHeight::default(),
+        font,
+        align_x: text::Alignment::Default,
+        align_y: iced::alignment::Vertical::Top,
+        shaping: text::Shaping::default(),
+        wrapping: text::Wrapping::None,
+    })
+    .min_width()
+}
+
+/// Splits `title` into one or two lines no wider than `width`. Two lines break
+/// at the space that makes them closest in width, so a short word is never
+/// left alone when a more even split fits. Without any fitting split, line 2
+/// ends in "..." at a word boundary, and a word too long for a line is cut.
+pub(crate) fn balance(title: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
+    let words: Vec<&str> = title.split_whitespace().collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let whole = words.join(" ");
+    if measure(&whole) <= width {
+        return vec![whole];
+    }
+    if words.len() == 1 {
+        return vec![cut(&whole, width, &measure)];
+    }
+    let mut best: Option<(f32, String, String)> = None;
+    for split in 1..words.len() {
+        let first = words[..split].join(" ");
+        let second = words[split..].join(" ");
+        let (first_width, second_width) = (measure(&first), measure(&second));
+        if first_width > width || second_width > width {
+            continue;
+        }
+        let gap = (first_width - second_width).abs();
+        if best.as_ref().is_none_or(|(best_gap, ..)| gap < *best_gap) {
+            best = Some((gap, first, second));
+        }
+    }
+    if let Some((_, first, second)) = best {
+        return vec![first, second];
+    }
+    // Nothing fits on two lines, so fill line 1 and shorten line 2.
+    let taken = (1..words.len())
+        .rev()
+        .find(|split| measure(&words[..*split].join(" ")) <= width)
+        .unwrap_or(1);
+    let first = words[..taken].join(" ");
+    let first = if measure(&first) <= width {
+        first
+    } else {
+        cut(&first, width, &measure)
+    };
+    let rest = &words[taken..];
+    let second = rest.join(" ");
+    if measure(&second) <= width {
+        return vec![first, second];
+    }
+    let second = (1..rest.len())
+        .rev()
+        .map(|end| ellipsized(&rest[..end].join(" ")))
+        .find(|line| measure(line) <= width)
+        .unwrap_or_else(|| cut(rest[0], width, &measure));
+    vec![first, second]
+}
+
+/// `line` cut between characters to fit `width` with an ellipsis.
+fn cut(line: &str, width: f32, measure: &impl Fn(&str) -> f32) -> String {
+    line.char_indices()
+        .rev()
+        .map(|(index, _)| index)
+        .filter(|end| *end > 0)
+        .map(|end| ellipsized(&line[..end]))
+        .find(|candidate| measure(candidate) <= width)
+        .unwrap_or_else(|| ELLIPSIS.to_owned())
+}
+
+/// Punctuation that ended a cut clause reads oddly before the ellipsis.
+fn ellipsized(line: &str) -> String {
+    let line = line.trim_end_matches([' ', ',', ':', ';', '-']);
+    format!("{line}{ELLIPSIS}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Seven pixels a character keeps expected splits easy to reason about.
+    fn chars(line: &str) -> f32 {
+        line.chars().count() as f32 * 7.0
+    }
+
+    #[test]
+    fn a_short_title_stays_on_one_line() {
+        assert_eq!(balance("Portal 2", 120.0, chars), ["Portal 2"]);
+        assert_eq!(balance("  Portal   2 ", 120.0, chars), ["Portal 2"]);
+        assert!(balance("   ", 120.0, chars).is_empty());
+    }
+
+    #[test]
+    fn balanced_breaks_keep_short_words_off_their_own_line() {
+        assert_eq!(
+            balance("Sid Meier's Civilization VI", 120.0, chars),
+            ["Sid Meier's", "Civilization VI"]
+        );
+        assert_eq!(
+            balance("Grand Theft Auto IV: The Complete Edition", 140.0, chars),
+            ["Grand Theft Auto IV:", "The Complete Edition"]
+        );
+    }
+
+    #[test]
+    fn existing_punctuation_stays_with_its_word() {
+        assert_eq!(
+            balance("Half-Life 2: Episode One", 112.0, chars),
+            ["Half-Life 2:", "Episode One"]
+        );
+        assert_eq!(
+            balance("Hello, World! (Deluxe)", 112.0, chars),
+            ["Hello, World!", "(Deluxe)"]
+        );
+    }
+
+    #[test]
+    fn a_title_too_long_for_two_lines_ends_in_an_ellipsis() {
+        assert_eq!(
+            balance(
+                "The Elder Scrolls V: Skyrim Special Edition Anniversary",
+                140.0,
+                chars
+            ),
+            ["The Elder Scrolls V:", "Skyrim Special..."]
+        );
+        // The cut clause's colon gives way to the ellipsis.
+        assert_eq!(
+            balance("Alpha Beta Gamma: Delta Epsilon Zeta", 84.0, chars),
+            ["Alpha Beta", "Gamma..."]
+        );
+    }
+
+    #[test]
+    fn an_overlong_word_is_cut_with_an_ellipsis() {
+        assert_eq!(
+            balance("Supercalifragilistic", 84.0, chars),
+            ["Supercali..."]
+        );
+        assert_eq!(
+            balance("Supercalifragilistic Adventures", 84.0, chars),
+            ["Supercali...", "Adventures"]
+        );
+        assert_eq!(
+            balance("Go Supercalifragilistic", 84.0, chars),
+            ["Go", "Supercali..."]
+        );
+        assert_eq!(balance("Wide", 7.0, chars), ["..."]);
+    }
+
+    #[test]
+    fn real_measurement_wraps_the_maintainer_examples() {
+        let size = 13.0;
+        let width = 120.0;
+        for title in [
+            "Sid Meier's Civilization VI",
+            "Grand Theft Auto IV: The Complete Edition",
+        ] {
+            let lines = balance(title, width, |line| measure(line, size, Font::DEFAULT));
+            assert!(lines.len() <= 2, "{lines:?}");
+            for line in &lines {
+                assert!(
+                    measure(line, size, Font::DEFAULT) <= width,
+                    "{line:?} is too wide"
+                );
+            }
+        }
+        assert!(measure("Wide", size, Font::DEFAULT) > measure("W", size, Font::DEFAULT));
+    }
+}

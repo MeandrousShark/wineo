@@ -31,6 +31,7 @@ mod size;
 mod snapshots_page;
 mod spinner;
 mod theme;
+mod tile_title;
 mod tools_navigation;
 mod tools_page;
 mod trash_page;

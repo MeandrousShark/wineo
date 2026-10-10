@@ -10,7 +10,7 @@ use iced::widget::{
     Row, button, checkbox, column, container, image, mouse_area, pick_list, row, scrollable, stack,
     text, text_input,
 };
-use iced::{Center, Color, ContentFit, Element, Fill, Task, border, mouse};
+use iced::{Center, Color, ContentFit, Element, Fill, Font, Task, border, mouse};
 use wineo_core::art::{Format, Kind};
 use wineo_core::cancel::Token;
 use wineo_core::components::Component;
@@ -2657,9 +2657,10 @@ const TILE_WIDTH: f32 = 120.0;
 /// With the focus ring's padding.
 const TILE_OUTER_WIDTH: f32 = TILE_WIDTH + 8.0;
 const TILE_POSTER_HEIGHT: f32 = 180.0;
-/// Room under the poster for the title and two lines of reason, fixed so
-/// every row is the same height.
-const TILE_HEIGHT: f32 = 244.0;
+/// Room under the poster for two title lines and two lines of reason, fixed
+/// so every row is the same height.
+const TILE_HEIGHT: f32 = 262.0;
+const TILE_TITLE_SIZE: f32 = 13.0;
 pub(super) const TILE_GAP: f32 = 12.0;
 
 /// How many tiles fit across a flow dialog `width` wide, after the page's
@@ -2791,14 +2792,18 @@ pub(super) fn tile<'a, Message: Clone + 'a>(
     }
     let mut content = column![
         layers,
-        text(tile.title)
-            .size(13)
-            .color(if dimmed {
-                palette.muted
-            } else {
-                palette.foreground
-            })
-            .wrapping(iced::widget::text::Wrapping::None),
+        text(
+            crate::tile_title::lines(tile.title, TILE_WIDTH, TILE_TITLE_SIZE, Font::DEFAULT)
+                .join("\n")
+        )
+        .size(TILE_TITLE_SIZE)
+        .height(crate::tile_title::two_line_height(TILE_TITLE_SIZE))
+        .color(if dimmed {
+            palette.muted
+        } else {
+            palette.foreground
+        })
+        .wrapping(iced::widget::text::Wrapping::None),
     ]
     .spacing(4)
     .width(TILE_WIDTH);
@@ -3838,6 +3843,37 @@ mod tests {
             }
         }
         files
+    }
+
+    fn sample_tile(title: &str) -> Tile<'_> {
+        Tile {
+            title,
+            poster: None,
+            reason: None,
+            note: None,
+            chosen: false,
+            focused: false,
+            dimmed: false,
+        }
+    }
+
+    #[test]
+    fn tiles_reserve_two_title_lines_whatever_the_title() {
+        use crate::layout_probe::{bounds_at, layout};
+        let size = iced::Size::new(400.0, 400.0);
+        let mut heights = Vec::new();
+        for title in ["Portal", "Grand Theft Auto IV: The Complete Edition"] {
+            let mut view = tile(sample_tile(title), Palette::DARK, Event::Toggle(0));
+            let node = layout(&mut view, size);
+            assert_eq!(node.bounds().height, TILE_HEIGHT);
+            let title = bounds_at(&node, &[0, 1]);
+            assert_eq!(
+                title.height,
+                crate::tile_title::two_line_height(TILE_TITLE_SIZE)
+            );
+            heights.push(title.y);
+        }
+        assert_eq!(heights[0], heights[1]);
     }
 
     #[test]
