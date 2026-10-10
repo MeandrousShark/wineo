@@ -43,6 +43,12 @@ fn installed(f: &Fixture, app_id: &str, title: &str) {
     manifest(&steam_root(f), app_id, title, 4, 0, 0);
 }
 
+fn cache_path(f: &Fixture) -> PathBuf {
+    f.root
+        .path()
+        .join("cache/wineo/steam-owned-76561197960265729.json")
+}
+
 fn config_path(f: &Fixture, name: &str) -> PathBuf {
     f.config_dir().join(format!("environments/{name}.toml"))
 }
@@ -252,7 +258,7 @@ fn an_empty_response_is_a_failure_that_keeps_the_saved_list() {
 fn an_uninstalled_owned_game_imports_and_shows_as_not_installed() {
     let f = Fixture::new();
     login(&f);
-    let api = SteamApi::start(vec![library()]);
+    let api = SteamApi::start(vec![library(), library()]);
 
     let dry = run(
         &f,
@@ -266,6 +272,7 @@ fn an_uninstalled_owned_game_imports_and_shows_as_not_installed() {
     assert!(text.contains("state     not installed"), "{text}");
     assert!(text.contains("Dry run, nothing was imported."), "{text}");
     assert!(!config_path(&f, "the-witcher-3").exists());
+    assert!(!cache_path(&f).exists(), "a dry run saves nothing");
 
     let output = run(
         &f,
@@ -280,11 +287,8 @@ fn an_uninstalled_owned_game_imports_and_shows_as_not_installed() {
         fs::read_to_string(config_path(&f, "the-witcher-3")).unwrap(),
         "schema_version = 1\nkind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"292030\"\ntitle = \"The Witcher 3\"\ntags = [\"game\"]\ndesktop = false\n"
     );
-    assert_eq!(
-        api.requests().len(),
-        1,
-        "the second run used the saved list"
-    );
+    assert_eq!(api.requests().len(), 2, "the dry run left nothing saved");
+    assert!(cache_path(&f).is_file());
     let status = run(&f, None, None, &["status", "the-witcher-3"]);
     assert!(
         stdout(&status).starts_with("the-witcher-3: not installed"),
@@ -596,4 +600,148 @@ fn list_and_status_show_installing_percent_in_text() {
         "{}",
         stdout(&list)
     );
+}
+
+#[test]
+fn dry_runs_ask_about_ownership_but_never_write_the_saved_list() {
+    for args in [
+        &["import", "steam", "--game", "292030", "--dry-run"][..],
+        &["import", "steam", "--all", "--owned", "--dry-run"],
+    ] {
+        // No saved list: it is fetched, used, and not saved.
+        let f = Fixture::new();
+        login(&f);
+        let api = SteamApi::start(vec![library()]);
+        let output = run(&f, Some(&api), Some(KEY), args);
+        assert_success(&output);
+        assert!(stdout(&output).contains("The Witcher 3"), "{args:?}");
+        assert_eq!(api.requests().len(), 1);
+        assert!(!cache_path(&f).exists(), "{args:?}");
+
+        // A stale saved list is fetched over, and left byte for byte.
+        let stale = r#"{"fetched_at":1,"games":[{"app_id":"9","name":"Old"}]}"#;
+        fs::create_dir_all(cache_path(&f).parent().unwrap()).unwrap();
+        fs::write(cache_path(&f), stale).unwrap();
+        api.push(library());
+        let output = run(&f, Some(&api), Some(KEY), args);
+        assert_success(&output);
+        assert!(stdout(&output).contains("The Witcher 3"), "{args:?}");
+        assert_eq!(api.requests().len(), 2);
+        assert_eq!(fs::read_to_string(cache_path(&f)).unwrap(), stale);
+        assert!(!config_path(&f, "the-witcher-3").exists());
+        assert_no_key(&output);
+    }
+}
+
+#[test]
+fn a_dry_run_uses_a_fresh_saved_list_without_asking() {
+    let f = Fixture::new();
+    login(&f);
+    let api = SteamApi::start(vec![library()]);
+    assert_success(&run(
+        &f,
+        Some(&api),
+        Some(KEY),
+        &["import", "steam", "--list"],
+    ));
+    let before = fs::read(cache_path(&f)).unwrap();
+
+    let output = run(
+        &f,
+        Some(&api),
+        Some(KEY),
+        &["import", "steam", "--game", "292030", "--dry-run"],
+    );
+
+    assert_success(&output);
+    assert_eq!(api.requests().len(), 1);
+    assert_eq!(fs::read(cache_path(&f)).unwrap(), before);
+}
+
+/// Two accounts and none marked most recent.
+fn ambiguous_accounts(f: &Fixture) {
+    let config = steam_root(f).join("config");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(
+        config.join("loginusers.vdf"),
+        "\"users\" { \"76561197960265729\" { \"MostRecent\" \"0\" } \"76561197960265730\" { \"MostRecent\" \"0\" } }\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn several_accounts_with_none_most_recent_is_an_error_when_a_key_is_set() {
+    let f = Fixture::new();
+    ambiguous_accounts(&f);
+    installed(&f, "10", "Hades II");
+    let api = SteamApi::start(vec![library()]);
+    for args in [
+        &["import", "steam", "--list"][..],
+        &["import", "steam", "--game", "292030"],
+        &["import", "steam", "--all", "--owned", "--yes"],
+    ] {
+        let output = run(&f, Some(&api), Some(KEY), args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(
+            stderr(&output),
+            "error: Steam doesn't say which account was used last\n",
+            "{args:?}"
+        );
+        assert_no_key(&output);
+    }
+    assert!(api.requests().is_empty());
+    assert!(!config_path(&f, "hades-ii").exists());
+
+    // Without a key no account is needed, and installed games list as before.
+    let no_key = run(&f, Some(&api), None, &["import", "steam", "--list"]);
+    assert_success(&no_key);
+    assert!(stdout(&no_key).contains("Hades II"));
+    // Installed games import with a key set, since they need no list.
+    assert_success(&run(
+        &f,
+        Some(&api),
+        Some(KEY),
+        &["import", "steam", "--game", "10"],
+    ));
+}
+
+#[test]
+fn a_failed_key_check_never_prints_the_key_even_with_verbose() {
+    let f = Fixture::new();
+    login(&f);
+    for reply in [
+        steam_api::status(401),
+        steam_api::status(500),
+        steam_api::json("not json"),
+        steam_api::json("{\"response\":{}}"),
+    ] {
+        let api = SteamApi::start(vec![reply]);
+        let mut child = command(&f, Some(&api), None, &["-v", "import", "steam", "--key"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writeln!(child.stdin.take().unwrap(), "{KEY}").unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert_no_key(&output);
+    }
+    // A server that is not there at all.
+    let gone = SteamApi::start(vec![]);
+    let base = gone.base.clone();
+    drop(gone);
+    let mut child = f
+        .wineo_at_home()
+        .env("WINEO_TEST_STEAM_API", base)
+        .args(["-v", "import", "steam", "--key"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(child.stdin.take().unwrap(), "{KEY}").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_no_key(&output);
 }

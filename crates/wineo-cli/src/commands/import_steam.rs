@@ -112,7 +112,7 @@ fn single(
     // Installed games import with no key and no network, so the list is only
     // loaded when nothing on disk settles the game.
     let data = if steam_import::needs_owned(paths, global, app_id) {
-        let data = Data::load(paths, global, args.refresh);
+        let data = Data::load(paths, global, args.refresh, !args.dry_run)?;
         data.require()?;
         data
     } else {
@@ -165,29 +165,42 @@ enum Data {
 impl Data {
     /// Looks for the key and, with one, loads the list. Only commands that
     /// want uninstalled games call this.
-    fn load(paths: &Paths, global: &GlobalConfig, refresh: bool) -> Self {
+    ///
+    /// Several accounts with none marked most recent is an error, since there
+    /// is no telling whose library to ask for. A dry run (`save` false) leaves
+    /// the saved list alone.
+    fn load(
+        paths: &Paths,
+        global: &GlobalConfig,
+        refresh: bool,
+        save: bool,
+    ) -> anyhow::Result<Self> {
         let keyring = SecretServiceKeyring::for_spec(&steam::key::KEY_SPEC);
         let key = match steam::key::find_key(paths, |var| std::env::var_os(var), &keyring) {
             Ok(Some(key)) => key,
-            Ok(None) => return Data::NoKey,
-            Err(error) => return Data::KeyFailed(error.to_string()),
+            Ok(None) => return Ok(Data::NoKey),
+            Err(error) => return Ok(Data::KeyFailed(error.to_string())),
         };
         let Some(install) = steam::active_for(paths, global) else {
-            return Data::Unloaded;
+            return Ok(Data::Unloaded);
         };
-        let steam_id = match steam::active_steam_id(&install) {
-            Ok(steam_id) => steam_id,
-            Err(reason) => return Data::Failed(LoadError(OwnedError::Account(reason))),
-        };
+        let steam_id = steam::active_steam_id(&install).map_err(anyhow::Error::msg)?;
         let api = match SteamApi::from_env() {
             Ok(api) => api,
-            Err(error) => return Data::Failed(LoadError(OwnedError::Api(error))),
+            Err(error) => return Ok(Data::Failed(LoadError(OwnedError::Api(error)))),
         };
-        match owned::load(paths, steam_id, Some(&key.value), &api, refresh) {
-            Ok(Loaded::Owned(owned)) => Data::Loaded(owned),
-            Ok(Loaded::NoKey) => Data::NoKey,
-            Err(error) => Data::Failed(error),
-        }
+        let load = if save {
+            owned::load
+        } else {
+            owned::load_without_saving
+        };
+        Ok(
+            match load(paths, steam_id, Some(&key.value), &api, refresh) {
+                Ok(Loaded::Owned(owned)) => Data::Loaded(owned),
+                Ok(Loaded::NoKey) => Data::NoKey,
+                Err(error) => Data::Failed(error),
+            },
+        )
     }
 
     fn games(&self) -> OwnedGames<'_> {
@@ -242,7 +255,7 @@ fn canceled(error: &anyhow::Error) -> bool {
 }
 
 fn list(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<ExitCode> {
-    let data = Data::load(paths, global, args.refresh);
+    let data = Data::load(paths, global, args.refresh, true)?;
     let entries = steam_import::listing(paths, global, data.games())?;
     if !entries.is_empty() {
         let mut rows = vec![["APP ID", "TITLE", "SIZE", "STATE", "IMPORTED"].map(str::to_owned)];
@@ -428,7 +441,7 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
     // One fetch for the whole run. Without the owned games, only installed
     // ones are imported.
     let data = if args.owned {
-        let data = Data::load(paths, global, args.refresh);
+        let data = Data::load(paths, global, args.refresh, !args.dry_run)?;
         match &data {
             Data::NoKey => anyhow::bail!("Add a Steam Web API key to import uninstalled games."),
             other => other.require()?,
@@ -553,7 +566,7 @@ fn guided<I: Input, W: Write>(
     out: &mut Prompt<I, W>,
     first_question: bool,
 ) -> anyhow::Result<ExitCode> {
-    let data = Data::load(paths, global, args.refresh);
+    let data = Data::load(paths, global, args.refresh, true)?;
     let games = data.games();
     let entries: Vec<_> = steam_import::listing(paths, global, games)?
         .into_iter()

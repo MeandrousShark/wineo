@@ -153,6 +153,26 @@ pub fn load(
     )
 }
 
+/// `load` for a dry run: the same answers, but a fetched list is never saved,
+/// so nothing on disk changes.
+pub fn load_without_saving(
+    paths: &Paths,
+    steam_id: u64,
+    key: Option<&str>,
+    api: &SteamApi,
+    refresh: bool,
+) -> Result<Loaded, LoadError> {
+    load_inner(
+        paths,
+        steam_id,
+        key,
+        api,
+        refresh,
+        jiff::Timestamp::now().as_second(),
+        false,
+    )
+}
+
 fn load_at(
     paths: &Paths,
     steam_id: u64,
@@ -160,6 +180,18 @@ fn load_at(
     api: &SteamApi,
     refresh: bool,
     now: i64,
+) -> Result<Loaded, LoadError> {
+    load_inner(paths, steam_id, key, api, refresh, now, true)
+}
+
+fn load_inner(
+    paths: &Paths,
+    steam_id: u64,
+    key: Option<&str>,
+    api: &SteamApi,
+    refresh: bool,
+    now: i64,
+    save: bool,
 ) -> Result<Loaded, LoadError> {
     let Some(key) = key else {
         return Ok(Loaded::NoKey);
@@ -180,9 +212,13 @@ fn load_at(
                 fetched_at: now,
                 games,
             };
-            let warning = write_cache(&path, &cache)
-                .err()
-                .map(|reason| format!("Couldn't save owned games: {reason}"));
+            let warning = if save {
+                write_cache(&path, &cache)
+                    .err()
+                    .map(|reason| format!("Couldn't save owned games: {reason}"))
+            } else {
+                None
+            };
             Ok(owned(cache.games, warning))
         }
         // An error never replaces the cache, which includes an empty
@@ -570,6 +606,24 @@ mod tests {
             games(run(&server, &paths, false, T)).0,
             [game("1", "Alpha")]
         );
+    }
+
+    #[test]
+    fn loading_without_saving_fetches_but_never_touches_the_cache() {
+        let (_root, paths) = setup();
+        let path = paths.steam_owned_cache(ID);
+        let server = Server::start(vec![library(&[(1, "Alpha")]), library(&[(2, "Beta")])]);
+        let api = SteamApi::with_base(&server.base).unwrap();
+
+        let fetched = load_inner(&paths, ID, Some(KEY), &api, false, T, false);
+        assert_eq!(games(fetched), (vec![game("1", "Alpha")], None));
+        assert!(!path.exists());
+
+        write_raw_cache(&paths, T - 7200, &[("9", "Old")]);
+        let before = fs::read(&path).unwrap();
+        let stale = load_inner(&paths, ID, Some(KEY), &api, false, T, false);
+        assert_eq!(games(stale), (vec![game("2", "Beta")], None));
+        assert_eq!(fs::read(&path).unwrap(), before);
     }
 
     fn write_raw_cache(paths: &Paths, fetched_at: i64, games: &[(&str, &str)]) {
