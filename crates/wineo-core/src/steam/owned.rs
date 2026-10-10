@@ -1,14 +1,15 @@
 //! The games an account owns, from Steam's Web API, cached for an hour.
 //! Installed games never need this: they come from the local scan.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::api::{ApiError, SteamApi};
 use super::{Install, active_steam_id, is_tool};
-use crate::files::write_atomic;
 use crate::paths::Paths;
 
 const PATH: &str = "IPlayerService/GetOwnedGames/v1/";
@@ -167,7 +168,9 @@ fn load_at(
     let cached = read_cache(&path);
     if !refresh
         && let Some(cache) = &cached
-        && (0..FRESH_SECONDS).contains(&(now - cache.fetched_at))
+        && now
+            .checked_sub(cache.fetched_at)
+            .is_some_and(|age| (0..FRESH_SECONDS).contains(&age))
     {
         return Ok(owned(cache.games.clone(), None));
     }
@@ -212,7 +215,36 @@ fn read_cache(path: &std::path::Path) -> Option<Cache> {
 
 fn write_cache(path: &std::path::Path, cache: &Cache) -> Result<(), String> {
     let text = serde_json::to_string(cache).map_err(|error| error.to_string())?;
-    write_atomic(path, text).map_err(|error| error.to_string())
+    write_unique(path, text.as_bytes()).map_err(|error| error.to_string())
+}
+
+/// Writes through a temp file no other writer can share, then renames it
+/// into place. Two commands refreshing at once each get their own file, so
+/// neither can rename a half-written one over the cache.
+fn write_unique(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let dir = path.parent().expect("the cache path has a parent");
+    fs::create_dir_all(dir)?;
+    let mut name = path
+        .file_name()
+        .expect("the cache path has a name")
+        .to_owned();
+    name.push(format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let tmp = dir.join(name);
+    let result = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut file| file.write_all(contents))
+        .and_then(|()| fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -520,6 +552,129 @@ mod tests {
         assert_eq!(
             games(run(&server, &paths, false, T)).0,
             [game("1", "Alpha")]
+        );
+    }
+
+    fn write_raw_cache(paths: &Paths, fetched_at: i64, games: &[(&str, &str)]) {
+        let cache = Cache {
+            fetched_at,
+            games: games.iter().map(|(id, name)| game(id, name)).collect(),
+        };
+        write_cache(&paths.steam_owned_cache(ID), &cache).unwrap();
+    }
+
+    #[test]
+    fn racing_writers_never_leave_unparseable_json() {
+        let (_root, paths) = setup();
+        let path = paths.steam_owned_cache(ID);
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let (path, done) = (path.clone(), done.clone());
+            std::thread::spawn(move || {
+                while !done.load(Ordering::Relaxed) {
+                    if let Ok(text) = fs::read_to_string(&path) {
+                        serde_json::from_str::<Cache>(&text).expect("a torn cache was visible");
+                    }
+                }
+            })
+        };
+        let writers: Vec<_> = (0..4)
+            .map(|writer| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let games = (0..2000)
+                        .map(|id| game(&id.to_string(), &format!("Game {writer} {id}")))
+                        .collect();
+                    let cache = Cache {
+                        fetched_at: writer,
+                        games,
+                    };
+                    for _ in 0..25 {
+                        write_cache(&path, &cache).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        done.store(true, Ordering::Relaxed);
+        reader.join().unwrap();
+        assert!(read_cache(&path).is_some());
+        // No temp files are left behind.
+        let left = fs::read_dir(path.parent().unwrap()).unwrap().count();
+        assert_eq!(left, 1);
+    }
+
+    #[test]
+    fn extreme_future_and_invalid_timestamps_are_stale() {
+        for fetched_at in [i64::MIN, i64::MAX, T + 1, T + 3600] {
+            let (_root, paths) = setup();
+            write_raw_cache(&paths, fetched_at, &[("1", "Old")]);
+            let server = Server::start(vec![library(&[(2, "New")])]);
+            let (found, _) = games(run(&server, &paths, false, T));
+            assert_eq!(found, [game("2", "New")], "fetched_at {fetched_at}");
+            assert_eq!(server.requests().len(), 1);
+        }
+        // An overflowing age is stale too, whatever the clock says.
+        let (_root, paths) = setup();
+        write_raw_cache(&paths, i64::MIN, &[("1", "Old")]);
+        let server = Server::start(vec![library(&[(2, "New")])]);
+        assert_eq!(
+            games(run(&server, &paths, false, i64::MAX)).0,
+            [game("2", "New")]
+        );
+    }
+
+    #[test]
+    fn a_cache_that_cannot_be_written_is_a_warning() {
+        let (root, paths) = setup();
+        // A file where the cache dir should be.
+        fs::create_dir_all(root.path().join(".cache")).unwrap();
+        fs::write(root.path().join(".cache/wineo"), "in the way").unwrap();
+        let server = Server::start(vec![library(&[(1, "Alpha")])]);
+        let (found, warning) = games(run(&server, &paths, false, T));
+        assert_eq!(found, [game("1", "Alpha")]);
+        let warning = warning.unwrap();
+        assert!(
+            warning.starts_with("Couldn't save owned games: "),
+            "{warning}"
+        );
+        assert!(!warning.contains(KEY), "{warning}");
+    }
+
+    #[test]
+    fn no_key_wins_over_an_existing_cache() {
+        let (_root, paths) = setup();
+        write_raw_cache(&paths, T, &[("1", "Alpha")]);
+        let server = Server::start(vec![]);
+        let api = SteamApi::with_base(&server.base).unwrap();
+        assert_eq!(
+            load_at(&paths, ID, None, &api, false, T + 1).unwrap(),
+            Loaded::NoKey
+        );
+        assert!(server.requests().is_empty());
+    }
+
+    #[test]
+    fn tools_are_filtered_from_a_stale_fallback_too() {
+        let (_root, paths) = setup();
+        write_raw_cache(
+            &paths,
+            T,
+            &[
+                ("1", "Alpha"),
+                ("1493710", "Proton Experimental"),
+                ("228980", "Redist"),
+            ],
+        );
+        let server = Server::start(vec![reply(500, "x")]);
+        let (found, warning) = games(run(&server, &paths, false, T + 7200));
+        assert_eq!(found, [game("1", "Alpha")]);
+        assert!(
+            warning
+                .unwrap()
+                .starts_with("Couldn't refresh owned games: ")
         );
     }
 }

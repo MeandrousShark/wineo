@@ -16,6 +16,8 @@ pub const BASE: &str = "https://api.steampowered.com";
 /// A large library is a few hundred kilobytes.
 const MAX_BODY: u64 = 32 * 1024 * 1024;
 
+const TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ApiError {
     #[error("can't reach Steam")]
@@ -40,30 +42,28 @@ pub enum ApiError {
 pub struct SteamApi {
     client: reqwest::blocking::Client,
     base: Url,
+    max_body: u64,
 }
 
 impl SteamApi {
     /// The real API, over HTTPS, following no redirects.
     pub fn new() -> Result<Self, ApiError> {
-        Self::build(BASE, true)
+        Self::build(BASE, true, TIMEOUT)
     }
 
     /// A fixture server standing in for Steam, which may be plain HTTP.
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_base(base: &str) -> Result<Self, ApiError> {
-        Self::build(base, false)
+        Self::build(base, false, TIMEOUT)
     }
 
-    fn build(base: &str, https_only: bool) -> Result<Self, ApiError> {
-        let client = http_client_following(
-            https_only,
-            Duration::from_secs(10),
-            reqwest::redirect::Policy::none(),
-        )
-        .map_err(|_| ApiError::Request)?;
+    fn build(base: &str, https_only: bool, timeout: Duration) -> Result<Self, ApiError> {
+        let client = http_client_following(https_only, timeout, reqwest::redirect::Policy::none())
+            .map_err(|_| ApiError::Request)?;
         Ok(Self {
             client,
             base: Url::parse(base).map_err(|_| ApiError::Request)?,
+            max_body: MAX_BODY,
         })
     }
 
@@ -106,17 +106,47 @@ impl SteamApi {
         }
         let mut body = Vec::new();
         response
-            .take(MAX_BODY + 1)
+            .take(self.max_body + 1)
             .read_to_end(&mut body)
-            .map_err(|error| match error.kind() {
-                io::ErrorKind::TimedOut => ApiError::Timeout,
-                _ => ApiError::Body,
+            .map_err(|error| {
+                if timed_out(&error) {
+                    ApiError::Timeout
+                } else {
+                    ApiError::Body
+                }
             })?;
-        if body.len() as u64 > MAX_BODY {
+        if body.len() as u64 > self.max_body {
             return Err(ApiError::TooLarge);
         }
         serde_json::from_slice(&body).map_err(|_| ApiError::Json)
     }
+}
+
+/// Whether a body read failed on a timeout. reqwest wraps its own timeout in
+/// an `io::Error` of kind `Other`, so the chain is walked for it. The error
+/// is only inspected, never formatted, since reqwest's text names the URL.
+fn timed_out(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(error) = error.downcast_ref::<reqwest::Error>()
+            && error.is_timeout()
+        {
+            return true;
+        }
+        if let Some(error) = error.downcast_ref::<io::Error>() {
+            if error.kind() == io::ErrorKind::TimedOut {
+                return true;
+            }
+            // An io::Error's own source skips the error it wraps.
+            if let Some(inner) = error.get_ref()
+                && timed_out(inner)
+            {
+                return true;
+            }
+        }
+        current = error.source();
+    }
+    false
 }
 
 #[cfg(test)]
@@ -127,6 +157,7 @@ pub(crate) mod fixture {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     pub struct Server {
         pub base: String,
@@ -145,6 +176,12 @@ pub(crate) mod fixture {
     impl Server {
         /// Serves `replies` in order, one per connection, then stops.
         pub fn start(replies: Vec<Vec<u8>>) -> Self {
+            Self::start_stalling(replies, Duration::ZERO)
+        }
+
+        /// Like `start`, but holds each connection open for `stall` after
+        /// writing the reply, so a short client timeout can run out.
+        pub fn start_stalling(replies: Vec<Vec<u8>>, stall: Duration) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
             let requests = Arc::new(Mutex::new(Vec::new()));
@@ -167,6 +204,8 @@ pub(crate) mod fixture {
                         .unwrap()
                         .push(line.lines().next().unwrap_or_default().to_owned());
                     let _ = stream.write_all(&reply);
+                    let _ = stream.flush();
+                    std::thread::sleep(stall);
                 }
             });
             Self { base, requests }
@@ -286,8 +325,43 @@ mod tests {
 
     #[test]
     fn the_production_client_refuses_plain_http() {
-        let api = SteamApi::build("http://127.0.0.1:9", true).unwrap();
+        let api = SteamApi::build("http://127.0.0.1:9", true, TIMEOUT).unwrap();
         let error = api.get_json(PATH, &[], KEY).unwrap_err();
+        assert_no_key(&error);
+    }
+
+    fn quick(base: &str) -> SteamApi {
+        SteamApi::build(base, false, Duration::from_millis(150)).unwrap()
+    }
+
+    #[test]
+    fn a_stalled_header_is_a_timeout() {
+        // Nothing is ever written, and the connection stays open.
+        let server = Server::start_stalling(vec![Vec::new()], Duration::from_secs(2));
+        let error = quick(&server.base).get_json(PATH, &[], KEY).unwrap_err();
+        assert_eq!(error, ApiError::Timeout);
+        assert_no_key(&error);
+    }
+
+    #[test]
+    fn a_stalled_body_is_a_timeout() {
+        let cut = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{\"res".to_vec();
+        let server = Server::start_stalling(vec![cut], Duration::from_secs(2));
+        let error = quick(&server.base).get_json(PATH, &[], KEY).unwrap_err();
+        assert_eq!(error, ApiError::Timeout);
+        assert_no_key(&error);
+    }
+
+    #[test]
+    fn an_oversized_answer_is_too_large() {
+        let server = Server::start(vec![reply(
+            200,
+            &format!("{{\"pad\": \"{}\"}}", "x".repeat(64)),
+        )]);
+        let mut api = SteamApi::with_base(&server.base).unwrap();
+        api.max_body = 32;
+        let error = api.get_json(PATH, &[], KEY).unwrap_err();
+        assert_eq!(error, ApiError::TooLarge);
         assert_no_key(&error);
     }
 }
