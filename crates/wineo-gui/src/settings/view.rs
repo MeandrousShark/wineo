@@ -22,6 +22,8 @@ use wineo_core::paths::Paths;
 const LABEL_WIDTH: f32 = 180.0;
 const CONTROL_WIDTH: f32 = 260.0;
 const PAGE_WIDTH: f32 = 760.0;
+const SCROLL_ID: &str = "settings-scroll";
+const STEAM_KEY_ID: &str = "settings-steam-key";
 
 fn send(event: Event) -> Message {
     Message::Settings(event)
@@ -80,6 +82,7 @@ impl Page {
             View::Global(editor) => global_view(
                 editor,
                 &self.steamgriddb,
+                &self.steam_key,
                 paths,
                 self.locked(),
                 spinner,
@@ -91,6 +94,7 @@ impl Page {
                 .padding(24)
                 .center_x(Fill),
         )
+        .id(iced::widget::Id::new(SCROLL_ID))
         .width(Fill)
         .height(Fill);
         let mut page = column![
@@ -354,6 +358,7 @@ fn proxied_editor_view<'a>(
 fn global_view<'a>(
     editor: &'a global::Editor,
     steamgriddb: &'a super::steamgriddb::Settings,
+    steam_key: &'a super::steam_key::Settings,
     paths: &Paths,
     locked: bool,
     spinner: f32,
@@ -485,9 +490,15 @@ fn global_view<'a>(
         section("Art to fetch", art.into(), palette),
         section(
             "SteamGridDB",
-            steamgriddb_settings(steamgriddb, paths, spinner, palette),
+            key_row(steamgriddb_row(steamgriddb, paths), spinner, palette),
             palette,
         ),
+        container(section(
+            "Steam Web API",
+            key_row(steam_key_row(steam_key, paths), spinner, palette),
+            palette,
+        ))
+        .id(iced::widget::Id::new(STEAM_KEY_ID)),
         section(
             "Environment variables",
             env_rows(
@@ -506,23 +517,166 @@ fn global_view<'a>(
     .into()
 }
 
-fn steamgriddb_settings<'a>(
+/// One saved API key's row: its status, notes, and controls. The SteamGridDB
+/// and Steam keys share it, so both behave the same. Nothing here ever holds
+/// a saved key; the typed one only reaches a secure input.
+pub(super) struct KeyRow<'a> {
+    status: String,
+    override_note: Option<String>,
+    warning: Option<String>,
+    status_error: Option<&'a str>,
+    result: Option<&'a str>,
+    error: Option<&'a str>,
+    hint: Option<String>,
+    busy: Option<super::steamgriddb::Busy>,
+    input_open: bool,
+    input: &'a super::steamgriddb::Secret,
+    placeholder: &'static str,
+    open: Event,
+    cancel: Event,
+    set: Event,
+    remove: Event,
+    text: fn(super::steamgriddb::Secret) -> Event,
+}
+
+fn status_or_checking(label: Option<String>, failed: bool) -> String {
+    label.unwrap_or_else(|| {
+        if failed {
+            "Key status unavailable".to_owned()
+        } else {
+            "Checking...".to_owned()
+        }
+    })
+}
+
+pub(super) fn steamgriddb_row<'a>(
     settings: &'a super::steamgriddb::Settings,
     paths: &Paths,
-    spinner: f32,
-    palette: Palette,
-) -> Element<'a, Message> {
-    let status = settings
-        .status
-        .as_ref()
-        .map(|status| status.label(paths))
-        .unwrap_or_else(|| {
-            if settings.status_error.is_some() {
-                "Key status unavailable".to_owned()
-            } else {
-                "Checking...".to_owned()
-            }
-        });
+) -> KeyRow<'a> {
+    KeyRow {
+        status: status_or_checking(
+            settings.status.as_ref().map(|status| status.label(paths)),
+            settings.status_error.is_some(),
+        ),
+        override_note: settings
+            .status
+            .as_ref()
+            .is_some_and(|status| status.override_note)
+            .then(|| "WINEO_STEAMGRIDDB_KEY is set and overrides the saved key".to_owned()),
+        warning: settings.warning.clone().or_else(|| {
+            settings
+                .status
+                .as_ref()
+                .and_then(|status| status.warning(paths))
+        }),
+        status_error: settings.status_error.as_deref(),
+        result: settings.result.as_deref(),
+        error: settings.error.as_deref(),
+        hint: None,
+        busy: settings.busy,
+        input_open: settings.input_open,
+        input: &settings.input,
+        placeholder: "SteamGridDB API key",
+        open: Event::SteamGridDbKeySetOpen,
+        cancel: Event::SteamGridDbKeySetCancel,
+        set: Event::SteamGridDbKeySet,
+        remove: Event::SteamGridDbKeyRemove,
+        text: Event::SteamGridDbKeyText,
+    }
+}
+
+pub(super) fn steam_key_row<'a>(
+    settings: &'a super::steam_key::Settings,
+    paths: &Paths,
+) -> KeyRow<'a> {
+    KeyRow {
+        status: status_or_checking(
+            settings.status.as_ref().map(|status| status.label(paths)),
+            settings.status_error.is_some(),
+        ),
+        override_note: settings
+            .status
+            .as_ref()
+            .is_some_and(|status| status.override_note)
+            .then(|| {
+                format!(
+                    "{} is set and overrides the saved key",
+                    wineo_core::steam::key::KEY_VAR
+                )
+            }),
+        warning: settings.warning.clone().or_else(|| {
+            settings
+                .status
+                .as_ref()
+                .and_then(|status| status.warning(paths))
+        }),
+        status_error: settings.status_error.as_deref(),
+        result: settings.result.as_deref(),
+        error: settings.error.as_deref(),
+        hint: Some(format!("Get a key at {}.", super::steam_key::KEY_PAGE)),
+        busy: settings.busy,
+        input_open: settings.input_open,
+        input: &settings.input,
+        placeholder: "Steam Web API key",
+        open: Event::SteamKeySetOpen,
+        cancel: Event::SteamKeySetCancel,
+        set: Event::SteamKeySet,
+        remove: Event::SteamKeyRemove,
+        text: Event::SteamKeyText,
+    }
+}
+
+impl KeyRow<'_> {
+    fn busy_label(&self) -> Option<&'static str> {
+        self.busy.map(|busy| match busy {
+            super::steamgriddb::Busy::Saving => "Checking and saving...",
+            super::steamgriddb::Busy::Removing => "Removing...",
+        })
+    }
+
+    /// Every piece of text the row shows, in order.
+    #[cfg(test)]
+    pub(super) fn texts(&self) -> Vec<String> {
+        let mut texts = vec!["Key".to_owned(), self.status.clone()];
+        texts.extend(self.override_note.clone());
+        texts.extend(self.warning.clone());
+        texts.extend(
+            [self.status_error, self.result, self.error]
+                .into_iter()
+                .flatten()
+                .map(str::to_owned),
+        );
+        texts.extend(self.busy_label().map(str::to_owned));
+        texts.extend(self.hint.clone());
+        if self.input_open {
+            texts.extend([self.placeholder, "Save", "Cancel"].map(str::to_owned));
+        } else {
+            texts.extend(["Set key...", "Remove key"].map(str::to_owned));
+        }
+        texts
+    }
+}
+
+fn key_row<'a>(row_data: KeyRow<'a>, spinner: f32, palette: Palette) -> Element<'a, Message> {
+    let busy_label = row_data.busy_label();
+    let KeyRow {
+        status,
+        override_note,
+        warning,
+        status_error,
+        result,
+        error,
+        hint,
+        busy,
+        input_open,
+        input,
+        placeholder,
+        open,
+        cancel,
+        set,
+        remove,
+        text: on_text,
+    } = row_data;
     let mut rows = column![setting_row(
         "Key",
         text(status).color(palette.foreground).into(),
@@ -530,40 +684,22 @@ fn steamgriddb_settings<'a>(
         palette,
     )]
     .spacing(12);
-    if settings
-        .status
-        .as_ref()
-        .is_some_and(|status| status.override_note)
-    {
-        rows = rows.push(
-            text("WINEO_STEAMGRIDDB_KEY is set and overrides the saved key")
-                .size(13)
-                .color(palette.muted),
-        );
+    if let Some(note) = override_note {
+        rows = rows.push(text(note).size(13).color(palette.muted));
     }
-    let warning = settings.warning.clone().or_else(|| {
-        settings
-            .status
-            .as_ref()
-            .and_then(|status| status.warning(paths))
-    });
     if let Some(warning) = warning {
         rows = rows.push(text(warning).size(13).color(palette.warning));
     }
-    if let Some(error) = &settings.status_error {
-        rows = rows.push(text(error.clone()).size(13).color(palette.danger));
+    if let Some(error) = status_error {
+        rows = rows.push(text(error).size(13).color(palette.danger));
     }
-    if let Some(result) = &settings.result {
-        rows = rows.push(text(result.clone()).size(13).color(palette.muted));
+    if let Some(result) = result {
+        rows = rows.push(text(result).size(13).color(palette.muted));
     }
-    if let Some(error) = &settings.error {
-        rows = rows.push(text(error.clone()).size(13).color(palette.danger));
+    if let Some(error) = error {
+        rows = rows.push(text(error).size(13).color(palette.danger));
     }
-    if let Some(busy) = settings.busy {
-        let label = match busy {
-            super::steamgriddb::Busy::Saving => "Checking and saving...",
-            super::steamgriddb::Busy::Removing => "Removing...",
-        };
+    if let Some(label) = busy_label {
         rows = rows.push(
             row![
                 crate::spinner::spinner(palette, spinner, 16.0),
@@ -573,33 +709,30 @@ fn steamgriddb_settings<'a>(
             .align_y(Center),
         );
     }
-    if settings.input_open {
-        let input = text_input("SteamGridDB API key", settings.input.as_str())
+    if let Some(hint) = hint {
+        rows = rows.push(text(hint).size(13).color(palette.muted));
+    }
+    if input_open {
+        let field = text_input(placeholder, input.as_str())
             .secure(true)
-            .on_input_maybe(settings.busy.is_none().then_some(|value| {
-                send(Event::SteamGridDbKeyText(super::steamgriddb::Secret::new(
-                    value,
-                )))
-            }))
+            .on_input_maybe(
+                busy.is_none()
+                    .then_some(move |value| send(on_text(super::steamgriddb::Secret::new(value)))),
+            )
             .width(Fill)
             .padding([6, 10])
             .style(move |_, status| input_style(palette, status));
         rows = rows.push(
             row![
-                input,
+                field,
                 action_button(
                     "Save",
                     palette.primary,
-                    settings.busy.is_none() && !settings.input.as_str().trim().is_empty(),
-                    send(Event::SteamGridDbKeySet),
+                    busy.is_none() && !input.as_str().trim().is_empty(),
+                    send(set),
                 ),
                 button(text("Cancel").size(14))
-                    .on_press_maybe(
-                        settings
-                            .busy
-                            .is_none()
-                            .then(|| send(Event::SteamGridDbKeySetCancel)),
-                    )
+                    .on_press_maybe(busy.is_none().then(|| send(cancel)))
                     .height(32)
                     .padding([6, 12])
                     .style(move |_, status| secondary(palette, status)),
@@ -610,19 +743,9 @@ fn steamgriddb_settings<'a>(
     } else {
         rows = rows.push(
             row![
-                action_button(
-                    "Set key...",
-                    palette.primary,
-                    settings.busy.is_none(),
-                    send(Event::SteamGridDbKeySetOpen),
-                ),
+                action_button("Set key...", palette.primary, busy.is_none(), send(open)),
                 button(text("Remove key").size(14))
-                    .on_press_maybe(
-                        settings
-                            .busy
-                            .is_none()
-                            .then(|| send(Event::SteamGridDbKeyRemove)),
-                    )
+                    .on_press_maybe(busy.is_none().then(|| send(remove)))
                     .height(32)
                     .padding([6, 12])
                     .style(move |_, status| secondary(palette, status)),
@@ -632,6 +755,26 @@ fn steamgriddb_settings<'a>(
         );
     }
     rows.into()
+}
+
+/// Finds the Steam key row, for the import page's link to it.
+pub(super) fn locate_steam_key() -> iced::Task<crate::grid_motion::CardBounds> {
+    crate::grid_motion::locate(
+        iced::widget::Id::new(STEAM_KEY_ID),
+        iced::widget::Id::new(SCROLL_ID),
+    )
+}
+
+/// Scrolls the page so a located row sits near the top.
+pub(super) fn scroll_to_row(bounds: crate::grid_motion::CardBounds) -> iced::Task<Message> {
+    let top = bounds.card.y - bounds.viewport.y;
+    iced::widget::operation::scroll_to(
+        iced::widget::Id::new(SCROLL_ID),
+        iced::widget::scrollable::AbsoluteOffset {
+            x: 0.0,
+            y: (top - 24.0).max(0.0),
+        },
+    )
 }
 
 fn indented(content: Element<'_, Message>) -> Element<'_, Message> {

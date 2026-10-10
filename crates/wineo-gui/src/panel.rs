@@ -11,6 +11,7 @@ use wineo_core::hooks::Phase;
 use wineo_core::launch::LaunchEvent;
 use wineo_core::operation::Operation as CoreOperation;
 use wineo_core::runtime::State;
+use wineo_core::steam_install;
 use wineo_core::winetricks::WinetricksEvent;
 
 use crate::artwork;
@@ -27,6 +28,10 @@ const PANEL_ACTION_WIDTH: f32 = 82.0;
 pub(crate) const LOG_ID: &str = "panel-log";
 const LOG_LINES: usize = 2000;
 const PANEL_PLAY_ID: &str = "panel-play";
+const PANEL_INSTALL_ID: &str = "panel-install";
+/// How strongly art for a game that isn't installed is dimmed, on its card
+/// and in its panel.
+pub(crate) const DIMMED_OPACITY: f32 = 0.45;
 const PANEL_STOP_ID: &str = "panel-stop";
 const PANEL_LOG_ID: &str = "panel-log";
 const PANEL_SETTINGS_ID: &str = "panel-settings";
@@ -207,6 +212,11 @@ pub(crate) fn play_enabled(card: &Card, operation_busy: bool, target: Option<&st
         && target.is_some()
 }
 
+/// Install hands off to Steam, so it only waits on another Steam request.
+pub(crate) fn install_enabled(card: &Card, request_busy: bool) -> bool {
+    card.error.is_none() && !card.busy && !card.active() && card.installable() && !request_busy
+}
+
 pub(crate) fn stop_enabled(card: &Card, operation_busy: bool) -> bool {
     (!card.busy && card.active() || matches!(card.busy_holder, Some(CoreOperation::Hook(_))))
         && !operation_busy
@@ -291,6 +301,61 @@ impl App {
         self.panel_error = None;
         self.panel_note = None;
         worker::start(self.paths.clone(), name, target, token, install_done)
+    }
+    pub(crate) fn install_selected(&mut self) -> Task<Message> {
+        let Some(card) = self
+            .selected
+            .as_ref()
+            .and_then(|name| self.cards.iter().find(|card| &card.name == name))
+        else {
+            return Task::none();
+        };
+        if !install_enabled(card, self.steam_request.is_some()) {
+            return Task::none();
+        }
+        let name = card.name.clone();
+        self.ask_steam(name, steam_install::Action::Install)
+    }
+    /// Uninstall from the menu. The card is selected first, so Steam's answer
+    /// or a refusal shows in its panel.
+    pub(crate) fn uninstall(&mut self, name: String) -> Task<Message> {
+        self.action_menu = None;
+        if self.steam_request.is_some() || !self.uninstall_action(&name) {
+            return Task::none();
+        }
+        let select = if self.selected.as_deref() != Some(&name) || !self.panel_open {
+            self.update(Message::Select(name.clone()))
+        } else {
+            Task::none()
+        };
+        Task::batch([
+            select,
+            self.ask_steam(name, steam_install::Action::Uninstall),
+        ])
+    }
+    fn ask_steam(&mut self, name: String, action: steam_install::Action) -> Task<Message> {
+        self.steam_request = Some(name.clone());
+        self.panel_error = None;
+        self.panel_note = None;
+        worker::steam_request(self.paths.clone(), name, action)
+    }
+    /// The hero and logo as drawn: grayscale for a game that isn't
+    /// installed, matching its card.
+    pub(crate) fn panel_images(
+        &self,
+        card: &Card,
+        hero: Option<&crate::library::ArtFile>,
+        logo: Option<&crate::library::ArtFile>,
+    ) -> (Option<&image::Handle>, Option<&image::Handle>) {
+        let images = if card.not_installed() {
+            &self.dimmed_images
+        } else {
+            &self.images
+        };
+        (
+            hero.and_then(|art| images.get(&(art.clone(), artwork::Kind::Hero))),
+            logo.and_then(|art| images.get(&(art.clone(), artwork::Kind::Logo))),
+        )
     }
     fn after_hook_active(&self, card: &Card) -> bool {
         card.busy_holder == Some(CoreOperation::Hook(Phase::After))
@@ -591,13 +656,18 @@ impl App {
         let art = target.and_then(|target| card.panel_art.get(target));
         let hero = art.and_then(|art| art.hero.as_ref());
         let logo = art.and_then(|art| art.logo.as_ref());
-        let hero_image = hero.and_then(|art| self.images.get(&(art.clone(), artwork::Kind::Hero)));
-        let logo_image = logo.and_then(|art| self.images.get(&(art.clone(), artwork::Kind::Logo)));
+        let (hero_image, logo_image) = self.panel_images(card, hero, logo);
+        let art_opacity = if card.not_installed() {
+            DIMMED_OPACITY
+        } else {
+            1.0
+        };
         let hero: Element<'_, Message> = match hero_image {
             Some(handle) => image(handle.clone())
                 .width(Fill)
                 .height(hero_height)
                 .content_fit(ContentFit::Cover)
+                .opacity(art_opacity)
                 .into(),
             None => container(Space::new())
                 .width(Fill)
@@ -629,6 +699,7 @@ impl App {
             let logo_layer = image(handle.clone())
                 .height(72)
                 .content_fit(ContentFit::Contain)
+                .opacity(art_opacity)
                 .expand(true);
             let logo_overlay = container(logo_layer)
                 .width(Fill)
@@ -677,14 +748,23 @@ impl App {
         let mut actions = row![].spacing(8).align_y(Center);
         let mut target_picker: Option<Element<'_, Message>> = None;
         if card.error.is_none() {
-            let enabled = play_enabled(card, operation_busy, target);
-            let play = panel_action_button(
-                card.launch_button_label(),
-                palette.primary,
-                enabled,
-                Message::Play,
-                PANEL_PLAY_ID,
-            );
+            let play = if card.installable() {
+                panel_action_button(
+                    "Install",
+                    palette.primary,
+                    install_enabled(card, self.steam_request.is_some()),
+                    Message::Install,
+                    PANEL_INSTALL_ID,
+                )
+            } else {
+                panel_action_button(
+                    card.launch_button_label(),
+                    palette.primary,
+                    play_enabled(card, operation_busy, target),
+                    Message::Play,
+                    PANEL_PLAY_ID,
+                )
+            };
             actions = actions.push(play);
             if card.targets.len() > 1 {
                 target_picker = Some(
@@ -737,7 +817,7 @@ impl App {
         } else if let Some(error) = &card.error {
             inner = inner.push(error_box(error, palette));
         } else {
-            inner = inner.push(detail_row("State", card.state_word(), palette));
+            inner = inner.push(detail_row("State", &card.state_label(), palette));
             if let Some(steam) = &card.steam {
                 inner = inner.push(detail_row("Launcher", "Steam", palette));
                 if let Some(proton) = &steam.proton {
@@ -832,6 +912,16 @@ impl App {
                     Message::CancelStart,
                 ));
             }
+        }
+        if self.steam_request.as_deref() == Some(&card.name) {
+            inner = inner.push(
+                row![
+                    crate::spinner::spinner(palette, self.spinner_angle, 16.0),
+                    text("Asking Steam...").size(14).color(palette.muted)
+                ]
+                .spacing(8)
+                .align_y(Center),
+            );
         }
         if let Some(note) = &self.panel_note {
             inner = inner.push(text(note).size(12).color(palette.muted));

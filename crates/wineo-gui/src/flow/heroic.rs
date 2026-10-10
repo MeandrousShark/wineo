@@ -1890,6 +1890,7 @@ impl Page {
                         note: None,
                         chosen: self.chosen.contains(&candidate.id),
                         focused: self.focus == Some(index),
+                        dimmed: false,
                     },
                     palette,
                     Event::Toggle(index),
@@ -2707,6 +2708,8 @@ pub(super) struct Tile<'a> {
     pub note: Option<String>,
     pub chosen: bool,
     pub focused: bool,
+    /// Dims the tile like an uninstalled game, while it stays selectable.
+    pub dimmed: bool,
 }
 
 pub(super) fn tile<'a, Message: Clone + 'a>(
@@ -2714,14 +2717,21 @@ pub(super) fn tile<'a, Message: Clone + 'a>(
     palette: Palette,
     on_press: Message,
 ) -> Element<'a, Message> {
-    let dimmed = tile.reason.is_some();
+    let refused = tile.reason.is_some();
+    let dimmed = refused || tile.dimmed;
     let art: Element<'_, Message> = match tile.poster {
         Some(handle) => image(handle.clone())
             .width(Fill)
             .height(Fill)
             .content_fit(ContentFit::Cover)
             .border_radius(4)
-            .opacity(if dimmed { 0.35_f32 } else { 1.0_f32 })
+            .opacity(if refused {
+                0.35_f32
+            } else if dimmed {
+                crate::panel::DIMMED_OPACITY
+            } else {
+                1.0_f32
+            })
             .into(),
         None => container(
             text(tile.title)
@@ -2809,7 +2819,7 @@ pub(super) fn tile<'a, Message: Clone + 'a>(
             }))
         });
     let area = mouse_area(framed);
-    if dimmed {
+    if refused {
         area.into()
     } else {
         area.on_press(on_press)

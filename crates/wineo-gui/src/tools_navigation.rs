@@ -79,6 +79,14 @@ impl App {
         })
     }
 
+    /// Whether the menu offers Uninstall: only for Steam games Steam has
+    /// fully installed.
+    pub(crate) fn uninstall_action(&self, name: &str) -> bool {
+        self.cards
+            .iter()
+            .any(|card| card.name == name && card.error.is_none() && card.uninstallable())
+    }
+
     pub(crate) fn restore_pending(&self, name: &str) -> bool {
         wineo_core::snapshot::check_recovery_marker(&self.paths, name).is_err()
     }

@@ -12,13 +12,20 @@ use wineo_core::config::GlobalConfig;
 use wineo_core::heroic_import::default_name;
 use wineo_core::paths::Paths;
 use wineo_core::steam;
-use wineo_core::steam_import::{self, ApplyOutcome, EntryState, OwnedGames, Plan, PlanOutcome};
+use wineo_core::steam::InstallState;
+use wineo_core::steam_import::{
+    self, ApplyOutcome, EntryState, NO_KEY_HINT, OwnedData, Plan, PlanOutcome,
+};
 
 use super::heroic::{self, Tile};
 use super::{Action, artwork};
 use crate::theme::Palette;
 
 const GRID_ID: &str = "steam-import-grid";
+
+/// A poster by app id and whether it is drawn dimmed, since the grayscale is
+/// baked into the handle.
+type PosterKey = (String, bool);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -34,8 +41,17 @@ struct Candidate {
     app_id: String,
     title: String,
     size: u64,
-    updating: bool,
+    note: Option<&'static str>,
+    /// False for an owned game Steam doesn't have on disk, which is dimmed.
+    installed: bool,
     poster: Option<PathBuf>,
+}
+
+/// What the page says about the owned games, beside the listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OwnedNote {
+    NoKey,
+    Problem(String),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -112,7 +128,11 @@ pub(crate) enum Event {
     Force,
     BackToLibrary,
     Listed(u64, Result<Listing, String>),
-    Poster(u64, String, Result<image::Handle, String>),
+    /// Fetches the owned games again instead of using the saved list.
+    Refresh,
+    OpenSteamKey,
+    OwnedListed(u64, Result<(OwnedData, Listing), String>),
+    Poster(u64, PosterKey, Result<image::Handle, String>),
     Planned(u64, Review),
     Progress(u64, String),
     Finished(u64, Result<Report, String>),
@@ -124,9 +144,15 @@ pub(crate) struct Page {
     generation: u64,
     poster_generation: u64,
     listing: Option<Listing>,
+    /// The owned list once loaded, which planning and importing an
+    /// uninstalled game need. It loads once per page, never in the library.
+    owned: Option<OwnedData>,
+    owned_note: Option<OwnedNote>,
+    owned_loading: bool,
+    owned_generation: u64,
     chosen: BTreeSet<String>,
     focus: Option<usize>,
-    posters: HashMap<String, Option<image::Handle>>,
+    posters: HashMap<PosterKey, Option<image::Handle>>,
     name: String,
     review: Option<Review>,
     report: Option<Report>,
@@ -144,6 +170,10 @@ impl Page {
             generation: 0,
             poster_generation: 0,
             listing: None,
+            owned: None,
+            owned_note: None,
+            owned_loading: false,
+            owned_generation: 0,
             chosen: BTreeSet::new(),
             focus: None,
             posters: HashMap::new(),
@@ -165,6 +195,14 @@ impl Page {
 
     pub(crate) fn waiting(&self) -> bool {
         !self.status.is_empty()
+    }
+
+    pub(crate) fn spinning(&self) -> bool {
+        self.waiting() || self.owned_loading
+    }
+
+    fn owned_games(&self) -> OwnedData {
+        self.owned.clone().unwrap_or(OwnedData::Unloaded)
     }
 
     pub(crate) fn cancel(&mut self, force: bool) {
@@ -243,22 +281,75 @@ impl Page {
         )
     }
 
+    /// Loads the owned games off the UI thread, then lists them after the
+    /// installed ones.
+    fn load_owned(&mut self, refresh: bool) -> Task<Event> {
+        self.owned_loading = true;
+        self.owned_generation = self.owned_generation.wrapping_add(1);
+        let generation = self.owned_generation;
+        let paths = self.paths.clone();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    load_owned(&paths, refresh, |paths, global, refresh| {
+                        OwnedData::load(paths, global, refresh, true)
+                    })
+                })
+                .await
+                .map_err(|error| error.to_string())?
+            },
+            move |result| Event::OwnedListed(generation, result),
+        )
+    }
+
+    fn refresh_available(&self) -> bool {
+        self.step == Step::Games
+            && self.listing.is_some()
+            && !self.waiting()
+            && !self.owned_loading
+            && self.owned_note != Some(OwnedNote::NoKey)
+    }
+
+    /// Posters the listing shows that aren't loaded in the color treatment
+    /// they need now. Failed loads are tried again.
+    fn posters_to_load(&self, listing: &Listing) -> Vec<(PosterKey, PathBuf)> {
+        listing
+            .games
+            .iter()
+            .filter_map(|game| {
+                let key = (game.app_id.clone(), !game.installed);
+                let loaded = matches!(self.posters.get(&key), Some(Some(_)));
+                (!loaded).then(|| Some((key, game.poster.clone()?)))?
+            })
+            .collect()
+    }
+
     fn load_posters(&self, listing: &Listing) -> Task<Event> {
         let generation = self.poster_generation;
-        Task::batch(listing.games.iter().filter_map(|game| {
-            let path = game.poster.clone()?;
-            let app_id = game.app_id.clone();
-            Some(Task::perform(
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        artwork::preview_with_format(&path, Kind::Grid).map(|(handle, _)| handle)
-                    })
-                    .await
-                    .map_err(|error| error.to_string())?
-                },
-                move |result| Event::Poster(generation, app_id, result),
-            ))
-        }))
+        Task::batch(
+            self.posters_to_load(listing)
+                .into_iter()
+                .map(|(key, path)| {
+                    let dim = key.1;
+                    Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                let handle = artwork::preview_with_format(&path, Kind::Grid)
+                                    .map(|(handle, _)| handle)?;
+                                // Grayscale like an uninstalled card in the library.
+                                Ok(if dim {
+                                    crate::artwork::grayscale(&handle).unwrap_or(handle)
+                                } else {
+                                    handle
+                                })
+                            })
+                            .await
+                            .map_err(|error| error.to_string())?
+                        },
+                        move |result| Event::Poster(generation, key, result),
+                    )
+                }),
+        )
     }
 
     fn import_selected(&mut self) -> Task<Event> {
@@ -302,9 +393,10 @@ impl Page {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let paths = self.paths.clone();
+        let owned = self.owned_games();
         Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || plan_review(&paths, selected, name))
+                tokio::task::spawn_blocking(move || plan_review(&paths, selected, name, &owned))
                     .await
                     .unwrap_or_else(|error| Review {
                         failures: vec![Failure {
@@ -335,11 +427,12 @@ impl Page {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let paths = self.paths.clone();
+        let owned = self.owned_games();
         let (sender, receiver) = unbounded();
         let work = Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    run_import(&paths, review, &token, |message| {
+                    run_import(&paths, review, &owned, &token, |message| {
                         let _ = sender.unbounded_send(Event::Progress(generation, message));
                     })
                 })
@@ -413,7 +506,7 @@ impl Page {
                     Ok(listing) => {
                         let task = self.load_posters(&listing);
                         self.listing = Some(listing);
-                        task
+                        Task::batch([task, self.load_owned(false)])
                     }
                     Err(error) => {
                         self.error = Some(error);
@@ -421,8 +514,36 @@ impl Page {
                     }
                 }
             }
-            Event::Poster(generation, app_id, result) if generation == self.poster_generation => {
-                self.posters.insert(app_id, result.ok());
+            Event::Refresh if self.refresh_available() => self.load_owned(true),
+            Event::OpenSteamKey if self.step == Step::Games && !self.busy() => {
+                self.action = Some(Action::SteamKey);
+                Task::none()
+            }
+            Event::OwnedListed(generation, result) if generation == self.owned_generation => {
+                self.owned_loading = false;
+                match result {
+                    Ok((owned, listing)) => {
+                        self.owned_note = match &owned {
+                            OwnedData::NoKey => Some(OwnedNote::NoKey),
+                            other => other.problem().map(OwnedNote::Problem),
+                        };
+                        self.owned = Some(owned);
+                        self.chosen.retain(|app_id| {
+                            listing.games.iter().any(|game| &game.app_id == app_id)
+                        });
+                        self.focus = self.focus.filter(|index| *index < listing.games.len());
+                        let task = self.load_posters(&listing);
+                        self.listing = Some(listing);
+                        task
+                    }
+                    Err(error) => {
+                        self.owned_note = Some(OwnedNote::Problem(error));
+                        Task::none()
+                    }
+                }
+            }
+            Event::Poster(generation, key, result) if generation == self.poster_generation => {
+                self.posters.insert(key, result.ok());
                 Task::none()
             }
             Event::Planned(generation, review) if generation == self.generation => {
@@ -519,11 +640,15 @@ impl Page {
                 heroic::tile(
                     Tile {
                         title: &game.title,
-                        poster: self.posters.get(&game.app_id).and_then(Option::as_ref),
+                        poster: self
+                            .posters
+                            .get(&(game.app_id.clone(), !game.installed))
+                            .and_then(Option::as_ref),
                         reason: None,
-                        note: game.updating.then(|| "Updating in Steam".to_owned()),
+                        note: game.note.map(str::to_owned),
                         chosen: self.chosen.contains(&game.app_id),
                         focused: self.focus == Some(index),
+                        dimmed: !game.installed,
                     },
                     palette,
                     Event::Toggle(index),
@@ -572,9 +697,49 @@ impl Page {
                     for issue in &listing.issues {
                         body = body.push(text(issue).size(12).color(palette.warning));
                     }
+                    if self.owned_loading {
+                        body = body.push(
+                            row![
+                                crate::spinner::spinner(palette, spin, 16.0),
+                                text("Getting owned games...").size(12).color(palette.muted)
+                            ]
+                            .spacing(8)
+                            .align_y(Center),
+                        );
+                    }
+                    match &self.owned_note {
+                        Some(OwnedNote::NoKey) => {
+                            body = body.push(
+                                row![
+                                    text(NO_KEY_HINT).size(12).color(palette.muted),
+                                    button(text("Open Settings").size(12))
+                                        .on_press_maybe(
+                                            (!self.waiting()).then_some(Event::OpenSteamKey),
+                                        )
+                                        .padding([4, 8]),
+                                ]
+                                .spacing(8)
+                                .align_y(Center),
+                            );
+                        }
+                        Some(OwnedNote::Problem(problem)) => {
+                            body = body.push(text(problem).size(12).color(palette.warning));
+                        }
+                        None => {}
+                    }
+                    let refresh = (self.owned_note != Some(OwnedNote::NoKey)).then(|| {
+                        button("Refresh")
+                            .on_press_maybe(self.refresh_available().then_some(Event::Refresh))
+                    });
                     if listing.games.is_empty() {
-                        body = body
-                            .push(text("No Steam games are ready to import.").color(palette.muted));
+                        if !self.owned_loading {
+                            body = body.push(
+                                text("No Steam games are ready to import.").color(palette.muted),
+                            );
+                        }
+                        if let Some(refresh) = refresh {
+                            body = body.push(refresh);
+                        }
                     } else {
                         let count = self.chosen.len();
                         body = body.push(
@@ -584,6 +749,7 @@ impl Page {
                                     .on_press_maybe((count > 0).then_some(Event::SelectNone)),
                                 button(text(heroic::import_label(count)))
                                     .on_press_maybe((count > 0).then_some(Event::ImportSelected)),
+                                refresh,
                             ]
                             .spacing(12)
                             .align_y(Center),
@@ -599,10 +765,11 @@ impl Page {
                         .find(|game| self.chosen.contains(&game.app_id))
                 }) {
                     body = body.push(text(format!("{} ({})", game.title, game.app_id)));
-                    body = body.push(text(format!(
-                        "Size: {}",
-                        crate::size::format_bytes(game.size)
-                    )));
+                    body = body.push(text(if game.installed {
+                        format!("Size: {}", crate::size::format_bytes(game.size))
+                    } else {
+                        "Not installed".to_owned()
+                    }));
                     body = body.push(
                         column![
                             text("Environment name").size(13),
@@ -617,12 +784,16 @@ impl Page {
                     let mut summary =
                         column![crate::ui::section_heading("Games", palette)].spacing(8);
                     for plan in &review.ready {
+                        let size = if plan.state() == InstallState::NotInstalled {
+                            "not installed".to_owned()
+                        } else {
+                            crate::size::format_bytes(plan.size_on_disk())
+                        };
                         summary = summary.push(text(format!(
-                            "{}: {} ({}) - {}",
+                            "{}: {} ({}) - {size}",
                             plan.name(),
                             plan.title(),
                             plan.app_id(),
-                            crate::size::format_bytes(plan.size_on_disk())
                         )));
                     }
                     if !review.ready.is_empty() {
@@ -738,45 +909,73 @@ impl Page {
 }
 
 fn load_listing(paths: &Paths) -> Result<Listing, String> {
+    load_listing_with(paths, &OwnedData::Unloaded)
+}
+
+/// Installed games first, then owned games Steam doesn't have on disk, when
+/// the owned list is loaded.
+fn load_listing_with(paths: &Paths, owned: &OwnedData) -> Result<Listing, String> {
     if paths.portable_root().is_some() {
         return Err("Steam games can't be imported into a portable folder.".to_owned());
     }
     let global = GlobalConfig::load(paths).map_err(|error| error.to_string())?;
-    let entries = steam_import::listing(paths, &global, OwnedGames::Unloaded)
-        .map_err(|error| error.to_string())?;
+    let entries =
+        steam_import::listing(paths, &global, owned.games()).map_err(|error| error.to_string())?;
     let install = steam::active_for(paths, &global);
     let mut listing = Listing::default();
     for entry in entries {
         if entry.imported_as.is_some() {
             continue;
         }
-        match entry.state {
-            EntryState::Installed | EntryState::Updating | EntryState::Installing => {
-                let poster = install.as_ref().and_then(|install| {
-                    steam::art_files(install, &entry.app_id)
-                        .into_iter()
-                        .find_map(|(kind, path)| (kind == Kind::Grid).then_some(path))
-                });
-                listing.games.push(Candidate {
-                    title: entry.title.unwrap_or_else(|| entry.app_id.clone()),
-                    app_id: entry.app_id,
-                    size: entry.size_on_disk.unwrap_or(0),
-                    updating: entry.state != EntryState::Installed,
-                    poster,
-                });
+        let (installed, note) = match &entry.state {
+            EntryState::Installed => (true, None),
+            EntryState::Updating | EntryState::Installing => (true, Some("Updating in Steam")),
+            EntryState::NotInstalled => (false, None),
+            EntryState::InstallQueued => (false, Some("Install queued")),
+            EntryState::Uninstalling => (false, Some("Uninstalling")),
+            EntryState::Unreadable(reason) => {
+                listing
+                    .issues
+                    .push(format!("Steam app {}: {reason}", entry.app_id));
+                continue;
             }
-            // Owned games are only listed when the list is loaded, which the
-            // desktop app doesn't do yet.
-            EntryState::InstallQueued | EntryState::Uninstalling | EntryState::NotInstalled => {}
-            EntryState::Unreadable(reason) => listing
-                .issues
-                .push(format!("Steam app {}: {reason}", entry.app_id)),
-        }
+        };
+        // Steam caches art for owned games too, not just installed ones.
+        let poster = install.as_ref().and_then(|install| {
+            steam::art_files(install, &entry.app_id)
+                .into_iter()
+                .find_map(|(kind, path)| (kind == Kind::Grid).then_some(path))
+        });
+        listing.games.push(Candidate {
+            title: entry.title.unwrap_or_else(|| entry.app_id.clone()),
+            app_id: entry.app_id,
+            size: entry.size_on_disk.unwrap_or(0),
+            note,
+            installed,
+            poster,
+        });
     }
     Ok(listing)
 }
 
-fn plan_review(paths: &Paths, selected: Vec<Candidate>, name: Option<String>) -> Review {
+/// Loads the owned list with `load`, then the listing with it.
+fn load_owned(
+    paths: &Paths,
+    refresh: bool,
+    load: impl FnOnce(&Paths, &GlobalConfig, bool) -> anyhow::Result<OwnedData>,
+) -> Result<(OwnedData, Listing), String> {
+    let global = GlobalConfig::load(paths).map_err(|error| error.to_string())?;
+    let owned = load(paths, &global, refresh).map_err(|error| error.to_string())?;
+    let listing = load_listing_with(paths, &owned)?;
+    Ok((owned, listing))
+}
+
+fn plan_review(
+    paths: &Paths,
+    selected: Vec<Candidate>,
+    name: Option<String>,
+    owned: &OwnedData,
+) -> Review {
     let mut review = Review::default();
     let global = match GlobalConfig::load(paths) {
         Ok(global) => global,
@@ -796,13 +995,7 @@ fn plan_review(paths: &Paths, selected: Vec<Candidate>, name: Option<String>) ->
     let mut names = HashSet::new();
     for game in selected {
         let wanted_name = name.as_deref();
-        match steam_import::plan(
-            paths,
-            &global,
-            OwnedGames::Unloaded,
-            &game.app_id,
-            wanted_name,
-        ) {
+        match steam_import::plan(paths, &global, owned.games(), &game.app_id, wanted_name) {
             Ok(PlanOutcome::Ready(plan)) if names.insert(plan.name().to_owned()) => {
                 review.ready.push(plan);
             }
@@ -827,6 +1020,7 @@ fn plan_review(paths: &Paths, selected: Vec<Candidate>, name: Option<String>) ->
 fn run_import(
     paths: &Paths,
     review: Review,
+    owned: &OwnedData,
     token: &Token,
     mut progress: impl FnMut(String),
 ) -> Result<Report, String> {
@@ -842,7 +1036,7 @@ fn run_import(
             break;
         }
         progress(format!("Importing {}...", plan.title()));
-        match steam_import::apply(paths, &global, OwnedGames::Unloaded, &plan, token) {
+        match steam_import::apply(paths, &global, owned.games(), &plan, token) {
             Ok(ApplyOutcome::Imported(applied)) => {
                 report.done.push(applied.environment.name);
                 report.warnings.extend(applied.warnings);
@@ -933,6 +1127,7 @@ mod tests {
             &paths,
             page.listing.as_ref().unwrap().games.clone(),
             Some(page.name.clone()),
+            &OwnedData::Unloaded,
         );
         let _ = page.update(Event::Planned(planned_generation, review));
         assert_eq!(page.step, Step::Review);
@@ -956,6 +1151,7 @@ mod tests {
         let report = run_import(
             &paths,
             page.review.clone().unwrap(),
+            &OwnedData::Unloaded,
             page.token.as_ref().unwrap(),
             |_| {},
         );
@@ -1030,11 +1226,18 @@ mod tests {
         fs::write(steam.join("steamapps/appmanifest_4.acf"), "broken").unwrap();
         let global = GlobalConfig::load(&paths).unwrap();
         let PlanOutcome::Ready(plan) =
-            steam_import::plan(&paths, &global, OwnedGames::Unloaded, "1", None).unwrap()
+            steam_import::plan(&paths, &global, OwnedData::Unloaded.games(), "1", None).unwrap()
         else {
             panic!("expected ready plan")
         };
-        steam_import::apply(&paths, &global, OwnedGames::Unloaded, &plan, &Token::new()).unwrap();
+        steam_import::apply(
+            &paths,
+            &global,
+            OwnedData::Unloaded.games(),
+            &plan,
+            &Token::new(),
+        )
+        .unwrap();
 
         let listing = load_listing(&paths).unwrap();
         assert_eq!(listing.games.len(), 1);
@@ -1063,9 +1266,10 @@ mod tests {
             listing.games[0].poster.as_deref(),
             Some(cache.join("library_600x900.jpg").as_path())
         );
-        let review = plan_review(&paths, listing.games, None);
+        let review = plan_review(&paths, listing.games, None, &OwnedData::Unloaded);
         assert_eq!(review.ready.len(), 2);
-        let report = run_import(&paths, review, &Token::new(), |_| {}).unwrap();
+        let report =
+            run_import(&paths, review, &OwnedData::Unloaded, &Token::new(), |_| {}).unwrap();
         assert_eq!(report.lines(), ["Imported 2 of 2 games."]);
         assert!(paths.environment_config("alpha").is_file());
         assert!(paths.environment_config("beta").is_file());
@@ -1083,14 +1287,16 @@ mod tests {
                     app_id: "1".to_owned(),
                     title: "Alpha".to_owned(),
                     size: 1,
-                    updating: false,
+                    note: None,
+                    installed: true,
                     poster: None,
                 },
                 Candidate {
                     app_id: "2".to_owned(),
                     title: "Beta".to_owned(),
                     size: 2,
-                    updating: true,
+                    note: Some("Updating in Steam"),
+                    installed: true,
                     poster: None,
                 },
             ],
@@ -1133,10 +1339,16 @@ mod tests {
         fs::create_dir_all(steam.join("steamapps")).unwrap();
         manifest(&steam, "1", "Alpha", 4);
         manifest(&steam, "2", "Alpha", 4);
-        let review = plan_review(&paths, load_listing(&paths).unwrap().games, None);
+        let review = plan_review(
+            &paths,
+            load_listing(&paths).unwrap().games,
+            None,
+            &OwnedData::Unloaded,
+        );
         assert_eq!(review.ready.len(), 1);
         assert_eq!(review.failures.len(), 1);
-        let report = run_import(&paths, review, &Token::new(), |_| {}).unwrap();
+        let report =
+            run_import(&paths, review, &OwnedData::Unloaded, &Token::new(), |_| {}).unwrap();
         assert_eq!(report.lines(), ["Imported 1 of 1 game.", "1 failed: alpha"]);
     }
 
@@ -1148,18 +1360,24 @@ mod tests {
         fs::create_dir_all(steam.join("steamapps")).unwrap();
         manifest(&steam, "1", "Alpha", 4);
         manifest(&steam, "2", "Beta", 4);
-        let review = plan_review(&paths, load_listing(&paths).unwrap().games, None);
+        let review = plan_review(
+            &paths,
+            load_listing(&paths).unwrap().games,
+            None,
+            &OwnedData::Unloaded,
+        );
         let global = GlobalConfig::load(&paths).unwrap();
         steam_import::apply(
             &paths,
             &global,
-            OwnedGames::Unloaded,
+            wineo_core::steam_import::OwnedGames::Unloaded,
             &review.ready[0],
             &Token::new(),
         )
         .unwrap();
 
-        let report = run_import(&paths, review, &Token::new(), |_| {}).unwrap();
+        let report =
+            run_import(&paths, review, &OwnedData::Unloaded, &Token::new(), |_| {}).unwrap();
         assert_eq!(
             report.lines(),
             ["Imported 1 of 1 game.", "1 already imported: alpha"]
@@ -1197,5 +1415,283 @@ mod tests {
                 "1 failed: gamma"
             ]
         );
+    }
+
+    const STEAM_ID: u64 = 76_561_197_960_265_729;
+
+    fn login(steam: &Path, users: &[(u64, bool)]) {
+        let body: String = users
+            .iter()
+            .map(|(id, recent)| format!("\"{id}\" {{ \"MostRecent\" \"{}\" }}", u8::from(*recent)))
+            .collect();
+        fs::create_dir_all(steam.join("config")).unwrap();
+        fs::write(
+            steam.join("config/loginusers.vdf"),
+            format!("\"users\" {{ {body} }}"),
+        )
+        .unwrap();
+    }
+
+    fn owned_cache(paths: &Paths, fetched_at: i64, games: &[(&str, &str)]) {
+        let games: Vec<_> = games
+            .iter()
+            .map(|(app_id, name)| serde_json::json!({ "app_id": app_id, "name": name }))
+            .collect();
+        let path = paths.steam_owned_cache(STEAM_ID);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            serde_json::json!({ "fetched_at": fetched_at, "games": games }).to_string(),
+        )
+        .unwrap();
+    }
+
+    /// Steam's API at an address nothing listens on.
+    fn unreachable() -> Result<wineo_core::steam::api::SteamApi, wineo_core::steam::api::ApiError> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        wineo_core::steam::api::SteamApi::with_base(&base)
+    }
+
+    fn owned_with_key(
+        key: bool,
+    ) -> impl FnOnce(&Paths, &GlobalConfig, bool) -> anyhow::Result<OwnedData> {
+        move |paths, global, refresh| {
+            OwnedData::load_with(
+                paths,
+                global,
+                refresh,
+                true,
+                |name| {
+                    (key && name == wineo_core::steam::key::KEY_VAR)
+                        .then(|| OsString::from("SECRETKEY"))
+                },
+                &wineo_core::key_store::NoKeyring,
+                unreachable,
+            )
+        }
+    }
+
+    /// A Steam root with Alpha installed and an account to look up.
+    fn owned_fixture(temp: &TempDir) -> (Paths, PathBuf) {
+        let paths = paths(temp.path(), false);
+        let steam = temp.path().join("home/.local/share/Steam");
+        fs::create_dir_all(steam.join("steamapps")).unwrap();
+        manifest(&steam, "1", "Alpha", 4);
+        login(&steam, &[(STEAM_ID, true)]);
+        (paths, steam)
+    }
+
+    fn listed_page(paths: &Paths) -> Page {
+        let (mut page, _) = Page::new(paths.clone());
+        let generation = page.generation;
+        let _ = page.update(Event::Listed(generation, load_listing(paths)));
+        assert!(
+            page.owned_loading,
+            "the owned list loads once the page lists"
+        );
+        assert!(page.spinning());
+        assert!(!page.waiting(), "installed games stay usable meanwhile");
+        page
+    }
+
+    #[test]
+    fn owned_games_are_listed_after_installed_ones_dimmed_and_import() {
+        let temp = TempDir::new().unwrap();
+        let (paths, steam) = owned_fixture(&temp);
+        let now = jiff::Timestamp::now().as_second();
+        owned_cache(
+            &paths,
+            now,
+            &[
+                ("3", "Gamma"),
+                ("1", "Alpha"),
+                ("2", "Beta"),
+                ("1493710", "Proton Experimental"),
+            ],
+        );
+        let cache = steam.join("appcache/librarycache/2");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("library_600x900.jpg"), b"art").unwrap();
+
+        let mut page = listed_page(&paths);
+        let _ = page.update(Event::Toggle(0));
+        let result = load_owned(&paths, false, owned_with_key(true));
+        let _ = page.update(Event::OwnedListed(page.owned_generation, result));
+        assert!(!page.owned_loading);
+        assert_eq!(page.owned_note, None);
+        let games = page.listing.as_ref().unwrap().games.clone();
+        let shown: Vec<_> = games
+            .iter()
+            .map(|game| (game.app_id.as_str(), game.installed))
+            .collect();
+        assert_eq!(shown, [("1", true), ("2", false), ("3", false)]);
+        assert_eq!(
+            games[1].poster.as_deref(),
+            Some(cache.join("library_600x900.jpg").as_path())
+        );
+        assert_eq!(games[1].note, None);
+        // The installed game picked before the list landed stays picked.
+        assert!(page.chosen.contains("1"));
+
+        let _ = page.update(Event::SelectAll);
+        assert_eq!(page.chosen.len(), 3);
+        let selected = games.clone();
+        let review = plan_review(&paths, selected, None, page.owned.as_ref().unwrap());
+        assert_eq!(review.ready.len(), 3, "{:?}", review.failures);
+        assert_eq!(review.ready[1].state(), InstallState::NotInstalled);
+        let report = run_import(
+            &paths,
+            review,
+            page.owned.as_ref().unwrap(),
+            &Token::new(),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(report.lines(), ["Imported 3 of 3 games."]);
+        let config = fs::read_to_string(paths.environment_config("beta")).unwrap();
+        assert!(config.contains("app_id = \"2\""));
+        assert!(config.contains("title = \"Beta\""));
+    }
+
+    #[test]
+    fn without_a_key_installed_games_show_with_a_link_to_settings() {
+        let temp = TempDir::new().unwrap();
+        let (paths, _) = owned_fixture(&temp);
+        let mut page = listed_page(&paths);
+        let result = load_owned(&paths, false, owned_with_key(false));
+        let _ = page.update(Event::OwnedListed(page.owned_generation, result));
+        assert_eq!(page.owned_note, Some(OwnedNote::NoKey));
+        assert_eq!(
+            NO_KEY_HINT,
+            "Add a Steam Web API key to see uninstalled games."
+        );
+        assert_eq!(page.listing.as_ref().unwrap().games.len(), 1);
+        assert!(!page.refresh_available());
+        let _ = page.update(Event::Refresh);
+        assert!(!page.owned_loading);
+
+        let _ = page.update(Event::OpenSteamKey);
+        assert!(matches!(page.take_action(), Some(Action::SteamKey)));
+    }
+
+    #[test]
+    fn a_failed_fetch_without_a_cache_lists_installed_games_and_says_why() {
+        let temp = TempDir::new().unwrap();
+        let (paths, _) = owned_fixture(&temp);
+        let mut page = listed_page(&paths);
+        let result = load_owned(&paths, false, owned_with_key(true));
+        let _ = page.update(Event::OwnedListed(page.owned_generation, result));
+        assert_eq!(
+            page.owned_note,
+            Some(OwnedNote::Problem(
+                "Couldn't get owned games: can't reach Steam".to_owned()
+            ))
+        );
+        assert_eq!(page.listing.as_ref().unwrap().games.len(), 1);
+        assert!(page.refresh_available());
+    }
+
+    #[test]
+    fn refresh_forces_a_fetch_and_falls_back_to_the_cache() {
+        let temp = TempDir::new().unwrap();
+        let (paths, _) = owned_fixture(&temp);
+        let now = jiff::Timestamp::now().as_second();
+        owned_cache(&paths, now, &[("2", "Beta")]);
+        let mut page = listed_page(&paths);
+        let first = page.owned_generation;
+        let result = load_owned(&paths, false, owned_with_key(true));
+        let _ = page.update(Event::OwnedListed(first, result));
+        assert_eq!(page.owned_note, None);
+
+        let _ = page.update(Event::Refresh);
+        assert!(page.owned_loading);
+        assert_ne!(page.owned_generation, first);
+        // An answer from before the refresh can't land on top of it.
+        let _ = page.update(Event::OwnedListed(first, Err("stale".to_owned())));
+        assert!(page.owned_loading);
+        let result = load_owned(&paths, true, owned_with_key(true));
+        let _ = page.update(Event::OwnedListed(page.owned_generation, result));
+        assert_eq!(
+            page.owned_note,
+            Some(OwnedNote::Problem(
+                "Couldn't refresh owned games: can't reach Steam".to_owned()
+            ))
+        );
+        let games = &page.listing.as_ref().unwrap().games;
+        assert_eq!(games.len(), 2);
+        assert!(!games[1].installed);
+    }
+
+    #[test]
+    fn several_accounts_with_none_most_recent_show_that_error() {
+        let temp = TempDir::new().unwrap();
+        let (paths, steam) = owned_fixture(&temp);
+        login(&steam, &[(STEAM_ID, false), (STEAM_ID + 1, false)]);
+        let mut page = listed_page(&paths);
+        let result = load_owned(&paths, false, owned_with_key(true));
+        let _ = page.update(Event::OwnedListed(page.owned_generation, result));
+        assert_eq!(
+            page.owned_note,
+            Some(OwnedNote::Problem(
+                "Steam doesn't say which account was used last".to_owned()
+            ))
+        );
+        assert_eq!(page.listing.as_ref().unwrap().games.len(), 1);
+        assert!(page.owned.is_none());
+    }
+
+    #[test]
+    fn refresh_reloads_posters_whose_install_state_flipped_and_retries_failures() {
+        let temp = TempDir::new().unwrap();
+        let (paths, steam) = owned_fixture(&temp);
+        let now = jiff::Timestamp::now().as_second();
+        owned_cache(&paths, now, &[("1", "Alpha"), ("2", "Beta")]);
+        for app_id in ["1", "2"] {
+            let cache = steam.join(format!("appcache/librarycache/{app_id}"));
+            fs::create_dir_all(&cache).unwrap();
+            fs::write(cache.join("library_600x900.jpg"), b"art").unwrap();
+        }
+        let keys = |page: &Page| {
+            let mut keys: Vec<_> = page
+                .posters_to_load(page.listing.as_ref().unwrap())
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect();
+            keys.sort();
+            keys
+        };
+        let handle = || image::Handle::from_rgba(1, 1, vec![10, 80, 240, 255]);
+
+        let mut page = listed_page(&paths);
+        let result = load_owned(&paths, false, owned_with_key(true));
+        let _ = page.update(Event::OwnedListed(page.owned_generation, result));
+        assert_eq!(
+            keys(&page),
+            [("1".to_owned(), false), ("2".to_owned(), true)]
+        );
+        let generation = page.poster_generation;
+        let _ = page.update(Event::Poster(
+            generation,
+            ("1".into(), false),
+            Err("bad".into()),
+        ));
+        let _ = page.update(Event::Poster(generation, ("2".into(), true), Ok(handle())));
+        assert_eq!(keys(&page), [("1".to_owned(), false)]);
+
+        // Steam installs Beta behind wineo's back.
+        manifest(&steam, "2", "Beta", 4);
+        let _ = page.update(Event::Refresh);
+        let result = load_owned(&paths, true, owned_with_key(true));
+        let _ = page.update(Event::OwnedListed(page.owned_generation, result));
+        let games = &page.listing.as_ref().unwrap().games;
+        assert!(games.iter().all(|game| game.installed));
+        // The gray Beta poster isn't reused, and the failed Alpha one is retried.
+        assert_eq!(
+            keys(&page),
+            [("1".to_owned(), false), ("2".to_owned(), false)]
+        );
+        assert!(!page.posters.contains_key(&("2".to_owned(), false)));
     }
 }

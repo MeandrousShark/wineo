@@ -98,6 +98,8 @@ pub(crate) struct App {
     scroll_offset: f32,
     scroll_visible_until: Option<Instant>,
     pub(crate) operation: Option<Operation>,
+    /// The game an install or uninstall request is being handed to Steam for.
+    pub(crate) steam_request: Option<String>,
     pub(crate) panel_error: Option<PanelError>,
     pub(crate) hook_stop_confirm: Option<String>,
     pub(crate) hook_stop_identity: Option<wineo_core::hooks::Running>,
@@ -123,6 +125,7 @@ pub(crate) struct App {
     steamgriddb_input_session_sequence: u64,
     steamgriddb_pending: HashSet<(u64, u64)>,
     steamgriddb_late_result: Option<settings::Event>,
+    steam_key_work: settings::SteamKeyWork,
     art_page: Option<String>,
     art_pages: HashMap<String, art_page::Page>,
     pending_art_writes: HashSet<(String, u64, u64, art_page::EnvironmentIdentity)>,
@@ -196,6 +199,9 @@ pub(crate) enum Message {
     InstallPhase(String, bool),
     StartFinished(String, Result<wineo_core::launch::StartOutcome, PanelError>),
     StopFinished(String, Result<Vec<String>, PanelError>),
+    Install,
+    Uninstall(String),
+    SteamRequested(String, Result<String, PanelError>),
     ConfirmHookStop,
     CancelHookStop,
     AfterHookPhase(String, Token),
@@ -308,6 +314,7 @@ impl App {
             scroll_offset: 0.0,
             scroll_visible_until: None,
             operation: None,
+            steam_request: None,
             panel_error: None,
             hook_stop_confirm: None,
             hook_stop_identity: None,
@@ -331,6 +338,7 @@ impl App {
             steamgriddb_input_session_sequence: 0,
             steamgriddb_pending: HashSet::new(),
             steamgriddb_late_result: None,
+            steam_key_work: settings::SteamKeyWork::default(),
             art_page: None,
             art_pages: HashMap::new(),
             pending_art_writes: HashSet::new(),
@@ -430,11 +438,15 @@ impl App {
         self.filesystem_busy()
             || self.tools_busy()
             || self.operation.is_some()
+            || self.steam_request.is_some()
             || self.art_busy()
             || self.checkups.values().any(|results| results.checking)
             || self.change.is_some()
             || (self.section == sidebar::Section::Trash && self.trash_page.reviewing)
-            || self.settings.as_ref().is_some_and(|page| page.saving)
+            || self
+                .settings
+                .as_ref()
+                .is_some_and(|page| page.saving || page.key_busy())
             || self.flow.as_ref().is_some_and(flow::Page::spinning)
     }
 
@@ -529,6 +541,8 @@ impl App {
                     | Message::ClosePanel
                     | Message::TargetPicked(_)
                     | Message::Play
+                    | Message::Install
+                    | Message::Uninstall(_)
                     | Message::Stop
                     | Message::CleanUp
                     | Message::CancelStart
@@ -641,6 +655,25 @@ impl App {
                 self.load_panel_art()
             }
             Message::Play => self.start_selected(),
+            Message::Install => self.install_selected(),
+            Message::Uninstall(name) => self.uninstall(name),
+            Message::SteamRequested(name, result) => {
+                if self.steam_request.as_deref() == Some(&name) {
+                    self.steam_request = None;
+                }
+                if self.selected.as_deref() == Some(&name) {
+                    match result {
+                        Ok(note) => self.panel_note = Some(note),
+                        Err(error) => self.panel_error = Some(error),
+                    }
+                }
+                if self.refreshing {
+                    Task::none()
+                } else {
+                    self.refreshing = true;
+                    self.reload_library()
+                }
+            }
             Message::Stop | Message::CleanUp => self.stop_selected(),
             Message::ConfirmHookStop => self.confirm_hook_stop(),
             Message::CancelHookStop => {
@@ -1284,6 +1317,9 @@ impl App {
             }
             self.flow = None;
             self.flow_generation = self.flow_generation.wrapping_add(1);
+            if matches!(action, flow::Action::SteamKey) {
+                return self.open_steam_key_settings();
+            }
             let generation = self.flow_generation;
             let paths = self.paths.clone();
             return Task::perform(
@@ -1320,7 +1356,7 @@ impl App {
             }
         }
         let (name, launch, settings) = match action {
-            flow::Action::Choose => return Task::none(),
+            flow::Action::Choose | flow::Action::SteamKey => return Task::none(),
             flow::Action::Library { name, launch } => (name, launch, false),
             flow::Action::Settings { name, launch } => (Some(name), launch, true),
         };
@@ -1429,8 +1465,24 @@ impl App {
             .cards
             .iter()
             .filter(|card| card.not_installed())
-            .filter_map(|card| card.art.clone())
-            .map(|art| (art, artwork::Kind::Grid))
+            .flat_map(|card| {
+                // The panel's hero and logo dim along with the poster.
+                let panel = card.panel_art.values().flat_map(|art| {
+                    art.hero
+                        .iter()
+                        .map(|hero| (hero.clone(), artwork::Kind::Hero))
+                        .chain(
+                            art.logo
+                                .iter()
+                                .map(|logo| (logo.clone(), artwork::Kind::Logo)),
+                        )
+                });
+                card.art
+                    .iter()
+                    .map(|art| (art.clone(), artwork::Kind::Grid))
+                    .chain(panel)
+                    .collect::<Vec<_>>()
+            })
             .collect();
         self.dimmed_images.retain(|key, _| keys.contains(key));
         for key in keys {
@@ -2386,6 +2438,268 @@ mod tests {
         assert!(app.images.contains_key(&key));
         app.merge(Vec::new());
         assert!(app.images.is_empty());
+    }
+
+    fn steam_card(name: &str, install: wineo_core::steam::AppState) -> Card {
+        let mut card = card(name, State::Inactive, 0);
+        card.kind = Some(crate::library::CardKind::Proxied);
+        card.tags = vec!["game".into()];
+        card.targets = vec!["steam".into()];
+        card.default_target = Some("steam".into());
+        card.steam = Some(crate::library::SteamDetails {
+            install: install.into(),
+            proton: None,
+            size: None,
+        });
+        card
+    }
+
+    #[test]
+    fn the_steam_key_link_opens_global_settings_at_the_key_row() {
+        let mut app = app();
+        let _ = app.update(Message::Add);
+        let generation = app.flow_generation;
+        let _ = app.flow_update(generation, flow::Event::Steam);
+        assert!(app.flow.is_some());
+        app.flow = None;
+        let _ = app.open_steam_key_settings();
+        let page = app.settings.as_ref().unwrap();
+        assert!(page.is_global());
+        assert!(page.reveal_steam_key);
+    }
+
+    #[test]
+    fn install_replaces_play_and_asks_steam_once() {
+        use wineo_core::steam::AppState;
+        let mut app = app();
+        app.merge(vec![
+            steam_card("owned", AppState::NotInstalled),
+            steam_card("queued", AppState::InstallQueued),
+            steam_card("installed", AppState::Installed),
+        ]);
+        for (name, installable) in [("owned", true), ("queued", true), ("installed", false)] {
+            let card = app.cards.iter().find(|card| card.name == name).unwrap();
+            assert_eq!(card.installable(), installable, "{name}");
+            assert_eq!(panel::install_enabled(card, false), installable, "{name}");
+            assert!(!panel::install_enabled(card, true), "{name}");
+        }
+
+        let _ = app.update(Message::Select("installed".into()));
+        assert_eq!(app.update(Message::Install).units(), 0);
+        assert!(app.steam_request.is_none());
+
+        let _ = app.update(Message::Select("owned".into()));
+        app.panel_note = Some("old".into());
+        assert!(app.update(Message::Install).units() > 0);
+        assert_eq!(app.steam_request.as_deref(), Some("owned"));
+        assert!(app.panel_note.is_none());
+        assert!(app.spinning());
+        // A second press waits for Steam's answer.
+        assert_eq!(app.update(Message::Install).units(), 0);
+
+        let _ = app.update(Message::SteamRequested(
+            "owned".into(),
+            Ok("Asked Steam to install owned.".into()),
+        ));
+        assert!(app.steam_request.is_none());
+        assert_eq!(
+            app.panel_note.as_deref(),
+            Some("Asked Steam to install owned.")
+        );
+        assert!(!app.spinning());
+    }
+
+    #[test]
+    fn start_stays_disabled_until_steam_has_the_game() {
+        use wineo_core::steam::AppState;
+        for (install, playable) in [
+            (AppState::NotInstalled, false),
+            (AppState::InstallQueued, false),
+            (AppState::Installing(Some(40)), false),
+            (AppState::Installing(None), false),
+            (AppState::Uninstalling, false),
+            (AppState::Updating, true),
+            (AppState::Installed, true),
+        ] {
+            let label = format!("{install:?}");
+            let mut app = app();
+            app.merge(vec![steam_card("game", install)]);
+            let card = &app.cards[0];
+            assert_eq!(
+                panel::play_enabled(card, false, Some("steam")),
+                playable,
+                "{label}"
+            );
+            let _ = app.update(Message::Select("game".into()));
+            let _ = app.update(Message::Play);
+            assert_eq!(app.operation.is_some(), playable, "{label}");
+        }
+    }
+
+    #[test]
+    fn steam_request_refusals_show_in_the_panel() {
+        let mut app = app();
+        app.merge(vec![steam_card(
+            "game",
+            wineo_core::steam::AppState::Installed,
+        )]);
+        let _ = app.update(Message::Select("game".into()));
+        app.steam_request = Some("game".into());
+        let _ = app.update(Message::SteamRequested(
+            "game".into(),
+            Err(PanelError::from_error(&anyhow::anyhow!(
+                "Stop game before uninstalling it."
+            ))),
+        ));
+        assert!(app.steam_request.is_none());
+        assert_eq!(
+            app.panel_error.as_ref().unwrap().text,
+            "Stop game before uninstalling it."
+        );
+    }
+
+    #[test]
+    fn uninstall_is_offered_only_for_installed_steam_games() {
+        use wineo_core::steam::AppState;
+        let mut app = app();
+        let mut wine = card("wine", State::Inactive, 0);
+        wine.kind = Some(crate::library::CardKind::Wine);
+        wine.prefix = Some(PathBuf::from("/tmp/wine-prefix"));
+        let mut native = card("native", State::Inactive, 0);
+        native.kind = Some(crate::library::CardKind::Native);
+        let mut broken = steam_card("broken", AppState::Installed);
+        broken.error = Some("broken config".into());
+        app.merge(vec![
+            steam_card("installed", AppState::Installed),
+            steam_card("updating", AppState::Updating),
+            steam_card("owned", AppState::NotInstalled),
+            steam_card("queued", AppState::InstallQueued),
+            steam_card("installing", AppState::Installing(Some(5))),
+            steam_card("uninstalling", AppState::Uninstalling),
+            steam_card("missing", AppState::Unknown("Steam isn't found".into())),
+            broken,
+            wine,
+            native,
+        ]);
+        for (name, offered) in [
+            ("installed", true),
+            ("updating", true),
+            ("owned", false),
+            ("queued", false),
+            ("installing", false),
+            ("uninstalling", false),
+            ("missing", false),
+            ("broken", false),
+            ("wine", false),
+            ("native", false),
+        ] {
+            assert_eq!(app.uninstall_action(name), offered, "{name}");
+        }
+
+        assert_eq!(app.update(Message::Uninstall("owned".into())).units(), 0);
+        assert!(app.steam_request.is_none());
+
+        // The menu's Uninstall selects the game, so Steam's answer has a place.
+        app.action_menu = Some("installed".into());
+        assert!(app.update(Message::Uninstall("installed".into())).units() > 0);
+        assert!(app.action_menu.is_none());
+        assert_eq!(app.selected.as_deref(), Some("installed"));
+        assert!(app.panel_open);
+        assert_eq!(app.steam_request.as_deref(), Some("installed"));
+        assert_eq!(app.update(Message::Uninstall("updating".into())).units(), 0);
+    }
+
+    #[test]
+    fn steam_requests_use_the_install_path_and_its_notes() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        let steamapps = root.path().join(".local/share/Steam/steamapps");
+        std::fs::create_dir_all(&steamapps).unwrap();
+        std::fs::create_dir_all(paths.environments_dir()).unwrap();
+        std::fs::write(
+            paths.environment_config("native"),
+            "kind = 'native'
+",
+        )
+        .unwrap();
+        std::fs::write(
+            paths.environment_config("game"),
+            "kind = 'proxied'\nlauncher = 'steam'\napp_id = '123'\n",
+        )
+        .unwrap();
+        let request = |name, action| {
+            worker::steam_request_now(&paths, name, action).map_err(|error| error.to_string())
+        };
+        use wineo_core::steam_install::Action;
+        assert_eq!(
+            request("native", Action::Install).unwrap_err(),
+            "Only Steam games can be installed."
+        );
+        assert_eq!(
+            request("game", Action::Uninstall).unwrap(),
+            "Not installed."
+        );
+        std::fs::write(
+            steamapps.join("appmanifest_123.acf"),
+            r#""AppState" { "appid" "123" "name" "Game" "StateFlags" "4" }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            request("game", Action::Install).unwrap(),
+            "Already installed."
+        );
+        std::fs::write(
+            steamapps.join("appmanifest_123.acf"),
+            r#""AppState" { "appid" "123" "name" "Game" "StateFlags" "1026" }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            request("game", Action::Install).unwrap(),
+            "Steam is already installing game."
+        );
+    }
+
+    #[test]
+    fn panel_art_is_dimmed_for_games_steam_doesnt_have() {
+        use wineo_core::steam::AppState;
+        let mut app = app();
+        let hero = art_file("/tmp/steam-hero.png", 10);
+        let logo = art_file("/tmp/steam-logo.png", 11);
+        let mut card = steam_card("game", AppState::NotInstalled);
+        card.panel_art.insert(
+            "steam".into(),
+            crate::library::ArtPaths {
+                hero: Some(hero.clone()),
+                logo: Some(logo.clone()),
+            },
+        );
+        app.merge(vec![card.clone()]);
+        let blue = || image::Handle::from_rgba(1, 1, vec![10, 80, 240, 255]);
+        for key in [
+            (hero.clone(), artwork::Kind::Hero),
+            (logo.clone(), artwork::Kind::Logo),
+        ] {
+            let _ = app.update(Message::ArtLoaded(key.clone(), Ok(blue())));
+            assert!(app.dimmed_images.contains_key(&key));
+        }
+        let gray = |handle: Option<&image::Handle>| match handle {
+            Some(image::Handle::Rgba { pixels, .. }) => {
+                pixels[0] == pixels[1] && pixels[1] == pixels[2]
+            }
+            _ => panic!("expected decoded art"),
+        };
+        let (shown_hero, shown_logo) = app.panel_images(&app.cards[0], Some(&hero), Some(&logo));
+        assert!(gray(shown_hero));
+        assert!(gray(shown_logo));
+
+        card.steam.as_mut().unwrap().install = AppState::Installed.into();
+        app.merge(vec![card]);
+        assert!(app.dimmed_images.is_empty());
+        let (shown_hero, shown_logo) = app.panel_images(&app.cards[0], Some(&hero), Some(&logo));
+        assert!(!gray(shown_hero));
+        assert!(!gray(shown_logo));
     }
 
     #[test]

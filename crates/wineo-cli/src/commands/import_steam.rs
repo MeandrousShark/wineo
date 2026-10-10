@@ -8,9 +8,11 @@ use wineo_core::key_store::{Keyring, Saved};
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steam::api::SteamApi;
-use wineo_core::steam::owned::{self, LoadError, Loaded, Owned, OwnedError};
+use wineo_core::steam::owned;
 use wineo_core::steam::{self, InstallState};
-use wineo_core::steam_import::{self, ApplyOutcome, EntryState, OwnedGames, Plan, PlanOutcome};
+use wineo_core::steam_import::{
+    self, ApplyOutcome, EntryState, NO_KEY_HINT, OwnedData as Data, OwnedGames, Plan, PlanOutcome,
+};
 use wineo_core::steamgriddb::Key;
 
 use super::art::{self, KeyCheck};
@@ -150,73 +152,19 @@ fn single(
     }
 }
 
-/// What a command knows about the owned games, loaded once.
-enum Data {
-    /// Nothing was asked for, or Steam isn't found, which the import reports.
-    Unloaded,
-    /// There is no Steam Web API key.
-    NoKey,
-    /// The key couldn't be looked up, like a dismissed keyring prompt.
-    KeyFailed(String),
-    Failed(LoadError),
-    Loaded(Owned),
+/// How the CLI reports what the owned list lacks.
+trait Notes {
+    fn require(&self) -> anyhow::Result<()>;
+    fn notes(&self, hint: bool);
+    fn warn(&self);
 }
 
-impl Data {
-    /// Looks for the key and, with one, loads the list. Only commands that
-    /// want uninstalled games call this.
-    ///
-    /// Several accounts with none marked most recent is an error, since there
-    /// is no telling whose library to ask for. A dry run (`save` false) leaves
-    /// the saved list alone.
-    fn load(
-        paths: &Paths,
-        global: &GlobalConfig,
-        refresh: bool,
-        save: bool,
-    ) -> anyhow::Result<Self> {
-        let keyring = SecretServiceKeyring::for_spec(&steam::key::KEY_SPEC);
-        let key = match steam::key::find_key(paths, |var| std::env::var_os(var), &keyring) {
-            Ok(Some(key)) => key,
-            Ok(None) => return Ok(Data::NoKey),
-            Err(error) => return Ok(Data::KeyFailed(error.to_string())),
-        };
-        let Some(install) = steam::active_for(paths, global) else {
-            return Ok(Data::Unloaded);
-        };
-        let steam_id = steam::active_steam_id(&install).map_err(anyhow::Error::msg)?;
-        let api = match SteamApi::from_env() {
-            Ok(api) => api,
-            Err(error) => return Ok(Data::Failed(LoadError(OwnedError::Api(error)))),
-        };
-        let load = if save {
-            owned::load
-        } else {
-            owned::load_without_saving
-        };
-        Ok(
-            match load(paths, steam_id, Some(&key.value), &api, refresh) {
-                Ok(Loaded::Owned(owned)) => Data::Loaded(owned),
-                Ok(Loaded::NoKey) => Data::NoKey,
-                Err(error) => Data::Failed(error),
-            },
-        )
-    }
-
-    fn games(&self) -> OwnedGames<'_> {
-        match self {
-            Data::Unloaded | Data::NoKey | Data::KeyFailed(_) => OwnedGames::Unloaded,
-            Data::Failed(error) => OwnedGames::Failed(error),
-            Data::Loaded(owned) => OwnedGames::Loaded(owned),
-        }
-    }
-
+impl Notes for Data {
     /// For commands that can't go on without the list. A missing key is left
     /// to the import, which says a game isn't installed.
     fn require(&self) -> anyhow::Result<()> {
-        match self {
-            Data::KeyFailed(reason) => anyhow::bail!("Couldn't get owned games: {reason}"),
-            Data::Failed(error) => anyhow::bail!("{error}"),
+        match (self, self.problem()) {
+            (Data::KeyFailed(_) | Data::Failed(_), Some(problem)) => anyhow::bail!("{problem}"),
             _ => Ok(()),
         }
     }
@@ -224,20 +172,11 @@ impl Data {
     /// Says what is wrong with the list, for commands that go on without it
     /// or with an old one. With `hint`, a missing key is said too.
     fn notes(&self, hint: bool) {
-        let note = match self {
-            Data::NoKey if hint => {
-                eprintln!("Add a Steam Web API key to see uninstalled games.");
-                return;
-            }
-            Data::KeyFailed(reason) => format!("Couldn't get owned games: {reason}"),
-            Data::Failed(error) => error.to_string(),
-            Data::Loaded(Owned {
-                warning: Some(warning),
-                ..
-            }) => warning.clone(),
-            _ => return,
-        };
-        eprintln!("{}", style::warning_stderr(note));
+        if hint && matches!(self, Data::NoKey) {
+            eprintln!("{NO_KEY_HINT}");
+        } else if let Some(problem) = self.problem() {
+            eprintln!("{}", style::warning_stderr(problem));
+        }
     }
 
     fn warn(&self) {

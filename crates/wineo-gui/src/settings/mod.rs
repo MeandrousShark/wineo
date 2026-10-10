@@ -4,6 +4,7 @@ mod form;
 mod global;
 mod load;
 mod runner_picker;
+pub(crate) mod steam_key;
 mod steamgriddb;
 mod view;
 
@@ -70,6 +71,16 @@ pub(crate) enum Event {
     SteamGridDbKeyStatusLoaded(u64, u64, Result<steamgriddb::Status, String>),
     SteamGridDbKeySaved(u64, u64, Option<u64>, Result<steamgriddb::Saved, String>),
     SteamGridDbKeyRemoved(u64, u64, Option<u64>, Result<steamgriddb::Removed, String>),
+    SteamKeySetOpen,
+    SteamKeySetCancel,
+    SteamKeyText(steamgriddb::Secret),
+    SteamKeySet,
+    SteamKeyRemove,
+    SteamKeyStatusLoaded(u64, u64, Result<steam_key::Status, String>),
+    SteamKeySaved(u64, u64, Option<u64>, Result<steam_key::Saved, String>),
+    SteamKeyRemoved(u64, u64, Option<u64>, Result<steam_key::Removed, String>),
+    /// Where the Steam key row is, to scroll it into view.
+    SteamKeyLocated(u64, crate::grid_motion::CardBounds),
     /// An edit on one target's card.
     Target(String, TargetEdit),
     /// Opens or closes a target's card, which only changes the view.
@@ -160,6 +171,28 @@ impl Event {
                 Event::SteamGridDbKeyRemoved(generation, *sequence, *session, result.clone()),
             ),
             _ => None,
+        }
+    }
+
+    /// The sequence of a finished Steam key save or remove.
+    fn steam_key_operation(&self) -> Option<u64> {
+        match self {
+            Event::SteamKeySaved(_, sequence, _, _) | Event::SteamKeyRemoved(_, sequence, _, _) => {
+                Some(*sequence)
+            }
+            _ => None,
+        }
+    }
+
+    fn rebind_steam_key(self, generation: u64) -> Self {
+        match self {
+            Event::SteamKeySaved(_, sequence, session, result) => {
+                Event::SteamKeySaved(generation, sequence, session, result)
+            }
+            Event::SteamKeyRemoved(_, sequence, session, result) => {
+                Event::SteamKeyRemoved(generation, sequence, session, result)
+            }
+            other => other,
         }
     }
 
@@ -489,9 +522,35 @@ pub(crate) struct Page {
     steamgriddb_input_session_touched: bool,
     steamgriddb_busy_sequence: Option<u64>,
     steamgriddb: steamgriddb::Settings,
+    /// Only the latest Steam key status lands. Saves and removes belong to
+    /// the app (`SteamKeyWork`), which hands their results to this page.
+    steam_key_sequence: u64,
+    steam_key_busy_sequence: Option<u64>,
+    steam_key_input_session: Option<u64>,
+    steam_key: steam_key::Settings,
+    /// Scrolls to the Steam key row once the page loads.
+    pub(crate) reveal_steam_key: bool,
     /// The add target form as it was sent to be checked.
     resolving: Option<NewTarget>,
     pub(crate) open_add_after_load: bool,
+}
+
+/// The Steam key save or remove the app owns, so it outlives the page that
+/// started it. Its result lands on whichever global page is open, or waits
+/// for the next one, and no second operation starts while it runs.
+#[derive(Default)]
+pub(crate) struct SteamKeyWork {
+    /// The highest sequence any page used, so pages never reuse one.
+    sequence: u64,
+    pending: Option<(u64, steamgriddb::Busy)>,
+    late: Option<Event>,
+}
+
+impl SteamKeyWork {
+    #[cfg(test)]
+    pub(crate) fn pending(&self) -> bool {
+        self.pending.is_some()
+    }
 }
 
 /// What the app does after the page handles an event.
@@ -549,6 +608,11 @@ impl Page {
             steamgriddb_input_session_touched: false,
             steamgriddb_busy_sequence: None,
             steamgriddb: steamgriddb::Settings::default(),
+            steam_key_sequence: 0,
+            steam_key_busy_sequence: None,
+            steam_key_input_session: None,
+            steam_key: steam_key::Settings::default(),
+            reveal_steam_key: false,
             resolving: None,
             open_add_after_load: false,
         }
@@ -613,6 +677,24 @@ impl Page {
         }
         let sequence = self.bump_steamgriddb_sequence();
         steamgriddb::status_task(paths.clone(), self.generation, sequence)
+    }
+    fn bump_steam_key_sequence(&mut self) -> u64 {
+        self.steam_key_sequence = self.steam_key_sequence.wrapping_add(1);
+        self.steam_key_sequence
+    }
+    fn refresh_steam_key(&mut self, paths: &Paths) -> Task<Message> {
+        if !self.global || !matches!(self.view, View::Global(_)) {
+            return Task::none();
+        }
+        let sequence = self.bump_steam_key_sequence();
+        steam_key::status_task(paths.clone(), self.generation, sequence)
+    }
+    /// A key is being checked, saved, or removed, which spins the spinner.
+    pub(crate) fn key_busy(&self) -> bool {
+        self.steamgriddb.busy.is_some() || self.steam_key.busy.is_some()
+    }
+    fn steam_key_idle(&self) -> bool {
+        self.global && !self.locked() && !self.loading() && self.steam_key.busy.is_none()
     }
     pub(crate) fn is_dirty(&self) -> bool {
         match &self.view {
@@ -1384,6 +1466,148 @@ impl Page {
                     }
                 }
             }
+            Event::SteamKeySetOpen => {
+                if self.steam_key_idle() {
+                    self.steam_key.input_open = true;
+                    self.steam_key.input = steamgriddb::Secret::default();
+                    self.steam_key_input_session = Some(self.bump_steam_key_sequence());
+                    self.steam_key.error = None;
+                    self.steam_key.result = None;
+                }
+                Step::none()
+            }
+            Event::SteamKeySetCancel => {
+                if self.global && self.steam_key.busy.is_none() {
+                    self.steam_key.input_open = false;
+                    self.steam_key.input = steamgriddb::Secret::default();
+                    self.steam_key_input_session = None;
+                    self.steam_key.error = None;
+                }
+                Step::none()
+            }
+            Event::SteamKeyText(value) => {
+                if self.global && self.steam_key.input_open && self.steam_key.busy.is_none() {
+                    self.steam_key.input = value;
+                    self.steam_key.error = None;
+                }
+                Step::none()
+            }
+            Event::SteamKeySet => {
+                if !self.steam_key_idle() || self.steam_key.input.as_str().trim().is_empty() {
+                    return Step::none();
+                }
+                self.steam_key.busy = Some(steamgriddb::Busy::Saving);
+                self.steam_key.error = None;
+                self.steam_key.result = None;
+                let key = std::mem::take(&mut self.steam_key.input);
+                let sequence = self.bump_steam_key_sequence();
+                self.steam_key_busy_sequence = Some(sequence);
+                Step::task(steam_key::save_task(
+                    paths.clone(),
+                    self.generation,
+                    sequence,
+                    self.steam_key_input_session,
+                    key,
+                ))
+            }
+            Event::SteamKeyRemove => {
+                if !self.steam_key_idle() {
+                    return Step::none();
+                }
+                self.steam_key.busy = Some(steamgriddb::Busy::Removing);
+                self.steam_key.error = None;
+                self.steam_key.result = None;
+                let sequence = self.bump_steam_key_sequence();
+                self.steam_key_busy_sequence = Some(sequence);
+                Step::task(steam_key::remove_task(
+                    paths.clone(),
+                    self.generation,
+                    sequence,
+                    self.steam_key_input_session,
+                ))
+            }
+            Event::SteamKeyStatusLoaded(generation, sequence, result) => {
+                if generation != self.generation
+                    || !self.global
+                    || sequence != self.steam_key_sequence
+                {
+                    return Step::none();
+                }
+                match result {
+                    Ok(status) => {
+                        self.steam_key.warning = status.warning(paths);
+                        self.steam_key.status = Some(status);
+                        self.steam_key.status_error = None;
+                    }
+                    Err(error) => self.steam_key.status_error = Some(error),
+                }
+                Step::none()
+            }
+            Event::SteamKeySaved(generation, sequence, input_session, result) => {
+                if generation != self.generation
+                    || !self.global
+                    || self.steam_key_busy_sequence != Some(sequence)
+                {
+                    return Step::none();
+                }
+                self.steam_key.busy = None;
+                self.steam_key_busy_sequence = None;
+                let same_input =
+                    input_session.is_some() && input_session == self.steam_key_input_session;
+                match result {
+                    Ok(saved) => {
+                        self.steam_key.warning = saved.warning;
+                        self.steam_key.result = saved.result;
+                        self.steam_key.status = Some(saved.status);
+                        if same_input {
+                            self.steam_key.error = None;
+                            self.steam_key.input_open = false;
+                            self.steam_key_input_session = None;
+                        }
+                    }
+                    Err(error) => {
+                        self.steam_key.error = Some(error);
+                        if same_input {
+                            self.steam_key.input_open = true;
+                            self.steam_key_input_session = Some(self.bump_steam_key_sequence());
+                        }
+                    }
+                }
+                self.steam_key.input = steamgriddb::Secret::default();
+                Step::task(self.refresh_steam_key(paths))
+            }
+            Event::SteamKeyRemoved(generation, sequence, input_session, result) => {
+                if generation != self.generation
+                    || !self.global
+                    || self.steam_key_busy_sequence != Some(sequence)
+                {
+                    return Step::none();
+                }
+                self.steam_key.busy = None;
+                self.steam_key_busy_sequence = None;
+                match result {
+                    Ok(removed) => {
+                        self.steam_key.warning = None;
+                        self.steam_key.result = Some(removed.result);
+                        self.steam_key.status = Some(removed.status);
+                        if input_session.is_some() && input_session == self.steam_key_input_session
+                        {
+                            self.steam_key.error = None;
+                            self.steam_key.input_open = false;
+                            self.steam_key.input = steamgriddb::Secret::default();
+                            self.steam_key_input_session = None;
+                        }
+                    }
+                    Err(error) => self.steam_key.error = Some(error),
+                }
+                Step::task(self.refresh_steam_key(paths))
+            }
+            Event::SteamKeyLocated(generation, bounds) => {
+                if generation != self.generation {
+                    return Step::none();
+                }
+                Step::task(view::scroll_to_row(bounds))
+            }
             Event::Prefix(value) => {
                 self.edited();
                 if let Some(draft) = self.draft() {
@@ -1563,7 +1787,19 @@ impl Page {
                     let after_save = pending.after_save;
                     self.land(pending, snapshot);
                     if self.global && matches!(self.view, View::Global(_)) {
-                        return Step::task(self.refresh_steamgriddb(paths));
+                        let reveal = if std::mem::take(&mut self.reveal_steam_key) {
+                            let generation = self.generation;
+                            view::locate_steam_key().map(move |bounds| {
+                                Message::Settings(Event::SteamKeyLocated(generation, bounds))
+                            })
+                        } else {
+                            Task::none()
+                        };
+                        return Step::task(Task::batch([
+                            self.refresh_steamgriddb(paths),
+                            self.refresh_steam_key(paths),
+                            reveal,
+                        ]));
                     }
                     if self.open_add_after_load && self.editor().is_some() {
                         self.open_add_after_load = false;
@@ -1903,6 +2139,19 @@ impl App {
         page.steamgriddb_sequence = self.steamgriddb_sequence;
         page.steamgriddb_input_session_sequence = self.steamgriddb_input_session_sequence;
         let mut task = page.reload(&self.paths, Mode::Replace);
+        page.steam_key_sequence = self.steam_key_work.sequence;
+        if let Some((sequence, busy)) = self.steam_key_work.pending {
+            page.steam_key.busy = Some(busy);
+            page.steam_key_busy_sequence = Some(sequence);
+        }
+        if let Some(event) = self.steam_key_work.late.take()
+            && let Some(sequence) = event.steam_key_operation()
+        {
+            page.steam_key_busy_sequence = Some(sequence);
+            let step = page.update(&self.paths, event.rebind_steam_key(page.generation));
+            task = Task::batch([task, step.task]);
+        }
+        self.steam_key_work.sequence = self.steam_key_work.sequence.max(page.steam_key_sequence);
         if let Some(event) = self.steamgriddb_late_result.take() {
             if !page.steamgriddb_input_session_touched
                 && let Some(session) = event.steamgriddb_input_session()
@@ -1922,8 +2171,43 @@ impl App {
         self.settings = Some(page);
         task
     }
+    /// Global settings, scrolled to the Steam Web API key row once loaded.
+    pub(crate) fn open_steam_key_settings(&mut self) -> Task<Message> {
+        let task = self.navigate_section(crate::sidebar::Section::Settings);
+        if let Some(page) = self.settings.as_mut().filter(|page| page.is_global()) {
+            page.reveal_steam_key = true;
+        }
+        task
+    }
     pub(crate) fn settings_update(&mut self, event: Event) -> Task<Message> {
         self.update_settings_work_refusal();
+        if matches!(event, Event::SteamKeySet | Event::SteamKeyRemove)
+            && self.steam_key_work.pending.is_some()
+        {
+            return Task::none();
+        }
+        if let Some(sequence) = event.steam_key_operation() {
+            if self
+                .steam_key_work
+                .pending
+                .is_some_and(|(pending, _)| pending == sequence)
+            {
+                self.steam_key_work.pending = None;
+            }
+            match self.settings.as_mut().filter(|page| page.is_global()) {
+                Some(page) => {
+                    let event = event.rebind_steam_key(page.generation);
+                    let step = page.update(&self.paths, event);
+                    self.steam_key_work.sequence =
+                        self.steam_key_work.sequence.max(page.steam_key_sequence);
+                    return step.task;
+                }
+                None => {
+                    self.steam_key_work.late = Some(event);
+                    return Task::none();
+                }
+            }
+        }
         if let Some((generation, sequence)) = event.steamgriddb_token() {
             let same_generation = self
                 .settings
@@ -2010,6 +2294,15 @@ impl App {
         if current_sequence != previous_sequence {
             self.steamgriddb_sequence = self.steamgriddb_sequence.max(current_sequence);
             self.track_steamgriddb(generation, current_sequence);
+        }
+        if let Some(page) = self.settings.as_ref().filter(|page| page.is_global()) {
+            self.steam_key_work.sequence =
+                self.steam_key_work.sequence.max(page.steam_key_sequence);
+            if let (Some(sequence), Some(busy)) =
+                (page.steam_key_busy_sequence, page.steam_key.busy)
+            {
+                self.steam_key_work.pending = Some((sequence, busy));
+            }
         }
         if let Some(page) = &self.settings {
             self.steamgriddb_input_session_sequence = self
@@ -2226,6 +2519,187 @@ mod tests {
             page.steamgriddb.result.as_deref(),
             Some("Removed the SteamGridDB key")
         );
+    }
+
+    fn steam_texts(page: &Page, paths: &Paths) -> Vec<String> {
+        view::steam_key_row(&page.steam_key, paths).texts()
+    }
+
+    #[test]
+    fn steam_key_row_saves_checks_and_removes_without_showing_the_key() {
+        let key = steam_key::tests::KEY;
+        let (_root, paths) = setup();
+        let mut page = global_page(&paths);
+        let shown = steam_texts(&page, &paths);
+        assert_eq!(shown[1], "Checking...");
+        assert!(
+            shown
+                .iter()
+                .any(|text| text == "Get a key at https://steamcommunity.com/dev/apikey.")
+        );
+        let status = page.steam_key_sequence;
+        let _ = page.update(
+            &paths,
+            Event::SteamKeyStatusLoaded(
+                page.generation,
+                status,
+                Ok(steam_key::Status {
+                    source: None,
+                    override_note: false,
+                }),
+            ),
+        );
+        assert_eq!(steam_texts(&page, &paths)[1], "No key");
+
+        let _ = page.update(&paths, Event::SteamKeySetOpen);
+        let _ = page.update(
+            &paths,
+            Event::SteamKeyText(steamgriddb::Secret::new(key.to_owned())),
+        );
+        assert!(
+            !steam_texts(&page, &paths)
+                .iter()
+                .any(|text| text.contains(key))
+        );
+        let _ = page.update(&paths, Event::SteamKeySet);
+        assert_eq!(page.steam_key.busy, Some(steamgriddb::Busy::Saving));
+        assert_eq!(page.steam_key.input.as_str(), "");
+        assert!(
+            steam_texts(&page, &paths)
+                .iter()
+                .any(|text| text == "Checking and saving...")
+        );
+
+        // A refused key leaves the input open and empty, with Steam's reason.
+        let sequence = page.steam_key_sequence;
+        let session = page.steam_key_input_session;
+        let _ = page.update(
+            &paths,
+            Event::SteamKeySaved(
+                page.generation,
+                sequence,
+                session,
+                Err("Couldn't check the key: Steam rejected the Web API key".to_owned()),
+            ),
+        );
+        assert!(page.steam_key.busy.is_none());
+        assert!(page.steam_key.input_open);
+        assert!(
+            steam_texts(&page, &paths)
+                .iter()
+                .any(|text| text == "Couldn't check the key: Steam rejected the Web API key")
+        );
+
+        let _ = page.update(
+            &paths,
+            Event::SteamKeyText(steamgriddb::Secret::new(key.to_owned())),
+        );
+        let _ = page.update(&paths, Event::SteamKeySet);
+        let sequence = page.steam_key_sequence;
+        let session = page.steam_key_input_session;
+        let _ = page.update(
+            &paths,
+            Event::SteamKeySaved(
+                page.generation,
+                sequence,
+                session,
+                Ok(steam_key::Saved {
+                    status: steam_key::Status {
+                        source: Some(wineo_core::key_store::KeySource::Keyring),
+                        override_note: false,
+                    },
+                    warning: None,
+                    result: Some("Saved the Steam Web API key to the keyring".to_owned()),
+                }),
+            ),
+        );
+        assert!(!page.steam_key.input_open);
+        let shown = steam_texts(&page, &paths);
+        assert_eq!(shown[1], "Saved in the keyring");
+        assert!(
+            shown
+                .iter()
+                .any(|text| text == "Saved the Steam Web API key to the keyring")
+        );
+        assert!(!shown.iter().any(|text| text.contains(key)));
+        assert!(!format!("{:?}", page.steam_key).contains(key));
+        // The save asked for the status again; an older answer can't land.
+        let _ = page.update(
+            &paths,
+            Event::SteamKeyStatusLoaded(
+                page.generation,
+                status,
+                Ok(steam_key::Status {
+                    source: None,
+                    override_note: false,
+                }),
+            ),
+        );
+        assert_eq!(steam_texts(&page, &paths)[1], "Saved in the keyring");
+
+        let _ = page.update(&paths, Event::SteamKeyRemove);
+        assert_eq!(page.steam_key.busy, Some(steamgriddb::Busy::Removing));
+        let sequence = page.steam_key_sequence;
+        let _ = page.update(
+            &paths,
+            Event::SteamKeyRemoved(
+                page.generation,
+                sequence,
+                None,
+                Ok(steam_key::Removed {
+                    status: steam_key::Status {
+                        source: None,
+                        override_note: false,
+                    },
+                    result: "Removed the Steam Web API key".to_owned(),
+                }),
+            ),
+        );
+        let shown = steam_texts(&page, &paths);
+        assert_eq!(shown[1], "No key");
+        assert!(
+            shown
+                .iter()
+                .any(|text| text == "Removed the Steam Web API key")
+        );
+        // The SteamGridDB row was never touched.
+        assert!(page.steamgriddb.result.is_none());
+        assert!(page.steamgriddb.busy.is_none());
+    }
+
+    #[test]
+    fn steam_key_results_for_a_closed_page_are_dropped() {
+        let (_root, paths) = setup();
+        let mut page = global_page(&paths);
+        let _ = page.update(&paths, Event::SteamKeyRemove);
+        let sequence = page.steam_key_sequence;
+        let _ = page.update(
+            &paths,
+            Event::SteamKeyRemoved(
+                page.generation + 1,
+                sequence,
+                None,
+                Ok(steam_key::Removed {
+                    status: steam_key::Status {
+                        source: None,
+                        override_note: false,
+                    },
+                    result: "Removed the Steam Web API key".to_owned(),
+                }),
+            ),
+        );
+        assert_eq!(page.steam_key.busy, Some(steamgriddb::Busy::Removing));
+        assert!(page.steam_key.result.is_none());
+    }
+
+    #[test]
+    fn steam_key_reveal_is_used_once() {
+        let (_root, paths) = setup();
+        let mut page = Page::new_global(1);
+        page.reveal_steam_key = true;
+        let _ = page.reload(&paths, Mode::Replace);
+        let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+        assert!(!page.reveal_steam_key);
     }
 
     #[test]
@@ -3777,6 +4251,157 @@ mod tests {
             load::snapshot_global(paths),
         )));
         app
+    }
+
+    fn steam_saved(ok: bool) -> Result<steam_key::Saved, String> {
+        if ok {
+            Ok(steam_key::Saved {
+                status: steam_key::Status {
+                    source: Some(wineo_core::key_store::KeySource::Keyring),
+                    override_note: false,
+                },
+                warning: None,
+                result: Some("Saved the Steam Web API key to the keyring".to_owned()),
+            })
+        } else {
+            Err("Couldn't check the key: Steam rejected the Web API key".to_owned())
+        }
+    }
+
+    /// Starts a Steam key save on the open global page and returns its
+    /// generation, sequence, and input session.
+    fn start_steam_save(app: &mut App) -> (u64, u64, Option<u64>) {
+        let _ = app.update(Message::Settings(Event::SteamKeySetOpen));
+        let _ = app.update(Message::Settings(Event::SteamKeyText(
+            steamgriddb::Secret::new(steam_key::tests::KEY.to_owned()),
+        )));
+        let _ = app.update(Message::Settings(Event::SteamKeySet));
+        let page = app.settings.as_ref().unwrap();
+        assert_eq!(page.steam_key.busy, Some(steamgriddb::Busy::Saving));
+        assert!(app.steam_key_work.pending());
+        (
+            page.generation,
+            page.steam_key_busy_sequence.unwrap(),
+            page.steam_key_input_session,
+        )
+    }
+
+    fn reopen_global(app: &mut App, paths: &Paths) {
+        let _ = app.update(Message::Section(crate::sidebar::Section::Settings));
+        let generation = app.settings.as_ref().unwrap().generation;
+        let _ = app.update(Message::Settings(Event::Loaded(
+            generation,
+            load::snapshot_global(paths),
+        )));
+    }
+
+    fn assert_steam_outcome(app: &App, paths: &Paths, ok: bool) {
+        let page = app.settings.as_ref().unwrap();
+        assert!(page.steam_key.busy.is_none());
+        assert!(!app.steam_key_work.pending());
+        let shown = view::steam_key_row(&page.steam_key, paths).texts();
+        if ok {
+            assert_eq!(shown[1], "Saved in the keyring");
+            assert!(
+                shown
+                    .iter()
+                    .any(|text| text == "Saved the Steam Web API key to the keyring")
+            );
+        } else {
+            assert!(
+                shown
+                    .iter()
+                    .any(|text| text == "Couldn't check the key: Steam rejected the Web API key")
+            );
+        }
+        assert!(
+            !shown
+                .iter()
+                .any(|text| text.contains(steam_key::tests::KEY))
+        );
+    }
+
+    #[test]
+    fn steam_key_result_lands_after_leaving_and_returning_to_settings() {
+        use crate::sidebar::Section;
+        for ok in [true, false] {
+            let (_root, paths) = setup();
+            let mut app = open_global_app(&paths);
+            let (generation, sequence, session) = start_steam_save(&mut app);
+            let _ = app.update(Message::Section(Section::Trash));
+            assert!(app.settings.is_none());
+            let _ = app.update(Message::Settings(Event::SteamKeySaved(
+                generation,
+                sequence,
+                session,
+                steam_saved(ok),
+            )));
+            assert!(!app.steam_key_work.pending());
+            reopen_global(&mut app, &paths);
+            assert_steam_outcome(&app, &paths, ok);
+        }
+    }
+
+    #[test]
+    fn a_reopened_page_waits_for_the_pending_steam_key_save() {
+        use crate::sidebar::Section;
+        for ok in [true, false] {
+            let (_root, paths) = setup();
+            let mut app = open_global_app(&paths);
+            let (generation, sequence, session) = start_steam_save(&mut app);
+            let _ = app.update(Message::Section(Section::Trash));
+            reopen_global(&mut app, &paths);
+            let page = app.settings.as_ref().unwrap();
+            assert_ne!(page.generation, generation);
+            assert_eq!(page.steam_key.busy, Some(steamgriddb::Busy::Saving));
+            assert!(app.spinning());
+
+            // No second write starts while the first is pending.
+            let _ = app.update(Message::Settings(Event::SteamKeyRemove));
+            let _ = app.update(Message::Settings(Event::SteamKeySetOpen));
+            let _ = app.update(Message::Settings(Event::SteamKeySet));
+            let page = app.settings.as_ref().unwrap();
+            assert_eq!(page.steam_key.busy, Some(steamgriddb::Busy::Saving));
+            assert_eq!(page.steam_key_busy_sequence, Some(sequence));
+
+            let _ = app.update(Message::Settings(Event::SteamKeySaved(
+                generation,
+                sequence,
+                session,
+                steam_saved(ok),
+            )));
+            assert_steam_outcome(&app, &paths, ok);
+            assert!(!app.spinning());
+        }
+    }
+
+    #[test]
+    fn a_pending_steam_key_save_refuses_another_write_even_from_a_fresh_page() {
+        let (_root, paths) = setup();
+        let mut app = open_global_app(&paths);
+        let (_, sequence, _) = start_steam_save(&mut app);
+        // A page that somehow didn't adopt the work still can't start one.
+        app.settings.as_mut().unwrap().steam_key.busy = None;
+        let _ = app.update(Message::Settings(Event::SteamKeyRemove));
+        let page = app.settings.as_ref().unwrap();
+        assert!(page.steam_key.busy.is_none());
+        assert!(app.steam_key_work.pending());
+        assert_eq!(page.steam_key_busy_sequence, Some(sequence));
+    }
+
+    #[test]
+    fn key_work_spins_the_spinner_only_while_it_runs() {
+        let (_root, paths) = setup();
+        let mut app = open_global_app(&paths);
+        assert!(!app.spinning());
+        let _ = app.update(Message::Settings(Event::SteamGridDbKeyRemove));
+        assert!(app.settings.as_ref().unwrap().key_busy());
+        assert!(app.spinning());
+        let page = app.settings.as_mut().unwrap();
+        page.steamgriddb.busy = None;
+        assert!(!app.spinning());
+        let _ = app.update(Message::Settings(Event::SteamKeyRemove));
+        assert!(app.spinning());
     }
 
     #[test]

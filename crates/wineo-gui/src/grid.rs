@@ -3,7 +3,9 @@ use iced::widget::{
     Space, button, column, container, image, mouse_area, row, scrollable, stack, svg, text,
     text_input,
 };
-use iced::{Center, Color, ContentFit, Element, Fill, Font, Size, Theme, border, font, mouse};
+use iced::{
+    Center, Color, ContentFit, Element, Fill, FillPortion, Font, Size, Theme, border, font, mouse,
+};
 
 use crate::library::Card;
 use crate::theme::Palette;
@@ -17,6 +19,7 @@ const ACTION_MENU_MARGIN: f32 = 8.0;
 const ACTION_MENU_PADDING: f32 = 12.0;
 const ACTION_MENU_SPACING: f32 = 4.0;
 const ACTION_MENU_HEADER_HEIGHT: f32 = 20.0;
+const INSTALL_BAR_HEIGHT: f32 = 4.0;
 
 impl App {
     pub(crate) fn grid(&self) -> Element<'_, Message> {
@@ -45,7 +48,7 @@ impl App {
                 .content_fit(ContentFit::Cover)
                 .border_radius(4)
                 .opacity(if dimmed {
-                    0.45_f32
+                    crate::panel::DIMMED_OPACITY
                 } else if hovered {
                     0.85_f32
                 } else {
@@ -64,7 +67,7 @@ impl App {
             .center(Fill)
             .style(move |_| {
                 container::Style::default().background(palette.surface.scale_alpha(if dimmed {
-                    0.45
+                    crate::panel::DIMMED_OPACITY
                 } else if hovered {
                     0.85
                 } else {
@@ -80,7 +83,11 @@ impl App {
             )))
             .width(20)
             .height(20)
-            .opacity(if dimmed { 0.45_f32 } else { 1.0_f32 });
+            .opacity(if dimmed {
+                crate::panel::DIMMED_OPACITY
+            } else {
+                1.0_f32
+            });
             layers = layers.push(
                 container(mark)
                     .width(Fill)
@@ -88,6 +95,14 @@ impl App {
                     .align_right(Fill)
                     .align_bottom(Fill)
                     .padding(8),
+            );
+        }
+        if let Some(percent) = card.install_progress() {
+            layers = layers.push(
+                container(install_bar(percent, palette))
+                    .width(Fill)
+                    .height(Fill)
+                    .align_bottom(Fill),
             );
         }
         let framed = container(container(layers).clip(true))
@@ -339,9 +354,12 @@ impl App {
             let palette = self.palette;
             let wine_actions = self.wine_actions(name);
             let transfer_actions = self.transfer_actions(name);
+            let uninstall_action = self.uninstall_action(name);
             let removal_reason = self.remove_reason(name);
-            let menu_buttons =
-                4 + usize::from(wine_actions) * 3 + usize::from(transfer_actions) * 2;
+            let menu_buttons = 4
+                + usize::from(wine_actions) * 3
+                + usize::from(transfer_actions) * 2
+                + usize::from(uninstall_action);
             let menu_dividers = 1 + usize::from(wine_actions);
             let body_content_height =
                 action_menu_body_height(menu_buttons, menu_dividers, removal_reason.as_deref());
@@ -362,6 +380,17 @@ impl App {
                 ),
             ]
             .spacing(ACTION_MENU_SPACING);
+            if uninstall_action {
+                // Steam's own dialog asks before anything is removed.
+                scroll_items = scroll_items.push(context_menu_button(
+                    "Uninstall",
+                    palette,
+                    false,
+                    self.steam_request
+                        .is_none()
+                        .then(|| Message::Uninstall(name.clone())),
+                ));
+            }
             if wine_actions {
                 scroll_items = scroll_items.push(context_menu_button(
                     "Snapshots...",
@@ -768,6 +797,29 @@ impl App {
         .width(Fill)
         .into()
     }
+}
+
+/// A thin bar along the poster's bottom edge while Steam installs. It only
+/// moves when the library reloads, so nothing animates while idle.
+fn install_bar(percent: u8, palette: Palette) -> Element<'static, Message> {
+    let done = u16::from(percent.min(100));
+    let mut bar = row![].width(Fill).height(INSTALL_BAR_HEIGHT);
+    if done > 0 {
+        bar = bar.push(
+            container(Space::new())
+                .width(FillPortion(done))
+                .height(Fill)
+                .style(move |_| container::Style::default().background(palette.primary)),
+        );
+    }
+    if done < 100 {
+        bar = bar.push(Space::new().width(FillPortion(100 - done)));
+    }
+    container(bar)
+        .width(Fill)
+        .height(INSTALL_BAR_HEIGHT)
+        .style(|_| container::Style::default().background(Color::BLACK.scale_alpha(0.55)))
+        .into()
 }
 
 fn text_width(content: &str) -> f32 {
