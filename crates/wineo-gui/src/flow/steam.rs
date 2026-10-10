@@ -850,28 +850,18 @@ impl Page {
         let back = button("< Back")
             .on_press_maybe((!self.busy() && self.step != Step::Finished).then_some(Event::Back));
         let content: Element<'_, Event> = match (&self.listing, self.step) {
-            (Some(listing), Step::Games) if !listing.games.is_empty() => container(
+            (Some(listing), Step::Games) if !listing.games.is_empty() => {
                 column![body, self.grid(listing, palette, width)]
                     .spacing(14)
-                    .height(Fill),
-            )
-            .max_width(780)
-            .width(Fill)
-            .height(Fill)
-            .padding(24)
-            .center_x(Fill)
-            .into(),
-            _ => scrollable(
-                container(body)
-                    .max_width(780)
-                    .width(Fill)
-                    .padding(24)
-                    .center_x(Fill),
-            )
-            .height(Fill)
-            .into(),
+                    .height(Fill)
+                    .into()
+            }
+            _ => heroic::scroll_body(body, None),
         };
-        let mut page = column![row![back], content].spacing(12);
+        let mut page = column![row![back], content]
+            .spacing(12)
+            .max_width(heroic::PAGE_MAX_WIDTH)
+            .height(Fill);
         let footer: Option<Element<'_, Event>> = match self.step {
             Step::Details => Some(button("Review").on_press(Event::Review).into()),
             Step::Review => self.review.as_ref().map(|review| {
@@ -901,10 +891,10 @@ impl Page {
             page = page.push(container(footer).padding(12).width(Fill).style(move |_| {
                 container::Style::default()
                     .background(palette.surface)
-                    .border(border::rounded(1).width(1).color(palette.border))
+                    .border(border::rounded(8).width(1).color(palette.border))
             }));
         }
-        container(page).width(Fill).height(Fill).into()
+        heroic::page_frame(page)
     }
 }
 
@@ -1296,6 +1286,57 @@ mod tests {
         assert!(paths.environment_config("alpha").is_file());
         assert!(paths.environment_config("beta").is_file());
         assert!(paths.art_dir("alpha").join("grid.png").is_file());
+    }
+
+    fn listed(count: usize) -> Listing {
+        Listing {
+            games: (0..count)
+                .map(|index| Candidate {
+                    app_id: index.to_string(),
+                    title: format!("Game {index}"),
+                    size: 1,
+                    note: None,
+                    installed: true,
+                    poster: None,
+                })
+                .collect(),
+            ..Listing::default()
+        }
+    }
+
+    #[test]
+    fn every_step_sits_inside_the_dialog_padding() {
+        use crate::layout_probe::{bounds_at, layout, within};
+        let temp = TempDir::new().unwrap();
+        let (mut page, _) = Page::new(paths(temp.path(), false));
+        page.status.clear();
+        page.listing = Some(listed(40));
+        for (width, height) in [(900.0, 720.0), (360.0, 280.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            for step in [
+                Step::Games,
+                Step::Details,
+                Step::Review,
+                Step::Working,
+                Step::Finished,
+            ] {
+                page.step = step;
+                let mut view = page.view(Palette::DARK, width, 0.0);
+                let node = layout(&mut view, iced::Size::new(width, height));
+                let page_bounds = bounds_at(&node, &[0]);
+                assert!(within(page_bounds, inset), "{step:?}: {page_bounds:?}");
+                let back = bounds_at(&node, &[0, 0, 0]);
+                assert!(back.x >= 24.0 && back.y >= 24.0, "{step:?}: {back:?}");
+                let content = bounds_at(&node, &[0, 1]);
+                assert!(
+                    content.y + content.height <= height - 24.0 + 0.01,
+                    "{step:?}: {content:?}"
+                );
+            }
+        }
     }
 
     #[test]

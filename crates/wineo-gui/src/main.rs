@@ -13,6 +13,8 @@ mod focus_button;
 mod grid;
 mod grid_motion;
 mod keys;
+#[cfg(test)]
+mod layout_probe;
 mod library;
 mod logview;
 mod panel;

@@ -2468,53 +2468,56 @@ impl Page {
         let content: Element<'_, Event> = match (&self.listing, self.step) {
             // The grid scrolls on its own under fixed controls, so keyboard
             // focus can scroll it to a known row.
-            (Some(listing), Step::Games) => container(
-                column![body, self.grid(listing, palette, width)]
-                    .spacing(14)
-                    .height(Fill),
-            )
-            .max_width(780)
-            .width(Fill)
-            .height(Fill)
-            .padding(24)
-            .center_x(Fill)
-            .into(),
-            _ => scrollable(
-                container(body)
-                    .max_width(780)
-                    .width(Fill)
-                    .padding(24)
-                    .center_x(Fill),
-            )
-            .id(iced::widget::Id::new(BODY_ID))
-            .height(Fill)
-            .into(),
+            (Some(listing), Step::Games) => column![body, self.grid(listing, palette, width)]
+                .spacing(14)
+                .height(Fill)
+                .into(),
+            _ => scroll_body(body, Some(BODY_ID)),
         };
-        let page = column![row![back].align_y(Center), content]
-            .spacing(12)
-            .width(Fill)
-            .height(Fill);
-        let mut page: Element<'_, Event> = container(page).width(Fill).height(Fill).into();
+        let mut page = column![].spacing(12).max_width(PAGE_MAX_WIDTH).height(Fill);
         if self.leave_prompt {
-            page = container(
-                column![
-                    text("Discard this Heroic import draft?"),
-                    row![
-                        button("Keep editing").on_press(Event::KeepEditing),
-                        button("Discard").on_press(Event::Discard)
-                    ]
-                    .spacing(12),
-                    page,
+            page = page.push(text("Discard this Heroic import draft?")).push(
+                row![
+                    button("Keep editing").on_press(Event::KeepEditing),
+                    button("Discard").on_press(Event::Discard)
                 ]
-                .spacing(12)
-                .padding(24),
-            )
-            .width(Fill)
-            .height(Fill)
-            .into();
+                .spacing(12),
+            );
         }
-        page
+        page_frame(page.push(row![back].align_y(Center)).push(content))
     }
+}
+
+/// The widest an import page's content grows in a wide dialog.
+pub(super) const PAGE_MAX_WIDTH: f32 = 780.0;
+const PAGE_PADDING: f32 = 24.0;
+/// Keeps scrolled text clear of the scrollbar, which draws over its content.
+const SCROLL_GUTTER: f32 = 16.0;
+
+/// Insets an import page from the dialog's rounded border on every side, so
+/// Back sits inside the corner and scrolled content ends above the bottom.
+pub(super) fn page_frame<'a, Message: 'a>(
+    page: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    container(page)
+        .padding(PAGE_PADDING)
+        .width(Fill)
+        .height(Fill)
+        .center_x(Fill)
+        .into()
+}
+
+pub(super) fn scroll_body<'a, Message: 'a>(
+    body: impl Into<Element<'a, Message>>,
+    id: Option<&'static str>,
+) -> Element<'a, Message> {
+    let mut body = scrollable(container(body).padding(iced::Padding::ZERO.right(SCROLL_GUTTER)))
+        .width(Fill)
+        .height(Fill);
+    if let Some(id) = id {
+        body = body.id(iced::widget::Id::new(id));
+    }
+    body.into()
 }
 
 fn field<'a>(
@@ -2660,9 +2663,9 @@ const TILE_HEIGHT: f32 = 244.0;
 pub(super) const TILE_GAP: f32 = 12.0;
 
 /// How many tiles fit across a flow dialog `width` wide, after the page's
-/// max width, padding, and the scrollbar.
+/// padding, max width, and the scrollbar.
 pub(super) fn grid_columns(width: f32) -> usize {
-    let content = width.min(780.0) - 48.0 - 16.0;
+    let content = (width - 2.0 * PAGE_PADDING).min(PAGE_MAX_WIDTH) - SCROLL_GUTTER;
     ((content + TILE_GAP) / (TILE_OUTER_WIDTH + TILE_GAP))
         .floor()
         .max(1.0) as usize
@@ -3835,6 +3838,45 @@ mod tests {
             }
         }
         files
+    }
+
+    #[test]
+    fn every_step_sits_inside_the_dialog_padding() {
+        use crate::layout_probe::{bounds_at, layout, within};
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        for (width, height) in [(900.0, 720.0), (360.0, 280.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            for step in [
+                Step::Sources,
+                Step::Games,
+                Step::Details,
+                Step::Review,
+                Step::Working,
+                Step::Finished,
+            ] {
+                for leave_prompt in [false, true] {
+                    page.step = step;
+                    page.leave_prompt = leave_prompt;
+                    let back_index = if leave_prompt { 2 } else { 0 };
+                    let mut view =
+                        page.view_with_key_availability(Palette::DARK, width, 0.0, false);
+                    let node = layout(&mut view, iced::Size::new(width, height));
+                    let page_bounds = bounds_at(&node, &[0]);
+                    assert!(within(page_bounds, inset), "{step:?}: {page_bounds:?}");
+                    let back = bounds_at(&node, &[0, back_index, 0]);
+                    assert!(back.x >= 24.0 && back.y >= 24.0, "{step:?}: {back:?}");
+                    let content = bounds_at(&node, &[0, back_index + 1]);
+                    assert!(
+                        content.y + content.height <= height - 24.0 + 0.01,
+                        "{step:?}: {content:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
