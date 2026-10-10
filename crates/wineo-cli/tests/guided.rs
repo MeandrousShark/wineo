@@ -2563,7 +2563,7 @@ fn plain_import_steam_escape_returns_to_the_source_menu() {
     let mut command = f.wineo_at_home();
     command.arg("import");
     let mut pty = Pty::spawn(command);
-    pty.expect("  3) An installed Steam game");
+    pty.expect("  3) A Steam game");
     pty.expect("Source [1]: ");
     pty.send("3");
     pty.expect("Which Steam game?");

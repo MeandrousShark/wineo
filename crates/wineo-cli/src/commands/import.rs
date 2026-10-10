@@ -89,7 +89,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
                         &numbered([
                             ("An existing prefix".to_owned(), 1),
                             ("A manually added Heroic game".to_owned(), 2),
-                            ("An installed Steam game".to_owned(), 3),
+                            ("A Steam game".to_owned(), 3),
                         ]),
                         Some("1"),
                         true,

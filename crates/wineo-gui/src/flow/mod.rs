@@ -183,7 +183,7 @@ impl Page {
                             button("4 - Import from Steam")
                                 .on_press(Event::Steam)
                                 .padding(12),
-                            text("Installed Steam games"),
+                            text("Installed and owned Steam games"),
                         ]
                         .spacing(16),
                     ),
