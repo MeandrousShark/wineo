@@ -397,6 +397,25 @@ the changelog.
   - The app owns one Steam key operation at a time, like SteamGridDB's, so
     its result reaches Settings even after leaving and coming back. Both key
     rows' spinners now animate, which fixed the same miss in SteamGridDB's.
+- Acceptance polish (2026-10-09, maintainer). Merged before its last review
+  round at the maintainer's request, pending the final qa pass after
+  acceptance:
+  - Import pages (Heroic and Steam share the code) sit inside the dialog
+    border with 24 px padding, and their action rows wrap instead of
+    squeezing a button to nothing. The artwork editor and the New flow's
+    Environment row wrap the same way in narrow dialogs.
+  - Poster titles on import tiles and library cards wrap to two balanced
+    lines, measured with the rendered font, so a short word isn't left
+    alone on line 2. A title that still doesn't fit ends with `...`; on
+    120 px import tiles that includes long ones like Grand Theft Auto IV,
+    which the maintainer accepted.
+  - The import poster focus ring shows only after keyboard navigation, as
+    a primary ring around the poster, not after clicks.
+  - Lazy art loading uses real card heights instead of a fixed row pitch.
+  - Open: at a dialog height of 280 px or less, the import grid has no room
+    left under the header and action row, so no games show. How a short
+    dialog should scroll is the maintainer's call; the layout tests skip
+    that case (`heroic::grid_too_short`) until it's decided.
 
 ## Questions
 
@@ -589,6 +608,15 @@ small games you own but haven't installed, called GAME1 and GAME2 below
     reachable, and Settings scrolls to the Steam row. Check light and dark
     themes if you use both.
 17. `wineo import steam --remove-key`: `Removed the Steam Web API key`.
+18. Import page polish, on **Import from Steam** and **Import from Heroic**:
+    Back sits inside the dialog's corner with even margins; long titles wrap
+    to two balanced lines (`Sid Meier's` / `Civilization VI`); clicking a
+    poster shows no white box, and arrow keys bring back a ring around the
+    focused poster. In a narrow window the action row wraps, and the New
+    flow's details page puts Edit on its own line.
+19. Library: long titles wrap to two lines with the state and playtime still
+    under them, and art keeps loading while you scroll far down a big
+    library.
 
 Afterward, uninstall the test games in Steam if you don't want them, and
 `rm -r /tmp/acc-0048`.
