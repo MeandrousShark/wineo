@@ -5443,6 +5443,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "unicode-segmentation",
  "wineo-core",
 ]
 

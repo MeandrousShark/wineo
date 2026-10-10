@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use iced::advanced::text::{self, Paragraph as _};
 use iced::{Font, Pixels, Size};
+use unicode_segmentation::UnicodeSegmentation as _;
 
 const ELLIPSIS: &str = "...";
 
@@ -104,9 +105,10 @@ pub(crate) fn balance(title: &str, width: f32, measure: impl Fn(&str) -> f32) ->
     vec![first, second]
 }
 
-/// `line` cut between characters to fit `width` with an ellipsis.
+/// `line` cut to fit `width` with an ellipsis. Cuts fall between grapheme
+/// clusters, so an accent or a joined emoji is never split from its base.
 fn cut(line: &str, width: f32, measure: &impl Fn(&str) -> f32) -> String {
-    line.char_indices()
+    line.grapheme_indices(true)
         .rev()
         .map(|(index, _)| index)
         .filter(|end| *end > 0)
@@ -193,6 +195,19 @@ mod tests {
             ["Go", "Supercali..."]
         );
         assert_eq!(balance("Wide", 7.0, chars), ["..."]);
+    }
+
+    #[test]
+    fn cuts_keep_combining_marks_and_joined_emoji_whole() {
+        // Decomposed é is two chars, so a char cut could drop its accent.
+        let accented = "e\u{301}".repeat(10);
+        assert_eq!(balance(&accented, 42.0, chars), ["e\u{301}..."]);
+        // Woman technologist is three chars joined by a zero width joiner.
+        let coder = "\u{1f469}\u{200d}\u{1f4bb}";
+        assert_eq!(
+            balance(&coder.repeat(3), 49.0, chars),
+            [format!("{coder}...")]
+        );
     }
 
     #[test]
