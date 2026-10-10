@@ -16,7 +16,7 @@ portable copies don't, since Steam owns the prefix.
 $ wineo import steam --list
 APP ID   TITLE              SIZE     STATE           IMPORTED
 1086940  Baldur's Gate 3    140 GiB  installed       bg3
-2142790  Fields of Mistria  -        installing 42%
+2142790  Fields of Mistria  612 MiB  installing 42%
 292030   The Witcher 3      -        not installed
 ```
 

@@ -5,9 +5,9 @@ Every `wineo` command ends with one of these:
 | Code | Meaning |
 |---|---|
 | 0 | It worked, including when there was nothing to do, like `list --tag nope` or `stop` on something that isn't running. |
-| 1 | It failed. The reason is on stderr as `error: ...`, or in the `errors` array with `--json`. |
+| 1 | It failed. The reason is on stderr, usually as `error: ...`, or in the `errors` array with `--json`. |
 | 2 | The command line was wrong: an unknown flag, a missing argument, or two flags that don't go together. Nothing ran. |
-| 130 | It was canceled and nothing more was done: Ctrl+C, Esc or `q` at the first question of a guided flow, or answering no to a final confirmation. |
+| 130 | It was canceled and wineo did nothing more: Ctrl+C, Esc or `q` at the first question of a guided flow, or answering no to a final confirmation. |
 | 141 | Whatever was reading wineo's output went away, like `wineo list \| head -1`. Wineo stops quietly. |
 | N | `run`, `exec`, and `winetricks`, and installers from `new --install-exe` or `setup`, end with the program's own exit code. A program killed by a signal shows as 128 plus the signal, so 137 for SIGKILL. |
 
@@ -70,7 +70,8 @@ A few things to know:
   own exit code can't be collected.
 - `install -f` and `uninstall -f` exit 0 when Steam finishes, 1 when Steam
   cancels partway, and 130 on Ctrl+C, which stops following but never
-  Steam's work. Without `-f`, and for a no-op like `Already installed.`,
+  Steam's work. Steam canceling prints `Steam canceled the install.` without
+  an `error:` prefix, since nothing in wineo failed. Without `-f`, and for a no-op like `Already installed.`,
   they exit 0 once the request is handed to Steam.
 - The process wineo starts for a detached run never reports the game's exit
   code. It's recorded with the run instead: see `status NAME`.

@@ -564,7 +564,7 @@ the saved key. See [The SteamGridDB key](art.md#the-steamgriddb-key).
 
 **Steam Web API** works the same way for the key that lists
 [owned Steam games](steam.md#owned-games), checked with Steam before it's
-saved, and links to <https://steamcommunity.com/dev/apikey>. With
+saved, and shows where to get a key: <https://steamcommunity.com/dev/apikey>. With
 `WINEO_STEAM_KEY` set, it says that overrides the saved key.
 
 ## Keyboard

@@ -530,7 +530,9 @@ set -x XDG_STATE_HOME /tmp/acc-0048/state
 set -x XDG_CACHE_HOME /tmp/acc-0048/cache
 ```
 
-Run `wineo-gui` from the same shell when a step uses the app. You need a
+Run `wineo-gui` from the same shell when a step uses the app. The XDG dirs
+don't isolate the keyring, so steps 2, 15, and 17 save and remove your real
+Steam key; save it again afterward if you want to keep it. You need a
 Steam Web API key from <https://steamcommunity.com/dev/apikey>, and two
 small games you own but haven't installed, called GAME1 and GAME2 below
 (Cookie Clicker, 1454400, is free and about 100 MB).
