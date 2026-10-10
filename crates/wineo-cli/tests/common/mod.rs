@@ -20,6 +20,7 @@ pub use runners::{FAKE_GAMEMODERUN, FAKE_UMU, FAKE_WINE, FAKE_WINESERVER};
 #[allow(unused_imports)]
 pub mod snapshot;
 pub mod steam;
+pub mod steam_api;
 
 pub struct Fixture {
     pub root: tempfile::TempDir,
@@ -107,6 +108,8 @@ impl Fixture {
             .env("XDG_CACHE_HOME", root.join("cache"))
             .env_remove("WINEO_PORTABLE_DIR")
             .env_remove("WINEO_STEAMGRIDDB_KEY")
+            .env_remove("WINEO_STEAM_KEY")
+            .env_remove("WINEO_TEST_STEAM_API")
             // No session bus, so nothing a test runs can reach the real keyring.
             .env(
                 "DBUS_SESSION_BUS_ADDRESS",

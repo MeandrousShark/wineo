@@ -119,7 +119,7 @@ pub fn format_overview(overview: Overview, now: Timestamp, tz: &TimeZone) -> Gat
                 && let Some(KindReport::Proxied { install, .. }) = &row.kind
                 && install.state != "installed"
             {
-                row.state = install.display().to_owned();
+                row.state = install.label().to_owned();
             }
             row
         })

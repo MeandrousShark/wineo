@@ -214,8 +214,8 @@ fn header(report: &EnvironmentReport, now: Timestamp, tz: &TimeZone) -> String {
         && install.state != "installed"
     {
         return match &install.problem {
-            Some(reason) => format!("{name}: {} ({reason})", install.display()),
-            None => format!("{name}: {}", install.display()),
+            Some(reason) => format!("{name}: {} ({reason})", install.label()),
+            None => format!("{name}: {}", install.label()),
         };
     }
     match (status.state, &status.run) {

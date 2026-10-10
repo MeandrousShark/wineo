@@ -2497,6 +2497,45 @@ fn guided_steam_import_reviews_and_writes_the_chosen_name() {
 }
 
 #[test]
+fn guided_steam_import_lists_owned_games_after_installed_ones() {
+    let f = Fixture::new();
+    steam_import_fixture(&f);
+    let config = f.root.path().join(".local/share/Steam/config");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(
+        config.join("loginusers.vdf"),
+        r#""users" { "76561197960265729" { "MostRecent" "1" } }"#,
+    )
+    .unwrap();
+    let api = common::steam_api::SteamApi::start(vec![common::steam_api::owned(&[
+        (9, "Zeta Game"),
+        (7, "Alpha"),
+    ])]);
+    let mut command = f.wineo_at_home();
+    command
+        .env("WINEO_TEST_STEAM_API", &api.base)
+        .env("WINEO_STEAM_KEY", "guided-key")
+        .args(["import", "steam"]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Which Steam game?");
+    pty.expect("1) Alpha (7)");
+    pty.expect("2) Zeta Game (9, not installed)");
+    pty.expect("Game: ");
+    pty.send("2");
+    pty.expect("Environment name [zeta-game]: ");
+    pty.send("");
+    pty.expect("Ready to import zeta-game:");
+    pty.expect("state     not installed");
+    pty.expect("Import it? [Y/n]: ");
+    pty.send("");
+    pty.expect("Imported zeta-game.");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(0), "{output}");
+    assert!(!output.contains("guided-key"), "{output}");
+    assert!(f.config("zeta-game").contains("title = \"Zeta Game\""));
+}
+
+#[test]
 fn guided_steam_import_esc_walks_back_through_review_name_and_game() {
     let f = Fixture::new();
     steam_import_fixture(&f);

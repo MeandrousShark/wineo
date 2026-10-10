@@ -140,9 +140,16 @@ static void append(const char *path, const char *text) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3 || strcmp(argv[1], "-applaunch")) return 2;
     const char *root = getenv("WINEO_TEST_STEAM_FIXTURE");
     if (!root) return 3;
+    if (argc == 2 && !strncmp(argv[1], "steam://", 8)) {
+        char urls[PATH_MAX], line[1024];
+        snprintf(urls, sizeof(urls), "%s/steam-urls", root);
+        snprintf(line, sizeof(line), "%s\n", argv[1]);
+        append(urls, line);
+        return 0;
+    }
+    if (argc < 3 || strcmp(argv[1], "-applaunch")) return 2;
     char dispatches[PATH_MAX], mode_path[PATH_MAX], fifo[PATH_MAX];
     char linger[PATH_MAX], request_pids[PATH_MAX], path[PATH_MAX];
     snprintf(dispatches, sizeof(dispatches), "%s/steam-dispatches", root);
@@ -312,7 +319,8 @@ impl SteamFixture {
             .env("WINEO_TEST_STEAM_FIXTURE", self.f.root.path())
             .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "5000")
             .env("WINEO_TEST_STEAM_STALL_TIMEOUT_MS", "5000")
-            .env("WINEO_TEST_STEAM_SCAN_INTERVAL_MS", "25");
+            .env("WINEO_TEST_STEAM_SCAN_INTERVAL_MS", "25")
+            .env("WINEO_TEST_STEAM_FOLLOW_INTERVAL_MS", "50");
         command
     }
 
@@ -326,6 +334,15 @@ impl SteamFixture {
             .args(args)
             .output()
             .unwrap()
+    }
+
+    /// The `steam://` URLs the fake Steam was asked to open, in order.
+    pub fn urls(&self) -> Vec<String> {
+        fs::read_to_string(self.f.root.path().join("steam-urls"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     pub fn dispatch_count(&self) -> usize {

@@ -51,6 +51,20 @@ impl SteamApi {
         Self::build(BASE, true, TIMEOUT)
     }
 
+    /// The real API, except that debug builds send requests to the plain HTTP
+    /// server named by `WINEO_TEST_STEAM_API`, so CLI tests can stand in for
+    /// Steam. Release builds never look at the variable.
+    pub fn from_env() -> Result<Self, ApiError> {
+        #[cfg(debug_assertions)]
+        if let Some(base) = std::env::var("WINEO_TEST_STEAM_API")
+            .ok()
+            .filter(|base| !base.is_empty())
+        {
+            return Self::build(&base, false, TIMEOUT);
+        }
+        Self::new()
+    }
+
     /// A fixture server standing in for Steam, which may be plain HTTP.
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_base(base: &str) -> Result<Self, ApiError> {

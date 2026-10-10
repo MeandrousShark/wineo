@@ -197,6 +197,20 @@ pub enum End {
     Stopped,
 }
 
+/// Once a second. Debug builds let tests shorten it with
+/// `WINEO_TEST_STEAM_FOLLOW_INTERVAL_MS`.
+fn poll_interval() -> Duration {
+    const DEFAULT: Duration = Duration::from_secs(1);
+    if cfg!(debug_assertions) {
+        std::env::var("WINEO_TEST_STEAM_FOLLOW_INTERVAL_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .map_or(DEFAULT, Duration::from_millis)
+    } else {
+        DEFAULT
+    }
+}
+
 /// Follows one game's install or uninstall through its manifest. It takes no
 /// lock, since Steam is the only thing changing the manifest.
 pub struct Follow {
@@ -228,7 +242,7 @@ impl Follow {
             app_id: proxied.app_id.clone(),
             title: proxied.title.clone().unwrap_or_else(|| name.to_owned()),
             moved: false,
-            interval: Duration::from_secs(1),
+            interval: poll_interval(),
         })
     }
 

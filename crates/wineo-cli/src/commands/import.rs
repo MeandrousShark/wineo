@@ -26,7 +26,7 @@ enum Source {
     Prefix(PrefixArgs),
     /// Import a manually added Heroic game
     Heroic(import_heroic::Args),
-    /// Import an installed Steam game
+    /// Import a Steam game, installed or owned
     Steam(import_steam::Args),
 }
 

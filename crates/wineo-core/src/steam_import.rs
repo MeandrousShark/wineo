@@ -59,6 +59,9 @@ pub struct Entry {
     pub title: Option<String>,
     pub size_on_disk: Option<u64>,
     pub state: EntryState,
+    /// How far an install is, from 0 to 100, while it is installing and
+    /// Steam has written totals.
+    pub install_progress: Option<u8>,
     pub imported_as: Option<String>,
 }
 
@@ -151,7 +154,12 @@ pub fn listing(
         let imported_as = imported_as(&item.app_id);
         match item.manifest {
             Ok(manifest) if !manifest.is_tool() => {
-                let state = entry_state(&manifest.app_state());
+                let app_state = manifest.app_state();
+                let state = entry_state(&app_state);
+                let install_progress = match app_state {
+                    AppState::Installing(percent) => percent,
+                    _ => None,
+                };
                 if manifest.state() == InstallState::NotInstalled {
                     absent.insert(item.app_id, state);
                     continue;
@@ -161,6 +169,7 @@ pub fn listing(
                     title: Some(manifest.name),
                     size_on_disk: Some(manifest.size_on_disk),
                     state,
+                    install_progress,
                     imported_as,
                 });
             }
@@ -170,6 +179,7 @@ pub fn listing(
                 title: None,
                 size_on_disk: None,
                 state: EntryState::Unreadable(error),
+                install_progress: None,
                 imported_as,
             }),
         }
@@ -196,6 +206,7 @@ pub fn listing(
                     .get(&game.app_id)
                     .cloned()
                     .unwrap_or(EntryState::NotInstalled),
+                install_progress: None,
                 imported_as: imported_as(&game.app_id),
             });
         }
@@ -249,6 +260,27 @@ pub fn plan(
         size_on_disk: game.size_on_disk,
         state: game.state,
     }))
+}
+
+/// Whether importing `app_id` would look at the owned list, because nothing
+/// on disk settles it. Callers load the list only when this is true, so
+/// importing an installed game never needs a key or the network.
+pub fn needs_owned(paths: &Paths, global: &GlobalConfig, app_id: &str) -> bool {
+    let Ok(install) = active_install(paths, global) else {
+        return false;
+    };
+    if imported_games(paths).is_ok_and(|games| games.iter().any(|(id, _)| id == app_id)) {
+        return false;
+    }
+    match steam::manifests(&install)
+        .into_iter()
+        .find(|item| item.app_id == app_id)
+    {
+        Some(item) => item
+            .manifest
+            .is_ok_and(|manifest| manifest.state() == InstallState::NotInstalled),
+        None => true,
+    }
 }
 
 /// What Steam, or failing that the owned list, says about one app.
@@ -1187,5 +1219,58 @@ mod tests {
             format!("Steam's library at {} isn't available.", gone.display())
         );
         ready_with(&paths, &global, OwnedGames::Loaded(&owned), "292030");
+    }
+
+    #[test]
+    fn needs_owned_only_when_nothing_on_disk_settles_the_game() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let root = steam_root(&paths, false);
+        manifest(&root, "10", "Happy Game", 4, 1024);
+        manifest(&root, "11", "Queued Game", 2, 0);
+        fs::write(
+            root.join("steamapps/appmanifest_12.acf"),
+            "\"AppState\" { \"appid\" \"12\"",
+        )
+        .unwrap();
+        let global = GlobalConfig::default();
+
+        assert!(!needs_owned(&paths, &global, "10"));
+        assert!(needs_owned(&paths, &global, "11"));
+        assert!(needs_owned(&paths, &global, "99"));
+        // A manifest that can't be read is final, whatever the owned list says.
+        assert!(!needs_owned(&paths, &global, "12"));
+
+        let planned = ready(&paths, &global, "10", None);
+        imported(&paths, &planned);
+        assert!(!needs_owned(&paths, &global, "10"));
+    }
+
+    #[test]
+    fn needs_owned_is_false_without_steam() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        assert!(!needs_owned(&paths, &GlobalConfig::default(), "99"));
+    }
+
+    #[test]
+    fn list_carries_the_install_percent() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let root = steam_root(&paths, false);
+        fs::write(
+            root.join("steamapps/appmanifest_13.acf"),
+            "\"AppState\" { \"appid\" \"13\" \"name\" \"Downloading\" \"StateFlags\" \"1026\" \"BytesToDownload\" \"200\" \"BytesDownloaded\" \"50\" }",
+        )
+        .unwrap();
+        manifest(&root, "14", "Done Game", 4, 1);
+
+        let entries = listing(&paths, &GlobalConfig::default(), OwnedGames::Unloaded).unwrap();
+
+        let progress: Vec<_> = entries
+            .iter()
+            .map(|entry| (entry.app_id.as_str(), entry.install_progress))
+            .collect();
+        assert_eq!(progress, [("13", Some(25)), ("14", None)]);
     }
 }
