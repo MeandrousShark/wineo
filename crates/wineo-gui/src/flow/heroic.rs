@@ -1214,7 +1214,11 @@ impl Page {
         key_available: bool,
     ) -> Task<Event> {
         match event {
-            Event::Back => self.back(),
+            Event::Back => {
+                // The Back button is a click, so the grid it returns to shows no ring.
+                self.focus_visible = false;
+                self.back()
+            }
             Event::Discard => {
                 self.leave_prompt = false;
                 self.action = Some(Action::Choose);
@@ -4076,6 +4080,55 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn mouse_back_and_reopening_show_no_ring_until_a_key() {
+        let root = tempdir().unwrap();
+        let none = keyboard::Modifiers::empty();
+        let mut page = grid_page(root.path());
+        let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
+        let focus = page.focus.unwrap();
+        assert!(page.focus_ring(focus));
+        // Space chooses the focused game, and Import opens its details.
+        let _ = page.key(&Key::Named(Named::Space), none, 900.0);
+        open_details(&mut page, focus);
+        let _ = page.update(Event::Back);
+        assert_eq!(page.step, Step::Games);
+        assert!(!page.focus_ring(focus));
+        let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
+        assert!(page.focus_ring(page.focus.unwrap()));
+
+        // Leaving from the grid closes the page, and Add opens a fresh one.
+        let mut flow = super::super::Page::Choose(page.paths.clone());
+        let _ = flow.update(super::super::Event::Heroic);
+        let super::super::Page::Heroic(reopened) = &mut flow else {
+            panic!("expected the Heroic page");
+        };
+        reopened.step = Step::Games;
+        reopened.listing = page.listing.clone();
+        reopened.status.clear();
+        let count = reopened.listing.as_ref().unwrap().candidates.len();
+        assert!((0..count).all(|index| !reopened.focus_ring(index)));
+        let _ = flow.key(&Key::Named(Named::ArrowDown), none, 900.0);
+        let super::super::Page::Heroic(reopened) = &flow else {
+            unreachable!()
+        };
+        assert!(reopened.focus_ring(reopened.focus.unwrap()));
+    }
+
+    /// Prepares the chosen game the way the background task does.
+    fn open_details(page: &mut Page, index: usize) {
+        let _ = page.update(Event::ImportSelected);
+        let listing = page.listing.clone().unwrap();
+        let prepared = prepare_game(
+            &page.paths,
+            &listing.source,
+            listing.candidates[index].clone(),
+        )
+        .unwrap();
+        let _ = page.update(Event::Prepared(page.generation, Ok(Box::new(prepared))));
+        assert_eq!(page.step, Step::Details);
     }
 
     #[test]

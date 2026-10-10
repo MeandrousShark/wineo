@@ -451,7 +451,11 @@ impl Page {
 
     pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
         match event {
-            Event::Back => self.back(),
+            Event::Back => {
+                // The Back button is a click, so the grid it returns to shows no ring.
+                self.focus_visible = false;
+                self.back()
+            }
             Event::Toggle(index) if self.step == Step::Games && !self.waiting() => {
                 if let Some(game) = self
                     .listing
@@ -1402,6 +1406,39 @@ mod tests {
         assert!(!page.focus_ring(0));
         let _ = page.key(&Key::Named(Named::Space), none, 900.0);
         assert!(page.focus_ring(0));
+    }
+
+    #[test]
+    fn mouse_back_and_reopening_show_no_ring_until_a_key() {
+        let temp = TempDir::new().unwrap();
+        let paths = paths(temp.path(), false);
+        let none = keyboard::Modifiers::empty();
+        let (mut page, _) = Page::new(paths.clone());
+        page.status.clear();
+        page.listing = Some(listed(3));
+        let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
+        assert!(page.focus_ring(0));
+        page.step = Step::Details;
+        let _ = page.update(Event::Back);
+        assert_eq!(page.step, Step::Games);
+        assert!(!page.focus_ring(0));
+        let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
+        assert!(page.focus_ring(1));
+
+        // Leaving from the grid closes the page, and Add opens a fresh one.
+        let mut flow = super::super::Page::Choose(paths.clone());
+        let _ = flow.update(super::super::Event::Steam);
+        let super::super::Page::Steam(reopened) = &mut flow else {
+            panic!("expected the Steam page");
+        };
+        reopened.listing = Some(listed(3));
+        reopened.status.clear();
+        assert!((0..3).all(|index| !reopened.focus_ring(index)));
+        let _ = flow.key(&Key::Named(Named::ArrowDown), none, 900.0);
+        let super::super::Page::Steam(reopened) = &flow else {
+            unreachable!()
+        };
+        assert!(reopened.focus_ring(0));
     }
 
     #[test]
