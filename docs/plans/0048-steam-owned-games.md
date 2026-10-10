@@ -384,6 +384,19 @@ the changelog.
   - Debug builds read `WINEO_TEST_STEAM_API` and
     `WINEO_TEST_STEAM_FOLLOW_INTERVAL_MS` so CLI tests can stand in for
     Steam. Release builds compile both out.
+- Step 5 (2026-10-09):
+  - The CLI's owned-list loading moved into core as
+    `steam_import::OwnedData`, so the CLI and the desktop app decide when to
+    fetch the same way. CLI output didn't change.
+  - Import from Steam shows installed games first and loads the owned list
+    after them, so a slow fetch never blocks them.
+  - Uninstall from the context menu opens the game's panel, so Steam's
+    answer or a refusal shows there. It's offered for installed and updating
+    games only; the CLI also allows it mid-install.
+  - Installing cards aren't dimmed; not-installed and queued ones are.
+  - The app owns one Steam key operation at a time, like SteamGridDB's, so
+    its result reaches Settings even after leaving and coming back. Both key
+    rows' spinners now animate, which fixed the same miss in SteamGridDB's.
 
 ## Questions
 
