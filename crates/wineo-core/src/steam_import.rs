@@ -1,6 +1,7 @@
 //! Planning and registering installed Steam games as proxied environments.
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
@@ -14,9 +15,12 @@ use crate::cancel::Token;
 use crate::config::{self, GlobalConfig, Launcher};
 use crate::environment::{self, Environment};
 use crate::heroic_import::default_name;
+use crate::key_store::Keyring;
 use crate::operation::Locks;
 use crate::paths::Paths;
-use crate::steam::owned::{LoadError, Owned, OwnedGame};
+use crate::secret_service::SecretServiceKeyring;
+use crate::steam::api::{ApiError, SteamApi};
+use crate::steam::owned::{self, LoadError, Loaded, Owned, OwnedError, OwnedGame};
 use crate::steam::{self, AppState, Install, InstallState};
 
 /// What a command knows about the owned list. It is loaded once per command
@@ -36,6 +40,109 @@ impl OwnedGames<'_> {
         match self {
             OwnedGames::Loaded(owned) => owned.games.iter().find(|game| game.app_id == app_id),
             OwnedGames::Unloaded | OwnedGames::Failed(_) => None,
+        }
+    }
+}
+
+/// The line listings show when there is no Steam Web API key.
+pub const NO_KEY_HINT: &str = "Add a Steam Web API key to see uninstalled games.";
+
+/// What a frontend knows about the owned games, loaded once by whatever wants
+/// uninstalled games. The CLI and the desktop app share it, so both look for
+/// the key and fall back the same way.
+#[derive(Debug, Clone)]
+pub enum OwnedData {
+    /// Nothing was asked for, or Steam isn't found, which the import reports.
+    Unloaded,
+    /// There is no Steam Web API key.
+    NoKey,
+    /// The key couldn't be looked up, like a dismissed keyring prompt.
+    KeyFailed(String),
+    Failed(LoadError),
+    Loaded(Owned),
+}
+
+impl OwnedData {
+    /// Looks for the key and, with one, loads the list.
+    ///
+    /// Several accounts with none marked most recent is an error, since there
+    /// is no telling whose library to ask for. With `save` false (a dry run)
+    /// the saved list is left alone.
+    pub fn load(
+        paths: &Paths,
+        global: &GlobalConfig,
+        refresh: bool,
+        save: bool,
+    ) -> anyhow::Result<Self> {
+        let keyring = SecretServiceKeyring::for_spec(&steam::key::KEY_SPEC);
+        Self::load_with(
+            paths,
+            global,
+            refresh,
+            save,
+            |var| std::env::var_os(var),
+            &keyring,
+            SteamApi::from_env,
+        )
+    }
+
+    /// `load` with the key lookup and the API passed in, for tests.
+    pub fn load_with(
+        paths: &Paths,
+        global: &GlobalConfig,
+        refresh: bool,
+        save: bool,
+        lookup: impl Fn(&str) -> Option<OsString>,
+        keyring: &dyn Keyring,
+        api: impl FnOnce() -> Result<SteamApi, ApiError>,
+    ) -> anyhow::Result<Self> {
+        let key = match steam::key::find_key(paths, lookup, keyring) {
+            Ok(Some(key)) => key,
+            Ok(None) => return Ok(Self::NoKey),
+            Err(error) => return Ok(Self::KeyFailed(error.to_string())),
+        };
+        let Some(install) = steam::active_for(paths, global) else {
+            return Ok(Self::Unloaded);
+        };
+        let steam_id = steam::active_steam_id(&install).map_err(anyhow::Error::msg)?;
+        let api = match api() {
+            Ok(api) => api,
+            Err(error) => return Ok(Self::Failed(LoadError(OwnedError::Api(error)))),
+        };
+        let load = if save {
+            owned::load
+        } else {
+            owned::load_without_saving
+        };
+        Ok(
+            match load(paths, steam_id, Some(&key.value), &api, refresh) {
+                Ok(Loaded::Owned(owned)) => Self::Loaded(owned),
+                Ok(Loaded::NoKey) => Self::NoKey,
+                Err(error) => Self::Failed(error),
+            },
+        )
+    }
+
+    pub fn games(&self) -> OwnedGames<'_> {
+        match self {
+            Self::Unloaded | Self::NoKey | Self::KeyFailed(_) => OwnedGames::Unloaded,
+            Self::Failed(error) => OwnedGames::Failed(error),
+            Self::Loaded(owned) => OwnedGames::Loaded(owned),
+        }
+    }
+
+    /// What is wrong with the list, for listings that go on without it or
+    /// with an old one. A missing key isn't a problem here; see
+    /// `NO_KEY_HINT`.
+    pub fn problem(&self) -> Option<String> {
+        match self {
+            Self::KeyFailed(reason) => Some(format!("Couldn't get owned games: {reason}")),
+            Self::Failed(error) => Some(error.to_string()),
+            Self::Loaded(Owned {
+                warning: Some(warning),
+                ..
+            }) => Some(warning.clone()),
+            _ => None,
         }
     }
 }
@@ -1272,5 +1379,122 @@ mod tests {
             .map(|entry| (entry.app_id.as_str(), entry.install_progress))
             .collect();
         assert_eq!(progress, [("13", Some(25)), ("14", None)]);
+    }
+
+    const STEAM_ID: u64 = 76_561_197_960_265_729;
+
+    fn login(root: &Path, users: &[(u64, bool)]) {
+        let body: String = users
+            .iter()
+            .map(|(id, recent)| format!("\"{id}\" {{ \"MostRecent\" \"{}\" }}", u8::from(*recent)))
+            .collect();
+        fs::create_dir_all(root.join("config")).unwrap();
+        fs::write(
+            root.join("config/loginusers.vdf"),
+            format!("\"users\" {{ {body} }}"),
+        )
+        .unwrap();
+    }
+
+    fn with_key(name: &str) -> Option<OsString> {
+        (name == steam::key::KEY_VAR).then(|| OsString::from("SECRETKEY"))
+    }
+
+    fn cache(paths: &Paths, fetched_at: i64, games: &[(&str, &str)]) {
+        let games: Vec<_> = games
+            .iter()
+            .map(|(app_id, name)| serde_json::json!({ "app_id": app_id, "name": name }))
+            .collect();
+        let path = paths.steam_owned_cache(STEAM_ID);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            serde_json::json!({ "fetched_at": fetched_at, "games": games }).to_string(),
+        )
+        .unwrap();
+    }
+
+    fn unreachable_api() -> Result<SteamApi, ApiError> {
+        SteamApi::with_base(&steam::api::fixture::refused())
+    }
+
+    fn owned_data(paths: &Paths, refresh: bool) -> anyhow::Result<OwnedData> {
+        OwnedData::load_with(
+            paths,
+            &GlobalConfig::default(),
+            refresh,
+            true,
+            with_key,
+            &crate::key_store::NoKeyring,
+            unreachable_api,
+        )
+    }
+
+    #[test]
+    fn owned_data_without_a_key_never_asks_steam() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let root = steam_root(&paths, false);
+        login(&root, &[(STEAM_ID, true)]);
+        let data = OwnedData::load_with(
+            &paths,
+            &GlobalConfig::default(),
+            true,
+            true,
+            |_| None,
+            &crate::key_store::NoKeyring,
+            || panic!("no key means no request"),
+        )
+        .unwrap();
+        assert!(matches!(data, OwnedData::NoKey));
+        assert!(matches!(data.games(), OwnedGames::Unloaded));
+        assert_eq!(data.problem(), None);
+    }
+
+    #[test]
+    fn owned_data_uses_a_fresh_cache_and_falls_back_on_refresh_failures() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let root = steam_root(&paths, false);
+        login(&root, &[(STEAM_ID, true)]);
+
+        let failed = owned_data(&paths, false).unwrap();
+        assert!(matches!(failed.games(), OwnedGames::Failed(_)));
+        assert_eq!(
+            failed.problem().as_deref(),
+            Some("Couldn't get owned games: can't reach Steam")
+        );
+
+        cache(
+            &paths,
+            jiff::Timestamp::now().as_second(),
+            &[("20", "Owned")],
+        );
+        let fresh = owned_data(&paths, false).unwrap();
+        let OwnedGames::Loaded(owned) = fresh.games() else {
+            panic!("expected the cached list")
+        };
+        assert_eq!(owned.games[0].app_id, "20");
+        assert_eq!(fresh.problem(), None);
+
+        let stale = owned_data(&paths, true).unwrap();
+        assert!(matches!(stale.games(), OwnedGames::Loaded(_)));
+        assert_eq!(
+            stale.problem().as_deref(),
+            Some("Couldn't refresh owned games: can't reach Steam")
+        );
+    }
+
+    #[test]
+    fn owned_data_fails_when_no_account_is_most_recent() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let root = steam_root(&paths, false);
+        login(&root, &[(STEAM_ID, false), (STEAM_ID + 1, false)]);
+        let error = owned_data(&paths, false).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Steam doesn't say which account was used last"
+        );
     }
 }
