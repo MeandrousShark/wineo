@@ -3,6 +3,32 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.28.0 - 2026-10-09
+
+- Steam games ([0047](docs/plans/0047-steam-library.md)). `wineo import
+  steam` brings installed Steam games into the library as a new proxied
+  environment kind: tagged, counted in `wineo stats` with Steam's own
+  playtime, started and stopped from the CLI or the desktop app, with hooks
+  around wineo's launches. Steam keeps owning the game and its prefix, and
+  wineo never writes to Steam's files. Games started from the Steam client
+  show as running, and Stop works on them. See [Steam games](docs/steam.md).
+- Steam games take arguments, tags, a title, hooks, and a desktop entry.
+  Snapshots, winetricks, `exec`, clone, portable copies, env vars, and
+  runner settings are refused with one short line.
+- The global `steam` setting (`wineo set --global steam=flatpak`) picks
+  Flatpak Steam over a native install.
+- Import copies Steam's cached art, and `art fetch` and `--art` look Steam
+  games up on SteamGridDB by app id instead of by title.
+- `status --json` and `list --json` have `kind` for every environment, and
+  Steam games add `launcher`, `app_id`, `install`, and `started_by`. A Steam
+  game's `played.sessions` is `null`, and `played.seconds` is `null` when
+  Steam's playtime is unknown.
+- `wineo validate` checks Steam games: Steam missing, the game not
+  installed, or a library that can't be read.
+- The desktop app gets **Add**, **Import from Steam**, a Steam mark on
+  cards, grayscaled cards for games that aren't installed, and
+  **Waiting for Steam...** while a game starts.
+
 ## 0.27.1 - 2026-10-07
 
 - In the desktop app, Stop turns into Force stop when a game is still

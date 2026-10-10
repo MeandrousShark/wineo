@@ -1,4 +1,4 @@
-Status: approved
+Status: done
 
 # 0047: Steam installed games
 
