@@ -80,6 +80,10 @@ enum Command {
     Config(commands::config::Args),
     /// Start an environment in the background
     Start(commands::start::Args),
+    /// Ask Steam to install a Steam game
+    Install(commands::install::Args),
+    /// Ask Steam to uninstall a Steam game
+    Uninstall(commands::uninstall::Args),
     /// Stop a running environment
     Stop(commands::stop::Args),
     /// Stop an environment if it's running, then start it again
@@ -187,6 +191,8 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Setup(args) => commands::setup::run(&paths, args),
         Command::Config(args) => commands::config::run(&paths, args),
         Command::Start(args) => commands::start::run(&paths, args),
+        Command::Install(args) => commands::install::run(&paths, args),
+        Command::Uninstall(args) => commands::uninstall::run(&paths, args),
         Command::Stop(args) => commands::stop::run(&paths, args),
         Command::Restart(args) => commands::restart::run(&paths, args),
         Command::Import(args) => commands::import::run(&paths, args, verbose),
