@@ -104,8 +104,8 @@ Checked on 2026-10-09:
   512 update paused, 1024 update started, 2048 uninstalling, 131072
   validating, 262144 adding files, 524288 preallocating, 1048576
   downloading, 2097152 staging, 4194304 committing. Lutris's list numbers
-  them sequentially and is off past 4096. The real sequence during a fresh
-  install hasn't been observed yet; step 1 records it.
+  them sequentially and is off past 4096. Only a few of these reach the
+  manifest on disk; see step 1 under "Decisions during implementation".
 
 ## Proposed design
 
@@ -194,9 +194,9 @@ From question 3: `wineo install NAME`, and **Install** in the desktop app.
 - It returns once Steam accepts the handoff. It doesn't wait for the
   download unless `-f` is given.
 - Installing an installed game is a no-op: `Already installed.`
-- A queued or paused partial install opens Steam's dialog anyway, which
-  resumes it. An installing game is a no-op: `Steam is already installing
-  NAME.`
+- A queued install opens Steam's dialog anyway. An installing game is a
+  no-op: `Steam is already installing NAME.` A paused install looks the
+  same on disk, so it gets the same answer, and it's resumed in Steam.
 - An unreadable library or unknown state is refused with the reason, as
   `start` does today (`steam.rs:442`), since the game may be there.
 - Installing an environment that isn't a Steam game is refused: `Only Steam
@@ -231,7 +231,7 @@ Uninstalled.
   uninstall), and 1 if Steam stops partway: the manifest disappears during
   an install (`Steam canceled the install.`) or comes back fully installed
   during an uninstall (`Steam canceled the uninstall.`). A paused install
-  keeps following and shows `paused`.
+  keeps following, with no percent, until Steam resumes it.
 - A no-op (`Already installed.`, `Not installed.`) exits 0 right away.
 - Following uses the same manifest reader as `status`, polled once a
   second, and takes no lock while it waits.
@@ -242,12 +242,13 @@ From question 4.
 
 - `wineo uninstall NAME` opens `steam://uninstall/<app_id>` through the same
   handoff and returns. Steam's dialog asks for confirmation, so wineo
-  doesn't ask again. Step 1 confirms the dialog appears.
+  doesn't ask again. Step 1 confirmed it asks.
 - The config stays, and the game goes back to `not installed`.
 - A game that is `starting` or running is refused, including one started
   from the Steam client (found by the reaper scan): `Stop NAME before
   uninstalling it.`
-- A queued, paused, or running partial install is allowed. Steam's dialog
+- A queued or installing partial install (paused ones included) is
+  allowed. Steam's dialog
   cancels it.
 - An unreadable library or unknown state is refused with the reason.
 - A game that isn't installed is a no-op: `Not installed.` A game that
@@ -262,17 +263,19 @@ from the manifest:
 | Manifest | `install` | Display |
 | --- | --- | --- |
 | no manifest | `not_installed` | `not installed` |
-| not fully installed, update running or downloading | `installing` | `installing 42%` |
-| not fully installed, update paused | `install_paused` | `install paused 42%` |
-| not fully installed, only update required | `install_queued` | `install queued` |
+| not fully installed, update started (1024) or another updating bit | `installing` | `installing 42%` |
+| not fully installed, only update required (2) | `install_queued` | `install queued` |
 | fully installed plus any updating bit | `updating` | `updating` (unchanged) |
-| uninstalling | `uninstalling` | `uninstalling` |
+| uninstalling (2048), if Steam ever writes it | `uninstalling` | `uninstalling` |
 
 - Percent is `BytesDownloaded / BytesToDownload`, then staging bytes once
   downloading is done, like the launch watcher. No percent when the totals
   are zero.
-- The exact flag combinations come from step 1's observation, and the
-  table is amended if Steam does something else.
+- Step 1 found no paused state on disk: a paused install keeps `1026` and
+  its byte counts drop to zero, the same as an install that hasn't started
+  downloading. So a paused install shows as `installing` with no percent.
+- Steam rewrites the byte counts only now and then, so the percent moves
+  in jumps.
 - These are new values of the existing `install` field, not of `state`.
   `state` stays the run status (`view.rs:78`, 0047), so a script checking
   `state` sees no change, and a game can be idle and installing at once.
@@ -288,7 +291,7 @@ from the manifest:
 made sense when every Steam import was installed. Imported but uninstalled
 games are normal now, and `validate` has only errors and warnings
 (`validate.rs:46`), so the check is dropped: not installed, installing,
-paused, queued, and uninstalling are not reported. `status` and the desktop
+queued, and uninstalling are not reported. `status` and the desktop
 app already show them. Unreadable libraries and unknown state keep their
 existing checks. The `steam_game_not_installed` code goes away, which
 changes `validate`'s exit code and JSON for those environments and goes in
@@ -308,6 +311,25 @@ the changelog.
   matching the card.
 - Settings gets a **Steam Web API key** row beside the SteamGridDB one, with
   the same save, check, and remove behavior.
+
+## Decisions during implementation
+
+- Step 1 (2026-10-09, maintainer): a real install and uninstall of Cookie
+  Clicker (1454400) and Fields of Mistria (2142790), installed from
+  Steam's UI and watched once a second:
+  - The manifest appears as soon as Install is pressed, with `StateFlags`
+    `2`. It changes to `1026` (update required, update started) and keeps
+    it for the whole download, then turns `4`. Downloading, staging, and
+    update running never showed up on disk.
+  - Byte totals appear a few seconds into `1026`. `BytesDownloaded` was
+    rewritten about once per download (`187MB/306MB`), and staged bytes
+    moved along with it.
+  - A pause and resume (as the maintainer remembers it) kept `1026` and
+    dropped both byte counts to `0/0` for about two seconds. `512` never
+    appeared, so `install_paused` was dropped from the table.
+  - Uninstalling removed the manifest within a second, with no `2048`.
+  - `steam steam://install/1454400` opens Steam's install dialog, and
+    `steam steam://uninstall/1454400` opens its uninstall confirmation.
 
 ## Questions
 
@@ -409,10 +431,11 @@ Each step is reviewed by `qa-gpt` before it lands.
   `response` keeps the cache, `game_count: 0` replaces it, a key save
   refused on an empty `response`, and `--all --owned` fetching once.
 - Install and uninstall admission for each state: installed, not installed,
-  queued, paused, installing, uninstalling, unavailable, unknown, starting,
+  queued, installing, uninstalling, unavailable, unknown, starting,
   running from wineo, and running from the Steam client.
 - `-f` against a fake manifest that steps through states: install to
-  finished, a paused install, the manifest vanishing mid-install, an
+  finished, byte counts dropping to zero mid-install (a pause), the
+  manifest vanishing mid-install, an
   uninstall finishing and one coming back, non-terminal output, and Ctrl+C
   exiting 130 while the fake install carries on.
 - `validate` passes on a not-installed Steam game and still fails on an
