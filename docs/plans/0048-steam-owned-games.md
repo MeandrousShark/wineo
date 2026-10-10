@@ -412,10 +412,35 @@ the changelog.
   - The import poster focus ring shows only after keyboard navigation, as
     a primary ring around the poster, not after clicks.
   - Lazy art loading uses real card heights instead of a fixed row pitch.
-  - Open: at a dialog height of 280 px or less, the import grid has no room
-    left under the header and action row, so no games show. How a short
-    dialog should scroll is the maintainer's call; the layout tests skip
-    that case (`heroic::grid_too_short`) until it's decided.
+  - At a dialog height of 280 px or less, the import grid had no room left
+    under the header and action row, so no games showed. Window managers
+    like Hyprland ignore minimum sizes, so a window can get that short.
+    The maintainer settled it on 2026-10-10: the import page's title and
+    notes scroll with the grid, and Back and the action row stay pinned
+    outside the scroll, like New's review footer. The layout tests' short
+    dialog exemption (`heroic::grid_too_short`) goes away.
+- Acceptance (2026-10-10, maintainer): items 1 to 16, 18, and 19 pass.
+  The maintainer accepted item 17 (`--remove-key`) without running it: item
+  15's **Remove key** calls the same core `steam::key::remove_key` against
+  the real keyring, and `steam_owned.rs` covers the CLI's flags and output.
+  Item 18 passed
+  as written, but the maintainer asked for every page to match
+  [gui-style.md](../gui-style.md), with the whole app in scope:
+  - Text action buttons all use the guide's controls: 32 px high with 8 px
+    corners, a filled accent for the main action of a step, and neutral
+    for the rest. Before this, the New flow, the import pages, Tools, and
+    others used iced's stock buttons or shorter chip-style ones. A disabled
+    main action keeps its accent and dims rather than turning neutral. The
+    Remove dialog's **Remove** is danger, matching the context menu row
+    that opens it.
+  - Every `< Back` in the app is now `Back`, like New's.
+  - Choice lists (the numbered **Add** choices, New's program list, and
+    Heroic's source list) are quiet full-width rows in one grouped surface,
+    like the context menu, instead of stock buttons.
+  - Every scrollbar uses the library's thin rail (6 px, 4 px thumb, no
+    track). The thumb stays visible outside the library, so a short dialog
+    shows that there's more below. The library keeps hiding its thumb when
+    idle.
 
 ## Questions
 

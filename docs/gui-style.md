@@ -55,7 +55,20 @@ and Actions sit on a quieter row below. Use Play for the exact `game` tag and
 Launch otherwise. The target picker has a visible **Launch target:** label.
 Primary actions use a filled accent; secondary actions use a neutral surface
 and border. Destructive actions use danger only where their consequence calls
-for it. Keep text labels visible.
+for it. Keep text labels visible. Every text action button in the app uses
+these controls through the helpers in `ui.rs`, never iced's stock button
+style. Give each step or action row at most one accent button, for its main
+forward action (Next, Review, Import, Create); Back, Cancel, Browse, and
+Discard stay neutral. A disabled main action keeps its accent and dims. A
+dialog that confirms Remove uses danger, like the context menu row. Back
+buttons say **Back**, with no arrow. Lists of choices, like **Add**'s or a
+program list, use quiet full-width rows in one grouped surface, not
+buttons.
+
+Scrollbars use a thin rail: 6 px wide with a 4 px thumb in the border color
+and no visible track. Outside the Library the thumb is always shown, so a
+short window still signals more content. The Library hides its thumb while
+idle and shows it on hover or scroll.
 
 Hover, press, disabled, and keyboard focus must be visibly distinct in both
 palettes. Use a clear focus outline without changing button geometry. Disabled
