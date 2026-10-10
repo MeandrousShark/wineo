@@ -21,10 +21,23 @@ From the "Store library import" backlog row (2026-10-02) and
   wineo watches the manifest's state and downloaded bytes for progress.
 - Steam games are proxied environments with one config each, from an
   explicit `wineo import steam` (0047 question 1).
-- `rm` removes only wineo's config and never uninstalls (0047).
+- `rm` removes only wineo's config and never uninstalls (0047). Uninstalling
+  is its own command (question 4).
 
 On 2026-10-09 the maintainer split queue item 5 into this plan and a direct
 GOG plan, and parked Epic as a backlog row.
+
+The same day the maintainer answered the questions below:
+
+1. One listing: `--list` shows owned games with a state column, `--game`
+   imports either kind, `--all` stays installed-only, and `--all --owned`
+   takes the whole library (A).
+2. The key is set with `wineo import steam --key` and removed with
+   `--remove-key` (A).
+3. A new `wineo install NAME` and an **Install** button (A).
+4. `wineo uninstall NAME` and a desktop button open Steam's own uninstall
+   dialog (B).
+5. A not-installed Steam game is a note in `validate`, which passes (A).
 
 ## Existing foundation
 
@@ -66,8 +79,9 @@ Checked on 2026-10-09:
   browser, doesn't fit a CLI.
 - Keys come from `https://steamcommunity.com/dev/apikey`. Steam may refuse
   a key to accounts without a purchase or without Steam Guard.
-- The API sometimes misses games, mostly free ones, so manual import by app
-  id stays possible (`--game` with an id the list doesn't show).
+- The API sometimes misses games, mostly free ones. Those can still be
+  imported once Steam installs them, since installed games come from the
+  local scan.
 - `steam steam://install/<app_id>` opens Steam's install dialog, starting
   the client if needed. Flatpak Steam takes the same URL through `flatpak
   run com.valvesoftware.Steam`.
@@ -96,7 +110,8 @@ A second secret beside the SteamGridDB key, with the same read order:
   reqwest errors print their URL, so every Steam API error is stripped with
   `without_url()` and reported as a short reason. A test checks that no
   error text contains the key.
-- How you set it is question 2.
+- `wineo import steam --key` prompts for it and checks it, and
+  `--remove-key` removes it (question 2).
 
 ### The owned list
 
@@ -118,11 +133,13 @@ A second secret beside the SteamGridDB key, with the same read order:
 
 ### Importing an uninstalled game
 
-How uninstalled games show up and get imported is question 1. In every
-option:
+From question 1: `--list` shows every owned game with a state column,
+`--game` imports either kind, `--all` stays installed-only, and `--all
+--owned` takes the whole library. Also:
 
 - `plan` and `apply` stop refusing not-installed games when the owned list
-  has the app id, or when `--game` names an id directly. The written config
+  has the app id. An id that is neither installed nor owned is refused:
+  `App 12345 isn't installed or owned.` The written config
   is the same as for an installed game: `kind`, `launcher`, `app_id`,
   `title` (from the owned list), `tags = ["game"]`.
 - Art is copied from Steam's library cache when it's there, and `--art`
@@ -132,7 +149,7 @@ option:
 
 ### Installing
 
-How install is triggered is question 3.
+From question 3: `wineo install NAME`, and **Install** in the desktop app.
 
 - Wineo opens `steam://install/<app_id>` detached, through the same
   `__steam_request` handoff `start` uses (`supervisor/steam.rs:39`), so
@@ -142,6 +159,18 @@ How install is triggered is question 3.
 - Installing an installed game is a no-op: `Already installed.`
 - Installing an environment that isn't a Steam game is refused: `Only Steam
   games can be installed.`
+
+### Uninstalling
+
+From question 4.
+
+- `wineo uninstall NAME` opens `steam://uninstall/<app_id>` through the same
+  handoff and returns. Steam's dialog asks for confirmation, so wineo
+  doesn't ask again. Step 1 confirms the dialog appears.
+- The config stays, and the game goes back to `not installed`.
+- A running game is refused: `Stop NAME before uninstalling it.`
+- A game that isn't installed is a no-op: `Not installed.` A game that
+  isn't a Steam game is refused: `Only Steam games can be uninstalled.`
 
 ### Install progress
 
@@ -155,6 +184,7 @@ from the manifest:
 | not fully installed, update paused | `install_paused` | `install paused 42%` |
 | not fully installed, only update required | `install_queued` | `install queued` |
 | fully installed plus any updating bit | `updating` | `updating` (unchanged) |
+| uninstalling | `uninstalling` | `uninstalling` |
 
 - Percent is `BytesDownloaded / BytesToDownload`, then staging bytes once
   downloading is done, like the launch watcher. No percent when the totals
@@ -163,8 +193,8 @@ from the manifest:
   table is amended if Steam does something else.
 - `status`, `list`, `status --json` (`state` plus a new `progress` number,
   null when unknown), and the desktop app all show it.
-- `start` on an installing game is refused: `Steam is still installing
-  NAME.`
+- `start` on an installing or uninstalling game is refused: `Steam is
+  still installing NAME.` or `Steam is uninstalling NAME.`
 
 ### Validate
 
@@ -182,6 +212,8 @@ those environments and goes in the changelog.
 - A not-installed card's panel shows **Install** where Play is. Installing
   cards show a thin progress bar on the poster and the state word in the
   panel, from the existing 2-second reload.
+- Installed Steam games get **Uninstall** in the context menu, which opens
+  Steam's dialog.
 - The panel's hero and logo art are dimmed for not-installed games too,
   matching the card.
 - Settings gets a **Steam Web API key** row beside the SteamGridDB one, with
@@ -189,7 +221,10 @@ those environments and goes in the changelog.
 
 ## Questions
 
-🧐 1. How uninstalled games show up and get imported:
+All five were answered by the maintainer on 2026-10-09; see the settled
+list above. The options are kept as a record of what was weighed.
+
+1. How uninstalled games show up and get imported:
    - **A (recommended).** In the same listing, marked. `--list` shows
      every owned game with a state column. `--game` imports either kind.
      `--all` still means installed games only, and `--all --owned` takes
@@ -215,7 +250,7 @@ those environments and goes in the changelog.
 
    A keeps one list to scan and makes `--all` safe by default, since a
    whole library can be hundreds of games.
-🧐 2. Where the Steam Web API key is set:
+2. Where the Steam Web API key is set:
    - **A (recommended).** On the import command: `wineo import steam
      --key` prompts and checks it, `--remove-key` removes it. It sits where
      it's used, like Steam's own settings.
@@ -229,7 +264,7 @@ those environments and goes in the changelog.
    B: wineo steam key
    C: wineo key steam
    ```
-🧐 3. How install is triggered:
+3. How install is triggered:
    - **A (recommended).** A new `wineo install NAME` for Steam games, and an
      **Install** button in the desktop app. Explicit, and free for GOG to
      reuse later.
@@ -237,32 +272,35 @@ those environments and goes in the changelog.
      dialog instead of refusing.
    - **C.** A, plus `wineo import steam --game ID --install` to import and
      install in one go.
-🧐 4. Uninstalling:
+4. Uninstalling:
    - **A (recommended).** Not in this plan. Steam's client does it in two
      clicks, and wineo stays a tool that never removes game files. Backlog
      row.
    - **B.** `wineo uninstall NAME` and a desktop button that open
      `steam://uninstall/<app_id>`, Steam's own confirmation dialog.
-🧐 5. `validate` on not-installed Steam games:
+5. `validate` on not-installed Steam games:
    - **A (recommended).** A note, so `validate` passes.
    - **B.** A warning: `validate` passes, but warnings show in its summary.
    - **C.** Keep it an error.
 
 ## Implementation sequence
 
-1. Observe a real install (maintainer, with a primary-written watcher
-   script): record `StateFlags` and byte counts every second while Steam
-   installs, pauses, resumes, and finishes a small free game. Amend the
+1. Observe a real install and uninstall (maintainer, with a primary-written
+   watcher script): record `StateFlags` and byte counts every second while
+   Steam installs, pauses, resumes, finishes, and uninstalls a small free
+   game, and check that `steam://uninstall` shows a confirmation. Amend the
    install state table.
 2. Core: key descriptor and generalized key helpers, SteamID64 from the
    account, the Steam API request path with redacted errors, `GetOwnedGames`
    and the owned cache. (`coder`)
 3. Core: import of uninstalled games, install states and progress in
-   reports and JSON, the install handoff, and the validate level. (`coder`)
-4. CLI: listing and flags from question 1, key commands from question 2,
-   install from question 3, status and list output. (`coder`)
-5. Desktop app: import list, Install button, progress bar, panel dimming,
-   and the Settings key row. (`coder-opus`)
+   reports and JSON, the install and uninstall handoffs, and the validate
+   level. (`coder`)
+4. CLI: `--list` state column and `--all --owned`, `--key` and
+   `--remove-key`, `install`, `uninstall`, and status and list output.
+   (`coder`)
+5. Desktop app: import list, Install button, Uninstall menu item, progress
+   bar, panel dimming, and the Settings key row. (`coder-opus`)
 6. Docs: `steam.md`, `json-output.md`, `validate.md`, `gui.md`, `art.md`
    (keys), README, and the acceptance checklist. (primary)
 
@@ -277,14 +315,14 @@ Each step is reviewed by `qa-gpt` before it lands.
 - A local HTTP fixture for `GetOwnedGames`: success, 401, 403, empty
   `response`, and malformed JSON.
 - CLI integration tests with a fake Steam root: listing with and without a
-  key, importing an uninstalled game, installing (the handoff records the
-  URL instead of running Steam), and status during a fake install.
+  key, importing an uninstalled game, installing and uninstalling (the
+  handoff records the URL instead of running Steam), refusing to uninstall
+  a running game, and status during a fake install.
 - The acceptance checklist uses throwaway `XDG_*` dirs, a real Steam
   account and key, and a small free game to install.
 
 ## Scope limits
 
-- Uninstalling, unless question 4 picks B.
 - Family Sharing games and other accounts' libraries.
 - DLC lists and per-DLC install.
 - Choosing the install library from wineo. Steam's dialog asks.
