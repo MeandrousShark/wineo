@@ -4,12 +4,13 @@ use std::collections::HashMap;
 
 use dbus_secret_service::{EncryptionType, Error, SecretService};
 
-use crate::steamgriddb::{Keyring, KeyringError};
+use crate::key_store::{KeySpec, Keyring, KeyringError};
 
 /// One item in the Secret Service, found by its `service` and `account`
 /// attributes, the same pair tools like `secret-tool` search by.
 pub struct SecretServiceKeyring {
     account: String,
+    label: String,
 }
 
 const SERVICE: &str = "wineo";
@@ -17,12 +18,21 @@ const SERVICE: &str = "wineo";
 impl SecretServiceKeyring {
     /// The item holding the SteamGridDB key.
     pub fn steamgriddb() -> Self {
-        Self::for_account("steamgriddb")
+        Self::for_spec(&crate::steamgriddb::KEY_SPEC)
+    }
+
+    /// The item holding the key a spec describes.
+    pub fn for_spec(spec: &KeySpec) -> Self {
+        Self {
+            account: spec.account.to_owned(),
+            label: spec.label.to_owned(),
+        }
     }
 
     pub fn for_account(account: &str) -> Self {
         Self {
             account: account.to_owned(),
+            label: format!("{SERVICE} {account} key"),
         }
     }
 
@@ -63,10 +73,9 @@ impl Keyring for SecretServiceKeyring {
             Err(err) => return Err(failed(err)),
         };
         collection.ensure_unlocked().map_err(failed)?;
-        let label = format!("{SERVICE} {} key", self.account);
         collection
             .create_item(
-                &label,
+                &self.label,
                 self.attributes(),
                 key.as_bytes(),
                 true,

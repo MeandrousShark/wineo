@@ -23,6 +23,7 @@ pub mod hooks;
 pub mod import;
 pub mod install;
 pub mod installer;
+pub mod key_store;
 pub mod launch;
 pub mod log;
 pub mod name;
