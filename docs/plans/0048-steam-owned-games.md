@@ -505,6 +505,79 @@ Each step is reviewed by `qa-gpt` before it lands.
 - The acceptance checklist uses throwaway `XDG_*` dirs, a real Steam
   account and key, and a small free game to install.
 
+## Acceptance checklist
+
+Like 0047, wineo gets throwaway XDG dirs while Steam is found through your
+real home. In fish:
+
+```fish
+set -x XDG_CONFIG_HOME /tmp/acc-0048/config
+set -x XDG_DATA_HOME /tmp/acc-0048/data
+set -x XDG_STATE_HOME /tmp/acc-0048/state
+set -x XDG_CACHE_HOME /tmp/acc-0048/cache
+```
+
+Run `wineo-gui` from the same shell when a step uses the app. You need a
+Steam Web API key from <https://steamcommunity.com/dev/apikey>, and two
+small games you own but haven't installed, called GAME1 and GAME2 below
+(Cookie Clicker, 1454400, is free and about 100 MB).
+
+1. `wineo import steam --list` shows installed games only, under a header
+   row, and ends with `Add a Steam Web API key to see uninstalled games.`
+2. `wineo import steam --key` with a made-up key: `Couldn't check the key:
+   ...`, and nothing is saved. Then with your real key: `Saved the Steam Web
+   API key to the keyring`. The key is never echoed.
+3. `wineo import steam --list` now lists uninstalled games after installed
+   ones, with `-` for size and `not installed`, and GAME1 is there.
+   `ls /tmp/acc-0048/cache/wineo/` has `steam-owned-<id>.json`.
+4. `stat -c %Y` that file, then `wineo import steam --game GAME1 --dry-run`:
+   the review shows `state     not installed` and `Dry run, nothing was
+   imported.`, and the file's time hasn't changed.
+5. `wineo import steam --game GAME1 -n acc1`: `Imported acc1.`.
+   `wineo list` shows `acc1  not installed`, `wineo start acc1` refuses with
+   `Steam lists acc1 as not installed.`, and `wineo validate` reports
+   nothing for acc1.
+6. `wineo install acc1 -f`: Steam's install dialog opens, and the terminal
+   shows `Waiting for Steam's install dialog...`, then `Installing ...` with
+   a percent once Steam knows the size, then `Installed.`; `echo $status` is
+   0. While it installs, `wineo status acc1 --json` in another terminal (same
+   variables) has `"state":"inactive"`, `"install":"installing"`, and
+   `install_progress` as a number or null.
+7. `wineo start acc1`, then `wineo uninstall acc1`: refused with `Stop acc1
+   before uninstalling it.` Stop the game.
+8. `wineo uninstall acc1 -f`: Steam asks to confirm, then `Uninstalled.`
+   and exit 0. `wineo list` still has `acc1`, now `not installed`.
+9. `wineo install acc1 -f`, and press Ctrl+C while it's installing: exit
+   130, and Steam keeps installing. Run `wineo install acc1` again once it's
+   done: `Already installed.`
+10. `wineo import steam --all --dry-run` reviews only installed games, and
+    `wineo import steam --all --owned --dry-run` adds uninstalled ones.
+11. `WINEO_STEAM_KEY=bad wineo import steam --list --refresh`: warns
+    `Couldn't refresh owned games: ...` and still lists uninstalled games
+    from the saved list.
+12. In the app, **Add**, **Import from Steam**: installed games appear, then
+    **Getting owned games...**, then uninstalled games dimmed after them.
+    **Refresh** works. Import GAME2 as `acc2`.
+13. `acc2`'s card is grayed out and its panel has **Install** instead of
+    Play, with dimmed hero and logo art. **Install** opens Steam's dialog
+    and the panel says `Asked Steam to install acc2.`. While Steam installs,
+    the card has a progress bar and the panel's State says `installing N%`.
+    Once it's done, Play works.
+14. Right-click `acc2`, **Uninstall**: its panel opens and Steam asks to
+    confirm. Afterwards the card is grayed out again.
+15. **Settings**, **Steam Web API**: it says the key is saved in the
+    keyring. **Remove key**, then **Add**, **Import from Steam** shows the
+    hint and **Open Settings**, which goes to the key row. **Set key...**
+    with your key, leave Settings while it checks, and come back: the result
+    is shown.
+16. Shrink the window: the import page's Back and review buttons stay
+    reachable, and Settings scrolls to the Steam row. Check light and dark
+    themes if you use both.
+17. `wineo import steam --remove-key`: `Removed the Steam Web API key`.
+
+Afterward, uninstall the test games in Steam if you don't want them, and
+`rm -r /tmp/acc-0048`.
+
 ## Scope limits
 
 - Family Sharing games and other accounts' libraries.

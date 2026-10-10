@@ -53,7 +53,10 @@ Under the art are the environment's state and playtime, the same numbers
 read gets a warning dot, and its panel shows the error.
 
 [Steam games](steam.md) have a small Steam mark on their card. One Steam
-lists as not installed is grayed out and dimmed, and Play is disabled. One
+lists as not installed, or whose install is only queued, is grayed out and
+dimmed, and its panel shows **Install** in place of Play. A game Steam is
+installing gets a thin progress bar along the bottom of its poster once
+Steam knows the size, and the panel's State says `installing 42%`. One
 whose library is unavailable, or whose Steam files can't be read, gets a
 warning dot instead, since it may still be on disk. A Steam game's title is
 the one Steam has, and its playtime is Steam's total, with `-` for sessions.
@@ -108,6 +111,15 @@ Steam may be starting or updating first. A game started from the Steam
 client shows as running too, and **Stop** and **Force stop** work on it. The
 panel also shows **Launcher** (Steam), the game's **Proton** build when it
 has one, and its **Install size**.
+
+**Install** opens Steam's install dialog. The panel says **Asking Steam...**
+and then `Asked Steam to install NAME.`, or a note like `Already
+installed.`. Play stays off while a game is queued, installing, or
+uninstalling. Right-click an installed Steam game for **Uninstall**, which
+opens its panel and Steam's uninstall dialog; Steam asks for confirmation,
+so wineo doesn't. A running game is refused: `Stop NAME before
+uninstalling it.` The panel's hero and logo art are dimmed for a game that
+isn't installed, like its card.
 
 Games keep running after you close the app, the same as games started with
 `wineo start`. Reopen it to see or stop them.
@@ -411,7 +423,14 @@ automatically.
 
 Steam import shows the installed Steam games that aren't imported yet as a
 poster grid, using Steam's cached posters, with the same selection controls
-as Heroic import. Steam's own tools are left out, and a game Steam is
+as Heroic import. With a [Steam Web API key](steam.md#owned-games), games
+you own but haven't installed follow, dimmed, after **Getting owned
+games...**; they import the same way and show **Not installed** instead of a
+size. **Refresh** fetches the owned list again. Without a key, the page says
+`Add a Steam Web API key to see uninstalled games.` with **Open Settings**,
+which goes to the key. When the list can't be fetched, it says `Couldn't
+refresh owned games: REASON` and uses the saved list, or `Couldn't get owned
+games: REASON` when there isn't one. Steam's own tools are left out, and a game Steam is
 updating is marked **Updating in Steam**. Importing one game asks for its
 environment name, which defaults to a slug of the title. The review lists
 each game with its source, `game` tag, and Steam's cached art, and the
@@ -542,6 +561,11 @@ key. Both apply right away, outside the Save bar, and don't count as
 edits. You can leave the page while one runs, and its result shows when you
 come back. With `WINEO_STEAMGRIDDB_KEY` set, the section says it overrides
 the saved key. See [The SteamGridDB key](art.md#the-steamgriddb-key).
+
+**Steam Web API** works the same way for the key that lists
+[owned Steam games](steam.md#owned-games), checked with Steam before it's
+saved, and links to <https://steamcommunity.com/dev/apikey>. With
+`WINEO_STEAM_KEY` set, it says that overrides the saved key.
 
 ## Keyboard
 
