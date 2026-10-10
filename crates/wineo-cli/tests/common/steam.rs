@@ -319,7 +319,8 @@ impl SteamFixture {
             .env("WINEO_TEST_STEAM_FIXTURE", self.f.root.path())
             .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "5000")
             .env("WINEO_TEST_STEAM_STALL_TIMEOUT_MS", "5000")
-            .env("WINEO_TEST_STEAM_SCAN_INTERVAL_MS", "25");
+            .env("WINEO_TEST_STEAM_SCAN_INTERVAL_MS", "25")
+            .env("WINEO_TEST_STEAM_FOLLOW_INTERVAL_MS", "50");
         command
     }
 

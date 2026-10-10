@@ -228,6 +228,8 @@ fn fish_completes_environment_positions_and_filters_prefix() {
         "set",
         "winetricks",
         "validate",
+        "install",
+        "uninstall",
     ] {
         let names = complete(root.path(), "fish", &["wineo", command, "ha"]);
         assert!(names.contains(&"hades".to_owned()), "{command}: {names:?}");
