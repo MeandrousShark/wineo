@@ -38,7 +38,8 @@ pub fn act(paths: &Paths, name: &str, follow: bool, action: Action) -> anyhow::R
     }
     // An install Steam is already running can be followed too.
     if follow && matches!(outcome, Outcome::Opened | Outcome::AlreadyInstalling(_)) {
-        self::follow(paths, &global, name, action)
+        let joining = matches!(outcome, Outcome::AlreadyInstalling(_));
+        self::follow(paths, &global, name, action, joining)
     } else {
         Ok(ExitCode::SUCCESS)
     }
@@ -49,14 +50,17 @@ fn follow(
     global: &GlobalConfig,
     name: &str,
     action: Action,
+    joining: bool,
 ) -> anyhow::Result<ExitCode> {
     let mut follow = Follow::new(paths, global, name, action)?;
-    let title = follow.title().to_owned();
+    if joining {
+        follow = follow.already_installing();
+    }
     // Ctrl+C stops following. Steam's work is its own and carries on.
     let cancellation = Cancellation::new()?;
     let mut screen = Screen::new(std::io::stdout().is_terminal());
-    let end = follow.wait(&cancellation.token, |update| {
-        if let Some(line) = line(action, &title, update) {
+    let end = follow.wait(&cancellation.token, |update, title| {
+        if let Some(line) = line(action, title, update) {
             screen.show(update, line);
         }
     });

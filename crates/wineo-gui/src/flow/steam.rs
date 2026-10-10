@@ -1264,11 +1264,7 @@ mod tests {
             .collect();
         assert_eq!(
             notes,
-            [
-                None,
-                Some("Updating in Steam"),
-                Some("Installing in Steam"),
-            ]
+            [None, Some("Updating in Steam"), Some("Installing in Steam"),]
         );
     }
 

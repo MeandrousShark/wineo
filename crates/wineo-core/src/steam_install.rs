@@ -246,6 +246,16 @@ impl Follow {
         })
     }
 
+    /// Starts an install follow as one already seen working, for when the
+    /// request found Steam installing the game. Without it a manifest that
+    /// vanishes before the first look reads as a dialog not yet answered, and
+    /// the wait never ends.
+    #[must_use]
+    pub fn already_installing(mut self) -> Self {
+        self.moved = true;
+        self
+    }
+
     /// The game's title: Steam's own once its manifest has been read, then the
     /// config's, then the environment's name.
     pub fn title(&self) -> &str {
@@ -304,14 +314,15 @@ impl Follow {
     }
 
     /// Polls every `interval` until the install or uninstall ends or `cancel`
-    /// asks to stop. `report` sees every look, including the last.
-    pub fn wait(&mut self, cancel: &Token, mut report: impl FnMut(&Update)) -> End {
+    /// asks to stop. `report` sees every look, including the last, with the
+    /// title as that look left it.
+    pub fn wait(&mut self, cancel: &Token, mut report: impl FnMut(&Update, &str)) -> End {
         loop {
             if cancel.is_canceled() {
                 return End::Stopped;
             }
             let update = self.poll();
-            report(&update);
+            report(&update, &self.title);
             match update {
                 Update::Finished => return End::Finished,
                 Update::SteamCanceled => return End::SteamCanceled,
@@ -801,6 +812,53 @@ mod tests {
     }
 
     #[test]
+    fn joining_an_install_steam_already_runs_ends_if_it_vanishes_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        let root = steam_root(&paths);
+        game(&paths, "witcher");
+        // Installing when the request looked, canceled before the first poll.
+        write_manifest(&root, 1026, 400, 100);
+        let outcome = ask(
+            &paths,
+            "witcher",
+            Action::Install,
+            &Recorded::default(),
+            true,
+        )
+        .unwrap();
+        assert!(matches!(outcome, Outcome::AlreadyInstalling(_)));
+        remove_manifest(&root);
+
+        let mut follow = follower(&paths, Action::Install).already_installing();
+        follow.interval = Duration::from_millis(10);
+        assert_eq!(follow.wait(&Token::new(), |_, _| {}), End::SteamCanceled);
+
+        // A plain install still waits for the dialog.
+        assert_eq!(follower(&paths, Action::Install).poll(), Update::Waiting);
+    }
+
+    #[test]
+    fn wait_reports_the_title_each_look_left() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        let root = steam_root(&paths);
+        game(&paths, "witcher");
+        let mut follow = follower(&paths, Action::Install);
+        follow.interval = Duration::from_millis(10);
+        let token = Token::new();
+        let mut titles = Vec::new();
+        let end = follow.wait(&token, |update, title| {
+            titles.push(title.to_owned());
+            if *update == Update::Waiting {
+                write_manifest(&root, 4, 0, 0);
+            }
+        });
+        assert_eq!(end, End::Finished);
+        assert_eq!(titles, ["Config Title", "Real Title"]);
+    }
+
+    #[test]
     fn a_manifest_that_never_appeared_is_waited_for_without_a_timeout() {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(temp.path());
@@ -871,7 +929,7 @@ mod tests {
         write_manifest(&root, 4, 0, 0);
         let mut follow = follower(&paths, Action::Install);
         let mut seen = Vec::new();
-        let end = follow.wait(&Token::new(), |update| seen.push(update.clone()));
+        let end = follow.wait(&Token::new(), |update, _| seen.push(update.clone()));
         assert_eq!(end, End::Finished);
         assert_eq!(seen, [Update::Finished]);
 
@@ -881,7 +939,7 @@ mod tests {
         follow.interval = Duration::from_millis(10);
         let token = Token::new();
         let mut looks = 0;
-        let end = follow.wait(&token, |_| {
+        let end = follow.wait(&token, |_, _| {
             looks += 1;
             if looks == 3 {
                 token.cancel();
@@ -895,7 +953,7 @@ mod tests {
         write_manifest(&root, 1026, 0, 0);
         let token = Token::new();
         token.cancel();
-        assert_eq!(follow.wait(&token, |_| panic!("looked")), End::Stopped);
+        assert_eq!(follow.wait(&token, |_, _| panic!("looked")), End::Stopped);
     }
 
     fn remove_manifest_if_any(root: &Path) {
