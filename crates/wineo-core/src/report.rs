@@ -105,14 +105,25 @@ impl KindReport {
 pub struct InstallReport {
     pub state: &'static str,
     pub problem: Option<String>,
+    /// How far an install is, from 0 to 100. None when there's no percent or
+    /// the game isn't installing.
+    pub progress: Option<u8>,
 }
 
 impl InstallReport {
     pub fn display(&self) -> &'static str {
-        if self.state == "not_installed" {
-            "not installed"
-        } else {
-            self.state
+        match self.state {
+            "not_installed" => "not installed",
+            "install_queued" => "install queued",
+            other => other,
+        }
+    }
+
+    /// `display` with the percent, like `installing 42%`.
+    pub fn label(&self) -> String {
+        match (self.state, self.progress) {
+            ("installing", Some(percent)) => format!("installing {percent}%"),
+            _ => self.display().to_owned(),
         }
     }
 }
@@ -120,10 +131,17 @@ impl InstallReport {
 impl From<crate::steam::AppState> for InstallReport {
     fn from(state: crate::steam::AppState) -> Self {
         use crate::steam::AppState;
+        let mut progress = None;
         let (state, problem) = match state {
             AppState::Installed => ("installed", None),
             AppState::Updating => ("updating", None),
             AppState::NotInstalled => ("not_installed", None),
+            AppState::Installing(percent) => {
+                progress = percent;
+                ("installing", None)
+            }
+            AppState::InstallQueued => ("install_queued", None),
+            AppState::Uninstalling => ("uninstalling", None),
             AppState::Unavailable(path) => (
                 "unavailable",
                 Some(format!(
@@ -133,7 +151,11 @@ impl From<crate::steam::AppState> for InstallReport {
             ),
             AppState::Unknown(reason) => ("unknown", Some(reason)),
         };
-        Self { state, problem }
+        Self {
+            state,
+            problem,
+            progress,
+        }
     }
 }
 

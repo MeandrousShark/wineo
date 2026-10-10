@@ -35,6 +35,7 @@ const TOOL_APP_IDS: [&str; 5] = ["228980", "1070560", "1391110", "1628350", "418
 // The trailing spaces keep games like "Protonic" from matching.
 const TOOL_NAME_PREFIXES: [&str; 3] = ["Proton ", "Steam Linux Runtime", "Steamworks "];
 
+const UPDATE_REQUIRED: u32 = 2;
 const FULLY_INSTALLED: u32 = 4;
 const UNINSTALLING: u32 = 2048;
 const UPDATING: u32 =
@@ -208,6 +209,51 @@ impl Manifest {
         state_from_flags(self.state_flags)
     }
 
+    /// The finer state wineo shows, which tells an install in progress from a
+    /// game that isn't there.
+    pub fn app_state(&self) -> AppState {
+        let flags = self.state_flags;
+        if flags & UNINSTALLING != 0 {
+            AppState::Uninstalling
+        } else if flags & FULLY_INSTALLED != 0 {
+            if flags & UPDATING != 0 {
+                AppState::Updating
+            } else {
+                AppState::Installed
+            }
+        } else if flags & UPDATING != 0 {
+            AppState::Installing(self.install_percent())
+        } else if flags & UPDATE_REQUIRED != 0 {
+            AppState::InstallQueued
+        } else {
+            AppState::NotInstalled
+        }
+    }
+
+    /// How far an install is, from 0 to 100. See `install_bytes`.
+    pub fn install_percent(&self) -> Option<u8> {
+        self.install_bytes()
+            .map(|(done, total)| percent(done, total))
+    }
+
+    /// Bytes done and bytes in all for the phase an install is in: downloading
+    /// first, then staging once the download is done, as the launch watcher
+    /// reads it. None when Steam hasn't written any totals.
+    pub fn install_bytes(&self) -> Option<(u64, u64)> {
+        if self.bytes_to_download > 0 && self.bytes_downloaded < self.bytes_to_download {
+            Some((self.bytes_downloaded, self.bytes_to_download))
+        } else if self.bytes_to_stage > 0 {
+            Some((
+                self.bytes_staged.min(self.bytes_to_stage),
+                self.bytes_to_stage,
+            ))
+        } else if self.bytes_to_download > 0 {
+            Some((self.bytes_to_download, self.bytes_to_download))
+        } else {
+            None
+        }
+    }
+
     pub fn is_tool(&self) -> bool {
         is_tool(&self.app_id, &self.name)
     }
@@ -362,6 +408,11 @@ impl Progress {
     }
 }
 
+pub(crate) fn percent(done: u64, total: u64) -> u8 {
+    // Widened so a huge total can't overflow the multiplication.
+    u8::try_from((u128::from(done) * 100 / u128::from(total)).min(100)).unwrap_or(100)
+}
+
 /// Whether an app is one of Steam's tools rather than a game.
 pub fn is_tool(app_id: &str, name: &str) -> bool {
     TOOL_APP_IDS.contains(&app_id)
@@ -373,8 +424,16 @@ pub fn is_tool(app_id: &str, name: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppState {
     Installed,
+    /// Fully installed, and Steam is updating it.
     Updating,
     NotInstalled,
+    /// Not fully installed and Steam is working on it. A paused install looks
+    /// the same on disk, with its byte counts dropped to zero. The percent is
+    /// None when there are no totals.
+    Installing(Option<u8>),
+    /// Steam has the install waiting, and hasn't started it.
+    InstallQueued,
+    Uninstalling,
     /// A library that might hold the game can't be read, so the game may be
     /// there. Carries that library's path.
     Unavailable(PathBuf),
@@ -395,6 +454,12 @@ pub(crate) fn app_snapshot(
     install: Option<&Install>,
     app_id: &str,
 ) -> (AppState, Option<Progress>) {
+    let (state, manifest) = app_details(install, app_id);
+    (state, manifest.map(|manifest| manifest.progress()))
+}
+
+/// The state of one app with the manifest it came from, when there is one.
+pub fn app_details(install: Option<&Install>, app_id: &str) -> (AppState, Option<Manifest>) {
     let Some(install) = install else {
         return (AppState::Unknown("Steam isn't found".to_owned()), None);
     };
@@ -427,14 +492,7 @@ pub(crate) fn app_snapshot(
             }
         };
         return match parse_manifest(&text, app_id) {
-            Ok(manifest) => {
-                let state = match manifest.state() {
-                    InstallState::Installed => AppState::Installed,
-                    InstallState::Updating => AppState::Updating,
-                    InstallState::NotInstalled => AppState::NotInstalled,
-                };
-                (state, Some(manifest.progress()))
-            }
+            Ok(manifest) => (manifest.app_state(), Some(manifest)),
             Err(error) => (
                 AppState::Unknown(format!("{}: {error}", path.display())),
                 None,

@@ -31,6 +31,8 @@ use crate::runtime::{RunMode, RunState, RunStatus, Runtime, exit_code};
 
 mod steam;
 
+pub(crate) use steam::request as request_steam;
+
 /// The hidden command a detached supervisor runs as.
 pub const SUPERVISE_COMMAND: &str = "__supervise";
 

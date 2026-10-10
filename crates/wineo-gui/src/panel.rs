@@ -1050,6 +1050,7 @@ mod tests {
                 install: wineo_core::report::InstallReport {
                     state,
                     problem: None,
+                    progress: None,
                 },
                 proton: None,
                 size: None,

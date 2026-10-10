@@ -90,7 +90,23 @@ pub enum Host {
         install: crate::steam::Install,
         app_id: String,
         baseline: Option<crate::steam::Baseline>,
+        /// What is asked of Steam. Absent in a request written before
+        /// installs were handed off, which was always a launch.
+        #[serde(default)]
+        request: SteamRequest,
     },
+}
+
+/// What a request to the Steam client asks for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SteamRequest {
+    #[default]
+    Launch,
+    /// Opens Steam's install dialog.
+    Install,
+    /// Opens Steam's uninstall confirmation.
+    Uninstall,
 }
 
 impl Host {
@@ -553,6 +569,33 @@ impl Launch {
         })
     }
 
+    /// A request to the Steam client, like opening its install dialog. It
+    /// carries no baseline, since nothing waits for a game process.
+    pub(crate) fn steam_request(
+        paths: &Paths,
+        install: crate::steam::Install,
+        app_id: &str,
+        request: SteamRequest,
+    ) -> Self {
+        Self {
+            host: Host::Proxied {
+                install,
+                app_id: app_id.to_owned(),
+                baseline: None,
+                request,
+            },
+            target: None,
+            args: Vec::new(),
+            cwd: paths.home().to_owned(),
+            env: BTreeMap::new(),
+            wrappers: Wrappers::default(),
+            wayland: Wayland::Off,
+            gameid: None,
+            store: None,
+            build_guards: Vec::new(),
+        }
+    }
+
     pub fn command(&self) -> Command {
         let wrappers = self.wrappers.command_line();
         let mut command = match &self.host {
@@ -561,7 +604,10 @@ impl Launch {
                 .expect("the runner was resolved when this launch was built"),
             Host::Native { exe } => runner::wrapped(exe, &wrappers),
             Host::Proxied {
-                install, app_id, ..
+                install,
+                app_id,
+                request,
+                ..
             } => {
                 let mut command = match install.kind() {
                     crate::steam::InstallKind::Native => Command::new("steam"),
@@ -571,7 +617,11 @@ impl Launch {
                         command
                     }
                 };
-                command.args(["-applaunch", app_id]);
+                match request {
+                    SteamRequest::Launch => command.args(["-applaunch", app_id]),
+                    SteamRequest::Install => command.arg(format!("steam://install/{app_id}")),
+                    SteamRequest::Uninstall => command.arg(format!("steam://uninstall/{app_id}")),
+                };
                 command
             }
         };
@@ -959,9 +1009,22 @@ fn steam_target(
     let install = crate::steam::active_for(paths, global);
     match crate::steam::app_state(install.as_ref(), &proxied.app_id) {
         crate::steam::AppState::Installed | crate::steam::AppState::Updating => {}
-        crate::steam::AppState::NotInstalled => {
+        // A queued install has nothing to play yet, so it reads as not installed.
+        crate::steam::AppState::NotInstalled | crate::steam::AppState::InstallQueued => {
             return Err(Error::StartFailed(format!(
                 "Steam lists {} as not installed.",
+                environment.name
+            )));
+        }
+        crate::steam::AppState::Installing(_) => {
+            return Err(Error::StartFailed(format!(
+                "Steam is still installing {}.",
+                environment.name
+            )));
+        }
+        crate::steam::AppState::Uninstalling => {
+            return Err(Error::StartFailed(format!(
+                "Steam is uninstalling {}.",
                 environment.name
             )));
         }
@@ -979,6 +1042,7 @@ fn steam_target(
             install,
             app_id: proxied.app_id.clone(),
             baseline: None,
+            request: SteamRequest::Launch,
         },
         target: Some("steam".to_owned()),
         args: overrides.args.clone(),

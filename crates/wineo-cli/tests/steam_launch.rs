@@ -977,3 +977,25 @@ fn lost_proxied_run_does_not_kill_a_live_group_or_write_a_session() {
     assert!(!s.f.stats_log("civ").exists());
     assert_success(&s.run(&["start", "civ"]));
 }
+
+#[test]
+fn start_is_refused_while_steam_installs_or_uninstalls_the_game() {
+    let s = SteamFixture::new();
+    s.config("");
+    for (flags, message) in [
+        (1026, "Steam is still installing civ."),
+        (512 | 2, "Steam is still installing civ."),
+        (4 | 2048, "Steam is uninstalling civ."),
+        (2, "Steam lists civ as not installed."),
+    ] {
+        s.add_game("289070", "Civilization VI", flags);
+        let output = s.run(&["start", "civ"]);
+        assert!(!output.status.success(), "{flags}");
+        assert!(
+            stderr(&output).contains(message),
+            "{flags}: {}",
+            stderr(&output)
+        );
+    }
+    assert_eq!(s.dispatch_count(), 0);
+}

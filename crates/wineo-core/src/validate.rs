@@ -138,7 +138,6 @@ pub enum Code {
     DesktopPortable,
     SteamNotFound,
     SteamInstallMissing,
-    SteamGameNotInstalled,
     SteamLibraryUnavailable,
     SteamDataUnknown,
     ArtConfigInvalid,
@@ -152,7 +151,7 @@ pub enum Code {
 }
 
 impl Code {
-    pub const ALL: [Code; 38] = [
+    pub const ALL: [Code; 37] = [
         Code::GlobalConfigInvalid,
         Code::TemplateInvalid,
         Code::TemplateUnresolved,
@@ -180,7 +179,6 @@ impl Code {
         Code::DesktopPortable,
         Code::SteamNotFound,
         Code::SteamInstallMissing,
-        Code::SteamGameNotInstalled,
         Code::SteamLibraryUnavailable,
         Code::SteamDataUnknown,
         Code::ArtConfigInvalid,
@@ -222,7 +220,6 @@ impl Code {
             Code::DesktopPortable => "desktop_portable",
             Code::SteamNotFound => "steam_not_found",
             Code::SteamInstallMissing => "steam_install_missing",
-            Code::SteamGameNotInstalled => "steam_game_not_installed",
             Code::SteamLibraryUnavailable => "steam_library_unavailable",
             Code::SteamDataUnknown => "steam_data_unknown",
             Code::ArtConfigInvalid => "art_config_invalid",
@@ -255,7 +252,6 @@ impl Code {
             | Code::NativeExeInvalid
             | Code::SteamNotFound
             | Code::SteamInstallMissing
-            | Code::SteamGameNotInstalled
             | Code::SteamDataUnknown
             | Code::RestoreInterrupted
             | Code::ArtConfigInvalid => Level::Error,
@@ -308,7 +304,6 @@ impl Code {
             }
             Code::SteamNotFound
             | Code::SteamInstallMissing
-            | Code::SteamGameNotInstalled
             | Code::SteamLibraryUnavailable
             | Code::SteamDataUnknown => Area::Steam,
             Code::ArtConfigInvalid
@@ -873,13 +868,14 @@ fn check_proxied_steam(
         return;
     };
     match steam::app_state(Some(install), &proxied.app_id) {
-        AppState::Installed | AppState::Updating => {}
-        AppState::NotInstalled => report.push(Problem::new(
-            Code::SteamGameNotInstalled,
-            Some(name),
-            format!("Steam lists {name} as not installed."),
-            None,
-        )),
+        // A game Steam doesn't have yet is a normal import now, and `status`
+        // already says where an install stands.
+        AppState::Installed
+        | AppState::Updating
+        | AppState::NotInstalled
+        | AppState::Installing(_)
+        | AppState::InstallQueued
+        | AppState::Uninstalling => {}
         AppState::Unavailable(library) => report.push(Problem::new(
             Code::SteamLibraryUnavailable,
             Some(name),
@@ -2466,14 +2462,36 @@ mod tests {
     }
 
     #[test]
-    fn proxied_validate_reports_a_game_that_is_not_installed() {
+    fn proxied_validate_does_not_report_a_game_that_is_not_installed() {
         let f = Fixture::new();
         f.proxied("game", "77", false);
         f.steam_root();
-        let problem = f.only(Code::SteamGameNotInstalled);
-        assert_eq!(problem.level, Level::Error);
-        assert_eq!(problem.area, Area::Steam);
-        assert_eq!(problem.message, "Steam lists game as not installed.");
+        assert_eq!(f.codes(), []);
+        // Queued, installing, and uninstalling are normal states too.
+        for flags in [2, 1026, 4 | 2048] {
+            f.steam_manifest(
+                "77",
+                &format!(
+                    "\"AppState\" {{ \"appid\" \"77\" \"name\" \"Game\" \"StateFlags\" \"{flags}\" }}"
+                ),
+            );
+            assert_eq!(f.codes(), [], "flags {flags}");
+        }
+    }
+
+    #[test]
+    fn a_not_installed_game_passes_while_an_unrelated_error_still_fails() {
+        let f = Fixture::new();
+        f.proxied("game", "77", false);
+        f.proxied("broken", "78", false);
+        f.steam_manifest(
+            "78",
+            "\"AppState\" { \"appid\" \"78\" \"StateFlags\" \"bad\" }",
+        );
+        let report = f.check();
+        assert_eq!(codes(&report), [Code::SteamDataUnknown]);
+        assert_eq!(report.problems[0].environment.as_deref(), Some("broken"));
+        assert_eq!(report.errors(), 1);
     }
 
     #[test]

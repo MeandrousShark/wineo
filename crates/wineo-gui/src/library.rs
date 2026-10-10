@@ -114,7 +114,9 @@ impl Card {
     pub(super) fn not_installed(&self) -> bool {
         self.steam
             .as_ref()
-            .is_some_and(|steam| steam.install.state == "not_installed")
+            // A queued install has nothing on disk yet, so it dims like a game
+            // Steam doesn't have.
+            .is_some_and(|steam| matches!(steam.install.state, "not_installed" | "install_queued"))
     }
 
     pub(super) fn install_allows_play(&self) -> bool {
@@ -516,7 +518,8 @@ mod tests {
         for (flags, state, playable, dimmed) in [
             (4, "installed", true, false),
             (1030, "updating", true, false),
-            (2, "not installed", false, true),
+            (0, "not installed", false, true),
+            (2, "install queued", false, true),
         ] {
             fs::write(steamapps.join("appmanifest_123.acf"), format!(
                 r#""AppState" {{ "appid" "123" "name" "Live title" "installdir" "Game" "StateFlags" "{flags}" "SizeOnDisk" "2048" }}"#)).unwrap();
