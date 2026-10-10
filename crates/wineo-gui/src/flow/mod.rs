@@ -5,7 +5,7 @@ pub(crate) mod new;
 mod prefix;
 mod steam;
 
-use iced::widget::{button, column, container, text};
+use iced::widget::{button, column, container, scrollable, text};
 use iced::{Element, Fill, Task, keyboard};
 use wineo_core::paths::Paths;
 
@@ -158,22 +158,27 @@ impl Page {
                 column![
                     button("Back").on_press(Event::Back),
                     text("Add to your library").size(28),
-                    button("1 - New environment")
-                        .on_press(Event::New)
-                        .padding(12),
-                    text("An installer, an existing executable, or an empty environment"),
-                    button("2 - Import prefix")
-                        .on_press(Event::Prefix)
-                        .padding(12),
-                    text("Copy or register an existing Wine prefix or Proton compatdata"),
-                    button("3 - Import from Heroic")
-                        .on_press(Event::Heroic)
-                        .padding(12),
-                    text("Manually added Windows and native Linux games"),
-                    button("4 - Import from Steam")
-                        .on_press(Event::Steam)
-                        .padding(12),
-                    text("Installed Steam games"),
+                    scrollable(
+                        column![
+                            button("1 - New environment")
+                                .on_press(Event::New)
+                                .padding(12),
+                            text("An installer, an existing executable, or an empty environment"),
+                            button("2 - Import prefix")
+                                .on_press(Event::Prefix)
+                                .padding(12),
+                            text("Copy or register an existing Wine prefix or Proton compatdata"),
+                            button("3 - Import from Heroic")
+                                .on_press(Event::Heroic)
+                                .padding(12),
+                            text("Manually added Windows and native Linux games"),
+                            button("4 - Import from Steam")
+                                .on_press(Event::Steam)
+                                .padding(12),
+                            text("Installed Steam games"),
+                        ]
+                        .spacing(16),
+                    ),
                 ]
                 .spacing(16),
             )

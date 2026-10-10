@@ -596,6 +596,10 @@ In this plan (question 7).
   `Steam isn't found.`, matching `start` and `status`. The desktop app reads
   Steam's manifests and `config.vdf` once per library load, and not at all
   when nothing is proxied.
+- Acceptance fixes (2026-10-09, maintainer): the Add dialog was a fixed 430
+  px tall, sized for three choices, so **Import from Steam** was clipped
+  off the bottom (item 10). It's 560 px now, and the choices scroll in a
+  smaller window with Back kept outside the scroll.
 
 ## Questions
 

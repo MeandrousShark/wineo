@@ -251,8 +251,9 @@ impl App {
         if let Some(flow) = &self.flow {
             let palette = self.palette;
             let generation = self.flow_generation;
+            // Fits all four Add choices; smaller windows scroll them.
             let height = if matches!(flow, crate::flow::Page::Choose(_)) {
-                430.0
+                560.0
             } else {
                 720.0
             };
