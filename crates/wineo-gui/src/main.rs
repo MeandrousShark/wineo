@@ -2423,8 +2423,16 @@ mod tests {
                 let mut card = card(&format!("game-{index}"), State::Inactive, 0);
                 // Every third row has a titled card, which adds the
                 // identifier line and makes that row taller.
-                if (index / columns).is_multiple_of(3) && index.is_multiple_of(columns) {
+                let row = index / columns;
+                if row.is_multiple_of(3) && index.is_multiple_of(columns) {
                     card.display_title = format!("Game {index}");
+                }
+                // Wrapped state and playtime labels make rows taller too.
+                if row % 5 == 1 && index % columns == 1 {
+                    card.state = State::SteamRunning;
+                }
+                if row % 7 == 2 && index % columns == 2 {
+                    card.playtime = "1234 hours 56 minutes across many sessions".to_owned();
                 }
                 card.art = Some(art_file(&format!("/tmp/art-{index}.png"), index as u64));
                 card

@@ -25,6 +25,8 @@ const CARD_POSTER_HEIGHT: f32 = 240.0;
 const CARD_SPACING: f32 = 4.0;
 /// The identifier line and the state and playtime row.
 const CARD_CONTEXT_SIZE: f32 = 12.0;
+const CARD_DOT: f32 = 8.0;
+const CARD_META_SPACING: f32 = 8.0;
 
 /// The identifier shows as muted context only when a title replaces it.
 fn shows_identifier(card: &Card) -> bool {
@@ -41,9 +43,24 @@ pub(crate) fn card_height(card: &Card) -> f32 {
         + CARD_SPACING
         + crate::tile_title::two_line_height(CARD_TITLE_SIZE)
         + CARD_SPACING
-        + line;
+        + meta_height(card);
     if shows_identifier(card) {
         height += CARD_SPACING + line;
+    }
+    height
+}
+
+/// The state and playtime row's height. Its labels wrap when they outgrow
+/// the card, and a row hands each child whatever width the ones before it
+/// left, so this measures them in that order.
+fn meta_height(card: &Card) -> f32 {
+    let mut available = CARD_WIDTH - 2.0 * CARD_META_SPACING - CARD_DOT;
+    let mut height = CARD_DOT;
+    for label in [card.state_word(), card.playtime()] {
+        let size =
+            crate::tile_title::wrapped_size(label, available, CARD_CONTEXT_SIZE, Font::DEFAULT);
+        available -= size.width;
+        height = height.max(size.height);
     }
     height
 }
@@ -153,8 +170,8 @@ impl App {
         let dot_color = card.dot(palette);
         let meta = row![
             container(Space::new())
-                .width(8)
-                .height(8)
+                .width(CARD_DOT)
+                .height(CARD_DOT)
                 .style(move |_| container::Style::default()
                     .background(dot_color)
                     .border(border::rounded(4))),
@@ -165,7 +182,7 @@ impl App {
                 .size(CARD_CONTEXT_SIZE)
                 .color(palette.muted),
         ]
-        .spacing(8)
+        .spacing(CARD_META_SPACING)
         .align_y(Center);
         let mut content = column![
             framed,
@@ -1016,6 +1033,27 @@ pub(super) fn scroll_style(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn card_height_counts_wrapped_state_and_playtime() {
+        use crate::layout_probe::layout;
+        use wineo_core::runtime::State;
+        let app = crate::tests::app();
+        let plain = crate::tests::card("game", State::Inactive, 60);
+        let mut steam = crate::tests::card("game", State::SteamRunning, 60);
+        steam.display_title = "Game".to_owned();
+        let mut long_playtime = crate::tests::card("game", State::Stopped, 60);
+        long_playtime.playtime = "1234 hours 56 minutes across many sessions".to_owned();
+        let mut both = crate::tests::card("game", State::SteamRunning, 60);
+        both.playtime = long_playtime.playtime.clone();
+        for card in [&plain, &steam, &long_playtime, &both] {
+            let mut view = app.card(card);
+            let built = layout(&mut view, Size::new(400.0, 900.0)).bounds().height;
+            assert_eq!(card_height(card), built, "{:?}", card.state);
+        }
+        assert!(card_height(&steam) > card_height(&plain) + 15.0);
+        assert!(card_height(&long_playtime) > card_height(&plain));
+    }
 
     #[test]
     fn card_titles_wrap_to_two_balanced_lines_in_a_fixed_height() {

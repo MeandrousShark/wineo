@@ -14,12 +14,40 @@ const ELLIPSIS: &str = "...";
 /// frame while something animates, so results are kept per title and style.
 pub(crate) fn lines(title: &str, width: f32, size: f32, font: Font) -> Vec<String> {
     thread_local! {
-        static CACHE: RefCell<Cache> = RefCell::new(Cache::new(CACHE_LIMIT));
+        static CACHE: RefCell<Cache<Vec<String>>> = RefCell::new(Cache::new(CACHE_LIMIT));
     }
     let key = (title.to_owned(), width.to_bits(), size.to_bits(), font);
     CACHE.with_borrow_mut(|cache| {
         cache.get_or_insert_with(key, || {
             balance(title, width, |content| measure(content, size, font))
+        })
+    })
+}
+
+/// The size a text widget with default settings takes for `content` when
+/// it may wrap within `width`, for predicting the height of wrapped labels.
+pub(crate) fn wrapped_size(content: &str, width: f32, size: f32, font: Font) -> Size {
+    thread_local! {
+        static CACHE: RefCell<Cache<Size>> = RefCell::new(Cache::new(CACHE_LIMIT));
+    }
+    let width = width.max(0.0);
+    let key = (content.to_owned(), width.to_bits(), size.to_bits(), font);
+    CACHE.with_borrow_mut(|cache| {
+        cache.get_or_insert_with(key, || {
+            let bounds = <iced::Renderer as text::Renderer>::Paragraph::with_text(text::Text {
+                content,
+                bounds: Size::new(width, f32::INFINITY),
+                size: Pixels(size),
+                line_height: text::LineHeight::default(),
+                font,
+                align_x: text::Alignment::Default,
+                align_y: iced::alignment::Vertical::Top,
+                shaping: text::Shaping::default(),
+                wrapping: text::Wrapping::default(),
+            })
+            .min_bounds();
+            // The widget never reports more width than it was offered.
+            Size::new(bounds.width.min(width), bounds.height)
         })
     })
 }
@@ -30,15 +58,15 @@ const CACHE_LIMIT: usize = 8192;
 
 type Key = (String, u32, u32, Font);
 
-/// Wrapped titles by title and style. Renamed and removed titles stop being
+/// Measurements by text and style. Renamed and removed titles stop being
 /// used, so once the cache is full it drops whatever wasn't used recently.
-struct Cache {
-    entries: HashMap<Key, (Vec<String>, u64)>,
+struct Cache<V> {
+    entries: HashMap<Key, (V, u64)>,
     tick: u64,
     limit: usize,
 }
 
-impl Cache {
+impl<V: Clone> Cache<V> {
     fn new(limit: usize) -> Self {
         Self {
             entries: HashMap::new(),
@@ -47,7 +75,7 @@ impl Cache {
         }
     }
 
-    fn get_or_insert_with(&mut self, key: Key, wrap: impl FnOnce() -> Vec<String>) -> Vec<String> {
+    fn get_or_insert_with(&mut self, key: Key, wrap: impl FnOnce() -> V) -> V {
         self.tick += 1;
         if let Some((lines, used)) = self.entries.get_mut(&key) {
             *used = self.tick;
