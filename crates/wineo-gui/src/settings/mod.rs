@@ -2115,6 +2115,14 @@ impl App {
         self.settings = Some(page);
         task
     }
+    /// Global settings, scrolled to the Steam Web API key row once loaded.
+    pub(crate) fn open_steam_key_settings(&mut self) -> Task<Message> {
+        let task = self.navigate_section(crate::sidebar::Section::Settings);
+        if let Some(page) = self.settings.as_mut().filter(|page| page.is_global()) {
+            page.reveal_steam_key = true;
+        }
+        task
+    }
     pub(crate) fn settings_update(&mut self, event: Event) -> Task<Message> {
         self.update_settings_work_refusal();
         if let Some((generation, sequence)) = event.steamgriddb_token() {

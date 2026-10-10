@@ -14,8 +14,16 @@ use crate::theme::Palette;
 #[derive(Debug, Clone)]
 pub(crate) enum Action {
     Choose,
-    Library { name: Option<String>, launch: bool },
-    Settings { name: String, launch: bool },
+    Library {
+        name: Option<String>,
+        launch: bool,
+    },
+    Settings {
+        name: String,
+        launch: bool,
+    },
+    /// Leaves the dialog for Settings, at the Steam Web API key row.
+    SteamKey,
 }
 
 #[derive(Debug, Clone)]
@@ -121,7 +129,7 @@ impl Page {
     pub(crate) fn spinning(&self) -> bool {
         match self {
             Self::Heroic(page) => page.waiting(),
-            Self::Steam(page) => page.waiting(),
+            Self::Steam(page) => page.spinning(),
             _ => false,
         }
     }

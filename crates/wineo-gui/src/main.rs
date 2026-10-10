@@ -1312,6 +1312,9 @@ impl App {
             }
             self.flow = None;
             self.flow_generation = self.flow_generation.wrapping_add(1);
+            if matches!(action, flow::Action::SteamKey) {
+                return self.open_steam_key_settings();
+            }
             let generation = self.flow_generation;
             let paths = self.paths.clone();
             return Task::perform(
@@ -1348,7 +1351,7 @@ impl App {
             }
         }
         let (name, launch, settings) = match action {
-            flow::Action::Choose => return Task::none(),
+            flow::Action::Choose | flow::Action::SteamKey => return Task::none(),
             flow::Action::Library { name, launch } => (name, launch, false),
             flow::Action::Settings { name, launch } => (Some(name), launch, true),
         };
@@ -2444,6 +2447,20 @@ mod tests {
             size: None,
         });
         card
+    }
+
+    #[test]
+    fn the_steam_key_link_opens_global_settings_at_the_key_row() {
+        let mut app = app();
+        let _ = app.update(Message::Add);
+        let generation = app.flow_generation;
+        let _ = app.flow_update(generation, flow::Event::Steam);
+        assert!(app.flow.is_some());
+        app.flow = None;
+        let _ = app.open_steam_key_settings();
+        let page = app.settings.as_ref().unwrap();
+        assert!(page.is_global());
+        assert!(page.reveal_steam_key);
     }
 
     #[test]
