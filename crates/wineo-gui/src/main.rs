@@ -125,6 +125,7 @@ pub(crate) struct App {
     steamgriddb_input_session_sequence: u64,
     steamgriddb_pending: HashSet<(u64, u64)>,
     steamgriddb_late_result: Option<settings::Event>,
+    steam_key_work: settings::SteamKeyWork,
     art_page: Option<String>,
     art_pages: HashMap<String, art_page::Page>,
     pending_art_writes: HashSet<(String, u64, u64, art_page::EnvironmentIdentity)>,
@@ -337,6 +338,7 @@ impl App {
             steamgriddb_input_session_sequence: 0,
             steamgriddb_pending: HashSet::new(),
             steamgriddb_late_result: None,
+            steam_key_work: settings::SteamKeyWork::default(),
             art_page: None,
             art_pages: HashMap::new(),
             pending_art_writes: HashSet::new(),
@@ -441,7 +443,10 @@ impl App {
             || self.checkups.values().any(|results| results.checking)
             || self.change.is_some()
             || (self.section == sidebar::Section::Trash && self.trash_page.reviewing)
-            || self.settings.as_ref().is_some_and(|page| page.saving)
+            || self
+                .settings
+                .as_ref()
+                .is_some_and(|page| page.saving || page.key_busy())
             || self.flow.as_ref().is_some_and(flow::Page::spinning)
     }
 
