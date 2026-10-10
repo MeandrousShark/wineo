@@ -1576,13 +1576,16 @@ impl Page {
                 body = body.push(text(
                     "Choose the game executable. The installer itself is not a target.",
                 ));
-                if let Some(report) = &self.report {
-                    for (label, exe) in &report.programs {
-                        body = body.push(
-                            button(text(format!("{label} - {exe}")))
-                                .on_press(Event::Program(exe.clone())),
-                        );
-                    }
+                if let Some(report) = &self.report
+                    && !report.programs.is_empty()
+                {
+                    body = body.push(ui::list_group(
+                        report.programs.iter().map(|(label, exe)| {
+                            ui::list_row(ui::list_row_text(format!("{label} - {exe}")), palette)
+                                .on_press(Event::Program(exe.clone()))
+                        }),
+                        palette,
+                    ));
                 }
                 body = body.push(
                     row![

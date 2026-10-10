@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 
-use iced::widget::{Button, Container, Space, Text, button, container, scrollable, text};
+use iced::widget::{Button, Column, Container, Space, Text, button, container, scrollable, text};
 use iced::{Color, Element, Fill, Font, Theme, border, font};
 
 use crate::theme::Palette;
@@ -160,6 +160,64 @@ pub(crate) fn accent_base<'a, M: 'a>(
         .height(BUTTON_HEIGHT)
         .padding([0, 16])
         .style(move |theme: &iced::Theme, status| accent_style(color, theme.palette().text, status))
+}
+
+/// A quiet full-width row for choosing one of several options. Group them
+/// with `list_group`.
+pub(crate) fn list_row<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    palette: Palette,
+) -> Button<'a, M> {
+    button(content)
+        .width(Fill)
+        .padding([10, 12])
+        .style(move |_, status| list_row_style(palette, status))
+}
+
+pub(crate) fn list_row_text<'a>(label: impl text::IntoFragment<'a>) -> Text<'a> {
+    text(label).size(14)
+}
+
+pub(crate) fn list_row_style(palette: Palette, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Active | button::Status::Disabled => Color::TRANSPARENT,
+        button::Status::Hovered => palette.primary.scale_alpha(0.10),
+        button::Status::Pressed => palette.primary.scale_alpha(0.22),
+    };
+    button::Style {
+        background: Some(background.into()),
+        text_color: if status == button::Status::Disabled {
+            palette.muted
+        } else {
+            palette.foreground
+        },
+        border: border::rounded(CONTROL_RADIUS).width(1).color(
+            if status == button::Status::Pressed {
+                palette.primary
+            } else {
+                Color::TRANSPARENT
+            },
+        ),
+        ..button::Style::default()
+    }
+}
+
+/// Rows in one grouped surface with a separator between each pair.
+pub(crate) fn list_group<'a, M: Clone + 'a>(
+    rows: impl IntoIterator<Item = Button<'a, M>>,
+    palette: Palette,
+) -> Container<'a, M> {
+    let mut list = Column::new().width(Fill);
+    for (index, row) in rows.into_iter().enumerate() {
+        if index > 0 {
+            list = list.push(separator(palette));
+        }
+        list = list.push(row);
+    }
+    container(list)
+        .width(Fill)
+        .padding(4)
+        .style(move |_| section_style(palette))
 }
 
 pub(crate) fn secondary_style(palette: Palette, status: button::Status) -> button::Style {

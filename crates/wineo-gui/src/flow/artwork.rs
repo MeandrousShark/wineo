@@ -1210,7 +1210,8 @@ mod tests {
         use crate::layout_probe::probe;
         let draft = Draft::new();
         // Page padding and the scrollbar gutter come off the dialog width.
-        for width in [280.0_f32 - 48.0 - 16.0, 780.0 - 16.0] {
+        let gutter = crate::flow::heroic::SCROLL_GUTTER;
+        for width in [280.0_f32 - 48.0 - gutter, 780.0 - gutter] {
             let mut view: Element<'_, Event> =
                 iced::widget::scrollable(draft.view(Palette::DARK, true))
                     .height(400)

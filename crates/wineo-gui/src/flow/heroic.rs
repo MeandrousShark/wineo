@@ -7,8 +7,8 @@ use iced::futures::channel::mpsc::{UnboundedSender, unbounded};
 use iced::keyboard::{self, Key, key::Named};
 use iced::widget::operation::RelativeOffset;
 use iced::widget::{
-    Row, button, checkbox, column, container, image, mouse_area, pick_list, row, scrollable, stack,
-    text, text_input,
+    Row, checkbox, column, container, image, mouse_area, pick_list, row, scrollable, stack, text,
+    text_input,
 };
 use iced::{Center, Color, ContentFit, Element, Fill, Font, Task, border, mouse};
 use wineo_core::art::{Format, Kind};
@@ -34,7 +34,9 @@ use super::{Action, artwork};
 use crate::chips::Chips;
 use crate::runner_label::{self, Choice};
 use crate::theme::Palette;
-use crate::ui::{PickListStyle, ScrollStyle, accent_base, secondary_button};
+use crate::ui::{
+    PickListStyle, ScrollStyle, accent_base, list_group, list_row, list_row_text, secondary_button,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -1959,15 +1961,21 @@ impl Page {
                 if self.sources.is_empty() {
                     body = body.push(text("No Heroic configuration was found automatically. Choose its config folder.").color(palette.muted));
                 }
-                for (index, source) in self.sources.iter().enumerate() {
-                    body = body.push(
-                        button(text(format!(
-                            "{}: {}",
-                            origin_label(source.origin()),
-                            source.config_dir().display()
-                        )))
-                        .on_press(Event::Source(index)),
-                    );
+                if !self.sources.is_empty() {
+                    body = body.push(list_group(
+                        self.sources.iter().enumerate().map(|(index, source)| {
+                            list_row(
+                                list_row_text(format!(
+                                    "{}: {}",
+                                    origin_label(source.origin()),
+                                    source.config_dir().display()
+                                )),
+                                palette,
+                            )
+                            .on_press(Event::Source(index))
+                        }),
+                        palette,
+                    ));
                 }
                 body = body.push(
                     secondary_button("Browse for Heroic config folder...", palette)
@@ -2531,7 +2539,7 @@ impl Page {
 pub(super) const PAGE_MAX_WIDTH: f32 = 780.0;
 const PAGE_PADDING: f32 = 24.0;
 /// Keeps scrolled text clear of the scrollbar, which draws over its content.
-const SCROLL_GUTTER: f32 = crate::ui::SCROLLBAR_WIDTH + 6.0;
+pub(super) const SCROLL_GUTTER: f32 = crate::ui::SCROLLBAR_WIDTH + 6.0;
 
 /// Insets an import page from the dialog's rounded border on every side, so
 /// Back sits inside the corner and scrolled content ends above the bottom.
