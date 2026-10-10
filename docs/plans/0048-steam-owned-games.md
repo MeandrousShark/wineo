@@ -362,6 +362,28 @@ the changelog.
     bytes while downloading, staged bytes once staging.
   - `install_progress` is left out of the JSON for Wine and native
     environments, and `null` for a Steam game with no percent.
+- Step 4 (2026-10-09):
+  - `install` and `uninstall` without `-f` print `Asked Steam to install
+    NAME.` or `Asked Steam to uninstall NAME.`, like `start`.
+  - `install -f` on a game Steam is already installing prints `Steam is
+    already installing NAME.` and then follows it.
+  - Sizes use wineo's usual formatter, so the progress line says `GiB`.
+  - `Steam canceled the install.` and `Steam canceled the uninstall.` go to
+    stderr without an `error:` prefix and exit 1.
+  - `--list` gained a header row (`APP ID  TITLE  SIZE  STATE  IMPORTED`).
+  - `--owned` requires `--all`. `--refresh` with plain `--all` or an
+    installed `--game` is ignored, since nothing is fetched.
+  - `--all --owned` with no key fails with `Add a Steam Web API key to
+    import uninstalled games.` `--game` of an uninstalled game with no key
+    keeps `Steam lists N as not installed.`
+  - With a key, several accounts and none most recent fail with `Steam
+    doesn't say which account was used last.` before any request.
+  - A dry run checks ownership like the real run (fresh cache, otherwise a
+    fetch) but never writes the cache, so `GetOwnedGames` joins the
+    SteamGridDB search as a dry run's network use.
+  - Debug builds read `WINEO_TEST_STEAM_API` and
+    `WINEO_TEST_STEAM_FOLLOW_INTERVAL_MS` so CLI tests can stand in for
+    Steam. Release builds compile both out.
 
 ## Questions
 
