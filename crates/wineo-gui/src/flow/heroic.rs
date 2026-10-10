@@ -916,25 +916,14 @@ impl Page {
         self.focus_visible && self.focus == Some(index)
     }
 
-    /// Scrolls so the focused row shows. Rows are all one height, so scrolling
-    /// in proportion to the row keeps it in view.
+    /// Scrolls so the focused row shows, wherever the header above the grid
+    /// ends.
     fn reveal_focus(&self, columns: usize, count: usize) -> Task<Event> {
         let Some(index) = self.focus else {
             return Task::none();
         };
-        let rows = count.div_ceil(columns.max(1));
-        let y = if rows > 1 {
-            (index / columns.max(1)) as f32 / (rows - 1) as f32
-        } else {
-            0.0
-        };
-        iced::widget::operation::snap_to(
-            iced::widget::Id::new(GRID_ID),
-            RelativeOffset {
-                x: None,
-                y: Some(y),
-            },
-        )
+        let columns = columns.max(1);
+        reveal_row(GRID_ID, index / columns, count.div_ceil(columns))
     }
 
     /// The body scrollable keeps its offset across steps, so without the snap
@@ -1892,6 +1881,7 @@ impl Page {
         listing: &'a HeroicListing,
         palette: Palette,
         width: f32,
+        header: Element<'a, Event>,
     ) -> Element<'a, Event> {
         let columns = grid_columns(width);
         let mut rows = column![].spacing(TILE_GAP);
@@ -1919,12 +1909,7 @@ impl Page {
         while tiles.peek().is_some() {
             rows = rows.push(Row::with_children(tiles.by_ref().take(columns)).spacing(TILE_GAP));
         }
-        scrollable(rows)
-            .wineo_style(palette)
-            .id(iced::widget::Id::new(GRID_ID))
-            .width(Fill)
-            .height(Fill)
-            .into()
+        grid_scroll(GRID_ID, header, rows.into(), palette)
     }
 
     pub(crate) fn view_with_key_availability(
@@ -1935,6 +1920,8 @@ impl Page {
         key_available: bool,
     ) -> Element<'_, Event> {
         let mut body = column![].spacing(14).width(Fill);
+        // Pinned under the scrolling grid so it stays reachable in a short dialog.
+        let mut games_actions: Option<Element<'_, Event>> = None;
         let title = match self.step {
             Step::Sources => "Import from Heroic".to_owned(),
             Step::Games => "Choose Heroic games".to_owned(),
@@ -2011,7 +1998,7 @@ impl Page {
                         actions = actions.push(self.working(palette, spin));
                     }
                     // A narrow dialog would squeeze the last control away.
-                    body = body.push(actions.wrap().vertical_spacing(8));
+                    games_actions = Some(actions.wrap().vertical_spacing(8).into());
                 }
             }
             Step::Details => {
@@ -2513,12 +2500,17 @@ impl Page {
         let back = secondary_button("Back", palette)
             .on_press_maybe((!self.busy() && self.step != Step::Finished).then_some(Event::Back));
         let content: Element<'_, Event> = match (&self.listing, self.step) {
-            // The grid scrolls on its own under fixed controls, so keyboard
-            // focus can scroll it to a known row.
-            (Some(listing), Step::Games) => column![body, self.grid(listing, palette, width)]
-                .spacing(14)
-                .height(Fill)
-                .into(),
+            // The title and notes scroll with the grid, above fixed controls, so
+            // a short dialog still shows games. Keyboard focus scrolls the
+            // grid to a known row.
+            (Some(listing), Step::Games) => {
+                let grid = self.grid(listing, palette, width, body.into());
+                column![grid]
+                    .push(games_actions)
+                    .spacing(14)
+                    .height(Fill)
+                    .into()
+            }
             _ => scroll_body(body, Some(BODY_ID), palette),
         };
         let mut page = column![].spacing(12).max_width(PAGE_MAX_WIDTH).height(Fill);
@@ -2727,13 +2719,130 @@ pub(super) fn grid_columns(width: f32) -> usize {
         .max(1.0) as usize
 }
 
-/// Open question for the maintainer: at dialog heights of 280 px and below,
-/// the grid page's fixed header (title, notes, wrapped action row) leaves the
-/// grid no height and the action row runs past the frame. Fixing it means
-/// choosing how a short dialog should scroll, so layout tests exempt it.
-#[cfg(test)]
-pub(super) fn grid_too_short(grid_page: bool, height: f32) -> bool {
-    grid_page && height <= 280.0
+const ROWS_ID: &str = "import-grid-rows";
+
+/// The import grid page's one scrolling region: the title, notes, and tile
+/// rows scroll together, so a short dialog can still reach every game.
+pub(super) fn grid_scroll<'a, Message: 'a>(
+    id: &'static str,
+    header: Element<'a, Message>,
+    rows: Element<'a, Message>,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let rows = container(rows)
+        .id(iced::widget::Id::new(ROWS_ID))
+        .width(Fill);
+    scrollable(
+        container(column![header, rows].spacing(14).width(Fill))
+            .padding(iced::Padding::ZERO.right(SCROLL_GUTTER)),
+    )
+    .wineo_style(palette)
+    .id(iced::widget::Id::new(id))
+    .width(Fill)
+    .height(Fill)
+    .into()
+}
+
+/// The smallest scroll offset that shows the row spanning `top..bottom` of
+/// the content in a `viewport` tall window now scrolled to `current`. A row
+/// taller than the window shows its top, and the first row shows the header
+/// above it when both fit.
+fn reveal_offset(current: f32, viewport: f32, top: f32, bottom: f32, first: bool) -> f32 {
+    let lowest = bottom - viewport;
+    if first && lowest <= 0.0 {
+        return 0.0;
+    }
+    if lowest > top {
+        return top;
+    }
+    current.clamp(lowest, top)
+}
+
+/// Scrolls the grid named `grid` so its row `row` of `rows` shows. The header
+/// sits inside the scrolled content with a height that depends on how its text
+/// wraps, so the first pass measures it and the second scrolls.
+pub(super) fn reveal_row<T: Send + 'static>(
+    grid: &'static str,
+    row: usize,
+    rows: usize,
+) -> Task<T> {
+    iced::advanced::widget::operate(measure(grid, row, rows))
+}
+
+fn measure(grid: &'static str, row: usize, rows: usize) -> Measure {
+    Measure {
+        grid: iced::widget::Id::new(grid),
+        row,
+        rows,
+        viewport: None,
+        rows_top: None,
+    }
+}
+
+struct Measure {
+    grid: iced::widget::Id,
+    row: usize,
+    rows: usize,
+    /// The window's height, the content's top, and the current offset.
+    viewport: Option<(f32, f32, f32)>,
+    /// The tile rows' top and height.
+    rows_top: Option<(f32, f32)>,
+}
+
+impl<T: Send + 'static> iced::advanced::widget::Operation<T> for Measure {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<T>)) {
+        operate(self);
+    }
+
+    fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+        if id == Some(&iced::widget::Id::new(ROWS_ID)) {
+            self.rows_top = Some((bounds.y, bounds.height));
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        bounds: iced::Rectangle,
+        content_bounds: iced::Rectangle,
+        translation: iced::Vector,
+        _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        if id == Some(&self.grid) {
+            self.viewport = Some((bounds.height, content_bounds.y, translation.y));
+        }
+    }
+
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<T> {
+        use iced::advanced::widget::operation::Outcome;
+        let (Some((viewport, content_top, current)), Some((rows_y, rows_height))) =
+            (self.viewport, self.rows_top)
+        else {
+            return Outcome::None;
+        };
+        if self.rows == 0 {
+            return Outcome::None;
+        }
+        // Rows are one height, so the pitch follows from the whole.
+        let pitch = (rows_height + TILE_GAP) / self.rows as f32;
+        let top = rows_y - content_top + self.row as f32 * pitch;
+        let offset = reveal_offset(
+            current,
+            viewport,
+            top,
+            top + pitch - TILE_GAP,
+            self.row == 0,
+        );
+        Outcome::Chain(Box::new(
+            iced::advanced::widget::operation::scrollable::scroll_to(
+                self.grid.clone(),
+                iced::advanced::widget::operation::scrollable::AbsoluteOffset {
+                    x: None,
+                    y: Some(offset),
+                },
+            ),
+        ))
+    }
 }
 
 pub(super) fn move_focus(
@@ -4116,9 +4225,6 @@ mod tests {
                     let node = &probe.node;
                     let spilled = probe.outside(inset);
                     assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
-                    if grid_too_short(*label == "games", height) {
-                        continue;
-                    }
                     assert!(
                         spilled.is_empty(),
                         "{label} at {width}x{height}, prompt {leave_prompt}: {spilled:?}"
@@ -4128,6 +4234,84 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_short_dialog_keeps_the_actions_in_frame_and_the_grid_scrolling() {
+        use crate::layout_probe::{bounds_at, probe, within};
+        let root = tempdir().unwrap();
+        let page = grid_page(root.path());
+        for (width, height) in [(280.0, 240.0), (360.0, 200.0), (900.0, 240.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            let mut view = page.view_with_key_availability(Palette::DARK, width, 0.0, false);
+            let probe = probe(&mut view, iced::Size::new(width, height));
+            assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
+            let (viewport, content) = probe.scrollables[0];
+            assert!(viewport.height > 0.0, "{width}x{height}: {viewport:?}");
+            // The title and notes are the top of the scrolled content.
+            assert!(
+                (content.y - viewport.y).abs() < 0.01 && content.height > viewport.height,
+                "{width}x{height}: {viewport:?} {content:?}"
+            );
+            let actions = bounds_at(&probe.node, &[0, 1, 1]);
+            assert!(within(actions, inset), "{width}x{height}: {actions:?}");
+            assert!(
+                actions.y >= viewport.y + viewport.height - 0.01,
+                "{width}x{height}: {actions:?} under {viewport:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn keyboard_focus_scrolls_a_row_into_view_below_the_header() {
+        use crate::layout_probe::{bounds_at, lay_out};
+        let root = tempdir().unwrap();
+        let page = grid_page(root.path());
+        let rows = page.listing.as_ref().unwrap().candidates.len();
+        // One column, so each game is its own row.
+        for height in [700.0, 300.0] {
+            let view = page.view_with_key_availability(Palette::DARK, 280.0, 0.0, false);
+            let mut laid = lay_out(view, iced::Size::new(280.0, height));
+            let viewport = bounds_at(&laid.node, &[0, 1, 0]);
+            for row in [rows - 1, 2, 0, 3, 1] {
+                laid.run(Box::new(measure(GRID_ID, row, rows)));
+                let offset = laid.offsets()[0];
+                let tile = bounds_at(&laid.node, &[0, 1, 0, 0, 0, 1, 0, row]);
+                let top = tile.y - offset;
+                let bottom = tile.y + tile.height - offset;
+                if tile.height <= viewport.height {
+                    assert!(
+                        top >= viewport.y - 0.5 && bottom <= viewport.y + viewport.height + 0.5,
+                        "row {row} at {height}: {tile:?} offset {offset} in {viewport:?}"
+                    );
+                } else {
+                    assert!(
+                        (top - viewport.y).abs() < 0.5,
+                        "row {row} at {height}: {tile:?} offset {offset} in {viewport:?}"
+                    );
+                }
+                if row == 0 && tile.y - viewport.y + tile.height <= viewport.height {
+                    assert_eq!(offset, 0.0, "the header shows with the first row");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reveal_offset_moves_only_as_far_as_needed() {
+        // A 100 tall window over rows 0..40 and 52..92 (the header is above).
+        assert_eq!(reveal_offset(0.0, 100.0, 52.0, 92.0, false), 0.0);
+        assert_eq!(reveal_offset(0.0, 100.0, 152.0, 192.0, false), 92.0);
+        assert_eq!(reveal_offset(300.0, 100.0, 152.0, 192.0, false), 152.0);
+        assert_eq!(reveal_offset(140.0, 100.0, 152.0, 192.0, false), 140.0);
+        // Taller than the window shows the top.
+        assert_eq!(reveal_offset(0.0, 30.0, 52.0, 92.0, false), 52.0);
+        // The first row shows the header when both fit.
+        assert_eq!(reveal_offset(80.0, 100.0, 30.0, 70.0, true), 0.0);
+        assert_eq!(reveal_offset(80.0, 40.0, 30.0, 70.0, true), 30.0);
     }
 
     #[test]

@@ -3,8 +3,7 @@ use std::path::PathBuf;
 
 use iced::futures::channel::mpsc::unbounded;
 use iced::keyboard::{self, Key, key::Named};
-use iced::widget::operation::RelativeOffset;
-use iced::widget::{Row, column, container, image, row, scrollable, text, text_input};
+use iced::widget::{Row, column, container, image, row, text, text_input};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::art::Kind;
 use wineo_core::cancel::Token;
@@ -20,7 +19,7 @@ use wineo_core::steam_import::{
 use super::heroic::{self, Tile};
 use super::{Action, artwork};
 use crate::theme::Palette;
-use crate::ui::{ScrollStyle, accent_base, secondary_button};
+use crate::ui::{accent_base, secondary_button};
 
 const GRID_ID: &str = "steam-import-grid";
 
@@ -626,19 +625,8 @@ impl Page {
         let Some(index) = self.focus else {
             return Task::none();
         };
-        let rows = count.div_ceil(columns.max(1));
-        let y = if rows > 1 {
-            (index / columns.max(1)) as f32 / (rows - 1) as f32
-        } else {
-            0.0
-        };
-        iced::widget::operation::snap_to(
-            iced::widget::Id::new(GRID_ID),
-            RelativeOffset {
-                x: None,
-                y: Some(y),
-            },
-        )
+        let columns = columns.max(1);
+        heroic::reveal_row(GRID_ID, index / columns, count.div_ceil(columns))
     }
 
     fn grid<'a>(
@@ -646,6 +634,7 @@ impl Page {
         listing: &'a Listing,
         palette: Palette,
         width: f32,
+        header: Element<'a, Event>,
     ) -> Element<'a, Event> {
         let columns = heroic::grid_columns(width);
         let mut rows = column![].spacing(heroic::TILE_GAP);
@@ -677,12 +666,7 @@ impl Page {
             rows = rows
                 .push(Row::with_children(tiles.by_ref().take(columns)).spacing(heroic::TILE_GAP));
         }
-        scrollable(rows)
-            .wineo_style(palette)
-            .id(iced::widget::Id::new(GRID_ID))
-            .width(Fill)
-            .height(Fill)
-            .into()
+        heroic::grid_scroll(GRID_ID, header, rows.into(), palette)
     }
 
     pub(crate) fn view(&self, palette: Palette, width: f32, spin: f32) -> Element<'_, Event> {
@@ -709,6 +693,8 @@ impl Page {
         if let Some(error) = &self.error {
             body = body.push(text(error).color(palette.danger));
         }
+        // Pinned under the scrolling grid so it stays reachable in a short dialog.
+        let mut games_actions: Option<Element<'_, Event>> = None;
         match self.step {
             Step::Games => {
                 if let Some(listing) = &self.listing {
@@ -758,7 +744,7 @@ impl Page {
                         }
                     } else {
                         let count = self.chosen.len();
-                        body = body.push(
+                        games_actions = Some(
                             row![
                                 secondary_button("Select all", palette).on_press(Event::SelectAll),
                                 secondary_button("Select none", palette)
@@ -771,7 +757,8 @@ impl Page {
                             .align_y(Center)
                             // A narrow dialog would squeeze the last button away.
                             .wrap()
-                            .vertical_spacing(8),
+                            .vertical_spacing(8)
+                            .into(),
                         );
                     }
                 }
@@ -869,8 +856,11 @@ impl Page {
         let back = secondary_button("Back", palette)
             .on_press_maybe((!self.busy() && self.step != Step::Finished).then_some(Event::Back));
         let content: Element<'_, Event> = match (&self.listing, self.step) {
+            // The title and notes scroll with the grid, above the fixed action row.
             (Some(listing), Step::Games) if !listing.games.is_empty() => {
-                column![body, self.grid(listing, palette, width)]
+                let grid = self.grid(listing, palette, width, body.into());
+                column![grid]
+                    .push(games_actions)
                     .spacing(14)
                     .height(Fill)
                     .into()
@@ -1382,12 +1372,10 @@ mod tests {
                 let node = &probe.node;
                 let spilled = probe.outside(inset);
                 assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
-                if !heroic::grid_too_short(step == Step::Games, height) {
-                    assert!(
-                        spilled.is_empty(),
-                        "{step:?} at {width}x{height}: {spilled:?}"
-                    );
-                }
+                assert!(
+                    spilled.is_empty(),
+                    "{step:?} at {width}x{height}: {spilled:?}"
+                );
                 let back = bounds_at(node, &[0, 0, 0]);
                 assert!(within(back, inset), "{step:?}: {back:?}");
                 if step != Step::Games {
@@ -1395,6 +1383,37 @@ mod tests {
                     assert!(within(footer, inset), "{step:?}: {footer:?}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_short_dialog_keeps_the_actions_in_frame_and_the_grid_scrolling() {
+        use crate::layout_probe::{bounds_at, probe, within};
+        let temp = TempDir::new().unwrap();
+        let (mut page, _) = Page::new(paths(temp.path(), false));
+        page.status.clear();
+        page.listing = Some(listed(40));
+        page.step = Step::Games;
+        for (width, height) in [(280.0, 240.0), (360.0, 200.0), (900.0, 240.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            let mut view = page.view(Palette::DARK, width, 0.0);
+            let probe = probe(&mut view, iced::Size::new(width, height));
+            assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
+            let (viewport, content) = probe.scrollables[0];
+            assert!(viewport.height > 0.0, "{width}x{height}: {viewport:?}");
+            assert!(
+                (content.y - viewport.y).abs() < 0.01 && content.height > viewport.height,
+                "{width}x{height}: {viewport:?} {content:?}"
+            );
+            let actions = bounds_at(&probe.node, &[0, 1, 1]);
+            assert!(within(actions, inset), "{width}x{height}: {actions:?}");
+            assert!(
+                actions.y >= viewport.y + viewport.height - 0.01,
+                "{width}x{height}: {actions:?} under {viewport:?}"
+            );
         }
     }
 
