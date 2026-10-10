@@ -47,7 +47,7 @@ impl Page {
     ) -> Element<'_, Message> {
         // Global settings is a sidebar section, so the sidebar is its way out.
         let back = (!self.is_global()).then(|| {
-            secondary_button("< Back", palette)
+            secondary_button("Back", palette)
                 .on_press_maybe((!self.saving).then(|| send(Event::Back)))
         });
         let header = container(

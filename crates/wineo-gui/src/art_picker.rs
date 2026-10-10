@@ -363,7 +363,7 @@ impl Picker {
         progress: Option<&str>,
     ) -> Element<'_, Event> {
         let mut header = row![
-            secondary_button("< Back", palette).on_press(Event::Back),
+            secondary_button("Back", palette).on_press(Event::Back),
             text(title.to_owned()).size(20),
         ]
         .spacing(14)
@@ -420,11 +420,11 @@ impl Picker {
             );
         }
         let has_progress = progress.is_some();
-        let use_button = if !has_progress && self.selected().is_some() {
-            accent_base("Use", palette.primary).on_press(Event::Use)
-        } else {
-            secondary_button("Use", palette)
-        };
+        let use_button = accent_base("Use", palette.primary).on_press_maybe(
+            (!has_progress)
+                .then(|| self.selected().map(|_| Event::Use))
+                .flatten(),
+        );
         let footer = row![details.width(Fill), use_button]
             .spacing(14)
             .align_y(Center);

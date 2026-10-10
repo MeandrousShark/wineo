@@ -931,7 +931,7 @@ impl Page {
                 .map(move |event| Event::Picker(visit, event));
         }
         let mut header = row![
-            secondary_button("< Back", palette).on_press(Event::Back),
+            secondary_button("Back", palette).on_press(Event::Back),
             text(format!("{} art", self.name)).size(20),
         ]
         .spacing(16)

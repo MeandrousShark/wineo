@@ -650,7 +650,7 @@ impl App {
         .spacing(12);
         if !running {
             controls = controls.push(focus_button::control(
-                accent_base("Remove", palette.primary)
+                accent_base("Remove", palette.danger)
                     .on_press_maybe(reason.is_none().then_some(Message::ConfirmRemove))
                     .into(),
                 reason.is_none(),
