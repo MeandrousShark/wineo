@@ -49,6 +49,10 @@ these answers the same day:
 - `validate` has no note level, so a not-installed Steam game is simply not
   reported, rather than adding one.
 
+Also on 2026-10-09 the maintainer added `-f`/`--follow` to `install` and
+`uninstall`, which hands off to Steam and then shows progress until it's
+done. The name matches `logs -f`.
+
 ## Existing foundation
 
 - `steam.rs` scans every library's `appmanifest_*.acf` and parses
@@ -188,7 +192,7 @@ From question 3: `wineo install NAME`, and **Install** in the desktop app.
   `__steam_request` handoff `start` uses (`supervisor/steam.rs:39`), so
   Steam is never in wineo's process group.
 - It returns once Steam accepts the handoff. It doesn't wait for the
-  download.
+  download unless `-f` is given.
 - Installing an installed game is a no-op: `Already installed.`
 - A queued or paused partial install opens Steam's dialog anyway, which
   resumes it. An installing game is a no-op: `Steam is already installing
@@ -199,6 +203,38 @@ From question 3: `wineo install NAME`, and **Install** in the desktop app.
   games can be installed.`
 - The check and the handoff run under the game's `steam-<app_id>.lock`, the
   one launch takes, so a wineo launch can't race them.
+
+### Following
+
+`wineo install NAME -f` and `wineo uninstall NAME -f` hand off to Steam the
+same way, then stay attached and show progress from the manifest:
+
+```text
+$ wineo install witcher3 -f
+Waiting for Steam's install dialog...
+Installing The Witcher 3... 42% (14.2 GB of 33.8 GB)
+Installed.
+
+$ wineo uninstall witcher3 -f
+Uninstalling The Witcher 3...
+Uninstalled.
+```
+
+- The progress line redraws in place on a terminal and prints one line per
+  state change otherwise, so logs stay readable.
+- Before Steam writes a manifest, it waits as long as the dialog is open,
+  with no timeout, since the install dialog can sit for a while. Wineo
+  can't tell a canceled dialog from an open one, so Ctrl+C is the way out.
+- Ctrl+C stops following, never the install, and exits 130 like other waits
+  (`docs/exit-codes.md`).
+- It exits 0 once the game is installed (or the manifest is gone for
+  uninstall), and 1 if Steam stops partway: the manifest disappears during
+  an install (`Steam canceled the install.`) or comes back fully installed
+  during an uninstall (`Steam canceled the uninstall.`). A paused install
+  keeps following and shows `paused`.
+- A no-op (`Already installed.`, `Not installed.`) exits 0 right away.
+- Following uses the same manifest reader as `status`, polled once a
+  second, and takes no lock while it waits.
 
 ### Uninstalling
 
@@ -353,7 +389,8 @@ list above. The options are kept as a record of what was weighed.
    admission rules, and dropping the not-installed validate check.
    (`coder`)
 4. CLI: `--list` state column and `--all --owned`, `--key` and
-   `--remove-key`, `install`, `uninstall`, and status and list output.
+   `--remove-key`, `install` and `uninstall` with `-f`, and status and list
+   output.
    (`coder`)
 5. Desktop app: import list, Install button, Uninstall menu item, progress
    bar, panel dimming, and the Settings key row. (`coder-opus`)
@@ -374,6 +411,10 @@ Each step is reviewed by `qa-gpt` before it lands.
 - Install and uninstall admission for each state: installed, not installed,
   queued, paused, installing, uninstalling, unavailable, unknown, starting,
   running from wineo, and running from the Steam client.
+- `-f` against a fake manifest that steps through states: install to
+  finished, a paused install, the manifest vanishing mid-install, an
+  uninstall finishing and one coming back, non-terminal output, and Ctrl+C
+  exiting 130 while the fake install carries on.
 - `validate` passes on a not-installed Steam game and still fails on an
   unrelated error in the same run, in text and JSON.
 - `status --json` and `list --json` keep `state` as run status while
