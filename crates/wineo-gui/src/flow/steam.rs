@@ -20,7 +20,7 @@ use wineo_core::steam_import::{
 use super::heroic::{self, Tile};
 use super::{Action, artwork};
 use crate::theme::Palette;
-use crate::ui::{accent_base, secondary_button};
+use crate::ui::{ScrollStyle, accent_base, secondary_button};
 
 const GRID_ID: &str = "steam-import-grid";
 
@@ -678,6 +678,7 @@ impl Page {
                 .push(Row::with_children(tiles.by_ref().take(columns)).spacing(heroic::TILE_GAP));
         }
         scrollable(rows)
+            .wineo_style(palette)
             .id(iced::widget::Id::new(GRID_ID))
             .width(Fill)
             .height(Fill)
@@ -874,7 +875,7 @@ impl Page {
                     .height(Fill)
                     .into()
             }
-            _ => heroic::scroll_body(body, None),
+            _ => heroic::scroll_body(body, None, palette),
         };
         let mut page = column![row![back], content]
             .spacing(12)

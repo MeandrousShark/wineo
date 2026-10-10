@@ -35,7 +35,7 @@ use crate::logview::{self, LogView};
 use crate::picker;
 use crate::runner_label::{self, Choice};
 use crate::theme::Palette;
-use crate::ui::{self, PickListStyle};
+use crate::ui::{self, PickListStyle, ScrollStyle};
 
 const LOG_ID: &str = "install-log";
 const LOG_CAP: usize = 128 * 1024;
@@ -1692,8 +1692,9 @@ impl Page {
         } else {
             760
         };
-        let scroll =
-            scrollable(container(body).max_width(max_width).width(Fill).padding(24)).height(Fill);
+        let scroll = scrollable(container(body).max_width(max_width).width(Fill).padding(24))
+            .wineo_style(palette)
+            .height(Fill);
         let content: Element<'_, Event> = if let Some(footer) = review_footer {
             column![
                 scroll,

@@ -10,7 +10,7 @@ use iced::{Element, Fill, Task, keyboard};
 use wineo_core::paths::Paths;
 
 use crate::theme::Palette;
-use crate::ui::secondary_button;
+use crate::ui::{ScrollStyle, secondary_button};
 
 #[derive(Debug, Clone)]
 pub(crate) enum Action {
@@ -187,7 +187,8 @@ impl Page {
                             text("Installed and owned Steam games"),
                         ]
                         .spacing(16),
-                    ),
+                    )
+                    .wineo_style(palette),
                 ]
                 .spacing(16),
             )

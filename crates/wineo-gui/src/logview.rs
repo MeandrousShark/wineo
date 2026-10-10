@@ -16,7 +16,7 @@ use iced::widget::{Id, Row, row, scrollable, text_editor as editor_widget};
 use iced::{Background, Border, Color, Element, Font, Length, Task};
 
 use crate::theme::Palette;
-use crate::ui::secondary_button;
+use crate::ui::{ScrollStyle, secondary_button};
 use crate::{WHEEL_STEP_SCALE, wheel};
 
 pub(crate) struct LogView {
@@ -320,6 +320,7 @@ pub(crate) fn editor<'a, Message: Clone + 'a>(
         });
     wheel::scale(
         scrollable(editor)
+            .wineo_style(palette)
             .id(Id::new(id))
             .height(height)
             .on_scroll(on_scroll),

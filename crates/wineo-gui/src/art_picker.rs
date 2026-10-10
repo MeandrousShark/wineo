@@ -15,7 +15,7 @@ use wineo_core::steamgriddb::{self, Api, Filters, Image};
 use crate::artwork;
 use crate::keys::{self, Direction};
 use crate::theme::Palette;
-use crate::ui::{accent_base, secondary_button};
+use crate::ui::{ScrollStyle, accent_base, secondary_button};
 
 const PAGE_SIZE: usize = 18;
 const PAGE_WIDTH: f32 = 1120.0;
@@ -542,6 +542,7 @@ impl Picker {
             );
         }
         scrollable(container(grid).width(Fill).padding([0, 2]))
+            .wineo_style(palette)
             .id(self.scroll_id.clone())
             .on_scroll(|viewport| {
                 Event::Scrolled(viewport.absolute_offset().y, viewport.bounds().height)

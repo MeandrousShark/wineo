@@ -34,7 +34,7 @@ use super::{Action, artwork};
 use crate::chips::Chips;
 use crate::runner_label::{self, Choice};
 use crate::theme::Palette;
-use crate::ui::{PickListStyle, accent_base, secondary_button};
+use crate::ui::{PickListStyle, ScrollStyle, accent_base, secondary_button};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -1918,6 +1918,7 @@ impl Page {
             rows = rows.push(Row::with_children(tiles.by_ref().take(columns)).spacing(TILE_GAP));
         }
         scrollable(rows)
+            .wineo_style(palette)
             .id(iced::widget::Id::new(GRID_ID))
             .width(Fill)
             .height(Fill)
@@ -2510,7 +2511,7 @@ impl Page {
                 .spacing(14)
                 .height(Fill)
                 .into(),
-            _ => scroll_body(body, Some(BODY_ID)),
+            _ => scroll_body(body, Some(BODY_ID), palette),
         };
         let mut page = column![].spacing(12).max_width(PAGE_MAX_WIDTH).height(Fill);
         if self.leave_prompt {
@@ -2530,7 +2531,7 @@ impl Page {
 pub(super) const PAGE_MAX_WIDTH: f32 = 780.0;
 const PAGE_PADDING: f32 = 24.0;
 /// Keeps scrolled text clear of the scrollbar, which draws over its content.
-const SCROLL_GUTTER: f32 = 16.0;
+const SCROLL_GUTTER: f32 = crate::ui::SCROLLBAR_WIDTH + 6.0;
 
 /// Insets an import page from the dialog's rounded border on every side, so
 /// Back sits inside the corner and scrolled content ends above the bottom.
@@ -2548,8 +2549,10 @@ pub(super) fn page_frame<'a, Message: 'a>(
 pub(super) fn scroll_body<'a, Message: 'a>(
     body: impl Into<Element<'a, Message>>,
     id: Option<&'static str>,
+    palette: Palette,
 ) -> Element<'a, Message> {
     let mut body = scrollable(container(body).padding(iced::Padding::ZERO.right(SCROLL_GUTTER)))
+        .wineo_style(palette)
         .width(Fill)
         .height(Fill);
     if let Some(id) = id {

@@ -23,7 +23,7 @@ use crate::chips::secondary;
 use crate::flow::artwork::{self as flow_artwork, Match};
 use crate::theme::Palette;
 use crate::ui::PickListStyle;
-use crate::ui::{accent_base, secondary_button};
+use crate::ui::{ScrollStyle, accent_base, secondary_button};
 use crate::wheel;
 use crate::{art_picker, artwork};
 
@@ -984,6 +984,7 @@ impl Page {
                 .padding(24)
                 .center_x(Fill),
         )
+        .wineo_style(palette)
         .height(Fill);
         container(wheel::scale(scroll, crate::WHEEL_STEP_SCALE))
             .width(Fill)

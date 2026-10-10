@@ -15,7 +15,9 @@ use super::{Editor, Event, Page, TargetEdit, View};
 use crate::chips::{Chips, input_style};
 use crate::panel::{action_button, error_box};
 use crate::theme::Palette;
-use crate::ui::{PickListStyle, secondary_button, section as grouped_section, section_heading};
+use crate::ui::{
+    PickListStyle, ScrollStyle, secondary_button, section as grouped_section, section_heading,
+};
 use crate::{Message, WHEEL_STEP_SCALE, wheel};
 use wineo_core::paths::Paths;
 
@@ -94,6 +96,7 @@ impl Page {
                 .padding(24)
                 .center_x(Fill),
         )
+        .wineo_style(palette)
         .id(iced::widget::Id::new(SCROLL_ID))
         .width(Fill)
         .height(Fill);

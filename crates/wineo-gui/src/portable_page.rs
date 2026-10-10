@@ -12,7 +12,7 @@ use wineo_core::runners::Runners;
 
 use crate::chips::input_style;
 use crate::theme::Palette;
-use crate::ui::{accent_base, secondary_button};
+use crate::ui::{ScrollStyle, accent_base, secondary_button};
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
@@ -297,11 +297,12 @@ impl Page {
         if let Some(error) = &self.error {
             content = content.push(text(error.as_str()).size(13).color(palette.danger));
         }
-        let base: Element<'_, Event> = container(scrollable(content).height(Fill))
-            .padding(24)
-            .width(Fill)
-            .height(Fill)
-            .into();
+        let base: Element<'_, Event> =
+            container(scrollable(content).wineo_style(palette).height(Fill))
+                .padding(24)
+                .width(Fill)
+                .height(Fill)
+                .into();
         if self.discard_prompt {
             iced::widget::stack![base, discard_prompt(palette)].into()
         } else {

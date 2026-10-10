@@ -6,7 +6,9 @@ use iced::{Center, Element, Fill, Task, border};
 use wineo_core::paths::Paths;
 use wineo_core::trash::{Entry, PendingEntry, Phase, PruneReview};
 
-use crate::ui::{accent_button, page_title, secondary_button, section, section_heading};
+use crate::ui::{
+    ScrollStyle, accent_button, page_title, secondary_button, section, section_heading,
+};
 use crate::{App, Message, focus_button, removal, sidebar, spinner, trash_work};
 
 const CANCEL_ID: &str = "trash-cancel";
@@ -490,6 +492,7 @@ impl App {
                     .padding(24)
                     .width(Fill),
                 )
+                .wineo_style(palette)
                 .height(Fill)
                 .into();
             }
@@ -625,6 +628,7 @@ impl App {
         }
         content = self.trash_feedback(content);
         scrollable(container(content).padding(24).width(Fill))
+            .wineo_style(palette)
             .height(Fill)
             .into()
     }
@@ -700,7 +704,9 @@ impl App {
         .spacing(12);
         container(
             column![
-                scrollable(selection).height((self.window_size.height - 180.0).clamp(120.0, 480.0)),
+                scrollable(selection)
+                    .wineo_style(palette)
+                    .height((self.window_size.height - 180.0).clamp(120.0, 480.0)),
                 controls
             ]
             .spacing(16),

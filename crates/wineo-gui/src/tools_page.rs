@@ -19,7 +19,7 @@ use wineo_core::winetricks::{self, EnsureEvent, EnsureOutput, WinetricksEvent};
 use crate::chips::{self, Chips};
 use crate::logview::{self, LogView};
 use crate::theme::Palette;
-use crate::ui::{accent_base, secondary_button};
+use crate::ui::{ScrollStyle, accent_base, secondary_button};
 
 const LOG_ID: &str = "tool-output";
 const LOG_LIMIT: usize = 256 * 1024;
@@ -690,7 +690,7 @@ impl Page {
                 .size(12)
                 .color(palette.muted),
         );
-        container(scrollable(body).height(Fill))
+        container(scrollable(body).wineo_style(palette).height(Fill))
             .padding(20)
             .width(Fill)
             .height(Fill)

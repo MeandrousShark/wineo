@@ -17,7 +17,8 @@ use wineo_core::snapshot::{
 use crate::logview::{self, LogView};
 use crate::theme::Palette;
 use crate::ui::{
-    PickListStyle, accent_button, page_title, secondary_button, section, section_heading,
+    PickListStyle, ScrollStyle, accent_button, page_title, secondary_button, section,
+    section_heading,
 };
 
 const SNAPSHOT_LIST_HEIGHT: f32 = 180.0;
@@ -769,8 +770,11 @@ impl Page {
                                     .spacing(4),
                                 );
                             }
-                            snapshot_rows =
-                                snapshot_rows.push(scrollable(rows).height(SNAPSHOT_LIST_HEIGHT));
+                            snapshot_rows = snapshot_rows.push(
+                                scrollable(rows)
+                                    .wineo_style(palette)
+                                    .height(SNAPSHOT_LIST_HEIGHT),
+                            );
                         }
                     }
                     Err(error) => {
@@ -861,6 +865,7 @@ impl Page {
             content = content.push(section(feedback, palette));
         }
         scrollable(container(content).padding(24).width(Fill))
+            .wineo_style(palette)
             .height(Fill)
             .into()
     }

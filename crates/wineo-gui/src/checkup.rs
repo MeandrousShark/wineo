@@ -9,7 +9,7 @@ use wineo_core::winetricks::WinetricksEvent;
 
 use crate::removal::Change as RunningChange;
 use crate::theme::Palette;
-use crate::ui::{secondary_button, section, section_heading};
+use crate::ui::{ScrollStyle, secondary_button, section, section_heading};
 use crate::{App, Message, checkup_work, focus_button, spinner};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -941,7 +941,10 @@ impl App {
                 palette,
             ));
         }
-        scrollable(body).height(iced::Fill).into()
+        scrollable(body)
+            .wineo_style(palette)
+            .height(iced::Fill)
+            .into()
     }
 
     pub(crate) fn checkup_status(&self, scope: &Scope) -> Element<'_, Message> {

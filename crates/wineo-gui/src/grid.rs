@@ -9,7 +9,7 @@ use iced::{
 
 use crate::library::Card;
 use crate::theme::Palette;
-use crate::ui::{self, secondary_button};
+use crate::ui::{self, ScrollStyle, secondary_button};
 use crate::wheel;
 use crate::{App, CARD_WIDTH, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
 
@@ -529,7 +529,9 @@ impl App {
                     .height(ACTION_MENU_HEADER_HEIGHT)
                     .align_y(Center)
                     .wrapping(iced::widget::text::Wrapping::None),
-                scrollable(scroll_items).height(action_menu_scroll_height(menu_height)),
+                scrollable(scroll_items)
+                    .wineo_style(palette)
+                    .height(action_menu_scroll_height(menu_height)),
                 context_menu_button("Close menu", palette, false, Some(Message::CloseMenu)),
             ]
             .spacing(ACTION_MENU_SPACING)

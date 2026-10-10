@@ -19,7 +19,7 @@ use crate::focus_button;
 use crate::library::Card;
 use crate::logview::{self, LogView};
 use crate::theme::Palette;
-use crate::ui::{self, PickListStyle, secondary_button};
+use crate::ui::{self, PickListStyle, ScrollStyle, secondary_button};
 use crate::worker::LogSource;
 use crate::{App, Message, Operation, OperationKind, worker};
 
@@ -971,7 +971,11 @@ impl App {
         if self.panel_log_visible() || self.checkup_visible() {
             body = body.push(ui::section(inner, palette).height(Fill));
         } else {
-            body = body.push(scrollable(ui::section(inner, palette)).height(Fill));
+            body = body.push(
+                scrollable(ui::section(inner, palette))
+                    .wineo_style(palette)
+                    .height(Fill),
+            );
         }
         container(body)
             .width(PANEL_WIDTH)
