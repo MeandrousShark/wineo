@@ -223,28 +223,45 @@ fn write_cache(path: &std::path::Path, cache: &Cache) -> Result<(), String> {
 /// neither can rename a half-written one over the cache.
 fn write_unique(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
+    write_unique_with(path, contents, &COUNTER)
+}
+
+fn write_unique_with(
+    path: &std::path::Path,
+    contents: &[u8],
+    counter: &AtomicU64,
+) -> std::io::Result<()> {
+    const TRIES: usize = 8;
     let dir = path.parent().expect("the cache path has a parent");
     fs::create_dir_all(dir)?;
-    let mut name = path
-        .file_name()
-        .expect("the cache path has a name")
-        .to_owned();
-    name.push(format!(
-        ".{}-{}.tmp",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let tmp = dir.join(name);
-    let result = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp)
-        .and_then(|mut file| file.write_all(contents))
-        .and_then(|()| fs::rename(&tmp, path));
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
+    let base = path.file_name().expect("the cache path has a name");
+    for _ in 0..TRIES {
+        let mut name = base.to_owned();
+        name.push(format!(
+            ".{}-{}.tmp",
+            std::process::id(),
+            counter.fetch_add(1, Ordering::Relaxed)
+        ));
+        let tmp = dir.join(name);
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(file) => file,
+            // Someone else's file, maybe a crash leftover. Leave it alone.
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        // From here the temp file is this writer's own to clean up.
+        let result = file
+            .write_all(contents)
+            .and_then(|()| fs::rename(&tmp, path));
+        if result.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        return result;
     }
-    result
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "no free temp file name",
+    ))
 }
 
 #[cfg(test)]
@@ -568,14 +585,18 @@ mod tests {
         let (_root, paths) = setup();
         let path = paths.steam_owned_cache(ID);
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        write_raw_cache(&paths, T, &[("1", "Seed")]);
         let reader = {
             let (path, done) = (path.clone(), done.clone());
             std::thread::spawn(move || {
+                let mut seen = 0_u32;
                 while !done.load(Ordering::Relaxed) {
                     if let Ok(text) = fs::read_to_string(&path) {
                         serde_json::from_str::<Cache>(&text).expect("a torn cache was visible");
+                        seen += 1;
                     }
                 }
+                seen
             })
         };
         let writers: Vec<_> = (0..4)
@@ -599,7 +620,7 @@ mod tests {
             writer.join().unwrap();
         }
         done.store(true, Ordering::Relaxed);
-        reader.join().unwrap();
+        assert!(reader.join().unwrap() > 0, "the reader saw no snapshot");
         assert!(read_cache(&path).is_some());
         // No temp files are left behind.
         let left = fs::read_dir(path.parent().unwrap()).unwrap().count();
@@ -676,5 +697,60 @@ mod tests {
                 .unwrap()
                 .starts_with("Couldn't refresh owned games: ")
         );
+    }
+
+    #[test]
+    fn a_taken_temp_name_is_left_alone_and_the_next_is_used() {
+        let (_root, paths) = setup();
+        let path = paths.steam_owned_cache(ID);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let taken = path.with_file_name(format!(
+            "{}.{}-0.tmp",
+            path.file_name().unwrap().to_string_lossy(),
+            std::process::id()
+        ));
+        fs::write(&taken, "someone else's").unwrap();
+
+        let counter = AtomicU64::new(0);
+        write_unique_with(&path, b"{\"fetched_at\":1,\"games\":[]}", &counter).unwrap();
+        assert_eq!(fs::read_to_string(&taken).unwrap(), "someone else's");
+        assert!(read_cache(&path).is_some());
+        assert_eq!(counter.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn every_temp_name_taken_is_a_write_error() {
+        let (_root, paths) = setup();
+        let path = paths.steam_owned_cache(ID);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for n in 0..8 {
+            fs::write(
+                path.with_file_name(format!(
+                    "{}.{}-{n}.tmp",
+                    path.file_name().unwrap().to_string_lossy(),
+                    std::process::id()
+                )),
+                "x",
+            )
+            .unwrap();
+        }
+        let error = write_unique_with(&path, b"{}", &AtomicU64::new(0)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_failure_after_creating_the_temp_file_removes_only_that_file() {
+        let (_root, paths) = setup();
+        let path = paths.steam_owned_cache(ID);
+        // A non-empty directory can't be renamed over, so the rename fails.
+        fs::create_dir_all(path.join("kept")).unwrap();
+        assert!(write_unique_with(&path, b"{}", &AtomicU64::new(0)).is_err());
+        assert!(path.join("kept").is_dir());
+        let names: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 1, "{names:?}");
     }
 }
