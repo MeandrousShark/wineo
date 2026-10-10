@@ -251,13 +251,23 @@ impl Client<Https> {
     }
 }
 fn http_client(https_only: bool, timeout: Duration) -> Result<reqwest::blocking::Client> {
+    http_client_following(https_only, timeout, reqwest::redirect::Policy::limited(10))
+}
+
+/// The same client with its own redirect policy, for requests that carry a
+/// secret in the URL and must not follow it anywhere.
+pub(crate) fn http_client_following(
+    https_only: bool,
+    timeout: Duration,
+    redirects: reqwest::redirect::Policy,
+) -> Result<reqwest::blocking::Client> {
     // Blocking responses apply this timeout to each Read, not the entire archive.
     Ok(reqwest::blocking::Client::builder()
         .https_only(https_only)
         .connect_timeout(timeout)
         .timeout(timeout)
         .user_agent(concat!("wineo/", env!("CARGO_PKG_VERSION")))
-        .redirect(reqwest::redirect::Policy::limited(10))
+        .redirect(redirects)
         .build()
         .map_err(|err| Error::Network(err.into()))?)
 }

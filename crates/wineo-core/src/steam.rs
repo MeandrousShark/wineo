@@ -4,6 +4,7 @@
 //! can build fixture trees under a temporary directory.
 
 mod account;
+pub mod api;
 pub mod key;
 pub mod process;
 pub mod vdf;
