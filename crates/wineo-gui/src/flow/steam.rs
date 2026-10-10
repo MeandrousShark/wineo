@@ -12,7 +12,7 @@ use wineo_core::config::GlobalConfig;
 use wineo_core::heroic_import::default_name;
 use wineo_core::paths::Paths;
 use wineo_core::steam;
-use wineo_core::steam_import::{self, ApplyOutcome, EntryState, Plan, PlanOutcome};
+use wineo_core::steam_import::{self, ApplyOutcome, EntryState, OwnedGames, Plan, PlanOutcome};
 
 use super::heroic::{self, Tile};
 use super::{Action, artwork};
@@ -742,7 +742,8 @@ fn load_listing(paths: &Paths) -> Result<Listing, String> {
         return Err("Steam games can't be imported into a portable folder.".to_owned());
     }
     let global = GlobalConfig::load(paths).map_err(|error| error.to_string())?;
-    let entries = steam_import::listing(paths, &global).map_err(|error| error.to_string())?;
+    let entries = steam_import::listing(paths, &global, OwnedGames::Unloaded)
+        .map_err(|error| error.to_string())?;
     let install = steam::active_for(paths, &global);
     let mut listing = Listing::default();
     for entry in entries {
@@ -750,7 +751,7 @@ fn load_listing(paths: &Paths) -> Result<Listing, String> {
             continue;
         }
         match entry.state {
-            EntryState::Installed | EntryState::Updating => {
+            EntryState::Installed | EntryState::Updating | EntryState::Installing => {
                 let poster = install.as_ref().and_then(|install| {
                     steam::art_files(install, &entry.app_id)
                         .into_iter()
@@ -760,10 +761,13 @@ fn load_listing(paths: &Paths) -> Result<Listing, String> {
                     title: entry.title.unwrap_or_else(|| entry.app_id.clone()),
                     app_id: entry.app_id,
                     size: entry.size_on_disk.unwrap_or(0),
-                    updating: entry.state == EntryState::Updating,
+                    updating: entry.state != EntryState::Installed,
                     poster,
                 });
             }
+            // Owned games are only listed when the list is loaded, which the
+            // desktop app doesn't do yet.
+            EntryState::InstallQueued | EntryState::Uninstalling | EntryState::NotInstalled => {}
             EntryState::Unreadable(reason) => listing
                 .issues
                 .push(format!("Steam app {}: {reason}", entry.app_id)),
@@ -792,7 +796,13 @@ fn plan_review(paths: &Paths, selected: Vec<Candidate>, name: Option<String>) ->
     let mut names = HashSet::new();
     for game in selected {
         let wanted_name = name.as_deref();
-        match steam_import::plan(paths, &global, &game.app_id, wanted_name) {
+        match steam_import::plan(
+            paths,
+            &global,
+            OwnedGames::Unloaded,
+            &game.app_id,
+            wanted_name,
+        ) {
             Ok(PlanOutcome::Ready(plan)) if names.insert(plan.name().to_owned()) => {
                 review.ready.push(plan);
             }
@@ -832,7 +842,7 @@ fn run_import(
             break;
         }
         progress(format!("Importing {}...", plan.title()));
-        match steam_import::apply(paths, &global, &plan, token) {
+        match steam_import::apply(paths, &global, OwnedGames::Unloaded, &plan, token) {
             Ok(ApplyOutcome::Imported(applied)) => {
                 report.done.push(applied.environment.name);
                 report.warnings.extend(applied.warnings);
@@ -1019,11 +1029,12 @@ mod tests {
         manifest(&steam, "3", "Gamma", 0);
         fs::write(steam.join("steamapps/appmanifest_4.acf"), "broken").unwrap();
         let global = GlobalConfig::load(&paths).unwrap();
-        let PlanOutcome::Ready(plan) = steam_import::plan(&paths, &global, "1", None).unwrap()
+        let PlanOutcome::Ready(plan) =
+            steam_import::plan(&paths, &global, OwnedGames::Unloaded, "1", None).unwrap()
         else {
             panic!("expected ready plan")
         };
-        steam_import::apply(&paths, &global, &plan, &Token::new()).unwrap();
+        steam_import::apply(&paths, &global, OwnedGames::Unloaded, &plan, &Token::new()).unwrap();
 
         let listing = load_listing(&paths).unwrap();
         assert_eq!(listing.games.len(), 1);
@@ -1139,7 +1150,14 @@ mod tests {
         manifest(&steam, "2", "Beta", 4);
         let review = plan_review(&paths, load_listing(&paths).unwrap().games, None);
         let global = GlobalConfig::load(&paths).unwrap();
-        steam_import::apply(&paths, &global, &review.ready[0], &Token::new()).unwrap();
+        steam_import::apply(
+            &paths,
+            &global,
+            OwnedGames::Unloaded,
+            &review.ready[0],
+            &Token::new(),
+        )
+        .unwrap();
 
         let report = run_import(&paths, review, &Token::new(), |_| {}).unwrap();
         assert_eq!(

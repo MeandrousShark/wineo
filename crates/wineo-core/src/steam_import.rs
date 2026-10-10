@@ -1,6 +1,6 @@
 //! Planning and registering installed Steam games as proxied environments.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
@@ -16,12 +16,40 @@ use crate::environment::{self, Environment};
 use crate::heroic_import::default_name;
 use crate::operation::Locks;
 use crate::paths::Paths;
-use crate::steam::{self, Install, InstallState, Manifest};
+use crate::steam::owned::{LoadError, Owned, OwnedGame};
+use crate::steam::{self, AppState, Install, InstallState};
+
+/// What a command knows about the owned list. It is loaded once per command
+/// and passed in, so nothing here fetches.
+#[derive(Debug, Clone, Copy)]
+pub enum OwnedGames<'a> {
+    /// No list was asked for, or there is no key, so only installed games
+    /// can be imported.
+    Unloaded,
+    /// The list was asked for and couldn't be loaded.
+    Failed(&'a LoadError),
+    Loaded(&'a Owned),
+}
+
+impl OwnedGames<'_> {
+    fn find(&self, app_id: &str) -> Option<&OwnedGame> {
+        match self {
+            OwnedGames::Loaded(owned) => owned.games.iter().find(|game| game.app_id == app_id),
+            OwnedGames::Unloaded | OwnedGames::Failed(_) => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryState {
     Installed,
     Updating,
+    /// Steam is downloading it, and it isn't playable yet.
+    Installing,
+    InstallQueued,
+    Uninstalling,
+    /// Owned, with nothing on disk.
+    NotInstalled,
     Unreadable(String),
 }
 
@@ -94,29 +122,40 @@ pub enum ApplyOutcome {
     AlreadyImported(String),
 }
 
-/// Lists importable games and malformed manifests from the active install.
-/// Tool ids are hidden even when their manifests cannot be read.
-pub fn listing(paths: &Paths, global: &GlobalConfig) -> anyhow::Result<Vec<Entry>> {
+/// Lists importable games and malformed manifests from the active install,
+/// then the owned games that aren't installed. Tool ids are hidden even when
+/// their manifests cannot be read.
+pub fn listing(
+    paths: &Paths,
+    global: &GlobalConfig,
+    owned: OwnedGames<'_>,
+) -> anyhow::Result<Vec<Entry>> {
     check_portable(paths)?;
     let install = active_install(paths, global)?;
     let imported = imported_games(paths)?;
+    let imported_as = |app_id: &str| {
+        imported
+            .iter()
+            .find(|(id, _)| id == app_id)
+            .map(|(_, name)| name.clone())
+    };
     let mut seen = HashSet::new();
     let mut entries = Vec::new();
+    // Manifests that say the game isn't there, with what they do say. Only
+    // the owned list can bring them back into the listing.
+    let mut absent = HashMap::new();
     for item in steam::manifests(&install) {
         if !seen.insert(item.app_id.clone()) || steam::is_tool(&item.app_id, "") {
             continue;
         }
-        let imported_as = imported
-            .iter()
-            .find(|(app_id, _)| app_id == &item.app_id)
-            .map(|(_, name)| name.clone());
+        let imported_as = imported_as(&item.app_id);
         match item.manifest {
             Ok(manifest) if !manifest.is_tool() => {
-                let state = match manifest.state() {
-                    InstallState::Installed => EntryState::Installed,
-                    InstallState::Updating => EntryState::Updating,
-                    InstallState::NotInstalled => continue,
-                };
+                let state = entry_state(&manifest.app_state());
+                if manifest.state() == InstallState::NotInstalled {
+                    absent.insert(item.app_id, state);
+                    continue;
+                }
                 entries.push(Entry {
                     app_id: item.app_id,
                     title: Some(manifest.name),
@@ -135,14 +174,55 @@ pub fn listing(paths: &Paths, global: &GlobalConfig) -> anyhow::Result<Vec<Entry
             }),
         }
     }
+    if let OwnedGames::Loaded(owned) = owned {
+        let mut taken = HashSet::new();
+        let mut rest: Vec<&OwnedGame> = owned
+            .games
+            .iter()
+            .filter(|game| !steam::is_tool(&game.app_id, &game.name))
+            .filter(|game| {
+                (!seen.contains(&game.app_id) || absent.contains_key(&game.app_id))
+                    && taken.insert(game.app_id.as_str())
+            })
+            .collect();
+        // The API's order is arbitrary, and a whole library is long.
+        rest.sort_by_cached_key(|game| (game.name.to_lowercase(), game.app_id.clone()));
+        for game in rest {
+            entries.push(Entry {
+                app_id: game.app_id.clone(),
+                title: Some(game.name.clone()),
+                size_on_disk: None,
+                state: absent
+                    .get(&game.app_id)
+                    .cloned()
+                    .unwrap_or(EntryState::NotInstalled),
+                imported_as: imported_as(&game.app_id),
+            });
+        }
+    }
     Ok(entries)
 }
 
+fn entry_state(state: &AppState) -> EntryState {
+    match state {
+        AppState::Installed => EntryState::Installed,
+        AppState::Updating => EntryState::Updating,
+        AppState::Installing(_) => EntryState::Installing,
+        AppState::InstallQueued => EntryState::InstallQueued,
+        AppState::Uninstalling => EntryState::Uninstalling,
+        AppState::NotInstalled | AppState::Unavailable(_) | AppState::Unknown(_) => {
+            EntryState::NotInstalled
+        }
+    }
+}
+
 /// Resolves one Steam app id without writing anything. A previously imported
-/// app is a skip, regardless of which name the caller requested for it.
+/// app is a skip, regardless of which name the caller requested for it. A game
+/// that isn't installed is resolved from the owned list.
 pub fn plan(
     paths: &Paths,
     global: &GlobalConfig,
+    owned: OwnedGames<'_>,
     app_id: &str,
     name: Option<&str>,
 ) -> anyhow::Result<PlanOutcome> {
@@ -154,25 +234,70 @@ pub fn plan(
     {
         return Ok(PlanOutcome::AlreadyImported(existing));
     }
-    let manifest = manifest_for(&install, app_id)?;
-    if manifest.is_tool() {
+    let game = resolve(&install, owned, app_id)?;
+    if game.tool {
         anyhow::bail!("Steam lists {app_id} as a tool.");
-    }
-    if manifest.state() == InstallState::NotInstalled {
-        anyhow::bail!("Steam lists {app_id} as not installed.");
     }
     let name = name
         .map(str::to_owned)
-        .unwrap_or_else(|| default_name(&manifest.name, None));
+        .unwrap_or_else(|| default_name(&game.title, None));
     environment::check_new_name(paths, &name)?;
-    let state = manifest.state();
     Ok(PlanOutcome::Ready(Plan {
         app_id: app_id.to_owned(),
-        title: manifest.name,
+        title: game.title,
         name,
-        size_on_disk: manifest.size_on_disk,
-        state,
+        size_on_disk: game.size_on_disk,
+        state: game.state,
     }))
+}
+
+/// What Steam, or failing that the owned list, says about one app.
+struct Game {
+    title: String,
+    size_on_disk: u64,
+    state: InstallState,
+    tool: bool,
+}
+
+fn resolve(install: &Install, owned: OwnedGames<'_>, app_id: &str) -> anyhow::Result<Game> {
+    let found = steam::manifests(install)
+        .into_iter()
+        .find(|item| item.app_id == app_id);
+    if let Some(item) = found {
+        let manifest = item.manifest.map_err(anyhow::Error::msg)?;
+        let state = manifest.state();
+        if state != InstallState::NotInstalled {
+            return Ok(Game {
+                tool: manifest.is_tool(),
+                title: manifest.name,
+                size_on_disk: manifest.size_on_disk,
+                state,
+            });
+        }
+    } else if owned.find(app_id).is_none() {
+        // A library that can't be read might hold the game, which is worth
+        // saying unless the owned list settles it.
+        match steam::app_state(Some(install), app_id) {
+            AppState::Unavailable(path) => {
+                anyhow::bail!("Steam's library at {} isn't available.", path.display())
+            }
+            AppState::Unknown(reason) => anyhow::bail!("{reason}."),
+            _ => {}
+        }
+    }
+    match owned {
+        OwnedGames::Loaded(_) => match owned.find(app_id) {
+            Some(game) => Ok(Game {
+                tool: steam::is_tool(app_id, &game.name),
+                title: game.name.clone(),
+                size_on_disk: 0,
+                state: InstallState::NotInstalled,
+            }),
+            None => anyhow::bail!("App {app_id} isn't installed or owned."),
+        },
+        OwnedGames::Failed(error) => anyhow::bail!("{error}"),
+        OwnedGames::Unloaded => anyhow::bail!("Steam lists {app_id} as not installed."),
+    }
 }
 
 /// Creates the config, then copies any valid Steam cached art. Art errors are
@@ -180,13 +305,14 @@ pub fn plan(
 pub fn apply(
     paths: &Paths,
     global: &GlobalConfig,
+    owned: OwnedGames<'_>,
     plan: &Plan,
     cancel: &Token,
 ) -> anyhow::Result<ApplyOutcome> {
     check_portable(paths)?;
     crate::import::check_cancelled(cancel)?;
     let locks = Locks::new(paths);
-    let _app_guard = locks.steam_import(&plan.app_id)?;
+    let _app_guard = locks.steam_app(&plan.app_id)?;
     crate::import::check_cancelled(cancel)?;
     if let Some((_, existing)) = imported_games(paths)?
         .into_iter()
@@ -195,17 +321,14 @@ pub fn apply(
         return Ok(ApplyOutcome::AlreadyImported(existing));
     }
     let install = active_install(paths, global)?;
-    let manifest = manifest_for(&install, &plan.app_id)?;
-    if manifest.state() == InstallState::NotInstalled {
-        anyhow::bail!("Steam lists {} as not installed.", plan.app_id);
-    }
+    let game = resolve(&install, owned, &plan.app_id)?;
     environment::check_new_name(paths, &plan.name)?;
     let path = paths.environment_config(&plan.name);
     let mut document = config::new_document();
     document["kind"] = value("proxied");
     document["launcher"] = value(Launcher::Steam.as_str());
     document["app_id"] = value(&plan.app_id);
-    document["title"] = value(&manifest.name);
+    document["title"] = value(&game.title);
     let mut tags = Array::new();
     tags.push("game");
     document["tags"] = value(tags);
@@ -256,22 +379,6 @@ fn imported_games(paths: &Paths) -> crate::Result<Vec<(String, String)>> {
         }
     }
     Ok(found)
-}
-
-fn manifest_for(install: &Install, app_id: &str) -> anyhow::Result<Manifest> {
-    if let Some(item) = steam::manifests(install)
-        .into_iter()
-        .find(|item| item.app_id == app_id)
-    {
-        return item.manifest.map_err(anyhow::Error::msg);
-    }
-    match steam::app_state(Some(install), app_id) {
-        steam::AppState::Unavailable(path) => {
-            anyhow::bail!("Steam's library at {} isn't available.", path.display())
-        }
-        steam::AppState::Unknown(reason) => anyhow::bail!("{reason}."),
-        _ => anyhow::bail!("Steam lists {app_id} as not installed."),
-    }
 }
 
 fn write_new(path: &Path, contents: &str) -> anyhow::Result<()> {
@@ -370,14 +477,22 @@ mod tests {
     }
 
     fn ready(paths: &Paths, global: &GlobalConfig, app_id: &str, name: Option<&str>) -> Plan {
-        match plan(paths, global, app_id, name).unwrap() {
+        match plan(paths, global, OwnedGames::Unloaded, app_id, name).unwrap() {
             PlanOutcome::Ready(plan) => plan,
             PlanOutcome::AlreadyImported(_) => panic!("app was already imported"),
         }
     }
 
     fn imported(paths: &Paths, plan: &Plan) -> Applied {
-        match apply(paths, &GlobalConfig::default(), plan, &Token::new()).unwrap() {
+        match apply(
+            paths,
+            &GlobalConfig::default(),
+            OwnedGames::Unloaded,
+            plan,
+            &Token::new(),
+        )
+        .unwrap()
+        {
             ApplyOutcome::Imported(applied) => applied,
             ApplyOutcome::AlreadyImported(_) => panic!("app was already imported"),
         }
@@ -400,7 +515,7 @@ mod tests {
         manifest(&root, "228980", "Steamworks Common Redistributables", 4, 12);
         manifest(&root, "12", "Proton 9.0", 4, 12);
         fs::write(root.join("steamapps/appmanifest_13.acf"), "bad {").unwrap();
-        let entries = listing(&paths, &GlobalConfig::default()).unwrap();
+        let entries = listing(&paths, &GlobalConfig::default(), OwnedGames::Unloaded).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].app_id, "10");
         assert_eq!(entries[0].title.as_deref(), Some("Happy Game"));
@@ -430,11 +545,13 @@ mod tests {
             "schema_version = 1\nkind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"42\"\ntitle = \"My Game\"\ntags = [\"game\"]\ndesktop = false\n"
         );
         assert_eq!(
-            listing(&paths, &global).unwrap()[0].imported_as.as_deref(),
+            listing(&paths, &global, OwnedGames::Unloaded).unwrap()[0]
+                .imported_as
+                .as_deref(),
             Some("custom")
         );
         assert!(matches!(
-            plan(&paths, &global, "42", Some("another")).unwrap(),
+            plan(&paths, &global, OwnedGames::Unloaded, "42", Some("another")).unwrap(),
             PlanOutcome::AlreadyImported(name) if name == "custom"
         ));
     }
@@ -452,26 +569,32 @@ mod tests {
         assert_eq!(first.name, "one-game");
         imported(&paths, &first);
         assert_eq!(
-            plan(&paths, &global, "2", None).unwrap_err().to_string(),
+            plan(&paths, &global, OwnedGames::Unloaded, "2", None)
+                .unwrap_err()
+                .to_string(),
             "Steam lists 2 as not installed."
         );
         assert_eq!(
-            plan(&paths, &global, "99", None).unwrap_err().to_string(),
+            plan(&paths, &global, OwnedGames::Unloaded, "99", None)
+                .unwrap_err()
+                .to_string(),
             "Steam lists 99 as not installed."
         );
         assert_eq!(
-            plan(&paths, &global, "3", None).unwrap_err().to_string(),
+            plan(&paths, &global, OwnedGames::Unloaded, "3", None)
+                .unwrap_err()
+                .to_string(),
             "Steam lists 3 as a tool."
         );
         assert_eq!(
-            plan(&paths, &global, "1", Some("one-game"))
+            plan(&paths, &global, OwnedGames::Unloaded, "1", Some("one-game"))
                 .unwrap()
                 .already_imported(),
             Some("one-game")
         );
         manifest(&root, "4", "Four Game", 4, 4);
         assert_eq!(
-            plan(&paths, &global, "4", Some("one-game"))
+            plan(&paths, &global, OwnedGames::Unloaded, "4", Some("one-game"))
                 .unwrap_err()
                 .to_string(),
             "environment `one-game` already exists"
@@ -524,7 +647,15 @@ mod tests {
         assert_eq!(planned.title(), "Native Title");
         global.steam = Some(steam::InstallKind::Flatpak);
 
-        let applied = match apply(&paths, &global, &planned, &Token::new()).unwrap() {
+        let applied = match apply(
+            &paths,
+            &global,
+            OwnedGames::Unloaded,
+            &planned,
+            &Token::new(),
+        )
+        .unwrap()
+        {
             ApplyOutcome::Imported(applied) => applied,
             ApplyOutcome::AlreadyImported(_) => panic!("app was already imported"),
         };
@@ -594,7 +725,16 @@ mod tests {
         let planned = ready(&paths, &GlobalConfig::default(), "42", None);
         let token = Token::new();
         token.cancel();
-        assert!(apply(&paths, &GlobalConfig::default(), &planned, &token).is_err());
+        assert!(
+            apply(
+                &paths,
+                &GlobalConfig::default(),
+                OwnedGames::Unloaded,
+                &planned,
+                &token
+            )
+            .is_err()
+        );
         assert!(!paths.environment_config(&planned.name).exists());
     }
 
@@ -614,7 +754,14 @@ mod tests {
         let config = fs::read(paths.environment_config("another-name")).unwrap();
         let art = fs::read(paths.art_dir("another-name").join("logo.png")).unwrap();
 
-        let outcome = apply(&paths, &global, &planned, &Token::new()).unwrap();
+        let outcome = apply(
+            &paths,
+            &global,
+            OwnedGames::Unloaded,
+            &planned,
+            &Token::new(),
+        )
+        .unwrap();
 
         assert!(matches!(outcome, ApplyOutcome::AlreadyImported(name) if name == "another-name"));
         assert_eq!(environment::names(&paths).unwrap(), ["another-name"]);
@@ -646,9 +793,15 @@ mod tests {
             }
 
             assert_eq!(
-                apply(&paths, &global, &planned, &Token::new())
-                    .unwrap_err()
-                    .to_string(),
+                apply(
+                    &paths,
+                    &global,
+                    OwnedGames::Unloaded,
+                    &planned,
+                    &Token::new()
+                )
+                .unwrap_err()
+                .to_string(),
                 "Steam lists 42 as not installed."
             );
             assert!(!paths.environment_config(&planned.name).exists());
@@ -668,9 +821,15 @@ mod tests {
         global.steam = Some(steam::InstallKind::Flatpak);
 
         assert_eq!(
-            apply(&paths, &global, &planned, &Token::new())
-                .unwrap_err()
-                .to_string(),
+            apply(
+                &paths,
+                &global,
+                OwnedGames::Unloaded,
+                &planned,
+                &Token::new()
+            )
+            .unwrap_err()
+            .to_string(),
             "Steam lists 42 as not installed."
         );
         assert!(!paths.environment_config(&planned.name).exists());
@@ -694,7 +853,7 @@ mod tests {
                 .map(|plan| {
                     scope.spawn(|| {
                         barrier.wait();
-                        apply(&paths, &global, plan, &Token::new()).unwrap()
+                        apply(&paths, &global, OwnedGames::Unloaded, plan, &Token::new()).unwrap()
                     })
                 })
                 .collect();
@@ -734,9 +893,15 @@ mod tests {
         write_new(&path, "kind = 'native'\n").unwrap();
 
         assert_eq!(
-            apply(&paths, &global, &planned, &Token::new())
-                .unwrap_err()
-                .to_string(),
+            apply(
+                &paths,
+                &global,
+                OwnedGames::Unloaded,
+                &planned,
+                &Token::new()
+            )
+            .unwrap_err()
+            .to_string(),
             "environment `my-game` already exists"
         );
         assert_eq!(fs::read_to_string(path).unwrap(), "kind = 'native'\n");
@@ -747,7 +912,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(temp.path(), false);
         assert_eq!(
-            listing(&paths, &GlobalConfig::default())
+            listing(&paths, &GlobalConfig::default(), OwnedGames::Unloaded)
                 .unwrap_err()
                 .to_string(),
             "Steam wasn't found."
@@ -757,21 +922,270 @@ mod tests {
         manifest(&native, "1", "Native Game", 4, 1);
         manifest(&flatpak, "2", "Flatpak Game", 4, 2);
         let mut global = GlobalConfig::default();
-        assert_eq!(listing(&paths, &global).unwrap()[0].app_id, "1");
         assert_eq!(
-            plan(&paths, &global, "2", None).unwrap_err().to_string(),
+            listing(&paths, &global, OwnedGames::Unloaded).unwrap()[0].app_id,
+            "1"
+        );
+        assert_eq!(
+            plan(&paths, &global, OwnedGames::Unloaded, "2", None)
+                .unwrap_err()
+                .to_string(),
             "Steam lists 2 as not installed."
         );
         global.steam = Some(steam::InstallKind::Flatpak);
-        assert_eq!(listing(&paths, &global).unwrap()[0].app_id, "2");
+        assert_eq!(
+            listing(&paths, &global, OwnedGames::Unloaded).unwrap()[0].app_id,
+            "2"
+        );
         let portable = self::paths(temp.path(), true);
         assert_eq!(
-            listing(&portable, &global).unwrap_err().to_string(),
+            listing(&portable, &global, OwnedGames::Unloaded)
+                .unwrap_err()
+                .to_string(),
             "Steam games can't be imported into a portable folder."
         );
         assert_eq!(
-            plan(&portable, &global, "2", None).unwrap_err().to_string(),
+            plan(&portable, &global, OwnedGames::Unloaded, "2", None)
+                .unwrap_err()
+                .to_string(),
             "Steam games can't be imported into a portable folder."
         );
+    }
+
+    fn owned_list(games: &[(&str, &str)]) -> Owned {
+        Owned {
+            games: games
+                .iter()
+                .map(|(app_id, name)| OwnedGame {
+                    app_id: (*app_id).to_owned(),
+                    name: (*name).to_owned(),
+                })
+                .collect(),
+            warning: None,
+        }
+    }
+
+    fn hidden() -> LoadError {
+        LoadError(crate::steam::owned::OwnedError::Hidden)
+    }
+
+    #[test]
+    fn list_adds_owned_games_that_are_not_installed_after_the_installed_ones() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let root = steam_root(&paths, false);
+        manifest(&root, "10", "Happy Game", 4, 1024);
+        manifest(&root, "11", "Queued Game", 2, 0);
+        manifest(&root, "12", "Going Game", 4 | 2048, 0);
+        manifest(&root, "13", "Downloading Game", 1026, 0);
+        manifest(&root, "228980", "Steamworks Common Redistributables", 4, 12);
+        let global = GlobalConfig::default();
+        let owned = owned_list(&[
+            ("500", "zebra Crossing"),
+            ("10", "Happy Game"),
+            ("11", "Queued Game"),
+            ("12", "Going Game"),
+            ("228980", "Steamworks Common Redistributables"),
+            ("400", "Apple Orchard"),
+            ("400", "Apple Orchard"),
+        ]);
+
+        let entries = listing(&paths, &global, OwnedGames::Loaded(&owned)).unwrap();
+
+        let shown: Vec<_> = entries
+            .iter()
+            .map(|entry| (entry.app_id.as_str(), entry.state.clone()))
+            .collect();
+        // Installed games come first, then the rest by title.
+        assert_eq!(
+            shown,
+            [
+                ("10", EntryState::Installed),
+                ("13", EntryState::Installing),
+                ("400", EntryState::NotInstalled),
+                ("12", EntryState::Uninstalling),
+                ("11", EntryState::InstallQueued),
+                ("500", EntryState::NotInstalled),
+            ]
+        );
+        let owned_only = entries.iter().find(|entry| entry.app_id == "500").unwrap();
+        assert_eq!(owned_only.title.as_deref(), Some("zebra Crossing"));
+        assert_eq!(owned_only.size_on_disk, None);
+    }
+
+    #[test]
+    fn list_without_owned_data_keeps_the_installed_view() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let root = steam_root(&paths, false);
+        manifest(&root, "10", "Happy Game", 4, 1024);
+        manifest(&root, "11", "Queued Game", 2, 0);
+        let global = GlobalConfig::default();
+        let failed = hidden();
+        for owned in [OwnedGames::Unloaded, OwnedGames::Failed(&failed)] {
+            let entries = listing(&paths, &global, owned).unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].app_id, "10");
+        }
+    }
+
+    #[test]
+    fn an_owned_game_that_is_not_installed_imports_with_its_owned_title() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let root = steam_root(&paths, false);
+        let cache = root.join("appcache/librarycache/292030");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("library_600x900.jpg"), png()).unwrap();
+        let global = GlobalConfig::default();
+        let owned = owned_list(&[("292030", "The Witcher 3")]);
+        let owned = OwnedGames::Loaded(&owned);
+
+        let PlanOutcome::Ready(planned) = plan(&paths, &global, owned, "292030", None).unwrap()
+        else {
+            panic!("expected a plan");
+        };
+        assert_eq!(planned.title(), "The Witcher 3");
+        assert_eq!(planned.name(), "the-witcher-3");
+        assert_eq!(planned.state(), InstallState::NotInstalled);
+        assert_eq!(planned.size_on_disk(), 0);
+
+        let ApplyOutcome::Imported(applied) =
+            apply(&paths, &global, owned, &planned, &Token::new()).unwrap()
+        else {
+            panic!("expected an import");
+        };
+        assert_eq!(applied.art, [Kind::Grid]);
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("the-witcher-3")).unwrap(),
+            "schema_version = 1\nkind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"292030\"\ntitle = \"The Witcher 3\"\ntags = [\"game\"]\ndesktop = false\n"
+        );
+    }
+
+    #[test]
+    fn a_queued_install_imports_through_the_owned_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let root = steam_root(&paths, false);
+        manifest(&root, "11", "Manifest Title", 2, 0);
+        let global = GlobalConfig::default();
+        let owned = owned_list(&[("11", "Owned Title")]);
+
+        let planned = ready_with(&paths, &global, OwnedGames::Loaded(&owned), "11");
+
+        assert_eq!(planned.title(), "Owned Title");
+        assert_eq!(
+            plan(&paths, &global, OwnedGames::Unloaded, "11", None)
+                .unwrap_err()
+                .to_string(),
+            "Steam lists 11 as not installed."
+        );
+    }
+
+    fn ready_with(paths: &Paths, global: &GlobalConfig, owned: OwnedGames<'_>, id: &str) -> Plan {
+        match plan(paths, global, owned, id, None).unwrap() {
+            PlanOutcome::Ready(plan) => plan,
+            PlanOutcome::AlreadyImported(_) => panic!("app was already imported"),
+        }
+    }
+
+    #[test]
+    fn an_id_neither_installed_nor_owned_is_refused_and_a_failed_list_says_why() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        steam_root(&paths, false);
+        let global = GlobalConfig::default();
+        let owned = owned_list(&[("292030", "The Witcher 3")]);
+        let empty = owned_list(&[]);
+        for list in [&owned, &empty] {
+            assert_eq!(
+                plan(&paths, &global, OwnedGames::Loaded(list), "12345", None)
+                    .unwrap_err()
+                    .to_string(),
+                "App 12345 isn't installed or owned."
+            );
+        }
+        let failed = hidden();
+        assert_eq!(
+            plan(&paths, &global, OwnedGames::Failed(&failed), "12345", None)
+                .unwrap_err()
+                .to_string(),
+            "Couldn't get owned games: the key can't see this library"
+        );
+        assert_eq!(
+            plan(&paths, &global, OwnedGames::Unloaded, "12345", None)
+                .unwrap_err()
+                .to_string(),
+            "Steam lists 12345 as not installed."
+        );
+        assert!(environment::names(&paths).unwrap().is_empty());
+    }
+
+    #[test]
+    fn installed_games_import_with_no_owned_list_at_all() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let root = steam_root(&paths, false);
+        manifest(&root, "10", "Happy Game", 4, 1024);
+        manifest(&root, "20", "Other Game", 4, 1024);
+        let global = GlobalConfig::default();
+        let failed = hidden();
+        for (id, owned) in [
+            ("10", OwnedGames::Unloaded),
+            ("20", OwnedGames::Failed(&failed)),
+        ] {
+            let planned = ready_with(&paths, &global, owned, id);
+            assert_eq!(planned.state(), InstallState::Installed);
+            assert!(matches!(
+                apply(&paths, &global, owned, &planned, &Token::new()).unwrap(),
+                ApplyOutcome::Imported(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn apply_rechecks_ownership_under_the_lock_without_fetching() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        steam_root(&paths, false);
+        let global = GlobalConfig::default();
+        let owned = owned_list(&[("292030", "The Witcher 3")]);
+        let planned = ready_with(&paths, &global, OwnedGames::Loaded(&owned), "292030");
+        let other = owned_list(&[]);
+
+        for list in [
+            OwnedGames::Loaded(&other),
+            OwnedGames::Unloaded,
+            OwnedGames::Failed(&hidden()),
+        ] {
+            assert!(apply(&paths, &global, list, &planned, &Token::new()).is_err());
+        }
+        assert!(!paths.environment_config(planned.name()).exists());
+    }
+
+    #[test]
+    fn an_unreadable_library_blocks_an_unowned_id_but_not_an_owned_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path(), false);
+        let root = steam_root(&paths, false);
+        let gone = temp.path().join("unmounted");
+        fs::write(
+            root.join("steamapps/libraryfolders.vdf"),
+            format!(
+                "\"libraryfolders\" {{ \"1\" {{ \"path\" \"{}\" }} }}",
+                gone.display()
+            ),
+        )
+        .unwrap();
+        let global = GlobalConfig::default();
+        let owned = owned_list(&[("292030", "The Witcher 3")]);
+
+        assert_eq!(
+            plan(&paths, &global, OwnedGames::Loaded(&owned), "5", None)
+                .unwrap_err()
+                .to_string(),
+            format!("Steam's library at {} isn't available.", gone.display())
+        );
+        ready_with(&paths, &global, OwnedGames::Loaded(&owned), "292030");
     }
 }

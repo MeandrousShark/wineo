@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
 use wineo_core::paths::Paths;
-use wineo_core::steam_import::{self, ApplyOutcome, EntryState, Plan, PlanOutcome};
+use wineo_core::steam_import::{self, ApplyOutcome, EntryState, OwnedGames, Plan, PlanOutcome};
 use wineo_core::steamgriddb::Key;
 
 use super::art::{self, KeyCheck};
@@ -59,7 +59,13 @@ pub fn run(paths: &Paths, args: Args, first_question: bool) -> anyhow::Result<Ex
         } else if args.all {
             bulk(paths, &global, &args)
         } else if let Some(app_id) = &args.game {
-            match steam_import::plan(paths, &global, app_id, args.name.as_deref())? {
+            match steam_import::plan(
+                paths,
+                &global,
+                OwnedGames::Unloaded,
+                app_id,
+                args.name.as_deref(),
+            )? {
                 PlanOutcome::AlreadyImported(name) => {
                     println!("Already imported as {name}.");
                     if args.dry_run {
@@ -108,10 +114,14 @@ fn canceled(error: &anyhow::Error) -> bool {
 }
 
 fn list(paths: &Paths, global: &GlobalConfig) -> anyhow::Result<ExitCode> {
-    for entry in steam_import::listing(paths, global)? {
+    for entry in steam_import::listing(paths, global, OwnedGames::Unloaded)? {
         let state = match &entry.state {
             EntryState::Installed => "installed",
             EntryState::Updating => "updating",
+            EntryState::Installing => "installing",
+            EntryState::InstallQueued => "install queued",
+            EntryState::Uninstalling => "uninstalling",
+            EntryState::NotInstalled => "not installed",
             EntryState::Unreadable(_) => "unreadable manifest",
         };
         let size = entry
@@ -164,7 +174,7 @@ fn apply(
     key: Option<&Key>,
     cancel: &Token,
 ) -> anyhow::Result<ApplyOutcome> {
-    let outcome = steam_import::apply(paths, global, plan, cancel)?;
+    let outcome = steam_import::apply(paths, global, OwnedGames::Unloaded, plan, cancel)?;
     let applied = match &outcome {
         ApplyOutcome::Imported(applied) => applied,
         ApplyOutcome::AlreadyImported(name) => {
@@ -238,12 +248,12 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
     let mut already_imported = Vec::new();
     let mut names = HashSet::new();
     let mut out = Prompt::new(OutputOnly, crate::output::stdout());
-    for entry in steam_import::listing(paths, global)? {
+    for entry in steam_import::listing(paths, global, OwnedGames::Unloaded)? {
         if let Some(name) = entry.imported_as {
             println!("Already imported as {name}.");
             continue;
         }
-        match steam_import::plan(paths, global, &entry.app_id, None) {
+        match steam_import::plan(paths, global, OwnedGames::Unloaded, &entry.app_id, None) {
             Ok(PlanOutcome::Ready(plan)) => {
                 if names.insert(plan.name().to_owned()) {
                     review(&plan, key.is_some(), &mut out)?;
@@ -338,7 +348,7 @@ fn guided<I: Input, W: Write>(
     out: &mut Prompt<I, W>,
     first_question: bool,
 ) -> anyhow::Result<ExitCode> {
-    let entries: Vec<_> = steam_import::listing(paths, global)?
+    let entries: Vec<_> = steam_import::listing(paths, global, OwnedGames::Unloaded)?
         .into_iter()
         .filter(|entry| {
             entry.imported_as.is_none() && !matches!(entry.state, EntryState::Unreadable(_))
@@ -380,7 +390,7 @@ fn guided<I: Input, W: Write>(
                     "Environment name",
                     Some(name.as_deref().unwrap_or(&default)),
                     |value| {
-                        steam_import::plan(paths, global, &game, Some(value))
+                        steam_import::plan(paths, global, OwnedGames::Unloaded, &game, Some(value))
                             .map(|_| value.to_owned())
                             .map_err(|error| error.to_string())
                     },
@@ -393,7 +403,13 @@ fn guided<I: Input, W: Write>(
                 }
             }
             _ => {
-                let plan = match steam_import::plan(paths, global, &game, name.as_deref())? {
+                let plan = match steam_import::plan(
+                    paths,
+                    global,
+                    OwnedGames::Unloaded,
+                    &game,
+                    name.as_deref(),
+                )? {
                     PlanOutcome::Ready(plan) => plan,
                     PlanOutcome::AlreadyImported(name) => {
                         out.say(format!("Already imported as {name}."))?;

@@ -595,8 +595,9 @@ impl Locks {
         )
     }
 
-    /// Serializes registration of one Steam app across environment names.
-    pub(crate) fn steam_import(&self, app_id: &str) -> Result<ConfigGuard> {
+    /// Serializes registering, installing, and uninstalling one Steam app
+    /// across environment names.
+    pub(crate) fn steam_app(&self, app_id: &str) -> Result<ConfigGuard> {
         self.write_lock(
             &self.dir.join(format!("steam-{}.lock", label(app_id))),
             format!("Steam app {app_id}"),
