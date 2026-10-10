@@ -21,6 +21,32 @@ const ACTION_MENU_SPACING: f32 = 4.0;
 const ACTION_MENU_HEADER_HEIGHT: f32 = 20.0;
 const INSTALL_BAR_HEIGHT: f32 = 4.0;
 const CARD_TITLE_SIZE: f32 = 14.0;
+const CARD_POSTER_HEIGHT: f32 = 240.0;
+const CARD_SPACING: f32 = 4.0;
+/// The identifier line and the state and playtime row.
+const CARD_CONTEXT_SIZE: f32 = 12.0;
+
+/// The identifier shows as muted context only when a title replaces it.
+fn shows_identifier(card: &Card) -> bool {
+    card.name != card.display_title
+}
+
+/// A card's laid out height, from the same sizes `App::card` builds it with,
+/// so lazy art loading can follow the grid's real row geometry.
+pub(crate) fn card_height(card: &Card) -> f32 {
+    let line = iced::widget::text::LineHeight::default()
+        .to_absolute(CARD_CONTEXT_SIZE.into())
+        .0;
+    let mut height = CARD_POSTER_HEIGHT
+        + CARD_SPACING
+        + crate::tile_title::two_line_height(CARD_TITLE_SIZE)
+        + CARD_SPACING
+        + line;
+    if shows_identifier(card) {
+        height += CARD_SPACING + line;
+    }
+    height
+}
 
 impl App {
     pub(crate) fn grid(&self) -> Element<'_, Message> {
@@ -108,7 +134,7 @@ impl App {
         }
         let framed = container(container(layers).clip(true))
             .width(CARD_WIDTH)
-            .height(240)
+            .height(CARD_POSTER_HEIGHT)
             .padding(2)
             .style(move |_| {
                 container::Style::default().border(border::rounded(6).width(2).color(if selected {
@@ -132,8 +158,12 @@ impl App {
                 .style(move |_| container::Style::default()
                     .background(dot_color)
                     .border(border::rounded(4))),
-            text(card.state_word()).size(12).color(palette.muted),
-            text(card.playtime()).size(12).color(palette.muted),
+            text(card.state_word())
+                .size(CARD_CONTEXT_SIZE)
+                .color(palette.muted),
+            text(card.playtime())
+                .size(CARD_CONTEXT_SIZE)
+                .color(palette.muted),
         ]
         .spacing(8)
         .align_y(Center);
@@ -150,12 +180,12 @@ impl App {
                 })
                 .wrapping(iced::widget::text::Wrapping::None),
         ]
-        .spacing(4)
+        .spacing(CARD_SPACING)
         .width(CARD_WIDTH);
-        if card.name != card.display_title {
+        if shows_identifier(card) {
             content = content.push(
                 text(truncate_name(&card.name, CARD_WIDTH))
-                    .size(12)
+                    .size(CARD_CONTEXT_SIZE)
                     .color(palette.muted)
                     .wrapping(iced::widget::text::Wrapping::None),
             );
@@ -1017,6 +1047,20 @@ mod tests {
             heights.push(node.bounds().height);
         }
         assert_eq!(heights[0], heights[1]);
+        // Art loading predicts row geometry with `card_height`.
+        let mut untitled = crate::tests::card("game", wineo_core::runtime::State::Inactive, 60);
+        let mut view = app.card(&untitled);
+        assert_eq!(
+            card_height(&untitled),
+            layout(&mut view, Size::new(400.0, 600.0)).bounds().height
+        );
+        drop(view);
+        untitled.display_title = "Game".to_owned();
+        let mut view = app.card(&untitled);
+        assert_eq!(
+            card_height(&untitled),
+            layout(&mut view, Size::new(400.0, 600.0)).bounds().height
+        );
     }
 
     #[test]

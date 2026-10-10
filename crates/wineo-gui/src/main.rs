@@ -60,8 +60,6 @@ use crate::panel::{LOG_ID, LogBuffer, PanelError};
 use crate::theme::Palette;
 
 pub(crate) const CARD_WIDTH: f32 = 160.0;
-/// Roughly one library row: poster, two title lines, metadata, and the gap.
-const CARD_ROW: f32 = 318.0;
 pub(crate) const GAP: f32 = 16.0;
 const SCROLL_ID: &str = "library";
 const SEARCH_ID: &str = "library-search";
@@ -1524,22 +1522,23 @@ impl App {
             || self.close_prompt
     }
     fn load_visible_art(&mut self) -> Task<Message> {
-        let pitch = CARD_ROW;
-        let first = ((self.scroll_offset - 2.0 * pitch).max(0.0) / pitch).floor() as usize;
-        let last =
-            ((self.scroll_offset + self.viewport_height + 2.0 * pitch) / pitch).ceil() as usize;
         let filtered = self.filtered();
+        let heights: Vec<f32> = filtered
+            .iter()
+            .map(|card| grid::card_height(card))
+            .collect();
+        // Two rows either side start decoding before a card scrolls in.
+        let margin = 2.0 * (heights.iter().copied().fold(0.0, f32::max) + GAP);
+        let top = self.scroll_offset - margin;
+        let bottom = self.scroll_offset + self.viewport_height + margin;
         let mut seen = HashSet::new();
         let mut paths = Vec::new();
         for columns in [
             grid_motion::columns_for_viewport(self.viewport_width, false),
             grid_motion::columns_for_viewport(self.viewport_width, true),
         ] {
-            for card in filtered
-                .iter()
-                .skip(first * columns)
-                .take(last.saturating_sub(first) * columns)
-            {
+            let range = grid_motion::cards_between(&heights, columns, top, bottom);
+            for card in &filtered[range] {
                 if let Some(art) = &card.art {
                     let key = (art.clone(), artwork::Kind::Grid);
                     if seen.insert(key.clone()) {
@@ -2411,6 +2410,50 @@ mod tests {
         let _ = app.load_visible_art();
         assert!(app.loading.contains(&new_key));
         assert!(!app.loading.contains(&old_key));
+    }
+
+    #[test]
+    fn deep_scrolls_load_art_for_every_visible_row_of_mixed_heights() {
+        let mut app = app();
+        app.viewport_width = 1000.0;
+        app.viewport_height = 800.0;
+        let columns = grid_motion::columns_for_viewport(app.viewport_width, false);
+        app.cards = (0..columns * 120)
+            .map(|index| {
+                let mut card = card(&format!("game-{index}"), State::Inactive, 0);
+                // Every third row has a titled card, which adds the
+                // identifier line and makes that row taller.
+                if (index / columns).is_multiple_of(3) && index.is_multiple_of(columns) {
+                    card.display_title = format!("Game {index}");
+                }
+                card.art = Some(art_file(&format!("/tmp/art-{index}.png"), index as u64));
+                card
+            })
+            .collect();
+        let row_heights: Vec<f32> = app
+            .cards
+            .chunks(columns)
+            .map(|row| row.iter().map(grid::card_height).fold(0.0, f32::max))
+            .collect();
+        assert_ne!(row_heights[0], row_heights[1]);
+        let row_top = |row: usize| 16.0 + row_heights[..row].iter().map(|h| h + GAP).sum::<f32>();
+        app.scroll_offset = row_top(60);
+        let _ = app.load_visible_art();
+        let bottom = app.scroll_offset + app.viewport_height;
+        let visible: Vec<usize> = (0..row_heights.len())
+            .filter(|row| {
+                row_top(*row) <= bottom && row_top(*row) + row_heights[*row] >= app.scroll_offset
+            })
+            .collect();
+        assert_eq!(visible.first(), Some(&60));
+        for row in visible {
+            for card in &app.cards[row * columns..(row + 1) * columns] {
+                let key = (card.art.clone().unwrap(), artwork::Kind::Grid);
+                assert!(app.loading.contains(&key), "row {row} wasn't loaded");
+            }
+        }
+        // The range stays near the viewport instead of loading everything.
+        assert!(app.loading.len() < 20 * columns);
     }
 
     #[test]
