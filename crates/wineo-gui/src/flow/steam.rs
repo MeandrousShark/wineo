@@ -929,7 +929,8 @@ fn load_listing_with(paths: &Paths, owned: &OwnedData) -> Result<Listing, String
         }
         let (installed, note) = match &entry.state {
             EntryState::Installed => (true, None),
-            EntryState::Updating | EntryState::Installing => (true, Some("Updating in Steam")),
+            EntryState::Updating => (true, Some("Updating in Steam")),
+            EntryState::Installing => (true, Some("Installing in Steam")),
             EntryState::NotInstalled => (false, None),
             EntryState::InstallQueued => (false, Some("Install queued")),
             EntryState::Uninstalling => (false, Some("Uninstalling")),
@@ -1244,6 +1245,31 @@ mod tests {
         assert_eq!(listing.games[0].app_id, "2");
         assert_eq!(listing.issues.len(), 1);
         assert!(listing.issues[0].contains("4"));
+    }
+
+    #[test]
+    fn notes_tell_installing_from_updating() {
+        let temp = TempDir::new().unwrap();
+        let paths = paths(temp.path(), false);
+        let steam = temp.path().join("home/.local/share/Steam");
+        fs::create_dir_all(steam.join("steamapps")).unwrap();
+        manifest(&steam, "1", "Alpha", 4);
+        manifest(&steam, "2", "Beta", 1028);
+        manifest(&steam, "3", "Gamma", 1026);
+        let notes: Vec<_> = load_listing(&paths)
+            .unwrap()
+            .games
+            .iter()
+            .map(|game| game.note)
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                None,
+                Some("Updating in Steam"),
+                Some("Installing in Steam"),
+            ]
+        );
     }
 
     #[test]
