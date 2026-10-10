@@ -45,6 +45,7 @@ pub mod snapshot;
 pub mod stats;
 pub mod steam;
 pub mod steam_import;
+pub mod steam_install;
 pub mod steamgriddb;
 pub mod supervisor;
 pub mod target_path;
