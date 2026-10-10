@@ -586,7 +586,11 @@ impl Draft {
                     .spacing(10),
                     self.tile(Kind::Grid, "Poster", "Cover art", 148, 222, true, palette),
                 ]
-                .spacing(12),
+                .spacing(12)
+                // In a narrow dialog the poster moves below instead of
+                // being squeezed to nothing.
+                .wrap()
+                .vertical_spacing(10),
             ]
             .spacing(10),
             self.control_rows(palette, key_available),

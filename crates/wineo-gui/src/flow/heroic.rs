@@ -1994,7 +1994,8 @@ impl Page {
                     if self.status_by_action() {
                         actions = actions.push(self.working(palette, spin));
                     }
-                    body = body.push(actions);
+                    // A narrow dialog would squeeze the last control away.
+                    body = body.push(actions.wrap().vertical_spacing(8));
                 }
             }
             Step::Details => {
@@ -3971,40 +3972,107 @@ mod tests {
         assert!(page.focus_ring(focus));
     }
 
+    /// A page at each step, filled in the way a real import fills it.
+    fn staged_pages(root: &std::path::Path) -> Vec<(&'static str, Page)> {
+        const LONG: &str =
+            "Grand Theft Auto IV: The Complete Edition and Episodes from Liberty City";
+        let page = |name: &str| {
+            let mut page = grid_page(&root.join(name));
+            if let Some(listing) = &mut page.listing {
+                listing.candidates[DUSK].title = LONG.to_owned();
+            }
+            page
+        };
+        let mut pages = Vec::new();
+        let mut sources = page("sources");
+        sources.step = Step::Sources;
+        pages.push(("sources", sources));
+
+        let mut games = page("games");
+        let _ = games.update(Event::Toggle(DUSK));
+        let _ = games.update(Event::Toggle(NOON));
+        let _ = games.key(
+            &Key::Named(Named::ArrowRight),
+            keyboard::Modifiers::empty(),
+            900.0,
+        );
+        pages.push(("games", games));
+
+        let mut single = page("single");
+        open_single(&mut single, DUSK);
+        pages.push(("single details", single));
+        let mut single = page("single-review");
+        open_single(&mut single, DUSK);
+        let listing = single.listing.clone().unwrap();
+        let review = plan_review(&single.paths, &listing, single.selected, &single.draft).unwrap();
+        let _ = single.update(Event::Planned(single.generation, Ok(Box::new(review))));
+        assert_eq!(single.step, Step::Review);
+        pages.push(("single review", single));
+
+        let mut batch = page("batch");
+        let _ = batch.update(Event::Toggle(DUSK));
+        let _ = batch.update(Event::Toggle(NOON));
+        let _ = batch.update(Event::ImportSelected);
+        assert!(batch.draft.batch);
+        pages.push(("batch details", batch));
+        let mut batch = page("batch-review");
+        let _ = batch.update(Event::Toggle(DUSK));
+        let _ = batch.update(Event::Toggle(NOON));
+        let _ = batch.update(Event::ImportSelected);
+        let listing = batch.listing.clone().unwrap();
+        let review = plan_review(&batch.paths, &listing, None, &batch.draft).unwrap();
+        let _ = batch.update(Event::Planned(batch.generation, Ok(Box::new(review))));
+        assert_eq!(batch.step, Step::Review);
+        pages.push(("batch review", batch));
+
+        let results = || {
+            vec![
+                (
+                    "grand-theft-auto-iv-the-complete-edition".to_owned(),
+                    Ok(vec!["Desktop entry: the menu folder couldn't be written".to_owned()]),
+                ),
+                (
+                    "noon".to_owned(),
+                    Err("Heroic no longer lists the install folder for this game, so it can't be imported".to_owned()),
+                ),
+            ]
+        };
+        let mut working = page("working");
+        working.step = Step::Working;
+        working.token = Some(Token::new());
+        working.results = results();
+        pages.push(("working", working));
+        let mut finished = page("finished");
+        finished.step = Step::Finished;
+        finished.results = results();
+        pages.push(("finished", finished));
+        pages
+    }
+
     #[test]
     fn every_step_sits_inside_the_dialog_padding() {
-        use crate::layout_probe::{bounds_at, layout, within};
+        use crate::layout_probe::{bounds_at, layout, outside, within};
         let root = tempdir().unwrap();
-        let mut page = grid_page(root.path());
-        for (width, height) in [(900.0, 720.0), (360.0, 280.0)] {
+        let mut pages = staged_pages(root.path());
+        // The smallest dialog the window allows, a small one, and the widest.
+        for (width, height) in [(280.0, 240.0), (360.0, 280.0), (900.0, 720.0)] {
             let inset = iced::Rectangle::new(
                 iced::Point::new(24.0, 24.0),
                 iced::Size::new(width - 48.0, height - 48.0),
             );
-            for step in [
-                Step::Sources,
-                Step::Games,
-                Step::Details,
-                Step::Review,
-                Step::Working,
-                Step::Finished,
-            ] {
+            for (label, page) in &mut pages {
                 for leave_prompt in [false, true] {
-                    page.step = step;
                     page.leave_prompt = leave_prompt;
-                    let back_index = if leave_prompt { 2 } else { 0 };
                     let mut view =
                         page.view_with_key_availability(Palette::DARK, width, 0.0, false);
                     let node = layout(&mut view, iced::Size::new(width, height));
-                    let page_bounds = bounds_at(&node, &[0]);
-                    assert!(within(page_bounds, inset), "{step:?}: {page_bounds:?}");
-                    let back = bounds_at(&node, &[0, back_index, 0]);
-                    assert!(back.x >= 24.0 && back.y >= 24.0, "{step:?}: {back:?}");
-                    let content = bounds_at(&node, &[0, back_index + 1]);
+                    let spilled = outside(&node, inset);
                     assert!(
-                        content.y + content.height <= height - 24.0 + 0.01,
-                        "{step:?}: {content:?}"
+                        spilled.is_empty(),
+                        "{label} at {width}x{height}, prompt {leave_prompt}: {spilled:?}"
                     );
+                    let back = bounds_at(&node, &[0, if leave_prompt { 2 } else { 0 }, 0]);
+                    assert!(within(back, inset), "{label}: {back:?}");
                 }
             }
         }

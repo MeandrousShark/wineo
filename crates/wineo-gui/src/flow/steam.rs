@@ -764,7 +764,10 @@ impl Page {
                                 refresh,
                             ]
                             .spacing(12)
-                            .align_y(Center),
+                            .align_y(Center)
+                            // A narrow dialog would squeeze the last button away.
+                            .wrap()
+                            .vertical_spacing(8),
                         );
                     }
                 }
@@ -1318,12 +1321,41 @@ mod tests {
 
     #[test]
     fn every_step_sits_inside_the_dialog_padding() {
-        use crate::layout_probe::{bounds_at, layout, within};
+        use crate::layout_probe::{bounds_at, layout, outside, within};
         let temp = TempDir::new().unwrap();
         let (mut page, _) = Page::new(paths(temp.path(), false));
         page.status.clear();
-        page.listing = Some(listed(40));
-        for (width, height) in [(900.0, 720.0), (360.0, 280.0)] {
+        let mut listing = listed(40);
+        listing.games[0].title =
+            "Grand Theft Auto IV: The Complete Edition and Episodes from Liberty City".to_owned();
+        listing.games[3].installed = false;
+        listing.games[3].note = Some("Updating in Steam");
+        listing.issues = vec!["A Steam library folder couldn't be read.".to_owned()];
+        page.listing = Some(listing);
+        page.chosen = ["0", "3", "7"].map(str::to_owned).into();
+        page.name = "grand-theft-auto-iv-the-complete-edition".to_owned();
+        let failure = Failure {
+            app_id: "12210".to_owned(),
+            name: "grand-theft-auto-iv-the-complete-edition".to_owned(),
+            reason:
+                "Steam no longer lists the install folder for this game, so it can't be imported"
+                    .to_owned(),
+        };
+        page.review = Some(Review {
+            ready: Vec::new(),
+            already: vec!["portal-2".to_owned()],
+            failures: vec![failure.clone()],
+        });
+        page.report = Some(Report {
+            done: vec!["half-life-2".to_owned()],
+            total: 3,
+            already: vec!["portal-2".to_owned()],
+            failures: vec![failure],
+            warnings: vec!["Desktop entry: the menu folder couldn't be written".to_owned()],
+            canceled: true,
+        });
+        // The smallest dialog the window allows, a small one, and the widest.
+        for (width, height) in [(280.0, 240.0), (360.0, 280.0), (900.0, 720.0)] {
             let inset = iced::Rectangle::new(
                 iced::Point::new(24.0, 24.0),
                 iced::Size::new(width - 48.0, height - 48.0),
@@ -1336,17 +1368,20 @@ mod tests {
                 Step::Finished,
             ] {
                 page.step = step;
+                page.token = (step == Step::Working).then(Token::new);
                 let mut view = page.view(Palette::DARK, width, 0.0);
                 let node = layout(&mut view, iced::Size::new(width, height));
-                let page_bounds = bounds_at(&node, &[0]);
-                assert!(within(page_bounds, inset), "{step:?}: {page_bounds:?}");
-                let back = bounds_at(&node, &[0, 0, 0]);
-                assert!(back.x >= 24.0 && back.y >= 24.0, "{step:?}: {back:?}");
-                let content = bounds_at(&node, &[0, 1]);
+                let spilled = outside(&node, inset);
                 assert!(
-                    content.y + content.height <= height - 24.0 + 0.01,
-                    "{step:?}: {content:?}"
+                    spilled.is_empty(),
+                    "{step:?} at {width}x{height}: {spilled:?}"
                 );
+                let back = bounds_at(&node, &[0, 0, 0]);
+                assert!(within(back, inset), "{step:?}: {back:?}");
+                if step != Step::Games {
+                    let footer = bounds_at(&node, &[0, 2, 0]);
+                    assert!(within(footer, inset), "{step:?}: {footer:?}");
+                }
             }
         }
     }
