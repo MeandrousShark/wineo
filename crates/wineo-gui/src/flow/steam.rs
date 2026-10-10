@@ -23,6 +23,10 @@ use crate::theme::Palette;
 
 const GRID_ID: &str = "steam-import-grid";
 
+/// A poster by app id and whether it is drawn dimmed, since the grayscale is
+/// baked into the handle.
+type PosterKey = (String, bool);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
     Games,
@@ -128,7 +132,7 @@ pub(crate) enum Event {
     Refresh,
     OpenSteamKey,
     OwnedListed(u64, Result<(OwnedData, Listing), String>),
-    Poster(u64, String, Result<image::Handle, String>),
+    Poster(u64, PosterKey, Result<image::Handle, String>),
     Planned(u64, Review),
     Progress(u64, String),
     Finished(u64, Result<Report, String>),
@@ -148,7 +152,7 @@ pub(crate) struct Page {
     owned_generation: u64,
     chosen: BTreeSet<String>,
     focus: Option<usize>,
-    posters: HashMap<String, Option<image::Handle>>,
+    posters: HashMap<PosterKey, Option<image::Handle>>,
     name: String,
     review: Option<Review>,
     report: Option<Report>,
@@ -306,33 +310,46 @@ impl Page {
             && self.owned_note != Some(OwnedNote::NoKey)
     }
 
+    /// Posters the listing shows that aren't loaded in the color treatment
+    /// they need now. Failed loads are tried again.
+    fn posters_to_load(&self, listing: &Listing) -> Vec<(PosterKey, PathBuf)> {
+        listing
+            .games
+            .iter()
+            .filter_map(|game| {
+                let key = (game.app_id.clone(), !game.installed);
+                let loaded = matches!(self.posters.get(&key), Some(Some(_)));
+                (!loaded).then(|| Some((key, game.poster.clone()?)))?
+            })
+            .collect()
+    }
+
     fn load_posters(&self, listing: &Listing) -> Task<Event> {
         let generation = self.poster_generation;
-        Task::batch(listing.games.iter().filter_map(|game| {
-            if self.posters.contains_key(&game.app_id) {
-                return None;
-            }
-            let path = game.poster.clone()?;
-            let app_id = game.app_id.clone();
-            let dim = !game.installed;
-            Some(Task::perform(
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        let handle = artwork::preview_with_format(&path, Kind::Grid)
-                            .map(|(handle, _)| handle)?;
-                        // Grayscale like an uninstalled card in the library.
-                        Ok(if dim {
-                            crate::artwork::grayscale(&handle).unwrap_or(handle)
-                        } else {
-                            handle
-                        })
-                    })
-                    .await
-                    .map_err(|error| error.to_string())?
-                },
-                move |result| Event::Poster(generation, app_id, result),
-            ))
-        }))
+        Task::batch(
+            self.posters_to_load(listing)
+                .into_iter()
+                .map(|(key, path)| {
+                    let dim = key.1;
+                    Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                let handle = artwork::preview_with_format(&path, Kind::Grid)
+                                    .map(|(handle, _)| handle)?;
+                                // Grayscale like an uninstalled card in the library.
+                                Ok(if dim {
+                                    crate::artwork::grayscale(&handle).unwrap_or(handle)
+                                } else {
+                                    handle
+                                })
+                            })
+                            .await
+                            .map_err(|error| error.to_string())?
+                        },
+                        move |result| Event::Poster(generation, key, result),
+                    )
+                }),
+        )
     }
 
     fn import_selected(&mut self) -> Task<Event> {
@@ -525,8 +542,8 @@ impl Page {
                     }
                 }
             }
-            Event::Poster(generation, app_id, result) if generation == self.poster_generation => {
-                self.posters.insert(app_id, result.ok());
+            Event::Poster(generation, key, result) if generation == self.poster_generation => {
+                self.posters.insert(key, result.ok());
                 Task::none()
             }
             Event::Planned(generation, review) if generation == self.generation => {
@@ -623,7 +640,10 @@ impl Page {
                 heroic::tile(
                     Tile {
                         title: &game.title,
-                        poster: self.posters.get(&game.app_id).and_then(Option::as_ref),
+                        poster: self
+                            .posters
+                            .get(&(game.app_id.clone(), !game.installed))
+                            .and_then(Option::as_ref),
                         reason: None,
                         note: game.note.map(str::to_owned),
                         chosen: self.chosen.contains(&game.app_id),
@@ -1620,5 +1640,58 @@ mod tests {
         );
         assert_eq!(page.listing.as_ref().unwrap().games.len(), 1);
         assert!(page.owned.is_none());
+    }
+
+    #[test]
+    fn refresh_reloads_posters_whose_install_state_flipped_and_retries_failures() {
+        let temp = TempDir::new().unwrap();
+        let (paths, steam) = owned_fixture(&temp);
+        let now = jiff::Timestamp::now().as_second();
+        owned_cache(&paths, now, &[("1", "Alpha"), ("2", "Beta")]);
+        for app_id in ["1", "2"] {
+            let cache = steam.join(format!("appcache/librarycache/{app_id}"));
+            fs::create_dir_all(&cache).unwrap();
+            fs::write(cache.join("library_600x900.jpg"), b"art").unwrap();
+        }
+        let keys = |page: &Page| {
+            let mut keys: Vec<_> = page
+                .posters_to_load(page.listing.as_ref().unwrap())
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect();
+            keys.sort();
+            keys
+        };
+        let handle = || image::Handle::from_rgba(1, 1, vec![10, 80, 240, 255]);
+
+        let mut page = listed_page(&paths);
+        let result = load_owned(&paths, false, owned_with_key(true));
+        let _ = page.update(Event::OwnedListed(page.owned_generation, result));
+        assert_eq!(
+            keys(&page),
+            [("1".to_owned(), false), ("2".to_owned(), true)]
+        );
+        let generation = page.poster_generation;
+        let _ = page.update(Event::Poster(
+            generation,
+            ("1".into(), false),
+            Err("bad".into()),
+        ));
+        let _ = page.update(Event::Poster(generation, ("2".into(), true), Ok(handle())));
+        assert_eq!(keys(&page), [("1".to_owned(), false)]);
+
+        // Steam installs Beta behind wineo's back.
+        manifest(&steam, "2", "Beta", 4);
+        let _ = page.update(Event::Refresh);
+        let result = load_owned(&paths, true, owned_with_key(true));
+        let _ = page.update(Event::OwnedListed(page.owned_generation, result));
+        let games = &page.listing.as_ref().unwrap().games;
+        assert!(games.iter().all(|game| game.installed));
+        // The gray Beta poster isn't reused, and the failed Alpha one is retried.
+        assert_eq!(
+            keys(&page),
+            [("1".to_owned(), false), ("2".to_owned(), false)]
+        );
+        assert!(!page.posters.contains_key(&("2".to_owned(), false)));
     }
 }
