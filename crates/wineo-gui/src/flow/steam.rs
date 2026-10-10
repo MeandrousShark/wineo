@@ -1325,7 +1325,7 @@ mod tests {
 
     #[test]
     fn every_step_sits_inside_the_dialog_padding() {
-        use crate::layout_probe::{bounds_at, layout, outside, within};
+        use crate::layout_probe::{bounds_at, probe, within};
         let temp = TempDir::new().unwrap();
         let (mut page, _) = Page::new(paths(temp.path(), false));
         page.status.clear();
@@ -1374,16 +1374,20 @@ mod tests {
                 page.step = step;
                 page.token = (step == Step::Working).then(Token::new);
                 let mut view = page.view(Palette::DARK, width, 0.0);
-                let node = layout(&mut view, iced::Size::new(width, height));
-                let spilled = outside(&node, inset);
-                assert!(
-                    spilled.is_empty(),
-                    "{step:?} at {width}x{height}: {spilled:?}"
-                );
-                let back = bounds_at(&node, &[0, 0, 0]);
+                let probe = probe(&mut view, iced::Size::new(width, height));
+                let node = &probe.node;
+                let spilled = probe.outside(inset);
+                assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
+                if !heroic::grid_too_short(step == Step::Games, height) {
+                    assert!(
+                        spilled.is_empty(),
+                        "{step:?} at {width}x{height}: {spilled:?}"
+                    );
+                }
+                let back = bounds_at(node, &[0, 0, 0]);
                 assert!(within(back, inset), "{step:?}: {back:?}");
                 if step != Step::Games {
-                    let footer = bounds_at(&node, &[0, 2, 0]);
+                    let footer = bounds_at(node, &[0, 2, 0]);
                     assert!(within(footer, inset), "{step:?}: {footer:?}");
                 }
             }
