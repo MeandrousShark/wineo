@@ -1,7 +1,7 @@
 use std::borrow::Borrow;
 
-use iced::widget::{Button, Container, Space, Text, button, container, text};
-use iced::{Color, Element, Fill, Font, border, font};
+use iced::widget::{Button, Container, Space, Text, button, container, scrollable, text};
+use iced::{Color, Element, Fill, Font, Theme, border, font};
 
 use crate::theme::Palette;
 
@@ -81,7 +81,51 @@ fn pick_menu_style(palette: Palette) -> iced::overlay::menu::Style {
     }
 }
 
-pub(crate) fn secondary_button<'a, M: 'a>(label: &'a str, palette: Palette) -> Button<'a, M> {
+/// Thin scrollbar geometry shared by every scrollable in the app.
+pub(crate) const SCROLLBAR_WIDTH: f32 = 6.0;
+pub(crate) const SCROLLER_WIDTH: f32 = 4.0;
+
+pub(crate) trait ScrollStyle {
+    /// Vertical scrolling with the shared thin scrollbar, thumb always shown.
+    fn wineo_style(self, palette: Palette) -> Self;
+}
+
+impl<'a, M: 'a> ScrollStyle for scrollable::Scrollable<'a, M> {
+    fn wineo_style(self, palette: Palette) -> Self {
+        self.direction(scrollable::Direction::Vertical(
+            scrollable::Scrollbar::new()
+                .width(SCROLLBAR_WIDTH)
+                .scroller_width(SCROLLER_WIDTH),
+        ))
+        .style(move |theme, status| scroll_style(theme, status, palette, true))
+    }
+}
+
+pub(crate) fn scroll_style(
+    theme: &Theme,
+    status: scrollable::Status,
+    palette: Palette,
+    visible: bool,
+) -> scrollable::Style {
+    let mut style = scrollable::default(theme, status);
+    let show = visible || !matches!(status, scrollable::Status::Active { .. });
+    for rail in [&mut style.vertical_rail, &mut style.horizontal_rail] {
+        rail.background = None;
+        rail.border = border::rounded(3);
+        rail.scroller.background = if show {
+            palette.border.into()
+        } else {
+            Color::TRANSPARENT.into()
+        };
+        rail.scroller.border = border::rounded(3);
+    }
+    style
+}
+
+pub(crate) fn secondary_button<'a, M: 'a>(
+    label: impl text::IntoFragment<'a>,
+    palette: Palette,
+) -> Button<'a, M> {
     button(text(label).size(14).center())
         .height(BUTTON_HEIGHT)
         .padding([0, 12])
@@ -89,7 +133,7 @@ pub(crate) fn secondary_button<'a, M: 'a>(label: &'a str, palette: Palette) -> B
 }
 
 pub(crate) fn accent_button<M: Clone + 'static>(
-    label: &'static str,
+    label: impl text::IntoFragment<'static>,
     color: Color,
     enabled: bool,
     message: M,
@@ -98,16 +142,26 @@ pub(crate) fn accent_button<M: Clone + 'static>(
 }
 
 pub(crate) fn accent_control<M: Clone + 'static>(
-    label: &'static str,
+    label: impl text::IntoFragment<'static>,
     color: Color,
     enabled: bool,
     message: M,
 ) -> Button<'static, M> {
+    accent_base(label, color).on_press_maybe(enabled.then_some(message))
+}
+
+/// An accent button without a press handler, for callers that decide
+/// availability themselves with `on_press` or `on_press_maybe`.
+pub(crate) fn accent_base<'a, M: 'a>(
+    label: impl text::IntoFragment<'a>,
+    color: Color,
+) -> Button<'a, M> {
     button(text(label).size(14).center())
         .height(BUTTON_HEIGHT)
         .padding([0, 16])
-        .on_press_maybe(enabled.then_some(message))
-        .style(move |theme: &iced::Theme, status| accent_style(color, theme.palette().text, status))
+        .style(move |theme: &iced::Theme, status| {
+            accent_style(color, theme.palette().text, status)
+        })
 }
 
 pub(crate) fn secondary_style(palette: Palette, status: button::Status) -> button::Style {
@@ -259,6 +313,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn scroll_thumb_shows_when_visible_or_active_and_hides_when_idle() {
+        let palette = Palette::from_mode(iced::theme::Mode::Dark);
+        let theme = Theme::Dark;
+        let idle = scrollable::Status::Active {
+            is_horizontal_scrollbar_disabled: false,
+            is_vertical_scrollbar_disabled: false,
+        };
+        let thumb = |status, visible| scroll_style(&theme, status, palette, visible)
+            .vertical_rail
+            .scroller
+            .background;
+        assert_eq!(thumb(idle, true), palette.border.into());
+        assert_eq!(thumb(idle, false), Color::TRANSPARENT.into());
+        let hovered = scrollable::Status::Hovered {
+            is_horizontal_scrollbar_hovered: false,
+            is_vertical_scrollbar_hovered: true,
+            is_horizontal_scrollbar_disabled: false,
+            is_vertical_scrollbar_disabled: false,
+        };
+        assert_eq!(thumb(hovered, false), palette.border.into());
     }
 
     fn composite(color: Color, background: Color) -> Color {

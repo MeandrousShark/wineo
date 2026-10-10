@@ -4,7 +4,7 @@ use iced::widget::{
     text_input,
 };
 use iced::{
-    Center, Color, ContentFit, Element, Fill, FillPortion, Font, Size, Theme, border, font, mouse,
+    Center, Color, ContentFit, Element, Fill, FillPortion, Font, Size, border, font, mouse,
 };
 
 use crate::library::Card;
@@ -699,10 +699,12 @@ impl App {
             .width(Fill)
             .height(Fill)
             .direction(scrollable::Direction::Vertical(
-                scrollable::Scrollbar::new().width(6).scroller_width(4),
+                scrollable::Scrollbar::new()
+                    .width(crate::ui::SCROLLBAR_WIDTH)
+                    .scroller_width(crate::ui::SCROLLER_WIDTH),
             ))
             .on_scroll(Message::Scrolled)
-            .style(move |theme, status| scroll_style(theme, status, palette, visible));
+            .style(move |theme, status| crate::ui::scroll_style(theme, status, palette, visible));
         let library = mouse_area(wheel::scale(scroll, WHEEL_STEP_SCALE));
         let library = if self.panel_open {
             library.on_press(Message::ClosePanel)
@@ -1007,27 +1009,6 @@ fn truncate_name(name: &str, max_width: f32) -> String {
         .trim_end()
         .to_owned()
         + "..."
-}
-
-pub(super) fn scroll_style(
-    theme: &Theme,
-    status: scrollable::Status,
-    palette: Palette,
-    visible: bool,
-) -> scrollable::Style {
-    let mut style = scrollable::default(theme, status);
-    let show = visible || !matches!(status, scrollable::Status::Active { .. });
-    for rail in [&mut style.vertical_rail, &mut style.horizontal_rail] {
-        rail.background = None;
-        rail.border = border::rounded(3);
-        rail.scroller.background = if show {
-            palette.border.into()
-        } else {
-            Color::TRANSPARENT.into()
-        };
-        rail.scroller.border = border::rounded(3);
-    }
-    style
 }
 
 #[cfg(test)]
