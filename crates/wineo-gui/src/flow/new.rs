@@ -2364,6 +2364,37 @@ mod tests {
     }
 
     #[test]
+    fn target_programs_fit_narrow_and_small_dialogs() {
+        use crate::layout_probe::probe;
+        let mut page = page();
+        page.stage = Stage::Target;
+        let mut report = Report::new();
+        report.programs = vec![
+            ("Game".to_owned(), "C:\\Games\\Game\\game.exe".to_owned()),
+            (
+                "A Rather Long Program Name That Needs More Than One Line".to_owned(),
+                format!(
+                    "C:\\Program Files\\{}\\launcher.exe",
+                    "VeryLongFolderName".repeat(6)
+                ),
+            ),
+            (
+                "Editor".to_owned(),
+                "C:\\Games\\Game\\editor.exe".to_owned(),
+            ),
+        ];
+        page.report = Some(report);
+        for (width, height) in [(280.0, 240.0), (360.0, 280.0), (900.0, 720.0)] {
+            let mut view = page.view_with_key_availability(Palette::DARK, true);
+            let probe = probe(&mut view, iced::Size::new(width, height));
+            assert!(!probe.scrollables.is_empty());
+            let frame = iced::Rectangle::with_size(iced::Size::new(width, height));
+            let spilled = probe.outside(frame);
+            assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
+        }
+    }
+
+    #[test]
     fn back_from_review_preserves_details() {
         let mut page = page();
         page.draft.title = "test-game".to_owned();

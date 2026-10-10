@@ -4131,6 +4131,36 @@ mod tests {
     }
 
     #[test]
+    fn several_sources_sit_inside_the_dialog_padding() {
+        use crate::layout_probe::probe;
+        let root = tempdir().unwrap();
+        let mut page = grid_page(&root.path().join("sources"));
+        page.step = Step::Sources;
+        let long = format!(
+            "/home/someone/.var/app/com.heroicgameslauncher.hgl/{}/heroic",
+            "a-very-long-directory-name/".repeat(8)
+        );
+        page.sources = vec![
+            HeroicSource::from_config_dir_with_home(
+                root.path().join("heroic"),
+                root.path().to_owned(),
+            ),
+            HeroicSource::from_config_dir_with_home(PathBuf::from(long), root.path().to_owned()),
+        ];
+        for (width, height) in [(280.0, 240.0), (360.0, 280.0), (900.0, 720.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            let mut view = page.view_with_key_availability(Palette::DARK, width, 0.0, false);
+            let probe = probe(&mut view, iced::Size::new(width, height));
+            assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
+            let spilled = probe.outside(inset);
+            assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
+        }
+    }
+
+    #[test]
     fn mouse_back_and_reopening_show_no_ring_until_a_key() {
         let root = tempdir().unwrap();
         let none = keyboard::Modifiers::empty();

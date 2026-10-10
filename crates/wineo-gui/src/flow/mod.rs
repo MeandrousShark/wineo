@@ -305,3 +305,32 @@ impl Page {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use super::*;
+
+    #[test]
+    fn add_choices_fit_or_scroll_in_small_and_narrow_dialogs() {
+        use crate::layout_probe::probe;
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        let page = Page::choose(paths);
+        assert!(matches!(page, Page::Choose(_)));
+        // The smallest dialog the window allows, a small one, and the widest.
+        for (width, height) in [(280.0, 240.0), (360.0, 280.0), (680.0, 560.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            let mut view = page.view_with_key_availability(Palette::DARK, width, 0.0, false);
+            let probe = probe(&mut view, iced::Size::new(width, height));
+            assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
+            let spilled = probe.outside(inset);
+            assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
+        }
+    }
+}
