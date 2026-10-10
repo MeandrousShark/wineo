@@ -37,7 +37,17 @@ The same day the maintainer answered the questions below:
 3. A new `wineo install NAME` and an **Install** button (A).
 4. `wineo uninstall NAME` and a desktop button open Steam's own uninstall
    dialog (B).
-5. A not-installed Steam game is a note in `validate`, which passes (A).
+5. A not-installed Steam game doesn't fail `validate` (A).
+
+A review on 2026-10-09 found gaps, and the maintainer took every fix and
+these answers the same day:
+
+- When the owned list can't be fetched, listings fall back to installed
+  games, and an empty `response` from Steam never replaces the cache.
+- Install and uninstall have defined outcomes for unreadable libraries,
+  partial installs, and pending launches, and run under the game's lock.
+- `validate` has no note level, so a not-installed Steam game is simply not
+  reported, rather than adding one.
 
 ## Existing foundation
 
@@ -105,11 +115,19 @@ A second secret beside the SteamGridDB key, with the same read order:
   `remove_key`) over a small key descriptor (env var, keyring account, file
   name, label) instead of copying them.
 - Saving a key checks it online with one `GetOwnedGames` call for the
-  active account, like `wineo art key` does.
-- Steam takes the key as a query parameter, so it ends up in the URL.
-  reqwest errors print their URL, so every Steam API error is stripped with
-  `without_url()` and reported as a short reason. A test checks that no
-  error text contains the key.
+  active account. Unlike SteamGridDB's status-only check
+  (`steamgriddb.rs:219`), a 200 isn't enough: the response must carry
+  `game_count`, since Steam answers an empty `response` when the key can't
+  see the library.
+- Steam takes the key as a query parameter, so it ends up in the URL, and
+  several layers put the URL in errors: reqwest's own errors,
+  `Transport::request`'s `request failed: {url}` context
+  (`download.rs:198`), and the default transport's refusal
+  (`download.rs:158`). Steam API calls get their own request path whose
+  errors are built without the URL at every layer, including body reads
+  and JSON parsing, rather than scrubbed afterward. Tests format each
+  failure through the production transport with `{error:#}` and check that
+  the key appears nowhere.
 - `wineo import steam --key` prompts for it and checks it, and
   `--remove-key` removes it (question 2).
 
@@ -119,10 +137,25 @@ A second secret beside the SteamGridDB key, with the same read order:
   SteamID64 (`account.rs` returns it alongside the account id) and caches
   `app_id` and `name` for each game in
   `$XDG_CACHE_HOME/wineo/steam-owned-<steamid64>.json`, with the fetch time.
-- The cache is refreshed when an import listing opens and it's older than
-  an hour, or on `--refresh`. A failed refresh keeps the old list with a
-  warning.
-- Only import listings read it. The desktop app's 2-second library reload
+- Each command that needs it loads it once and passes it to `plan` and
+  `apply`: a listing, a direct `--game` import of a game that isn't
+  installed, and `--all --owned`, which makes one fetch for the whole run.
+  The cache is used when it's under an hour old; otherwise wineo fetches,
+  or on `--refresh`.
+- Installed games never need it. Importing one works with no key and no
+  network, as in 0047, and `apply`'s recheck under the app lock
+  (`steam_import.rs:188`) only consults the owned list when the game still
+  isn't installed.
+- When a fetch fails:
+  - With a cache, the old list is used, with `Couldn't refresh owned
+    games: REASON`.
+  - Without one, listings show installed games only, with `Couldn't get
+    owned games: REASON`. A direct import of an uninstalled game fails with
+    the same message.
+  - An empty `response` (no `game_count`) means the key can't see the
+    library. It's a failure: the cache is kept, never replaced.
+  - `game_count: 0` is a real, empty library and replaces the cache.
+- Only import commands read it. The desktop app's 2-second library reload
   never touches the owned list or the network. An imported game already
   carries its `title` in its config, so the library doesn't need the list.
 - The tools filter from 0047 still applies.
@@ -157,8 +190,15 @@ From question 3: `wineo install NAME`, and **Install** in the desktop app.
 - It returns once Steam accepts the handoff. It doesn't wait for the
   download.
 - Installing an installed game is a no-op: `Already installed.`
+- A queued or paused partial install opens Steam's dialog anyway, which
+  resumes it. An installing game is a no-op: `Steam is already installing
+  NAME.`
+- An unreadable library or unknown state is refused with the reason, as
+  `start` does today (`steam.rs:442`), since the game may be there.
 - Installing an environment that isn't a Steam game is refused: `Only Steam
   games can be installed.`
+- The check and the handoff run under the game's `steam-<app_id>.lock`, the
+  one launch takes, so a wineo launch can't race them.
 
 ### Uninstalling
 
@@ -168,16 +208,22 @@ From question 4.
   handoff and returns. Steam's dialog asks for confirmation, so wineo
   doesn't ask again. Step 1 confirms the dialog appears.
 - The config stays, and the game goes back to `not installed`.
-- A running game is refused: `Stop NAME before uninstalling it.`
+- A game that is `starting` or running is refused, including one started
+  from the Steam client (found by the reaper scan): `Stop NAME before
+  uninstalling it.`
+- A queued, paused, or running partial install is allowed. Steam's dialog
+  cancels it.
+- An unreadable library or unknown state is refused with the reason.
 - A game that isn't installed is a no-op: `Not installed.` A game that
   isn't a Steam game is refused: `Only Steam games can be uninstalled.`
+- Like install, the check and handoff run under `steam-<app_id>.lock`.
 
 ### Install progress
 
 New install states beside `installed`, `updating`, and `not installed`,
 from the manifest:
 
-| Manifest | State | Display |
+| Manifest | `install` | Display |
 | --- | --- | --- |
 | no manifest | `not_installed` | `not installed` |
 | not fully installed, update running or downloading | `installing` | `installing 42%` |
@@ -191,8 +237,12 @@ from the manifest:
   are zero.
 - The exact flag combinations come from step 1's observation, and the
   table is amended if Steam does something else.
-- `status`, `list`, `status --json` (`state` plus a new `progress` number,
-  null when unknown), and the desktop app all show it.
+- These are new values of the existing `install` field, not of `state`.
+  `state` stays the run status (`view.rs:78`, 0047), so a script checking
+  `state` sees no change, and a game can be idle and installing at once.
+- `status`, `list`, `status --json`, `list --json`, and the desktop app all
+  show it. The JSON gains `install_progress`, an integer percent from 0 to
+  100, `null` when there's no percent or the game isn't installing.
 - `start` on an installing or uninstalling game is refused: `Steam is
   still installing NAME.` or `Steam is uninstalling NAME.`
 
@@ -200,9 +250,13 @@ from the manifest:
 
 `steam_game_not_installed` is an error today (`validate.rs:258`), which
 made sense when every Steam import was installed. Imported but uninstalled
-games are normal now, so it becomes a note and `validate` passes. Installing
-and paused installs are notes too. This changes `validate`'s exit code for
-those environments and goes in the changelog.
+games are normal now, and `validate` has only errors and warnings
+(`validate.rs:46`), so the check is dropped: not installed, installing,
+paused, queued, and uninstalling are not reported. `status` and the desktop
+app already show them. Unreadable libraries and unknown state keep their
+existing checks. The `steam_game_not_installed` code goes away, which
+changes `validate`'s exit code and JSON for those environments and goes in
+the changelog.
 
 ### Desktop app
 
@@ -279,7 +333,8 @@ list above. The options are kept as a record of what was weighed.
    - **B.** `wineo uninstall NAME` and a desktop button that open
      `steam://uninstall/<app_id>`, Steam's own confirmation dialog.
 5. `validate` on not-installed Steam games:
-   - **A (recommended).** A note, so `validate` passes.
+   - **A (recommended).** A note, so `validate` passes. Validate turned out
+     to have no note level, so the review settled on not reporting it.
    - **B.** A warning: `validate` passes, but warnings show in its summary.
    - **C.** Keep it an error.
 
@@ -294,8 +349,9 @@ list above. The options are kept as a record of what was weighed.
    account, the Steam API request path with redacted errors, `GetOwnedGames`
    and the owned cache. (`coder`)
 3. Core: import of uninstalled games, install states and progress in
-   reports and JSON, the install and uninstall handoffs, and the validate
-   level. (`coder`)
+   reports and JSON, the install and uninstall handoffs with their
+   admission rules, and dropping the not-installed validate check.
+   (`coder`)
 4. CLI: `--list` state column and `--all --owned`, `--key` and
    `--remove-key`, `install`, `uninstall`, and status and list output.
    (`coder`)
@@ -312,8 +368,18 @@ Each step is reviewed by `qa-gpt` before it lands.
   redaction (no key in any error string), owned cache freshness and stale
   fallback, install state mapping for each flag combination from step 1,
   progress math with zero totals.
+- Owned-list failures: fetch fails with and without a cache, empty
+  `response` keeps the cache, `game_count: 0` replaces it, a key save
+  refused on an empty `response`, and `--all --owned` fetching once.
+- Install and uninstall admission for each state: installed, not installed,
+  queued, paused, installing, uninstalling, unavailable, unknown, starting,
+  running from wineo, and running from the Steam client.
+- `validate` passes on a not-installed Steam game and still fails on an
+  unrelated error in the same run, in text and JSON.
+- `status --json` and `list --json` keep `state` as run status while
+  `install` and `install_progress` change.
 - A local HTTP fixture for `GetOwnedGames`: success, 401, 403, empty
-  `response`, and malformed JSON.
+  `response`, `game_count: 0`, and malformed JSON.
 - CLI integration tests with a fake Steam root: listing with and without a
   key, importing an uninstalled game, installing and uninstalling (the
   handoff records the URL instead of running Steam), refusing to uninstall
