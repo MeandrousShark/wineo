@@ -10,6 +10,7 @@ use iced::{Element, Fill, Task, keyboard};
 use wineo_core::paths::Paths;
 
 use crate::theme::Palette;
+use crate::ui::secondary_button;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Action {
@@ -164,7 +165,7 @@ impl Page {
                 .map(|event| Event::SteamMessage(Box::new(event))),
             Self::Choose(_) => container(
                 column![
-                    button("Back").on_press(Event::Back),
+                    secondary_button("Back", palette).on_press(Event::Back),
                     text("Add to your library").size(28),
                     scrollable(
                         column![

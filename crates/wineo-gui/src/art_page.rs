@@ -23,6 +23,7 @@ use crate::chips::secondary;
 use crate::flow::artwork::{self as flow_artwork, Match};
 use crate::theme::Palette;
 use crate::ui::PickListStyle;
+use crate::ui::{accent_base, secondary_button};
 use crate::wheel;
 use crate::{art_picker, artwork};
 
@@ -930,9 +931,7 @@ impl Page {
                 .map(move |event| Event::Picker(visit, event));
         }
         let mut header = row![
-            button("< Back")
-                .on_press(Event::Back)
-                .style(move |_, status| secondary(palette, status)),
+            secondary_button("< Back", palette).on_press(Event::Back),
             text(format!("{} art", self.name)).size(20),
         ]
         .spacing(16)
@@ -941,9 +940,8 @@ impl Page {
         header = header.push(text("SteamGridDB game").size(12).color(palette.muted));
         header = header.push(text(self.game_label(key_available)).size(14));
         header = header.push(
-            button("Change")
-                .on_press_maybe((key_available && !self.writing).then_some(Event::Change))
-                .style(move |_, status| secondary(palette, status)),
+            secondary_button("Change", palette)
+                .on_press_maybe((key_available && !self.writing).then_some(Event::Change)),
         );
         let mut body = column![header].spacing(14);
         if !key_available {
@@ -952,9 +950,7 @@ impl Page {
                     text("Add a SteamGridDB key in Settings to find artwork or change the game.")
                         .size(12)
                         .color(palette.muted),
-                    button("Settings")
-                        .on_press(Event::Settings)
-                        .style(move |_, status| secondary(palette, status)),
+                    secondary_button("Settings", palette).on_press(Event::Settings),
                 ]
                 .spacing(10)
                 .align_y(Center),
@@ -1106,27 +1102,25 @@ impl Page {
             details = details.push(
                 row![
                     text(&download.status).size(12),
-                    button("Cancel")
-                        .on_press(Event::CancelUse)
-                        .style(move |_, status| secondary(palette, status)),
+                    secondary_button("Cancel", palette).on_press(Event::CancelUse),
                 ]
                 .spacing(8),
             );
         }
         let actions = column![
-            button("Find...")
-                .on_press_maybe((key_available && !self.writing).then_some(Event::Find(kind)))
-                .style(move |_, status| secondary(palette, status)),
-            button("Browse...")
-                .on_press_maybe((!self.writing).then_some(Event::Browse(kind)))
-                .style(move |_, status| secondary(palette, status)),
-            button(if self.showing.is_some() && has_override {
-                "Use environment art"
-            } else {
-                "Remove"
-            })
-            .on_press_maybe((!self.writing && has_override).then_some(Event::Remove(kind)))
-            .style(move |_, status| secondary(palette, status)),
+            secondary_button("Find...", palette)
+                .on_press_maybe((key_available && !self.writing).then_some(Event::Find(kind))),
+            secondary_button("Browse...", palette)
+                .on_press_maybe((!self.writing).then_some(Event::Browse(kind))),
+            secondary_button(
+                if self.showing.is_some() && has_override {
+                    "Use environment art"
+                } else {
+                    "Remove"
+                },
+                palette
+            )
+            .on_press_maybe((!self.writing && has_override).then_some(Event::Remove(kind))),
         ]
         .spacing(5);
         container(
@@ -1183,14 +1177,10 @@ impl Page {
                         .on_input(Event::Path)
                         .on_submit(Event::UsePath)
                         .width(Fill),
-                    button("Use file")
-                        .on_press_maybe(
-                            (!self.path.is_empty() && !self.writing).then_some(Event::UsePath)
-                        )
-                        .style(move |_, status| secondary(palette, status)),
-                    button("Cancel")
-                        .on_press(Event::CancelPath)
-                        .style(move |_, status| secondary(palette, status)),
+                    accent_base("Use file", palette.primary).on_press_maybe(
+                        (!self.path.is_empty() && !self.writing).then_some(Event::UsePath)
+                    ),
+                    secondary_button("Cancel", palette).on_press(Event::CancelPath),
                 ]
                 .spacing(8),
             ]
@@ -1205,9 +1195,8 @@ impl Page {
         let mut content = column![
             row![
                 text("Choose a SteamGridDB game").size(17),
-                button("Back")
-                    .on_press_maybe((!self.writing).then_some(Event::CancelChange))
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Back", palette)
+                    .on_press_maybe((!self.writing).then_some(Event::CancelChange)),
             ]
             .spacing(12)
             .align_y(Center),
@@ -1216,12 +1205,10 @@ impl Page {
                     .on_input(Event::SearchText)
                     .on_submit(Event::Search)
                     .width(Fill),
-                button("Search")
-                    .on_press_maybe(
-                        (!change.searching && !change.search.trim().is_empty())
-                            .then_some(Event::Search)
-                    )
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Search", palette).on_press_maybe(
+                    (!change.searching && !change.search.trim().is_empty())
+                        .then_some(Event::Search)
+                ),
             ]
             .spacing(8),
         ]
@@ -1243,13 +1230,9 @@ impl Page {
         if let Some(error) = &change.error {
             content = content.push(text(error).color(palette.danger));
         }
-        content = content.push(
-            button("Use game")
-                .on_press_maybe(
-                    (change.selected.is_some() && !self.writing).then_some(Event::SaveGame),
-                )
-                .style(move |_, status| secondary(palette, status)),
-        );
+        content = content.push(accent_base("Use game", palette.primary).on_press_maybe(
+            (change.selected.is_some() && !self.writing).then_some(Event::SaveGame),
+        ));
         container(content)
             .padding(14)
             .width(Fill)

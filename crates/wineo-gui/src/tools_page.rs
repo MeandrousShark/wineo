@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
+use iced::widget::{column, container, row, scrollable, text, text_input};
 use iced::{Center, Element, Fill, Task};
 use wineo_core::cancel::Token;
 use wineo_core::config::{self, GlobalConfig};
@@ -19,6 +19,7 @@ use wineo_core::winetricks::{self, EnsureEvent, EnsureOutput, WinetricksEvent};
 use crate::chips::{self, Chips};
 use crate::logview::{self, LogView};
 use crate::theme::Palette;
+use crate::ui::{accent_base, secondary_button};
 
 const LOG_ID: &str = "tool-output";
 const LOG_LIMIT: usize = 256 * 1024;
@@ -489,7 +490,7 @@ impl Page {
         let enabled = !blocked && !self.busy();
         let mut body = column![
             row![
-                button("Back").on_press(Event::Back),
+                secondary_button("Back", palette).on_press(Event::Back),
                 text(match self.kind {
                     Kind::Exec => "Run program",
                     Kind::Winetricks => "Winetricks",
@@ -510,7 +511,8 @@ impl Page {
                             .on_input_maybe(enabled.then_some(Event::Program))
                             .on_submit_maybe(enabled.then_some(Event::Submit))
                             .style(move |_, status| chips::input_style(palette, status)),
-                        button("Browse...").on_press_maybe(enabled.then_some(Event::Browse)),
+                        secondary_button("Browse...", palette)
+                            .on_press_maybe(enabled.then_some(Event::Browse)),
                     ]
                     .spacing(8),
                 );
@@ -555,7 +557,7 @@ impl Page {
                 }
                 body = body.push(
                     row![
-                        button("Install missing").on_press_maybe(
+                        secondary_button("Install missing", palette).on_press_maybe(
                             (enabled
                                 && self
                                     .declared
@@ -563,8 +565,8 @@ impl Page {
                                     .is_ok_and(|v| v.iter().any(|(_, installed)| !installed)))
                             .then_some(Event::InstallMissing)
                         ),
-                        button("Edit in Settings").on_press(Event::Settings),
-                        button("Refresh").on_press(Event::Refresh),
+                        secondary_button("Edit in Settings", palette).on_press(Event::Settings),
+                        secondary_button("Refresh", palette).on_press(Event::Refresh),
                     ]
                     .spacing(8),
                 );
@@ -611,7 +613,8 @@ impl Page {
             body = body.push(
                 row![
                     text(format!("{key}={value}")),
-                    button("x").on_press_maybe(enabled.then(|| Event::RemoveVariable(key.clone())))
+                    secondary_button("x", palette)
+                        .on_press_maybe(enabled.then(|| Event::RemoveVariable(key.clone())))
                 ]
                 .spacing(8),
             );
@@ -624,27 +627,32 @@ impl Page {
                 text_input("VALUE", &self.variable_value)
                     .on_input_maybe(enabled.then_some(Event::VariableValue))
                     .style(move |_, status| chips::input_style(palette, status)),
-                button("Add variable").on_press_maybe(enabled.then_some(Event::AddVariable)),
+                secondary_button("Add variable", palette)
+                    .on_press_maybe(enabled.then_some(Event::AddVariable)),
             ]
             .spacing(8),
         );
         let mut controls = row![].spacing(8);
         if self.busy() {
-            controls = controls.push(button("Cancel").on_press(Event::Cancel));
+            controls = controls.push(secondary_button("Cancel", palette).on_press(Event::Cancel));
             if self.force_available() {
-                controls = controls.push(button("Force stop").on_press(Event::Force));
+                controls =
+                    controls.push(secondary_button("Force stop", palette).on_press(Event::Force));
             }
         } else {
             controls = controls.push(
-                button(match self.kind {
-                    Kind::Exec => "Run",
-                    Kind::Winetricks => "Run verbs",
-                })
+                accent_base(
+                    match self.kind {
+                        Kind::Exec => "Run",
+                        Kind::Winetricks => "Run verbs",
+                    },
+                    palette.primary,
+                )
                 .on_press_maybe(enabled.then_some(Event::Submit)),
             );
             if self.kind == Kind::Winetricks {
                 controls = controls.push(
-                    button("Open winetricks")
+                    secondary_button("Open winetricks", palette)
                         .on_press_maybe(enabled.then_some(Event::OpenWinetricks)),
                 );
             }
@@ -666,6 +674,7 @@ impl Page {
                 !self.output.is_empty(),
                 Event::CopyLog,
                 Event::FollowLog,
+                palette,
             ));
             body = body.push(logview::editor(
                 &self.log,

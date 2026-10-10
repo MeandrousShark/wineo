@@ -9,7 +9,7 @@ use iced::{
 
 use crate::library::Card;
 use crate::theme::Palette;
-use crate::ui;
+use crate::ui::{self, secondary_button};
 use crate::wheel;
 use crate::{App, CARD_WIDTH, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
 
@@ -372,13 +372,14 @@ impl App {
                     || self.operation.is_some()
                     || self.flow.as_ref().is_some_and(crate::flow::Page::busy))
             {
-                row![button("Force stop").on_press(Message::ForceCloseWork)]
+                row![secondary_button("Force stop", self.palette).on_press(Message::ForceCloseWork)]
             } else if self.closing {
                 row![text("Waiting for cleanup...")]
             } else {
                 row![
-                    button("Keep working").on_press(Message::KeepWorking),
-                    button("Cancel and close").on_press(Message::CancelAndClose),
+                    secondary_button("Keep working", self.palette).on_press(Message::KeepWorking),
+                    secondary_button("Cancel and close", self.palette)
+                        .on_press(Message::CancelAndClose),
                 ]
             }
             .spacing(12);

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
+use iced::widget::{column, container, row, scrollable, text, text_input};
 use iced::{Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::clone::{self, CloneInspection, NativeCloneInspection};
@@ -10,8 +10,9 @@ use wineo_core::import::{self, ImportProgress};
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 
-use crate::chips::{input_style, secondary};
+use crate::chips::input_style;
 use crate::theme::Palette;
+use crate::ui::{accent_base, secondary_button};
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
@@ -243,20 +244,14 @@ impl Page {
                     } else {
                         ("Cancel", Event::Cancel)
                     };
-                    button(text(label))
-                        .on_press(event)
-                        .padding([6, 12])
-                        .style(move |_, status| secondary(palette, status))
+                    secondary_button(label, palette).on_press(event)
                 }),
             ]
             .spacing(14)
             .into(),
             Step::Finished => column![
                 text(format!("Cloned {} as {}.", self.source, self.name)).color(palette.success),
-                button(text("Back to library"))
-                    .on_press(Event::Library)
-                    .padding([8, 14])
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Back to library", palette).on_press(Event::Library),
             ]
             .spacing(12)
             .into(),
@@ -370,24 +365,15 @@ impl Page {
                             .width(Fill)
                             .padding(8)
                             .style(move |_, status| input_style(palette, status)),
-                        button(text("Browse..."))
-                            .on_press(Event::PickDestination)
-                            .padding([6, 12])
-                            .style(move |_, status| secondary(palette, status)),
+                        secondary_button("Browse...", palette).on_press(Event::PickDestination),
                     ]
                     .spacing(8),
                 );
         }
         fields = fields.push(
             row![
-                button(text("Back"))
-                    .on_press(Event::Back)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
-                button(text("Review"))
-                    .on_press(Event::Review)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Back", palette).on_press(Event::Back),
+                accent_base("Review", palette.primary).on_press(Event::Review),
             ]
             .spacing(8),
         );
@@ -460,14 +446,8 @@ impl Page {
         }
         content = content.push(
             row![
-                button(text("Back"))
-                    .on_press(Event::Back)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
-                button(text("Clone"))
-                    .on_press(Event::Clone)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Back", palette).on_press(Event::Back),
+                accent_base("Clone", palette.primary).on_press(Event::Clone),
             ]
             .spacing(8),
         );
@@ -681,14 +661,15 @@ fn dependencies<'a>(
         return content;
     }
     content = content.push(
-        button(text(if show {
-            format!("Hide {} external dependencies", dependencies.len())
-        } else {
-            format!("Show all {} external dependencies", dependencies.len())
-        }))
-        .on_press(Event::Dependencies(!show))
-        .padding([5, 10])
-        .style(move |_, status| secondary(palette, status)),
+        secondary_button(
+            if show {
+                format!("Hide {} external dependencies", dependencies.len())
+            } else {
+                format!("Show all {} external dependencies", dependencies.len())
+            },
+            palette,
+        )
+        .on_press(Event::Dependencies(!show)),
     );
     if show {
         for dependency in dependencies {
@@ -714,14 +695,8 @@ fn discard_prompt(palette: Palette) -> Element<'static, Event> {
                 .color(palette.foreground),
             text("Your clone name and destination will be lost.").color(palette.muted),
             row![
-                button(text("Keep editing"))
-                    .on_press(Event::KeepEditing)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
-                button(text("Discard"))
-                    .on_press(Event::Discard)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status))
+                secondary_button("Keep editing", palette).on_press(Event::KeepEditing),
+                secondary_button("Discard", palette).on_press(Event::Discard)
             ]
             .spacing(8),
         ]

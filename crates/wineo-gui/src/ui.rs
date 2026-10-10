@@ -159,9 +159,7 @@ pub(crate) fn accent_base<'a, M: 'a>(
     button(text(label).size(14).center())
         .height(BUTTON_HEIGHT)
         .padding([0, 16])
-        .style(move |theme: &iced::Theme, status| {
-            accent_style(color, theme.palette().text, status)
-        })
+        .style(move |theme: &iced::Theme, status| accent_style(color, theme.palette().text, status))
 }
 
 pub(crate) fn secondary_style(palette: Palette, status: button::Status) -> button::Style {
@@ -323,10 +321,12 @@ mod tests {
             is_horizontal_scrollbar_disabled: false,
             is_vertical_scrollbar_disabled: false,
         };
-        let thumb = |status, visible| scroll_style(&theme, status, palette, visible)
-            .vertical_rail
-            .scroller
-            .background;
+        let thumb = |status, visible| {
+            scroll_style(&theme, status, palette, visible)
+                .vertical_rail
+                .scroller
+                .background
+        };
         assert_eq!(thumb(idle, true), palette.border.into());
         assert_eq!(thumb(idle, false), Color::TRANSPARENT.into());
         let hovered = scrollable::Status::Hovered {

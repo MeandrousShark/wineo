@@ -34,7 +34,7 @@ use super::{Action, artwork};
 use crate::chips::Chips;
 use crate::runner_label::{self, Choice};
 use crate::theme::Palette;
-use crate::ui::PickListStyle;
+use crate::ui::{PickListStyle, accent_base, secondary_button};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -1969,14 +1969,16 @@ impl Page {
                     );
                 }
                 body = body.push(
-                    button("Browse for Heroic config folder...").on_press(Event::BrowseSource),
+                    secondary_button("Browse for Heroic config folder...", palette)
+                        .on_press(Event::BrowseSource),
                 );
                 body = body.push(field(
                     "Config folder path",
                     &self.source_path,
                     Event::SourcePath,
                 ));
-                body = body.push(button("Open folder").on_press(Event::OpenSourcePath));
+                body = body
+                    .push(secondary_button("Open folder", palette).on_press(Event::OpenSourcePath));
             }
             Step::Games => {
                 if let Some(listing) = &self.listing {
@@ -1986,10 +1988,11 @@ impl Page {
                     let count = self.chosen.len();
                     let idle = !self.busy();
                     let mut actions = row![
-                        button("Select all").on_press_maybe(idle.then_some(Event::SelectAll)),
-                        button("Select none")
+                        secondary_button("Select all", palette)
+                            .on_press_maybe(idle.then_some(Event::SelectAll)),
+                        secondary_button("Select none", palette)
                             .on_press_maybe((idle && count > 0).then_some(Event::SelectNone)),
-                        button(text(import_label(count))).on_press_maybe(
+                        accent_base(import_label(count), palette.primary).on_press_maybe(
                             (!self.waiting() && count > 0).then_some(Event::ImportSelected)
                         ),
                     ]
@@ -2028,7 +2031,8 @@ impl Page {
                     }
                     if self.draft.runner.is_empty() {
                         body = body.push(
-                            button("Download latest GE-Proton").on_press(Event::DownloadRunner),
+                            secondary_button("Download latest GE-Proton", palette)
+                                .on_press(Event::DownloadRunner),
                         );
                     }
                     body = body.push(
@@ -2068,7 +2072,7 @@ impl Page {
                                 .color(palette.warning),
                         );
                         body = body.push(
-                            button("Open its settings")
+                            secondary_button("Open its settings", palette)
                                 .on_press(Event::OpenExisting(self.draft.name.clone())),
                         );
                     }
@@ -2077,8 +2081,10 @@ impl Page {
                         &self.draft.executable,
                         Event::Executable,
                     ));
-                    body =
-                        body.push(button("Browse executable...").on_press(Event::BrowseExecutable));
+                    body = body.push(
+                        secondary_button("Browse executable...", palette)
+                            .on_press(Event::BrowseExecutable),
+                    );
                     body = body.push(text("Arguments").size(13));
                     if let Some(raw) = &self.draft.unparsed_arguments {
                         body = body.push(
@@ -2099,14 +2105,16 @@ impl Page {
                         }
                         .view(palette),
                     );
-                    body = body.push(button("No arguments").on_press(Event::ArgumentsClear));
+                    body = body.push(
+                        secondary_button("No arguments", palette).on_press(Event::ArgumentsClear),
+                    );
                     body = body.push(field(
                         "Working directory",
                         &self.draft.working_directory,
                         Event::WorkingDirectory,
                     ));
                     body = body.push(
-                        button("Browse working directory...")
+                        secondary_button("Browse working directory...", palette)
                             .on_press(Event::BrowseWorkingDirectory),
                     );
                     if let Some(prepared) = &self.prepared {
@@ -2138,8 +2146,10 @@ impl Page {
                                     ))
                                     .color(palette.muted),
                                 );
-                                body = body
-                                    .push(button("Copy Heroic runner").on_press(Event::CopyRunner));
+                                body = body.push(
+                                    secondary_button("Copy Heroic runner", palette)
+                                        .on_press(Event::CopyRunner),
+                                );
                             } else if let Some(RunnerSuggestion::Choose {
                                 proton,
                                 copy_blocked,
@@ -2162,7 +2172,8 @@ impl Page {
                         }
                         if self.draft.runner.is_empty() {
                             body = body.push(
-                                button("Download latest GE-Proton").on_press(Event::DownloadRunner),
+                                secondary_button("Download latest GE-Proton", palette)
+                                    .on_press(Event::DownloadRunner),
                             );
                         }
                         body = body.push(
@@ -2185,7 +2196,8 @@ impl Page {
                     );
                 }
                 let mut next = row![
-                    button("Next: Review").on_press_maybe((!self.waiting()).then_some(Event::Plan))
+                    accent_base("Next: Review", palette.primary)
+                        .on_press_maybe((!self.waiting()).then_some(Event::Plan))
                 ]
                 .spacing(12)
                 .align_y(Center);
@@ -2315,11 +2327,11 @@ impl Page {
                             }
                             if let Some((component, version)) = missing_build {
                                 body = body.push(
-                                    button(text(format!("Download {} build", component.label())))
-                                        .on_press(Event::DownloadBuild(
-                                            *component,
-                                            version.clone(),
-                                        )),
+                                    secondary_button(
+                                        format!("Download {} build", component.label()),
+                                        palette,
+                                    )
+                                    .on_press(Event::DownloadBuild(*component, version.clone())),
                                 );
                             }
                         }
@@ -2403,11 +2415,14 @@ impl Page {
                                 let version =
                                     offer.versions.iter().find_map(|version| version.clone());
                                 body = body.push(
-                                    button(text(format!(
-                                        "Download {} for {} game(s)",
-                                        offer.component.label(),
-                                        offer.games
-                                    )))
+                                    secondary_button(
+                                        format!(
+                                            "Download {} for {} game(s)",
+                                            offer.component.label(),
+                                            offer.games
+                                        ),
+                                        palette,
+                                    )
                                     .on_press(Event::DownloadBuild(offer.component, version)),
                                 );
                             }
@@ -2420,7 +2435,7 @@ impl Page {
                         }
                     };
                     let mut import =
-                        row![button("Import").on_press_maybe(
+                        row![accent_base("Import", palette.primary).on_press_maybe(
                             (can_import && !self.waiting()).then_some(Event::Import)
                         )]
                         .spacing(12)
@@ -2447,15 +2462,17 @@ impl Page {
                     body = body.push(text(line).size(13));
                 }
                 if self.registered.is_some() && self.error.is_some() && self.token.is_none() {
-                    body = body.push(button("Retry artwork").on_press(Event::RetryArt));
-                    body = body.push(button("Skip artwork").on_press(Event::SkipArt));
+                    body = body
+                        .push(secondary_button("Retry artwork", palette).on_press(Event::RetryArt));
+                    body = body
+                        .push(secondary_button("Skip artwork", palette).on_press(Event::SkipArt));
                 } else if let Some(token) = &self.token {
                     let (label, event) = if token.is_canceled() {
                         ("Force stop", Event::Force)
                     } else {
                         ("Cancel", Event::Cancel)
                     };
-                    body = body.push(button(label).on_press(event));
+                    body = body.push(secondary_button(label, palette).on_press(event));
                 }
             }
             Step::Finished => {
@@ -2475,12 +2492,16 @@ impl Page {
                     }
                 }
                 if self.registered.is_some() {
-                    body = body.push(button("Open settings").on_press(Event::OpenSettings));
+                    body = body.push(
+                        secondary_button("Open settings", palette).on_press(Event::OpenSettings),
+                    );
                 }
-                body = body.push(button("Back to library").on_press(Event::BackToLibrary));
+                body = body.push(
+                    secondary_button("Back to library", palette).on_press(Event::BackToLibrary),
+                );
             }
         }
-        let back = button("< Back")
+        let back = secondary_button("Back", palette)
             .on_press_maybe((!self.busy() && self.step != Step::Finished).then_some(Event::Back));
         let content: Element<'_, Event> = match (&self.listing, self.step) {
             // The grid scrolls on its own under fixed controls, so keyboard
@@ -2495,8 +2516,8 @@ impl Page {
         if self.leave_prompt {
             page = page.push(text("Discard this Heroic import draft?")).push(
                 row![
-                    button("Keep editing").on_press(Event::KeepEditing),
-                    button("Discard").on_press(Event::Discard)
+                    secondary_button("Keep editing", palette).on_press(Event::KeepEditing),
+                    secondary_button("Discard", palette).on_press(Event::Discard)
                 ]
                 .spacing(12),
             );
@@ -2566,7 +2587,9 @@ fn launch_settings(draft: &Draft, windows: bool, palette: Palette) -> Element<'_
         }
         .view(palette),
     );
-    body = body.push(button("Clear environment variables").on_press(Event::EnvironmentClear));
+    body = body.push(
+        secondary_button("Clear environment variables", palette).on_press(Event::EnvironmentClear),
+    );
     body = body.push(
         checkbox(draft.gamemode)
             .label("GameMode")

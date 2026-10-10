@@ -1211,8 +1211,10 @@ impl Page {
                 .spacing(12),
         );
         if !environment.is_empty() && self.paths.environment_config(&environment).exists() {
-            form = form
-                .push(button("Open existing environment settings").on_press(Event::OpenExisting));
+            form = form.push(
+                ui::secondary_button("Open existing environment settings", palette)
+                    .on_press(Event::OpenExisting),
+            );
         }
         let sources = if self.draft.kind == Kind::Windows {
             vec![Source::Installer, Source::Executable, Source::Empty]
@@ -1238,7 +1240,7 @@ impl Page {
             form = form.push(
                 row![
                     text_input(hint, &self.draft.path).on_input(Event::Path),
-                    button("Browse...").on_press(Event::Browse),
+                    ui::secondary_button("Browse...", palette).on_press(Event::Browse),
                 ]
                 .spacing(8),
             );
@@ -1296,11 +1298,14 @@ impl Page {
                 form = form.push(summary);
             }
             form = form.push(
-                button(if self.additional_wine_options_visible() {
-                    "Additional wine options (hide)"
-                } else {
-                    "Additional wine options"
-                })
+                ui::secondary_button(
+                    if self.additional_wine_options_visible() {
+                        "Additional wine options (hide)"
+                    } else {
+                        "Additional wine options"
+                    },
+                    palette,
+                )
                 .on_press(Event::ToggleAdditionalWineOptions),
             );
             if self.additional_wine_options_visible() {
@@ -1348,7 +1353,7 @@ impl Page {
                 options_body = options_body.push(text("Prefix folder override")).push(
                     row![
                         text_input("Use default path", &self.draft.prefix).on_input(Event::Prefix),
-                        button("Browse...").on_press(Event::BrowsePrefix)
+                        ui::secondary_button("Browse...", palette).on_press(Event::BrowsePrefix)
                     ]
                     .spacing(8),
                 );
@@ -1400,8 +1405,8 @@ impl Page {
                         let icon = self.art.icon(palette).map(Event::Art);
                         let controls = self.art.controls(palette, key_available).map(Event::Art);
                         let navigation = row![
-                            button("Back").on_press(Event::Back),
-                            button("Next").on_press(Event::Next)
+                            ui::secondary_button("Back", palette).on_press(Event::Back),
+                            ui::accent_base("Next", palette.primary).on_press(Event::Next)
                         ]
                         .spacing(8);
                         if size.width >= SIDE_POSTER {
@@ -1555,6 +1560,7 @@ impl Page {
                         true,
                         Event::CopyLog,
                         Event::LogFollow,
+                        palette,
                     ));
                     body = body.push(logview::editor(
                         &self.log_view,
@@ -1582,7 +1588,7 @@ impl Page {
                     row![
                         text_input("Executable path", &self.target_path)
                             .on_input(Event::TargetPath),
-                        button("Browse...").on_press(Event::Browse)
+                        ui::secondary_button("Browse...", palette).on_press(Event::Browse)
                     ]
                     .spacing(8),
                 );
@@ -1593,9 +1599,7 @@ impl Page {
                 );
                 body = body.push(
                     row![
-                        button("Confirm")
-                            .padding([8, 20])
-                            .on_press(Event::AddTarget),
+                        ui::accent_base("Confirm", palette.primary).on_press(Event::AddTarget),
                         button("Skip for now")
                             .style(move |_, status| crate::chips::link(palette, status))
                             .on_press(Event::SkipTarget),
@@ -1622,12 +1626,20 @@ impl Page {
                         body = body.push(text(note));
                     }
                     if !report.cleanup_resolved {
-                        body = body.push(button("Clean up installer").on_press(Event::CleanUp));
+                        body = body.push(
+                            ui::secondary_button("Clean up installer", palette)
+                                .on_press(Event::CleanUp),
+                        );
                     }
                     if let Some(error) = &report.art_error {
                         body = body.push(text(format!("Artwork: {error}")).color(palette.warning));
-                        body = body.push(button("Retry artwork").on_press(Event::RetryArt));
-                        body = body.push(button("Skip artwork").on_press(Event::SkipArt));
+                        body = body.push(
+                            ui::secondary_button("Retry artwork", palette)
+                                .on_press(Event::RetryArt),
+                        );
+                        body = body.push(
+                            ui::secondary_button("Skip artwork", palette).on_press(Event::SkipArt),
+                        );
                     }
                     if report.registered && report.playable && report.cleanup_resolved {
                         body = body.push(
@@ -1639,14 +1651,22 @@ impl Page {
                     if report.registered {
                         body = body.push(
                             row![
-                                button("Open settings").on_press(Event::OpenSettings),
-                                button("Back to library").on_press(Event::ToLibrary)
+                                ui::secondary_button("Open settings", palette)
+                                    .on_press(Event::OpenSettings),
+                                ui::secondary_button("Back to library", palette)
+                                    .on_press(Event::ToLibrary)
                             ]
                             .spacing(8),
                         );
                     } else {
-                        body = body.push(button("Review again").on_press(Event::RetryCreation));
-                        body = body.push(button("Back to library").on_press(Event::ToLibrary));
+                        body = body.push(
+                            ui::secondary_button("Review again", palette)
+                                .on_press(Event::RetryCreation),
+                        );
+                        body = body.push(
+                            ui::secondary_button("Back to library", palette)
+                                .on_press(Event::ToLibrary),
+                        );
                     }
                 }
             }
@@ -1659,8 +1679,8 @@ impl Page {
                 column![
                     text("Discard this new environment draft?"),
                     row![
-                        button("Keep editing").on_press(Event::KeepEditing),
-                        button("Discard").on_press(Event::Discard)
+                        ui::secondary_button("Keep editing", palette).on_press(Event::KeepEditing),
+                        ui::secondary_button("Discard", palette).on_press(Event::Discard)
                     ]
                     .spacing(8)
                 ]

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use iced::futures::channel::mpsc::unbounded;
 use iced::keyboard::{self, Key, key::Named};
 use iced::widget::operation::RelativeOffset;
-use iced::widget::{Row, button, column, container, image, row, scrollable, text, text_input};
+use iced::widget::{Row, column, container, image, row, scrollable, text, text_input};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::art::Kind;
 use wineo_core::cancel::Token;
@@ -20,6 +20,7 @@ use wineo_core::steam_import::{
 use super::heroic::{self, Tile};
 use super::{Action, artwork};
 use crate::theme::Palette;
+use crate::ui::{accent_base, secondary_button};
 
 const GRID_ID: &str = "steam-import-grid";
 
@@ -728,11 +729,9 @@ impl Page {
                             body = body.push(
                                 row![
                                     text(NO_KEY_HINT).size(12).color(palette.muted),
-                                    button(text("Open Settings").size(12))
-                                        .on_press_maybe(
-                                            (!self.waiting()).then_some(Event::OpenSteamKey),
-                                        )
-                                        .padding([4, 8]),
+                                    secondary_button("Open Settings", palette).on_press_maybe(
+                                        (!self.waiting()).then_some(Event::OpenSteamKey),
+                                    ),
                                 ]
                                 .spacing(8)
                                 .align_y(Center),
@@ -744,7 +743,7 @@ impl Page {
                         None => {}
                     }
                     let refresh = (self.owned_note != Some(OwnedNote::NoKey)).then(|| {
-                        button("Refresh")
+                        secondary_button("Refresh", palette)
                             .on_press_maybe(self.refresh_available().then_some(Event::Refresh))
                     });
                     if listing.games.is_empty() {
@@ -760,10 +759,10 @@ impl Page {
                         let count = self.chosen.len();
                         body = body.push(
                             row![
-                                button("Select all").on_press(Event::SelectAll),
-                                button("Select none")
+                                secondary_button("Select all", palette).on_press(Event::SelectAll),
+                                secondary_button("Select none", palette)
                                     .on_press_maybe((count > 0).then_some(Event::SelectNone)),
-                                button(text(heroic::import_label(count)))
+                                accent_base(heroic::import_label(count), palette.primary)
                                     .on_press_maybe((count > 0).then_some(Event::ImportSelected)),
                                 refresh,
                             ]
@@ -866,7 +865,7 @@ impl Page {
                 }
             }
         }
-        let back = button("< Back")
+        let back = secondary_button("Back", palette)
             .on_press_maybe((!self.busy() && self.step != Step::Finished).then_some(Event::Back));
         let content: Element<'_, Event> = match (&self.listing, self.step) {
             (Some(listing), Step::Games) if !listing.games.is_empty() => {
@@ -882,9 +881,13 @@ impl Page {
             .max_width(heroic::PAGE_MAX_WIDTH)
             .height(Fill);
         let footer: Option<Element<'_, Event>> = match self.step {
-            Step::Details => Some(button("Review").on_press(Event::Review).into()),
+            Step::Details => Some(
+                accent_base("Review", palette.primary)
+                    .on_press(Event::Review)
+                    .into(),
+            ),
             Step::Review => self.review.as_ref().map(|review| {
-                button("Import")
+                accent_base("Import", palette.primary)
                     .on_press_maybe(
                         (!review.ready.is_empty() || !review.failures.is_empty())
                             .then_some(Event::Import),
@@ -897,10 +900,10 @@ impl Page {
                 } else {
                     ("Cancel", Event::Cancel)
                 };
-                button(label).on_press(event).into()
+                secondary_button(label, palette).on_press(event).into()
             }),
             Step::Finished => Some(
-                button("Back to library")
+                secondary_button("Back to library", palette)
                     .on_press(Event::BackToLibrary)
                     .into(),
             ),

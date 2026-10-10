@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input};
+use iced::widget::{column, container, pick_list, row, scrollable, text, text_input};
 use iced::{Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GlobalConfig};
@@ -10,10 +10,10 @@ use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
-use crate::chips::{input_style, secondary};
+use crate::chips::input_style;
 use crate::runner_label;
 use crate::theme::Palette;
-use crate::ui::PickListStyle;
+use crate::ui::{PickListStyle, accent_base, secondary_button};
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
@@ -419,10 +419,8 @@ impl Page {
                     } else {
                         ("Cancel", Event::Cancel)
                     };
-                    button(text(label))
+                    secondary_button(label, palette)
                         .on_press(event)
-                        .padding([6, 12])
-                        .style(move |_, status| secondary(palette, status))
                 })
             ]
             .spacing(14)
@@ -434,14 +432,10 @@ impl Page {
                 ))
                 .color(palette.warning),
                 row![
-                    button(text("Retry artwork"))
-                        .on_press(Event::RetryArt)
-                        .padding([6, 12])
-                        .style(move |_, status| secondary(palette, status)),
-                    button(text("Skip artwork"))
+                    secondary_button("Retry artwork", palette)
+                        .on_press(Event::RetryArt),
+                    secondary_button("Skip artwork", palette)
                         .on_press(Event::SkipArt)
-                        .padding([6, 12])
-                        .style(move |_, status| secondary(palette, status))
                 ]
                 .spacing(8),
             ]
@@ -456,14 +450,10 @@ impl Page {
                 text("Scan installed programs and choose game targets now, or add them later in Settings.")
                     .color(palette.muted),
                 row![
-                    button(text("Set up targets"))
-                        .on_press(Event::OpenSettings)
-                        .padding([8, 14])
-                        .style(move |_, status| secondary(palette, status)),
-                    button(text("Back to library"))
+                    secondary_button("Set up targets", palette)
+                        .on_press(Event::OpenSettings),
+                    secondary_button("Back to library", palette)
                         .on_press(Event::Library)
-                        .padding([8, 14])
-                        .style(move |_, status| secondary(palette, status))
                 ]
                 .spacing(8),
             ]
@@ -571,10 +561,7 @@ impl Page {
                     .width(Fill)
                     .padding(8)
                     .style(move |_, status| input_style(palette, status)),
-                button(text("Browse..."))
-                    .on_press(Event::PickSource)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status))
+                secondary_button("Browse...", palette).on_press(Event::PickSource)
             ]
             .spacing(8),
             text("Environment name").color(palette.foreground),
@@ -590,22 +577,24 @@ impl Page {
             .width(Fill)
             .wineo_style(palette),
             row![
-                button(text(if self.adopt {
-                    "Use in place (selected)"
-                } else {
-                    "Use in place"
-                }))
-                .on_press(Event::Mode(true))
-                .padding([6, 12])
-                .style(move |_, status| secondary(palette, status)),
-                button(text(if !self.adopt {
-                    "Copy (default)"
-                } else {
-                    "Copy"
-                }))
+                secondary_button(
+                    if self.adopt {
+                        "Use in place (selected)"
+                    } else {
+                        "Use in place"
+                    },
+                    palette
+                )
+                .on_press(Event::Mode(true)),
+                secondary_button(
+                    if !self.adopt {
+                        "Copy (default)"
+                    } else {
+                        "Copy"
+                    },
+                    palette
+                )
                 .on_press(Event::Mode(false))
-                .padding([6, 12])
-                .style(move |_, status| secondary(palette, status))
             ]
             .spacing(8),
         ]
@@ -626,10 +615,7 @@ impl Page {
                             .width(Fill)
                             .padding(8)
                             .style(move |_, status| input_style(palette, status)),
-                        button(text("Browse..."))
-                            .on_press(Event::PickDestination)
-                            .padding([6, 12])
-                            .style(move |_, status| secondary(palette, status))
+                        secondary_button("Browse...", palette).on_press(Event::PickDestination)
                     ]
                     .spacing(8),
                 );
@@ -637,14 +623,8 @@ impl Page {
         fields = fields.push(self.art.view(palette, key_available).map(Event::Art));
         fields = fields.push(
             row![
-                button(text("Back"))
-                    .on_press(Event::Back)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
-                button(text("Review"))
-                    .on_press(Event::Next)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Back", palette).on_press(Event::Back),
+                accent_base("Review", palette.primary).on_press(Event::Next),
             ]
             .spacing(8),
         );
@@ -682,14 +662,15 @@ impl Page {
         if !review.inspection.external_dependencies.is_empty() {
             let count = review.inspection.external_dependencies.len();
             content = content.push(
-                button(text(if self.show_dependencies {
-                    format!("Hide {count} external dependencies")
-                } else {
-                    format!("Show all {count} external dependencies")
-                }))
-                .on_press(Event::Dependencies(!self.show_dependencies))
-                .padding([5, 10])
-                .style(move |_, status| secondary(palette, status)),
+                secondary_button(
+                    if self.show_dependencies {
+                        format!("Hide {count} external dependencies")
+                    } else {
+                        format!("Show all {count} external dependencies")
+                    },
+                    palette,
+                )
+                .on_press(Event::Dependencies(!self.show_dependencies)),
             );
             if self.show_dependencies {
                 for dependency in &review.inspection.external_dependencies {
@@ -711,23 +692,15 @@ impl Page {
         }
         content = content.push(
             row![
-                button(text("Back"))
-                    .on_press(Event::Back)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
-                button(text("Import"))
-                    .on_press(Event::Import)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status))
+                secondary_button("Back", palette).on_press(Event::Back),
+                accent_base("Import", palette.primary).on_press(Event::Import)
             ]
             .spacing(8),
         );
         if self.recovery_path.is_some() {
             content = content.push(
-                button(text("Use retained copy in place"))
-                    .on_press(Event::UseRetained)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Use retained copy in place", palette)
+                    .on_press(Event::UseRetained),
             );
         }
         content.into()
@@ -1027,14 +1000,8 @@ fn discard_prompt(palette: Palette) -> Element<'static, Event> {
                 .color(palette.foreground),
             text("Your prefix, name, and artwork selections will be lost.").color(palette.muted),
             row![
-                button(text("Keep editing"))
-                    .on_press(Event::KeepEditing)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
-                button(text("Discard"))
-                    .on_press(Event::Discard)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status))
+                secondary_button("Keep editing", palette).on_press(Event::KeepEditing),
+                secondary_button("Discard", palette).on_press(Event::Discard)
             ]
             .spacing(8),
         ]

@@ -1,13 +1,14 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use iced::widget::{Space, button, checkbox, column, container, mouse_area, row, text};
+use iced::widget::{Space, checkbox, column, container, mouse_area, row, text};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 #[cfg(test)]
 use wineo_core::runtime::State;
 use wineo_core::trash::{Entry, RemoveEvent};
 
+use crate::ui::{accent_base, secondary_button};
 use crate::{App, Message, focus_button, remove_work, spinner};
 
 const PREFIX_ID: &str = "remove-prefix";
@@ -638,7 +639,7 @@ impl App {
         let mut controls = row![
             Space::new().width(Fill),
             focus_button::control(
-                button("Cancel")
+                secondary_button("Cancel", palette)
                     .on_press_maybe((!moving).then_some(Message::CancelRemove))
                     .into(),
                 !moving,
@@ -649,7 +650,7 @@ impl App {
         .spacing(12);
         if !running {
             controls = controls.push(focus_button::control(
-                button("Remove")
+                accent_base("Remove", palette.primary)
                     .on_press_maybe(reason.is_none().then_some(Message::ConfirmRemove))
                     .into(),
                 reason.is_none(),
@@ -681,7 +682,7 @@ impl App {
             && self.art_page.is_none()
             && !self.close_prompt;
         let undo = crate::focus_button::undo(
-            button("Undo")
+            secondary_button("Undo", palette)
                 .on_press_maybe(enabled.then_some(Message::Undo))
                 .into(),
             enabled,

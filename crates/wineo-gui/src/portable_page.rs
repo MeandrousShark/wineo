@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
+use iced::widget::{column, container, row, scrollable, text, text_input};
 use iced::{Element, Fill, Task};
 use wineo_core::cancel::Token;
 use wineo_core::config::{GlobalConfig, Kind};
@@ -10,8 +10,9 @@ use wineo_core::paths::Paths;
 use wineo_core::portable::{self, CopyEvent, CopyInspection, NativeCopyInspection, Storage};
 use wineo_core::runners::Runners;
 
-use crate::chips::{input_style, secondary};
+use crate::chips::input_style;
 use crate::theme::Palette;
+use crate::ui::{accent_base, secondary_button};
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
@@ -267,14 +268,15 @@ impl Page {
             Step::Details => self.details(palette, can_edit),
             Step::Inspecting | Step::Copying => column![
                 text(self.status.as_str()).color(palette.muted),
-                button(text(if self.finishing {
-                    "Finishing changes..."
-                } else {
-                    "Cancel"
-                }))
-                .on_press_maybe((!self.finishing).then_some(Event::Cancel))
-                .padding([6, 12])
-                .style(move |_, status| secondary(palette, status)),
+                secondary_button(
+                    if self.finishing {
+                        "Finishing changes..."
+                    } else {
+                        "Cancel"
+                    },
+                    palette
+                )
+                .on_press_maybe((!self.finishing).then_some(Event::Cancel)),
             ]
             .spacing(14)
             .into(),
@@ -390,10 +392,8 @@ impl Page {
                     .width(Fill)
                     .padding(8)
                     .style(move |_, status| input_style(palette, status)),
-                button(text("Browse..."))
-                    .on_press_maybe(enabled.then_some(Event::Browse))
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Browse...", palette)
+                    .on_press_maybe(enabled.then_some(Event::Browse)),
             ]
             .spacing(8),
         ]
@@ -407,17 +407,12 @@ impl Page {
         }
         fields = fields.push(
             row![
-                button(text("Back"))
-                    .on_press_maybe((!self.busy()).then_some(Event::Back))
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
-                button(text("Review"))
-                    .on_press_maybe(
-                        (enabled && self.native.is_some() && self.source_error.is_none())
-                            .then_some(Event::Review)
-                    )
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Back", palette)
+                    .on_press_maybe((!self.busy()).then_some(Event::Back)),
+                accent_base("Review", palette.primary).on_press_maybe(
+                    (enabled && self.native.is_some() && self.source_error.is_none())
+                        .then_some(Event::Review)
+                ),
             ]
             .spacing(8),
         );
@@ -438,18 +433,11 @@ impl Page {
         }
         content = content.push(
             row![
-                button(text("Back"))
-                    .on_press_maybe(enabled.then_some(Event::Back))
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
-                button(text("Review again"))
-                    .on_press_maybe(enabled.then_some(Event::Review))
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
-                button(text("Copy"))
-                    .on_press_maybe((enabled && self.review.is_some()).then_some(Event::Copy))
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Back", palette).on_press_maybe(enabled.then_some(Event::Back)),
+                secondary_button("Review again", palette)
+                    .on_press_maybe(enabled.then_some(Event::Review)),
+                accent_base("Copy", palette.primary)
+                    .on_press_maybe((enabled && self.review.is_some()).then_some(Event::Copy)),
             ]
             .spacing(8),
         );
@@ -473,14 +461,8 @@ impl Page {
         }
         content = content.push(
             row![
-                button(text("Copy to another folder..."))
-                    .on_press(Event::CopyAnother)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
-                button(text("Back"))
-                    .on_press(Event::Back)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Copy to another folder...", palette).on_press(Event::CopyAnother),
+                secondary_button("Back", palette).on_press(Event::Back),
             ]
             .spacing(8),
         );
@@ -939,14 +921,8 @@ fn discard_prompt(palette: Palette) -> Element<'static, Event> {
                 .color(palette.foreground),
             text("The folder path will be cleared.").color(palette.muted),
             row![
-                button(text("Keep editing"))
-                    .on_press(Event::KeepEditing)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
-                button(text("Discard"))
-                    .on_press(Event::Discard)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Keep editing", palette).on_press(Event::KeepEditing),
+                secondary_button("Discard", palette).on_press(Event::Discard),
             ]
             .spacing(8),
         ]

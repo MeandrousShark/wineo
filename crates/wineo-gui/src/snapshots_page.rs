@@ -1030,6 +1030,7 @@ fn report_panel<'a>(
             !report.is_empty(),
             Event::CopyReport(kind),
             Event::FollowReport(kind),
+            palette,
         ),
         logview::editor(
             log,
