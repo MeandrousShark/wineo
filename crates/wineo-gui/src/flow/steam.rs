@@ -152,6 +152,9 @@ pub(crate) struct Page {
     owned_generation: u64,
     chosen: BTreeSet<String>,
     focus: Option<usize>,
+    /// Whether `focus` came from the keyboard. A click moves focus too, but
+    /// like CSS :focus-visible only keyboard focus draws the ring.
+    focus_visible: bool,
     posters: HashMap<PosterKey, Option<image::Handle>>,
     name: String,
     review: Option<Review>,
@@ -176,6 +179,7 @@ impl Page {
             owned_generation: 0,
             chosen: BTreeSet::new(),
             focus: None,
+            focus_visible: false,
             posters: HashMap::new(),
             name: String::new(),
             review: None,
@@ -262,6 +266,7 @@ impl Page {
         self.listing = None;
         self.chosen.clear();
         self.focus = None;
+        self.focus_visible = false;
         self.posters.clear();
         self.poster_generation = self.poster_generation.wrapping_add(1);
         self.review = None;
@@ -457,6 +462,7 @@ impl Page {
                         self.chosen.remove(&game.app_id);
                     }
                     self.focus = Some(index);
+                    self.focus_visible = false;
                 }
                 Task::none()
             }
@@ -591,11 +597,13 @@ impl Page {
                 named @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
             ) => {
                 self.focus = heroic::move_focus(self.focus, named, columns, count);
+                self.focus_visible = true;
                 Some(self.reveal_focus(columns, count))
             }
             Key::Named(Named::Space) | Key::Character(" ") => {
                 if let Some(index) = self.focus {
                     let _ = self.update(Event::Toggle(index));
+                    self.focus_visible = true;
                 }
                 Some(Task::none())
             }
@@ -603,6 +611,10 @@ impl Page {
             Key::Named(Named::Enter) if !modifiers.control() => Some(self.import_selected()),
             _ => None,
         }
+    }
+
+    fn focus_ring(&self, index: usize) -> bool {
+        self.focus_visible && self.focus == Some(index)
     }
 
     fn reveal_focus(&self, columns: usize, count: usize) -> Task<Event> {
@@ -647,7 +659,7 @@ impl Page {
                         reason: None,
                         note: game.note.map(str::to_owned),
                         chosen: self.chosen.contains(&game.app_id),
-                        focused: self.focus == Some(index),
+                        focus_ring: self.focus_ring(index),
                         dimmed: !game.installed,
                     },
                     palette,
@@ -1337,6 +1349,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn only_keyboard_focus_draws_the_ring() {
+        let temp = TempDir::new().unwrap();
+        let (mut page, _) = Page::new(paths(temp.path(), false));
+        page.status.clear();
+        page.listing = Some(listed(3));
+        let none = keyboard::Modifiers::empty();
+        let _ = page.update(Event::Toggle(1));
+        assert_eq!(page.focus, Some(1));
+        assert!(!page.focus_ring(1));
+        let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
+        assert!(page.focus_ring(2));
+        let _ = page.update(Event::Toggle(0));
+        assert!(!page.focus_ring(0));
+        let _ = page.key(&Key::Named(Named::Space), none, 900.0);
+        assert!(page.focus_ring(0));
     }
 
     #[test]

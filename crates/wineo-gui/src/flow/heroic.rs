@@ -311,6 +311,9 @@ pub(crate) struct Page {
     /// Heroic ids picked in the grid, kept while the user goes back and forth.
     chosen: BTreeSet<String>,
     focus: Option<usize>,
+    /// Whether `focus` came from the keyboard. A click moves focus too, but
+    /// like CSS :focus-visible only keyboard focus draws the ring.
+    focus_visible: bool,
     /// Decoded posters by Heroic id, with their format. None when the file
     /// couldn't be decoded, so it's never stored as art either.
     posters: HashMap<String, Option<(image::Handle, Format)>>,
@@ -352,6 +355,7 @@ impl Page {
             already: HashMap::new(),
             chosen: BTreeSet::new(),
             focus: None,
+            focus_visible: false,
             posters: HashMap::new(),
             poster_generation: 0,
             selected: None,
@@ -633,6 +637,7 @@ impl Page {
         self.already.clear();
         self.chosen.clear();
         self.focus = None;
+        self.focus_visible = false;
         self.posters.clear();
         self.poster_generation = self.poster_generation.wrapping_add(1);
         self.prepared = None;
@@ -889,11 +894,13 @@ impl Page {
                 named @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
             ) => {
                 self.focus = move_focus(self.focus, named, columns, count);
+                self.focus_visible = true;
                 Some(self.reveal_focus(columns, count))
             }
             Key::Named(Named::Space) | Key::Character(" ") => {
                 if let Some(index) = self.focus {
                     self.toggle(index);
+                    self.focus_visible = true;
                 }
                 Some(Task::none())
             }
@@ -901,6 +908,10 @@ impl Page {
             Key::Named(Named::Enter) if !modifiers.control() => Some(self.import_chosen()),
             _ => None,
         }
+    }
+
+    fn focus_ring(&self, index: usize) -> bool {
+        self.focus_visible && self.focus == Some(index)
     }
 
     /// Scrolls so the focused row shows. Rows are all one height, so scrolling
@@ -1303,6 +1314,7 @@ impl Page {
             }
             Event::Toggle(index) => {
                 self.focus = Some(index);
+                self.focus_visible = false;
                 self.toggle(index);
                 Task::none()
             }
@@ -1889,7 +1901,7 @@ impl Page {
                         reason: self.ineligible(index),
                         note: None,
                         chosen: self.chosen.contains(&candidate.id),
-                        focused: self.focus == Some(index),
+                        focus_ring: self.focus_ring(index),
                         dimmed: false,
                     },
                     palette,
@@ -2654,8 +2666,12 @@ fn launch_settings(draft: &Draft, windows: bool, palette: Palette) -> Element<'_
 const GRID_ID: &str = "heroic-grid";
 const BODY_ID: &str = "heroic-body";
 const TILE_WIDTH: f32 = 120.0;
-/// With the focus ring's padding.
-const TILE_OUTER_WIDTH: f32 = TILE_WIDTH + 8.0;
+/// With room for the focus ring on either side.
+const TILE_OUTER_WIDTH: f32 = TILE_WIDTH + 2.0 * RING_INSET;
+/// How far the focus ring sits outside the poster's selection border.
+const RING_INSET: f32 = 4.0;
+const RING_WIDTH: f32 = 2.0;
+const SELECTION_RADIUS: f32 = 6.0;
 const TILE_POSTER_HEIGHT: f32 = 180.0;
 /// Room under the poster for two title lines and two lines of reason, fixed
 /// so every row is the same height.
@@ -2711,9 +2727,25 @@ pub(super) struct Tile<'a> {
     pub reason: Option<String>,
     pub note: Option<String>,
     pub chosen: bool,
-    pub focused: bool,
+    /// Draws the keyboard focus ring. Pages set it only for focus that came
+    /// from the keyboard, so clicking a tile doesn't outline it.
+    pub focus_ring: bool,
     /// Dims the tile like an uninstalled game, while it stays selectable.
     pub dimmed: bool,
+}
+
+/// A ring outside the selection border, concentric with it and separated by
+/// a gap, so focus reads differently from selection in both palettes.
+fn focus_ring_style(palette: Palette, shown: bool) -> container::Style {
+    container::Style::default().border(
+        border::rounded(SELECTION_RADIUS + RING_INSET)
+            .width(RING_WIDTH)
+            .color(if shown {
+                palette.primary
+            } else {
+                Color::TRANSPARENT
+            }),
+    )
 }
 
 pub(super) fn tile<'a, Message: Clone + 'a>(
@@ -2765,11 +2797,13 @@ pub(super) fn tile<'a, Message: Clone + 'a>(
             .height(TILE_POSTER_HEIGHT)
             .padding(3)
             .style(move |_| {
-                container::Style::default().border(border::rounded(6).width(3).color(if chosen {
-                    palette.primary
-                } else {
-                    Color::TRANSPARENT
-                }))
+                container::Style::default().border(
+                    border::rounded(SELECTION_RADIUS).width(3).color(if chosen {
+                        palette.primary
+                    } else {
+                        Color::TRANSPARENT
+                    }),
+                )
             })
     ];
     if chosen {
@@ -2790,8 +2824,11 @@ pub(super) fn tile<'a, Message: Clone + 'a>(
             .align_right(TILE_WIDTH),
         );
     }
-    let mut content = column![
-        layers,
+    let focus_ring = tile.focus_ring;
+    let ring = container(layers)
+        .padding(RING_INSET)
+        .style(move |_| focus_ring_style(palette, focus_ring));
+    let mut details = column![
         text(
             crate::tile_title::lines(tile.title, TILE_WIDTH, TILE_TITLE_SIZE, Font::DEFAULT)
                 .join("\n")
@@ -2806,26 +2843,18 @@ pub(super) fn tile<'a, Message: Clone + 'a>(
         .wrapping(iced::widget::text::Wrapping::None),
     ]
     .spacing(4)
-    .width(TILE_WIDTH);
+    .padding([0.0, RING_INSET])
+    .width(TILE_OUTER_WIDTH);
     if let Some(reason) = tile.reason {
-        content = content.push(text(reason).size(11).color(palette.warning));
+        details = details.push(text(reason).size(11).color(palette.warning));
     }
     if let Some(note) = tile.note {
-        content = content.push(text(note).size(11).color(palette.muted));
+        details = details.push(text(note).size(11).color(palette.muted));
     }
-    let focused = tile.focused;
-    let framed = container(content)
+    let framed = container(column![ring, details])
         .width(TILE_OUTER_WIDTH)
         .height(TILE_HEIGHT)
-        .padding(4)
-        .clip(true)
-        .style(move |_| {
-            container::Style::default().border(border::rounded(8).width(1).color(if focused {
-                palette.foreground
-            } else {
-                Color::TRANSPARENT
-            }))
-        });
+        .clip(true);
     let area = mouse_area(framed);
     if refused {
         area.into()
@@ -3852,7 +3881,7 @@ mod tests {
             reason: None,
             note: None,
             chosen: false,
-            focused: false,
+            focus_ring: false,
             dimmed: false,
         }
     }
@@ -3866,7 +3895,7 @@ mod tests {
             let mut view = tile(sample_tile(title), Palette::DARK, Event::Toggle(0));
             let node = layout(&mut view, size);
             assert_eq!(node.bounds().height, TILE_HEIGHT);
-            let title = bounds_at(&node, &[0, 1]);
+            let title = bounds_at(&node, &[0, 1, 0]);
             assert_eq!(
                 title.height,
                 crate::tile_title::two_line_height(TILE_TITLE_SIZE)
@@ -3874,6 +3903,72 @@ mod tests {
             heights.push(title.y);
         }
         assert_eq!(heights[0], heights[1]);
+    }
+
+    #[test]
+    fn the_focus_ring_wraps_the_poster_without_moving_the_tile() {
+        use crate::layout_probe::{bounds_at, layout, within};
+        let size = iced::Size::new(400.0, 400.0);
+        let mut layouts = Vec::new();
+        for focus_ring in [false, true] {
+            let mut view = tile(
+                Tile {
+                    focus_ring,
+                    chosen: true,
+                    ..sample_tile("Portal")
+                },
+                Palette::DARK,
+                Event::Toggle(0),
+            );
+            let node = layout(&mut view, size);
+            let ring = bounds_at(&node, &[0, 0]);
+            let poster = bounds_at(&node, &[0, 0, 0, 0]);
+            assert_eq!(
+                poster.size(),
+                iced::Size::new(TILE_WIDTH, TILE_POSTER_HEIGHT)
+            );
+            assert_eq!(ring, poster.expand(RING_INSET));
+            assert!(within(ring, node.bounds()));
+            layouts.push((node.bounds(), ring, poster));
+        }
+        assert_eq!(layouts[0], layouts[1]);
+    }
+
+    #[test]
+    fn the_focus_ring_is_primary_and_distinct_from_selection() {
+        for palette in [
+            Palette::from_mode(iced::theme::Mode::Dark),
+            Palette::from_mode(iced::theme::Mode::Light),
+        ] {
+            let shown = focus_ring_style(palette, true).border;
+            assert_eq!(shown.color, palette.primary);
+            assert_eq!(shown.width, RING_WIDTH);
+            // Concentric with the 3 px selection border, with a gap between.
+            assert_eq!(shown.radius, (SELECTION_RADIUS + RING_INSET).into());
+            const { assert!(RING_WIDTH < RING_INSET && RING_WIDTH != 3.0) };
+            assert_eq!(
+                focus_ring_style(palette, false).border.color,
+                Color::TRANSPARENT
+            );
+        }
+    }
+
+    #[test]
+    fn only_keyboard_focus_draws_the_ring() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        let none = keyboard::Modifiers::empty();
+        let _ = page.update(Event::Toggle(DUSK));
+        assert_eq!(page.focus, Some(DUSK));
+        assert!(!page.focus_ring(DUSK));
+        let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
+        let focus = page.focus.unwrap();
+        assert!(page.focus_ring(focus));
+        let _ = page.update(Event::Toggle(focus));
+        assert!(!page.focus_ring(focus));
+        // Space after a click is keyboard use, so the ring comes back.
+        let _ = page.key(&Key::Named(Named::Space), none, 900.0);
+        assert!(page.focus_ring(focus));
     }
 
     #[test]
