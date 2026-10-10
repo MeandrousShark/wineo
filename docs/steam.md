@@ -1,6 +1,6 @@
 # Steam games
 
-Games installed through Steam can join the rest of the library: tagged,
+Games you own on Steam can join the rest of the library: tagged,
 counted in `wineo stats`, started and stopped from the CLI or the desktop app,
 with [hooks](hooks.md) around them. Steam keeps owning the game, its prefix,
 and its process. Wineo reads Steam's files but never writes to them.
@@ -14,12 +14,18 @@ portable copies don't, since Steam owns the prefix.
 
 ```
 $ wineo import steam --list
-1086940  Baldur's Gate 3  140 GiB  installed
-1145360  Hades  14 GiB  installed
+APP ID   TITLE              SIZE     STATE           IMPORTED
+1086940  Baldur's Gate 3    140 GiB  installed       bg3
+2142790  Fields of Mistria  -        installing 42%
+292030   The Witcher 3      -        not installed
 ```
 
-`--list` shows installed games with their app id, title, size, and state.
-Steam's own tools, like Proton builds, the Steam Linux Runtimes, and
+`--list` shows each game's app id, title, size, state, and the environment
+it's imported as. Installed games come first. Games you own but haven't
+installed follow, by title, when wineo has a
+[Steam Web API key](#owned-games); without one, only installed games are
+listed, with `Add a Steam Web API key to see uninstalled games.` Steam's own
+tools, like Proton builds, the Steam Linux Runtimes, and
 Steamworks Common Redistributables, are left out. A game whose manifest
 can't be read shows as `unreadable manifest` and doesn't hide the rest.
 
@@ -47,11 +53,13 @@ $ wineo import steam --game 1086940
 Already imported as bg3.
 ```
 
-Import every installed game that isn't imported yet:
+Import every installed game that isn't imported yet, or with `--owned`,
+every game you own:
 
 ```sh
 wineo import steam --all --dry-run
 wineo import steam --all
+wineo import steam --all --owned
 ```
 
 `--all` reviews each game and asks once, or `--yes` skips the question,
@@ -68,6 +76,93 @@ SteamGridDB, looked up by the Steam app id rather than a title search.
 
 Steam games can't be imported into a [portable folder](portable.md), since
 the folder would depend on this machine's Steam.
+
+## Owned games
+
+Steam only lists the games you own through its Web API, which needs a key.
+Get one at <https://steamcommunity.com/dev/apikey> (Steam may refuse one to
+an account with no purchases or without Steam Guard), then save it:
+
+```
+$ wineo import steam --key
+Steam Web API key:
+Saved the Steam Web API key to the keyring
+```
+
+Wineo checks the key with Steam before saving it, and never prints it. It
+goes in the keyring like the [SteamGridDB key](art.md#the-steamgriddb-key), or
+in a private `steam.key` file under wineo's data folder when there's no
+keyring. `WINEO_STEAM_KEY` overrides both. `--remove-key` removes it. A key
+sees its own account's library even when the profile is private. Wineo
+finds the account itself, from the most recently logged in Steam user.
+
+The owned list is cached in `~/.cache/wineo/steam-owned-<steamid>.json` and
+fetched again when it's over an hour old, or right away with `--refresh`.
+Only import commands use it; the library, `list`, and the desktop app's
+library never go online for it.
+
+- If a fetch fails and there's a cached list, wineo uses it and warns:
+  `Couldn't refresh owned games: REASON`.
+- With no cached list, listings show installed games only, with `Couldn't
+  get owned games: REASON`, and importing an uninstalled game fails with
+  the same message.
+- When several Steam accounts have logged in and none is marked most
+  recent, owned games fail with `Steam doesn't say which account was used
+  last.`
+
+Importing an installed game never needs the key or the network. An
+uninstalled game imports the same way, with its title from the owned list
+and Steam's cached art when Steam has it. An app id that's neither installed
+nor owned is refused: `App 12345 isn't installed or owned.` Steam's API
+sometimes misses games, mostly free ones; install those in Steam first and
+import them from the local scan.
+
+## Installing and uninstalling
+
+```
+$ wineo install witcher3
+Asked Steam to install witcher3.
+$ wineo uninstall witcher3
+Asked Steam to uninstall witcher3.
+```
+
+Both open Steam's own dialog (`steam://install/<app_id>` or
+`steam://uninstall/<app_id>`), starting Steam if it isn't running, and
+return. Steam's dialog picks the library and asks before uninstalling, so
+wineo doesn't ask again. Uninstalling keeps wineo's config, and the game
+goes back to `not installed`.
+
+`-f` (`--follow`) stays and shows progress until Steam is done:
+
+```
+$ wineo install witcher3 -f
+Waiting for Steam's install dialog...
+Installing The Witcher 3... 42% (14.2 GiB of 33.8 GiB)
+Installed.
+```
+
+- On a terminal the progress line updates in place. Piped, it prints a line
+  each time the state or percent changes.
+- Steam rewrites its progress only now and then, so the percent moves in
+  jumps. A paused install looks the same on disk as one that hasn't started
+  downloading, so it shows without a percent until Steam resumes.
+- It waits for the dialog as long as it's open. Ctrl+C stops following,
+  never the install, and exits 130.
+- If the game disappears partway, it prints `Steam canceled the install.`
+  and exits 1. An uninstall that ends with the game still installed prints
+  `Steam canceled the uninstall.`
+
+| Game is | `install` | `uninstall` |
+|---|---|---|
+| installed | `Already installed.` | Opens the dialog |
+| starting or running, from wineo or Steam | `Already installed.` | Refused: `Stop bg3 before uninstalling it.` |
+| install queued | Opens the dialog | Opens the dialog |
+| installing | `Steam is already installing bg3.` (`-f` follows it) | Opens the dialog |
+| uninstalling | Refused: `Steam is uninstalling bg3.` | Opens the dialog |
+| not installed | Opens the dialog | `Not installed.` |
+| unavailable or unknown | Refused with the reason | Refused with the reason |
+
+Only Steam games can be installed or uninstalled.
 
 ## The config
 
@@ -193,21 +288,25 @@ says `More than one Steam process matches bg3.`
 
 ## Install states
 
-Each Steam game is in one of these states, shown in `list`, `status`,
-`validate`, and the desktop app:
+Each Steam game is in one of these states, shown in `list`, `status`, and
+the desktop app:
 
 | State | Meaning | Start |
 |---|---|---|
 | installed | Its manifest says fully installed | Works |
-| updating | Steam is downloading, staging, or validating it | Works, and waits in `starting` |
+| updating | Steam is updating an installed game | Works, and waits in `starting` |
+| installing | Steam is installing it, with a percent once Steam knows the size | Refused: `Steam is still installing bg3.` |
+| install queued | Install was pressed, and the download hasn't started | Refused: `Steam lists bg3 as not installed.` |
+| uninstalling | Steam is removing it | Refused: `Steam is uninstalling bg3.` |
 | not installed | Steam is readable and no library has it | Refused: `Steam lists bg3 as not installed.` |
 | unavailable | A library Steam lists is missing, so it might be there | Refused: `Steam's library at /mnt/games isn't available.` |
 | unknown | Steam isn't found, or one of its files can't be read | Refused with the reason |
 
 ```
 $ wineo list
-bg3    not installed
-hades  updating
+bg3       not installed
+hades     updating
+witcher3  installing 42%
 ```
 
 `list` shows the state in place of `inactive` when the game isn't plainly
@@ -253,7 +352,7 @@ a Proton game's saves. `WINEO_EXIT_CODE` is always empty, and
 | `art` | Works, and `art fetch` looks the game up on SteamGridDB by app id unless `--game` or `--search` says otherwise |
 | `desktop` | `desktop = true` adds `wineo-NAME-steam.desktop`, which runs `wineo start NAME` so hooks run |
 | `rm` | Removes wineo's config and art. It never uninstalls the game |
-| `validate` | Adds Steam checks: Steam not found, no active install, game not installed, library unavailable, unreadable files |
+| `validate` | Adds Steam checks: Steam not found, no active install, library unavailable, unreadable files. A game that isn't installed, or is installing, isn't a problem and isn't reported |
 | `winetricks`, `exec`, `snapshot`, `clone`, `portable copy` | Refused: `Steam manages bg3's prefix.` |
 | `setup` | Refused, since there are no targets to set up |
 
@@ -262,5 +361,5 @@ gamescope, Wayland, and template defaults are skipped. Only `stop_timeout`
 applies, to Stop.
 
 `status --json` and `list --json` have `"kind": "proxied"`, plus `launcher`,
-`app_id`, `install`, and `started_by`, which says whether a running game was
+`app_id`, `install`, `install_progress`, and `started_by`, which says whether a running game was
 started by `wineo` or `steam`. See [JSON output](json-output.md).

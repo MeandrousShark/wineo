@@ -68,6 +68,10 @@ A few things to know:
 - `run` on a [Steam game](steam.md) exits 0 when the game exits on its own,
   130 when it's stopped, and 1 when Steam never starts it, since the game's
   own exit code can't be collected.
+- `install -f` and `uninstall -f` exit 0 when Steam finishes, 1 when Steam
+  cancels partway, and 130 on Ctrl+C, which stops following but never
+  Steam's work. Without `-f`, and for a no-op like `Already installed.`,
+  they exit 0 once the request is handed to Steam.
 - The process wineo starts for a detached run never reports the game's exit
   code. It's recorded with the run instead: see `status NAME`.
 

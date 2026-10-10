@@ -82,7 +82,10 @@ Art from SteamGridDB, searching "Hades":
 
 `import heroic --all` prints one line per game with its top match. A missing
 key or a failed search prints the real run's note and doesn't change the exit
-code. This search is the only network use a dry run makes.
+code. This search is the only network use a dry run makes, apart from
+importing a [Steam game](steam.md#owned-games) that isn't installed: a dry
+run checks that you own it like the real run, fetching the owned list when
+the cached one is stale, but never saves the list.
 
 ## Limits
 

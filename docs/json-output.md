@@ -67,7 +67,12 @@ A [native environment](native.md) has no runner or prefix, so `runner` and
 
 A [Steam game](steam.md) has `"kind": "proxied"` and more fields:
 `launcher` (`steam`), `app_id`, `install`, one of `installed`, `updating`,
-`not_installed`, `unavailable`, or `unknown`, and `started_by`. `started_by`
+`installing`, `install_queued`, `uninstalling`, `not_installed`,
+`unavailable`, or `unknown`, `install_progress`, and `started_by`.
+`install_progress` is a whole percent from 0 to 100 while the game is
+installing and Steam knows its size, otherwise `null`; Wine and native
+environments don't have it. `install` is separate from `state`, which stays
+the run status, so a game can be `inactive` and `installing` at once. `started_by`
 is `wineo` while a wineo run is starting or running, `steam` when the game
 was started from the Steam client, and `null` when it isn't running.
 `install_problem` gives the reason when there is one, like `Steam's library
@@ -94,7 +99,8 @@ Nameless `status --json` and `list --json` return the same envelope:
 
 Each item in `environments` contains the common status fields shown above,
 plus `kind`, which is `null` for a config that can't be read, and a Steam
-game's `launcher`, `app_id`, `install`, `install_problem`, and `started_by`.
+game's `launcher`, `app_id`, `install`, `install_progress`, `install_problem`,
+and `started_by`.
 `list` includes every environment whose runtime status can be read, and
 `list --tag` only those with every given tag. Nameless `status` includes
 running, busy, or unresolved environments. Both sort by environment name.
@@ -164,7 +170,7 @@ The codes are stable:
 | `environment` | `target_ambiguous` |
 | `runtime` | `lost_run`, `installer_unresolved`, `restore_interrupted`, `state_dir_stray`, `stats_stray` |
 | `desktop` | `desktop_entry_stray`, `desktop_outdated`, `desktop_portable` |
-| `steam` | `steam_not_found`, `steam_install_missing`, `steam_game_not_installed`, `steam_library_unavailable`, `steam_data_unknown` |
+| `steam` | `steam_not_found`, `steam_install_missing`, `steam_library_unavailable`, `steam_data_unknown` |
 | `art` | `art_config_invalid`, `art_file_missing`, `art_target_unknown`, `art_duplicates`, `art_dir_stray` |
 
 A native target's working dir, gamemode, gamescope, and MangoHud problems use the `target` area.

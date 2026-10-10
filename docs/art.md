@@ -78,6 +78,10 @@ the saved key`. A command that needs the key and finds none says to run
 Keyring access needs `dbus` (`libdbus-1`) at runtime; the Arch package
 already depends on it.
 
+The [Steam Web API key](steam.md#owned-games) works the same way, through
+`wineo import steam --key` and `--remove-key`, with `WINEO_STEAM_KEY` and a
+`steam.key` file.
+
 ## Setting manual art
 
 ```sh

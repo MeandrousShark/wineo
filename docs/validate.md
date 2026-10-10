@@ -124,7 +124,6 @@ storage is reported for attention rather than recovered by ordinary commands.
 | Desktop | An environment's entries out of date with its config | warning | rewrite them, like `start` does |
 | Desktop | Portable config with `desktop = true` | warning | |
 | Steam game | Steam isn't installed, or the chosen install is missing | error | |
-| Steam game | Steam doesn't have the game installed | error | |
 | Steam game | A Steam library is unavailable, or a Steam file can't be read | error | |
 | Art | `art.toml` fails to parse | error | |
 | Art | Recorded file missing, or a target that no longer exists | warning | drop the record |
