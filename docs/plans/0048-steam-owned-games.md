@@ -202,7 +202,9 @@ From question 3: `wineo install NAME`, and **Install** in the desktop app.
 - Installing an environment that isn't a Steam game is refused: `Only Steam
   games can be installed.`
 - The check and the handoff run under the game's `steam-<app_id>.lock`, the
-  one launch takes, so a wineo launch can't race them.
+  one import takes, so install, uninstall, and import can't race each other.
+  `start` doesn't take it; see step 3 under "Decisions during
+  implementation".
 
 ### Following
 
@@ -330,6 +332,36 @@ the changelog.
   - Uninstalling removed the manifest within a second, with no `2048`.
   - `steam steam://install/1454400` opens Steam's install dialog, and
     `steam steam://uninstall/1454400` opens its uninstall confirmation.
+- Step 3 (2026-10-09):
+  - The plan said launch takes `steam-<app_id>.lock`. It doesn't: only
+    import did. Install and uninstall take it (renamed `Locks::steam_app`),
+    so they serialize with each other and with import. A `wineo start`
+    racing an uninstall is guarded only by uninstall's status check
+    (starting, running, or a reaper). The maintainer accepted that window
+    rather than changing 0047's launch path: wineo only opens Steam's
+    dialog, Steam asks for confirmation, and Steam arbitrates.
+  - Install while Steam is uninstalling is refused: `Steam is uninstalling
+    NAME.` Uninstall while uninstalling opens the dialog again.
+  - Unreadable libraries and unknown state refuse both actions with
+    `Steam's library at PATH isn't available.` or the reason.
+  - Import counts a manifest as installed whenever 0047's
+    `state_from_flags` does, so a game mid-install (`1026`) imports as
+    before. Flags `2`, `0`, `1`, and `2048` fall through to the owned list.
+  - Without owned data (`OwnedGames::Unloaded`), import keeps 0047's
+    `Steam lists N as not installed.` Owned games that aren't installed
+    are listed after installed ones, by title.
+  - `start` on a queued game keeps `Steam lists NAME as not installed.`
+  - Following: an install is waiting until a queued or installing state
+    appears, and a missing manifest after that is `Steam canceled the
+    install.` An uninstall keeps waiting while the game is fully installed
+    (the dialog is open), and a return to fully installed after any other
+    state is `Steam canceled the uninstall.` Unreadable reads keep
+    following. There's no debounce on a missing manifest; review found no
+    evidence Steam unlinks before replacing one.
+  - The `-f` byte pair comes from the same phase as the percent: download
+    bytes while downloading, staged bytes once staging.
+  - `install_progress` is left out of the JSON for Wine and native
+    environments, and `null` for a Steam game with no percent.
 
 ## Questions
 
