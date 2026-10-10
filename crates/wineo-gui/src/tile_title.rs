@@ -13,17 +13,57 @@ const ELLIPSIS: &str = "...";
 /// widget draws with. Shaping is too slow to repeat for every title on every
 /// frame while something animates, so results are kept per title and style.
 pub(crate) fn lines(title: &str, width: f32, size: f32, font: Font) -> Vec<String> {
-    type Key = (String, u32, u32, Font);
     thread_local! {
-        static CACHE: RefCell<HashMap<Key, Vec<String>>> = RefCell::new(HashMap::new());
+        static CACHE: RefCell<Cache> = RefCell::new(Cache::new(CACHE_LIMIT));
     }
     let key = (title.to_owned(), width.to_bits(), size.to_bits(), font);
-    if let Some(lines) = CACHE.with_borrow(|cache| cache.get(&key).cloned()) {
-        return lines;
+    CACHE.with_borrow_mut(|cache| {
+        cache.get_or_insert_with(key, || {
+            balance(title, width, |content| measure(content, size, font))
+        })
+    })
+}
+
+/// Comfortably more titles than one screen draws, so a redraw never evicts
+/// what it is about to reuse.
+const CACHE_LIMIT: usize = 8192;
+
+type Key = (String, u32, u32, Font);
+
+/// Wrapped titles by title and style. Renamed and removed titles stop being
+/// used, so once the cache is full it drops whatever wasn't used recently.
+struct Cache {
+    entries: HashMap<Key, (Vec<String>, u64)>,
+    tick: u64,
+    limit: usize,
+}
+
+impl Cache {
+    fn new(limit: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            tick: 0,
+            limit: limit.max(2),
+        }
     }
-    let lines = balance(title, width, |content| measure(content, size, font));
-    CACHE.with_borrow_mut(|cache| cache.insert(key, lines.clone()));
-    lines
+
+    fn get_or_insert_with(&mut self, key: Key, wrap: impl FnOnce() -> Vec<String>) -> Vec<String> {
+        self.tick += 1;
+        if let Some((lines, used)) = self.entries.get_mut(&key) {
+            *used = self.tick;
+            return lines.clone();
+        }
+        if self.entries.len() >= self.limit {
+            // Keeping the newer half evicts in bulk, so filling past the
+            // limit costs one sweep per limit / 2 inserts.
+            let keep = (self.limit / 2) as u64;
+            let tick = self.tick;
+            self.entries.retain(|_, (_, used)| tick - *used < keep);
+        }
+        let lines = wrap();
+        self.entries.insert(key, (lines.clone(), self.tick));
+        lines
+    }
 }
 
 /// Two lines' height at `size` with the default line height, reserved under
@@ -195,6 +235,25 @@ mod tests {
             ["Go", "Supercali..."]
         );
         assert_eq!(balance("Wide", 7.0, chars), ["..."]);
+    }
+
+    #[test]
+    fn the_cache_stays_bounded_and_keeps_titles_in_use() {
+        let key = |title: &str| (title.to_owned(), 0, 0, Font::DEFAULT);
+        let mut cache = Cache::new(8);
+        for index in 0..1000 {
+            let title = format!("Game {index}");
+            let _ = cache.get_or_insert_with(key(&title), || vec![title.clone()]);
+            // A title on screen is looked up on every redraw.
+            let _ = cache.get_or_insert_with(key("Shown"), || vec!["Shown".to_owned()]);
+            assert!(cache.entries.len() <= 8);
+        }
+        let mut wrapped = false;
+        let _ = cache.get_or_insert_with(key("Shown"), || {
+            wrapped = true;
+            Vec::new()
+        });
+        assert!(!wrapped);
     }
 
     #[test]
