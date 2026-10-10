@@ -60,7 +60,8 @@ use crate::panel::{LOG_ID, LogBuffer, PanelError};
 use crate::theme::Palette;
 
 pub(crate) const CARD_WIDTH: f32 = 160.0;
-const CARD_ROW: f32 = 300.0;
+/// Roughly one library row: poster, two title lines, metadata, and the gap.
+const CARD_ROW: f32 = 318.0;
 pub(crate) const GAP: f32 = 16.0;
 const SCROLL_ID: &str = "library";
 const SEARCH_ID: &str = "library-search";
@@ -1695,7 +1696,7 @@ mod tests {
     use super::*;
     use std::time::SystemTime;
 
-    fn card(name: &str, state: State, seconds: i64) -> Card {
+    pub(crate) fn card(name: &str, state: State, seconds: i64) -> Card {
         Card {
             name: name.into(),
             kind: None,
@@ -1718,7 +1719,7 @@ mod tests {
             panel_art: HashMap::new(),
         }
     }
-    fn app() -> App {
+    pub(crate) fn app() -> App {
         let paths =
             Paths::from_lookup(|key| (key == "HOME").then(|| "/tmp/wineo-gui-tests".into()))
                 .unwrap();

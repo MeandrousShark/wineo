@@ -20,6 +20,7 @@ const ACTION_MENU_PADDING: f32 = 12.0;
 const ACTION_MENU_SPACING: f32 = 4.0;
 const ACTION_MENU_HEADER_HEIGHT: f32 = 20.0;
 const INSTALL_BAR_HEIGHT: f32 = 4.0;
+const CARD_TITLE_SIZE: f32 = 14.0;
 
 impl App {
     pub(crate) fn grid(&self) -> Element<'_, Message> {
@@ -116,7 +117,13 @@ impl App {
                     Color::TRANSPARENT
                 }))
             });
-        let label = truncate_name(&card.display_title, CARD_WIDTH);
+        let title_font = Font {
+            weight: font::Weight::Semibold,
+            ..Font::DEFAULT
+        };
+        let label =
+            crate::tile_title::lines(&card.display_title, CARD_WIDTH, CARD_TITLE_SIZE, title_font)
+                .join("\n");
         let dot_color = card.dot(palette);
         let meta = row![
             container(Space::new())
@@ -133,11 +140,9 @@ impl App {
         let mut content = column![
             framed,
             text(label)
-                .size(14)
-                .font(Font {
-                    weight: font::Weight::Semibold,
-                    ..Font::DEFAULT
-                })
+                .size(CARD_TITLE_SIZE)
+                .height(crate::tile_title::two_line_height(CARD_TITLE_SIZE))
+                .font(title_font)
                 .color(if dimmed {
                     palette.muted
                 } else {
@@ -981,6 +986,38 @@ pub(super) fn scroll_style(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn card_titles_wrap_to_two_balanced_lines_in_a_fixed_height() {
+        use crate::layout_probe::{bounds_at, layout};
+        let app = crate::tests::app();
+        let font = Font {
+            weight: font::Weight::Semibold,
+            ..Font::DEFAULT
+        };
+        let lines = |title| crate::tile_title::lines(title, CARD_WIDTH, CARD_TITLE_SIZE, font);
+        assert_eq!(
+            lines("Halo: The Master Chief Collection"),
+            ["Halo: The Master", "Chief Collection"]
+        );
+        assert_eq!(lines("Portal 2"), ["Portal 2"]);
+        let mut heights = Vec::new();
+        for title in ["Portal 2", "Halo: The Master Chief Collection"] {
+            let mut card = crate::tests::card("game", wineo_core::runtime::State::Inactive, 60);
+            card.display_title = title.to_owned();
+            let mut view = app.card(&card);
+            let node = layout(&mut view, Size::new(400.0, 600.0));
+            let title = bounds_at(&node, &[1]);
+            assert_eq!(
+                title.height,
+                crate::tile_title::two_line_height(CARD_TITLE_SIZE)
+            );
+            // The identifier and the state and playtime row stay below.
+            assert_eq!(iced::advanced::Layout::new(&node).children().count(), 4);
+            heights.push(node.bounds().height);
+        }
+        assert_eq!(heights[0], heights[1]);
+    }
 
     #[test]
     fn context_menu_follows_pointer_and_stays_inside_window() {
