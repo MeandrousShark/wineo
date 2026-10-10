@@ -52,6 +52,9 @@ pub struct StatusOutput<'a> {
     pub install: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install_problem: Option<&'a str>,
+    /// Present for Steam games, and null unless an install has a percent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_progress: Option<Option<u8>>,
 }
 
 impl<'a> StatusOutput<'a> {
@@ -91,6 +94,7 @@ impl<'a> StatusOutput<'a> {
             }),
             install: proxied.map(|(_, _, install)| install.state),
             install_problem: proxied.and_then(|(_, _, install)| install.problem.as_deref()),
+            install_progress: proxied.map(|(_, _, install)| install.progress),
         }
     }
 }
@@ -323,6 +327,7 @@ mod tests {
             install: crate::report::InstallReport {
                 state: "installed",
                 problem: None,
+                progress: None,
             },
         };
         for (state, started_by) in [

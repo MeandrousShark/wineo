@@ -441,6 +441,93 @@ fn state_flags_table() {
     );
 }
 
+fn counted(flags: u32, to_download: u64, downloaded: u64, to_stage: u64, staged: u64) -> Manifest {
+    let text = format!(
+        "\"AppState\" {{ \"appid\" \"1\" \"name\" \"Game\" \"StateFlags\" \"{flags}\" \"BytesToDownload\" \"{to_download}\" \"BytesDownloaded\" \"{downloaded}\" \"BytesToStage\" \"{to_stage}\" \"BytesStaged\" \"{staged}\" }}"
+    );
+    parse_manifest(&text, "1").unwrap()
+}
+
+#[test]
+fn install_states_follow_the_flags() {
+    let state = |flags| counted(flags, 0, 0, 0, 0).app_state();
+    assert_eq!(state(0), AppState::NotInstalled);
+    assert_eq!(state(1), AppState::NotInstalled);
+    assert_eq!(state(64), AppState::NotInstalled);
+    assert_eq!(state(2), AppState::InstallQueued);
+    assert_eq!(state(2 | 64), AppState::InstallQueued);
+    assert_eq!(state(4), AppState::Installed);
+    assert_eq!(state(4 | 2), AppState::Installed);
+    assert_eq!(state(4 | 32 | 128), AppState::Installed);
+    assert_eq!(state(2048), AppState::Uninstalling);
+    assert_eq!(state(4 | 2048), AppState::Uninstalling);
+    assert_eq!(state(2048 | 1024), AppState::Uninstalling);
+    for bit in UPDATING_BITS {
+        // Not fully installed with any updating bit is an install under way.
+        assert_eq!(state(bit), AppState::Installing(None), "bit {bit}");
+        assert_eq!(state(bit | 2), AppState::Installing(None), "bit {bit} | 2");
+        // Fully installed with one is an update of a game that's there.
+        assert_eq!(state(bit | 4), AppState::Updating, "bit {bit} | 4");
+        assert_eq!(state(bit | 4 | 2), AppState::Updating, "bit {bit} | 4 | 2");
+    }
+}
+
+#[test]
+fn a_real_install_goes_from_queued_to_installing_to_installed() {
+    // Observed in step 1 of the plan: 2, then 1026 with no byte counts for a
+    // few seconds, then counts, then 4. Pausing dropped the counts to 0/0.
+    let steps = [
+        (2, 0, 0, AppState::InstallQueued),
+        (1026, 0, 0, AppState::Installing(None)),
+        (1026, 306_000_000, 0, AppState::Installing(Some(0))),
+        (
+            1026,
+            306_000_000,
+            187_000_000,
+            AppState::Installing(Some(61)),
+        ),
+        (1026, 0, 0, AppState::Installing(None)),
+        (
+            1026,
+            306_000_000,
+            306_000_000,
+            AppState::Installing(Some(100)),
+        ),
+        (4, 0, 0, AppState::Installed),
+    ];
+    for (flags, to_download, downloaded, expected) in steps {
+        let manifest = counted(flags, to_download, downloaded, 0, 0);
+        assert_eq!(manifest.app_state(), expected, "{flags} {downloaded}");
+    }
+}
+
+#[test]
+fn install_percent_counts_downloading_then_staging() {
+    assert_eq!(counted(1026, 0, 0, 0, 0).install_percent(), None);
+    // Totals of zero never divide.
+    assert_eq!(counted(1026, 0, 50, 0, 50).install_percent(), None);
+    assert_eq!(counted(1026, 200, 0, 0, 0).install_percent(), Some(0));
+    assert_eq!(counted(1026, 200, 50, 0, 0).install_percent(), Some(25));
+    assert_eq!(counted(1026, 200, 199, 0, 0).install_percent(), Some(99));
+    // Downloading is done, so staging is what is left.
+    assert_eq!(
+        counted(1026, 200, 200, 400, 100).install_percent(),
+        Some(25)
+    );
+    assert_eq!(counted(1026, 200, 200, 0, 0).install_percent(), Some(100));
+    // Only staging is left from the start.
+    assert_eq!(counted(1026, 0, 0, 400, 300).install_percent(), Some(75));
+    // A count past its total stops at 100.
+    assert_eq!(
+        counted(1026, 200, 900, 400, 900).install_percent(),
+        Some(100)
+    );
+    assert_eq!(
+        counted(1026, u64::MAX, u64::MAX - 1, 0, 0).install_percent(),
+        Some(99)
+    );
+}
+
 #[test]
 fn a_staging_only_stretch_shows_progress() {
     let snapshot = |downloaded: u64, staged: u64, flags: u32| {
@@ -497,16 +584,20 @@ fn app_state_covers_each_state() {
         &libraryfolders(&[&root, &gone]),
     );
     game(&root, "1", "Installed", 4);
-    game(&root, "2", "Updating", 1_048_576);
+    game(&root, "2", "Installing", 1_048_576);
     game(&root, "3", "Uninstalling", 2048 | 4);
     game(&root, "4", "Paused", 512 | 2);
+    game(&root, "5", "Updating", 4 | 1_048_576);
+    game(&root, "6", "Queued", 2);
     let install = only(home);
     let state = |app_id| app_state(Some(&install), app_id);
 
     assert_eq!(state("1"), AppState::Installed);
-    assert_eq!(state("2"), AppState::Updating);
-    assert_eq!(state("3"), AppState::NotInstalled);
-    assert_eq!(state("4"), AppState::Updating);
+    assert_eq!(state("2"), AppState::Installing(None));
+    assert_eq!(state("3"), AppState::Uninstalling);
+    assert_eq!(state("4"), AppState::Installing(None));
+    assert_eq!(state("5"), AppState::Updating);
+    assert_eq!(state("6"), AppState::InstallQueued);
     assert_eq!(state("999"), AppState::Unavailable(gone.clone()));
     assert_eq!(state("500000"), AppState::Unavailable(gone));
     assert!(

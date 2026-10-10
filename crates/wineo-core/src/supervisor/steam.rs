@@ -36,7 +36,9 @@ pub(super) fn dispatch_request_entry() -> Option<Result<()>> {
         })
 }
 
-fn request(launch: &Launch) -> Result<()> {
+/// Hands a request to the Steam client from a process of its own, so Steam is
+/// never in wineo's process group. Returns once Steam's command was spawned.
+pub(crate) fn request(launch: &Launch) -> Result<()> {
     let exe = std::env::current_exe().context(|| "failed to locate wineo".to_owned())?;
     let mut child = Command::new(exe)
         .arg(REQUEST_COMMAND)
@@ -82,6 +84,7 @@ impl Supervisor {
             install,
             app_id,
             baseline: Some(baseline),
+            ..
         } = &launch.host
         else {
             unreachable!()
@@ -170,6 +173,7 @@ impl Supervisor {
             install,
             app_id,
             baseline: Some(baseline),
+            ..
         } = &launch.host
         else {
             unreachable!()
@@ -294,7 +298,12 @@ impl StartingWait {
         state: &steam::AppState,
         progress: Option<steam::Progress>,
     ) {
-        let updating = matches!(state, steam::AppState::Updating);
+        // A partial install is waited on like an update, so a state that
+        // briefly drops FullyInstalled doesn't start the launch clock.
+        let updating = matches!(
+            state,
+            steam::AppState::Updating | steam::AppState::Installing(_)
+        );
         if self.updating && !updating {
             // Steam still needs time to launch after an update or a transient bad read.
             self.start_window = now;
