@@ -19,7 +19,7 @@ use crate::focus_button;
 use crate::library::Card;
 use crate::logview::{self, LogView};
 use crate::theme::Palette;
-use crate::ui::{self, PickListStyle};
+use crate::ui::{self, PickListStyle, ScrollStyle, secondary_button};
 use crate::worker::LogSource;
 use crate::{App, Message, Operation, OperationKind, worker};
 
@@ -575,12 +575,13 @@ impl App {
         let palette = self.palette;
         let mut body = column![].spacing(8).push(
             row![
-                button("Back").on_press(Message::CloseLog).padding([6, 12]),
+                secondary_button("Back", palette).on_press(Message::CloseLog),
                 logview::controls(
                     self.log_buffer.view(),
                     self.log_buffer.has_text(),
                     Message::CopyLog,
                     Message::LogFollow,
+                    palette,
                 ),
                 text(if self.log_install {
                     "Install log"
@@ -970,7 +971,11 @@ impl App {
         if self.panel_log_visible() || self.checkup_visible() {
             body = body.push(ui::section(inner, palette).height(Fill));
         } else {
-            body = body.push(scrollable(ui::section(inner, palette)).height(Fill));
+            body = body.push(
+                scrollable(ui::section(inner, palette))
+                    .wineo_style(palette)
+                    .height(Fill),
+            );
         }
         container(body)
             .width(PANEL_WIDTH)

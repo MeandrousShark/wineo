@@ -9,7 +9,8 @@ use wineo_core::download::{Provider, Release};
 use wineo_core::external_runners::Source;
 
 use crate::ui::{
-    PickListStyle, accent_button, page_title, secondary_button, section, section_heading,
+    PickListStyle, ScrollStyle, accent_button, page_title, secondary_button, section,
+    section_heading,
 };
 use crate::{App, Message, downloads_work, focus_button, removal, sidebar, spinner};
 
@@ -705,6 +706,7 @@ impl App {
             content = content.push(section(notices, palette));
         }
         scrollable(container(content).padding(24).width(Fill))
+            .wineo_style(palette)
             .height(Fill)
             .into()
     }

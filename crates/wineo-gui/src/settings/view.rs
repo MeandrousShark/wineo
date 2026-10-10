@@ -12,10 +12,12 @@ use super::form::{self, Build, Choice, Field, GamescopeFields, List, Source, Swi
 use super::global;
 use super::load::Scan;
 use super::{Editor, Event, Page, TargetEdit, View};
-use crate::chips::{Chips, input_style, secondary};
+use crate::chips::{Chips, input_style};
 use crate::panel::{action_button, error_box};
 use crate::theme::Palette;
-use crate::ui::{PickListStyle, secondary_button, section as grouped_section, section_heading};
+use crate::ui::{
+    PickListStyle, ScrollStyle, secondary_button, section as grouped_section, section_heading,
+};
 use crate::{Message, WHEEL_STEP_SCALE, wheel};
 use wineo_core::paths::Paths;
 
@@ -45,7 +47,7 @@ impl Page {
     ) -> Element<'_, Message> {
         // Global settings is a sidebar section, so the sidebar is its way out.
         let back = (!self.is_global()).then(|| {
-            secondary_button("< Back", palette)
+            secondary_button("Back", palette)
                 .on_press_maybe((!self.saving).then(|| send(Event::Back)))
         });
         let header = container(
@@ -94,6 +96,7 @@ impl Page {
                 .padding(24)
                 .center_x(Fill),
         )
+        .wineo_style(palette)
         .id(iced::widget::Id::new(SCROLL_ID))
         .width(Fill)
         .height(Fill);
@@ -731,11 +734,8 @@ fn key_row<'a>(row_data: KeyRow<'a>, spinner: f32, palette: Palette) -> Element<
                     busy.is_none() && !input.as_str().trim().is_empty(),
                     send(set),
                 ),
-                button(text("Cancel").size(14))
-                    .on_press_maybe(busy.is_none().then(|| send(cancel)))
-                    .height(32)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Cancel", palette)
+                    .on_press_maybe(busy.is_none().then(|| send(cancel))),
             ]
             .spacing(8)
             .align_y(Center),
@@ -744,11 +744,8 @@ fn key_row<'a>(row_data: KeyRow<'a>, spinner: f32, palette: Palette) -> Element<
         rows = rows.push(
             row![
                 action_button("Set key...", palette.primary, busy.is_none(), send(open)),
-                button(text("Remove key").size(14))
-                    .on_press_maybe(busy.is_none().then(|| send(remove)))
-                    .height(32)
-                    .padding([6, 12])
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Remove key", palette)
+                    .on_press_maybe(busy.is_none().then(|| send(remove))),
             ]
             .spacing(8)
             .align_y(Center),
@@ -889,7 +886,7 @@ fn target_body<'a>(
                 palette
             ),
             Some(
-                button("Browse...")
+                secondary_button("Browse...", palette)
                     .on_press_maybe(
                         (!locked).then(|| send(Event::BrowsePath(Some(target.to_owned()), false)))
                     )
@@ -925,7 +922,7 @@ fn target_body<'a>(
                 palette
             ),
             Some(
-                button("Browse...")
+                secondary_button("Browse...", palette)
                     .on_press_maybe(
                         (!locked).then(|| send(Event::BrowsePath(Some(target.to_owned()), true)))
                     )
@@ -1070,10 +1067,8 @@ fn inherited_fields<'a>(
         );
     }
     rows.push(
-        button(text("Edit here").size(13))
-            .on_press_maybe((!locked).then(|| target_event(target, TargetEdit::GamescopeHere)))
-            .padding([4, 10])
-            .style(move |_, status| secondary(palette, status)),
+        secondary_button("Edit here", palette)
+            .on_press_maybe((!locked).then(|| target_event(target, TargetEdit::GamescopeHere))),
     )
     .into()
 }
@@ -1093,10 +1088,8 @@ fn remove_target<'a>(
     };
     if editor.removing.as_deref() != Some(target) {
         return button_row(
-            button(text("Remove target").size(13))
+            secondary_button("Remove target", palette)
                 .on_press_maybe((!locked).then(|| target_event(target, TargetEdit::AskRemove)))
-                .padding([4, 10])
-                .style(move |_, status| secondary(palette, status))
                 .into(),
         );
     }
@@ -1135,10 +1128,7 @@ fn remove_target<'a>(
     );
     let actions = row![
         Space::new().width(Fill),
-        button(text("Keep it").size(13))
-            .on_press(send(Event::KeepTarget))
-            .padding([4, 10])
-            .style(move |_, status| secondary(palette, status)),
+        secondary_button("Keep it", palette).on_press(send(Event::KeepTarget)),
         action_button(
             "Remove",
             palette.danger,
@@ -1166,10 +1156,8 @@ fn add_target(
     palette: Palette,
 ) -> Element<'_, Message> {
     if !editor.add_open {
-        return button(text("+ Add target").size(14))
+        return secondary_button("+ Add target", palette)
             .on_press(send(Event::AddOpen(true)))
-            .padding([6, 12])
-            .style(move |_, status| secondary(palette, status))
             .into();
     }
     let muted =
@@ -1224,12 +1212,9 @@ fn add_target(
                             .size(13)
                             .color(palette.muted)
                             .width(Fill),
-                        button(text("Pick").size(13))
-                            .on_press_maybe(
-                                (!locked).then(|| send(Event::ProgramPicked(program.clone())))
-                            )
-                            .padding([4, 10])
-                            .style(move |_, status| secondary(palette, status)),
+                        secondary_button("Pick", palette).on_press_maybe(
+                            (!locked).then(|| send(Event::ProgramPicked(program.clone())))
+                        ),
                     ]
                     .spacing(12)
                     .align_y(Center),
@@ -1245,10 +1230,8 @@ fn add_target(
                     )
                 };
                 rows = rows.push(
-                    button(text(label).size(13))
-                        .on_press(send(Event::ShowHeldBack(!editor.show_held_back)))
-                        .padding([4, 10])
-                        .style(move |_, status| secondary(palette, status)),
+                    secondary_button(label, palette)
+                        .on_press(send(Event::ShowHeldBack(!editor.show_held_back))),
                 );
             }
         }
@@ -1285,7 +1268,7 @@ fn add_target(
             .style(move |_, status| input_style(palette, status))
             .into(),
         Some(
-            button("Browse...")
+            secondary_button("Browse...", palette)
                 .on_press_maybe((!locked).then(|| send(Event::BrowsePath(None, false))))
                 .into(),
         ),
@@ -1306,11 +1289,7 @@ fn add_target(
         row![
             text(checking).size(13).color(palette.muted),
             Space::new().width(Fill),
-            button(text("Cancel").size(14))
-                .on_press(send(Event::AddOpen(false)))
-                .height(32)
-                .padding([6, 16])
-                .style(move |_, status| secondary(palette, status)),
+            secondary_button("Cancel", palette).on_press(send(Event::AddOpen(false))),
             action_button("Add", palette.primary, can_add, send(Event::TargetAdd)),
         ]
         .spacing(8)
@@ -1360,10 +1339,8 @@ fn components<'a>(
             // Core refuses every save while this is set, so removing it is
             // the one thing left to do with it.
             Some(
-                button(text("Remove").size(13))
+                secondary_button("Remove", palette)
                     .on_press_maybe((!locked).then(|| send(Event::BuildRemoved(component))))
-                    .padding([4, 10])
-                    .style(move |_, status| secondary(palette, status))
                     .into(),
             )
         } else {
@@ -1425,10 +1402,8 @@ fn env_rows<'a>(
             field("value", &row.value, Fill).on_input_maybe(
                 (!locked).then_some(move |value| send(Event::EnvValue(index, value)))
             ),
-            button(text("x").size(13))
-                .on_press_maybe((!locked).then(|| send(Event::EnvRemove(index))))
-                .padding([6, 10])
-                .style(move |_, status| secondary(palette, status)),
+            secondary_button("x", palette)
+                .on_press_maybe((!locked).then(|| send(Event::EnvRemove(index)))),
         ]
         .spacing(8)
         .align_y(Center);
@@ -1449,10 +1424,7 @@ fn env_rows<'a>(
             field("value", &new.value, Fill)
                 .on_input_maybe((!locked).then_some(|value| send(Event::NewEnvValue(value))))
                 .on_submit_maybe(can_add.then(|| send(Event::EnvAdd))),
-            button(text("+").size(14))
-                .on_press_maybe(can_add.then(|| send(Event::EnvAdd)))
-                .padding([6, 10])
-                .style(move |_, status| secondary(palette, status)),
+            secondary_button("+", palette).on_press_maybe(can_add.then(|| send(Event::EnvAdd))),
         ]
         .spacing(8)
         .align_y(Center),
@@ -1644,12 +1616,8 @@ fn switch_row<'a>(
     .align_y(Center);
     // Only an overridden row can go back to inheriting.
     if let Some(reset) = reset {
-        line = line.push(
-            button(text("Reset").size(13))
-                .on_press_maybe((!locked).then_some(reset))
-                .padding([4, 10])
-                .style(move |_, status| secondary(palette, status)),
-        );
+        line = line
+            .push(secondary_button("Reset", palette).on_press_maybe((!locked).then_some(reset)));
     }
     line.into()
 }
@@ -1663,11 +1631,7 @@ fn leave_prompt(palette: Palette) -> Element<'static, Message> {
                 .color(palette.foreground),
             row![
                 Space::new().width(Fill),
-                button(text("Keep editing").size(14))
-                    .on_press(send(Event::KeepEditing))
-                    .height(32)
-                    .padding([6, 16])
-                    .style(move |_, status| secondary(palette, status)),
+                secondary_button("Keep editing", palette).on_press(send(Event::KeepEditing)),
                 action_button("Discard", palette.danger, true, send(Event::Discard)),
             ]
             .spacing(8)

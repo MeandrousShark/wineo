@@ -12,10 +12,11 @@ use std::sync::Arc;
 use iced::widget::text_editor::{
     self, Action, Binding, Content, Cursor, Edit, KeyPress, Motion, Position,
 };
-use iced::widget::{Id, Row, button, row, scrollable, text_editor as editor_widget};
+use iced::widget::{Id, Row, row, scrollable, text_editor as editor_widget};
 use iced::{Background, Border, Color, Element, Font, Length, Task};
 
 use crate::theme::Palette;
+use crate::ui::{ScrollStyle, secondary_button};
 use crate::{WHEEL_STEP_SCALE, wheel};
 
 pub(crate) struct LogView {
@@ -319,6 +320,7 @@ pub(crate) fn editor<'a, Message: Clone + 'a>(
         });
     wheel::scale(
         scrollable(editor)
+            .wineo_style(palette)
             .id(Id::new(id))
             .height(height)
             .on_scroll(on_scroll),
@@ -336,15 +338,15 @@ pub(crate) fn controls<'a, Message: Clone + 'a>(
     has_text: bool,
     copy: Message,
     follow: Message,
+    palette: Palette,
 ) -> Row<'a, Message> {
     let mut controls = row![
-        button(if view.copied() { "Copied" } else { "Copy" })
+        secondary_button(if view.copied() { "Copied" } else { "Copy" }, palette)
             .on_press_maybe(has_text.then_some(copy))
-            .padding([6, 12])
     ]
     .spacing(8);
     if view.can_follow() {
-        controls = controls.push(button("Jump to end").on_press(follow).padding([6, 12]));
+        controls = controls.push(secondary_button("Jump to end", palette).on_press(follow));
     }
     controls
 }

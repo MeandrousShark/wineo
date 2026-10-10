@@ -16,7 +16,7 @@ use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game};
 
 use crate::theme::Palette;
-use crate::ui::PickListStyle;
+use crate::ui::{PickListStyle, secondary_button};
 
 /// Width of the stacked tile block.
 const WIDTH: u32 = 356;
@@ -766,11 +766,14 @@ impl Draft {
 
     fn control_rows(&self, palette: Palette, key_available: bool) -> Column<'_, Event> {
         let mut content = column![
-            button(if self.manual_entry {
-                "Hide file paths"
-            } else {
-                "Enter a file path instead"
-            })
+            secondary_button(
+                if self.manual_entry {
+                    "Hide file paths"
+                } else {
+                    "Enter a file path instead"
+                },
+                palette
+            )
             .on_press(Event::ManualEntry(!self.manual_entry)),
         ]
         .spacing(10);
@@ -801,11 +804,14 @@ impl Draft {
                     content = content.push(
                         row![
                             text_input("Game title", &self.search).on_input(Event::SearchText),
-                            button(if self.searching {
-                                "Searching..."
-                            } else {
-                                "Search"
-                            })
+                            secondary_button(
+                                if self.searching {
+                                    "Searching..."
+                                } else {
+                                    "Search"
+                                },
+                                palette
+                            )
                             .on_press_maybe((!self.searching).then_some(Event::Search)),
                         ]
                         .spacing(8),
@@ -1204,7 +1210,8 @@ mod tests {
         use crate::layout_probe::probe;
         let draft = Draft::new();
         // Page padding and the scrollbar gutter come off the dialog width.
-        for width in [280.0_f32 - 48.0 - 16.0, 780.0 - 16.0] {
+        let gutter = crate::flow::heroic::SCROLL_GUTTER;
+        for width in [280.0_f32 - 48.0 - gutter, 780.0 - gutter] {
             let mut view: Element<'_, Event> =
                 iced::widget::scrollable(draft.view(Palette::DARK, true))
                     .height(400)

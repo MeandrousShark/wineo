@@ -4,12 +4,12 @@ use iced::widget::{
     text_input,
 };
 use iced::{
-    Center, Color, ContentFit, Element, Fill, FillPortion, Font, Size, Theme, border, font, mouse,
+    Center, Color, ContentFit, Element, Fill, FillPortion, Font, Size, border, font, mouse,
 };
 
 use crate::library::Card;
 use crate::theme::Palette;
-use crate::ui;
+use crate::ui::{self, ScrollStyle, secondary_button};
 use crate::wheel;
 use crate::{App, CARD_WIDTH, Message, SCROLL_ID, SEARCH_ID, WHEEL_STEP_SCALE};
 
@@ -372,13 +372,14 @@ impl App {
                     || self.operation.is_some()
                     || self.flow.as_ref().is_some_and(crate::flow::Page::busy))
             {
-                row![button("Force stop").on_press(Message::ForceCloseWork)]
+                row![secondary_button("Force stop", self.palette).on_press(Message::ForceCloseWork)]
             } else if self.closing {
                 row![text("Waiting for cleanup...")]
             } else {
                 row![
-                    button("Keep working").on_press(Message::KeepWorking),
-                    button("Cancel and close").on_press(Message::CancelAndClose),
+                    secondary_button("Keep working", self.palette).on_press(Message::KeepWorking),
+                    secondary_button("Cancel and close", self.palette)
+                        .on_press(Message::CancelAndClose),
                 ]
             }
             .spacing(12);
@@ -528,7 +529,9 @@ impl App {
                     .height(ACTION_MENU_HEADER_HEIGHT)
                     .align_y(Center)
                     .wrapping(iced::widget::text::Wrapping::None),
-                scrollable(scroll_items).height(action_menu_scroll_height(menu_height)),
+                scrollable(scroll_items)
+                    .wineo_style(palette)
+                    .height(action_menu_scroll_height(menu_height)),
                 context_menu_button("Close menu", palette, false, Some(Message::CloseMenu)),
             ]
             .spacing(ACTION_MENU_SPACING)
@@ -699,10 +702,12 @@ impl App {
             .width(Fill)
             .height(Fill)
             .direction(scrollable::Direction::Vertical(
-                scrollable::Scrollbar::new().width(6).scroller_width(4),
+                scrollable::Scrollbar::new()
+                    .width(crate::ui::SCROLLBAR_WIDTH)
+                    .scroller_width(crate::ui::SCROLLER_WIDTH),
             ))
             .on_scroll(Message::Scrolled)
-            .style(move |theme, status| scroll_style(theme, status, palette, visible));
+            .style(move |theme, status| crate::ui::scroll_style(theme, status, palette, visible));
         let library = mouse_area(wheel::scale(scroll, WHEEL_STEP_SCALE));
         let library = if self.panel_open {
             library.on_press(Message::ClosePanel)
@@ -1007,27 +1012,6 @@ fn truncate_name(name: &str, max_width: f32) -> String {
         .trim_end()
         .to_owned()
         + "..."
-}
-
-pub(super) fn scroll_style(
-    theme: &Theme,
-    status: scrollable::Status,
-    palette: Palette,
-    visible: bool,
-) -> scrollable::Style {
-    let mut style = scrollable::default(theme, status);
-    let show = visible || !matches!(status, scrollable::Status::Active { .. });
-    for rail in [&mut style.vertical_rail, &mut style.horizontal_rail] {
-        rail.background = None;
-        rail.border = border::rounded(3);
-        rail.scroller.background = if show {
-            palette.border.into()
-        } else {
-            Color::TRANSPARENT.into()
-        };
-        rail.scroller.border = border::rounded(3);
-    }
-    style
 }
 
 #[cfg(test)]

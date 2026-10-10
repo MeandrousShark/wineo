@@ -3,9 +3,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use iced::widget::{
-    Row, button, column, container, image, mouse_area, row, scrollable, text, toggler,
-};
+use iced::widget::{Row, column, container, image, mouse_area, row, scrollable, text, toggler};
 use iced::{Center, Color, ContentFit, Element, Fill, Length, Task, border, mouse};
 use wineo_core::art::Kind;
 use wineo_core::cancel::Token;
@@ -15,9 +13,9 @@ use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Filters, Image};
 
 use crate::artwork;
-use crate::chips::secondary;
 use crate::keys::{self, Direction};
 use crate::theme::Palette;
+use crate::ui::{ScrollStyle, accent_base, secondary_button};
 
 const PAGE_SIZE: usize = 18;
 const PAGE_WIDTH: f32 = 1120.0;
@@ -365,22 +363,22 @@ impl Picker {
         progress: Option<&str>,
     ) -> Element<'_, Event> {
         let mut header = row![
-            button("< Back")
-                .on_press(Event::Back)
-                .style(move |_, status| secondary(palette, status)),
+            secondary_button("Back", palette).on_press(Event::Back),
             text(title.to_owned()).size(20),
         ]
         .spacing(14)
         .align_y(Center);
         header = header.push(iced::widget::Space::new().width(Fill));
         header = header.push(
-            button(if self.filters_open {
-                "Filters ^"
-            } else {
-                "Filters v"
-            })
-            .on_press(Event::ToggleFilters)
-            .style(move |_, status| secondary(palette, status)),
+            secondary_button(
+                if self.filters_open {
+                    "Filters ^"
+                } else {
+                    "Filters v"
+                },
+                palette,
+            )
+            .on_press(Event::ToggleFilters),
         );
 
         let mut body = column![header].spacing(12);
@@ -415,27 +413,18 @@ impl Picker {
             details = details.push(
                 row![
                     text(status.to_owned()).size(12).color(palette.muted),
-                    button("Cancel")
-                        .on_press(Event::Cancel)
-                        .style(move |_, button_status| secondary(palette, button_status)),
+                    secondary_button("Cancel", palette).on_press(Event::Cancel),
                 ]
                 .spacing(10)
                 .align_y(Center),
             );
         }
         let has_progress = progress.is_some();
-        let use_button = if has_progress {
-            button("Use")
-        } else {
-            button("Use").on_press_maybe(self.selected().map(|_| Event::Use))
-        }
-        .style(move |_, status| {
-            if !has_progress && self.selected().is_some() {
-                button::primary(&palette.theme(), status)
-            } else {
-                secondary(palette, status)
-            }
-        });
+        let use_button = accent_base("Use", palette.primary).on_press_maybe(
+            (!has_progress)
+                .then(|| self.selected().map(|_| Event::Use))
+                .flatten(),
+        );
         let footer = row![details.width(Fill), use_button]
             .spacing(14)
             .align_y(Center);
@@ -548,15 +537,12 @@ impl Picker {
         if self.visible_count < indices.len() {
             grid = grid.push(
                 row![iced::widget::Space::new().width(Fill),]
-                    .push(
-                        button("Load more")
-                            .on_press(Event::LoadMore)
-                            .style(move |_, status| secondary(palette, status)),
-                    )
+                    .push(secondary_button("Load more", palette).on_press(Event::LoadMore))
                     .push(iced::widget::Space::new().width(Fill)),
             );
         }
         scrollable(container(grid).width(Fill).padding([0, 2]))
+            .wineo_style(palette)
             .id(self.scroll_id.clone())
             .on_scroll(|viewport| {
                 Event::Scrolled(viewport.absolute_offset().y, viewport.bounds().height)

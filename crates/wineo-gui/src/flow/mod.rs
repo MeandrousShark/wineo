@@ -5,11 +5,28 @@ pub(crate) mod new;
 mod prefix;
 mod steam;
 
-use iced::widget::{button, column, container, scrollable, text};
+use iced::widget::{column, container, scrollable, text};
 use iced::{Element, Fill, Task, keyboard};
 use wineo_core::paths::Paths;
 
 use crate::theme::Palette;
+use crate::ui::{ScrollStyle, list_group, list_row, list_row_text, secondary_button};
+
+/// One Add choice: its name, with what it does underneath.
+fn choice<'a>(
+    title: &'static str,
+    detail: &'static str,
+    palette: Palette,
+) -> iced::widget::Button<'a, Event> {
+    list_row(
+        column![
+            list_row_text(title),
+            text(detail).size(12).color(palette.muted)
+        ]
+        .spacing(2),
+        palette,
+    )
+}
 
 #[derive(Debug, Clone)]
 pub(crate) enum Action {
@@ -164,29 +181,38 @@ impl Page {
                 .map(|event| Event::SteamMessage(Box::new(event))),
             Self::Choose(_) => container(
                 column![
-                    button("Back").on_press(Event::Back),
+                    secondary_button("Back", palette).on_press(Event::Back),
                     text("Add to your library").size(28),
-                    scrollable(
-                        column![
-                            button("1 - New environment")
-                                .on_press(Event::New)
-                                .padding(12),
-                            text("An installer, an existing executable, or an empty environment"),
-                            button("2 - Import prefix")
-                                .on_press(Event::Prefix)
-                                .padding(12),
-                            text("Copy or register an existing Wine prefix or Proton compatdata"),
-                            button("3 - Import from Heroic")
-                                .on_press(Event::Heroic)
-                                .padding(12),
-                            text("Manually added Windows and native Linux games"),
-                            button("4 - Import from Steam")
-                                .on_press(Event::Steam)
-                                .padding(12),
-                            text("Installed and owned Steam games"),
-                        ]
-                        .spacing(16),
-                    ),
+                    scrollable(list_group(
+                        [
+                            choice(
+                                "1 - New environment",
+                                "An installer, an existing executable, or an empty environment",
+                                palette,
+                            )
+                            .on_press(Event::New),
+                            choice(
+                                "2 - Import prefix",
+                                "Copy or register an existing Wine prefix or Proton compatdata",
+                                palette,
+                            )
+                            .on_press(Event::Prefix),
+                            choice(
+                                "3 - Import from Heroic",
+                                "Manually added Windows and native Linux games",
+                                palette,
+                            )
+                            .on_press(Event::Heroic),
+                            choice(
+                                "4 - Import from Steam",
+                                "Installed and owned Steam games",
+                                palette,
+                            )
+                            .on_press(Event::Steam),
+                        ],
+                        palette,
+                    ),)
+                    .wineo_style(palette),
                 ]
                 .spacing(16),
             )
@@ -276,6 +302,35 @@ impl Page {
             Self::Heroic(page) => page.take_action(),
             Self::Steam(page) => page.take_action(),
             Self::Choose(_) => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use super::*;
+
+    #[test]
+    fn add_choices_fit_or_scroll_in_small_and_narrow_dialogs() {
+        use crate::layout_probe::probe;
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        let page = Page::choose(paths);
+        assert!(matches!(page, Page::Choose(_)));
+        // The smallest dialog the window allows, a small one, and the widest.
+        for (width, height) in [(280.0, 240.0), (360.0, 280.0), (680.0, 560.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            let mut view = page.view_with_key_availability(Palette::DARK, width, 0.0, false);
+            let probe = probe(&mut view, iced::Size::new(width, height));
+            assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
+            let spilled = probe.outside(inset);
+            assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
         }
     }
 }
