@@ -12,11 +12,13 @@ use anyhow::Context;
 use iced::Task;
 use iced::futures::channel::mpsc::{UnboundedSender, unbounded};
 use wineo_core::cancel::Token;
+use wineo_core::config::GlobalConfig;
 use wineo_core::installer::Output;
 use wineo_core::launch::{self, Overrides};
 use wineo_core::log::{Log, Tail};
 use wineo_core::paths::Paths;
 use wineo_core::runtime::{RunMode, Runtime, State};
+use wineo_core::steam_install::{self, Action};
 use wineo_core::winetricks::WinetricksEvent;
 
 use crate::Message;
@@ -150,6 +152,35 @@ pub(crate) fn stop(paths: Paths, name: String, force: bool) -> Task<Message> {
         },
         move |result| Message::StopFinished(finish_name, result),
     )
+}
+
+/// Asks Steam to install or uninstall a game, which opens Steam's own dialog.
+pub(crate) fn steam_request(paths: Paths, name: String, action: Action) -> Task<Message> {
+    let finish_name = name.clone();
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || steam_request_now(&paths, &name, action))
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|result| result)
+                .map_err(|error| PanelError::from_error(&error))
+        },
+        move |result| Message::SteamRequested(finish_name, result),
+    )
+}
+
+/// The line the panel shows once Steam has the request, like the CLI's.
+pub(crate) fn steam_request_now(
+    paths: &Paths,
+    name: &str,
+    action: Action,
+) -> anyhow::Result<String> {
+    let global = GlobalConfig::load(paths)?;
+    let outcome = steam_install::request(paths, &global, name, action)?;
+    Ok(outcome.note().unwrap_or_else(|| match action {
+        Action::Install => format!("Asked Steam to install {name}."),
+        Action::Uninstall => format!("Asked Steam to uninstall {name}."),
+    }))
 }
 
 pub(crate) fn stop_after(

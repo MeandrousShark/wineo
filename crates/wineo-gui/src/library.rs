@@ -119,6 +119,26 @@ impl Card {
             .is_some_and(|steam| matches!(steam.install.state, "not_installed" | "install_queued"))
     }
 
+    /// Install takes Play's place for a game Steam doesn't have on disk.
+    pub(super) fn installable(&self) -> bool {
+        self.not_installed()
+    }
+
+    /// Only games Steam has fully installed offer Uninstall.
+    pub(super) fn uninstallable(&self) -> bool {
+        self.steam
+            .as_ref()
+            .is_some_and(|steam| matches!(steam.install.state, "installed" | "updating"))
+    }
+
+    /// How far Steam's install is, for the poster's bar.
+    pub(super) fn install_progress(&self) -> Option<u8> {
+        self.steam
+            .as_ref()
+            .filter(|steam| steam.install.state == "installing")
+            .and_then(|steam| steam.install.progress)
+    }
+
     pub(super) fn install_allows_play(&self) -> bool {
         self.steam
             .as_ref()
@@ -150,6 +170,14 @@ impl Card {
             steam.install.display()
         } else {
             self.state.as_str()
+        }
+    }
+
+    /// `state_word` with an install's percent, for the panel.
+    pub(super) fn state_label(&self) -> String {
+        match &self.steam {
+            Some(steam) if self.state_word() == steam.install.display() => steam.install.label(),
+            _ => self.state_word().to_owned(),
         }
     }
     pub(super) fn dot(&self, palette: Palette) -> Color {
@@ -573,6 +601,104 @@ mod tests {
         assert!(!card.not_installed());
         assert!(!card.install_allows_play());
         assert!(card.install_warning().is_some());
+    }
+
+    #[test]
+    fn steam_install_progress_flows_from_the_manifest_to_the_card() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        let steamapps = root.path().join(".local/share/Steam/steamapps");
+        fs::create_dir_all(&steamapps).unwrap();
+        fs::create_dir_all(paths.environments_dir()).unwrap();
+        fs::write(
+            paths.environment_config("game"),
+            "kind = 'proxied'\nlauncher = 'steam'\napp_id = '123'\ntags = ['game']\n",
+        )
+        .unwrap();
+        let card = |flags: u32, bytes: &str| {
+            fs::write(
+                steamapps.join("appmanifest_123.acf"),
+                format!(
+                    r#""AppState" {{ "appid" "123" "name" "Game" "StateFlags" "{flags}" {bytes} }}"#
+                ),
+            )
+            .unwrap();
+            load_library(&paths).unwrap().remove(0)
+        };
+
+        let installing = card(1026, r#""BytesToDownload" "200" "BytesDownloaded" "50""#);
+        assert_eq!(installing.install_progress(), Some(25));
+        assert_eq!(installing.state_word(), "installing");
+        assert_eq!(installing.state_label(), "installing 25%");
+        assert!(!installing.install_allows_play());
+        assert!(!installing.installable());
+        assert!(!installing.uninstallable());
+
+        // Steam hasn't written totals yet, or the install is paused.
+        let unknown = card(1026, r#""BytesToDownload" "0" "BytesDownloaded" "0""#);
+        assert_eq!(unknown.install_progress(), None);
+        assert_eq!(unknown.state_label(), "installing");
+
+        let queued = card(2, "");
+        assert_eq!(queued.install_progress(), None);
+        assert_eq!(queued.state_label(), "install queued");
+        assert!(queued.installable());
+        assert!(!queued.uninstallable());
+
+        let installed = card(4, "");
+        assert_eq!(installed.install_progress(), None);
+        assert_eq!(installed.state_label(), "inactive");
+        assert!(!installed.installable());
+        assert!(installed.uninstallable());
+        assert!(card(1030, "").uninstallable());
+
+        fs::remove_file(steamapps.join("appmanifest_123.acf")).unwrap();
+        let missing = load_library(&paths).unwrap().remove(0);
+        assert_eq!(missing.state_label(), "not installed");
+        assert!(missing.installable());
+        assert!(!missing.uninstallable());
+    }
+
+    #[test]
+    fn load_library_never_reads_the_owned_list() {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+                .unwrap();
+        let steam = root.path().join(".local/share/Steam");
+        fs::create_dir_all(steam.join("steamapps")).unwrap();
+        fs::create_dir_all(steam.join("config")).unwrap();
+        let steam_id = 76_561_197_960_265_729_u64;
+        fs::write(
+            steam.join("config/loginusers.vdf"),
+            format!(r#""users" {{ "{steam_id}" {{ "MostRecent" "1" }} }}"#),
+        )
+        .unwrap();
+        // A saved key and a stale owned list naming the game. Loading the list
+        // would retitle the card from it, or fetch and rewrite the cache.
+        let key = wineo_core::steam::key::key_file(&paths);
+        fs::create_dir_all(key.parent().unwrap()).unwrap();
+        fs::write(&key, "SECRET\n").unwrap();
+        let cache = paths.steam_owned_cache(steam_id);
+        fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        let text = r#"{"fetched_at":1,"games":[{"app_id":"123","name":"From the owned list"}]}"#;
+        fs::write(&cache, text).unwrap();
+        let modified = fs::metadata(&cache).unwrap().modified().unwrap();
+        fs::create_dir_all(paths.environments_dir()).unwrap();
+        fs::write(
+            paths.environment_config("game"),
+            "kind = 'proxied'\nlauncher = 'steam'\napp_id = '123'\n",
+        )
+        .unwrap();
+
+        let card = load_library(&paths).unwrap().remove(0);
+        assert_eq!(card.display_title, "game");
+        assert_eq!(card.state_word(), "not installed");
+        assert_eq!(fs::read_to_string(&cache).unwrap(), text);
+        assert_eq!(fs::metadata(&cache).unwrap().modified().unwrap(), modified);
+        assert_eq!(fs::read_dir(cache.parent().unwrap()).unwrap().count(), 1);
     }
 
     #[test]
