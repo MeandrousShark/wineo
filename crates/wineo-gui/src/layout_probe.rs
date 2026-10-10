@@ -1,0 +1,220 @@
+//! Lays out real widget trees with the CPU renderer, so tests can check
+//! geometry without opening a window.
+
+use iced::advanced::Layout;
+use iced::advanced::layout::{self, Node};
+use iced::advanced::renderer::Headless;
+use iced::advanced::widget::operation::Scrollable;
+use iced::advanced::widget::{Id, Operation, Tree};
+use iced::{Element, Font, Pixels, Rectangle, Size, Vector};
+
+fn renderer() -> iced::Renderer {
+    iced::futures::executor::block_on(<iced::Renderer as Headless>::new(
+        Font::DEFAULT,
+        Pixels(14.0),
+        Some("tiny-skia"),
+    ))
+    .expect("tiny-skia renderer")
+}
+
+pub(crate) fn layout<M>(element: &mut Element<'_, M>, size: Size) -> Node {
+    probe(element, size).node
+}
+
+/// A laid out tree and the scrollable viewports in it.
+pub(crate) struct Probe {
+    pub(crate) node: Node,
+    /// Each scrollable's viewport and the bounds of the content inside it.
+    pub(crate) scrollables: Vec<(Rectangle, Rectangle)>,
+}
+
+pub(crate) fn probe<M>(element: &mut Element<'_, M>, size: Size) -> Probe {
+    let renderer = renderer();
+    let mut tree = Tree::new(element.as_widget());
+    let node = element.as_widget_mut().layout(
+        &mut tree,
+        &renderer,
+        &layout::Limits::new(Size::ZERO, size),
+    );
+    let mut finder = Scrollables(Vec::new());
+    element
+        .as_widget_mut()
+        .operate(&mut tree, Layout::new(&node), &renderer, &mut finder);
+    Probe {
+        node,
+        scrollables: finder.0,
+    }
+}
+
+/// Scrollable widgets report their viewport and content bounds only through
+/// operations, which is how scrolled content is told apart from overflow.
+struct Scrollables(Vec<(Rectangle, Rectangle)>);
+
+impl Operation for Scrollables {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        _id: Option<&Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        _translation: Vector,
+        _state: &mut dyn Scrollable,
+    ) {
+        self.0.push((bounds, content_bounds));
+    }
+}
+
+impl Probe {
+    /// Paths of descendants that spill out of their parent or `frame`, or
+    /// were squeezed to no width, and scrollable viewports with no room, which
+    /// carry an empty path. Only
+    /// a scrollable's own content may run past its viewport, so from there
+    /// down only the horizontal extent counts against `frame`.
+    pub(crate) fn outside(&self, frame: Rectangle) -> Vec<(Vec<usize>, Rectangle)> {
+        let mut found = Vec::new();
+        for (viewport, _) in &self.scrollables {
+            if viewport.width < 1.0 || viewport.height < 1.0 {
+                found.push((Vec::new(), *viewport));
+            }
+        }
+        self.walk(
+            Layout::new(&self.node),
+            &mut Vec::new(),
+            frame,
+            false,
+            &mut found,
+        );
+        found
+    }
+
+    fn scrolled_content(&self, parent: Rectangle, child: Rectangle) -> bool {
+        self.scrollables
+            .iter()
+            .any(|(viewport, content)| same(*viewport, parent) && same(*content, child))
+    }
+
+    fn walk(
+        &self,
+        layout: Layout<'_>,
+        path: &mut Vec<usize>,
+        frame: Rectangle,
+        scrolled: bool,
+        found: &mut Vec<(Vec<usize>, Rectangle)>,
+    ) {
+        let parent = layout.bounds();
+        for (index, child) in layout.children().enumerate() {
+            let bounds = child.bounds();
+            let content = self.scrolled_content(parent, bounds);
+            let scrolled = scrolled || content;
+            // A row too narrow for its controls squeezes the last to nothing.
+            // Empty text is a zero width leaf too, so only containers count.
+            let crushed =
+                bounds.width < 1.0 && bounds.height >= 1.0 && child.children().next().is_some();
+            let in_parent = if content {
+                bounds.x >= parent.x - 0.01
+                    && bounds.x + bounds.width <= parent.x + parent.width + 0.01
+            } else {
+                within(bounds, parent)
+            };
+            let in_frame = if scrolled {
+                bounds.x >= frame.x - 0.01
+                    && bounds.x + bounds.width <= frame.x + frame.width + 0.01
+            } else {
+                within(bounds, frame)
+            };
+            path.push(index);
+            if crushed || !in_parent || !in_frame {
+                found.push((path.clone(), bounds));
+            }
+            self.walk(child, path, frame, scrolled, found);
+            path.pop();
+        }
+    }
+}
+
+fn same(a: Rectangle, b: Rectangle) -> bool {
+    (a.x - b.x).abs() < 0.01
+        && (a.y - b.y).abs() < 0.01
+        && (a.width - b.width).abs() < 0.01
+        && (a.height - b.height).abs() < 0.01
+}
+
+/// The absolute bounds of `node`'s child at each index of `path` in turn.
+pub(crate) fn bounds_at(node: &Node, path: &[usize]) -> Rectangle {
+    let mut layout = Layout::new(node);
+    for index in path {
+        layout = layout
+            .children()
+            .nth(*index)
+            .unwrap_or_else(|| panic!("no child {index} on the path {path:?}"));
+    }
+    layout.bounds()
+}
+
+/// Whether `inner` lies within `outer`, allowing for float rounding.
+pub(crate) fn within(inner: Rectangle, outer: Rectangle) -> bool {
+    inner.x >= outer.x - 0.01
+        && inner.y >= outer.y - 0.01
+        && inner.x + inner.width <= outer.x + outer.width + 0.01
+        && inner.y + inner.height <= outer.y + outer.height + 0.01
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced::widget::{Space, column, container, row, scrollable};
+
+    fn frame() -> Rectangle {
+        Rectangle::with_size(Size::new(200.0, 200.0))
+    }
+
+    #[test]
+    fn scrolled_content_may_run_past_its_viewport() {
+        let mut view: Element<'_, ()> = scrollable(Space::new().width(100).height(1000))
+            .height(200)
+            .into();
+        let probe = probe(&mut view, frame().size());
+        assert_eq!(probe.scrollables.len(), 1);
+        assert!(probe.outside(frame()).is_empty());
+    }
+
+    #[test]
+    fn overflow_outside_a_scrollable_is_reported() {
+        // Most layouts clamp children to their limits, but a wrapping row
+        // grows past them, as the import action rows did in a short dialog.
+        let mut view: Element<'_, ()> = column![
+            container(
+                row![
+                    Space::new().width(150).height(60),
+                    Space::new().width(150).height(60)
+                ]
+                .wrap()
+            )
+            .height(80),
+            Space::new().width(50).height(50),
+        ]
+        .into();
+        let probe = probe(&mut view, frame().size());
+        assert!(!probe.outside(frame()).is_empty());
+    }
+
+    #[test]
+    fn a_collapsed_viewport_is_reported() {
+        let mut view: Element<'_, ()> = column![
+            Space::new().width(50).height(200),
+            scrollable(Space::new().width(50).height(400)),
+        ]
+        .into();
+        let probe = probe(&mut view, frame().size());
+        assert_eq!(probe.scrollables.len(), 1);
+        assert!(
+            probe
+                .outside(frame())
+                .iter()
+                .any(|(_, bounds)| bounds.height < 1.0)
+        );
+    }
+}

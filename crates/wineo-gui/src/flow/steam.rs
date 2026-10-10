@@ -152,6 +152,9 @@ pub(crate) struct Page {
     owned_generation: u64,
     chosen: BTreeSet<String>,
     focus: Option<usize>,
+    /// Whether `focus` came from the keyboard. A click moves focus too, but
+    /// like CSS :focus-visible only keyboard focus draws the ring.
+    focus_visible: bool,
     posters: HashMap<PosterKey, Option<image::Handle>>,
     name: String,
     review: Option<Review>,
@@ -176,6 +179,7 @@ impl Page {
             owned_generation: 0,
             chosen: BTreeSet::new(),
             focus: None,
+            focus_visible: false,
             posters: HashMap::new(),
             name: String::new(),
             review: None,
@@ -262,6 +266,7 @@ impl Page {
         self.listing = None;
         self.chosen.clear();
         self.focus = None;
+        self.focus_visible = false;
         self.posters.clear();
         self.poster_generation = self.poster_generation.wrapping_add(1);
         self.review = None;
@@ -446,7 +451,11 @@ impl Page {
 
     pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
         match event {
-            Event::Back => self.back(),
+            Event::Back => {
+                // The Back button is a click, so the grid it returns to shows no ring.
+                self.focus_visible = false;
+                self.back()
+            }
             Event::Toggle(index) if self.step == Step::Games && !self.waiting() => {
                 if let Some(game) = self
                     .listing
@@ -457,6 +466,7 @@ impl Page {
                         self.chosen.remove(&game.app_id);
                     }
                     self.focus = Some(index);
+                    self.focus_visible = false;
                 }
                 Task::none()
             }
@@ -591,11 +601,13 @@ impl Page {
                 named @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
             ) => {
                 self.focus = heroic::move_focus(self.focus, named, columns, count);
+                self.focus_visible = true;
                 Some(self.reveal_focus(columns, count))
             }
             Key::Named(Named::Space) | Key::Character(" ") => {
                 if let Some(index) = self.focus {
                     let _ = self.update(Event::Toggle(index));
+                    self.focus_visible = true;
                 }
                 Some(Task::none())
             }
@@ -603,6 +615,10 @@ impl Page {
             Key::Named(Named::Enter) if !modifiers.control() => Some(self.import_selected()),
             _ => None,
         }
+    }
+
+    fn focus_ring(&self, index: usize) -> bool {
+        self.focus_visible && self.focus == Some(index)
     }
 
     fn reveal_focus(&self, columns: usize, count: usize) -> Task<Event> {
@@ -647,7 +663,7 @@ impl Page {
                         reason: None,
                         note: game.note.map(str::to_owned),
                         chosen: self.chosen.contains(&game.app_id),
-                        focused: self.focus == Some(index),
+                        focus_ring: self.focus_ring(index),
                         dimmed: !game.installed,
                     },
                     palette,
@@ -752,7 +768,10 @@ impl Page {
                                 refresh,
                             ]
                             .spacing(12)
-                            .align_y(Center),
+                            .align_y(Center)
+                            // A narrow dialog would squeeze the last button away.
+                            .wrap()
+                            .vertical_spacing(8),
                         );
                     }
                 }
@@ -850,28 +869,18 @@ impl Page {
         let back = button("< Back")
             .on_press_maybe((!self.busy() && self.step != Step::Finished).then_some(Event::Back));
         let content: Element<'_, Event> = match (&self.listing, self.step) {
-            (Some(listing), Step::Games) if !listing.games.is_empty() => container(
+            (Some(listing), Step::Games) if !listing.games.is_empty() => {
                 column![body, self.grid(listing, palette, width)]
                     .spacing(14)
-                    .height(Fill),
-            )
-            .max_width(780)
-            .width(Fill)
-            .height(Fill)
-            .padding(24)
-            .center_x(Fill)
-            .into(),
-            _ => scrollable(
-                container(body)
-                    .max_width(780)
-                    .width(Fill)
-                    .padding(24)
-                    .center_x(Fill),
-            )
-            .height(Fill)
-            .into(),
+                    .height(Fill)
+                    .into()
+            }
+            _ => heroic::scroll_body(body, None),
         };
-        let mut page = column![row![back], content].spacing(12);
+        let mut page = column![row![back], content]
+            .spacing(12)
+            .max_width(heroic::PAGE_MAX_WIDTH)
+            .height(Fill);
         let footer: Option<Element<'_, Event>> = match self.step {
             Step::Details => Some(button("Review").on_press(Event::Review).into()),
             Step::Review => self.review.as_ref().map(|review| {
@@ -901,10 +910,10 @@ impl Page {
             page = page.push(container(footer).padding(12).width(Fill).style(move |_| {
                 container::Style::default()
                     .background(palette.surface)
-                    .border(border::rounded(1).width(1).color(palette.border))
+                    .border(border::rounded(8).width(1).color(palette.border))
             }));
         }
-        container(page).width(Fill).height(Fill).into()
+        heroic::page_frame(page)
     }
 }
 
@@ -1296,6 +1305,144 @@ mod tests {
         assert!(paths.environment_config("alpha").is_file());
         assert!(paths.environment_config("beta").is_file());
         assert!(paths.art_dir("alpha").join("grid.png").is_file());
+    }
+
+    fn listed(count: usize) -> Listing {
+        Listing {
+            games: (0..count)
+                .map(|index| Candidate {
+                    app_id: index.to_string(),
+                    title: format!("Game {index}"),
+                    size: 1,
+                    note: None,
+                    installed: true,
+                    poster: None,
+                })
+                .collect(),
+            ..Listing::default()
+        }
+    }
+
+    #[test]
+    fn every_step_sits_inside_the_dialog_padding() {
+        use crate::layout_probe::{bounds_at, probe, within};
+        let temp = TempDir::new().unwrap();
+        let (mut page, _) = Page::new(paths(temp.path(), false));
+        page.status.clear();
+        let mut listing = listed(40);
+        listing.games[0].title =
+            "Grand Theft Auto IV: The Complete Edition and Episodes from Liberty City".to_owned();
+        listing.games[3].installed = false;
+        listing.games[3].note = Some("Updating in Steam");
+        listing.issues = vec!["A Steam library folder couldn't be read.".to_owned()];
+        page.listing = Some(listing);
+        page.chosen = ["0", "3", "7"].map(str::to_owned).into();
+        page.name = "grand-theft-auto-iv-the-complete-edition".to_owned();
+        let failure = Failure {
+            app_id: "12210".to_owned(),
+            name: "grand-theft-auto-iv-the-complete-edition".to_owned(),
+            reason:
+                "Steam no longer lists the install folder for this game, so it can't be imported"
+                    .to_owned(),
+        };
+        page.review = Some(Review {
+            ready: Vec::new(),
+            already: vec!["portal-2".to_owned()],
+            failures: vec![failure.clone()],
+        });
+        page.report = Some(Report {
+            done: vec!["half-life-2".to_owned()],
+            total: 3,
+            already: vec!["portal-2".to_owned()],
+            failures: vec![failure],
+            warnings: vec!["Desktop entry: the menu folder couldn't be written".to_owned()],
+            canceled: true,
+        });
+        // The smallest dialog the window allows, a small one, and the widest.
+        for (width, height) in [(280.0, 240.0), (360.0, 280.0), (900.0, 720.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            for step in [
+                Step::Games,
+                Step::Details,
+                Step::Review,
+                Step::Working,
+                Step::Finished,
+            ] {
+                page.step = step;
+                page.token = (step == Step::Working).then(Token::new);
+                let mut view = page.view(Palette::DARK, width, 0.0);
+                let probe = probe(&mut view, iced::Size::new(width, height));
+                let node = &probe.node;
+                let spilled = probe.outside(inset);
+                assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
+                if !heroic::grid_too_short(step == Step::Games, height) {
+                    assert!(
+                        spilled.is_empty(),
+                        "{step:?} at {width}x{height}: {spilled:?}"
+                    );
+                }
+                let back = bounds_at(node, &[0, 0, 0]);
+                assert!(within(back, inset), "{step:?}: {back:?}");
+                if step != Step::Games {
+                    let footer = bounds_at(node, &[0, 2, 0]);
+                    assert!(within(footer, inset), "{step:?}: {footer:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_keyboard_focus_draws_the_ring() {
+        let temp = TempDir::new().unwrap();
+        let (mut page, _) = Page::new(paths(temp.path(), false));
+        page.status.clear();
+        page.listing = Some(listed(3));
+        let none = keyboard::Modifiers::empty();
+        let _ = page.update(Event::Toggle(1));
+        assert_eq!(page.focus, Some(1));
+        assert!(!page.focus_ring(1));
+        let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
+        assert!(page.focus_ring(2));
+        let _ = page.update(Event::Toggle(0));
+        assert!(!page.focus_ring(0));
+        let _ = page.key(&Key::Named(Named::Space), none, 900.0);
+        assert!(page.focus_ring(0));
+    }
+
+    #[test]
+    fn mouse_back_and_reopening_show_no_ring_until_a_key() {
+        let temp = TempDir::new().unwrap();
+        let paths = paths(temp.path(), false);
+        let none = keyboard::Modifiers::empty();
+        let (mut page, _) = Page::new(paths.clone());
+        page.status.clear();
+        page.listing = Some(listed(3));
+        let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
+        assert!(page.focus_ring(0));
+        page.step = Step::Details;
+        let _ = page.update(Event::Back);
+        assert_eq!(page.step, Step::Games);
+        assert!(!page.focus_ring(0));
+        let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
+        assert!(page.focus_ring(1));
+
+        // Leaving from the grid closes the page, and Add opens a fresh one.
+        let mut flow = super::super::Page::Choose(paths.clone());
+        let _ = flow.update(super::super::Event::Steam);
+        let super::super::Page::Steam(reopened) = &mut flow else {
+            panic!("expected the Steam page");
+        };
+        reopened.listing = Some(listed(3));
+        reopened.status.clear();
+        assert!((0..3).all(|index| !reopened.focus_ring(index)));
+        let _ = flow.key(&Key::Named(Named::ArrowDown), none, 900.0);
+        let super::super::Page::Steam(reopened) = &flow else {
+            unreachable!()
+        };
+        assert!(reopened.focus_ring(0));
     }
 
     #[test]

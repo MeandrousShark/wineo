@@ -160,6 +160,31 @@ pub(crate) fn columns_for_viewport(width: f32, open: bool) -> usize {
     columns(width - if open { DOCK_WIDTH } else { 0.0 })
 }
 
+/// The cards whose rows overlap `top..bottom`, with rows stacked the way
+/// `slots` stacks them: each as tall as its tallest card.
+pub(crate) fn cards_between(
+    heights: &[f32],
+    columns: usize,
+    top: f32,
+    bottom: f32,
+) -> std::ops::Range<usize> {
+    let columns = columns.max(1);
+    let (mut first, mut last) = (None, 0);
+    let mut y = PADDING;
+    for (row, cards) in heights.chunks(columns).enumerate() {
+        let height = cards.iter().copied().fold(0.0, f32::max);
+        if y > bottom {
+            break;
+        }
+        if y + height >= top {
+            first.get_or_insert(row * columns);
+            last = row * columns + cards.len();
+        }
+        y += height + GAP;
+    }
+    first.map_or(0..0, |first| first..last)
+}
+
 fn slots(sizes: &[Size], columns: usize) -> (Vec<Point>, f32) {
     let mut result = Vec::with_capacity(sizes.len());
     let mut y = PADDING;

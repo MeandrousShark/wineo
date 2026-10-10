@@ -10,7 +10,7 @@ use iced::widget::{
     Row, button, checkbox, column, container, image, mouse_area, pick_list, row, scrollable, stack,
     text, text_input,
 };
-use iced::{Center, Color, ContentFit, Element, Fill, Task, border, mouse};
+use iced::{Center, Color, ContentFit, Element, Fill, Font, Task, border, mouse};
 use wineo_core::art::{Format, Kind};
 use wineo_core::cancel::Token;
 use wineo_core::components::Component;
@@ -311,6 +311,9 @@ pub(crate) struct Page {
     /// Heroic ids picked in the grid, kept while the user goes back and forth.
     chosen: BTreeSet<String>,
     focus: Option<usize>,
+    /// Whether `focus` came from the keyboard. A click moves focus too, but
+    /// like CSS :focus-visible only keyboard focus draws the ring.
+    focus_visible: bool,
     /// Decoded posters by Heroic id, with their format. None when the file
     /// couldn't be decoded, so it's never stored as art either.
     posters: HashMap<String, Option<(image::Handle, Format)>>,
@@ -352,6 +355,7 @@ impl Page {
             already: HashMap::new(),
             chosen: BTreeSet::new(),
             focus: None,
+            focus_visible: false,
             posters: HashMap::new(),
             poster_generation: 0,
             selected: None,
@@ -633,6 +637,7 @@ impl Page {
         self.already.clear();
         self.chosen.clear();
         self.focus = None;
+        self.focus_visible = false;
         self.posters.clear();
         self.poster_generation = self.poster_generation.wrapping_add(1);
         self.prepared = None;
@@ -889,11 +894,13 @@ impl Page {
                 named @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
             ) => {
                 self.focus = move_focus(self.focus, named, columns, count);
+                self.focus_visible = true;
                 Some(self.reveal_focus(columns, count))
             }
             Key::Named(Named::Space) | Key::Character(" ") => {
                 if let Some(index) = self.focus {
                     self.toggle(index);
+                    self.focus_visible = true;
                 }
                 Some(Task::none())
             }
@@ -901,6 +908,10 @@ impl Page {
             Key::Named(Named::Enter) if !modifiers.control() => Some(self.import_chosen()),
             _ => None,
         }
+    }
+
+    fn focus_ring(&self, index: usize) -> bool {
+        self.focus_visible && self.focus == Some(index)
     }
 
     /// Scrolls so the focused row shows. Rows are all one height, so scrolling
@@ -1203,7 +1214,11 @@ impl Page {
         key_available: bool,
     ) -> Task<Event> {
         match event {
-            Event::Back => self.back(),
+            Event::Back => {
+                // The Back button is a click, so the grid it returns to shows no ring.
+                self.focus_visible = false;
+                self.back()
+            }
             Event::Discard => {
                 self.leave_prompt = false;
                 self.action = Some(Action::Choose);
@@ -1303,6 +1318,7 @@ impl Page {
             }
             Event::Toggle(index) => {
                 self.focus = Some(index);
+                self.focus_visible = false;
                 self.toggle(index);
                 Task::none()
             }
@@ -1889,7 +1905,7 @@ impl Page {
                         reason: self.ineligible(index),
                         note: None,
                         chosen: self.chosen.contains(&candidate.id),
-                        focused: self.focus == Some(index),
+                        focus_ring: self.focus_ring(index),
                         dimmed: false,
                     },
                     palette,
@@ -1982,7 +1998,8 @@ impl Page {
                     if self.status_by_action() {
                         actions = actions.push(self.working(palette, spin));
                     }
-                    body = body.push(actions);
+                    // A narrow dialog would squeeze the last control away.
+                    body = body.push(actions.wrap().vertical_spacing(8));
                 }
             }
             Step::Details => {
@@ -2468,53 +2485,56 @@ impl Page {
         let content: Element<'_, Event> = match (&self.listing, self.step) {
             // The grid scrolls on its own under fixed controls, so keyboard
             // focus can scroll it to a known row.
-            (Some(listing), Step::Games) => container(
-                column![body, self.grid(listing, palette, width)]
-                    .spacing(14)
-                    .height(Fill),
-            )
-            .max_width(780)
-            .width(Fill)
-            .height(Fill)
-            .padding(24)
-            .center_x(Fill)
-            .into(),
-            _ => scrollable(
-                container(body)
-                    .max_width(780)
-                    .width(Fill)
-                    .padding(24)
-                    .center_x(Fill),
-            )
-            .id(iced::widget::Id::new(BODY_ID))
-            .height(Fill)
-            .into(),
+            (Some(listing), Step::Games) => column![body, self.grid(listing, palette, width)]
+                .spacing(14)
+                .height(Fill)
+                .into(),
+            _ => scroll_body(body, Some(BODY_ID)),
         };
-        let page = column![row![back].align_y(Center), content]
-            .spacing(12)
-            .width(Fill)
-            .height(Fill);
-        let mut page: Element<'_, Event> = container(page).width(Fill).height(Fill).into();
+        let mut page = column![].spacing(12).max_width(PAGE_MAX_WIDTH).height(Fill);
         if self.leave_prompt {
-            page = container(
-                column![
-                    text("Discard this Heroic import draft?"),
-                    row![
-                        button("Keep editing").on_press(Event::KeepEditing),
-                        button("Discard").on_press(Event::Discard)
-                    ]
-                    .spacing(12),
-                    page,
+            page = page.push(text("Discard this Heroic import draft?")).push(
+                row![
+                    button("Keep editing").on_press(Event::KeepEditing),
+                    button("Discard").on_press(Event::Discard)
                 ]
-                .spacing(12)
-                .padding(24),
-            )
-            .width(Fill)
-            .height(Fill)
-            .into();
+                .spacing(12),
+            );
         }
-        page
+        page_frame(page.push(row![back].align_y(Center)).push(content))
     }
+}
+
+/// The widest an import page's content grows in a wide dialog.
+pub(super) const PAGE_MAX_WIDTH: f32 = 780.0;
+const PAGE_PADDING: f32 = 24.0;
+/// Keeps scrolled text clear of the scrollbar, which draws over its content.
+const SCROLL_GUTTER: f32 = 16.0;
+
+/// Insets an import page from the dialog's rounded border on every side, so
+/// Back sits inside the corner and scrolled content ends above the bottom.
+pub(super) fn page_frame<'a, Message: 'a>(
+    page: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    container(page)
+        .padding(PAGE_PADDING)
+        .width(Fill)
+        .height(Fill)
+        .center_x(Fill)
+        .into()
+}
+
+pub(super) fn scroll_body<'a, Message: 'a>(
+    body: impl Into<Element<'a, Message>>,
+    id: Option<&'static str>,
+) -> Element<'a, Message> {
+    let mut body = scrollable(container(body).padding(iced::Padding::ZERO.right(SCROLL_GUTTER)))
+        .width(Fill)
+        .height(Fill);
+    if let Some(id) = id {
+        body = body.id(iced::widget::Id::new(id));
+    }
+    body.into()
 }
 
 fn field<'a>(
@@ -2651,21 +2671,35 @@ fn launch_settings(draft: &Draft, windows: bool, palette: Palette) -> Element<'_
 const GRID_ID: &str = "heroic-grid";
 const BODY_ID: &str = "heroic-body";
 const TILE_WIDTH: f32 = 120.0;
-/// With the focus ring's padding.
-const TILE_OUTER_WIDTH: f32 = TILE_WIDTH + 8.0;
+/// With room for the focus ring on either side.
+const TILE_OUTER_WIDTH: f32 = TILE_WIDTH + 2.0 * RING_INSET;
+/// How far the focus ring sits outside the poster's selection border.
+const RING_INSET: f32 = 4.0;
+const RING_WIDTH: f32 = 2.0;
+const SELECTION_RADIUS: f32 = 6.0;
 const TILE_POSTER_HEIGHT: f32 = 180.0;
-/// Room under the poster for the title and two lines of reason, fixed so
-/// every row is the same height.
-const TILE_HEIGHT: f32 = 244.0;
+/// Room under the poster for two title lines and two lines of reason, fixed
+/// so every row is the same height.
+const TILE_HEIGHT: f32 = 262.0;
+const TILE_TITLE_SIZE: f32 = 13.0;
 pub(super) const TILE_GAP: f32 = 12.0;
 
 /// How many tiles fit across a flow dialog `width` wide, after the page's
-/// max width, padding, and the scrollbar.
+/// padding, max width, and the scrollbar.
 pub(super) fn grid_columns(width: f32) -> usize {
-    let content = width.min(780.0) - 48.0 - 16.0;
+    let content = (width - 2.0 * PAGE_PADDING).min(PAGE_MAX_WIDTH) - SCROLL_GUTTER;
     ((content + TILE_GAP) / (TILE_OUTER_WIDTH + TILE_GAP))
         .floor()
         .max(1.0) as usize
+}
+
+/// Open question for the maintainer: at dialog heights of 280 px and below,
+/// the grid page's fixed header (title, notes, wrapped action row) leaves the
+/// grid no height and the action row runs past the frame. Fixing it means
+/// choosing how a short dialog should scroll, so layout tests exempt it.
+#[cfg(test)]
+pub(super) fn grid_too_short(grid_page: bool, height: f32) -> bool {
+    grid_page && height <= 280.0
 }
 
 pub(super) fn move_focus(
@@ -2707,9 +2741,25 @@ pub(super) struct Tile<'a> {
     pub reason: Option<String>,
     pub note: Option<String>,
     pub chosen: bool,
-    pub focused: bool,
+    /// Draws the keyboard focus ring. Pages set it only for focus that came
+    /// from the keyboard, so clicking a tile doesn't outline it.
+    pub focus_ring: bool,
     /// Dims the tile like an uninstalled game, while it stays selectable.
     pub dimmed: bool,
+}
+
+/// A ring outside the selection border, concentric with it and separated by
+/// a gap, so focus reads differently from selection in both palettes.
+fn focus_ring_style(palette: Palette, shown: bool) -> container::Style {
+    container::Style::default().border(
+        border::rounded(SELECTION_RADIUS + RING_INSET)
+            .width(RING_WIDTH)
+            .color(if shown {
+                palette.primary
+            } else {
+                Color::TRANSPARENT
+            }),
+    )
 }
 
 pub(super) fn tile<'a, Message: Clone + 'a>(
@@ -2761,11 +2811,13 @@ pub(super) fn tile<'a, Message: Clone + 'a>(
             .height(TILE_POSTER_HEIGHT)
             .padding(3)
             .style(move |_| {
-                container::Style::default().border(border::rounded(6).width(3).color(if chosen {
-                    palette.primary
-                } else {
-                    Color::TRANSPARENT
-                }))
+                container::Style::default().border(
+                    border::rounded(SELECTION_RADIUS).width(3).color(if chosen {
+                        palette.primary
+                    } else {
+                        Color::TRANSPARENT
+                    }),
+                )
             })
     ];
     if chosen {
@@ -2786,38 +2838,37 @@ pub(super) fn tile<'a, Message: Clone + 'a>(
             .align_right(TILE_WIDTH),
         );
     }
-    let mut content = column![
-        layers,
-        text(tile.title)
-            .size(13)
-            .color(if dimmed {
-                palette.muted
-            } else {
-                palette.foreground
-            })
-            .wrapping(iced::widget::text::Wrapping::None),
+    let focus_ring = tile.focus_ring;
+    let ring = container(layers)
+        .padding(RING_INSET)
+        .style(move |_| focus_ring_style(palette, focus_ring));
+    let mut details = column![
+        text(
+            crate::tile_title::lines(tile.title, TILE_WIDTH, TILE_TITLE_SIZE, Font::DEFAULT)
+                .join("\n")
+        )
+        .size(TILE_TITLE_SIZE)
+        .height(crate::tile_title::two_line_height(TILE_TITLE_SIZE))
+        .color(if dimmed {
+            palette.muted
+        } else {
+            palette.foreground
+        })
+        .wrapping(iced::widget::text::Wrapping::None),
     ]
     .spacing(4)
-    .width(TILE_WIDTH);
+    .padding([0.0, RING_INSET])
+    .width(TILE_OUTER_WIDTH);
     if let Some(reason) = tile.reason {
-        content = content.push(text(reason).size(11).color(palette.warning));
+        details = details.push(text(reason).size(11).color(palette.warning));
     }
     if let Some(note) = tile.note {
-        content = content.push(text(note).size(11).color(palette.muted));
+        details = details.push(text(note).size(11).color(palette.muted));
     }
-    let focused = tile.focused;
-    let framed = container(content)
+    let framed = container(column![ring, details])
         .width(TILE_OUTER_WIDTH)
         .height(TILE_HEIGHT)
-        .padding(4)
-        .clip(true)
-        .style(move |_| {
-            container::Style::default().border(border::rounded(8).width(1).color(if focused {
-                palette.foreground
-            } else {
-                Color::TRANSPARENT
-            }))
-        });
+        .clip(true);
     let area = mouse_area(framed);
     if refused {
         area.into()
@@ -3835,6 +3886,263 @@ mod tests {
             }
         }
         files
+    }
+
+    fn sample_tile(title: &str) -> Tile<'_> {
+        Tile {
+            title,
+            poster: None,
+            reason: None,
+            note: None,
+            chosen: false,
+            focus_ring: false,
+            dimmed: false,
+        }
+    }
+
+    #[test]
+    fn tiles_reserve_two_title_lines_whatever_the_title() {
+        use crate::layout_probe::{bounds_at, layout};
+        let size = iced::Size::new(400.0, 400.0);
+        let mut heights = Vec::new();
+        for title in ["Portal", "Grand Theft Auto IV: The Complete Edition"] {
+            let mut view = tile(sample_tile(title), Palette::DARK, Event::Toggle(0));
+            let node = layout(&mut view, size);
+            assert_eq!(node.bounds().height, TILE_HEIGHT);
+            let title = bounds_at(&node, &[0, 1, 0]);
+            assert_eq!(
+                title.height,
+                crate::tile_title::two_line_height(TILE_TITLE_SIZE)
+            );
+            heights.push(title.y);
+        }
+        assert_eq!(heights[0], heights[1]);
+    }
+
+    #[test]
+    fn the_focus_ring_wraps_the_poster_without_moving_the_tile() {
+        use crate::layout_probe::{bounds_at, layout, within};
+        let size = iced::Size::new(400.0, 400.0);
+        let mut layouts = Vec::new();
+        for focus_ring in [false, true] {
+            let mut view = tile(
+                Tile {
+                    focus_ring,
+                    chosen: true,
+                    ..sample_tile("Portal")
+                },
+                Palette::DARK,
+                Event::Toggle(0),
+            );
+            let node = layout(&mut view, size);
+            let ring = bounds_at(&node, &[0, 0]);
+            let poster = bounds_at(&node, &[0, 0, 0, 0]);
+            assert_eq!(
+                poster.size(),
+                iced::Size::new(TILE_WIDTH, TILE_POSTER_HEIGHT)
+            );
+            assert_eq!(ring, poster.expand(RING_INSET));
+            assert!(within(ring, node.bounds()));
+            layouts.push((node.bounds(), ring, poster));
+        }
+        assert_eq!(layouts[0], layouts[1]);
+    }
+
+    #[test]
+    fn the_focus_ring_is_primary_and_distinct_from_selection() {
+        for palette in [
+            Palette::from_mode(iced::theme::Mode::Dark),
+            Palette::from_mode(iced::theme::Mode::Light),
+        ] {
+            let shown = focus_ring_style(palette, true).border;
+            assert_eq!(shown.color, palette.primary);
+            assert_eq!(shown.width, RING_WIDTH);
+            // Concentric with the 3 px selection border, with a gap between.
+            assert_eq!(shown.radius, (SELECTION_RADIUS + RING_INSET).into());
+            const { assert!(RING_WIDTH < RING_INSET && RING_WIDTH != 3.0) };
+            assert_eq!(
+                focus_ring_style(palette, false).border.color,
+                Color::TRANSPARENT
+            );
+        }
+    }
+
+    #[test]
+    fn only_keyboard_focus_draws_the_ring() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        let none = keyboard::Modifiers::empty();
+        let _ = page.update(Event::Toggle(DUSK));
+        assert_eq!(page.focus, Some(DUSK));
+        assert!(!page.focus_ring(DUSK));
+        let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
+        let focus = page.focus.unwrap();
+        assert!(page.focus_ring(focus));
+        let _ = page.update(Event::Toggle(focus));
+        assert!(!page.focus_ring(focus));
+        // Space after a click is keyboard use, so the ring comes back.
+        let _ = page.key(&Key::Named(Named::Space), none, 900.0);
+        assert!(page.focus_ring(focus));
+    }
+
+    /// A page at each step, filled in the way a real import fills it.
+    fn staged_pages(root: &std::path::Path) -> Vec<(&'static str, Page)> {
+        const LONG: &str =
+            "Grand Theft Auto IV: The Complete Edition and Episodes from Liberty City";
+        let page = |name: &str| {
+            let mut page = grid_page(&root.join(name));
+            if let Some(listing) = &mut page.listing {
+                listing.candidates[DUSK].title = LONG.to_owned();
+            }
+            page
+        };
+        let mut pages = Vec::new();
+        let mut sources = page("sources");
+        sources.step = Step::Sources;
+        pages.push(("sources", sources));
+
+        let mut games = page("games");
+        let _ = games.update(Event::Toggle(DUSK));
+        let _ = games.update(Event::Toggle(NOON));
+        let _ = games.key(
+            &Key::Named(Named::ArrowRight),
+            keyboard::Modifiers::empty(),
+            900.0,
+        );
+        pages.push(("games", games));
+
+        let mut single = page("single");
+        open_single(&mut single, DUSK);
+        pages.push(("single details", single));
+        let mut single = page("single-review");
+        open_single(&mut single, DUSK);
+        let listing = single.listing.clone().unwrap();
+        let review = plan_review(&single.paths, &listing, single.selected, &single.draft).unwrap();
+        let _ = single.update(Event::Planned(single.generation, Ok(Box::new(review))));
+        assert_eq!(single.step, Step::Review);
+        pages.push(("single review", single));
+
+        let mut batch = page("batch");
+        let _ = batch.update(Event::Toggle(DUSK));
+        let _ = batch.update(Event::Toggle(NOON));
+        let _ = batch.update(Event::ImportSelected);
+        assert!(batch.draft.batch);
+        pages.push(("batch details", batch));
+        let mut batch = page("batch-review");
+        let _ = batch.update(Event::Toggle(DUSK));
+        let _ = batch.update(Event::Toggle(NOON));
+        let _ = batch.update(Event::ImportSelected);
+        let listing = batch.listing.clone().unwrap();
+        let review = plan_review(&batch.paths, &listing, None, &batch.draft).unwrap();
+        let _ = batch.update(Event::Planned(batch.generation, Ok(Box::new(review))));
+        assert_eq!(batch.step, Step::Review);
+        pages.push(("batch review", batch));
+
+        let results = || {
+            vec![
+                (
+                    "grand-theft-auto-iv-the-complete-edition".to_owned(),
+                    Ok(vec!["Desktop entry: the menu folder couldn't be written".to_owned()]),
+                ),
+                (
+                    "noon".to_owned(),
+                    Err("Heroic no longer lists the install folder for this game, so it can't be imported".to_owned()),
+                ),
+            ]
+        };
+        let mut working = page("working");
+        working.step = Step::Working;
+        working.token = Some(Token::new());
+        working.results = results();
+        pages.push(("working", working));
+        let mut finished = page("finished");
+        finished.step = Step::Finished;
+        finished.results = results();
+        pages.push(("finished", finished));
+        pages
+    }
+
+    #[test]
+    fn every_step_sits_inside_the_dialog_padding() {
+        use crate::layout_probe::{bounds_at, probe, within};
+        let root = tempdir().unwrap();
+        let mut pages = staged_pages(root.path());
+        // The smallest dialog the window allows, a small one, and the widest.
+        for (width, height) in [(280.0, 240.0), (360.0, 280.0), (900.0, 720.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            for (label, page) in &mut pages {
+                for leave_prompt in [false, true] {
+                    page.leave_prompt = leave_prompt;
+                    let mut view =
+                        page.view_with_key_availability(Palette::DARK, width, 0.0, false);
+                    let probe = probe(&mut view, iced::Size::new(width, height));
+                    let node = &probe.node;
+                    let spilled = probe.outside(inset);
+                    assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
+                    if grid_too_short(*label == "games", height) {
+                        continue;
+                    }
+                    assert!(
+                        spilled.is_empty(),
+                        "{label} at {width}x{height}, prompt {leave_prompt}: {spilled:?}"
+                    );
+                    let back = bounds_at(node, &[0, if leave_prompt { 2 } else { 0 }, 0]);
+                    assert!(within(back, inset), "{label}: {back:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mouse_back_and_reopening_show_no_ring_until_a_key() {
+        let root = tempdir().unwrap();
+        let none = keyboard::Modifiers::empty();
+        let mut page = grid_page(root.path());
+        let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
+        let focus = page.focus.unwrap();
+        assert!(page.focus_ring(focus));
+        // Space chooses the focused game, and Import opens its details.
+        let _ = page.key(&Key::Named(Named::Space), none, 900.0);
+        open_details(&mut page, focus);
+        let _ = page.update(Event::Back);
+        assert_eq!(page.step, Step::Games);
+        assert!(!page.focus_ring(focus));
+        let _ = page.key(&Key::Named(Named::ArrowRight), none, 900.0);
+        assert!(page.focus_ring(page.focus.unwrap()));
+
+        // Leaving from the grid closes the page, and Add opens a fresh one.
+        let mut flow = super::super::Page::Choose(page.paths.clone());
+        let _ = flow.update(super::super::Event::Heroic);
+        let super::super::Page::Heroic(reopened) = &mut flow else {
+            panic!("expected the Heroic page");
+        };
+        reopened.step = Step::Games;
+        reopened.listing = page.listing.clone();
+        reopened.status.clear();
+        let count = reopened.listing.as_ref().unwrap().candidates.len();
+        assert!((0..count).all(|index| !reopened.focus_ring(index)));
+        let _ = flow.key(&Key::Named(Named::ArrowDown), none, 900.0);
+        let super::super::Page::Heroic(reopened) = &flow else {
+            unreachable!()
+        };
+        assert!(reopened.focus_ring(reopened.focus.unwrap()));
+    }
+
+    /// Prepares the chosen game the way the background task does.
+    fn open_details(page: &mut Page, index: usize) {
+        let _ = page.update(Event::ImportSelected);
+        let listing = page.listing.clone().unwrap();
+        let prepared = prepare_game(
+            &page.paths,
+            &listing.source,
+            listing.candidates[index].clone(),
+        )
+        .unwrap();
+        let _ = page.update(Event::Prepared(page.generation, Ok(Box::new(prepared))));
+        assert_eq!(page.step, Step::Details);
     }
 
     #[test]

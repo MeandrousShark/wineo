@@ -586,7 +586,11 @@ impl Draft {
                     .spacing(10),
                     self.tile(Kind::Grid, "Poster", "Cover art", 148, 222, true, palette),
                 ]
-                .spacing(12),
+                .spacing(12)
+                // In a narrow dialog the poster moves below instead of
+                // being squeezed to nothing.
+                .wrap()
+                .vertical_spacing(10),
             ]
             .spacing(10),
             self.control_rows(palette, key_available),
@@ -1192,6 +1196,40 @@ pub(crate) fn fetch_default(paths: &Paths, name: &str, title: &str) -> Result<Ve
 mod tests {
     use super::*;
     use wineo_core::environment::Environment;
+
+    /// The editor that Heroic details and Import prefix embed, at the content
+    /// width of the narrowest and widest import dialogs.
+    #[test]
+    fn the_editor_fits_narrow_and_wide_dialogs() {
+        use crate::layout_probe::probe;
+        let draft = Draft::new();
+        // Page padding and the scrollbar gutter come off the dialog width.
+        for width in [280.0_f32 - 48.0 - 16.0, 780.0 - 16.0] {
+            let mut view: Element<'_, Event> =
+                iced::widget::scrollable(draft.view(Palette::DARK, true))
+                    .height(400)
+                    .into();
+            let probe = probe(&mut view, iced::Size::new(width, 400.0));
+            let frame = iced::Rectangle::with_size(iced::Size::new(width, 400.0));
+            let spilled = probe.outside(frame);
+            assert!(spilled.is_empty(), "{width}: {spilled:?}");
+            // A squeezed row would leave the poster tile a sliver.
+            fn sizes(layout: iced::advanced::Layout<'_>, found: &mut Vec<iced::Size>) {
+                found.push(layout.bounds().size());
+                for child in layout.children() {
+                    sizes(child, found);
+                }
+            }
+            let mut found = Vec::new();
+            sizes(iced::advanced::Layout::new(&probe.node), &mut found);
+            assert!(
+                found
+                    .iter()
+                    .any(|size| size.width >= 148.0 && size.height >= 222.0),
+                "{width}: the poster tile lost its size"
+            );
+        }
+    }
 
     #[test]
     fn stale_generation_skips_decode() {

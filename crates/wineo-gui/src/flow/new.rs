@@ -1182,7 +1182,8 @@ impl Page {
                     }),
             );
         }
-        name_field = name_field.push(derived);
+        // A long environment name in a narrow dialog would squeeze Edit away.
+        name_field = name_field.push(derived.wrap());
         if self.editing_environment {
             name_field = name_field.push(text("Environment name")).push(
                 text_input(
@@ -2320,6 +2321,21 @@ mod tests {
         fs::write(&wineserver, "#!/bin/sh\nexit 0\n").unwrap();
         for path in [&wine, &wineserver] {
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[test]
+    fn details_and_artwork_fit_narrow_and_wide_dialogs() {
+        use crate::layout_probe::probe;
+        let page = page();
+        assert_eq!(page.stage, Stage::Details);
+        for (width, height) in [(280.0, 240.0), (900.0, 720.0)] {
+            let mut view = page.view_with_key_availability(Palette::DARK, true);
+            let probe = probe(&mut view, iced::Size::new(width, height));
+            assert!(!probe.scrollables.is_empty());
+            let frame = iced::Rectangle::with_size(iced::Size::new(width, height));
+            let spilled = probe.outside(frame);
+            assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
         }
     }
 
