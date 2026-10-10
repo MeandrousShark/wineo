@@ -253,6 +253,28 @@ fn following_an_install_prints_one_line_per_change_until_it_finishes() {
 }
 
 #[test]
+fn following_prefers_the_title_steam_writes_over_the_environment_name() {
+    let s = SteamFixture::new();
+    s.config("");
+    // A config without a title leaves only the environment name to start with.
+    let path = s.f.config_dir().join("environments/civ.toml");
+    fs::write(
+        path,
+        "kind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"289070\"\n",
+    )
+    .unwrap();
+    not_installed(&s);
+    let run = Followed::spawn(&s, &["install", "civ", "-f"]);
+    run.expect("Waiting for Steam's install dialog...");
+    manifest(&s, 2, 0, 0);
+    run.expect("Install queued for Civilization VI...");
+    manifest(&s, 4, 0, 0);
+    run.expect("Installed.");
+    let (status, _, err) = run.finish();
+    assert_eq!(status.code(), Some(0), "{err}");
+}
+
+#[test]
 fn following_an_install_that_steam_drops_exits_one() {
     let s = SteamFixture::new();
     s.config("");
