@@ -170,14 +170,14 @@ fn remove_with(
     })
 }
 
-fn plain_text_warning(path: &Path) -> String {
+pub(super) fn plain_text_warning(path: &Path) -> String {
     format!(
         "warning: no keyring, so the key is stored in plain text in {}",
         path.display()
     )
 }
 
-fn one_line(error: impl std::fmt::Display) -> String {
+pub(super) fn one_line(error: impl std::fmt::Display) -> String {
     error
         .to_string()
         .split_whitespace()

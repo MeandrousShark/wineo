@@ -452,9 +452,14 @@ impl Operation<CardBounds> for LocateCard {
 }
 
 pub(crate) fn locate_card(name: &str) -> Task<CardBounds> {
+    locate(Id::from(format!("library-card:{name}")), Id::new(SCROLL_ID))
+}
+
+/// Finds a container and the scrollable it sits in, by their ids.
+pub(crate) fn locate(card_id: Id, scroll_id: Id) -> Task<CardBounds> {
     iced::advanced::widget::operate(LocateCard {
-        card_id: Id::from(format!("library-card:{name}")),
-        scroll_id: Id::new(SCROLL_ID),
+        card_id,
+        scroll_id,
         card: None,
         viewport: None,
         offset: Vector::ZERO,
