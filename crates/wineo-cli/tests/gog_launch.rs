@@ -394,3 +394,53 @@ fn restart_keeps_the_run_when_the_folder_went_mid_update() {
     assert_success(&f.run(&["stop", "rimworld"]));
     f.wait_for_run_end("rimworld", "stopped");
 }
+
+#[test]
+fn ctrl_c_while_waiting_to_claim_the_folder_exits_130() {
+    let f = Fixture::new();
+    let folder = rimworld(&f, false);
+    f.gog_folder(&folder, None, ID, false);
+    let held =
+        wineo_core::gog::folder::FolderLock::exclusive(&f.paths(), &folder, &|| false).unwrap();
+    let child = f
+        .wineo()
+        .args(["start", "rimworld"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The launch holds the in-use lock while it waits for the state lock.
+    wait_for("the launch to wait for the state lock", || {
+        update_refused(&f, &folder)
+    });
+    let sent = std::process::Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(130), "{}", stderr(&output));
+    drop(held);
+    assert_eq!(f.gog_state(&folder).unwrap().owner, None);
+    assert!(!f.runtime("rimworld").is_running().unwrap());
+}
+
+#[test]
+fn no_hook_runs_for_an_owner_mid_update_whose_exe_is_gone() {
+    let f = Fixture::new();
+    let folder = folder(&f);
+    fs::remove_file(folder.join("RimWorldLinux")).unwrap();
+    let (table, before, after) = hooks(&f);
+    write_config(
+        &f,
+        "rimworld",
+        &format!(
+            "kind = \"native\"\ngog_id = \"{ID}\"\n\n{table}\n[targets.game]\nexe = \"{}\"\n",
+            folder.join("RimWorldLinux").display()
+        ),
+    );
+    f.gog_folder(&folder, Some("rimworld"), ID, true);
+    assert_refused(&f.run(&["start", "rimworld"]), MID_UPDATE);
+    assert!(!before.exists());
+    assert!(!after.exists());
+}

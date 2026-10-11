@@ -8,7 +8,7 @@ use crate::config::{GlobalConfig, Kind};
 use crate::desktop;
 use crate::environment::Environment;
 use crate::error::Error;
-use crate::gog::folder::InUseGuard;
+use crate::gog::folder::{FolderError, InUseGuard};
 use crate::hooks::{self, Hook, Phase};
 use crate::install::{self, Wanted};
 use crate::installer::Output;
@@ -433,7 +433,9 @@ pub fn prepare(
 
 /// Refuses a launch `protect` would refuse, before any hook runs or a
 /// restart stops the old run. Holds nothing afterwards. A target that
-/// doesn't resolve yet is left to preparation, which reports it.
+/// doesn't resolve yet is left to preparation, which reports it, but the
+/// owner's own folder is still checked, since an interrupted update can be
+/// what broke the target.
 pub fn precheck(
     paths: &Paths,
     global: &GlobalConfig,
@@ -445,15 +447,18 @@ pub fn precheck(
     {
         return Ok(());
     }
+    let gog_id = environment.config.gog_id.as_deref();
     let Ok(launch) = Launch::target(paths, global, environment, overrides) else {
-        return Ok(());
+        // Without paths an ownerless folder to claim can't be found, so a
+        // missing state is left to preparation too.
+        return match crate::gog::folder::precheck(paths, &environment.name, gog_id, &[]) {
+            Err(err) if matches!(err.downcast_ref(), Some(FolderError::StateMissing { .. })) => {
+                Ok(())
+            }
+            result => result,
+        };
     };
-    crate::gog::folder::precheck(
-        paths,
-        &environment.name,
-        environment.config.gog_id.as_deref(),
-        &launch.named_paths(),
-    )
+    crate::gog::folder::precheck(paths, &environment.name, gog_id, &launch.named_paths())
 }
 
 /// Checks the GOG game folders a launch runs from and takes their in-use
@@ -465,6 +470,18 @@ pub fn protect(
     launch: &Launch,
     token: &Token,
 ) -> anyhow::Result<Vec<InUseGuard>> {
+    protect_as(paths, environment, launch, token, "launch")
+}
+
+/// `protect`, with a cancel reported as `Error::Canceled(what)`, the error
+/// frontends already handle.
+pub(super) fn protect_as(
+    paths: &Paths,
+    environment: &Environment,
+    launch: &Launch,
+    token: &Token,
+    what: &'static str,
+) -> anyhow::Result<Vec<InUseGuard>> {
     if matches!(launch.host, Host::Proxied { .. }) {
         return Ok(Vec::new());
     }
@@ -475,6 +492,10 @@ pub fn protect(
         &launch.named_paths(),
         &|| token.is_canceled(),
     )
+    .map_err(|err| match err.downcast_ref() {
+        Some(FolderError::Canceled) => Error::Canceled(what).into(),
+        _ => err,
+    })
 }
 
 fn check_not_running(

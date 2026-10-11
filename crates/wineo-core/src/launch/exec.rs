@@ -18,9 +18,7 @@ use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::runtime::{Runtime, exit_code};
 
-use super::{
-    ExecResolution, Launch, LaunchEvent, ensure_prefix, protect, reconcile, runner_locked,
-};
+use super::{ExecResolution, Launch, LaunchEvent, ensure_prefix, reconcile, runner_locked};
 
 const POLL: Duration = Duration::from_millis(50);
 const READ_BATCH: u64 = 256 * 1024;
@@ -83,7 +81,7 @@ pub fn exec(
     let _guard = Locks::new(paths).acquire(Operation::Launch, name, &[prefix])?;
     Environment::ensure_exists(paths, name)?;
     Runtime::new(paths, name).check_resolved(name)?;
-    let _folders = protect(paths, &environment, &launch, token)?;
+    let _folders = super::orchestration::protect_as(paths, &environment, &launch, token, "exec")?;
     reconcile(paths, &global, &environment, &launch, |event| {
         events(ExecEvent::Launch(event));
     })?;
