@@ -28,8 +28,9 @@ wineo stop hades
   terminal.
 - **Imports.** Adopt or copy an existing prefix, or import games from Heroic
   with their launch settings.
-- **Steam games.** Bring installed [Steam games](docs/steam.md) into the
-  library to tag, launch, stop, and count, while Steam keeps owning them.
+- **Steam games.** Bring [Steam games](docs/steam.md) into the library,
+  installed or just owned, to tag, launch, stop, and count, while Steam keeps
+  owning them. Owned games can be installed through Steam from wineo.
 - **Clones, snapshots, and portable folders.** Copy an environment, snapshot
   and restore its prefix on a filesystem with reflinks (Btrfs, XFS), or keep
   everything in a folder you can move to another drive.
@@ -91,8 +92,9 @@ wineo manpages ~/.local/share/man/man1
 - `umu-launcher` to run Proton environments
 - `winetricks` for `wineo winetricks`
 - `gamemode`, `gamescope`, and `mangohud` for targets that turn them on
-- `dbus` and a Secret Service keyring (GNOME Keyring, KWallet) to store a
-  SteamGridDB key; without one, wineo falls back to a private file
+- `dbus` and a Secret Service keyring (GNOME Keyring, KWallet) to store the
+  SteamGridDB and Steam Web API keys; without one, wineo falls back to
+  private files
 
 ## Usage
 

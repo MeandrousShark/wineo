@@ -92,7 +92,8 @@ Saved the Steam Web API key to the keyring
 Wineo checks the key with Steam before saving it, and never prints it. It
 goes in the keyring like the [SteamGridDB key](art.md#the-steamgriddb-key), or
 in a private `steam.key` file under wineo's data folder when there's no
-keyring. `WINEO_STEAM_KEY` overrides both. `--remove-key` removes it. A key
+keyring. `WINEO_STEAM_KEY` overrides both. `--remove-key` removes it, along
+with any temporary copy a crash left behind while saving it. A key
 sees its own account's library even when the profile is private. Wineo
 finds the account itself, from the most recently logged in Steam user.
 
