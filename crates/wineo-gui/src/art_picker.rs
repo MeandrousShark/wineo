@@ -294,13 +294,15 @@ impl Picker {
                 // target is measured from the laid out page.
                 Task::batch([
                     thumbnails,
-                    iced::advanced::widget::operate(Reveal::new(
-                        self.scroll_id.clone(),
-                        index / columns,
-                    )),
+                    iced::advanced::widget::operate(self.reveal(index)),
                 ])
             }
         }
+    }
+
+    /// The scroll that brings the row of tile `index` into view.
+    fn reveal(&self, index: usize) -> Reveal {
+        Reveal::new(self.scroll_id.clone(), index / columns(self.kind))
     }
 
     pub(crate) fn selected(&self) -> Option<&Image> {
@@ -838,24 +840,17 @@ fn row_id(row: usize) -> iced::widget::Id {
     iced::widget::Id::from(format!("art-picker-row-{row}"))
 }
 
-/// The gap between grid rows.
-const ROW_GAP: f32 = 10.0;
-
-/// Room for the Selected label, which the row grows by once it is selected.
-const SELECTED_LABEL: f32 = 16.0;
-
-/// Measures where the tile row `row` sits in the scrolled content, then
-/// scrolls so it shows.
+/// Measures the tile row `row` in the scrolled content, then scrolls so it
+/// shows. The runtime rebuilds the interface after an update before it runs
+/// widget operations, so the row is already laid out with its Selected label
+/// and any rows a Load more added.
 struct Reveal {
     scroll: iced::widget::Id,
     row: usize,
     target: iced::widget::Id,
-    before: iced::widget::Id,
     /// The viewport's height, the content's top, and the current offset.
     viewport: Option<(f32, f32, f32)>,
     found: Option<iced::Rectangle>,
-    /// The row above, for a row that is not laid out yet.
-    above: Option<iced::Rectangle>,
 }
 
 impl Reveal {
@@ -864,10 +859,8 @@ impl Reveal {
             scroll,
             row,
             target: row_id(row),
-            before: row_id(row.saturating_sub(1)),
             viewport: None,
             found: None,
-            above: None,
         }
     }
 }
@@ -880,8 +873,6 @@ impl<T: Send + 'static> Operation<T> for Reveal {
     fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
         if id == Some(&self.target) {
             self.found = Some(bounds);
-        } else if self.row > 0 && id == Some(&self.before) {
-            self.above = Some(bounds);
         }
     }
 
@@ -899,26 +890,12 @@ impl<T: Send + 'static> Operation<T> for Reveal {
     }
 
     fn finish(&self) -> Outcome<T> {
-        let Some((viewport, content_top, current)) = self.viewport else {
-            return Outcome::None;
-        };
-        // A row the last frame did not have yet sits below the one above it.
-        let Some(bounds) = self.found.or_else(|| {
-            self.above.map(|above| iced::Rectangle {
-                y: above.y + above.height + ROW_GAP,
-                ..above
-            })
-        }) else {
+        let (Some((viewport, content_top, current)), Some(bounds)) = (self.viewport, self.found)
+        else {
             return Outcome::None;
         };
         let top = bounds.y - content_top;
-        let offset = reveal_offset(
-            current,
-            viewport,
-            top,
-            top + bounds.height + SELECTED_LABEL,
-            self.row == 0,
-        );
+        let offset = reveal_offset(current, viewport, top, top + bounds.height, self.row == 0);
         if (offset - current).abs() < 0.5 {
             return Outcome::None;
         }
@@ -1660,6 +1637,73 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// Drives the runtime's order: the update moves the selection (and loads
+    /// more rows), the interface is rebuilt with the scroll position it had,
+    /// and only then does the reveal run.
+    #[test]
+    fn moving_the_selection_reveals_the_new_row_after_the_rebuild() {
+        use crate::layout_probe::lay_out;
+        let (_root, paths) = paths();
+        let palette = Palette::DARK;
+        let decodes = Arc::new(tokio::sync::Semaphore::new(2));
+        let kind = Kind::Grid;
+        // 19 to 20 crosses into rows a Load more appends.
+        for (from, direction) in [
+            (19, Direction::Right),
+            (9, Direction::Right),
+            (10, Direction::Left),
+            (14, Direction::Down),
+        ] {
+            for (width, height) in [(360.0_f32, 900.0_f32), (360.0, 240.0)] {
+                let mut picker = loaded(kind, true);
+                for (index, image) in picker.images.iter_mut().enumerate() {
+                    let badged = (index / columns(kind)).is_multiple_of(2);
+                    image.animated = badged;
+                    image.nsfw = badged;
+                    image.humor = badged;
+                }
+                // Thumbnails are not under test, and fetching them needs a network.
+                picker.pending_thumbnails = picker.images.iter().map(|i| i.url.clone()).collect();
+                picker.visible_count = page_size(kind);
+                picker.selected = Some(from);
+                let size = iced::Size::new(width, height);
+                let case = format!("{from} {direction:?} {width}x{height}");
+                let mut laid = lay_out(picker.view(palette, "Grid art for my-game", None), size);
+                laid.run(Box::new(picker.reveal(from)));
+                let offset = laid.offsets()[0];
+                drop(laid);
+
+                let _ = picker.update(&paths, 123, Event::Move(direction), decodes.clone());
+                let to = picker.selected.expect("a selection");
+                assert_ne!(to, from, "{case}");
+                assert_eq!(
+                    picker.visible_count,
+                    if from == 19 { 40 } else { 20 },
+                    "{case}"
+                );
+                let mut laid = lay_out(picker.view(palette, "Grid art for my-game", None), size);
+                laid.run(Box::new(scrollable_operation::scroll_to(
+                    picker.scroll_id.clone(),
+                    scrollable_operation::AbsoluteOffset {
+                        x: None,
+                        y: Some(offset),
+                    },
+                )));
+                laid.run(Box::new(picker.reveal(to)));
+                let (top, bottom, viewport) = on_screen(&mut laid, &picker, to / columns(kind));
+                assert!(top >= viewport.y - 0.5, "{case}: row starts above the view");
+                assert!(
+                    bottom - top > viewport.height || bottom <= viewport.y + viewport.height + 0.5,
+                    "{case}: row ends below the view"
+                );
+                assert!(
+                    top <= viewport.y + viewport.height,
+                    "{case}: row top is below the view"
+                );
             }
         }
     }
