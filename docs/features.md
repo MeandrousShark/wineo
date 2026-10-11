@@ -141,7 +141,11 @@ maintainer calls it stable, which these criteria are meant to inform.
 1. Define the public contract in a doc page: config files, CLI commands and
    flags, exit codes, `--json` output, and where wineo keeps its files
    (including the portable layout). Human-readable output, the GUI, and
-   `wineo-core`'s Rust API are not part of it.
+   `wineo-core`'s Rust API are not part of it. Done (2026-10-10): see
+   [Stability](stability.md). The maintainer settled the borderline cases:
+   desktop entries and the snapshot and trash layouts are internal, keyring
+   item attributes and the settings merge order are stable, and the built-in
+   `gaming` template's settings and shell completion output aren't promised.
 2. Document exit codes for every command in one place. Today they're spread
    across feature pages, and only [Validate](validate.md) has a section.
    In progress (2026-10-06): an audit found 15 inconsistencies. The

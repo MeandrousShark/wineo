@@ -149,6 +149,7 @@ you pass `--portable DIR` or set it up for a portable folder.
 - [Validate](docs/validate.md)
 - [Playtime](docs/stats.md)
 - [JSON output](docs/json-output.md)
+- [Stability](docs/stability.md)
 - [Core API for frontends](docs/core-api.md)
 - [Shell completion](docs/shell-completion.md)
 - [Feature backlog](docs/features.md)
