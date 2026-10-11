@@ -1133,3 +1133,46 @@ fn art_page_header_pins_game_and_change_right_at_normal_widths() {
         "{change:?} should share Back's line"
     );
 }
+
+/// The picker's header and footer must keep their buttons whole too.
+#[test]
+fn art_picker_keeps_controls_whole_at_narrow_and_wide_widths() {
+    use crate::layout_probe::probe;
+    let (_root, paths, mut page) = fixture();
+    page.name = "an extremely long environment name that goes on and on".to_owned();
+    page.game_id = Some(9);
+    let _ = page.update_with_key_availability(&paths, Event::Find(Kind::Grid), decodes(), true);
+    let visit = page.picker_sequence;
+    let _ = page.update(
+        &paths,
+        Event::Picker(visit, art_picker::Event::ToggleFilters),
+        decodes(),
+    );
+    page.download = Some(Download {
+        spot: (None, Kind::Grid),
+        token: Token::new(),
+        status: "Downloading 123.4 MB of 456.7 MB, nearly there".into(),
+    });
+    let palette = Palette::DARK;
+    let natural = |label: &'static str| natural_size(secondary_button(label, palette).into());
+    let (back, filters, cancel) = (natural("Back"), natural("Filters ^"), natural("Cancel"));
+    for (width, height) in [(360.0_f32, 560.0_f32), (900.0, 400.0), (900.0, 900.0)] {
+        let size = iced::Size::new(width, height);
+        let mut view = page.view_with_key_availability(palette, true);
+        let frame = iced::Rectangle::with_size(size);
+        let probe = probe(&mut view, size);
+        let case = format!("{width}x{height}");
+        let spilled = probe.outside(frame);
+        assert!(spilled.is_empty(), "{case}: {spilled:?}");
+        let layout = iced::advanced::Layout::new(&probe.node);
+        assert!(has_node_of_size(layout, back), "{case}: Back was squeezed");
+        assert!(
+            has_node_of_size(layout, filters),
+            "{case}: Filters was squeezed"
+        );
+        assert!(
+            has_node_of_size(layout, cancel),
+            "{case}: Cancel was squeezed"
+        );
+    }
+}

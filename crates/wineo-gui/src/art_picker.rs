@@ -13,6 +13,7 @@ use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Filters, Image};
 
 use crate::artwork;
+use crate::ends::ends;
 use crate::keys::{self, Direction};
 use crate::theme::Palette;
 use crate::ui::{ScrollStyle, accent_base, secondary_button};
@@ -362,14 +363,13 @@ impl Picker {
         title: &str,
         progress: Option<&str>,
     ) -> Element<'_, Event> {
-        let mut header = row![
-            secondary_button("Back", palette).on_press(Event::Back),
-            text(title.to_owned()).size(20),
-        ]
-        .spacing(14)
-        .align_y(Center);
-        header = header.push(iced::widget::Space::new().width(Fill));
-        header = header.push(
+        let header = ends(
+            row![
+                secondary_button("Back", palette).on_press(Event::Back),
+                text(title.to_owned()).size(20),
+            ]
+            .spacing(14)
+            .align_y(Center),
             secondary_button(
                 if self.filters_open {
                     "Filters ^"
@@ -379,6 +379,7 @@ impl Picker {
                 palette,
             )
             .on_press(Event::ToggleFilters),
+            14.0,
         );
 
         let mut body = column![header].spacing(12);
@@ -416,7 +417,9 @@ impl Picker {
                     secondary_button("Cancel", palette).on_press(Event::Cancel),
                 ]
                 .spacing(10)
-                .align_y(Center),
+                .align_y(Center)
+                .wrap()
+                .vertical_spacing(8),
             );
         }
         let has_progress = progress.is_some();
@@ -499,7 +502,7 @@ impl Picker {
                 Filter::OtherSizes,
             ));
         }
-        container(filters)
+        container(filters.wrap().vertical_spacing(8))
             .padding(10)
             .width(Fill)
             .style(move |_| {
