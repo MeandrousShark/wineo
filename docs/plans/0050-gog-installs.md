@@ -22,6 +22,8 @@ answers carry over from 0049's questions:
   `defaults.games_root` setting, default `~/Games`.
 - **8A, 18A:** native packages are extracted, never run, with split files
   assembled by wineo (0049's native packages).
+- **20A:** a native game's products are always rebuilt together, base game
+  first, so a fresh install with DLC is one rebuild.
 - **9A:** uninstalled games appear in the import grid, not the library.
 - **11:** owned DLC, a language setting (default English), and GOG art are
   in.
@@ -74,6 +76,10 @@ answers carry over from 0049's questions:
 
 ### Windows installers
 
+- A Windows installer is a `setup_*.exe` plus `.bin` parts. The parts
+  download into one folder with their original file names, since the
+  `.exe` finds its `.bin` parts by name, and are verified before the
+  installer runs.
 - Build the prefix, then run the Inno installer with
   `/SP- /SILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /LOG="<log>"` and
   `/DIR="Z:\..."`, the install folder as a fully qualified Wine path.

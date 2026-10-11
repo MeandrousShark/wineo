@@ -61,6 +61,9 @@ Windows offline installers, and newly bought DLC moved to
 in this plan get update checks only: Galaxy-tracked ones wait for 0051 and
 installer-tracked ones for 0050.
 
+After a fourth review, the maintainer answered question 20 with A: every
+native update rebuilds all installed products from current packages.
+
 ## What GOG offers
 
 From reading the source of heroic-gogdl 1.3.1, Heroic, Minigalaxy 1.4.3,
@@ -133,6 +136,11 @@ prefix under Heroic's prefixes).
   places.
 
 ## Open questions
+
+These are the answers as given. Where a question's wording describes scope
+or behavior that changed later (installing games in this plan, updating
+every GOG game, failed DLC staying launchable), the proposed design below
+is what holds.
 
 ### 1. What an installed GOG game is
 
@@ -419,6 +427,28 @@ questions:
 - **Native space checks** use the packages' real unpacked sizes.
 - Heroic does keep a native file list; using it is deferred.
 
+## Fourth plan review (2026-10-10)
+
+Two High issues: the write order made a normal crash look like corrupt
+records, which blocked the recovery meant to fix it; and a migrated game's
+first update had no file lists to protect its DLC. Several Medium ones
+covered removal, reclaiming an incomplete folder, indirect DLC overlaps,
+and split-file containment. All are resolved below. Three of the High
+findings so far came from re-extracting only some products, so that rule
+became a question.
+
+### 20. Rebuilding native games on update
+
+- **A (recommended).** Every native update re-extracts every installed
+  product, the base game and then each DLC in order, from current
+  packages, and applies the result as a whole. The folder ends up exactly
+  as a fresh install would leave it, and file lists come out of every
+  update. Every update downloads all installed DLC packages again.
+- **B.** Re-extract only what changed plus everything its files could
+  shift, directly, indirectly, or by exposing an earlier product's file.
+  Smaller downloads, but hard to get right, and still a full rebuild when
+  file lists are missing.
+
 ## Proposed design
 
 Written for the answers above.
@@ -495,33 +525,49 @@ Written for the answers above.
   internal per [Stability](../stability.md). It records: GOG id, platform,
   canonical install folder, language as installed, the track (`installer`
   or `galaxy`), the installed installer version or build id, a status, the
-  packages an update is installing, the products' install order, and per
-  DLC: id, installer version, and status (`installed`, `failed`,
-  `unavailable`).
-- Native games also record, per product (the base game and each DLC), the
-  files it shipped with their sizes and MD5s, including files assembled
-  from split pieces.
-- **Authority.** The folder record says whether the folder is safe to use;
-  the receipt says which versions are in it. They're written in an order
-  that never shows a changing folder as safe: going into an update, the
-  record is set to `updating` before the receipt; coming out, the receipt
-  gets the new versions before the record returns to `installed`.
-- **Disagreement** (a receipt without a record, a record without a
-  receipt, or statuses that don't match) blocks launch and update for that
-  folder: `rimworld's GOG records don't match. Check it with wineo
-  validate rimworld.`
-- `wineo validate` reports those, and `--fix` repairs what's safe: a
-  missing record is recreated from an `installed` receipt; a record whose
-  owner is gone is removed when `installed`, and kept and reported when
-  not.
-- **Removing the owner.** `rm` of a game whose folder is `installed`
-  removes the receipt and the record. One mid-update is refused:
-  `rimworld is mid-update. Finish it with wineo update rimworld, or remove
-  it anyway with --force.` With `--force`, the record stays as
-  `incomplete` with no owner, blocking every launch from that folder until
-  migration claims it again.
-- **Trash restore** of an owner takes the folder lock and refuses if
-  another environment owns the folder by then.
+  target versions during an update, the products' order, and per DLC: id,
+  installer version, and status (`installed`, `failed`, `unavailable`).
+- Native games also record the winning files: for each file in the folder
+  that a product shipped, its size, MD5, and which product it came from,
+  with split files recorded as their assembled result.
+- **Write order.** An update sets the folder record to `updating`, with its
+  target versions, before the receipt; then the receipt to `updating`; and
+  only then changes files. At the end the receipt gets the new versions and
+  `installed` before the record returns to `installed`. So files change
+  only while both say `updating`, and every crash leaves a combination that
+  says how far it got.
+- **Recovery matrix.** Launch is blocked in every row but the first.
+  `wineo update NAME`, holding the folder lock exclusively, resolves the
+  others:
+
+  | Record | Receipt | Meaning | `wineo update NAME` |
+  |---|---|---|---|
+  | `installed` | `installed` | healthy | a normal update |
+  | `updating` | `installed`, old versions | crashed before any file changed | resets the record, then a normal update |
+  | `updating` | `updating` | crashed while changing files | rebuilds from current packages |
+  | `updating` | `installed`, target versions | crashed after finishing | sets the record to `installed` |
+  | `installed` | `updating` | can't happen in this order: corrupt | refused; `validate --fix` sets both `incomplete` |
+  | `incomplete` | any | a failed or forced-away update | rebuilds from current packages |
+
+- **Missing pieces.** A receipt without a record gets a record from the
+  receipt (`installed` if the receipt is, else `incomplete`), by
+  `validate --fix` or the next update. A record without a receipt is an
+  ownerless folder (below).
+- **Removing the owner.** `rm` takes the folder lock exclusively. It
+  removes the receipt and keeps the folder record, ownerless, with its
+  status, so clones still take the lock and still see its health. One
+  mid-update is refused: `rimworld is mid-update. Finish it with wineo
+  update rimworld, or remove it anyway with --force.` With `--force` the
+  record is left `incomplete`.
+- **Ownerless records** stay until their folder is gone, when `validate
+  --fix` removes them. Launching from an ownerless `installed` folder
+  works; from an ownerless `incomplete` one is refused until it's
+  migrated again and finished.
+- **Reclaiming.** Migrating or trash-restoring an owner into a folder with
+  a record takes the record over and keeps its status: an `incomplete`
+  folder stays `incomplete` until `wineo update` rebuilds it, since
+  Heroic's metadata or an old receipt can't vouch for a half-updated
+  folder. A record owned by another environment refuses either one.
 - **Snapshot restore** brings back the environment's config but not the
   game folder, so the receipt follows the folder: if the restored config
   has no `gog_id` (a snapshot from before migration), wineo puts the
@@ -540,7 +586,7 @@ Written for the answers above.
   can't be seen, and the docs say so.
 - A folder that isn't `installed` refuses the launch, naming the owner:
   `rimworld's game folder is mid-update. Finish it with wineo update
-  rimworld.` An ownerless folder says to migrate it again.
+  rimworld.` An ownerless one says to migrate it again and finish it.
 - Updating refuses while anything is running from the folder:
   `rimworld-copy is running from this game folder. Stop it before
   updating rimworld.`
@@ -560,20 +606,24 @@ Written for the answers above.
 ### Native packages
 
 - A native package is a `.sh` holding a zip. wineo reads the game files
-  (`data/noarch`) from the zip without running MojoSetup, and stages them
-  in a folder beside the game before moving them in.
+  (`data/noarch`) from the zip without running MojoSetup. Each product is
+  unpacked into its own staging folder beside the game, so same-named
+  pieces from different products never mix.
 - Entries with absolute paths or `..` are refused, executable bits are
   kept, and symlinks must point inside the folder. Writes and deletes in
   the game folder never follow an existing symlink out of it.
 - **Setup scripts.** GOG's `support/postinst.sh` isn't run (question 18).
   The known GOG script only assembles split files: for each path in
   `support/split_files`, it joins `<path>.split*` in order into `<path>`
-  and deletes the pieces. wineo does that itself, records the assembled
-  file in the shipped list, and counts it in the space check. A package
-  whose script doesn't match a known GOG script is refused before anything
-  changes: `This GOG package has a setup script wineo doesn't support.`
+  and deletes the pieces. wineo does that itself, inside the product's
+  staging folder. Each listed path must be relative and normalized, and
+  the output and every piece must stay inside the staging folder. The
+  assembled file is what gets recorded and counted; the pieces aren't. A
+  package whose script doesn't match a known GOG script is refused before
+  anything changes: `This GOG package has a setup script wineo doesn't
+  support.`
 - **Space.** After downloading and before changing anything, wineo sums the
-  zip's unpacked sizes for every package, plus the staging copy and the
+  zip's unpacked sizes for every package, plus the staging copies and the
   assembled split files, and refuses with the sizes when the filesystem is
   short. Before downloading it shows the download size and an unpacked
   estimate labeled as one.
@@ -591,40 +641,38 @@ Written for the answers above.
   An installer-tracked Windows game is compared by installer version and
   shows **Update available**, applied by 0050. `wineo update` on either
   says which plan's release will do it, and changes nothing.
-- **Packages first.** An update works out every package it needs, the
-  changed products' and the overlapping ones' (below), and downloads them
-  all before changing anything. If one isn't offered any more, for example
-  a DLC dropped in that language, the update is refused before any change,
+- **Rebuild (question 20).** Any native update, of the base game or of one
+  DLC, downloads the current package of every installed product before
+  changing anything. If one isn't offered any more, for example a DLC
+  dropped in that language, the update is refused before any change,
   naming it.
-- **Stable precedence.** The receipt keeps the products' install order:
-  the base game, then each DLC in the order it was installed. A file
-  shipped by more than one product belongs to the latest in that order.
-  Updating a product re-extracts it and then every later product whose
-  files overlap its new ones, so the same product wins every time.
-- **Applying.** The record goes to `updating`, then the receipt, with the
-  target packages. Products are extracted in install order, split files
-  assembled, and the new versions recorded, then the record returns to
-  `installed`.
-- **Old files.** A file in a product's old shipped list but not its new one
-  is deleted when unchanged and no other installed product ships it, and
-  kept and listed when changed. Changed files the new version still ships
-  are overwritten and listed (question 15). A game without a shipped list
-  yet (see Migrating) deletes nothing.
+- **Order.** The receipt keeps the products' order: the base game, then
+  each DLC in the order it was added. A file shipped by more than one
+  product comes from the latest one in that order.
+- **Applying.** Every product is unpacked and split files assembled, then
+  the staging folders are layered in order into the new winning files.
+  The record and receipt go to `updating`, and wineo writes every winning
+  file into the game folder, then records the new versions and winning
+  files.
+- **Old files.** A file that was a winning file before and isn't now is
+  deleted when it still matches the old winning file's hash, and kept and
+  listed when it doesn't. A winning file whose current content doesn't
+  match the old winning hash was changed by you, so it's overwritten and
+  listed (question 15). Files that were never winning files, like
+  RimWorld's `mods-1.5`, are never touched.
 - **Another tool's update:** the build in `goggame-<id>.info` is trusted
   only for Galaxy-tracked Windows games, and only when its `gameId` is the
   environment's `gog_id`; then wineo records that build.
 
 ### Recovery
 
-- `updating` and `incomplete` block launch. After a hard crash the receipt
-  or record still says `updating`; wineo treats that as `incomplete`.
-- `wineo update NAME` finishes it, run on the owner: it retries the
-  packages the receipt names, re-extracting every one of them in install
-  order, using the cached packages when they're all there and fetching the
-  current ones otherwise. A blocked clone's message names the owner to run
-  it on.
-- `wineo update NAME --reinstall` re-extracts the current packages of every
-  installed product of a native game, repairing changed or missing files.
+- `wineo update NAME`, run on the owner, resolves every row of the recovery
+  matrix. A rebuild uses the packages already in the download cache when
+  they're the current ones, so a retry after a failure can work without
+  the network, and fetches them otherwise.
+- A blocked clone's message names the owner to run it on.
+- `wineo update NAME --reinstall` rebuilds a native game from current
+  packages even when nothing changed, repairing changed or missing files.
   Historical packages aren't guaranteed through GOG's download API, so it
   uses the current ones. Windows games refuse it in this plan.
 
@@ -640,12 +688,16 @@ Written for the answers above.
 - **Track:** a Windows game with a `buildId` is Galaxy-tracked; one without
   is installer-tracked with Heroic's version. Native games are
   installer-tracked.
-- **First update deletes nothing.** heroic-gogdl keeps a native file list
+- **No winning files yet.** heroic-gogdl keeps a native file list
   (`.gogdl-linux-manifest`), but importing and checking it against the
-  folder is deferred. Scanning the folder instead would count mods as
-  shipped files. So a migrated native game's first update deletes nothing
-  and records the new version's files as its shipped list; deleting
-  obsolete files starts with the update after.
+  folder is deferred, and scanning the folder would count mods as shipped
+  files. So a migrated native game has no winning files until its first
+  update. That update is a normal rebuild, which writes every product's
+  files and records them; with no old winning files it deletes nothing.
+- **Starting order.** A migrated native game's products start as the base
+  game, then its DLC in the order Heroic's `installedDLCs` lists them.
+- **Incomplete folders** keep their status when migrated (see
+  Reclaiming).
 - **Matching an existing environment,** by canonical paths: first an
   environment with the same `gog_id`; then one whose default target's exe
   is the game's primary play task (Windows) or `start.sh` (native) and,
@@ -679,7 +731,10 @@ Written for the answers above.
   imports, unless `--yes`. Sizes in the review are labeled when estimated.
 - `wineo update [NAME|--all|--check] [--reinstall]`. `--all` updates every
   native GOG game with an update, and lists Windows games as skipped with
-  the reason.
+  the reason. `--check` with `--reinstall` is a usage error (exit 2).
+  `--all --dry-run` previews every game. Without a terminal, a migration or
+  update that would ask for confirmation needs `--yes`, like other
+  commands, and exits 2 without it.
 - **Outcomes:** `Already migrated.` and `Up to date.` are no-ops that exit
   0. A batch continues past a failed game and exits 1 with a summary.
   Cancel exits 130 and leaves `incomplete` when files had changed.
@@ -688,10 +743,12 @@ Written for the answers above.
   `{"games": [...], "errors": [...]}`, each game with `id`, `title`,
   `platforms`, `state` (`not_installed`, `heroic`, `imported`),
   `environment` (or `null`), `track`, `version`, `update` (`available`,
-  `none`, `galaxy`, `cant_compare`, or `null`), and `dlc` (`id`, `title`,
+  `none`, `galaxy`, `cant_compare`, or `null`), `applicable` (whether this
+  wineo can apply the update), `reason` (why not, like
+  `windows_installer` or `galaxy`, else `null`), and `dlc` (`id`, `title`,
   `state`). `update --check --json` returns `{"environments": [...],
   "errors": [...]}`, each with `name`, `id`, `track`, `installed`,
-  `available`, `update`, and `dlc`. A game whose details can't be fetched
+  `available`, `update`, `applicable`, `reason`, and `dlc`. A game whose details can't be fetched
   goes in `errors` with its `id` and `message`; the partial result still
   prints and the command exits 1, like `list --json`.
 - `--dry-run` follows [Dry runs](../dry-run.md) and question 16.
@@ -745,17 +802,20 @@ Written for the answers above.
 
 Unit and CLI tests run against the fake GOG server and fixture packages: a
 `.sh` built like GOG's (a shell header, a MojoSetup stand-in, and a zip),
-including one with split files and one with an unknown setup script. They
-cover the failure paths: an interrupted download resumed (including a 200
-instead of a 206, and an expired link), an interrupted update leaving
-`incomplete`, a crash between the record and receipt writes in both
-directions, a stale `updating` after a crash, a DLC-only update, two DLC
-overlapping with the earlier one updated, a package no longer offered,
-obsolete and changed shipped files, a migrated game's first update with no
-shipped list, a clone running while its owner updates, removing the owner
+including one with split files, one whose `split_files` names a path
+outside the folder, and one with an unknown setup script. They cover the
+failure paths: an interrupted download resumed (including a 200 instead of
+a 206, and an expired link), a crash at every point of the write order with
+each row of the recovery matrix resolved, an interrupted update leaving
+`incomplete`, a DLC-only update, a base and a DLC sharing a file that the
+DLC then drops, indirect overlaps across three products, a package no
+longer offered, obsolete and changed winning files, a migrated game's first
+update with DLC, a clone running while its owner updates, removing the owner
 mid-update with and without `--force`, nested game folders, a snapshot
 restore from before migration, symlinks in an existing game folder, launch
-protection through a Windows path and through an argument, account
+protection through a Windows path and through an argument, removing an
+owner and launching a clone before migrating it again, reclaiming an
+`incomplete` folder, account
 switching and logout, renewal under contention, and secrets never reaching
 errors.
 
