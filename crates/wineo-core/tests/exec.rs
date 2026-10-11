@@ -639,6 +639,122 @@ fn cancel_escalates_a_stubborn_program_without_prefix_wide_killing() {
     assert!(!status.success());
 }
 
+/// A GOG game folder with a program in it, owned by `owner`.
+fn gog_game(f: &Fixture, owner: &str, mid_update: bool) -> PathBuf {
+    use wineo_core::gog::folder::{
+        Committed, FolderLock, FolderState, Journal, JournalKind, Platform, Target, Track,
+    };
+    let folder = fs::canonicalize(f.root.path())
+        .unwrap()
+        .join("Games/RimWorld");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join("game.exe"), "").unwrap();
+    let target = Target {
+        gog_id: 1094900565,
+        platform: Platform::Windows,
+        language: "en-US".to_owned(),
+        track: Track::Installer,
+        products: Vec::new(),
+    };
+    let state = FolderState {
+        committed: Some(Committed {
+            gog_id: target.gog_id,
+            platform: target.platform,
+            language: target.language.clone(),
+            track: target.track,
+            products: Vec::new(),
+            files: Vec::new(),
+        }),
+        journal: mid_update.then(|| Journal {
+            operation: "op".to_owned(),
+            kind: JournalKind::Update,
+            target,
+            packages: Vec::new(),
+            attempted: Vec::new(),
+        }),
+        ..FolderState::new(folder.clone(), Some(owner.to_owned()))
+    };
+    FolderLock::exclusive(&f.paths, &folder, &|| false)
+        .unwrap()
+        .write(&state)
+        .unwrap();
+    folder
+}
+
+#[test]
+fn exec_from_a_gog_folder_holds_it_until_the_program_exits() {
+    use wineo_core::gog::folder::{FolderError, lock_for_update};
+
+    let f = Fixture::built();
+    let folder = gog_game(&f, "rimworld", false);
+    let exe = folder.join("game.exe").display().to_string();
+    let token = Token::new();
+    let mut refused = None;
+    let status = launch::exec(
+        &f.paths,
+        "app",
+        &exe,
+        &[],
+        &BTreeMap::new(),
+        &token,
+        |event| {
+            if matches!(event, ExecEvent::Started) {
+                refused = Some(
+                    lock_for_update(&f.paths, &folder, "rimworld")
+                        .err()
+                        .and_then(|error| error.downcast::<FolderError>().ok()),
+                );
+                token.cancel();
+            }
+        },
+    )
+    .unwrap();
+    assert!(!status.success());
+    assert!(
+        matches!(refused, Some(Some(FolderError::InUse { .. }))),
+        "{refused:?}"
+    );
+    assert!(lock_for_update(&f.paths, &folder, "rimworld").is_ok());
+
+    let updating = lock_for_update(&f.paths, &folder, "rimworld").unwrap();
+    let error = launch::exec(
+        &f.paths,
+        "app",
+        &exe,
+        &[],
+        &BTreeMap::new(),
+        &Token::new(),
+        |_| {},
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "rimworld's game folder is being updated."
+    );
+    drop(updating);
+
+    gog_game(&f, "rimworld", true);
+    let mut started = false;
+    let error = launch::exec(
+        &f.paths,
+        "app",
+        &exe,
+        &[],
+        &BTreeMap::new(),
+        &Token::new(),
+        |event| started |= matches!(event, ExecEvent::Started),
+    )
+    .unwrap_err();
+    assert!(!started);
+    assert!(
+        matches!(
+            error.downcast_ref::<FolderError>(),
+            Some(FolderError::MidUpdate { name }) if name == "rimworld"
+        ),
+        "{error}"
+    );
+}
+
 #[test]
 fn handoff_releases_locks_without_waiting_for_descendants_or_their_output() {
     let f = Fixture::built();
