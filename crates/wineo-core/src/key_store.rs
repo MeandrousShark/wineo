@@ -383,4 +383,103 @@ mod tests {
         assert!(removed.file);
         assert!(!names(dir).iter().any(|name| name.starts_with("test-key")));
     }
+
+    fn test_paths(root: &Path) -> Paths {
+        let home = root.to_owned();
+        Paths::select(
+            move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+            None,
+        )
+        .unwrap()
+    }
+
+    const SPEC: KeySpec = KeySpec {
+        env_var: "WINEO_TEST_NO_SUCH_VAR",
+        account: "test",
+        file_name: "test-key",
+        label: "Test",
+    };
+
+    #[test]
+    fn a_symlink_named_like_a_leftover_is_unlinked_and_its_target_kept() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("key");
+        let target = root.path().join("elsewhere");
+        fs::write(&target, "precious").unwrap();
+        std::os::unix::fs::symlink(&target, root.path().join("key.5-6.tmp")).unwrap();
+        assert!(!remove_key_file(&path).unwrap());
+        assert_eq!(names(root.path()), ["elsewhere"]);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "precious");
+    }
+
+    #[test]
+    fn leftovers_are_swept_when_the_key_file_is_already_gone() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let path = key_file(&SPEC, &paths);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path.with_file_name("test-key.8-3.tmp"), "secret").unwrap();
+        fs::write(path.with_file_name(".test-key.tmp"), "secret").unwrap();
+        let removed = remove_key(&SPEC, &paths, &NoKeyring).unwrap();
+        assert!(!removed.file);
+        assert!(
+            !names(path.parent().unwrap())
+                .iter()
+                .any(|n| n.contains("test-key"))
+        );
+    }
+
+    struct AcceptingKeyring;
+
+    impl Keyring for AcceptingKeyring {
+        fn get(&self) -> Result<Option<String>, KeyringError> {
+            Ok(None)
+        }
+        fn set(&self, _key: &str) -> Result<(), KeyringError> {
+            Ok(())
+        }
+        fn delete(&self) -> Result<bool, KeyringError> {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn migrating_to_the_keyring_sweeps_the_key_file_and_its_leftovers() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let path = key_file(&SPEC, &paths);
+        write_private(&path, "old").unwrap();
+        fs::write(path.with_file_name("test-key.8-3.tmp"), "old").unwrap();
+        fs::write(path.with_file_name(".test-key.tmp"), "old").unwrap();
+        let saved = save_key(&SPEC, &paths, &AcceptingKeyring, "new").unwrap();
+        assert_eq!(saved, Saved::Keyring);
+        assert!(
+            !names(path.parent().unwrap())
+                .iter()
+                .any(|n| n.contains("test-key"))
+        );
+    }
+
+    #[test]
+    fn a_leftover_that_cannot_be_deleted_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("keys");
+        fs::create_dir(&dir).unwrap();
+        let leftover = dir.join("key.5-6.tmp");
+        fs::write(&leftover, "secret").unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        // Root ignores directory permissions, so there is nothing to test.
+        let can_delete_anyway = fs::write(dir.join("probe"), "").is_ok();
+        let result = remove_key_file(&dir.join("key"));
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        if can_delete_anyway {
+            return;
+        }
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.starts_with(&format!("failed to remove {}", leftover.display())),
+            "{error}"
+        );
+        assert!(leftover.exists());
+    }
 }
