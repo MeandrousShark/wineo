@@ -586,8 +586,8 @@ Written for the answers above.
     the kind (`install`, `update`, `reinstall`, or `repair`); the resolved
     target, meaning each product's id, target version, platform, language,
     order, and intended status, enough to write the next `[committed]`
-    without asking GOG; the exact packages (GOG file ids, sizes, MD5s, and
-    which product each belongs to); and `attempted`: every entry any
+    without asking GOG; the exact packages (GOG download and file ids, sizes,
+    MD5s, and which product each belongs to); and `attempted`: every entry any
     attempt of this operation is about to write, with its type and hash,
     kept across failed attempts. 0050's Windows installs keep a different
     `attempted` (see 0050).
