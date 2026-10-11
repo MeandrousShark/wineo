@@ -922,6 +922,14 @@ After step 3's review, also on 2026-10-11:
   update is interrupted, since healthy means no journal and the game
   can't launch until `wineo update` finishes it.
 
+Settled by the maintainer on 2026-10-11, before step 4:
+
+- **What counts as a launch.** Launch protection and the in-use lock cover
+  `wineo start` and the desktop app's Play (every target), and `wineo
+  exec` and the Tools page's Run a program (any program), with the same
+  rules. Winetricks isn't covered, since it writes to the prefix, not the
+  game folder.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,
