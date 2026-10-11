@@ -848,6 +848,58 @@ fn forcing_a_gog_wait_kills_the_prefix() {
 }
 
 #[test]
+fn a_gog_wait_that_cant_settle_says_so_even_when_canceled() {
+    let f = Fixture::built();
+    let folder = gog_game(&f, "rimworld", false);
+    let wineserver = f.paths.default_runner_root().join("fake/bin/wineserver");
+    script(
+        &wineserver,
+        &runners::FAKE_WINESERVER.replacen("    done\n    ;;", "    done\n    exit 42\n    ;;", 1),
+    );
+    let token = Token::new();
+    let (paths, arg, waiter) = (f.paths.clone(), folder.display().to_string(), token.clone());
+    let exec = thread::spawn(move || {
+        launch::exec(
+            &paths,
+            "app",
+            "handoff",
+            &[arg],
+            &BTreeMap::new(),
+            &waiter,
+            |_| {},
+        )
+    });
+    wait_for(|| f.prefix.join("fake-pids").exists());
+    thread::sleep(Duration::from_millis(300));
+    token.cancel();
+    let error = exec.join().unwrap().unwrap_err();
+    assert!(
+        format!("{error:#}").contains("wineserver -w failed"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_gog_wait_shows_what_failed_while_stopping() {
+    let f = Fixture::built();
+    let folder = gog_game(&f, "rimworld", false);
+    let token = Token::new();
+    let exec = gog_handoff(&f, &folder, &token);
+    // The running wineserver -w keeps going, but the kill can't start.
+    fs::remove_file(f.paths.default_runner_root().join("fake/bin/wineserver")).unwrap();
+    token.force();
+    let (_, events) = exec.join().unwrap();
+    let warnings: Vec<_> = output_lines(&events)
+        .into_iter()
+        .filter(|line| line.starts_with("warning: "))
+        .collect();
+    assert!(
+        warnings.iter().any(|line| line.contains("wineserver -k")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
 fn a_proton_handoff_from_a_gog_folder_holds_it_until_the_group_is_gone() {
     let f = Fixture::new();
     fs::write(

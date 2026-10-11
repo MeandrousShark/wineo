@@ -149,7 +149,12 @@ fn run_settled(
             }
             Settling::Stopping => events(ExecEvent::Stopping),
             Settling::Killing => events(ExecEvent::Killing),
-            Settling::Exited | Settling::StillWaiting | Settling::Warning(_) => {}
+            // Shown with the program's output, the way the CLI prints one.
+            Settling::Warning(err) => events(ExecEvent::OutputLine(format!(
+                "warning: {}",
+                crate::error::chain(&err)
+            ))),
+            Settling::Exited | Settling::StillWaiting => {}
         },
     );
     if let Some(err) = failed {
@@ -187,18 +192,14 @@ pub enum Settling {
 #[derive(Debug)]
 pub struct Settled {
     status: Option<ExitStatus>,
-    stopped: bool,
     settled: crate::error::Result<()>,
 }
 
 impl Settled {
-    /// The started program's own status. A stop always ends the wait, so
-    /// only an unstopped run reports a prefix that couldn't be confirmed
-    /// idle.
+    /// The started program's own status, or, stopped or not, why the prefix
+    /// couldn't be confirmed idle, as a `start` run reports it.
     pub fn finish(self) -> anyhow::Result<ExitStatus> {
-        if !self.stopped {
-            self.settled?;
-        }
+        self.settled?;
         self.status
             .ok_or_else(|| Error::Unsettled("the program's exit status was lost".to_owned()).into())
     }
@@ -261,12 +262,10 @@ pub fn watch_settled(
     match watcher.join() {
         Ok(ending) => Settled {
             status: ending.exit_status,
-            stopped: ending.stopped,
             settled: ending.settled,
         },
         Err(_) => Settled {
             status: None,
-            stopped: false,
             settled: Err(Error::Unsettled("the exec watch failed".to_owned())),
         },
     }
