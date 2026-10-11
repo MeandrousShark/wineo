@@ -150,7 +150,7 @@ pub fn save_key(spec: &KeySpec, paths: &Paths, keyring: &dyn Keyring, key: &str)
     let path = key_file(spec, paths);
     match keyring.set(key) {
         Ok(()) => {
-            remove_file(&path)?;
+            remove_key_file(&path)?;
             Ok(Saved::Keyring)
         }
         Err(KeyringError::Unavailable) => {
@@ -177,7 +177,7 @@ pub fn remove_key(spec: &KeySpec, paths: &Paths, keyring: &dyn Keyring) -> Resul
     };
     Ok(Removed {
         keyring: from_keyring,
-        file: remove_file(&key_file(spec, paths))?,
+        file: remove_key_file(&key_file(spec, paths))?,
     })
 }
 
@@ -187,6 +187,55 @@ fn remove_file(path: &Path) -> Result<bool> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(err).context(|| format!("failed to remove {}", path.display())),
     }
+}
+
+/// Deletes the key file and any temp file a crashed save left beside it,
+/// since those hold the key too. Returns whether the key file itself existed.
+/// A leftover that can't be deleted is an error, because the point is to get
+/// the secret off disk. Only names that exactly match a temp name are touched.
+fn remove_key_file(path: &Path) -> Result<bool> {
+    let existed = remove_file(path)?;
+    let (Some(dir), Some(name)) = (
+        path.parent(),
+        path.file_name().and_then(|name| name.to_str()),
+    ) else {
+        return Ok(existed);
+    };
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(existed),
+        Err(err) => return Err(err).context(|| format!("failed to read {}", dir.display())),
+    };
+    for entry in entries {
+        let entry = entry.context(|| format!("failed to read {}", dir.display()))?;
+        let is_leftover = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|candidate| is_temp_name(name, candidate));
+        if is_leftover && !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            remove_file(&entry.path())?;
+        }
+    }
+    Ok(existed)
+}
+
+/// `<name>.<pid>-<n>.tmp` from `write_unique_private`, or the fixed
+/// `.<name>.tmp` older versions used.
+fn is_temp_name(name: &str, candidate: &str) -> bool {
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    if candidate
+        .strip_prefix('.')
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+        == Some(name)
+    {
+        return true;
+    }
+    candidate
+        .strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+        .and_then(|ids| ids.split_once('-'))
+        .is_some_and(|(pid, counter)| digits(pid) && digits(counter))
 }
 
 /// Writes through a temp file created `0600`, so the key is never readable by
@@ -239,8 +288,10 @@ mod tests {
             keys.iter().any(|key| text == format!("{key}\n")),
             "the file is not any one save"
         );
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
+        // A umask may narrow the mode further, but never open it to others.
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "{mode:o}");
+        assert_eq!(mode & 0o600, 0o600, "{mode:o}");
         let names: Vec<_> = fs::read_dir(path.parent().unwrap())
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
@@ -256,5 +307,80 @@ mod tests {
         write_private(&path, "secret").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "secret\n");
         assert!(!root.path().join(".key.tmp").exists());
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn removing_the_key_file_sweeps_crash_leftovers_and_the_legacy_temp() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("key");
+        for name in ["key", "key.123-0.tmp", "key.4-56.tmp", ".key.tmp"] {
+            fs::write(root.path().join(name), "secret").unwrap();
+        }
+        assert!(remove_key_file(&path).unwrap());
+        assert!(names(root.path()).is_empty());
+    }
+
+    #[test]
+    fn removing_the_key_file_keeps_names_that_are_not_temp_files() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("key");
+        let kept = [
+            "key.tmp",
+            "key.1-2.tmp.bak",
+            "key.1-2.TMP",
+            "key.-2.tmp",
+            "key.1-.tmp",
+            "key.1-2-3.tmp",
+            "key.a-2.tmp",
+            "key.+1-2.tmp",
+            "key2.1-2.tmp",
+            "other.1-2.tmp",
+            "..key.tmp",
+            ".other.tmp",
+            "x.key.1-2.tmp",
+        ];
+        for name in kept {
+            fs::write(root.path().join(name), "x").unwrap();
+        }
+        fs::create_dir(root.path().join("key.9-9.tmp")).unwrap();
+        // No key file, so nothing was removed.
+        assert!(!remove_key_file(&path).unwrap());
+        let mut expected: Vec<_> = kept.iter().map(|name| (*name).to_owned()).collect();
+        expected.push("key.9-9.tmp".to_owned());
+        expected.sort();
+        assert_eq!(names(root.path()), expected);
+    }
+
+    #[test]
+    fn remove_key_sweeps_leftovers_beside_the_key_file() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_owned();
+        let paths = Paths::select(
+            move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+            None,
+        )
+        .unwrap();
+        let spec = KeySpec {
+            env_var: "WINEO_TEST_NO_SUCH_VAR",
+            account: "test",
+            file_name: "test-key",
+            label: "Test",
+        };
+        let path = key_file(&spec, &paths);
+        write_private(&path, "secret").unwrap();
+        let dir = path.parent().unwrap();
+        fs::write(dir.join("test-key.77-1.tmp"), "secret").unwrap();
+        let removed = remove_key(&spec, &paths, &NoKeyring).unwrap();
+        assert!(removed.file);
+        assert!(!names(dir).iter().any(|name| name.starts_with("test-key")));
     }
 }
