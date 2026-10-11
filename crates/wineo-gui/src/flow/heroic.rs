@@ -1922,8 +1922,8 @@ impl Page {
         key_available: bool,
     ) -> Element<'_, Event> {
         let mut body = column![].spacing(14).width(Fill);
-        // Pinned under the scrolling grid so it stays reachable in a short dialog.
-        let mut games_actions: Option<Element<'_, Event>> = None;
+        // Pinned under the scrolling body so it stays reachable in a short dialog.
+        let mut actions: Option<Element<'_, Event>> = None;
         let title = match self.step {
             Step::Sources => "Import from Heroic".to_owned(),
             Step::Games => "Choose Heroic games".to_owned(),
@@ -1985,7 +1985,7 @@ impl Page {
                     }
                     let count = self.chosen.len();
                     let idle = !self.busy();
-                    let mut actions = row![
+                    let mut row_actions = row![
                         secondary_button("Select all", palette)
                             .on_press_maybe(idle.then_some(Event::SelectAll)),
                         secondary_button("Select none", palette)
@@ -1997,10 +1997,10 @@ impl Page {
                     .spacing(12)
                     .align_y(Center);
                     if self.status_by_action() {
-                        actions = actions.push(self.working(palette, spin));
+                        row_actions = row_actions.push(self.working(palette, spin));
                     }
                     // A narrow dialog would squeeze the last control away.
-                    games_actions = Some(actions.wrap().vertical_spacing(8).into());
+                    actions = Some(row_actions.wrap().vertical_spacing(8).into());
                 }
             }
             Step::Details => {
@@ -2202,7 +2202,7 @@ impl Page {
                 if self.status_by_action() {
                     next = next.push(self.working(palette, spin));
                 }
-                body = body.push(next);
+                actions = Some(next.wrap().vertical_spacing(8).into());
             }
             Step::Review => {
                 if let Some(review) = &self.review {
@@ -2441,7 +2441,7 @@ impl Page {
                     if self.status_by_action() {
                         import = import.push(self.working(palette, spin));
                     }
-                    body = body.push(import);
+                    actions = Some(import.wrap().vertical_spacing(8).into());
                 }
             }
             Step::Working => {
@@ -2460,17 +2460,23 @@ impl Page {
                     body = body.push(text(line).size(13));
                 }
                 if self.registered.is_some() && self.error.is_some() && self.token.is_none() {
-                    body = body
-                        .push(secondary_button("Retry artwork", palette).on_press(Event::RetryArt));
-                    body = body
-                        .push(secondary_button("Skip artwork", palette).on_press(Event::SkipArt));
+                    actions = Some(
+                        row![
+                            secondary_button("Retry artwork", palette).on_press(Event::RetryArt),
+                            secondary_button("Skip artwork", palette).on_press(Event::SkipArt),
+                        ]
+                        .spacing(12)
+                        .wrap()
+                        .vertical_spacing(8)
+                        .into(),
+                    );
                 } else if let Some(token) = &self.token {
                     let (label, event) = if token.is_canceled() {
                         ("Force stop", Event::Force)
                     } else {
                         ("Cancel", Event::Cancel)
                     };
-                    body = body.push(secondary_button(label, palette).on_press(event));
+                    actions = Some(secondary_button(label, palette).on_press(event).into());
                 }
             }
             Step::Finished => {
@@ -2489,31 +2495,34 @@ impl Page {
                         }
                     }
                 }
+                let mut done = row![].spacing(12).align_y(Center);
                 if self.registered.is_some() {
-                    body = body.push(
+                    done = done.push(
                         secondary_button("Open settings", palette).on_press(Event::OpenSettings),
                     );
                 }
-                body = body.push(
+                done = done.push(
                     secondary_button("Back to library", palette).on_press(Event::BackToLibrary),
                 );
+                actions = Some(done.wrap().vertical_spacing(8).into());
             }
         }
         let back = secondary_button("Back", palette)
             .on_press_maybe((!self.busy() && self.step != Step::Finished).then_some(Event::Back));
-        let content: Element<'_, Event> = match (&self.listing, self.step) {
+        let scrolling: Element<'_, Event> = match (&self.listing, self.step) {
             // The title and notes scroll with the grid, above fixed controls, so
             // a short dialog still shows games. Keyboard focus scrolls the
             // grid to a known row.
-            (Some(listing), Step::Games) => {
-                let grid = self.grid(listing, palette, width, body.into());
-                column![grid]
-                    .push(games_actions)
-                    .spacing(14)
-                    .height(Fill)
-                    .into()
-            }
+            (Some(listing), Step::Games) => self.grid(listing, palette, width, body.into()),
             _ => scroll_body(body, Some(BODY_ID), palette),
+        };
+        let content: Element<'_, Event> = match actions {
+            Some(actions) => column![scrolling]
+                .push(actions)
+                .spacing(14)
+                .height(Fill)
+                .into(),
+            None => scrolling,
         };
         let mut page = column![].spacing(12).max_width(PAGE_MAX_WIDTH).height(Fill);
         if self.leave_prompt {
@@ -4270,6 +4279,42 @@ mod tests {
                 actions.y >= viewport.y + viewport.height - 0.01,
                 "{width}x{height}: {actions:?} under {viewport:?}"
             );
+        }
+    }
+
+    #[test]
+    fn short_dialogs_pin_every_steps_actions_below_the_scroll() {
+        use crate::layout_probe::{bounds_at, probe, within};
+        let root = tempdir().unwrap();
+        let mut pages = staged_pages(root.path());
+        for (width, height) in [(280.0, 240.0), (360.0, 200.0), (900.0, 240.0)] {
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            for (label, page) in &mut pages {
+                // Sources has no action row, and Games is covered above.
+                if matches!(*label, "sources" | "games") {
+                    continue;
+                }
+                let mut view = page.view_with_key_availability(Palette::DARK, width, 0.0, false);
+                let probe = probe(&mut view, iced::Size::new(width, height));
+                assert_eq!(probe.scrollables.len(), 1, "{label}: one scrolling region");
+                let (viewport, _) = probe.scrollables[0];
+                assert!(
+                    viewport.height > 0.0,
+                    "{label} at {width}x{height}: {viewport:?}"
+                );
+                let actions = bounds_at(&probe.node, &[0, 1, 1]);
+                assert!(
+                    within(actions, inset),
+                    "{label} at {width}x{height}: {actions:?}"
+                );
+                assert!(
+                    actions.y >= viewport.y + viewport.height - 0.01,
+                    "{label} at {width}x{height}: {actions:?} under {viewport:?}"
+                );
+            }
         }
     }
 
