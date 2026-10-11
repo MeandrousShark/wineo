@@ -989,3 +989,147 @@ fn showing_choices_wrap_without_spilling_or_squeezing() {
         assert!(spilled.is_empty(), "{width}: {spilled:?}");
     }
 }
+
+/// The size `element` takes with all the room it wants.
+fn natural_size(element: Element<'_, Event>) -> iced::Size {
+    let mut element = element;
+    crate::layout_probe::layout(&mut element, iced::Size::new(4000.0, 400.0)).size()
+}
+
+fn has_node_of_size(layout: iced::advanced::Layout<'_>, size: iced::Size) -> bool {
+    let bounds = layout.bounds();
+    ((bounds.width - size.width).abs() < 0.01 && (bounds.height - size.height).abs() < 0.01)
+        || layout.children().any(|child| has_node_of_size(child, size))
+}
+
+/// Text columns squeezed to a sliver, which wraps a letter to a line.
+fn slivers(layout: iced::advanced::Layout<'_>) -> Vec<iced::Rectangle> {
+    let bounds = layout.bounds();
+    let mut found: Vec<_> = layout.children().flat_map(slivers).collect();
+    if bounds.width > 0.0 && bounds.width < 40.0 && bounds.height > 40.0 {
+        found.push(bounds);
+    }
+    found
+}
+
+/// A narrow window must not squeeze the header buttons, the key notice's
+/// Settings button, or the rows' text and buttons, however long the
+/// environment name and game label are.
+#[test]
+fn art_page_keeps_controls_whole_at_narrow_and_wide_widths() {
+    use crate::layout_probe::probe;
+    let (_root, _paths, mut page) = fixture();
+    page.name = "an extremely long environment name that goes on and on".to_owned();
+    page.game_id = Some(123);
+    page.game = Some(Game {
+        id: 123,
+        name: "A SteamGridDB game with a title that is much longer than usual".to_owned(),
+        year: Some(2020),
+    });
+    let palette = Palette::DARK;
+    let natural = |label: &'static str| natural_size(secondary_button(label, palette).into());
+    let (back, change, settings, cancel) = (
+        natural("Back"),
+        natural("Change"),
+        natural("Settings"),
+        natural("Cancel"),
+    );
+    let row_buttons = [natural("Find..."), natural("Browse..."), natural("Remove")];
+    for downloading in [false, true] {
+        page.download = downloading.then(|| Download {
+            spot: (None, Kind::Hero),
+            token: Token::new(),
+            status: "Downloading 123.4 MB of 456.7 MB, nearly there".into(),
+        });
+        for key_available in [true, false] {
+            for (width, height) in [(360.0_f32, 300.0_f32), (900.0, 300.0), (900.0, 900.0)] {
+                let size = iced::Size::new(width, height);
+                let mut view = page.view_with_key_availability(palette, key_available);
+                let frame = iced::Rectangle::with_size(size);
+                let probe = probe(&mut view, size);
+                let case = format!("download {downloading}, key {key_available}, {width}x{height}");
+                let spilled = probe.outside(frame);
+                assert!(spilled.is_empty(), "{case}: {spilled:?}");
+                let layout = iced::advanced::Layout::new(&probe.node);
+                assert!(has_node_of_size(layout, back), "{case}: Back was squeezed");
+                assert!(
+                    has_node_of_size(layout, change),
+                    "{case}: Change was squeezed"
+                );
+                assert_eq!(
+                    has_node_of_size(layout, settings),
+                    !key_available,
+                    "{case}: Settings"
+                );
+                // The path editor also has a Cancel, but it is closed here.
+                assert_eq!(
+                    has_node_of_size(layout, cancel),
+                    downloading,
+                    "{case}: Cancel"
+                );
+                for button in row_buttons {
+                    assert!(
+                        has_node_of_size(layout, button),
+                        "{case}: a row button was squeezed"
+                    );
+                }
+                let squeezed = slivers(layout);
+                assert!(squeezed.is_empty(), "{case}: {squeezed:?}");
+            }
+        }
+    }
+}
+
+/// At a normal width the header keeps its old look: Back and the title on the
+/// left, the game and Change on the right edge, all on one line.
+#[test]
+fn art_page_header_pins_game_and_change_right_at_normal_widths() {
+    use crate::layout_probe::probe;
+    let (_root, _paths, page) = fixture();
+    let palette = Palette::DARK;
+    let size = iced::Size::new(900.0, 600.0);
+    let mut view = page.view_with_key_availability(palette, true);
+    let probe = probe(&mut view, size);
+    let change = natural_size(secondary_button("Change", palette).into());
+    // The row cards below the header span the content width.
+    fn rightmost(layout: iced::advanced::Layout<'_>, below: f32) -> f32 {
+        let bounds = layout.bounds();
+        let own = if bounds.y > below {
+            bounds.x + bounds.width
+        } else {
+            0.0
+        };
+        layout
+            .children()
+            .map(|child| rightmost(child, below))
+            .fold(own, f32::max)
+    }
+    let right_edge = rightmost(iced::advanced::Layout::new(&probe.node), 100.0);
+    let mut found = None;
+    fn find(
+        layout: iced::advanced::Layout<'_>,
+        size: iced::Size,
+        found: &mut Option<iced::Rectangle>,
+    ) {
+        let bounds = layout.bounds();
+        if found.is_none()
+            && (bounds.width - size.width).abs() < 0.01
+            && (bounds.height - size.height).abs() < 0.01
+        {
+            *found = Some(bounds);
+        }
+        for child in layout.children() {
+            find(child, size, found);
+        }
+    }
+    find(iced::advanced::Layout::new(&probe.node), change, &mut found);
+    let change = found.expect("Change button");
+    assert!(
+        (change.x + change.width - right_edge).abs() < 0.5,
+        "{change:?} should end at {right_edge}"
+    );
+    assert!(
+        change.y < 24.0 + 40.0,
+        "{change:?} should share Back's line"
+    );
+}

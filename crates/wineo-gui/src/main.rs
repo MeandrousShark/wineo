@@ -8,6 +8,7 @@ mod chips;
 mod download_progress;
 mod downloads_page;
 mod downloads_work;
+mod ends;
 mod flow;
 mod focus_button;
 mod fonts;
