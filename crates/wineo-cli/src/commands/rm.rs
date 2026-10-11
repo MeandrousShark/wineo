@@ -12,13 +12,18 @@ pub struct Args {
     /// Also move the Wine prefix and snapshots to trash
     #[arg(long)]
     delete_prefix: bool,
+
+    /// Remove it even when its GOG game is mid-update
+    #[arg(long)]
+    force: bool,
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
-    let entry = trash::remove_with(
+    let entry = trash::remove_with_force(
         paths,
         &args.name,
         args.delete_prefix,
+        args.force,
         &wineo_core::cancel::Token::new(),
         |event| {
             if event == trash::RemoveEvent::Waiting {
