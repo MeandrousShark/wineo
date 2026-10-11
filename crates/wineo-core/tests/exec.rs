@@ -46,6 +46,12 @@ corelimit)
     grep 'Max core file size' /proc/self/limits
     exit 0
     ;;
+zombie-group)
+    # A worker that exits at once, left unreaped in this group by a parent
+    # that moves to a session of its own.
+    (sleep 0.1 & exec setsid sleep 3) &
+    exit 0
+    ;;
 forest)
     sleep 60 &
     printf '%s %s\n' "$$" "$!" >"$WINEPREFIX/forest-pids"
@@ -845,6 +851,40 @@ fn canceling_while_waiting_on_a_gog_handoff_ends_the_group() {
     thread::sleep(Duration::from_millis(2500));
     assert!(!f.prefix.join("handoff-done").exists());
     assert!(wineo_core::gog::folder::lock_for_update(&f.paths, &folder, "rimworld").is_ok());
+}
+
+#[test]
+fn a_group_left_with_only_a_zombie_ends_the_wait() {
+    if which("setsid").is_none() {
+        return;
+    }
+    let f = Fixture::built();
+    let folder = gog_game(&f, "rimworld", false);
+    let started = Instant::now();
+    let status = launch::exec(
+        &f.paths,
+        "app",
+        "zombie-group",
+        &[folder.display().to_string()],
+        &BTreeMap::new(),
+        &Token::new(),
+        |_| {},
+    )
+    .unwrap();
+    assert!(status.success());
+    // The worker's parent lives on for three seconds outside the group.
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(wineo_core::gog::folder::lock_for_update(&f.paths, &folder, "rimworld").is_ok());
+}
+
+fn which(program: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(program))
+        .find(|path| path.is_file())
 }
 
 #[test]

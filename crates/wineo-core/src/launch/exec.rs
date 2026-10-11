@@ -175,13 +175,7 @@ fn run(
                     }
                 },
             };
-            if !whole_group
-                || settled(
-                    crate::process::group_still_exists(group),
-                    killing,
-                    killed_at,
-                )
-            {
+            if !whole_group || settled(group_live(group), killing, killed_at) {
                 // Read only what is present now; handed-off programs can keep
                 // writing, and must not extend the lifetime of this worker.
                 let end = log.metadata()?.len();
@@ -216,14 +210,23 @@ fn run(
     result
 }
 
-/// Whether the wait on a group is over. The program led its own group and
-/// was reaped here, and orphans are reaped by init, so the kernel's answer
-/// on whether the group exists needs no `/proc`. Unknown counts as live, so
-/// a folder is never let go early, unless a cancel has already killed the
-/// group, which then gets `KILL_GRACE` at most.
-fn settled(exists: Option<bool>, killing: bool, killed_at: Option<Instant>) -> bool {
-    let gone = match exists {
-        Some(exists) => !exists,
+/// Whether anything in the group can still run. The kernel says for sure
+/// when the group is gone, with no `/proc` needed. A group that's left can
+/// hold just a zombie nobody reaps, like a worker whose parent left the
+/// group, so it's then looked at member by member.
+fn group_live(group: u32) -> Option<bool> {
+    match crate::process::group_still_exists(group) {
+        Some(false) => Some(false),
+        _ => crate::process::group_has_live_members(group),
+    }
+}
+
+/// Whether the wait on a group is over. Unknown counts as live, so a folder
+/// is never let go early, unless a cancel has already killed the group,
+/// which then gets `KILL_GRACE` at most.
+fn settled(live: Option<bool>, killing: bool, killed_at: Option<Instant>) -> bool {
+    let gone = match live {
+        Some(live) => !live,
         None => killing,
     };
     gone || killed_at.is_some_and(|at| at.elapsed() >= KILL_GRACE)
