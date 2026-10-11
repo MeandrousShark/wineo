@@ -930,7 +930,7 @@ Settled by the maintainer on 2026-10-11, before step 4:
   rules. Winetricks isn't covered, since it writes to the prefix, not the
   game folder.
 
-Chosen during step 4, on 2026-10-11, for the maintainer to confirm:
+Chosen during step 4 and confirmed by the maintainer on 2026-10-11:
 
 - **Refusing before hooks.** A read-only precheck refuses a blocked launch
   before any `before` hook runs, and `wineo restart` runs it before stopping
