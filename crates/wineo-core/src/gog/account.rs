@@ -344,8 +344,9 @@ impl<'a> Session<'a> {
         keyring: &'a dyn Keyring,
         client: Client,
     ) -> Result<Option<Self>, AccountError> {
-        // Read before the login, so a change in between shows up as a newer
-        // generation on the next check rather than going unnoticed.
+        // Changes bump the generation before they save, so reading the two
+        // without the lock could pair a new generation with the old login.
+        let _lock = CredentialsLock::acquire(paths)?;
         let generation = read_generation(paths)?;
         Ok(stored_login(paths, keyring)?.map(|(login, source)| Self {
             paths: paths.clone(),

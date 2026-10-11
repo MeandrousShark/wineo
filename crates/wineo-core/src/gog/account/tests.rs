@@ -648,3 +648,35 @@ fn no_secret_reaches_debug_or_any_error() {
         }
     }
 }
+
+#[test]
+fn opening_waits_for_a_login_change_in_progress() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "RA", USER);
+    let server = Server::start(Vec::new());
+    let session_client = client(&server);
+    // Another process has announced a switch but not saved it yet.
+    let lock = CredentialsLock::acquire(&paths).unwrap();
+    bump_generation(&paths, &lock).unwrap();
+    std::thread::scope(|scope| {
+        let (sent, received) = std::sync::mpsc::channel();
+        let (paths_ref, keyring_ref) = (&paths, &keyring);
+        let opener = scope.spawn(move || {
+            let session = Session::open(paths_ref, keyring_ref, session_client)
+                .unwrap()
+                .unwrap();
+            sent.send(()).unwrap();
+            session.user_id()
+        });
+        assert!(
+            received
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "opening must wait for the change instead of pairing the new generation with the old login"
+        );
+        save(&paths, &keyring, &login_of("RB", OTHER_USER)).unwrap();
+        drop(lock);
+        assert_eq!(opener.join().unwrap(), UserId::new(OTHER_USER));
+    });
+}
