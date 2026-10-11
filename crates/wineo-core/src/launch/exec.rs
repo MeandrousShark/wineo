@@ -40,9 +40,9 @@ pub enum ExecEvent {
 
 /// Runs an arbitrary program for a frontend, without consulting the current
 /// directory. Holds shared launch, build, and GOG folder in-use locks until
-/// the started process exits. Cancellation only signals its process group, never the whole prefix.
-/// A nonzero or canceled process exit is returned as a status. Cancellation
-/// before spawning is an error. No run record or playtime is written, and a
+/// the started process exits. Cancellation only signals its process group,
+/// never the whole prefix. A nonzero or canceled process exit is returned as
+/// a status. Cancellation before spawning is an error. No run record or playtime is written, and a
 /// frontend crash leaves the program running while releasing its locks.
 pub fn exec(
     paths: &Paths,

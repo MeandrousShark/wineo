@@ -7,6 +7,7 @@ use signal_hook::consts::SIGINT;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
+use wineo_core::gog::folder::FolderError;
 use wineo_core::launch::{self, Host, Launch, parse_env_assignment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
@@ -76,12 +77,17 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let _guard = locks.acquire(Operation::Launch, &environment.name, &[prefix])?;
     Environment::ensure_exists(paths, &environment.name)?;
     Runtime::new(paths, &environment.name).check_resolved(&environment.name)?;
-    let _folders = launch::protect(
-        paths,
-        &environment,
-        &launch,
-        &wineo_core::cancel::Token::new(),
-    )?;
+    // Claiming a folder can wait on its state lock, so Ctrl+C still works
+    // until the program starts and takes Ctrl+C itself.
+    let cancellation = Cancellation::new()?;
+    let folders = launch::protect(paths, &environment, &launch, &cancellation.token);
+    drop(cancellation);
+    let _folders = match folders {
+        Err(err) if matches!(err.downcast_ref(), Some(FolderError::Canceled)) => {
+            return Ok(ExitCode::from(130));
+        }
+        result => result?,
+    };
     launch::reconcile(paths, &global, &environment, &launch, |event| {
         build::print_event(paths, &environment.name, event)
     })?;
