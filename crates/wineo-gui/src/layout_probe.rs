@@ -46,6 +46,78 @@ pub(crate) fn probe<M>(element: &mut Element<'_, M>, size: Size) -> Probe {
     }
 }
 
+/// A laid out tree that keeps its widget state, so operations that scroll it
+/// show in what the next operation reads.
+pub(crate) struct Laid<'a, M> {
+    element: Element<'a, M>,
+    tree: Tree,
+    pub(crate) node: Node,
+    renderer: iced::Renderer,
+}
+
+pub(crate) fn lay_out<'a, M>(mut element: Element<'a, M>, size: Size) -> Laid<'a, M> {
+    let renderer = renderer();
+    let mut tree = Tree::new(element.as_widget());
+    let node = element.as_widget_mut().layout(
+        &mut tree,
+        &renderer,
+        &layout::Limits::new(Size::ZERO, size),
+    );
+    Laid {
+        element,
+        tree,
+        node,
+        renderer,
+    }
+}
+
+impl<M> Laid<'_, M> {
+    /// Runs `operation` and any operation it chains to.
+    pub(crate) fn run(&mut self, mut operation: Box<dyn Operation>) {
+        loop {
+            self.element.as_widget_mut().operate(
+                &mut self.tree,
+                Layout::new(&self.node),
+                &self.renderer,
+                operation.as_mut(),
+            );
+            match operation.finish() {
+                iced::advanced::widget::operation::Outcome::Chain(next) => operation = next,
+                _ => break,
+            }
+        }
+    }
+
+    /// The scroll offsets of every scrollable, top first.
+    pub(crate) fn offsets(&mut self) -> Vec<f32> {
+        struct Offsets(Vec<f32>);
+        impl Operation for Offsets {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+
+            fn scrollable(
+                &mut self,
+                _id: Option<&Id>,
+                _bounds: Rectangle,
+                _content_bounds: Rectangle,
+                translation: Vector,
+                _state: &mut dyn Scrollable,
+            ) {
+                self.0.push(translation.y);
+            }
+        }
+        let mut offsets = Box::new(Offsets(Vec::new()));
+        self.element.as_widget_mut().operate(
+            &mut self.tree,
+            Layout::new(&self.node),
+            &self.renderer,
+            offsets.as_mut(),
+        );
+        offsets.0
+    }
+}
+
 /// Scrollable widgets report their viewport and content bounds only through
 /// operations, which is how scrolled content is told apart from overflow.
 struct Scrollables(Vec<(Rectangle, Rectangle)>);
