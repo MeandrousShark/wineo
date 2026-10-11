@@ -6,10 +6,14 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use super::{FolderError, FolderLock, FolderState, InUseGuard, InUseLock, find, key, read_file};
 use crate::paths::Paths;
+
+/// How many times a launch looks for its folders again when one appeared
+/// while it was locking, before giving up.
+const ATTEMPTS: usize = 3;
 
 /// The GOG folders a launch touches, as found without locks.
 struct Touched<'a> {
@@ -46,15 +50,23 @@ impl<'a> Touched<'a> {
             Some(gog_id) => match find(paths, name, gog_id)? {
                 Some(state) => Some(state),
                 None => {
-                    let ownerless = matched
+                    let game = matched
                         .iter()
-                        .find(|state| state.owner.is_none() && state.is_game(gog_id))
+                        .find(|state| state.is_game(gog_id))
                         .ok_or_else(|| FolderError::StateMissing {
                             name: name.to_owned(),
                             gog_id: gog_id.to_owned(),
                         })?;
+                    // Another environment of the same game got here first.
+                    if let Some(owner) = &game.owner {
+                        return Err(FolderError::OwnedByOther {
+                            folder: game.folder.clone(),
+                            owner: owner.clone(),
+                        }
+                        .into());
+                    }
                     claim = true;
-                    Some(ownerless.clone())
+                    Some(game.clone())
                 }
             },
         };
@@ -144,8 +156,7 @@ pub fn protect(
     touched: &[PathBuf],
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<InUseGuard>> {
-    let found = Touched::find(paths, name, gog_id, touched)?;
-    let guards = found.lock_in_use(paths)?;
+    let (found, guards) = lock_touched(paths, name, gog_id, touched)?;
     if found.claim
         && let Some(folder) = &found.own
     {
@@ -162,6 +173,50 @@ pub fn protect(
         found.check(folder, state)?;
     }
     Ok(guards)
+}
+
+/// Finds the folders a launch touches and takes their in-use locks. They're
+/// found without locks, so they're looked for again once locked: a folder
+/// that became a game folder meanwhile means starting over, which keeps the
+/// locks in key order.
+fn lock_touched<'a>(
+    paths: &Paths,
+    name: &'a str,
+    gog_id: Option<&'a str>,
+    touched: &[PathBuf],
+) -> Result<(Touched<'a>, Vec<InUseGuard>)> {
+    for _ in 0..ATTEMPTS {
+        let found = Touched::find(paths, name, gog_id, touched)?;
+        between_find_and_lock();
+        let guards = found.lock_in_use(paths)?;
+        let again = Touched::find(paths, name, gog_id, touched)?;
+        if again
+            .states
+            .keys()
+            .all(|key| found.states.contains_key(key))
+        {
+            return Ok((again, guards));
+        }
+    }
+    bail!("{name}'s GOG folders changed while locking; retry")
+}
+
+#[cfg(test)]
+thread_local! {
+    static BETWEEN: std::cell::RefCell<Option<Box<dyn FnMut() -> bool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs a test's hook between finding folders and locking them. It's taken
+/// out while it runs, so it can launch too, and stays armed while it
+/// returns true.
+fn between_find_and_lock() {
+    #[cfg(test)]
+    if let Some(mut hook) = BETWEEN.with(|hook| hook.borrow_mut().take())
+        && hook()
+    {
+        BETWEEN.with(|slot| *slot.borrow_mut() = Some(hook));
+    }
 }
 
 /// What `protect` would refuse, found without claiming, writing, or keeping
@@ -437,7 +492,7 @@ mod tests {
             "an owned folder is never written again"
         );
         let error = refusal(protect(&paths, "other", Some("1094900565"), &[exe], NEVER));
-        assert!(matches!(error, FolderError::StateMissing { .. }));
+        assert!(matches!(&error, FolderError::OwnedByOther { owner, .. } if owner == "rimworld"));
         assert_eq!(owner(&paths, &folder).as_deref(), Some("rimworld"));
     }
 
@@ -546,6 +601,118 @@ mod tests {
         ));
         assert_eq!(owner(&paths, &folder), None);
         assert!(lock_for_update(&paths, &folder, "rimworld").is_ok());
+    }
+
+    fn arm(hook: impl FnMut() -> bool + 'static) {
+        BETWEEN.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    #[test]
+    fn a_folder_that_becomes_a_game_while_locking_is_locked_too() {
+        let (root, paths) = setup();
+        let folder = fs::canonicalize(root.path())
+            .unwrap()
+            .join("Games/RimWorld");
+        let touched = [folder.join("RimWorld.exe")];
+        let (hook_paths, hook_root) = (paths.clone(), root.path().to_owned());
+        arm(move || {
+            game(&hook_paths, &hook_root, Some("rimworld"), false);
+            false
+        });
+        let held = protect(&paths, "copy", None, &touched, NEVER).unwrap();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].lock().folder(), folder);
+        assert!(lock_for_update(&paths, &folder, "rimworld").is_err());
+    }
+
+    #[test]
+    fn folders_that_keep_appearing_are_refused() {
+        let (root, paths) = setup();
+        let base = fs::canonicalize(root.path()).unwrap();
+        let touched: Vec<PathBuf> = (0..ATTEMPTS + 1)
+            .map(|n| base.join(format!("g{n}/game.exe")))
+            .collect();
+        let hook_paths = paths.clone();
+        let mut next = touched.clone().into_iter();
+        arm(move || {
+            if let Some(exe) = next.next() {
+                let folder = exe.parent().unwrap();
+                fs::create_dir_all(folder).unwrap();
+                FolderLock::exclusive(&hook_paths, folder, NEVER)
+                    .unwrap()
+                    .write(&FolderState::new(folder.to_owned(), Some("x".to_owned())))
+                    .unwrap();
+            }
+            true
+        });
+        let error = protect(&paths, "copy", None, &touched, NEVER).unwrap_err();
+        BETWEEN.with(|slot| slot.borrow_mut().take());
+        assert_eq!(
+            error.to_string(),
+            "copy's GOG folders changed while locking; retry"
+        );
+    }
+
+    #[test]
+    fn a_second_environment_of_the_game_loses_the_claim() {
+        let (root, paths) = setup();
+        let folder = game(&paths, root.path(), None, false);
+        let touched = vec![folder.join("RimWorldLinux")];
+        let (hook_paths, hook_touched) = (paths.clone(), touched.clone());
+        // The winner claims after the loser found the folder ownerless.
+        arm(move || {
+            protect(
+                &hook_paths,
+                "rimworld",
+                Some("1094900565"),
+                &hook_touched,
+                NEVER,
+            )
+            .unwrap();
+            false
+        });
+        let error = refusal(protect(
+            &paths,
+            "other",
+            Some("1094900565"),
+            &touched,
+            NEVER,
+        ));
+        assert!(matches!(&error, FolderError::OwnedByOther { owner, .. } if owner == "rimworld"));
+        assert_eq!(owner(&paths, &folder).as_deref(), Some("rimworld"));
+    }
+
+    #[test]
+    fn two_environments_racing_for_one_folder_leave_one_owner() {
+        let (root, paths) = setup();
+        let folder = game(&paths, root.path(), None, false);
+        let barrier = Arc::new(Barrier::new(2));
+        let racers: Vec<_> = ["rimworld", "other"]
+            .into_iter()
+            .map(|name| {
+                let (paths, folder, barrier) = (paths.clone(), folder.clone(), barrier.clone());
+                thread::spawn(move || {
+                    barrier.wait();
+                    protect(&paths, name, Some("1094900565"), &[folder], NEVER)
+                        .map(|_| name)
+                        .map_err(|error| error.downcast::<FolderError>().unwrap())
+                })
+            })
+            .collect();
+        let results: Vec<_> = racers
+            .into_iter()
+            .map(|racer| racer.join().unwrap())
+            .collect();
+        let winners: Vec<_> = results
+            .iter()
+            .filter_map(|result| result.as_ref().ok())
+            .collect();
+        assert_eq!(winners.len(), 1, "{results:?}");
+        assert_eq!(owner(&paths, &folder).as_deref(), Some(*winners[0]));
+        assert!(results.iter().any(|result| matches!(
+            result,
+            Err(FolderError::OwnedByOther { owner, .. }) if owner == winners[0]
+        )));
     }
 
     #[test]
