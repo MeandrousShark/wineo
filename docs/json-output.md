@@ -171,6 +171,8 @@ The codes are stable:
 | `runtime` | `lost_run`, `installer_unresolved`, `restore_interrupted`, `state_dir_stray`, `stats_stray` |
 | `desktop` | `desktop_entry_stray`, `desktop_outdated`, `desktop_portable` |
 | `steam` | `steam_not_found`, `steam_install_missing`, `steam_library_unavailable`, `steam_data_unknown` |
+| `trash` | `trash_interrupted`, `trash_invalid` |
+| `gog` | `gog_state_invalid`, `gog_state_missing`, `gog_folder_missing`, `gog_folder_taken`, `gog_mid_update`, `gog_owner_missing` |
 | `art` | `art_config_invalid`, `art_file_missing`, `art_target_unknown`, `art_duplicates`, `art_dir_stray` |
 
 A native target's working dir, gamemode, gamescope, and MangoHud problems use the `target` area.

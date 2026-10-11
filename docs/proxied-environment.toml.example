@@ -8,8 +8,8 @@ schema_version = 1
 
 # Required. Makes this a proxied environment. The launcher owns the prefix and
 # the launch, so prefix, runner, arch, gameid, store, dxvk, vkd3d, wayland,
-# winetricks, gamemode, mangohud, gamescope, heroic_id, [env], and [targets]
-# are refused.
+# winetricks, gamemode, mangohud, gamescope, heroic_id, gog_id, [env], and
+# [targets] are refused.
 kind = "proxied"
 
 # Required. Who launches the game. Only steam for now.

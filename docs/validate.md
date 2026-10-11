@@ -125,6 +125,12 @@ storage is reported for attention rather than recovered by ordinary commands.
 | Desktop | Portable config with `desktop = true` | warning | |
 | Steam game | Steam isn't installed, or the chosen install is missing | error | |
 | Steam game | A Steam library is unavailable, or a Steam file can't be read | error | |
+| GOG game | A GOG folder state can't be read | error | |
+| GOG game | `gog_id` set, but no folder state names the environment | error | hint: migrate it again, or `--unset gog_id` |
+| GOG game | The environment's folder is owned by another environment | error | |
+| GOG game | The game folder is mid-update | error | hint: `wineo update` |
+| GOG game | Game folder missing or can't be checked | warning | forget it, only when surely deleted |
+| GOG game | A folder's owner no longer exists | warning | clear the owner |
 | Art | `art.toml` fails to parse | error | |
 | Art | Recorded file missing, or a target that no longer exists | warning | drop the record |
 | Art | Duplicate files for one kind | warning | |
@@ -145,6 +151,10 @@ Some things are left out on purpose:
   installer has no fix, because `wineo stop` can't reach it once the
   environment is gone. Remove it by hand once nothing from it is running.
 - Runner downloads are a hint, not a fix, since runners are big.
+- A missing GOG game folder may be on an unmounted drive, so its state is
+  forgotten only when it has no owner and no journal, and the folder's
+  nearest existing parent is on the filesystem the state recorded. Anything
+  less certain is only reported.
 
 Locks aren't checked. Every wineo lock is released by the kernel when its
 holder exits, so a stale one can't exist.
@@ -154,7 +164,8 @@ holder exits, so a stale one can't exist.
 Only the active root is checked: the standard locations, or the folder given
 by `--portable` or `WINEO_PORTABLE_DIR`. Portable environments never get
 desktop entries, so desktop checks are skipped there, apart from the warning
-about a hand-edited `desktop = true`.
+about a hand-edited `desktop = true`. GOG games live in the host library
+only, so GOG checks are skipped in a portable root.
 
 Shared-prefix discovery is also limited to registrations in the selected root;
 idle registrations in other roots may not be detected.

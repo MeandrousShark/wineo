@@ -125,7 +125,9 @@ snapshots, external dependencies, and settings that change before copying,
 including any literal source-prefix paths in arguments or environment
 variables that need manual review. External links are counted; add `-v` to
 list each one. Copied targets are always written with `desktop = false`, and
-the review lists that change. When `DIR/config/`
+the review lists that change. `gog_id` is removed too, from the config and
+from the configs saved in copied snapshots, since GOG games live in the host
+library and the copy shares the original game folder. When `DIR/config/`
 does not exist yet, the copy also brings over the source's global config and
 user templates, rebasing a copied `defaults.prefix_root` into
 `DIR/prefixes/`; otherwise the portable folder's own global config and
