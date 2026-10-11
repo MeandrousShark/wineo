@@ -368,6 +368,34 @@ fn an_absurd_page_count_is_malformed() {
     assert_eq!(server.requests().len(), 1);
 }
 
+#[test]
+fn a_page_total_that_changes_mid_fetch_fails_the_whole_list() {
+    // Grows on page 2, and shrinks on page 2 of a longer list.
+    for (first_total, second_total) in [(2, 3), (3, 2)] {
+        let server = FakeGog::start(move |request| match request.query("page").as_deref() {
+            Some("1") => reply(200, &owned_page(1, first_total, &[1])),
+            Some("2") => reply(200, &owned_page(2, second_total, &[2])),
+            _ => reply(200, &owned_page(3, 3, &[3])),
+        });
+        let error = server.client().owned_games(ACCESS).unwrap_err();
+        assert_eq!(
+            (error.endpoint(), error.kind()),
+            (Endpoint::Owned, ErrorKind::Malformed),
+            "{first_total} then {second_total}"
+        );
+        // Nothing past the page that disagreed is asked for.
+        assert_eq!(server.requests().len(), 2);
+    }
+}
+
+#[test]
+fn product_details_round_trip_through_serde() {
+    let server = FakeGog::start(|_| reply(200, &product_body("https://api.gog.com")));
+    let product = server.client().product(1, None).unwrap();
+    let text = serde_json::to_string(&product).unwrap();
+    assert_eq!(serde_json::from_str::<Product>(&text).unwrap(), product);
+}
+
 fn product_body(base: &str) -> String {
     json!({
         "id": 1094900565,

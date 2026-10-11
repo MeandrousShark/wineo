@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{Endpoint, Error, ErrorKind};
@@ -15,7 +16,7 @@ use crate::json;
 
 /// `content_system_compatibility`, as GOG states it. Sometimes wrong, so
 /// `Product::installer_platforms` gives the installers' view to check it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Compatibility {
     pub windows: bool,
     pub mac: bool,
@@ -23,7 +24,7 @@ pub struct Compatibility {
 }
 
 /// HTTPS image URLs. Each is optional, since products vary.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Images {
     pub background: Option<String>,
     pub logo: Option<String>,
@@ -33,7 +34,7 @@ pub struct Images {
     pub sidebar_icon2x: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DownloadFile {
     /// GOG's file id, like `en1installer0`.
     pub id: String,
@@ -43,7 +44,7 @@ pub struct DownloadFile {
 }
 
 /// One installer or patch, for one OS and language.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Download {
     pub id: String,
     pub name: Option<String>,
@@ -57,7 +58,7 @@ pub struct Download {
     pub files: Vec<DownloadFile>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Product {
     pub id: u64,
     pub title: String,

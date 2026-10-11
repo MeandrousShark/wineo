@@ -66,8 +66,9 @@ impl Client {
         )
     }
 
-    /// A server standing in for GOG, which may be plain HTTP. Only for tests
-    /// and debug builds.
+    /// A server standing in for GOG, which may be plain HTTP. Release builds
+    /// don't have it, so they can only ever talk to GOG over HTTPS.
+    #[cfg(any(test, debug_assertions))]
     pub fn with_base(user_agent: &str, base: &str) -> Result<Self, Error> {
         let endpoints =
             Endpoints::all_at(base).ok_or(Error::new(Endpoint::Setup, ErrorKind::Request))?;
@@ -161,7 +162,9 @@ impl Client {
         let mut products = first.products;
         for page in 2..=total.min(MAX_PAGES) {
             let next = self.owned_page(access_token, page)?;
-            if next.page != page {
+            // A changed total means the library moved under the fetch, so
+            // the pages may not add up to it.
+            if next.page != page || next.total_pages != total {
                 return Err(malformed());
             }
             products.extend(next.products);
