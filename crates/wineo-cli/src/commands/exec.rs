@@ -141,20 +141,31 @@ fn wait_with(
     program: &str,
     mut live: impl FnMut() -> Option<bool>,
     mut kill: impl FnMut(),
-    mut reap: impl FnMut(),
+    mut reap: impl FnMut() -> bool,
     mut say: impl FnMut(&str),
 ) {
+    let mut scans = process::EmptyScans::default();
     let mut waiting = false;
     let mut stopping: Option<Instant> = None;
     let mut forced = false;
     let mut killed: Option<Instant> = None;
     loop {
-        reap();
-        let live = live();
+        // No children at all is definitive for a subreaper. wineserver is
+        // usually one once it has left the group, though, so the scan,
+        // confirmed, is what normally ends the wait.
+        if reap() {
+            return;
+        }
+        let scanned = live();
+        let live = scans.observe(scanned.map(|live| process::Scan {
+            live,
+            witness: Vec::new(),
+        }));
         if live == Some(false) {
             return;
         }
-        if !waiting {
+        // Not while an empty scan is only being confirmed.
+        if !waiting && scanned != Some(false) {
             waiting = true;
             say(&format!(
                 "Waiting for programs {} started. Press Ctrl+C to stop them.",
@@ -177,7 +188,7 @@ fn wait_with(
             killed = Some(Instant::now());
         }
         if killed.is_some_and(|at| live.is_none() || at.elapsed() >= KILL_GRACE) {
-            reap();
+            let _ = reap();
             return;
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -230,7 +241,7 @@ mod tests {
                 None
             },
             || kills += 1,
-            || {},
+            || false,
             |line| said.push(line.to_owned()),
         );
         assert_eq!(kills, 1);
@@ -253,7 +264,7 @@ mod tests {
             "launcher.exe",
             || Some(false),
             || {},
-            || {},
+            || false,
             |line| said.push(line.to_owned()),
         );
         assert!(said.is_empty());
@@ -273,10 +284,11 @@ mod tests {
                 (polls < 3).then_some(true).or(Some(false))
             },
             || kills += 1,
-            || {},
+            || false,
             |_| {},
         );
         assert_eq!(kills, 1);
-        assert_eq!(polls, 3);
+        // Two live polls, then an empty one confirmed twice more.
+        assert_eq!(polls, 5);
     }
 }

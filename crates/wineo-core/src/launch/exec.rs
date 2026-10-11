@@ -143,6 +143,7 @@ fn run(
     let mut stopping = None;
     let mut killing = false;
     let mut killed_at = None;
+    let mut scans = crate::process::EmptyScans::default();
     let mut exited = None;
     let mut release = Some(release);
     let result = (|| {
@@ -175,7 +176,7 @@ fn run(
                     }
                 },
             };
-            if !whole_group || settled(group_live(group), killing, killed_at) {
+            if !whole_group || settled(group_live(group, &mut scans), killing, killed_at) {
                 // Read only what is present now; handed-off programs can keep
                 // writing, and must not extend the lifetime of this worker.
                 let end = log.metadata()?.len();
@@ -213,11 +214,12 @@ fn run(
 /// Whether anything in the group can still run. The kernel says for sure
 /// when the group is gone, with no `/proc` needed. A group that's left can
 /// hold just a zombie nobody reaps, like a worker whose parent left the
-/// group, so it's then looked at member by member.
-fn group_live(group: u32) -> Option<bool> {
+/// group, so it's then looked at member by member, and only counts as empty
+/// once the same zombies have been all that's there for a few polls.
+fn group_live(group: u32, scans: &mut crate::process::EmptyScans) -> Option<bool> {
     match crate::process::group_still_exists(group) {
         Some(false) => Some(false),
-        _ => crate::process::group_has_live_members(group),
+        _ => scans.observe(crate::process::scan_existing_group(group)),
     }
 }
 

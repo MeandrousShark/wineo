@@ -562,3 +562,31 @@ fn exec_reaps_what_it_adopts_while_it_waits() {
     assert!(running.wait().unwrap().success());
     assert!(prefix.join("handoff-done").exists());
 }
+
+#[test]
+fn exec_holds_the_folder_through_a_chain_that_keeps_forking() {
+    let f = Fixture::new();
+    let folder = rimworld(&f, false);
+    f.environment("copy", "");
+    let prefix = f.root.path().join("prefixes/copy");
+    let mut running = f
+        .wineo()
+        .args(["exec", "copy", "fork-chain", &folder.display().to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for("the chain to start", || {
+        prefix.join("chain-started").exists()
+    });
+    while !prefix.join("chain-done").exists() {
+        assert!(
+            running.try_wait().unwrap().is_none(),
+            "exec returned while the chain was running"
+        );
+        assert!(update_refused(&f, &folder));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(running.wait().unwrap().success());
+    assert!(!update_refused(&f, &folder));
+}

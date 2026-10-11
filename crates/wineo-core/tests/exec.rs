@@ -854,6 +854,39 @@ fn canceling_while_waiting_on_a_gog_handoff_ends_the_group() {
 }
 
 #[test]
+fn a_chain_that_keeps_forking_holds_the_folder_until_it_ends() {
+    use wineo_core::gog::folder::lock_for_update;
+
+    let f = Fixture::built();
+    let folder = gog_game(&f, "rimworld", false);
+    let done = f.prefix.join("chain-done");
+    let (paths, arg) = (f.paths.clone(), folder.display().to_string());
+    let exec = thread::spawn(move || {
+        launch::exec(
+            &paths,
+            "app",
+            "fork-chain",
+            &[arg],
+            &BTreeMap::new(),
+            &Token::new(),
+            |_| {},
+        )
+        .unwrap()
+    });
+    wait_for(|| f.prefix.join("chain-started").exists());
+    while !done.exists() {
+        assert!(
+            !exec.is_finished(),
+            "exec returned while the chain was running"
+        );
+        assert!(lock_for_update(&f.paths, &folder, "rimworld").is_err());
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(exec.join().unwrap().success());
+    assert!(lock_for_update(&f.paths, &folder, "rimworld").is_ok());
+}
+
+#[test]
 fn a_group_left_with_only_a_zombie_ends_the_wait() {
     if which("setsid").is_none() {
         return;

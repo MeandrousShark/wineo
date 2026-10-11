@@ -4,6 +4,8 @@
 /// a background writer behind, handoff exits and leaves something running for
 /// a couple of seconds the way an installer hands off to its child,
 /// handoff-two does the same but also leaves a child that exits at once,
+/// fork-chain leaves a chain where each link starts the next and exits, for
+/// a second or so,
 /// break-wineserver deletes the wineserver beside it, a program whose name ends
 /// in install-game.exe installs a game into the prefix, and any other program
 /// runs until `wineboot --end-session` or `wineserver -k` ends it.
@@ -98,6 +100,19 @@ handoff-two)
     (sleep 0.1) &
     (sleep 2; touch "$WINEPREFIX/handoff-done"; rm -f "$pids") &
     echo "$! $!" >"$pids"
+    exit 0
+    ;;
+fork-chain)
+    link() {
+        sleep 0.01
+        if [ "$1" -gt 0 ]; then
+            link $(($1 - 1)) &
+        else
+            touch "$WINEPREFIX/chain-done"
+        fi
+    }
+    link 80 &
+    echo started >"$WINEPREFIX/chain-started"
     exit 0
     ;;
 break-wineserver)
