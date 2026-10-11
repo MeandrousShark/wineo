@@ -16,6 +16,7 @@ pub mod error;
 pub mod external_runners;
 mod files;
 pub mod gamescope;
+pub mod gog;
 pub mod heroic;
 pub(crate) mod heroic_args;
 pub mod heroic_import;
