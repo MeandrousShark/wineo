@@ -70,10 +70,22 @@ answers carry over from 0049's questions:
   download cache and the game folder share a filesystem, the sum is
   checked.
 - **Order:** download, then create the environment and the folder's state
-  file with an `install` journal naming the packages and every path it
-  will write, install, then commit. 0049's journal, durability, and
-  recovery rules apply; a crash leaves the journal, and `wineo update NAME`
-  finishes the install.
+  file with an `install` journal and no `[committed]` yet, install, then
+  commit. 0049's journal, publishing order, durability, and recovery rules
+  apply; a crash leaves the journal, and `wineo update NAME` finishes the
+  install.
+- **Native installs** name every entry they'll write in `attempted`, like
+  0049's updates, so cleanup after a failure is exact.
+- **Windows installs and updates** can't: an Inno installer runs its own
+  scripts and programs, so its package doesn't say every file it will
+  write. Their journal records the operation, the resolved target, and the
+  packages, and `attempted` holds only the install folder itself.
+  Recovery reruns the full installer of the journal's (or the current)
+  version over the folder and checks the outcome (exit code 0 and the
+  installed `goggame-<id>.info`'s version). wineo never deletes files
+  after a failed Windows install or update, since it can't tell the
+  installer's files from yours; `--reinstall` is the repair. The docs say
+  so.
 
 ### Windows installers
 
