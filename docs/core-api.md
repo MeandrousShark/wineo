@@ -155,11 +155,16 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   `ExecResolution::ExplicitPaths` never consults the current directory.
 - GOG game folders: `launch::start` and `launch::exec` refuse a launch whose
   game folder is mid-update, being updated, or has lost its state, before
-  any hook runs, and hold the folder's in-use lock until the program exits
-  (through the supervisor for `start`), so updates refuse while it runs. The
-  refusals are `gog::folder::FolderError` variants: `MidUpdate`,
-  `OwnerlessMidUpdate`, `Updating`, `StateMissing`, `UnreadableFolder`, and
-  `OwnedByOther`. A frontend that runs its own launch flow calls
+  any hook runs, and hold the folder's in-use lock for the whole run, so
+  updates refuse while it runs. `start` hands the lock to the supervisor.
+  An `exec` from a game folder holds it until its whole process group has
+  exited, so a launcher that starts the game and exits still counts, and
+  only then sends `ExecEvent::Exited` with the started program's status.
+  Processes that leave the group aren't waited for. The refusals are
+  `gog::folder::FolderError` variants: `MidUpdate`, `OwnerlessMidUpdate`,
+  `Updating`, `StateMissing`, `UnreadableFolder`, `Unreadable`, and
+  `OwnedByOther`. Canceling while waiting for a folder's lock returns
+  `Error::Canceled`. A frontend that runs its own launch flow calls
   `launch::precheck` before side effects and holds the guards from
   `launch::protect`, taken after the operation lock, for the whole run.
 - `winetricks::ensure(...)`: installs the environment's missing declared

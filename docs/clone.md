@@ -48,7 +48,9 @@ the game can't be updated. wineo finds the folder through the paths a
 launch names: the program, its working directory, and arguments that are
 whole absolute or Windows paths. A program Wine finds by bare name, an
 argument like `--data=/path`, or a launcher that finds the game some other
-way isn't seen.
+way isn't seen. A `wineo exec` from the game folder keeps it in use until
+everything it started has exited, so a launcher that starts the game and
+exits still counts, unless the game leaves the launcher's process group.
 
 If registration fails after the copy, wineo keeps the copied prefix and reports
 its location for recovery. Remove a clone with `wineo rm NAME`; this trashes
