@@ -2,9 +2,14 @@
 //! last installed there, and a write-ahead journal while work is in flight.
 //!
 //! State files live in the host data dir, keyed by the SHA-256 of the
-//! folder's canonical path, and every change is made holding the folder's
-//! host-wide lock exclusively. Lock order: an environment's operation lock,
-//! then folder locks in key order, then config locks.
+//! folder's canonical path. Each folder has two host-wide locks: the state
+//! lock (`FolderLock`), held briefly, and every change to the state file is
+//! made holding it exclusively; and the in-use lock (`InUseLock`), held
+//! shared by a launch for its whole run and taken exclusively, without
+//! waiting, by update and migration.
+//!
+//! Lock order: an environment's operation lock, then in-use locks in key
+//! order, then state locks in key order, then config locks.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -21,6 +26,10 @@ use sha2::{Digest, Sha256};
 
 use crate::name;
 use crate::paths::Paths;
+
+mod in_use;
+
+pub use in_use::{InUseGuard, InUseLock, lock_for_update};
 
 /// The state file format. A file with any other version is refused.
 pub const VERSION: u32 = 1;
@@ -378,9 +387,12 @@ pub enum FolderError {
     Unreadable { name: String, detail: String },
     #[error("Canceled.")]
     Canceled,
+    /// An update or migration found something running from the folder.
+    #[error("Something is running from {name}'s game folder. Stop it first.")]
+    InUse { name: String },
 }
 
-/// Holds a folder's lock until dropped.
+/// Holds a folder's state lock until dropped.
 pub struct FolderLock {
     file: File,
     folder: PathBuf,
