@@ -539,6 +539,11 @@ Written for the answers above.
   accounts never shows another account's games.
 - A fetch replaces the cache only when every page arrived. A failed fetch
   or page falls back to the last complete list with a warning, like Steam's.
+- Product details are public, so they're cached per product id
+  (`gog-product-<id>.json`), not per account, and kept across logout.
+- A request already in flight when you log out or switch accounts may
+  finish, but its result is never shown or saved: every request is checked
+  before it starts and validated after it returns.
 - Logged out, `import gog --list` and update checks say so. Installed games
   stay playable, so being logged out isn't a `validate` issue.
 
