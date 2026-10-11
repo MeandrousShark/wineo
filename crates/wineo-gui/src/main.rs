@@ -10,6 +10,7 @@ mod downloads_page;
 mod downloads_work;
 mod flow;
 mod focus_button;
+mod fonts;
 mod grid;
 mod grid_motion;
 mod keys;
@@ -1588,9 +1589,13 @@ impl App {
 
 fn run() -> anyhow::Result<()> {
     let paths = Paths::from_env(None)?;
+    fonts::use_as_sans_serif();
     iced::application(move || App::boot(paths.clone()), App::update, App::view)
         .title("wineo")
         .theme(App::theme)
+        .font(fonts::REGULAR)
+        .font(fonts::SEMIBOLD)
+        .default_font(fonts::DEFAULT)
         .settings(Settings {
             default_text_size: 14.into(),
             ..Settings::default()
