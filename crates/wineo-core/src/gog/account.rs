@@ -7,7 +7,6 @@
 //! still the one it started from, so a stale renewal can't overwrite a newer
 //! login or bring one back after a logout.
 
-use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::OpenOptionsExt;
@@ -15,19 +14,17 @@ use std::time::{Duration, Instant};
 
 use rustix::fs::{FlockOperation, flock};
 use serde::{Deserialize, Serialize};
-use wineo_gog::{Class, Client, PasteError, Secret, Tokens, UserId};
+use wineo_gog::{Class, Client, ErrorKind, PasteError, Secret, Tokens, UserId};
 
 use super::owned;
 use crate::error::IoContext;
 use crate::key_store::{self, KeySource, KeySpec, Keyring, Removed, Saved};
 use crate::paths::Paths;
 
-/// Overrides the saved login, for scripts and CI. It holds the same JSON
-/// as the saved secret, and renewals of it are never saved.
-pub const LOGIN_VAR: &str = "WINEO_GOG_LOGIN";
-
+/// No variable overrides the login: GOG may replace the refresh token on
+/// every renewal, which a variable couldn't keep up with.
 pub const KEY_SPEC: KeySpec = KeySpec {
-    env_var: LOGIN_VAR,
+    env_var: None,
     account: "gog",
     file_name: "gog.key",
     label: "wineo GOG login",
@@ -108,6 +105,15 @@ impl AccountError {
     }
 }
 
+/// Why an authenticated request failed: the login, or the request itself.
+#[derive(Debug, thiserror::Error)]
+pub enum CallError {
+    #[error(transparent)]
+    Account(AccountError),
+    #[error("{0}")]
+    Request(wineo_gog::Error),
+}
+
 /// Classifies a token endpoint failure, for a renewal.
 fn renewal_error(error: wineo_gog::Error) -> AccountError {
     match error.class() {
@@ -117,22 +123,19 @@ fn renewal_error(error: wineo_gog::Error) -> AccountError {
     }
 }
 
-/// The saved login, from `WINEO_GOG_LOGIN`, the keyring, or the key file.
+/// The saved login, from the keyring or the key file.
 pub fn stored_login(
     paths: &Paths,
-    lookup: impl Fn(&str) -> Option<OsString>,
     keyring: &dyn Keyring,
 ) -> Result<Option<(StoredLogin, KeySource)>, AccountError> {
-    let Some(key) = key_store::find_key(&KEY_SPEC, paths, lookup, keyring)? else {
+    let Some(key) = key_store::find_key(&KEY_SPEC, paths, |_| None, keyring)? else {
         return Ok(None);
     };
     Ok(Some((StoredLogin::from_secret(&key.value)?, key.source)))
 }
 
-/// The saved login without the variable, which is what renewals and
-/// logouts compare and change.
 fn saved_login(paths: &Paths, keyring: &dyn Keyring) -> Result<Option<StoredLogin>, AccountError> {
-    stored_login(paths, |_| None, keyring).map(|found| found.map(|(login, _)| login))
+    stored_login(paths, keyring).map(|found| found.map(|(login, _)| login))
 }
 
 fn save(paths: &Paths, keyring: &dyn Keyring, login: &StoredLogin) -> crate::Result<Saved> {
@@ -281,20 +284,17 @@ impl<'a> Session<'a> {
     /// until an access token is needed.
     pub fn open(
         paths: &Paths,
-        lookup: impl Fn(&str) -> Option<OsString>,
         keyring: &'a dyn Keyring,
         client: Client,
     ) -> Result<Option<Self>, AccountError> {
-        Ok(
-            stored_login(paths, lookup, keyring)?.map(|(login, source)| Self {
-                paths: paths.clone(),
-                keyring,
-                client,
-                login,
-                source,
-                access: None,
-            }),
-        )
+        Ok(stored_login(paths, keyring)?.map(|(login, source)| Self {
+            paths: paths.clone(),
+            keyring,
+            client,
+            login,
+            source,
+            access: None,
+        }))
     }
 
     pub fn user_id(&self) -> UserId {
@@ -330,6 +330,24 @@ impl<'a> Session<'a> {
             .clone())
     }
 
+    /// Runs an authenticated request. When GOG refuses the access token
+    /// anyway, it is renewed whatever its lifetime and the request is tried
+    /// once more.
+    pub fn call<T>(
+        &mut self,
+        request: impl Fn(&Client, &str) -> Result<T, wineo_gog::Error>,
+    ) -> Result<T, CallError> {
+        let token = self.access_token().map_err(CallError::Account)?;
+        match request(&self.client, token.expose()) {
+            Err(error) if error.kind() == ErrorKind::Unauthorized => {
+                self.renew().map_err(CallError::Account)?;
+                let token = self.access_token().map_err(CallError::Account)?;
+                request(&self.client, token.expose()).map_err(CallError::Request)
+            }
+            result => result.map_err(CallError::Request),
+        }
+    }
+
     fn set_access(&mut self, tokens: &Tokens, requested: Instant) {
         let lifetime = Duration::from_secs(tokens.expires_in).saturating_sub(RENEW_EARLY);
         self.access = Some(Access {
@@ -340,18 +358,6 @@ impl<'a> Session<'a> {
 
     fn renew(&mut self) -> Result<(), AccountError> {
         self.access = None;
-        if self.source == KeySource::Variable {
-            // The variable can't be rewritten, and the saved login isn't
-            // the one in use, so nothing is saved or cleared.
-            let requested = Instant::now();
-            let tokens = self
-                .client
-                .refresh(&self.login.refresh_token)
-                .map_err(renewal_error)?;
-            self.login = StoredLogin::from_tokens(&tokens);
-            self.set_access(&tokens, requested);
-            return Ok(());
-        }
         for _ in 0..RENEW_TRIES {
             let started = self.login.clone();
             let requested = Instant::now();

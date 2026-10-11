@@ -12,7 +12,7 @@ use crate::paths::Paths;
 pub const KEY_VAR: &str = "WINEO_STEAM_KEY";
 
 pub const KEY_SPEC: KeySpec = KeySpec {
-    env_var: KEY_VAR,
+    env_var: Some(KEY_VAR),
     account: "steam",
     file_name: "steam.key",
     label: "wineo steam key",

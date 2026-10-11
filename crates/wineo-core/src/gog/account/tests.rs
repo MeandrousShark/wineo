@@ -24,7 +24,7 @@ fn seed(paths: &Paths, keyring: &dyn Keyring, refresh: &str, user_id: u64) {
 }
 
 fn open<'a>(paths: &Paths, keyring: &'a dyn Keyring, server: &Server) -> Session<'a> {
-    Session::open(paths, |_| None, keyring, client(server))
+    Session::open(paths, keyring, client(server))
         .unwrap()
         .unwrap()
 }
@@ -64,7 +64,7 @@ fn logging_in_saves_the_login_to_the_keyring() {
     assert_eq!(logged_in.saved, Saved::Keyring);
     assert!(server.requests()[0].contains(&format!("code={CODE}")));
 
-    let (login, source) = stored_login(&paths, |_| None, &keyring).unwrap().unwrap();
+    let (login, source) = stored_login(&paths, &keyring).unwrap().unwrap();
     assert_eq!(login, login_of("REFRESH1", USER));
     assert_eq!(source, KeySource::Keyring);
     assert_eq!(
@@ -91,7 +91,7 @@ fn without_a_keyring_the_login_is_a_private_file_and_logout_deletes_it() {
         fs::metadata(&file).unwrap().permissions().mode() & 0o777,
         0o600
     );
-    let (login, source) = stored_login(&paths, |_| None, &NoKeyring).unwrap().unwrap();
+    let (login, source) = stored_login(&paths, &NoKeyring).unwrap().unwrap();
     assert_eq!(
         (login, source),
         (login_of("REFRESH1", USER), KeySource::File)
@@ -109,7 +109,7 @@ fn without_a_keyring_the_login_is_a_private_file_and_logout_deletes_it() {
     assert!(!file.exists());
     assert!(!cache.exists());
     assert!(other_cache.exists(), "only that account's cache goes");
-    assert_eq!(stored_login(&paths, |_| None, &NoKeyring).unwrap(), None);
+    assert_eq!(stored_login(&paths, &NoKeyring).unwrap(), None);
 
     // Logging out again finds nothing to remove.
     let again = logout(&paths, &NoKeyring).unwrap();
@@ -117,16 +117,20 @@ fn without_a_keyring_the_login_is_a_private_file_and_logout_deletes_it() {
 }
 
 #[test]
-fn the_variable_overrides_the_saved_login() {
+fn no_variable_overrides_the_saved_login() {
+    assert_eq!(KEY_SPEC.env_var, None);
     let (_root, paths) = setup();
     let keyring = FakeKeyring::default();
     seed(&paths, &keyring, "SAVED", USER);
     let value = r#"{"refresh_token":"FROMENV","user_id":"5"}"#;
-    let lookup = |name: &str| (name == LOGIN_VAR).then(|| OsString::from(value));
-    let (login, source) = stored_login(&paths, lookup, &keyring).unwrap().unwrap();
+    // Whatever variable is set, the saved login is the one found.
+    let key = key_store::find_key(&KEY_SPEC, &paths, |_| Some(value.into()), &keyring)
+        .unwrap()
+        .unwrap();
+    assert_eq!(key.source, KeySource::Keyring);
     assert_eq!(
-        (login, source),
-        (login_of("FROMENV", 5), KeySource::Variable)
+        StoredLogin::from_secret(&key.value).unwrap(),
+        login_of("SAVED", USER)
     );
 }
 
@@ -227,7 +231,7 @@ fn temporary_failures_keep_the_login() {
     let keyring = FakeKeyring::default();
     seed(&paths, &keyring, "R1", USER);
     let unreachable = wineo_gog::Client::with_base("wineo-test", &refused()).unwrap();
-    let mut session = Session::open(&paths, |_| None, &keyring, unreachable)
+    let mut session = Session::open(&paths, &keyring, unreachable)
         .unwrap()
         .unwrap();
     assert!(session.access_token().unwrap_err().is_temporary());
@@ -330,43 +334,14 @@ fn concurrent_renewals_leave_one_consistent_login() {
 }
 
 #[test]
-fn a_login_from_the_variable_is_renewed_but_never_saved_or_cleared() {
-    let (_root, paths) = setup();
-    let keyring = FakeKeyring::default();
-    seed(&paths, &keyring, "SAVED", USER);
-    let value = r#"{"refresh_token":"FROMENV","user_id":"5"}"#;
-    let lookup = |name: &str| (name == LOGIN_VAR).then(|| OsString::from(value));
-
-    let server = Server::start(vec![tokens("A", "ENV2", 5, 3600)]);
-    let mut session = Session::open(&paths, lookup, &keyring, client(&server))
-        .unwrap()
-        .unwrap();
-    assert_eq!(session.source(), KeySource::Variable);
-    assert_eq!(session.access_token().unwrap().expose(), "A");
-    assert_eq!(sent_refresh(&server.requests()[0]), "FROMENV");
-    assert_eq!(saved(&paths, &keyring), Some(login_of("SAVED", USER)));
-
-    let server = Server::start(vec![invalid_grant()]);
-    let mut session = Session::open(&paths, lookup, &keyring, client(&server))
-        .unwrap()
-        .unwrap();
-    assert!(matches!(
-        session.access_token().unwrap_err(),
-        AccountError::LoggedOut
-    ));
-    assert_eq!(saved(&paths, &keyring), Some(login_of("SAVED", USER)));
-}
-
-#[test]
 fn an_unreadable_login_is_never_shown_and_logout_still_removes_it() {
     let (_root, paths) = setup();
     let keyring = FakeKeyring::default();
     *keyring.0.lock().unwrap() = Some("SECRETJUNK not json".to_owned());
-    let error = stored_login(&paths, |_| None, &keyring).unwrap_err();
+    let error = stored_login(&paths, &keyring).unwrap_err();
     assert!(matches!(error, AccountError::Unreadable));
     assert!(!format!("{error} {error:?}").contains("SECRETJUNK"));
-    let error =
-        Session::open(&paths, |_| None, &keyring, client(&Server::start(vec![]))).unwrap_err();
+    let error = Session::open(&paths, &keyring, client(&Server::start(vec![]))).unwrap_err();
     assert!(matches!(error, AccountError::Unreadable));
 
     let out = logout(&paths, &keyring).unwrap();

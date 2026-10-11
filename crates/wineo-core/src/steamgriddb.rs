@@ -24,7 +24,7 @@ pub const KEY_VAR: &str = "WINEO_STEAMGRIDDB_KEY";
 
 /// SteamGridDB's key: where it is kept and how it is named.
 pub const KEY_SPEC: KeySpec = KeySpec {
-    env_var: KEY_VAR,
+    env_var: Some(KEY_VAR),
     account: "steamgriddb",
     file_name: "steamgriddb.key",
     label: "wineo steamgriddb key",

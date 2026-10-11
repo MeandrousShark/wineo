@@ -42,7 +42,7 @@ fn run(
     now: i64,
 ) -> (Server, Result<Owned, LoadError>) {
     let server = Server::start(replies);
-    let mut session = Session::open(paths, |_| None, keyring, client(&server))
+    let mut session = Session::open(paths, keyring, client(&server))
         .unwrap()
         .unwrap();
     let result = load_at(&mut session, refresh, now);
@@ -307,7 +307,7 @@ fn logging_out_deletes_the_cache() {
     assert!(out.cache_removed);
     assert!(!paths.gog_owned_cache(USER).exists());
     assert!(
-        Session::open(&paths, |_| None, &keyring, client(&Server::start(vec![])))
+        Session::open(&paths, &keyring, client(&Server::start(vec![])))
             .unwrap()
             .is_none()
     );
@@ -335,4 +335,82 @@ fn a_cache_that_cannot_be_written_is_a_warning() {
             .unwrap()
             .starts_with("Couldn't save owned GOG games: ")
     );
+}
+
+#[test]
+fn a_refused_access_token_is_renewed_once_and_the_fetch_retried() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, USER);
+    let (server, owned) = run(
+        &paths,
+        &keyring,
+        vec![
+            tokens("A1", "R-second", USER, 3600),
+            reply(401, "{}"),
+            tokens("A2", "R-third", USER, 3600),
+            page(1, 1, &[(1, "Alpha")]),
+        ],
+        false,
+        T,
+    );
+    let owned = owned.unwrap();
+    assert_eq!(titles(&owned), ["Alpha"]);
+    assert_eq!(owned.warning, None);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    // The forced renewal used the refresh token the first one saved.
+    assert!(
+        requests[2].contains("refresh_token=R-second"),
+        "{}",
+        requests[2]
+    );
+    let (login, _) = account::stored_login(&paths, &keyring).unwrap().unwrap();
+    assert_eq!(login.refresh_token, "R-third");
+}
+
+#[test]
+fn a_second_refusal_falls_back_to_the_cache_and_keeps_the_login() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, USER);
+    let (_, first) = run(
+        &paths,
+        &keyring,
+        vec![token(), page(1, 1, &[(1, "Alpha")])],
+        false,
+        T,
+    );
+    first.unwrap();
+
+    let refused = || {
+        vec![
+            tokens("A1", "R-a", USER, 3600),
+            reply(401, "{}"),
+            tokens("A2", "R-b", USER, 3600),
+            reply(401, "{}"),
+        ]
+    };
+    let (server, owned) = run(&paths, &keyring, refused(), true, T + 10);
+    let owned = owned.unwrap();
+    assert_eq!(titles(&owned), ["Alpha"]);
+    assert_eq!(
+        owned.warning.as_deref(),
+        Some(
+            "Couldn't refresh owned GOG games: GOG owned games request failed: GOG rejected the login"
+        )
+    );
+    assert_eq!(server.requests().len(), 4);
+    assert!(account::stored_login(&paths, &keyring).unwrap().is_some());
+
+    // Without a cache it's the request's error, and the login stays.
+    remove_cache(&paths, UserId::new(USER)).unwrap();
+    let (_, owned) = run(&paths, &keyring, refused(), true, T + 20);
+    match owned.unwrap_err() {
+        LoadError::Fetch(error) => {
+            assert_eq!(error.kind(), wineo_gog::ErrorKind::Unauthorized)
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(account::stored_login(&paths, &keyring).unwrap().is_some());
 }

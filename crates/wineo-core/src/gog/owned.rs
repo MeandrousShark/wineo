@@ -9,7 +9,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use wineo_gog::{OwnedProduct, UserId};
 
-use super::account::{AccountError, Session};
+use super::account::{AccountError, CallError, Session};
 use crate::error::IoContext;
 use crate::files::write_unique;
 use crate::paths::Paths;
@@ -64,15 +64,13 @@ fn load_at(session: &mut Session, refresh: bool, now: i64) -> Result<Owned, Load
             warning: None,
         });
     }
-    let fetched = match session.access_token() {
-        Ok(token) => session
-            .client()
-            .owned_games(token.expose())
-            .map_err(|error| (error.to_string(), LoadError::Fetch(error))),
-        Err(
+    let fetched = match session.call(|client, token| client.owned_games(token)) {
+        Ok(games) => Ok(games),
+        Err(CallError::Request(error)) => Err((error.to_string(), LoadError::Fetch(error))),
+        Err(CallError::Account(
             error @ (AccountError::Temporary(_) | AccountError::Gog(_) | AccountError::Changed),
-        ) => Err((error.to_string(), LoadError::Account(error))),
-        Err(error) => return Err(LoadError::Account(error)),
+        )) => Err((error.to_string(), LoadError::Account(error))),
+        Err(CallError::Account(error)) => return Err(LoadError::Account(error)),
     };
     match fetched {
         Ok(games) => {
