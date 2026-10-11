@@ -80,6 +80,10 @@ Art from SteamGridDB, searching "Hades":
   3. Hades: Battle Out of Hell (2003), game 5250117
 ```
 
+Steam imports don't search: they look art up by app id. Their dry run makes
+no SteamGridDB request. With a key, the review's art line says
+`Steam cache, then SteamGridDB`.
+
 `import heroic --all` prints one line per game with its top match. A missing
 key or a failed search prints the real run's note and doesn't change the exit
 code. This search is the only network use a dry run makes, apart from
