@@ -685,9 +685,12 @@ Written for the answers above.
   request, and accepts only a 206 with a matching `Content-Range`; a 200
   restarts the file. Every finished file is verified whole: MD5 and size
   when GOG publishes a checksum, size only with a note when it doesn't.
-- Packages download to the cache under their GOG file id. They're deleted
-  after a commit and kept while a journal names them, so a retry can work
-  without the network (see Recovery).
+- Packages download to the cache under their product and download id
+  (`<product id>/<download id>/<GOG file name>`), with a small record per
+  GOG file id, so a Windows installer's `.exe` and `.bin` parts stay
+  together under the names the `.exe` looks for. They're deleted after a
+  commit and kept while a journal names them, so a retry can work without
+  the network (see Recovery).
 
 ### Native packages
 
