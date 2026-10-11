@@ -409,8 +409,9 @@ added Windows and Native Linux games. Games appear as a poster grid using the
 posters Heroic already cached, with a title placeholder where Heroic has
 none, so opening the picker makes no network requests. Click posters to
 select them, or use **Select all** and **Select none**; arrow keys, Space,
-Ctrl+A, and Enter work too. Already imported and unsupported games are
-dimmed with the reason under the title. **Import 1 game** opens an editable
+Ctrl+A, and Enter work too. Those buttons and **Import** stay pinned at the
+bottom while the title and posters scroll. Already imported and unsupported
+games are dimmed with the reason under the title. **Import 1 game** opens an editable
 review; importing several opens a batch review with per-game results. A
 game's Heroic poster becomes its grid art, shown as a prefilled pick marked
 **From Heroic** in the single review, where **Remove** lets SteamGridDB fill

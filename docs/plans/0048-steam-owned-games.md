@@ -418,7 +418,9 @@ the changelog.
     The maintainer settled it on 2026-10-10: the import page's title and
     notes scroll with the grid, and Back and the action row stay pinned
     outside the scroll, like New's review footer. The layout tests' short
-    dialog exemption (`heroic::grid_too_short`) goes away.
+    dialog exemption (`heroic::grid_too_short`) goes away. The maintainer
+    put the action row at the bottom, under the grid, with Back staying at
+    the top. This applies to both the Heroic and Steam grids.
 - Acceptance (2026-10-10, maintainer): items 1 to 16, 18, and 19 pass.
   The maintainer accepted item 17 (`--remove-key`) without running it: item
   15's **Remove key** calls the same core `steam::key::remove_key` against
