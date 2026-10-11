@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, io};
 
 /// The request that failed, which is all an error says about where it went.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,6 +10,12 @@ pub enum Endpoint {
     Product,
     Link,
     Builds,
+    /// Fetching an installer file from GOG's download servers.
+    Download,
+    /// Fetching an installer file's published checksum.
+    Checksum,
+    /// Reading or removing files already in the download cache.
+    Cache,
 }
 
 impl fmt::Display for Endpoint {
@@ -21,6 +27,9 @@ impl fmt::Display for Endpoint {
             Self::Product => "GOG product request",
             Self::Link => "GOG download link request",
             Self::Builds => "GOG build list request",
+            Self::Download => "GOG file download",
+            Self::Checksum => "GOG checksum request",
+            Self::Cache => "GOG download cache",
         })
     }
 }
@@ -58,6 +67,20 @@ pub enum ErrorKind {
     /// A download link pointing somewhere the access token must not go.
     #[error("the download link doesn't point at GOG")]
     UntrustedLink,
+    #[error("the download was canceled")]
+    Canceled,
+    /// Only the kind is kept, since an `io::Error` can name a path.
+    #[error("a cached file couldn't be read or written: {0}")]
+    Disk(io::ErrorKind),
+    /// The file, or what GOG says about it, disagrees with the size in the
+    /// product details.
+    #[error("the file isn't the size GOG listed")]
+    WrongSize,
+    #[error("the file doesn't match GOG's checksum")]
+    WrongChecksum,
+    /// A resumed download's answer starts somewhere else or ends early.
+    #[error("GOG's download server sent the wrong part of the file")]
+    WrongRange,
 }
 
 /// How a caller should treat a failure.
@@ -107,11 +130,18 @@ impl Error {
             | ErrorKind::Body
             | ErrorKind::RateLimited
             | ErrorKind::Server(_) => Class::Temporary,
-            ErrorKind::Json | ErrorKind::Malformed | ErrorKind::TooLarge => Class::Malformed,
+            ErrorKind::Json
+            | ErrorKind::Malformed
+            | ErrorKind::TooLarge
+            | ErrorKind::WrongRange => Class::Malformed,
             ErrorKind::InvalidGrant
             | ErrorKind::Unauthorized
             | ErrorKind::Status(_)
-            | ErrorKind::UntrustedLink => Class::Other,
+            | ErrorKind::UntrustedLink
+            | ErrorKind::Canceled
+            | ErrorKind::Disk(_)
+            | ErrorKind::WrongSize
+            | ErrorKind::WrongChecksum => Class::Other,
         }
     }
 }

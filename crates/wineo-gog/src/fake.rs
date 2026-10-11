@@ -59,6 +59,47 @@ pub fn raw(status: u16, body: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// A response with any headers and a binary body.
+pub fn response(status: u16, headers: &[(&str, String)], body: &[u8]) -> Vec<u8> {
+    let mut head = format!("HTTP/1.1 {status} X\r\n");
+    for (name, value) in headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    ));
+    let mut bytes = head.into_bytes();
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+/// Serves a file the way a download server does: whole, or from an offset
+/// with `Range: bytes=N-`.
+pub fn file(request: &Request, body: &[u8]) -> Reply {
+    let start = request
+        .header("range")
+        .and_then(|range| range.strip_prefix("bytes="))
+        .and_then(|range| range.strip_suffix('-'))
+        .and_then(|start| start.parse::<usize>().ok());
+    Reply::Send(match start {
+        None => response(200, &[], body),
+        Some(start) if start < body.len() => response(
+            206,
+            &[(
+                "Content-Range",
+                format!("bytes {start}-{}/{}", body.len() - 1, body.len()),
+            )],
+            &body[start..],
+        ),
+        Some(_) => response(
+            416,
+            &[("Content-Range", format!("bytes */{}", body.len()))],
+            &[],
+        ),
+    })
+}
+
 pub struct FakeGog {
     pub base: String,
     requests: Arc<Mutex<Vec<Request>>>,

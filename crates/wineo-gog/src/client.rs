@@ -49,6 +49,9 @@ impl Endpoints {
 
 pub struct Client {
     http: reqwest::blocking::Client,
+    /// For GOG's download servers. Their links are signed, so no token ever
+    /// goes there, and redirects can be followed.
+    pub(crate) cdn: reqwest::blocking::Client,
     endpoints: Endpoints,
     max_body: u64,
 }
@@ -83,18 +86,29 @@ impl Client {
         connect_timeout: Duration,
         read_timeout: Duration,
     ) -> Result<Self, Error> {
-        let http = reqwest::blocking::Client::builder()
-            .https_only(https_only)
-            .connect_timeout(connect_timeout)
-            .timeout(read_timeout)
-            .user_agent(user_agent)
+        let builder = || {
+            reqwest::blocking::Client::builder()
+                .https_only(https_only)
+                .connect_timeout(connect_timeout)
+                .timeout(read_timeout)
+                .user_agent(user_agent)
+        };
+        let setup = |_| Error::new(Endpoint::Setup, ErrorKind::Request);
+        let http = builder()
             // Every endpoint answers directly. A redirect could carry the
             // bearer token or the client secret somewhere unexpected.
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(|_| Error::new(Endpoint::Setup, ErrorKind::Request))?;
+            .map_err(setup)?;
+        let cdn = builder()
+            .redirect(reqwest::redirect::Policy::limited(5))
+            // The signed link works like a password while it lasts.
+            .referer(false)
+            .build()
+            .map_err(setup)?;
         Ok(Self {
             http,
+            cdn,
             endpoints,
             max_body: MAX_BODY,
         })
@@ -208,15 +222,7 @@ impl Client {
         if let Some(token) = bearer {
             request = request.bearer_auth(token);
         }
-        let response = request.send().map_err(|error| {
-            fail(if error.is_timeout() {
-                ErrorKind::Timeout
-            } else if error.is_connect() {
-                ErrorKind::Connect
-            } else {
-                ErrorKind::Request
-            })
-        })?;
+        let response = request.send().map_err(|error| fail(send_error(&error)))?;
         let status = response.status().as_u16();
         if status != 200 {
             // Only the token endpoint's 400 says anything useful in its body.
@@ -230,21 +236,43 @@ impl Client {
     }
 
     fn read_body(&self, response: reqwest::blocking::Response) -> Result<Vec<u8>, ErrorKind> {
-        let mut body = Vec::new();
-        response
-            .take(self.max_body + 1)
-            .read_to_end(&mut body)
-            .map_err(|error| {
-                if timed_out(&error) {
-                    ErrorKind::Timeout
-                } else {
-                    ErrorKind::Body
-                }
-            })?;
-        if body.len() as u64 > self.max_body {
-            return Err(ErrorKind::TooLarge);
-        }
-        Ok(body)
+        read_limited(response, self.max_body)
+    }
+}
+
+/// Reads a whole body of at most `limit` bytes.
+pub(crate) fn read_limited(
+    response: reqwest::blocking::Response,
+    limit: u64,
+) -> Result<Vec<u8>, ErrorKind> {
+    let mut body = Vec::new();
+    response
+        .take(limit + 1)
+        .read_to_end(&mut body)
+        .map_err(|error| read_error(&error))?;
+    if body.len() as u64 > limit {
+        return Err(ErrorKind::TooLarge);
+    }
+    Ok(body)
+}
+
+/// Classifies a request that got no answer. The error is only inspected.
+pub(crate) fn send_error(error: &reqwest::Error) -> ErrorKind {
+    if error.is_timeout() {
+        ErrorKind::Timeout
+    } else if error.is_connect() {
+        ErrorKind::Connect
+    } else {
+        ErrorKind::Request
+    }
+}
+
+/// Classifies a failed body read.
+pub(crate) fn read_error(error: &io::Error) -> ErrorKind {
+    if timed_out(error) {
+        ErrorKind::Timeout
+    } else {
+        ErrorKind::Body
     }
 }
 
@@ -260,7 +288,7 @@ fn join(base: &Url, segments: &[&str], endpoint: Endpoint) -> Result<Url, Error>
 
 /// Classifies a status that isn't a success. Only the token endpoint's
 /// `invalid_grant` is read from the body, and the body is never kept.
-fn status_kind(endpoint: Endpoint, status: u16, body: Option<&[u8]>) -> ErrorKind {
+pub(crate) fn status_kind(endpoint: Endpoint, status: u16, body: Option<&[u8]>) -> ErrorKind {
     match status {
         400 if endpoint == Endpoint::Token && body.is_some_and(is_invalid_grant) => {
             ErrorKind::InvalidGrant
