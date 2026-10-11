@@ -632,6 +632,8 @@ impl Page {
 
     fn list(&mut self, source: HeroicSource) -> Task<Event> {
         self.next_picker();
+        // Choosing a source answers an open discard prompt with keep editing.
+        self.leave_prompt = false;
         self.step = Step::Games;
         self.status = "Reading Heroic games...".to_owned();
         self.error = None;
@@ -4318,6 +4320,23 @@ mod tests {
         // The first row shows the header when both fit.
         assert_eq!(reveal_offset(80.0, 100.0, 30.0, 70.0, true), 0.0);
         assert_eq!(reveal_offset(80.0, 40.0, 30.0, 70.0, true), 30.0);
+    }
+
+    #[test]
+    fn choosing_a_source_dismisses_the_discard_prompt() {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        page.step = Step::Sources;
+        page.sources = vec![HeroicSource::from_config_dir_with_home(
+            root.path().join("heroic"),
+            root.path().to_owned(),
+        )];
+        page.source = Some(0);
+        let _ = page.update(Event::Back);
+        assert!(page.leave_prompt);
+        let _ = page.update(Event::Source(0));
+        assert_eq!(page.step, Step::Games);
+        assert!(!page.leave_prompt);
     }
 
     #[test]

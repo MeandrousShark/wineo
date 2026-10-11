@@ -421,6 +421,10 @@ the changelog.
     dialog exemption (`heroic::grid_too_short`) goes away. The maintainer
     put the action row at the bottom, under the grid, with Back staying at
     the top. This applies to both the Heroic and Steam grids.
+  - Review of that change found the Heroic discard prompt could follow you
+    onto the games grid: clicking a source while it showed opened the grid
+    with the prompt still up. The maintainer chose to treat a source pick as
+    Keep editing, so opening a source now dismisses the prompt.
 - Acceptance (2026-10-10, maintainer): items 1 to 16, 18, and 19 pass.
   The maintainer accepted item 17 (`--remove-key`) without running it: item
   15's **Remove key** calls the same core `steam::key::remove_key` against
