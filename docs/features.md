@@ -17,8 +17,8 @@ when it comes up, and the rows below have the details.
 4. Store library import, Steam installed games first. It adds the proxied
    environment kind: done in 0.28.0 as [0047](plans/0047-steam-library.md).
 5. Store library follow-ups, as two plans: owned but uninstalled Steam
-   games ([0048](plans/0048-steam-owned-games.md), approved), then GOG
-   directly without Heroic. Epic is a backlog row.
+   games (done in 0.29.0 as [0048](plans/0048-steam-owned-games.md)), then
+   GOG directly without Heroic. Epic is a backlog row.
 6. GUI library views, designed against a library that includes store games.
 7. GUI themes, last, so they cover palette roles the store work adds.
 

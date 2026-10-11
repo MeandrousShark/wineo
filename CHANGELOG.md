@@ -3,6 +3,39 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.29.0 - 2026-10-10
+
+- Owned Steam games ([0048](docs/plans/0048-steam-owned-games.md)). With a
+  Steam Web API key (`wineo import steam --key`, kept in the keyring like the
+  SteamGridDB key), `import steam --list` also shows games you own but
+  haven't installed, and they import like installed ones. `--all --owned`
+  imports every one. The owned list is cached for an hour; `--refresh`
+  fetches it again. See [Owned games](docs/steam.md#owned-games).
+- `wineo install` and `wineo uninstall` hand a Steam game to Steam's own
+  dialog. `-f` stays and shows progress until Steam is done. The game is
+  playable once Steam finishes, with no re-import.
+- Behavior change: `install` in `status --json` and `list --json` has new
+  values (`installing`, `install_queued`, `uninstalling`) and a new
+  `install_progress` percent. `state` stays the run status, so a game can be
+  `inactive` and `installing` at once.
+- Behavior change: `wineo validate` no longer reports a Steam game that isn't
+  installed, since owned games are allowed to be. The
+  `steam_game_not_installed` code is gone.
+- The desktop app lists owned games in **Import from Steam**, shows install
+  progress on cards, and has **Install**, **Uninstall**, and **Remove key**.
+- Desktop app polish: every button uses the shared styles, every scrollbar is
+  the thin rail, choice lists are quiet grouped rows, import tiles have
+  balanced two-line titles and a keyboard-only focus ring, and art loads
+  lazily by real row height.
+- Short windows: import pages keep Back at the top and pin each step's
+  action row at the bottom while the content scrolls, so a game grid shows
+  even in a 240 px tall dialog.
+- The desktop app bundles Noto Sans, so titles no longer fall back to a
+  monospace font on systems without a semibold Noto Sans.
+- Concurrent saves of the same file, including the SteamGridDB and Steam Web
+  API key files, can no longer clobber each other. Removing a key also
+  removes any temporary copy a crash left behind.
+
 ## 0.28.0 - 2026-10-09
 
 - Steam games ([0047](docs/plans/0047-steam-library.md)). `wineo import
