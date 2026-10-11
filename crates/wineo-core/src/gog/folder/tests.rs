@@ -626,3 +626,19 @@ fn a_folder_that_cant_be_looked_at_is_never_surely_deleted() {
     let unreadable_folder = |_: &Path| Err(io::Error::from(io::ErrorKind::PermissionDenied));
     assert!(!surely_deleted(&state, &unreadable_folder));
 }
+
+#[test]
+fn a_temporary_that_cant_be_removed_leaves_the_state_in_place() {
+    let (root, paths) = setup();
+    let folder = root.path().join("g");
+    save(&paths, &game(&folder, None, 1));
+    let stuck = paths
+        .gog_folders_dir()
+        .join(format!(".state-{}-stuck", key(&folder)));
+    fs::create_dir(&stuck).unwrap();
+    fs::write(stuck.join("inside"), "").unwrap();
+    assert!(forget(&paths, &folder, NEVER).is_err());
+    assert!(state_path(&paths, &folder).exists());
+    fs::remove_dir_all(&stuck).unwrap();
+    assert!(forget(&paths, &folder, NEVER).unwrap());
+}

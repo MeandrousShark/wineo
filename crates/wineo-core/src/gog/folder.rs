@@ -553,11 +553,11 @@ impl FolderLock {
     /// Removes the state file.
     fn remove(&self) -> Result<()> {
         self.require_exclusive()?;
+        // Temporaries first, so a cleanup failure never leaves the state
+        // removed without the directory synced.
+        remove_stale_temps(&self.dir, &key(&self.folder))?;
         match fs::remove_file(&self.state) {
-            Ok(()) => {
-                remove_stale_temps(&self.dir, &key(&self.folder))?;
-                sync_dir(&self.dir)
-            }
+            Ok(()) => sync_dir(&self.dir),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
         }
@@ -871,7 +871,14 @@ fn temp_prefix(key: &str) -> String {
 /// Only called under the folder's exclusive lock, so none is in use.
 fn remove_stale_temps(dir: &Path, key: &str) -> Result<()> {
     let prefix = temp_prefix(key);
-    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", dir.display()));
+        }
+    };
+    for entry in entries {
         let entry = entry?;
         if entry
             .file_name()
