@@ -3,6 +3,19 @@
 A finished plan bumps the minor version and fixes between plans bump the
 patch version. See `AGENTS.md` for the rule.
 
+## 0.29.1 - 2026-10-10
+
+- In the desktop app, the art page and the art picker work in narrow and
+  short windows. Change, Find, Browse, Remove, Filters, and Cancel stay
+  whole instead of shrinking to nothing; their rows move underneath or wrap
+  when there isn't room.
+- The art picker's title and filters scroll with the images, and only the
+  progress line and **Use** stay pinned at the bottom, so images still show
+  in a short window. Arrow keys scroll to the selected image's real row, even
+  when badges make rows taller.
+- A new [Stability](docs/stability.md) page lists what wineo will promise
+  not to break from 1.0 on, and what can change in any release.
+
 ## 0.29.0 - 2026-10-10
 
 - Owned Steam games ([0048](docs/plans/0048-steam-owned-games.md)). With a
