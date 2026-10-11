@@ -6,7 +6,8 @@
 //! attempt resolves a fresh one and none is ever stored. A partial file is
 //! resumed with a Range request, and every finished file is checked whole
 //! against its size, and its MD5 when GOG publishes one, before it gets its
-//! real name.
+//! real name. A published checksum that can't be fetched fails the attempt
+//! rather than being skipped.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -32,8 +33,8 @@ const MAX_CHECKSUM: u64 = 4 * 1024 * 1024;
 pub enum Verification {
     /// Its size, and this MD5 from GOG, in lowercase hex.
     Md5(String),
-    /// Only its size: GOG's checksum couldn't be had, which callers should
-    /// say.
+    /// Only its size: GOG publishes no checksum for this file, which
+    /// callers should say.
     SizeOnly,
 }
 
@@ -76,7 +77,9 @@ impl Client {
     /// caller can renew the token and call again to resume. A download
     /// server refusing the link is resolved again once, then fails with its
     /// status, never `Unauthorized`. A server answering with the wrong
-    /// range gets one more try from zero.
+    /// range gets one more try from zero. A published checksum that can't
+    /// be fetched after one retry fails on `Endpoint::Checksum` and keeps
+    /// the partial.
     ///
     /// Holds the product's cache lock throughout, so it waits for any other
     /// process downloading or removing the same product's files. `cancel`
@@ -170,7 +173,9 @@ impl Client {
                     .iter()
                     .any(|sibling| sibling.id == other.file_id);
             // Two current files under one name would overwrite each other
-            // in the folder.
+            // in the folder. This also refuses a name another current file
+            // still holds from before GOG renamed it; downloading that file
+            // again clears its old name.
             if current {
                 return Err(fail(ErrorKind::Malformed));
             }
