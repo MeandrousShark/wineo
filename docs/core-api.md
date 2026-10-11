@@ -157,10 +157,12 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   game folder is mid-update, being updated, or has lost its state, before
   any hook runs, and hold the folder's in-use lock for the whole run, so
   updates refuse while it runs. `start` hands the lock to the supervisor.
-  An `exec` from a game folder holds it until its whole process group has
-  exited, so a launcher that starts the game and exits still counts, and
-  only then sends `ExecEvent::Exited` with the started program's status.
-  Processes that leave the group aren't waited for. The refusals are
+  An `exec` from a game folder holds it, and its launch and build locks,
+  until the prefix is idle by the rule a `start` run ends on, so a launcher
+  that starts the game and exits still counts, and only then sends
+  `ExecEvent::Exited` with the started program's status. Canceling during
+  that wait asks the prefix's programs to close, and forces them after the
+  stop timeout. The refusals are
   `gog::folder::FolderError` variants: `MidUpdate`, `OwnerlessMidUpdate`,
   `Updating`, `StateMissing`, `UnreadableFolder`, `Unreadable`, and
   `OwnedByOther`. Canceling while waiting for a folder's lock returns
