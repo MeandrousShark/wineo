@@ -491,13 +491,17 @@ fn validate_app_id(app_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A GOG product id, which is always a number but kept as written.
+/// A GOG product id: a number that fits in 64 bits, with no leading zeros.
 pub fn validate_gog_id(gog_id: &str) -> Result<(), String> {
     if gog_id.is_empty() {
         return Err("Invalid gog_id: empty.".to_owned());
     }
     if !gog_id.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(format!("Invalid gog_id: {gog_id} isn't a number."));
+    }
+    // Written exactly as the number, so one game has one spelling.
+    if gog_id.parse::<u64>().map(|id| id.to_string()).as_deref() != Ok(gog_id) {
+        return Err(format!("Invalid gog_id: {gog_id} isn't a GOG id."));
     }
     Ok(())
 }
@@ -1154,6 +1158,11 @@ mod tests {
             ("\"12a\"", "Invalid gog_id: 12a isn't a number."),
             ("\"-1\"", "Invalid gog_id: -1 isn't a number."),
             ("\" 12\"", "Invalid gog_id:  12 isn't a number."),
+            ("\"0123\"", "Invalid gog_id: 0123 isn't a GOG id."),
+            (
+                "\"18446744073709551616\"",
+                "Invalid gog_id: 18446744073709551616 isn't a GOG id.",
+            ),
         ] {
             let err = named(
                 "rimworld",
