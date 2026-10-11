@@ -1,4 +1,4 @@
-Status: approved
+Status: draft
 
 # 0049: GOG games
 
