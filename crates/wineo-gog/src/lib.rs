@@ -1,6 +1,7 @@
 //! A blocking client for GOG's web APIs: login, the owned list, product
-//! details, installer links, and Galaxy build lists. It knows tokens and
-//! URLs, never wineo's environments, prefixes, configs, or runners.
+//! details, installer links, Galaxy build lists, and installer downloads
+//! into a cache. It knows tokens, URLs, and folders, never wineo's
+//! environments, prefixes, configs, or runners.
 //!
 //! Tokens, authorization codes, the client secret, and pasted redirect
 //! addresses are secrets. None of them can reach an `Error`: every failure is
@@ -10,7 +11,10 @@
 //! `Display`.
 
 mod auth;
+mod cache;
+mod checksum;
 mod client;
+mod download;
 mod error;
 mod json;
 mod owned;
@@ -22,7 +26,9 @@ mod fake;
 pub use auth::{
     AuthCode, CLIENT_ID, PasteError, REDIRECT_URI, Secret, Tokens, UserId, login_url, parse_paste,
 };
+pub use cache::{CachedFile, DownloadCache, Package};
 pub use client::{Client, Endpoints};
+pub use download::{Downloaded, Verification};
 pub use error::{Class, Endpoint, Error, ErrorKind};
 pub use owned::{OwnedPage, OwnedProduct, Platforms, collect_pages};
 pub use product::{
