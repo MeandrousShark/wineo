@@ -103,6 +103,24 @@ fn a_windows_path_is_translated_through_the_prefix_drives() {
 }
 
 #[test]
+fn a_z_drive_path_reaches_the_folder_through_the_host_root() {
+    let f = Fixture::new();
+    let folder = rimworld(&f, true);
+    let exe = folder.join("RimWorld.exe").display().to_string();
+    copy(&f, &format!("exe = 'Z:{}'", exe.replace('/', "\\")));
+    let dosdevices = f.root.path().join("prefixes/copy/dosdevices");
+    fs::create_dir_all(&dosdevices).unwrap();
+    symlink("/", dosdevices.join("z:")).unwrap();
+    assert_refused(&f.run(&["start", "copy"]), MID_UPDATE);
+
+    f.gog_folder(&folder, Some("rimworld"), ID, false);
+    assert_success(&f.run(&["start", "copy"]));
+    assert!(update_refused(&f, &folder));
+    assert_success(&f.run(&["stop", "copy"]));
+    f.wait_for_run_end("copy", "stopped");
+}
+
+#[test]
 fn a_working_directory_in_the_folder_is_refused() {
     let f = Fixture::new();
     let folder = rimworld(&f, true);
