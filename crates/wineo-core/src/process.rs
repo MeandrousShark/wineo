@@ -314,21 +314,56 @@ pub fn leaderless_group_settled(group: u32) -> Option<bool> {
     }
 }
 
-/// Returns whether a group has a process that can still run or fork. An
-/// entry whose stat is denied, as with `/proc` mounted `hidepid`, belongs to
-/// another user, which no member of a group wineo started is.
+/// Returns whether a group has a process that can still run or fork.
 pub fn group_has_live_members(group: u32) -> Option<bool> {
-    group_live_in(&proc_pids()?, &read_proc_stat, group)
+    group_live_in(&proc_pids()?, &Probe::REAL, group)
 }
 
-fn group_live_in(
-    pids: &[u32],
-    read: &dyn Fn(u32) -> io::Result<String>,
-    group: u32,
-) -> Option<bool> {
+/// How processes are looked at, so tests can stand in for `/proc`.
+struct Probe<'a> {
+    read: &'a dyn Fn(u32) -> io::Result<String>,
+    group_of: &'a dyn Fn(u32) -> io::Result<u32>,
+}
+
+impl Probe<'static> {
+    const REAL: Self = Self {
+        read: &read_proc_stat,
+        group_of: &group_of,
+    };
+}
+
+impl Probe<'_> {
+    /// Whether a process whose stat is denied is in `group`. With `/proc`
+    /// mounted `hidepid`, that's another user's process, or one of ours
+    /// that made itself undumpable, so it's asked of the kernel instead,
+    /// which needs no `/proc`. Its state and parents stay unknown, so one in
+    /// the group has to count as live. `None` for an unexpected answer.
+    fn denied_in(&self, pid: u32, group: u32) -> Option<bool> {
+        match (self.group_of)(pid) {
+            Ok(member) => Some(member == group),
+            Err(err) if err.raw_os_error() == Some(Errno::SRCH.raw_os_error()) => Some(false),
+            Err(_) => None,
+        }
+    }
+}
+
+fn group_of(pid: u32) -> io::Result<u32> {
+    let pid = i32::try_from(pid)
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or_else(|| io::Error::from_raw_os_error(Errno::SRCH.raw_os_error()))?;
+    let group = rustix::process::getpgid(Some(pid))?;
+    Ok(group.as_raw_nonzero().get() as u32)
+}
+
+fn group_live_in(pids: &[u32], probe: &Probe<'_>, group: u32) -> Option<bool> {
     for &pid in pids {
-        match read(pid) {
-            Err(err) if denied(&err) => {}
+        match (probe.read)(pid) {
+            Err(err) if denied(&err) => {
+                if probe.denied_in(pid, group)? {
+                    return Some(true);
+                }
+            }
             stat => match parse_stat_read(stat) {
                 ProcRead::Found(stat)
                     if stat.group == group && !matches!(stat.state, 'Z' | 'X' | 'x') =>
@@ -387,28 +422,30 @@ pub fn own_group_has_live_descendants() -> Option<bool> {
 /// The live members of this process's own group descended from it.
 pub fn own_group_live_descendants() -> Option<Vec<u32>> {
     let group = u32::try_from(rustix::process::getpgrp().as_raw_nonzero().get()).ok()?;
-    descendants_in(&proc_pids()?, &read_proc_stat, std::process::id(), group)
+    descendants_in(&proc_pids()?, &Probe::REAL, std::process::id(), group)
 }
 
-fn descendants_in(
-    pids: &[u32],
-    read: &dyn Fn(u32) -> io::Result<String>,
-    me: u32,
-    group: u32,
-) -> Option<Vec<u32>> {
+fn descendants_in(pids: &[u32], probe: &Probe<'_>, me: u32, group: u32) -> Option<Vec<u32>> {
     let mut found = Vec::new();
     for &pid in pids.iter().filter(|&&pid| pid != me) {
-        match read_family(read(pid)) {
+        match read_family((probe.read)(pid)) {
             Family::Found {
                 state,
                 group: member,
                 ..
             } if member == group && !matches!(state, 'Z' | 'X' | 'x') => {
-                if descends_from(read, pid, me)? {
+                if descends_from(probe.read, pid, me)? {
                     found.push(pid);
                 }
             }
-            Family::Found { .. } | Family::Gone | Family::Denied => {}
+            // Its parents can't be read either, so one in the group counts
+            // as a live descendant.
+            Family::Denied => {
+                if probe.denied_in(pid, group)? {
+                    found.push(pid);
+                }
+            }
+            Family::Found { .. } | Family::Gone => {}
             Family::Unknown => return None,
         }
     }
@@ -433,7 +470,7 @@ pub fn kill_own_group_descendants() {
         let Ok(pidfd) = pidfd_open(raw, PidfdFlags::empty()) else {
             continue;
         };
-        if descendants_in(&[pid], &read_proc_stat, me, group).is_some_and(|live| live == [pid]) {
+        if descendants_in(&[pid], &Probe::REAL, me, group).is_some_and(|live| live == [pid]) {
             let _ = pidfd_send_signal(&pidfd, Signal::KILL);
         }
     }
@@ -466,8 +503,10 @@ fn descends_from(
         match read_family(read(current)) {
             Family::Found { parent, .. } if parent == ancestor => return Some(true),
             Family::Found { parent, .. } if parent > 1 => current = parent,
-            // Another user's process can't be between wineo and its own
-            // descendant.
+            // A parent that can't be read is either another user's, which
+            // can't be between wineo and its descendant, or one of ours in
+            // the group, which is counted as live itself, or one that left
+            // the group, which isn't followed.
             Family::Found { .. } | Family::Gone | Family::Denied => return Some(false),
             Family::Unknown => return None,
         }
@@ -482,7 +521,7 @@ enum Family {
         group: u32,
     },
     Gone,
-    /// Another user's, under `hidepid`.
+    /// Denied under `hidepid`: another user's, or one made undumpable.
     Denied,
     Unknown,
 }
@@ -635,58 +674,113 @@ mod tests {
     /// A process's state, parent, and group, or how reading its stat fails.
     type FakeStat = Result<(char, u32, u32), Errno>;
 
-    /// A `/proc/<pid>/stat` line, or an error the way reading one fails.
-    fn fake_proc(entries: Vec<(u32, FakeStat)>) -> (Vec<u32>, impl Fn(u32) -> io::Result<String>) {
-        let pids = entries.iter().map(|(pid, _)| *pid).collect();
-        let read = move |pid: u32| match entries
-            .iter()
-            .find(|(entry, _)| *entry == pid)
-            .map(|(_, stat)| *stat)
-        {
-            Some(Ok((state, parent, group))) => Ok(format!(
-                "{pid} (fake) {state} {parent} {group} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 42 0\n"
-            )),
-            Some(Err(errno)) => Err(io::Error::from_raw_os_error(errno.raw_os_error())),
-            None => Err(io::Error::from_raw_os_error(Errno::NOENT.raw_os_error())),
-        };
-        (pids, read)
+    /// A stand-in for `/proc` and `getpgid`. A denied entry's group is
+    /// given separately, as only the kernel would know it.
+    struct FakeProc {
+        pids: Vec<u32>,
+        read: Box<dyn Fn(u32) -> io::Result<String>>,
+        group_of: Box<dyn Fn(u32) -> io::Result<u32>>,
+    }
+
+    impl FakeProc {
+        fn new(entries: Vec<(u32, FakeStat)>, groups: Vec<(u32, Result<u32, Errno>)>) -> Self {
+            let error = |errno: Errno| io::Error::from_raw_os_error(errno.raw_os_error());
+            Self {
+                pids: entries.iter().map(|(pid, _)| *pid).collect(),
+                read: Box::new(move |pid| {
+                    match entries
+                        .iter()
+                        .find(|(entry, _)| *entry == pid)
+                        .map(|(_, stat)| *stat)
+                    {
+                        Some(Ok((state, parent, group))) => Ok(format!(
+                            "{pid} (fake) {state} {parent} {group} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 42 0\n"
+                        )),
+                        Some(Err(errno)) => Err(error(errno)),
+                        None => Err(error(Errno::NOENT)),
+                    }
+                }),
+                group_of: Box::new(move |pid| {
+                    match groups.iter().find(|(entry, _)| *entry == pid) {
+                        Some((_, Ok(group))) => Ok(*group),
+                        Some((_, Err(errno))) => Err(error(*errno)),
+                        None => Err(error(Errno::SRCH)),
+                    }
+                }),
+            }
+        }
+
+        fn probe(&self) -> Probe<'_> {
+            Probe {
+                read: &*self.read,
+                group_of: &*self.group_of,
+            }
+        }
     }
 
     #[test]
-    fn group_scans_skip_denied_and_vanished_entries() {
-        let (pids, read) = fake_proc(vec![
-            (10, Err(Errno::ACCESS)),
-            (11, Err(Errno::PERM)),
-            (12, Err(Errno::NOENT)),
-            (13, Err(Errno::SRCH)),
-            (14, Ok(('Z', 1, 55))),
-            (15, Ok(('S', 1, 66))),
-        ]);
-        assert_eq!(group_live_in(&pids, &read, 55), Some(false));
-        let (pids, read) = fake_proc(vec![(10, Err(Errno::ACCESS)), (16, Ok(('S', 1, 55)))]);
-        assert_eq!(group_live_in(&pids, &read, 55), Some(true));
-        let (pids, read) = fake_proc(vec![(17, Err(Errno::IO))]);
-        assert_eq!(group_live_in(&pids, &read, 55), None);
+    fn group_scans_skip_vanished_entries_and_others_groups() {
+        let fake = FakeProc::new(
+            vec![
+                (10, Err(Errno::ACCESS)),
+                (11, Err(Errno::PERM)),
+                (12, Err(Errno::NOENT)),
+                (13, Err(Errno::SRCH)),
+                (14, Ok(('Z', 1, 55))),
+                (15, Ok(('S', 1, 66))),
+                (18, Err(Errno::PERM)),
+            ],
+            // 10 is in another group, and 11 and 18 have exited meanwhile.
+            vec![(10, Ok(66)), (11, Err(Errno::SRCH))],
+        );
+        assert_eq!(group_live_in(&fake.pids, &fake.probe(), 55), Some(false));
+        let fake = FakeProc::new(
+            vec![(10, Err(Errno::ACCESS)), (16, Ok(('S', 1, 55)))],
+            vec![(10, Ok(66))],
+        );
+        assert_eq!(group_live_in(&fake.pids, &fake.probe(), 55), Some(true));
+        let fake = FakeProc::new(vec![(17, Err(Errno::IO))], vec![]);
+        assert_eq!(group_live_in(&fake.pids, &fake.probe(), 55), None);
     }
 
     #[test]
-    fn descendant_scans_skip_denied_and_vanished_entries() {
-        let (pids, read) = fake_proc(vec![
-            (100, Ok(('S', 1, 55))),
-            // A child, and a grandchild whose parent left the group.
-            (200, Ok(('S', 100, 55))),
-            (300, Ok(('S', 100, 77))),
-            (301, Ok(('S', 300, 55))),
-            // A pipeline neighbor, under another user's shell.
-            (400, Ok(('S', 500, 55))),
-            (500, Err(Errno::ACCESS)),
-            (600, Err(Errno::PERM)),
-            (700, Err(Errno::NOENT)),
-            (800, Ok(('Z', 100, 55))),
-        ]);
-        assert_eq!(descendants_in(&pids, &read, 100, 55), Some(vec![200, 301]));
-        let (pids, read) = fake_proc(vec![(100, Ok(('S', 1, 55))), (900, Err(Errno::IO))]);
-        assert_eq!(descendants_in(&pids, &read, 100, 55), None);
+    fn a_denied_entry_in_the_group_counts_as_live() {
+        // One of ours that made itself undumpable, under `hidepid`.
+        let fake = FakeProc::new(vec![(10, Err(Errno::PERM))], vec![(10, Ok(55))]);
+        assert_eq!(group_live_in(&fake.pids, &fake.probe(), 55), Some(true));
+        assert_eq!(
+            descendants_in(&fake.pids, &fake.probe(), 100, 55),
+            Some(vec![10])
+        );
+        let fake = FakeProc::new(vec![(10, Err(Errno::PERM))], vec![(10, Err(Errno::IO))]);
+        assert_eq!(group_live_in(&fake.pids, &fake.probe(), 55), None);
+        assert_eq!(descendants_in(&fake.pids, &fake.probe(), 100, 55), None);
+    }
+
+    #[test]
+    fn descendant_scans_skip_vanished_entries_and_others_groups() {
+        let fake = FakeProc::new(
+            vec![
+                (100, Ok(('S', 1, 55))),
+                // A child, and a grandchild whose parent left the group.
+                (200, Ok(('S', 100, 55))),
+                (300, Ok(('S', 100, 77))),
+                (301, Ok(('S', 300, 55))),
+                // A pipeline neighbor, under another user's shell.
+                (400, Ok(('S', 500, 55))),
+                (500, Err(Errno::ACCESS)),
+                (600, Err(Errno::PERM)),
+                (700, Err(Errno::NOENT)),
+                (800, Ok(('Z', 100, 55))),
+            ],
+            vec![(500, Ok(500)), (600, Err(Errno::SRCH))],
+        );
+        assert_eq!(
+            descendants_in(&fake.pids, &fake.probe(), 100, 55),
+            Some(vec![200, 301])
+        );
+        let fake = FakeProc::new(vec![(100, Ok(('S', 1, 55))), (900, Err(Errno::IO))], vec![]);
+        assert_eq!(descendants_in(&fake.pids, &fake.probe(), 100, 55), None);
     }
 
     #[test]
