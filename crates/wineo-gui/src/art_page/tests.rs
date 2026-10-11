@@ -961,3 +961,31 @@ fn browse_write_rechecks_identity_after_art_lock_contention() {
     files.sort();
     assert_eq!(files, saved_files);
 }
+
+/// Environment plus three long target names is the most the toggle row
+/// shows before it becomes a pick list.
+#[test]
+fn showing_choices_wrap_without_spilling_or_squeezing() {
+    use crate::layout_probe::{layout, probe};
+    let (_root, _paths, mut page) = fixture();
+    page.targets = vec![
+        "a-rather-long-target-name".to_owned(),
+        "another-quite-long-target-name".to_owned(),
+        "yet-another-long-target-name".to_owned(),
+    ];
+    let widths = |width: f32| -> Vec<f32> {
+        let mut view = page.showing_view(Palette::DARK);
+        let node = layout(&mut view, iced::Size::new(width, 400.0));
+        node.children().iter().map(|c| c.size().width).collect()
+    };
+    let natural = widths(4000.0);
+    assert_eq!(natural.len(), 5, "label plus four choices");
+    // Content widths: the page's 24 px padding comes off the window width.
+    for width in [360.0_f32 - 48.0, 860.0 - 48.0] {
+        assert_eq!(widths(width), natural, "{width}: a choice lost its width");
+        let mut view = page.showing_view(Palette::DARK);
+        let frame = iced::Rectangle::with_size(iced::Size::new(width, 400.0));
+        let spilled = probe(&mut view, frame.size()).outside(frame);
+        assert!(spilled.is_empty(), "{width}: {spilled:?}");
+    }
+}
