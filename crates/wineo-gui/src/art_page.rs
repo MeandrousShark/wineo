@@ -3,9 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use iced::widget::{
-    button, column, container, image, pick_list, row, scrollable, stack, text, text_input,
-};
+use iced::widget::{column, container, image, pick_list, row, scrollable, stack, text, text_input};
 use iced::{Center, ContentFit, Element, Fill, Task, border};
 use wineo_core::art::{self, Kind, Origin, Resolved, Source};
 use wineo_core::cancel::Token;
@@ -19,7 +17,6 @@ use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game};
 use wineo_core::{art_fetch, desktop};
 
-use crate::chips::secondary;
 use crate::flow::artwork::{self as flow_artwork, Match};
 use crate::theme::Palette;
 use crate::ui::PickListStyle;
@@ -1009,17 +1006,12 @@ impl Page {
             for choice in choices {
                 let chosen = self.showing == choice.0;
                 let label = choice.to_string();
-                controls = controls.push(
-                    button(text(label).size(13))
-                        .on_press(Event::Showing(choice))
-                        .style(move |_, status| {
-                            if chosen {
-                                button::primary(&palette.theme(), status)
-                            } else {
-                                secondary(palette, status)
-                            }
-                        }),
-                );
+                let choice_button = if chosen {
+                    accent_base(label, palette.primary)
+                } else {
+                    secondary_button(label, palette)
+                };
+                controls = controls.push(choice_button.on_press(Event::Showing(choice)));
             }
         } else {
             controls = controls.push(
