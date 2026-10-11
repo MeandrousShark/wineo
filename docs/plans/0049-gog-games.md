@@ -1,4 +1,4 @@
-Status: draft
+Status: approved
 
 # 0049: GOG account, migration, and updates
 
