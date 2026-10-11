@@ -13,7 +13,7 @@ use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Filters, Image};
 
 use crate::artwork;
-use crate::ends::ends;
+use crate::ends::{MIN_LEFT, ends};
 use crate::keys::{self, Direction};
 use crate::theme::Palette;
 use crate::ui::{ScrollStyle, accent_base, secondary_button};
@@ -380,6 +380,7 @@ impl Picker {
             )
             .on_press(Event::ToggleFilters),
             14.0,
+            MIN_LEFT,
         );
 
         let mut body = column![header].spacing(12);

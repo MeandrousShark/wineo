@@ -17,7 +17,7 @@ use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game};
 use wineo_core::{art_fetch, desktop};
 
-use crate::ends::ends;
+use crate::ends::{MIN_LEFT, ends};
 use crate::flow::artwork::{self as flow_artwork, Match};
 use crate::theme::Palette;
 use crate::ui::PickListStyle;
@@ -948,6 +948,7 @@ impl Page {
             .wrap()
             .vertical_spacing(8),
             16.0,
+            MIN_LEFT,
         );
         let mut body = column![header].spacing(14);
         if !key_available {
@@ -1145,6 +1146,7 @@ impl Page {
                 .vertical_spacing(10),
             actions,
             16.0,
+            MIN_LEFT,
         ))
         .padding(14)
         .width(Fill)

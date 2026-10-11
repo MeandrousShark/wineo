@@ -997,9 +997,55 @@ fn natural_size(element: Element<'_, Event>) -> iced::Size {
 }
 
 fn has_node_of_size(layout: iced::advanced::Layout<'_>, size: iced::Size) -> bool {
+    !nodes_of_size(layout, size).is_empty()
+}
+
+/// Every node with exactly `size`, so each instance of a button is checked.
+fn nodes_of_size(layout: iced::advanced::Layout<'_>, size: iced::Size) -> Vec<iced::Rectangle> {
     let bounds = layout.bounds();
-    ((bounds.width - size.width).abs() < 0.01 && (bounds.height - size.height).abs() < 0.01)
-        || layout.children().any(|child| has_node_of_size(child, size))
+    let mut found: Vec<_> = layout
+        .children()
+        .flat_map(|child| nodes_of_size(child, size))
+        .collect();
+    if (bounds.width - size.width).abs() < 0.01 && (bounds.height - size.height).abs() < 0.01 {
+        found.push(bounds);
+    }
+    found
+}
+
+/// Four rows with art: Icon and Grid override the environment's, Hero and
+/// Logo inherit it, and Logo has an error.
+fn rich_page(row_error: &str) -> (tempfile::TempDir, Page) {
+    let (root, _paths, mut page) = fixture();
+    page.showing = Some("alt".to_owned());
+    page.targets = vec!["alt".to_owned()];
+    for (kind, origin) in [
+        (Kind::Icon, Origin::Target),
+        (Kind::Grid, Origin::Target),
+        (Kind::Hero, Origin::Environment),
+        (Kind::Logo, Origin::Environment),
+    ] {
+        page.rows.insert(
+            (page.showing.clone(), kind),
+            RowData {
+                resolved: Some(Resolved {
+                    origin,
+                    found: art::Found {
+                        path: PathBuf::from("art.png"),
+                        format: art::Format::Png,
+                        duplicates: Vec::new(),
+                    },
+                    source: Some(Source::SteamGridDb(77)),
+                }),
+                preview: Some(image::Handle::from_rgba(2, 3, vec![255; 24])),
+                dimensions: Some((600, 900)),
+                preview_error: None,
+            },
+        );
+    }
+    page.row_errors
+        .insert((page.showing.clone(), Kind::Logo), row_error.to_owned());
+    (root, page)
 }
 
 /// Text columns squeezed to a sliver, which wraps a letter to a line.
@@ -1018,7 +1064,9 @@ fn slivers(layout: iced::advanced::Layout<'_>) -> Vec<iced::Rectangle> {
 #[test]
 fn art_page_keeps_controls_whole_at_narrow_and_wide_widths() {
     use crate::layout_probe::probe;
-    let (_root, _paths, mut page) = fixture();
+    let (_root, mut page) = rich_page(
+        "The file could not be read because it is not an image this app understands at all",
+    );
     page.name = "an extremely long environment name that goes on and on".to_owned();
     page.game_id = Some(123);
     page.game = Some(Game {
@@ -1034,10 +1082,16 @@ fn art_page_keeps_controls_whole_at_narrow_and_wide_widths() {
         natural("Settings"),
         natural("Cancel"),
     );
-    let row_buttons = [natural("Find..."), natural("Browse..."), natural("Remove")];
+    // Icon and Grid override the environment, Hero and Logo inherit it.
+    let row_buttons = [
+        (natural("Find..."), 4),
+        (natural("Browse..."), 4),
+        (natural("Use environment art"), 2),
+        (natural("Remove"), 2),
+    ];
     for downloading in [false, true] {
         page.download = downloading.then(|| Download {
-            spot: (None, Kind::Hero),
+            spot: (Some("alt".to_owned()), Kind::Hero),
             token: Token::new(),
             status: "Downloading 123.4 MB of 456.7 MB, nearly there".into(),
         });
@@ -1067,9 +1121,10 @@ fn art_page_keeps_controls_whole_at_narrow_and_wide_widths() {
                     downloading,
                     "{case}: Cancel"
                 );
-                for button in row_buttons {
-                    assert!(
-                        has_node_of_size(layout, button),
+                for (button, count) in row_buttons {
+                    assert_eq!(
+                        nodes_of_size(layout, button).len(),
+                        count,
                         "{case}: a row button was squeezed"
                     );
                 }
@@ -1132,6 +1187,25 @@ fn art_page_header_pins_game_and_change_right_at_normal_widths() {
         change.y < 24.0 + 40.0,
         "{change:?} should share Back's line"
     );
+}
+
+/// A long error beside a row's art must wrap within the room the actions
+/// leave, not push the actions under the text, at a normal width.
+#[test]
+fn a_long_row_error_wraps_beside_the_actions_at_normal_widths() {
+    use crate::layout_probe::probe;
+    let (_root, page) = rich_page(&"The file could not be read. ".repeat(30));
+    let palette = Palette::DARK;
+    let size = iced::Size::new(900.0, 900.0);
+    let mut view = page.view_with_key_availability(palette, true);
+    let probe = probe(&mut view, size);
+    let layout = iced::advanced::Layout::new(&probe.node);
+    let find = natural_size(secondary_button("Find...", palette).into());
+    let found = nodes_of_size(layout, find);
+    assert_eq!(found.len(), 4);
+    for button in found {
+        assert!(button.x > 600.0, "{button:?} was pushed under the text");
+    }
 }
 
 /// The picker's header and footer must keep their buttons whole too.
