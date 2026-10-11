@@ -955,6 +955,10 @@ Settled by the maintainer on 2026-10-11, after step 4's second review:
   keeps the folder in use until the game quits. Execs that touch no GOG
   folder return when their program exits, as before. A program that leaves
   its process group isn't seen, and the docs say so.
+- **Saying why exec is still waiting.** When a CLI exec keeps waiting after
+  its program exits, it prints `Waiting for programs launcher.exe started.
+  Press Ctrl+C to stop them.`, and after the first Ctrl+C, `Press Ctrl+C
+  again to force them to stop.`
 
 ## Implementation sequence
 
