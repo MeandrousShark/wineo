@@ -17,6 +17,7 @@ use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game};
 use wineo_core::{art_fetch, desktop};
 
+use crate::ends::{MIN_LEFT, ends};
 use crate::flow::artwork::{self as flow_artwork, Match};
 use crate::theme::Palette;
 use crate::ui::PickListStyle;
@@ -927,18 +928,27 @@ impl Page {
                 )
                 .map(move |event| Event::Picker(visit, event));
         }
-        let mut header = row![
-            secondary_button("Back", palette).on_press(Event::Back),
-            text(format!("{} art", self.name)).size(20),
-        ]
-        .spacing(16)
-        .align_y(Center);
-        header = header.push(iced::widget::Space::new().width(Fill));
-        header = header.push(text("SteamGridDB game").size(12).color(palette.muted));
-        header = header.push(text(self.game_label(key_available)).size(14));
-        header = header.push(
-            secondary_button("Change", palette)
-                .on_press_maybe((key_available && !self.writing).then_some(Event::Change)),
+        // Each side wraps on its own so a long name or game label drops Change
+        // to the next line instead of squeezing it.
+        let header = ends(
+            row![
+                secondary_button("Back", palette).on_press(Event::Back),
+                text(format!("{} art", self.name)).size(20),
+            ]
+            .spacing(16)
+            .align_y(Center),
+            row![
+                text("SteamGridDB game").size(12).color(palette.muted),
+                text(self.game_label(key_available)).size(14),
+                secondary_button("Change", palette)
+                    .on_press_maybe((key_available && !self.writing).then_some(Event::Change)),
+            ]
+            .spacing(16)
+            .align_y(Center)
+            .wrap()
+            .vertical_spacing(8),
+            16.0,
+            MIN_LEFT,
         );
         let mut body = column![header].spacing(14);
         if !key_available {
@@ -950,7 +960,9 @@ impl Page {
                     secondary_button("Settings", palette).on_press(Event::Settings),
                 ]
                 .spacing(10)
-                .align_y(Center),
+                .align_y(Center)
+                .wrap()
+                .vertical_spacing(8),
             );
         }
         if let Some(error) = &self.error {
@@ -1103,7 +1115,9 @@ impl Page {
                     text(&download.status).size(12),
                     secondary_button("Cancel", palette).on_press(Event::CancelUse),
                 ]
-                .spacing(8),
+                .spacing(8)
+                .wrap()
+                .vertical_spacing(8),
             );
         }
         let actions = column![
@@ -1122,11 +1136,18 @@ impl Page {
             .on_press_maybe((!self.writing && has_override).then_some(Event::Remove(kind))),
         ]
         .spacing(5);
-        container(
-            row![preview, details.width(Fill), actions]
+        // The text wraps under the preview and the actions drop below the
+        // text, so a narrow window never leaves the text a sliver.
+        container(ends(
+            row![preview, details]
                 .spacing(16)
-                .align_y(Center),
-        )
+                .align_y(Center)
+                .wrap()
+                .vertical_spacing(10),
+            actions,
+            16.0,
+            MIN_LEFT,
+        ))
         .padding(14)
         .width(Fill)
         .style(move |_| {
