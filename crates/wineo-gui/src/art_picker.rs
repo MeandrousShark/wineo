@@ -146,7 +146,6 @@ pub(crate) struct Picker {
     thumbnail_token: Token,
     pub(crate) error: Option<String>,
     scroll_id: iced::widget::Id,
-    grid_id: iced::widget::Id,
 }
 
 impl Picker {
@@ -180,7 +179,6 @@ impl Picker {
             thumbnail_token: Token::new(),
             error: None,
             scroll_id: iced::widget::Id::unique(),
-            grid_id: iced::widget::Id::unique(),
         }
     }
 
@@ -292,18 +290,14 @@ impl Picker {
                 self.visible_count = self.visible_count.max(next_count.min(count));
                 let thumbnails =
                     self.thumbnail_tasks(old_count, self.visible_count, paths, decodes);
-                // The filters and notices above the grid change its top, so
-                // the scroll target is measured from the laid out page.
+                // The rows above and the filters differ in height, so the scroll
+                // target is measured from the laid out page.
                 Task::batch([
                     thumbnails,
-                    iced::advanced::widget::operate(Reveal {
-                        scroll: self.scroll_id.clone(),
-                        grid: self.grid_id.clone(),
-                        row: index / columns,
-                        pitch: tile_size(self.kind).1 as f32 + 48.0,
-                        viewport: None,
-                        grid_top: None,
-                    }),
+                    iced::advanced::widget::operate(Reveal::new(
+                        self.scroll_id.clone(),
+                        index / columns,
+                    )),
                 ])
             }
         }
@@ -350,13 +344,11 @@ impl Picker {
         title: &str,
         progress: Option<&str>,
     ) -> Element<'_, Event> {
+        // Back and Filters stay put. The title, filters, notices, details, and
+        // grid share one scrollable, so a short window still reaches the
+        // images, and the footer keeps only the progress line and Use.
         let header = ends(
-            row![
-                secondary_button("Back", palette).on_press(Event::Back),
-                text(title.to_owned()).size(20),
-            ]
-            .spacing(14)
-            .align_y(Center),
+            secondary_button("Back", palette).on_press(Event::Back),
             secondary_button(
                 if self.filters_open {
                     "Filters ^"
@@ -367,12 +359,12 @@ impl Picker {
             )
             .on_press(Event::ToggleFilters),
             14.0,
-            MIN_LEFT,
+            0.0,
         );
 
-        // The filters, notices, and grid share one scrollable, so a short
-        // window still reaches the images while Back and the footer stay put.
-        let mut scrolled = column![].spacing(12).width(Fill);
+        let mut scrolled = column![text(title.to_owned()).size(20)]
+            .spacing(12)
+            .width(Fill);
         if self.filters_open {
             scrolled = scrolled.push(self.filters_view(palette));
         }
@@ -387,13 +379,6 @@ impl Picker {
         if !self.loading && self.filtered_indices.is_empty() && self.error.is_none() {
             scrolled = scrolled.push(text("No images found.").color(palette.muted));
         }
-        scrolled = scrolled.push(self.grid_view(palette));
-        let scroll = scrollable(scrolled)
-            .wineo_style(palette)
-            .id(self.scroll_id.clone())
-            .width(Fill)
-            .height(Fill);
-        let mut body = column![header, scroll].spacing(12);
         let selected = self.details();
         let mut details = column![
             text(selected.unwrap_or_else(|| "Select an image to see its details.".to_owned()))
@@ -406,28 +391,33 @@ impl Picker {
         {
             details = details.push(text(error).size(12).color(palette.danger));
         }
-        if let Some(status) = progress {
-            details = details.push(
-                row![
-                    text(status.to_owned()).size(12).color(palette.muted),
-                    secondary_button("Cancel", palette).on_press(Event::Cancel),
-                ]
-                .spacing(10)
-                .align_y(Center)
-                .wrap()
-                .vertical_spacing(8),
-            );
-        }
+        scrolled = scrolled.push(details);
+        scrolled = scrolled.push(self.grid_view(palette));
+        let scroll = scrollable(scrolled)
+            .wineo_style(palette)
+            .id(self.scroll_id.clone())
+            .width(Fill)
+            .height(Fill);
         let has_progress = progress.is_some();
         let use_button = accent_base("Use", palette.primary).on_press_maybe(
             (!has_progress)
                 .then(|| self.selected().map(|_| Event::Use))
                 .flatten(),
         );
-        let footer = row![details.width(Fill), use_button]
-            .spacing(14)
-            .align_y(Center);
-        body = body.push(footer);
+        let status: Element<'_, Event> = match progress {
+            Some(status) => row![
+                text(status.to_owned()).size(12).color(palette.muted),
+                secondary_button("Cancel", palette).on_press(Event::Cancel),
+            ]
+            .spacing(10)
+            .align_y(Center)
+            .wrap()
+            .vertical_spacing(8)
+            .into(),
+            None => iced::widget::Space::new().into(),
+        };
+        let footer = ends(status, use_button, 14.0, MIN_LEFT);
+        let body = column![header, scroll, footer].spacing(12);
 
         container(
             container(body)
@@ -530,7 +520,9 @@ impl Picker {
             for _ in chunk.len()..columns {
                 tiles = tiles.push(iced::widget::Space::new().width(Length::FillPortion(1)));
             }
-            grid = grid.push(tiles);
+            // Rows differ in height with their badges and Selected label, so
+            // keyboard scrolling measures them by id.
+            grid = grid.push(container(tiles).id(row_id(row_index)).width(Fill));
         }
         if self.visible_count < indices.len() {
             grid = grid.push(
@@ -539,11 +531,7 @@ impl Picker {
                     .push(iced::widget::Space::new().width(Fill)),
             );
         }
-        container(grid)
-            .id(self.grid_id.clone())
-            .width(Fill)
-            .padding([0, 2])
-            .into()
+        container(grid).width(Fill).padding([0, 2]).into()
     }
 
     fn tile(
@@ -846,16 +834,42 @@ fn request_filters(filters: FilterState, kind: Kind) -> Filters {
     }
 }
 
-/// Measures where the grid sits in the scrolled content, then scrolls so the
-/// tile row `row` shows.
+fn row_id(row: usize) -> iced::widget::Id {
+    iced::widget::Id::from(format!("art-picker-row-{row}"))
+}
+
+/// The gap between grid rows.
+const ROW_GAP: f32 = 10.0;
+
+/// Room for the Selected label, which the row grows by once it is selected.
+const SELECTED_LABEL: f32 = 16.0;
+
+/// Measures where the tile row `row` sits in the scrolled content, then
+/// scrolls so it shows.
 struct Reveal {
     scroll: iced::widget::Id,
-    grid: iced::widget::Id,
     row: usize,
-    pitch: f32,
+    target: iced::widget::Id,
+    before: iced::widget::Id,
     /// The viewport's height, the content's top, and the current offset.
     viewport: Option<(f32, f32, f32)>,
-    grid_top: Option<f32>,
+    found: Option<iced::Rectangle>,
+    /// The row above, for a row that is not laid out yet.
+    above: Option<iced::Rectangle>,
+}
+
+impl Reveal {
+    fn new(scroll: iced::widget::Id, row: usize) -> Self {
+        Self {
+            scroll,
+            row,
+            target: row_id(row),
+            before: row_id(row.saturating_sub(1)),
+            viewport: None,
+            found: None,
+            above: None,
+        }
+    }
 }
 
 impl<T: Send + 'static> Operation<T> for Reveal {
@@ -864,8 +878,10 @@ impl<T: Send + 'static> Operation<T> for Reveal {
     }
 
     fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
-        if id == Some(&self.grid) {
-            self.grid_top = Some(bounds.y);
+        if id == Some(&self.target) {
+            self.found = Some(bounds);
+        } else if self.row > 0 && id == Some(&self.before) {
+            self.above = Some(bounds);
         }
     }
 
@@ -883,13 +899,26 @@ impl<T: Send + 'static> Operation<T> for Reveal {
     }
 
     fn finish(&self) -> Outcome<T> {
-        let (Some((viewport, content_top, current)), Some(grid_top)) =
-            (self.viewport, self.grid_top)
-        else {
+        let Some((viewport, content_top, current)) = self.viewport else {
             return Outcome::None;
         };
-        let top = grid_top - content_top + self.row as f32 * self.pitch;
-        let offset = reveal_offset(current, viewport, top, top + self.pitch, self.row == 0);
+        // A row the last frame did not have yet sits below the one above it.
+        let Some(bounds) = self.found.or_else(|| {
+            self.above.map(|above| iced::Rectangle {
+                y: above.y + above.height + ROW_GAP,
+                ..above
+            })
+        }) else {
+            return Outcome::None;
+        };
+        let top = bounds.y - content_top;
+        let offset = reveal_offset(
+            current,
+            viewport,
+            top,
+            top + bounds.height + SELECTED_LABEL,
+            self.row == 0,
+        );
         if (offset - current).abs() < 0.5 {
             return Outcome::None;
         }
@@ -1476,14 +1505,10 @@ mod tests {
     }
 
     #[test]
-    fn a_short_window_scrolls_filters_with_the_grid_and_pins_the_footer() {
+    fn a_short_window_scrolls_the_title_and_filters_with_the_grid_and_pins_the_footer() {
         use crate::layout_probe::probe;
         let palette = Palette::DARK;
-        // A name this long wraps the header over three lines at 360 px. With
-        // the progress row or at 240 px high that leaves no room for images
-        // however the page is laid out, so those cases use a short name.
-        const LONG: &str = "Grid art for an extremely long environment name that goes on";
-        const SHORT: &str = "Grid art for my-game";
+        let title = "Grid art for an extremely long environment name that goes on and on";
         let use_size = natural(accent_base("Use", palette.primary));
         let cancel_size = natural(secondary_button("Cancel", palette));
         for kind in [Kind::Grid, Kind::Hero] {
@@ -1491,16 +1516,6 @@ mod tests {
                 for progress in [None, Some("Downloading 123.4 MB of 456.7 MB, nearly there")] {
                     for (width, height) in [(360.0_f32, 300.0_f32), (360.0, 240.0), (900.0, 400.0)]
                     {
-                        // The progress row's two lines and the details fill a 240 px
-                        // window by themselves.
-                        if height < 260.0 && progress.is_some() {
-                            continue;
-                        }
-                        let title = if width > 400.0 || (height >= 300.0 && progress.is_none()) {
-                            LONG
-                        } else {
-                            SHORT
-                        };
                         let picker = loaded(kind, filters_open);
                         let size = iced::Size::new(width, height);
                         let case =
@@ -1521,9 +1536,14 @@ mod tests {
                         for (size, label) in footer {
                             let found = nodes_of_size(layout, size);
                             assert_eq!(found.len(), 1, "{case}: {label} was squeezed");
+                            let found = found[0];
                             assert!(
-                                found[0].y >= viewport.y + viewport.height - 0.01,
+                                found.y >= viewport.y + viewport.height - 0.01,
                                 "{case}: {label} is not below the scroll"
+                            );
+                            assert!(
+                                found.y + found.height <= height + 0.01,
+                                "{case}: {label} is cut off by the window"
                             );
                         }
                     }
@@ -1532,37 +1552,116 @@ mod tests {
         }
     }
 
+    /// Where a tile row and the scrollable are, as seen by an operation.
+    #[derive(Default)]
+    struct Spotted {
+        row: Option<iced::Rectangle>,
+        scroll: Option<(iced::Rectangle, iced::Rectangle, iced::Vector)>,
+    }
+
+    struct Where {
+        row: iced::widget::Id,
+        scroll: iced::widget::Id,
+        out: Arc<Mutex<Spotted>>,
+    }
+
+    impl Operation<()> for Where {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<()>)) {
+            operate(self);
+        }
+
+        fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+            if id == Some(&self.row) {
+                self.out.lock().unwrap().row = Some(bounds);
+            }
+        }
+
+        fn scrollable(
+            &mut self,
+            id: Option<&iced::widget::Id>,
+            bounds: iced::Rectangle,
+            content_bounds: iced::Rectangle,
+            translation: iced::Vector,
+            _state: &mut dyn Scrollable,
+        ) {
+            if id == Some(&self.scroll) {
+                self.out.lock().unwrap().scroll = Some((bounds, content_bounds, translation));
+            }
+        }
+    }
+
+    /// The row's top and bottom on screen, and the viewport's.
+    fn on_screen(
+        laid: &mut crate::layout_probe::Laid<'_, Event>,
+        picker: &Picker,
+        row: usize,
+    ) -> (f32, f32, iced::Rectangle) {
+        let out = Arc::new(Mutex::new(Spotted::default()));
+        laid.run(Box::new(Where {
+            row: row_id(row),
+            scroll: picker.scroll_id.clone(),
+            out: out.clone(),
+        }));
+        let out = out.lock().unwrap();
+        let row = out.row.expect("row is laid out");
+        let (viewport, content, translation) = out.scroll.expect("scrollable");
+        let top = viewport.y + (row.y - content.y) - translation.y;
+        (top, top + row.height, viewport)
+    }
+
+    /// Rows differ in height with their badges and the Selected label, so the
+    /// reveal has to measure them.
     #[test]
-    fn keyboard_reveal_counts_the_filters_above_the_grid() {
+    fn keyboard_reveal_lands_on_rows_of_different_heights() {
         use crate::layout_probe::lay_out;
         let palette = Palette::DARK;
-        let picker = loaded(Kind::Grid, true);
-        let mut laid = lay_out(
-            picker.view(palette, "Grid art", None),
-            iced::Size::new(900.0, 500.0),
-        );
-        let pitch = tile_size(Kind::Grid).1 as f32 + 48.0;
-        laid.run(Box::new(Reveal {
-            scroll: picker.scroll_id.clone(),
-            grid: picker.grid_id.clone(),
-            row: 1,
-            pitch,
-            viewport: None,
-            grid_top: None,
-        }));
-        let offset = laid.offsets()[0];
-        // The second row's bottom would sit at 2 * pitch without the filters.
-        let viewport = crate::layout_probe::probe(
-            &mut picker.view(palette, "Grid art", None),
-            iced::Size::new(900.0, 500.0),
-        )
-        .scrollables[0]
-            .0
-            .height;
-        assert!(
-            offset > 2.0 * pitch - viewport + 30.0,
-            "{offset} ignores the filters"
-        );
+        for kind in [Kind::Grid, Kind::Hero] {
+            for filters_open in [false, true] {
+                for (width, height) in [(360.0_f32, 300.0_f32), (360.0, 900.0), (900.0, 400.0)] {
+                    let mut probe_picker = loaded(kind, filters_open);
+                    for (index, image) in probe_picker.images.iter_mut().enumerate() {
+                        // Alternate rows wrap into several badge lines.
+                        let badged = (index / columns(kind)).is_multiple_of(2);
+                        image.animated = badged;
+                        image.nsfw = badged;
+                        image.humor = badged;
+                    }
+                    let rows = probe_picker.visible_count.div_ceil(columns(kind));
+                    for row in [0, rows / 2, rows - 1] {
+                        let mut picker = loaded(kind, filters_open);
+                        picker.images = probe_picker.images.clone();
+                        picker.selected = Some(row * columns(kind));
+                        let case =
+                            format!("{kind} filters {filters_open} {width}x{height} row {row}");
+                        let mut laid = lay_out(
+                            picker.view(palette, "Grid art for my-game", None),
+                            iced::Size::new(width, height),
+                        );
+                        // Start from the far end so every row has to move.
+                        for from in [rows - 1, 0, row] {
+                            laid.run(Box::new(Reveal::new(picker.scroll_id.clone(), from)));
+                        }
+                        let (top, bottom, viewport) = on_screen(&mut laid, &picker, row);
+                        let taller = bottom - top > viewport.height;
+                        let first = on_screen(&mut laid, &picker, 0);
+                        let second = on_screen(&mut laid, &picker, 1);
+                        assert!(
+                            ((first.1 - first.0) - (second.1 - second.0)).abs() > 10.0,
+                            "{case}: rows should differ in height"
+                        );
+                        assert!(top >= viewport.y - 0.5, "{case}: row starts above the view");
+                        assert!(
+                            taller || bottom <= viewport.y + viewport.height + 0.5,
+                            "{case}: row ends below the view"
+                        );
+                        assert!(
+                            top <= viewport.y + viewport.height,
+                            "{case}: row top is below the view"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
