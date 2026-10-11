@@ -231,6 +231,20 @@ impl Paths {
         self.cache.join(format!("gog-product-{product_id}.json"))
     }
 
+    /// GOG game folder state files. Always in the host data dir, since GOG
+    /// games live in the host library only.
+    pub fn gog_folders_dir(&self) -> PathBuf {
+        self.data.join("gog").join("folders")
+    }
+
+    /// A GOG game folder's lock, keyed like its state file. Host-wide, so
+    /// every root sees the same lock.
+    pub fn gog_folder_lock(&self, key: &str) -> PathBuf {
+        self.host_state
+            .join(".locks")
+            .join(format!("gog-folder-{key}.lock"))
+    }
+
     /// An environment's playtime log. A portable folder carries it, so it
     /// moves with the folder, like art.
     pub fn stats_log(&self, name: &str) -> PathBuf {
@@ -841,6 +855,16 @@ mod tests {
         assert_eq!(xdg.prefix_locks_dir(), xdg.locks_dir());
         assert_eq!(one.prefix_locks_dir(), xdg.prefix_locks_dir());
         assert_eq!(one.gog_credentials_lock(), xdg.gog_credentials_lock());
+        assert_eq!(one.gog_folders_dir(), xdg.gog_folders_dir());
+        assert_eq!(
+            xdg.gog_folders_dir(),
+            Path::new("/home/me/.local/share/wineo/gog/folders")
+        );
+        assert_eq!(one.gog_folder_lock("ab"), xdg.gog_folder_lock("ab"));
+        assert_eq!(
+            xdg.gog_folder_lock("ab"),
+            Path::new("/home/me/.local/state/wineo/.locks/gog-folder-ab.lock")
+        );
         assert_eq!(
             xdg.gog_credentials_lock(),
             Path::new("/home/me/.local/state/wineo/.locks/gog-credentials.lock")
