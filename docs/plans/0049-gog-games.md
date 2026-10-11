@@ -21,9 +21,10 @@ Second half of queue item 5 in [features.md](../features.md), after
 
 On 2026-10-10 the maintainer answered the open questions below: 1A, 2A,
 4A, 5A, 6A, 7A, 8A, 9A, 10A, and 11 with every recommended extra in.
-Question 3 is waiting on more detail about B, and beta branches and
-rollback are being considered alongside it, since only Galaxy builds offer
-them.
+After more detail on B, the maintainer chose a phased answer to question
+3: offline installers in this plan (A), and Galaxy builds for Windows in
+the next plan, 0050, with differential updates, beta branches, and
+rollback, since only Galaxy builds offer those.
 
 ## What GOG offers
 
@@ -352,8 +353,8 @@ out.
 
 ## Scope limits
 
-- Not in this plan: cloud saves, bonus content, Galaxy differential
-  downloads (a follow-up plan under question 3's answer A), beta branches,
-  rollback, posting playtime to GOG, and Mac games.
+- Not in this plan: cloud saves, bonus content, posting playtime to GOG,
+  and Mac games. Galaxy differential downloads, beta branches, and
+  rollback come in plan 0050.
 - Epic stays a backlog row.
 - wineo never edits Heroic's files.
