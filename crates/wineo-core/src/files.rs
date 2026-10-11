@@ -1,5 +1,6 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -14,18 +15,47 @@ pub(crate) fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> Result<()
     write_unique(path, contents.as_ref()).context(|| format!("failed to write {}", path.display()))
 }
 
+/// One counter for every kind of writer, so they never race for a temp name.
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// How the temp file is created before it is renamed into place.
+#[derive(Clone, Copy, Default)]
+struct Options {
+    /// Set at creation, so the file is never briefly wider than this.
+    mode: Option<u32>,
+    sync: bool,
+}
+
 /// Writes through a temp file no other writer can share, then renames it
 /// into place. Concurrent writers of one path each get their own file, so
 /// neither can rename a half-written one into place or delete the other's.
 pub(crate) fn write_unique(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     write_unique_with(path, contents, &COUNTER)
+}
+
+/// Like `write_unique`, for secrets: the temp file is created `0600` and
+/// synced before the rename.
+pub(crate) fn write_unique_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let options = Options {
+        mode: Some(0o600),
+        sync: true,
+    };
+    write_with(path, contents, &COUNTER, options)
 }
 
 pub(crate) fn write_unique_with(
     path: &Path,
     contents: &[u8],
     counter: &AtomicU64,
+) -> std::io::Result<()> {
+    write_with(path, contents, counter, Options::default())
+}
+
+fn write_with(
+    path: &Path,
+    contents: &[u8],
+    counter: &AtomicU64,
+    options: Options,
 ) -> std::io::Result<()> {
     const TRIES: usize = 8;
     let dir = path.parent().unwrap_or(Path::new(""));
@@ -44,7 +74,12 @@ pub(crate) fn write_unique_with(
             counter.fetch_add(1, Ordering::Relaxed)
         ));
         let tmp = dir.join(name);
-        let mut file = match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+        let mut open = OpenOptions::new();
+        open.write(true).create_new(true);
+        if let Some(mode) = options.mode {
+            open.mode(mode);
+        }
+        let mut file = match open.open(&tmp) {
             Ok(file) => file,
             // Someone else's file, maybe a crash leftover. Leave it alone.
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -53,6 +88,13 @@ pub(crate) fn write_unique_with(
         // From here the temp file is this writer's own to clean up.
         let result = file
             .write_all(contents)
+            .and_then(|()| {
+                if options.sync {
+                    file.sync_all()
+                } else {
+                    Ok(())
+                }
+            })
             .and_then(|()| fs::rename(&tmp, path));
         if result.is_err() {
             let _ = fs::remove_file(&tmp);

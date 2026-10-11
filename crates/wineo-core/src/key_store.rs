@@ -3,13 +3,13 @@
 //! a `KeySpec` and shares the rest.
 
 use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::{fmt, fmt::Formatter};
 
 use crate::error::{Error, IoContext, Result};
+use crate::files::write_unique_private;
 use crate::paths::Paths;
 
 /// Where one service's key lives.
@@ -190,25 +190,71 @@ fn remove_file(path: &Path) -> Result<bool> {
 }
 
 /// Writes through a temp file created `0600`, so the key is never readable by
-/// anyone else, not even for a moment.
+/// anyone else, not even for a moment. Each save has its own temp file, so
+/// concurrent saves can't publish or delete each other's.
 fn write_private(path: &Path, key: &str) -> Result<()> {
     let dir = path.parent().expect("the key file has a parent");
     fs::create_dir_all(dir).context(|| format!("failed to create {}", dir.display()))?;
+    // Older versions wrote to this one fixed name and could leave it behind
+    // after a crash. Unique temp names are never reused, so nothing else
+    // would ever clear it.
     let name = path.file_name().expect("the key file has a name");
-    let mut tmp_name = OsString::from(".");
-    tmp_name.push(name);
-    tmp_name.push(".tmp");
-    let tmp = dir.join(tmp_name);
-    remove_file(&tmp)?;
-    let context = || format!("failed to write {}", path.display());
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .context(context)?;
-    file.write_all(format!("{key}\n").as_bytes())
-        .and_then(|()| file.sync_all())
-        .context(context)?;
-    fs::rename(&tmp, path).context(context)
+    let mut legacy = OsString::from(".");
+    legacy.push(name);
+    legacy.push(".tmp");
+    remove_file(&dir.join(legacy))?;
+    write_unique_private(path, format!("{key}\n").as_bytes())
+        .context(|| format!("failed to write {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    #[test]
+    fn concurrent_saves_leave_one_complete_private_file_and_no_temp_files() {
+        const THREADS: usize = 8;
+        const ROUNDS: usize = 50;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("dir/key");
+        let keys: Vec<String> = (0..THREADS)
+            .map(|n| format!("key-{n}-").repeat(5_000))
+            .collect();
+        let barrier = std::sync::Barrier::new(THREADS);
+        std::thread::scope(|scope| {
+            for key in &keys {
+                let (path, barrier) = (&path, &barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..ROUNDS {
+                        write_private(path, key).unwrap();
+                    }
+                });
+            }
+        });
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            keys.iter().any(|key| text == format!("{key}\n")),
+            "the file is not any one save"
+        );
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let names: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+    }
+
+    #[test]
+    fn a_save_clears_the_legacy_fixed_temp_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("key");
+        fs::write(root.path().join(".key.tmp"), "stale").unwrap();
+        write_private(&path, "secret").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "secret\n");
+        assert!(!root.path().join(".key.tmp").exists());
+    }
 }
