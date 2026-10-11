@@ -3,6 +3,8 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use iced::advanced::widget::Operation;
+use iced::advanced::widget::operation::{Outcome, Scrollable, scrollable as scrollable_operation};
 use iced::widget::{Row, column, container, image, mouse_area, row, scrollable, text, toggler};
 use iced::{Center, Color, ContentFit, Element, Fill, Length, Task, border, mouse};
 use wineo_core::art::Kind;
@@ -126,7 +128,6 @@ pub(crate) enum Event {
     UseSelected(usize),
     Cancel,
     Move(Direction),
-    Scrolled(f32, f32),
 }
 
 pub(crate) struct Picker {
@@ -145,8 +146,7 @@ pub(crate) struct Picker {
     thumbnail_token: Token,
     pub(crate) error: Option<String>,
     scroll_id: iced::widget::Id,
-    scroll_offset: f32,
-    viewport_height: f32,
+    grid_id: iced::widget::Id,
 }
 
 impl Picker {
@@ -180,8 +180,7 @@ impl Picker {
             thumbnail_token: Token::new(),
             error: None,
             scroll_id: iced::widget::Id::unique(),
-            scroll_offset: 0.0,
-            viewport_height: 0.0,
+            grid_id: iced::widget::Id::unique(),
         }
     }
 
@@ -211,11 +210,6 @@ impl Picker {
                 Task::none()
             }
             Event::Use | Event::UseSelected(_) | Event::Cancel => Task::none(),
-            Event::Scrolled(offset, height) => {
-                self.scroll_offset = offset;
-                self.viewport_height = height;
-                Task::none()
-            }
             Event::ToggleFilters => {
                 self.filters_open = !self.filters_open;
                 Task::none()
@@ -298,25 +292,18 @@ impl Picker {
                 self.visible_count = self.visible_count.max(next_count.min(count));
                 let thumbnails =
                     self.thumbnail_tasks(old_count, self.visible_count, paths, decodes);
-                let row_height = tile_size(self.kind).1 as f32 + 48.0;
-                let top = (index / columns) as f32 * row_height;
-                let bottom = top + row_height;
-                let offset = if top < self.scroll_offset {
-                    Some(top)
-                } else if bottom > self.scroll_offset + self.viewport_height {
-                    Some((bottom - self.viewport_height).max(0.0))
-                } else {
-                    None
-                };
-                let Some(offset) = offset else {
-                    return thumbnails;
-                };
+                // The filters and notices above the grid change its top, so
+                // the scroll target is measured from the laid out page.
                 Task::batch([
                     thumbnails,
-                    iced::widget::operation::scroll_to(
-                        self.scroll_id.clone(),
-                        scrollable::AbsoluteOffset { x: 0.0, y: offset },
-                    ),
+                    iced::advanced::widget::operate(Reveal {
+                        scroll: self.scroll_id.clone(),
+                        grid: self.grid_id.clone(),
+                        row: index / columns,
+                        pitch: tile_size(self.kind).1 as f32 + 48.0,
+                        viewport: None,
+                        grid_top: None,
+                    }),
                 ])
             }
         }
@@ -383,22 +370,30 @@ impl Picker {
             MIN_LEFT,
         );
 
-        let mut body = column![header].spacing(12);
+        // The filters, notices, and grid share one scrollable, so a short
+        // window still reaches the images while Back and the footer stay put.
+        let mut scrolled = column![].spacing(12).width(Fill);
         if self.filters_open {
-            body = body.push(self.filters_view(palette));
+            scrolled = scrolled.push(self.filters_view(palette));
         }
         if self.loading && self.images.is_empty() {
-            body = body.push(text("Loading SteamGridDB images...").color(palette.muted));
+            scrolled = scrolled.push(text("Loading SteamGridDB images...").color(palette.muted));
         }
         if let Some(error) = &self.error
             && self.selected().is_none()
         {
-            body = body.push(text(error).size(13).color(palette.danger));
+            scrolled = scrolled.push(text(error).size(13).color(palette.danger));
         }
         if !self.loading && self.filtered_indices.is_empty() && self.error.is_none() {
-            body = body.push(text("No images found.").color(palette.muted));
+            scrolled = scrolled.push(text("No images found.").color(palette.muted));
         }
-        body = body.push(self.grid_view(palette));
+        scrolled = scrolled.push(self.grid_view(palette));
+        let scroll = scrollable(scrolled)
+            .wineo_style(palette)
+            .id(self.scroll_id.clone())
+            .width(Fill)
+            .height(Fill);
+        let mut body = column![header, scroll].spacing(12);
         let selected = self.details();
         let mut details = column![
             text(selected.unwrap_or_else(|| "Select an image to see its details.".to_owned()))
@@ -460,7 +455,6 @@ impl Picker {
         self.filtered_indices.clear();
         self.visible_count = 0;
         self.selected = None;
-        self.scroll_offset = 0.0;
         let sequence = self.list_sequence;
         let kind = self.kind;
         let filters = request_filters(self.filters, kind);
@@ -545,13 +539,10 @@ impl Picker {
                     .push(iced::widget::Space::new().width(Fill)),
             );
         }
-        scrollable(container(grid).width(Fill).padding([0, 2]))
-            .wineo_style(palette)
-            .id(self.scroll_id.clone())
-            .on_scroll(|viewport| {
-                Event::Scrolled(viewport.absolute_offset().y, viewport.bounds().height)
-            })
-            .height(Fill)
+        container(grid)
+            .id(self.grid_id.clone())
+            .width(Fill)
+            .padding([0, 2])
             .into()
     }
 
@@ -853,6 +844,78 @@ fn request_filters(filters: FilterState, kind: Kind) -> Filters {
     } else {
         Filters::Ranked
     }
+}
+
+/// Measures where the grid sits in the scrolled content, then scrolls so the
+/// tile row `row` shows.
+struct Reveal {
+    scroll: iced::widget::Id,
+    grid: iced::widget::Id,
+    row: usize,
+    pitch: f32,
+    /// The viewport's height, the content's top, and the current offset.
+    viewport: Option<(f32, f32, f32)>,
+    grid_top: Option<f32>,
+}
+
+impl<T: Send + 'static> Operation<T> for Reveal {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<T>)) {
+        operate(self);
+    }
+
+    fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+        if id == Some(&self.grid) {
+            self.grid_top = Some(bounds.y);
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        bounds: iced::Rectangle,
+        content_bounds: iced::Rectangle,
+        translation: iced::Vector,
+        _state: &mut dyn Scrollable,
+    ) {
+        if id == Some(&self.scroll) {
+            self.viewport = Some((bounds.height, content_bounds.y, translation.y));
+        }
+    }
+
+    fn finish(&self) -> Outcome<T> {
+        let (Some((viewport, content_top, current)), Some(grid_top)) =
+            (self.viewport, self.grid_top)
+        else {
+            return Outcome::None;
+        };
+        let top = grid_top - content_top + self.row as f32 * self.pitch;
+        let offset = reveal_offset(current, viewport, top, top + self.pitch, self.row == 0);
+        if (offset - current).abs() < 0.5 {
+            return Outcome::None;
+        }
+        Outcome::Chain(Box::new(scrollable_operation::scroll_to(
+            self.scroll.clone(),
+            scrollable_operation::AbsoluteOffset {
+                x: None,
+                y: Some(offset),
+            },
+        )))
+    }
+}
+
+/// The smallest scroll offset that shows the row spanning `top..bottom` of
+/// the content in a `viewport` tall window now scrolled to `current`. A row
+/// taller than the window shows its top, and the first row shows the filters
+/// above it when both fit.
+fn reveal_offset(current: f32, viewport: f32, top: f32, bottom: f32, first: bool) -> f32 {
+    let lowest = bottom - viewport;
+    if first && lowest <= 0.0 {
+        return 0.0;
+    }
+    if lowest > top {
+        return top;
+    }
+    current.clamp(lowest, top)
 }
 
 fn is_best_match(image_index: usize, filtered: &[usize]) -> bool {
@@ -1383,5 +1446,136 @@ mod tests {
                 .contains("https://cdn.example/21.png")
         );
         assert_eq!(picker.list_sequence(), 0);
+    }
+
+    fn loaded(kind: Kind, filters_open: bool) -> Picker {
+        let mut picker = Picker::new(kind, 0);
+        picker.images = (1..=40).map(item).collect();
+        picker.filtered_indices = (0..40).collect();
+        picker.visible_count = page_size(kind).min(40);
+        picker.selected = Some(0);
+        picker.filters_open = filters_open;
+        picker
+    }
+
+    fn nodes_of_size(layout: iced::advanced::Layout<'_>, size: iced::Size) -> Vec<iced::Rectangle> {
+        let bounds = layout.bounds();
+        let mut found: Vec<_> = layout
+            .children()
+            .flat_map(|child| nodes_of_size(child, size))
+            .collect();
+        if (bounds.width - size.width).abs() < 0.01 && (bounds.height - size.height).abs() < 0.01 {
+            found.push(bounds);
+        }
+        found
+    }
+
+    fn natural(button: iced::widget::Button<'static, Event>) -> iced::Size {
+        let mut element: Element<'static, Event> = button.into();
+        crate::layout_probe::layout(&mut element, iced::Size::new(4000.0, 400.0)).size()
+    }
+
+    #[test]
+    fn a_short_window_scrolls_filters_with_the_grid_and_pins_the_footer() {
+        use crate::layout_probe::probe;
+        let palette = Palette::DARK;
+        // A name this long wraps the header over three lines at 360 px. With
+        // the progress row or at 240 px high that leaves no room for images
+        // however the page is laid out, so those cases use a short name.
+        const LONG: &str = "Grid art for an extremely long environment name that goes on";
+        const SHORT: &str = "Grid art for my-game";
+        let use_size = natural(accent_base("Use", palette.primary));
+        let cancel_size = natural(secondary_button("Cancel", palette));
+        for kind in [Kind::Grid, Kind::Hero] {
+            for filters_open in [false, true] {
+                for progress in [None, Some("Downloading 123.4 MB of 456.7 MB, nearly there")] {
+                    for (width, height) in [(360.0_f32, 300.0_f32), (360.0, 240.0), (900.0, 400.0)]
+                    {
+                        // The progress row's two lines and the details fill a 240 px
+                        // window by themselves.
+                        if height < 260.0 && progress.is_some() {
+                            continue;
+                        }
+                        let title = if width > 400.0 || (height >= 300.0 && progress.is_none()) {
+                            LONG
+                        } else {
+                            SHORT
+                        };
+                        let picker = loaded(kind, filters_open);
+                        let size = iced::Size::new(width, height);
+                        let case =
+                            format!("{kind} filters {filters_open} {progress:?} {width}x{height}");
+                        let mut view = picker.view(palette, title, progress);
+                        let frame = iced::Rectangle::with_size(size);
+                        let probe = probe(&mut view, size);
+                        let spilled = probe.outside(frame);
+                        assert!(spilled.is_empty(), "{case}: {spilled:?}");
+                        assert_eq!(probe.scrollables.len(), 1, "{case}");
+                        let (viewport, _) = probe.scrollables[0];
+                        assert!(viewport.height > 0.0, "{case}: no room for the images");
+                        let layout = iced::advanced::Layout::new(&probe.node);
+                        let mut footer = vec![(use_size, "Use")];
+                        if progress.is_some() {
+                            footer.push((cancel_size, "Cancel"));
+                        }
+                        for (size, label) in footer {
+                            let found = nodes_of_size(layout, size);
+                            assert_eq!(found.len(), 1, "{case}: {label} was squeezed");
+                            assert!(
+                                found[0].y >= viewport.y + viewport.height - 0.01,
+                                "{case}: {label} is not below the scroll"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn keyboard_reveal_counts_the_filters_above_the_grid() {
+        use crate::layout_probe::lay_out;
+        let palette = Palette::DARK;
+        let picker = loaded(Kind::Grid, true);
+        let mut laid = lay_out(
+            picker.view(palette, "Grid art", None),
+            iced::Size::new(900.0, 500.0),
+        );
+        let pitch = tile_size(Kind::Grid).1 as f32 + 48.0;
+        laid.run(Box::new(Reveal {
+            scroll: picker.scroll_id.clone(),
+            grid: picker.grid_id.clone(),
+            row: 1,
+            pitch,
+            viewport: None,
+            grid_top: None,
+        }));
+        let offset = laid.offsets()[0];
+        // The second row's bottom would sit at 2 * pitch without the filters.
+        let viewport = crate::layout_probe::probe(
+            &mut picker.view(palette, "Grid art", None),
+            iced::Size::new(900.0, 500.0),
+        )
+        .scrollables[0]
+            .0
+            .height;
+        assert!(
+            offset > 2.0 * pitch - viewport + 30.0,
+            "{offset} ignores the filters"
+        );
+    }
+
+    #[test]
+    fn reveal_offset_keeps_visible_rows_and_shows_the_first_row_whole() {
+        // Already in view: no move.
+        assert_eq!(reveal_offset(100.0, 300.0, 150.0, 250.0, false), 100.0);
+        // Below the window: its bottom lines up with the bottom edge.
+        assert_eq!(reveal_offset(0.0, 300.0, 400.0, 500.0, false), 200.0);
+        // Above it: its top lines up with the top edge.
+        assert_eq!(reveal_offset(500.0, 300.0, 100.0, 200.0, false), 100.0);
+        // The first row scrolls back to show the filters above it.
+        assert_eq!(reveal_offset(80.0, 300.0, 60.0, 160.0, true), 0.0);
+        // A row taller than the window shows its top.
+        assert_eq!(reveal_offset(0.0, 100.0, 200.0, 500.0, false), 200.0);
     }
 }
