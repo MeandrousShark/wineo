@@ -59,6 +59,10 @@ pub struct Package<'a> {
     /// GOG's file id, like `en1installer0`.
     pub file_id: &'a str,
     pub size: u64,
+    /// Every file of the installer as GOG lists it now, this one included.
+    /// A cached file of the same name under an id not listed here is stale
+    /// and gets replaced. Empty means not known, and any clash is refused.
+    pub siblings: &'a [DownloadFile],
 }
 
 impl<'a> Package<'a> {
@@ -68,6 +72,7 @@ impl<'a> Package<'a> {
             download_id: &download.id,
             file_id: &file.id,
             size: file.size,
+            siblings: &download.files,
         }
     }
 }
@@ -433,20 +438,23 @@ pub(crate) fn write_record(folder: &Path, record: &Record) -> Result<(), Error> 
     fs::rename(&temporary, &path).map_err(disk)
 }
 
-/// Whether another file id's record in the folder names this file.
-pub(crate) fn claimed_by_another(folder: &Path, name: &str, file_id: &str) -> bool {
+/// The records of other file ids in the folder that name this file.
+pub(crate) fn claimed_by_others(folder: &Path, name: &str, file_id: &str) -> Vec<Record> {
     let Ok(entries) = fs::read_dir(folder) else {
-        return false;
+        return Vec::new();
     };
-    entries.flatten().any(|entry| {
-        entry
-            .file_name()
-            .to_str()
-            .and_then(|entry| entry.strip_prefix('.')?.strip_suffix(".json"))
-            .filter(|other| *other != file_id)
-            .and_then(|other| read_record(folder, other))
-            .is_some_and(|record| record.name == name)
-    })
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .and_then(|entry| entry.strip_prefix('.')?.strip_suffix(".json"))
+                .filter(|other| *other != file_id)
+                .and_then(|other| read_record(folder, other))
+                .filter(|record| record.name == name)
+        })
+        .collect()
 }
 
 /// Removes a file, which may already be gone.

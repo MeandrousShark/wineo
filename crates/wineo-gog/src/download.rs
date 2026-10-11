@@ -163,10 +163,21 @@ impl Client {
         let malformed_link = || Error::new(Endpoint::Link, ErrorKind::Malformed);
         let url = Url::parse(&link.downlink).map_err(|_| malformed_link())?;
         let name = file_name(&url).ok_or_else(malformed_link)?;
-        // Two files of one installer under one name would overwrite each
-        // other in the folder.
-        if cache::claimed_by_another(folder, &name, package.file_id) {
-            return Err(fail(ErrorKind::Malformed));
+        for other in cache::claimed_by_others(folder, &name, package.file_id) {
+            let current = package.siblings.is_empty()
+                || package
+                    .siblings
+                    .iter()
+                    .any(|sibling| sibling.id == other.file_id);
+            // Two current files under one name would overwrite each other
+            // in the folder.
+            if current {
+                return Err(fail(ErrorKind::Malformed));
+            }
+            // GOG dropped or renumbered that file, so what it left is stale.
+            remove(&folder.join(&other.name), Endpoint::Download)?;
+            remove(&part_path(folder, &other.name), Endpoint::Download)?;
+            remove(&record_path(folder, &other.file_id), Endpoint::Download)?;
         }
         let published = match &link.checksum {
             Some(url) => {

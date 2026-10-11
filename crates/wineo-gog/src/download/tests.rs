@@ -17,6 +17,7 @@ use super::*;
 use crate::cache::{CachedFile, write_record};
 use crate::error::Class;
 use crate::fake::{self, FakeGog, Reply, Request, json as reply, response};
+use crate::product::DownloadFile;
 
 const ACCESS: &str = "ACCESSSECRET0123456789";
 const PRODUCT: u64 = 1094900565;
@@ -78,6 +79,8 @@ struct Gog {
     script: Arc<Mutex<Script>>,
     _dir: TempDir,
     cache: DownloadCache,
+    /// The installer's file list, as product details would give it.
+    siblings: Vec<DownloadFile>,
 }
 
 fn body(len: usize, seed: usize) -> Vec<u8> {
@@ -248,6 +251,14 @@ impl Gog {
             script,
             _dir: dir,
             cache,
+            siblings: files
+                .iter()
+                .map(|(id, _, body)| DownloadFile {
+                    id: (*id).to_owned(),
+                    size: body.len() as u64,
+                    downlink: String::new(),
+                })
+                .collect(),
         }
     }
 
@@ -264,12 +275,13 @@ impl Gog {
         self.script.lock().unwrap().files[file_id].1.clone()
     }
 
-    fn package<'a>(&self, file_id: &'a str) -> Package<'a> {
+    fn package<'a>(&'a self, file_id: &'a str) -> Package<'a> {
         Package {
             product_id: PRODUCT,
             download_id: DOWNLOAD,
             file_id,
             size: self.body(file_id).len() as u64,
+            siblings: &self.siblings,
         }
     }
 
@@ -1188,4 +1200,41 @@ fn a_server_that_keeps_answering_416_fails_without_a_partial() {
     );
     assert_eq!(gog.file_requests().len(), 2);
     assert!(gog.names().is_empty(), "{:?}", gog.names());
+}
+
+#[test]
+fn a_renumbered_file_reusing_a_name_replaces_the_stale_one() {
+    // GOG now lists the setup program as en1installer1.
+    let gog = Gog::start(&[("en1installer1", SETUP, body(1000, 1))]);
+    let stale = Record {
+        file_id: "en1installer0".to_owned(),
+        name: SETUP.to_owned(),
+        size: 900,
+        md5: None,
+    };
+    gog.leave_partial(stale, &[7; 100]);
+    fs::write(gog.folder().join(SETUP), [7; 900]).unwrap();
+
+    let downloaded = gog.get(&gog.package("en1installer1")).unwrap();
+    assert_eq!(
+        fs::read(&downloaded.path).unwrap(),
+        gog.body("en1installer1")
+    );
+    assert_eq!(gog.names(), [".en1installer1.json", SETUP]);
+}
+
+#[test]
+fn a_name_clash_with_no_file_list_is_refused() {
+    let gog = Gog::start(&[
+        ("en1installer0", SETUP, body(1000, 1)),
+        ("en1installer9", SETUP, body(2000, 2)),
+    ]);
+    gog.get(&gog.package("en1installer0")).unwrap();
+    let unknown = Package {
+        siblings: &[],
+        ..gog.package("en1installer9")
+    };
+    let error = gog.get(&unknown).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Malformed);
+    assert!(gog.folder().join(".en1installer0.json").exists());
 }
