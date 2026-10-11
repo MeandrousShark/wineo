@@ -24,7 +24,7 @@ pub use auth::{
 };
 pub use client::{Client, Endpoints};
 pub use error::{Class, Endpoint, Error, ErrorKind};
-pub use owned::{OwnedPage, OwnedProduct, Platforms};
+pub use owned::{OwnedPage, OwnedProduct, Platforms, collect_pages};
 pub use product::{
     Build, Builds, Compatibility, Download, DownloadFile, Images, Product, ResolvedLink,
 };

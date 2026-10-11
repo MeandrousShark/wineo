@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# Lets other crates' tests point a client at a plain HTTP fake server in
+# release builds too. Only ever enabled from dev-dependencies.
+test-server = []
+
 [dependencies]
 reqwest.workspace = true
 serde.workspace = true

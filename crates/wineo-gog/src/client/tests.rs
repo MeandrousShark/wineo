@@ -5,6 +5,7 @@ use serde_json::json;
 use super::*;
 use crate::error::Class;
 use crate::fake::{FakeGog, Reply, Request, json as reply, raw, refused};
+use crate::owned::MAX_PAGES;
 use crate::{Compatibility, Platforms, parse_paste};
 
 const CODE: &str = "CODESECRET0123456789";

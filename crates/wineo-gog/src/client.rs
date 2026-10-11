@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::auth::{self, AuthCode, CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, Tokens};
 use crate::error::{Endpoint, Error, ErrorKind};
-use crate::owned::{self, MAX_PAGES, OwnedPage, OwnedProduct};
+use crate::owned::{self, OwnedPage, OwnedProduct};
 use crate::product::{self, Builds, Product, ResolvedLink};
 
 /// Product details with every DLC expanded run to a few megabytes.
@@ -67,8 +67,9 @@ impl Client {
     }
 
     /// A server standing in for GOG, which may be plain HTTP. Release builds
-    /// don't have it, so they can only ever talk to GOG over HTTPS.
-    #[cfg(any(test, debug_assertions))]
+    /// don't have it, so they can only ever talk to GOG over HTTPS. The
+    /// `test-server` feature brings it back for other crates' release tests.
+    #[cfg(any(test, debug_assertions, feature = "test-server"))]
     pub fn with_base(user_agent: &str, base: &str) -> Result<Self, Error> {
         let endpoints =
             Endpoints::all_at(base).ok_or(Error::new(Endpoint::Setup, ErrorKind::Request))?;
@@ -153,26 +154,7 @@ impl Client {
     /// Every owned game, from every page. Any page failing fails the whole
     /// list, so a partial list is never mistaken for the library.
     pub fn owned_games(&self, access_token: &str) -> Result<Vec<OwnedProduct>, Error> {
-        let malformed = || Error::new(Endpoint::Owned, ErrorKind::Malformed);
-        let first = self.owned_page(access_token, 1)?;
-        if first.page != 1 {
-            return Err(malformed());
-        }
-        let total = first.total_pages;
-        let mut products = first.products;
-        for page in 2..=total.min(MAX_PAGES) {
-            let next = self.owned_page(access_token, page)?;
-            // A changed total means the library moved under the fetch, so
-            // the pages may not add up to it.
-            if next.page != page || next.total_pages != total {
-                return Err(malformed());
-            }
-            products.extend(next.products);
-        }
-        // A purchase between pages can shift a game onto the next one.
-        let mut seen = std::collections::HashSet::new();
-        products.retain(|product| seen.insert(product.id));
-        Ok(products)
+        owned::collect_pages(|page| self.owned_page(access_token, page))
     }
 
     /// A product's details with its installers, patches, and expanded DLC.

@@ -41,6 +41,35 @@ pub struct OwnedPage {
     pub products: Vec<OwnedProduct>,
 }
 
+/// Builds the whole owned list from its pages, asking `fetch` for each one
+/// in turn, so a caller can check whatever it needs between requests. Any
+/// page failing fails the whole list, so a partial list is never mistaken
+/// for the library.
+pub fn collect_pages<E: From<Error>>(
+    mut fetch: impl FnMut(u32) -> Result<OwnedPage, E>,
+) -> Result<Vec<OwnedProduct>, E> {
+    let malformed = || E::from(Error::new(Endpoint::Owned, ErrorKind::Malformed));
+    let first = fetch(1)?;
+    if first.page != 1 {
+        return Err(malformed());
+    }
+    let total = first.total_pages;
+    let mut products = first.products;
+    for page in 2..=total.min(MAX_PAGES) {
+        let next = fetch(page)?;
+        // A changed total means the library moved under the fetch, so the
+        // pages may not add up to it.
+        if next.page != page || next.total_pages != total {
+            return Err(malformed());
+        }
+        products.extend(next.products);
+    }
+    // A purchase between pages can shift a game onto the next one.
+    let mut seen = std::collections::HashSet::new();
+    products.retain(|product| seen.insert(product.id));
+    Ok(products)
+}
+
 pub(crate) fn parse_page(json: &Value) -> Result<OwnedPage, Error> {
     let malformed = || Error::new(Endpoint::Owned, ErrorKind::Malformed);
     let number = |name: &str| {
