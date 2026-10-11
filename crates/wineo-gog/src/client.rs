@@ -102,6 +102,8 @@ impl Client {
             .map_err(setup)?;
         let cdn = builder()
             .redirect(reqwest::redirect::Policy::limited(5))
+            // The signed link works like a password while it lasts.
+            .referer(false)
             .build()
             .map_err(setup)?;
         Ok(Self {

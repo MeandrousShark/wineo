@@ -16,10 +16,17 @@
 //! the network, and a partial download is only resumed for the same file.
 //! One file id holds one file at a time: a different one replaces it.
 //!
+//! Reusing a finished file is decided offline, from its record: the size,
+//! and the MD5 GOG published when the file was downloaded. If GOG later
+//! replaces the file with another of the same size under the same name, only
+//! an MD5 the caller already knows, like one a journal recorded and passed
+//! to `DownloadCache::complete`, tells the two apart.
+//!
 //! `<product id>/.lock` is held exclusively, across processes, for as long
-//! as anything writes or removes the product's files. Reading the cache
-//! takes no lock: a finished file is only ever replaced by a rename, so a
-//! reader sees the old file or the new one, never half of either.
+//! as anything writes or removes the product's files. It is never deleted,
+//! so everyone always locks the same file. Reading the cache takes no lock:
+//! a finished file is only ever replaced by a rename, so a reader sees the
+//! old file or the new one, never half of either.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
@@ -136,8 +143,19 @@ impl DownloadCache {
         let disk = disk(endpoint);
         let dir = self.product_dir(product_id);
         let path = dir.join(".lock");
+        let retry = || {
+            if cancel() {
+                return Err(Error::new(endpoint, ErrorKind::Canceled));
+            }
+            thread::sleep(LOCK_RETRY);
+            Ok(())
+        };
         loop {
+            let created = !dir.exists();
             fs::create_dir_all(&dir).map_err(disk)?;
+            if created {
+                self.sync_parents(&dir, endpoint)?;
+            }
             let file = match OpenOptions::new()
                 .create(true)
                 .truncate(false)
@@ -146,26 +164,25 @@ impl DownloadCache {
                 .open(&path)
             {
                 Ok(file) => file,
-                // Removed with its product between the two calls.
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                // The folder was removed by hand between the two calls.
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    retry()?;
+                    continue;
+                }
                 Err(error) => return Err(disk(error)),
             };
             loop {
                 match flock(&file, FlockOperation::NonBlockingLockExclusive) {
                     Ok(()) => break,
-                    Err(Errno::WOULDBLOCK) => {
-                        if cancel() {
-                            return Err(Error::new(endpoint, ErrorKind::Canceled));
-                        }
-                        thread::sleep(LOCK_RETRY);
-                    }
+                    Err(Errno::WOULDBLOCK) => retry()?,
                     Err(Errno::INTR) => {}
                     Err(error) => return Err(disk(error.into())),
                 }
             }
             let lock = ProductLock { file };
-            // The holder before may have removed the product, lock file
-            // and all, which leaves this lock on a file nobody else sees.
+            // wineo never deletes the lock file, but someone clearing the
+            // cache by hand might, which would leave this lock on a file
+            // nobody else sees.
             let held = lock.file.metadata().map_err(disk)?;
             match fs::metadata(&path) {
                 Ok(now) if now.dev() == held.dev() && now.ino() == held.ino() => return Ok(lock),
@@ -173,6 +190,20 @@ impl DownloadCache {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(disk(error)),
             }
+            drop(lock);
+            retry()?;
+        }
+    }
+
+    /// Syncs a new product folder's parent, and the cache folder's own
+    /// parent in case it is new too.
+    fn sync_parents(&self, product_dir: &Path, endpoint: Endpoint) -> Result<(), Error> {
+        if let Some(parent) = product_dir.parent() {
+            sync_dir(parent, endpoint)?;
+        }
+        match self.dir.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => sync_dir(parent, endpoint),
+            _ => Ok(()),
         }
     }
 
@@ -208,7 +239,13 @@ impl DownloadCache {
             if !valid_id(&download_id) || !download.file_type().map_err(disk)?.is_dir() {
                 continue;
             }
-            for entry in fs::read_dir(download.path()).map_err(disk)? {
+            // A download running in another process may be replacing it.
+            let entries = match fs::read_dir(download.path()) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(disk(error)),
+            };
+            for entry in entries {
                 let entry = entry.map_err(disk)?;
                 let Some(file_id) = entry
                     .file_name()
@@ -239,19 +276,42 @@ impl DownloadCache {
         Ok(files)
     }
 
-    /// Removes everything cached for a product, finished or partial.
-    /// Waits for a download of the product in another process to finish,
-    /// checking `cancel` while it waits.
+    /// Removes everything cached for a product, finished or partial. The
+    /// product's folder and lock file stay. Waits for a download of the
+    /// product in another process to finish, checking `cancel` while it
+    /// waits.
     pub fn remove_product(&self, product_id: u64, cancel: &dyn Fn() -> bool) -> Result<(), Error> {
+        self.remove_product_with(product_id, cancel, &|| {})
+    }
+
+    /// `remove_product`, calling `between` after each entry it removes so
+    /// tests can step in mid-removal.
+    pub(crate) fn remove_product_with(
+        &self,
+        product_id: u64,
+        cancel: &dyn Fn() -> bool,
+        between: &dyn Fn(),
+    ) -> Result<(), Error> {
+        let disk = disk(Endpoint::Cache);
         let _lock = self.lock(product_id, cancel, Endpoint::Cache)?;
-        // The lock file goes too. Anyone waiting on it notices and locks
-        // a new one.
-        match fs::remove_dir_all(self.product_dir(product_id)) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => {
-                Err(disk(Endpoint::Cache)(error))
+        let dir = self.product_dir(product_id);
+        for entry in fs::read_dir(&dir).map_err(disk)? {
+            let entry = entry.map_err(disk)?;
+            if entry.file_name() == ".lock" {
+                continue;
             }
-            _ => Ok(()),
+            let removed = if entry.file_type().map_err(disk)?.is_dir() {
+                fs::remove_dir_all(entry.path())
+            } else {
+                fs::remove_file(entry.path())
+            };
+            match removed {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(disk(error)),
+                _ => {}
+            }
+            between();
         }
+        sync_dir(&dir, Endpoint::Cache)
     }
 }
 
@@ -286,7 +346,7 @@ pub(crate) fn reusable(
         (given, known) => given.or(known),
     };
     let path = folder.join(&record.name);
-    let mut file = match File::open(&path) {
+    let file = match File::open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(disk(endpoint)(error)),
@@ -297,7 +357,7 @@ pub(crate) fn reusable(
     }
     if let Some(md5) = &md5 {
         let mut hasher = Md5::new();
-        hash(&mut file, &mut hasher, cancel, endpoint)?;
+        hash(&file, &mut hasher, cancel, endpoint)?;
         if hex(hasher) != *md5 {
             return Ok(None);
         }
@@ -307,7 +367,7 @@ pub(crate) fn reusable(
 
 /// Feeds the rest of a file to `hasher`.
 pub(crate) fn hash(
-    file: &mut File,
+    mut file: &File,
     hasher: &mut Md5,
     cancel: &dyn Fn() -> bool,
     endpoint: Endpoint,
@@ -371,6 +431,22 @@ pub(crate) fn write_record(folder: &Path, record: &Record) -> Result<(), Error> 
         .and_then(|file| file.sync_all())
         .map_err(disk)?;
     fs::rename(&temporary, &path).map_err(disk)
+}
+
+/// Whether another file id's record in the folder names this file.
+pub(crate) fn claimed_by_another(folder: &Path, name: &str, file_id: &str) -> bool {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .and_then(|entry| entry.strip_prefix('.')?.strip_suffix(".json"))
+            .filter(|other| *other != file_id)
+            .and_then(|other| read_record(folder, other))
+            .is_some_and(|record| record.name == name)
+    })
 }
 
 /// Removes a file, which may already be gone.

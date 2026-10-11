@@ -12,6 +12,8 @@ pub enum Endpoint {
     Builds,
     /// Fetching an installer file from GOG's download servers.
     Download,
+    /// Fetching an installer file's published checksum.
+    Checksum,
     /// Reading or removing files already in the download cache.
     Cache,
 }
@@ -26,6 +28,7 @@ impl fmt::Display for Endpoint {
             Self::Link => "GOG download link request",
             Self::Builds => "GOG build list request",
             Self::Download => "GOG file download",
+            Self::Checksum => "GOG checksum request",
             Self::Cache => "GOG download cache",
         })
     }

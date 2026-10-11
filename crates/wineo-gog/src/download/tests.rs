@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -31,6 +32,10 @@ enum Sum {
     Missing,
     Junk,
     WrongTotal,
+    /// A 500 to every checksum request.
+    ServerError,
+    /// A 500 to the first checksum request, then the right one.
+    Flaky,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -41,6 +46,10 @@ enum Ranges {
     WrongTotal,
     /// A 206 with a range that never fits, even without a Range request.
     AlwaysWrong,
+    /// A 416 to any Range request.
+    Unsatisfiable,
+    /// A 416 to every request.
+    AlwaysUnsatisfiable,
 }
 
 struct Script {
@@ -53,10 +62,15 @@ struct Script {
     expired_through: u32,
     refuse_with: u16,
     refuse_always: bool,
+    /// Whether expired links refuse checksum requests too, not just files.
+    refuse_checksum: bool,
+    checksum_requests: u32,
     resolve_status: Option<u16>,
     file_status: Option<u16>,
     /// Links go through a redirect to the real file.
     redirect: bool,
+    /// Where redirects go, when not back to this server.
+    redirect_to: Option<String>,
 }
 
 struct Gog {
@@ -107,7 +121,11 @@ fn handle(script: &Mutex<Script>, request: &Request) -> Reply {
         );
     }
     if let Some(rest) = path.strip_prefix("/redirect/") {
-        let location = format!("http://{host}/cdn/{rest}?token=SIGNED");
+        let base = script
+            .redirect_to
+            .clone()
+            .unwrap_or_else(|| format!("http://{host}"));
+        let location = format!("{base}/cdn/{rest}?token=SIGNED");
         return Reply::Send(response(302, &[("Location", location)], &[]));
     }
     let Some(rest) = path.strip_prefix("/cdn/") else {
@@ -115,11 +133,15 @@ fn handle(script: &Mutex<Script>, request: &Request) -> Reply {
     };
     let (n, segment) = rest.split_once('/').unwrap();
     let n: u32 = n.parse().unwrap();
-    if script.refuse_always || n <= script.expired_through {
+    let checksum = segment.ends_with(".xml");
+    if (script.refuse_always || n <= script.expired_through)
+        && (script.refuse_checksum || !checksum)
+    {
         let status = script.refuse_with;
         return Reply::Send(response(status, &[], b"expired SIGNED"));
     }
     if let Some(segment) = segment.strip_suffix(".xml") {
+        script.checksum_requests += 1;
         let Some((name, body)) = script
             .files
             .values()
@@ -135,6 +157,8 @@ fn handle(script: &Mutex<Script>, request: &Request) -> Reply {
         return match script.sum {
             Sum::Missing => reply(404, ""),
             Sum::Junk => Reply::Send(response(200, &[], b"<html>no</html>")),
+            Sum::ServerError => reply(500, ""),
+            Sum::Flaky if script.checksum_requests == 1 => reply(500, ""),
             _ => Reply::Send(response(
                 200,
                 &[],
@@ -167,6 +191,13 @@ fn handle(script: &Mutex<Script>, request: &Request) -> Reply {
             &[("Content-Range", format!("bytes 5-9/{}", body.len()))],
             &body[5..10],
         )),
+        (Ranges::AlwaysUnsatisfiable, _) | (Ranges::Unsatisfiable, Some(_)) => {
+            Reply::Send(response(
+                416,
+                &[("Content-Range", format!("bytes */{}", body.len()))],
+                &[],
+            ))
+        }
         (Ranges::Honor, _) | (_, None) => fake::file(request, body),
         (Ranges::Whole, Some(_)) => Reply::Send(response(200, &[], body)),
         (Ranges::WrongStart, Some(start)) => Reply::Send(response(
@@ -201,9 +232,12 @@ impl Gog {
             expired_through: 0,
             refuse_with: 403,
             refuse_always: false,
+            refuse_checksum: true,
+            checksum_requests: 0,
             resolve_status: None,
             file_status: None,
             redirect: false,
+            redirect_to: None,
         }));
         let handler = Arc::clone(&script);
         let server = FakeGog::start(move |request| handle(&handler, request));
@@ -287,6 +321,15 @@ impl Gog {
             size: body.len() as u64,
             md5: Some(md5_of(&body)),
         }
+    }
+
+    fn product_entries(&self) -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(self.cache.dir().join(PRODUCT.to_string()))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
     }
 
     fn names(&self) -> Vec<String> {
@@ -431,23 +474,24 @@ fn a_server_that_keeps_sending_the_wrong_range_fails_without_a_partial() {
 
 #[test]
 fn a_refused_link_is_resolved_again_once() {
-    for status in [401, 403] {
+    for (status, refuse_checksum) in [(401, false), (403, false), (401, true), (403, true)] {
         let gog = Gog::one();
         gog.set(|script| {
             script.expired_through = 1;
             script.refuse_with = status;
+            script.refuse_checksum = refuse_checksum;
         });
         let downloaded = gog.get(&gog.package("en1installer0")).unwrap();
         assert_eq!(
             fs::read(&downloaded.path).unwrap(),
             gog.body("en1installer0")
         );
-        // The first link's checksum was refused too; the second one's wasn't.
         assert!(matches!(downloaded.verification, Verification::Md5(_)));
         assert_eq!(gog.script.lock().unwrap().resolves, 2);
+        // A refused checksum stops the attempt before the file is asked for.
         let files = gog.file_requests();
-        assert_eq!(files.len(), 2);
-        assert!(files[1].path().starts_with("/cdn/2/"));
+        assert_eq!(files.len(), if refuse_checksum { 1 } else { 2 });
+        assert!(files.last().unwrap().path().starts_with("/cdn/2/"));
     }
 }
 
@@ -538,17 +582,51 @@ fn a_checksum_mismatch_removes_the_file() {
 }
 
 #[test]
-fn without_a_checksum_only_the_size_is_checked() {
-    for sum in [Sum::NoUrl, Sum::Missing, Sum::Junk] {
+fn without_a_checksum_link_only_the_size_is_checked() {
+    let gog = Gog::one();
+    gog.set(|script| script.sum = Sum::NoUrl);
+    let downloaded = gog.get(&gog.package("en1installer0")).unwrap();
+    assert_eq!(downloaded.verification, Verification::SizeOnly);
+    assert_eq!(
+        fs::read(&downloaded.path).unwrap(),
+        gog.body("en1installer0")
+    );
+    assert_eq!(gog.script.lock().unwrap().checksum_requests, 0);
+}
+
+#[test]
+fn a_published_checksum_that_can_t_be_had_fails_and_keeps_the_partial() {
+    for (sum, kind, class) in [
+        (Sum::Missing, ErrorKind::Status(404), Class::Other),
+        (Sum::Junk, ErrorKind::Malformed, Class::Malformed),
+        (Sum::ServerError, ErrorKind::Server(500), Class::Temporary),
+    ] {
         let gog = Gog::one();
         gog.set(|script| script.sum = sum);
-        let downloaded = gog.get(&gog.package("en1installer0")).unwrap();
-        assert_eq!(downloaded.verification, Verification::SizeOnly, "{sum:?}");
+        let body = gog.body("en1installer0");
+        gog.leave_partial(gog.record("en1installer0"), &body[..1000]);
+        let error = gog.get(&gog.package("en1installer0")).unwrap_err();
         assert_eq!(
-            fs::read(&downloaded.path).unwrap(),
-            gog.body("en1installer0")
+            (error.endpoint(), error.kind(), error.class()),
+            (Endpoint::Checksum, kind, class),
+            "{sum:?}"
         );
+        assert_clean(&error);
+        // Tried once more before giving up, and the file never asked for.
+        assert_eq!(gog.script.lock().unwrap().checksum_requests, 2);
+        assert!(gog.file_requests().is_empty());
+        let part = fs::read(gog.folder().join(format!("{SETUP}.part"))).unwrap();
+        assert_eq!(part, &body[..1000]);
     }
+}
+
+#[test]
+fn a_checksum_that_fails_once_is_tried_again() {
+    let gog = Gog::one();
+    gog.set(|script| script.sum = Sum::Flaky);
+    let downloaded = gog.get(&gog.package("en1installer0")).unwrap();
+    assert!(matches!(downloaded.verification, Verification::Md5(_)));
+    assert_eq!(gog.script.lock().unwrap().checksum_requests, 2);
 }
 
 #[test]
@@ -698,8 +776,27 @@ fn a_multi_part_installer_lands_in_one_folder_under_its_own_names() {
 
     gog.cache.remove_product(PRODUCT, &|| false).unwrap();
     assert_eq!(gog.cache.files(PRODUCT).unwrap(), []);
-    assert!(!gog.cache.dir().join(PRODUCT.to_string()).exists());
+    assert_eq!(gog.product_entries(), [".lock"]);
     gog.cache.remove_product(PRODUCT, &|| false).unwrap();
+}
+
+#[test]
+fn two_files_of_one_installer_with_one_name_are_refused() {
+    let gog = Gog::start(&[
+        ("en1installer0", SETUP, body(1000, 1)),
+        ("en1installer1", SETUP, body(2000, 2)),
+    ]);
+    gog.get(&gog.package("en1installer0")).unwrap();
+    let error = gog.get(&gog.package("en1installer1")).unwrap_err();
+    assert_eq!(
+        (error.endpoint(), error.kind()),
+        (Endpoint::Download, ErrorKind::Malformed)
+    );
+    // The first file is untouched.
+    assert_eq!(
+        fs::read(gog.folder().join(SETUP)).unwrap(),
+        gog.body("en1installer0")
+    );
 }
 
 #[test]
@@ -741,6 +838,24 @@ fn redirects_from_the_download_server_are_followed() {
 }
 
 #[test]
+fn a_redirect_to_another_host_gets_neither_the_token_nor_the_signed_link() {
+    let file = body(600_000, 0);
+    let served = file.clone();
+    let other = FakeGog::start(move |request| fake::file(request, &served));
+    let gog = Gog::one();
+    gog.set(|script| {
+        script.redirect = true;
+        script.redirect_to = Some(other.base.clone());
+    });
+    let downloaded = gog.get(&gog.package("en1installer0")).unwrap();
+    assert_eq!(fs::read(&downloaded.path).unwrap(), file);
+    let requests = other.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].header("authorization"), None);
+    assert_eq!(requests[0].header("referer"), None);
+}
+
+#[test]
 fn unsafe_ids_and_names_are_refused() {
     let gog = Gog::one();
     for (download_id, file_id) in [("../up", "en1installer0"), (DOWNLOAD, ".hidden"), ("", "x")] {
@@ -779,7 +894,7 @@ fn unsafe_ids_and_names_are_refused() {
 
 #[test]
 fn no_download_error_shows_a_secret_or_a_signed_link() {
-    let setups: [fn(&mut Script); 8] = [
+    let setups: [fn(&mut Script); 11] = [
         |script| script.resolve_status = Some(401),
         |script| script.resolve_status = Some(500),
         |script| script.file_status = Some(500),
@@ -791,6 +906,9 @@ fn no_download_error_shows_a_secret_or_a_signed_link() {
         },
         |script| script.sum = Sum::Wrong,
         |script| script.sum = Sum::WrongTotal,
+        |script| script.sum = Sum::Missing,
+        |script| script.sum = Sum::Junk,
+        |script| script.ranges = Ranges::AlwaysUnsatisfiable,
     ];
     for setup in setups {
         let gog = Gog::one();
@@ -888,8 +1006,8 @@ fn a_downloader_waiting_while_the_product_is_removed_locks_it_again() {
         let gog = &gog;
         scope.spawn(move || sender.send(gog.get(&gog.package("en1installer0"))).unwrap());
         assert!(receiver.recv_timeout(Duration::from_millis(300)).is_err());
-        // What remove_product does while holding the lock: the lock file
-        // the downloader waits on goes with the product.
+        // wineo never removes the lock file, but someone clearing the cache
+        // by hand might, while the downloader waits on it.
         fs::remove_dir_all(gog.cache.dir().join(PRODUCT.to_string())).unwrap();
         drop(held);
         let downloaded = receiver
@@ -905,10 +1023,48 @@ fn a_downloader_waiting_while_the_product_is_removed_locks_it_again() {
                 .exists()
         );
     });
-    // A lock taken now is the same one the downloader used, not a new file.
     drop(gog.cache.lock(PRODUCT, &|| false, Endpoint::Cache).unwrap());
     gog.cache.remove_product(PRODUCT, &|| false).unwrap();
     assert_eq!(gog.cache.files(PRODUCT).unwrap(), []);
+}
+
+#[test]
+fn removing_a_product_keeps_its_lock_so_newcomers_wait() {
+    let gog = Gog::start(&[
+        ("en1installer0", SETUP, body(1000, 1)),
+        ("en1installer1", PART1, body(2000, 2)),
+    ]);
+    gog.get(&gog.package("en1installer0")).unwrap();
+    gog.get(&gog.package("en1installer1")).unwrap();
+    // Another download folder, so there's more than one entry to remove.
+    let product = gog.cache.dir().join(PRODUCT.to_string());
+    fs::create_dir_all(product.join("patch_x")).unwrap();
+    let lock = product.join(".lock");
+    let inode = |path: &PathBuf| fs::metadata(path).unwrap().ino();
+    let before = inode(&lock);
+    let steps = Cell::new(0);
+    gog.cache
+        .remove_product_with(PRODUCT, &|| false, &|| {
+            steps.set(steps.get() + 1);
+            // The same lock file is there, and still held, at every step.
+            assert_eq!(inode(&lock), before);
+            let file = fs::File::open(&lock).unwrap();
+            assert_eq!(
+                flock(&file, FlockOperation::NonBlockingLockExclusive),
+                Err(Errno::WOULDBLOCK)
+            );
+            // A newcomer arriving now waits rather than locking a new file.
+            let error = gog
+                .cache
+                .lock(PRODUCT, &|| true, Endpoint::Download)
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), ErrorKind::Canceled);
+        })
+        .unwrap();
+    assert_eq!(steps.get(), 2);
+    assert_eq!(gog.product_entries(), [".lock"]);
+    assert_eq!(inode(&lock), before);
 }
 
 #[test]
@@ -935,7 +1091,7 @@ fn removing_a_product_waits_for_its_download() {
             .unwrap()
             .unwrap();
     });
-    assert!(!gog.cache.dir().join(PRODUCT.to_string()).exists());
+    assert_eq!(gog.product_entries(), [".lock"]);
 }
 
 #[test]
@@ -1003,4 +1159,33 @@ fn canceling_a_wait_for_the_lock_leaves_the_holder_alone() {
         fs::read(&downloaded.path).unwrap(),
         gog.body("en1installer0")
     );
+}
+
+#[test]
+fn a_range_the_server_can_t_satisfy_starts_over_from_zero() {
+    let gog = Gog::one();
+    gog.set(|script| script.ranges = Ranges::Unsatisfiable);
+    let body = gog.body("en1installer0");
+    gog.leave_partial(gog.record("en1installer0"), &body[..1000]);
+    let downloaded = gog.get(&gog.package("en1installer0")).unwrap();
+    assert_eq!(fs::read(&downloaded.path).unwrap(), body);
+    let files = gog.file_requests();
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0].header("range"), Some("bytes=1000-"));
+    assert_eq!(files[1].header("range"), None);
+}
+
+#[test]
+fn a_server_that_keeps_answering_416_fails_without_a_partial() {
+    let gog = Gog::one();
+    gog.set(|script| script.ranges = Ranges::AlwaysUnsatisfiable);
+    let body = gog.body("en1installer0");
+    gog.leave_partial(gog.record("en1installer0"), &body[..1000]);
+    let error = gog.get(&gog.package("en1installer0")).unwrap_err();
+    assert_eq!(
+        (error.endpoint(), error.kind()),
+        (Endpoint::Download, ErrorKind::WrongRange)
+    );
+    assert_eq!(gog.file_requests().len(), 2);
+    assert!(gog.names().is_empty(), "{:?}", gog.names());
 }

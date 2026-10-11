@@ -8,7 +8,7 @@
 //! against its size, and its MD5 when GOG publishes one, before it gets its
 //! real name.
 
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -102,6 +102,12 @@ impl Client {
             if let Some(name) = name {
                 remove(&part_path(&folder, name), Endpoint::Download)?;
             }
+            // An earlier call may have stopped between its rename and its
+            // syncs, so nothing here is assumed to be on disk yet.
+            File::open(&path)
+                .and_then(|file| file.sync_all())
+                .map_err(disk(Endpoint::Download))?;
+            sync_folders(cache, &folder)?;
             progress(package.size, package.size);
             return Ok(Downloaded {
                 path,
@@ -157,11 +163,21 @@ impl Client {
         let malformed_link = || Error::new(Endpoint::Link, ErrorKind::Malformed);
         let url = Url::parse(&link.downlink).map_err(|_| malformed_link())?;
         let name = file_name(&url).ok_or_else(malformed_link)?;
-        let published = link.checksum.as_deref().and_then(|url| self.checksum(url));
-        if published.as_ref().is_some_and(|sum| sum.total_size != size) {
-            return Err(fail(ErrorKind::WrongSize));
+        // Two files of one installer under one name would overwrite each
+        // other in the folder.
+        if cache::claimed_by_another(folder, &name, package.file_id) {
+            return Err(fail(ErrorKind::Malformed));
         }
-        let published = published.map(|sum| sum.md5);
+        let published = match &link.checksum {
+            Some(url) => {
+                let sum = self.checksum(url)?;
+                if sum.total_size != size {
+                    return Err(fail(ErrorKind::WrongSize));
+                }
+                Some(sum.md5)
+            }
+            None => None,
+        };
 
         // A partial file is only kept for the same file, so the bytes
         // already there are known to belong to it.
@@ -194,98 +210,21 @@ impl Client {
         cache::write_record(folder, &record)?;
 
         let part = part_path(folder, &record.name);
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(&part)
             .map_err(disk)?;
-        let mut hasher = Md5::new();
-        let mut have = file.metadata().map_err(disk)?.len();
-        if have > size {
-            file.set_len(0).map_err(disk)?;
-            have = 0;
-        } else if have > 0 {
-            cache::hash(&mut file, &mut hasher, cancel, Endpoint::Download)?;
-        }
-        file.seek(SeekFrom::End(0)).map_err(disk)?;
-        progress(have, size);
-
-        if have < size {
-            let mut request = self.cdn.get(url);
-            if have > 0 {
-                request = request.header(RANGE, format!("bytes={have}-"));
+        let hasher = match self.transfer(&file, url, folder, &part, package, cancel, progress) {
+            Ok(hasher) => hasher,
+            Err(stop) => {
+                // Whatever is kept for a resume should survive a crash too.
+                let _ = file.sync_all();
+                return Err(stop);
             }
-            let mut response = request
-                .send()
-                .map_err(|error| fail(client::send_error(&error)))?;
-            let status = response.status().as_u16();
-            match status {
-                200 => {
-                    // The server sent the whole file instead of the rest.
-                    if have > 0 {
-                        file.set_len(0).map_err(disk)?;
-                        file.seek(SeekFrom::Start(0)).map_err(disk)?;
-                        hasher = Md5::new();
-                        have = 0;
-                        progress(0, size);
-                    }
-                    if response
-                        .content_length()
-                        .is_some_and(|length| length != size)
-                    {
-                        return Err(fail(ErrorKind::WrongSize));
-                    }
-                }
-                206 if have > 0 => {
-                    let range = response
-                        .headers()
-                        .get(CONTENT_RANGE)
-                        .and_then(|value| value.to_str().ok())
-                        .and_then(content_range);
-                    if range != Some((have, size - 1, size)) {
-                        drop(file);
-                        return Err(discard(folder, &part, package.file_id)?);
-                    }
-                }
-                206 => {
-                    drop(file);
-                    return Err(discard(folder, &part, package.file_id)?);
-                }
-                401 | 403 => return Err(Stop::Refused(status)),
-                _ => {
-                    return Err(fail(client::status_kind(Endpoint::Download, status, None)));
-                }
-            }
-
-            let mut buffer = vec![0; CHUNK];
-            loop {
-                if cancel() {
-                    return Err(fail(ErrorKind::Canceled));
-                }
-                let read = match response.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(read) => read,
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error) => return Err(fail(client::read_error(&error))),
-                };
-                if have + read as u64 > size {
-                    drop(file);
-                    remove(&part, Endpoint::Download)?;
-                    return Err(fail(ErrorKind::WrongSize));
-                }
-                file.write_all(&buffer[..read]).map_err(disk)?;
-                hasher.update(&buffer[..read]);
-                have += read as u64;
-                progress(have, size);
-            }
-            // Ended cleanly but short: what's there is kept for a resume.
-            if have < size {
-                return Err(fail(ErrorKind::Body));
-            }
-        }
-
+        };
         file.sync_all().map_err(disk)?;
         drop(file);
         if let Some(md5) = &record.md5
@@ -297,12 +236,7 @@ impl Client {
         }
         let path = folder.join(&record.name);
         fs::rename(&part, &path).map_err(disk)?;
-        // The folders may be new too, so each one up to the cache is synced.
-        cache::sync_dir(folder, Endpoint::Download)?;
-        if let Some(product) = folder.parent() {
-            cache::sync_dir(product, Endpoint::Download)?;
-        }
-        cache::sync_dir(cache.dir(), Endpoint::Download)?;
+        sync_folders(cache, folder)?;
         Ok(Downloaded {
             path,
             size,
@@ -311,17 +245,148 @@ impl Client {
         })
     }
 
-    /// GOG's checksum for a file, or none when it can't be had for any
-    /// reason. The signed link goes without the access token.
-    fn checksum(&self, url: &str) -> Option<checksum::Checksum> {
-        let url = Url::parse(url).ok()?;
-        let response = self.cdn.get(url).send().ok()?;
-        if response.status().as_u16() != 200 {
-            return None;
+    /// Fills the partial file, resuming it when it has bytes already, and
+    /// returns the hash of the whole file.
+    #[allow(clippy::too_many_arguments)]
+    fn transfer(
+        &self,
+        mut file: &File,
+        url: Url,
+        folder: &Path,
+        part: &Path,
+        package: &Package<'_>,
+        cancel: &dyn Fn() -> bool,
+        progress: &dyn Fn(u64, u64),
+    ) -> Result<Md5, Stop> {
+        let fail = |kind| Stop::Failed(Error::new(Endpoint::Download, kind));
+        let disk = disk(Endpoint::Download);
+        let size = package.size;
+        let mut hasher = Md5::new();
+        let mut have = file.metadata().map_err(disk)?.len();
+        if have > size {
+            file.set_len(0).map_err(disk)?;
+            have = 0;
+        } else if have > 0 {
+            cache::hash(file, &mut hasher, cancel, Endpoint::Download)?;
         }
-        let body = client::read_limited(response, MAX_CHECKSUM).ok()?;
-        checksum::parse(&body)
+        file.seek(SeekFrom::End(0)).map_err(disk)?;
+        progress(have, size);
+        if have == size {
+            return Ok(hasher);
+        }
+
+        let mut request = self.cdn.get(url);
+        if have > 0 {
+            request = request.header(RANGE, format!("bytes={have}-"));
+        }
+        let mut response = request
+            .send()
+            .map_err(|error| fail(client::send_error(&error)))?;
+        let status = response.status().as_u16();
+        match status {
+            200 => {
+                // The server sent the whole file instead of the rest.
+                if have > 0 {
+                    file.set_len(0).map_err(disk)?;
+                    file.seek(SeekFrom::Start(0)).map_err(disk)?;
+                    hasher = Md5::new();
+                    have = 0;
+                    progress(0, size);
+                }
+                if response
+                    .content_length()
+                    .is_some_and(|length| length != size)
+                {
+                    return Err(fail(ErrorKind::WrongSize));
+                }
+            }
+            206 if have > 0 => {
+                let range = response
+                    .headers()
+                    .get(CONTENT_RANGE)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(content_range);
+                if range != Some((have, size - 1, size)) {
+                    return Err(discard(folder, part, package.file_id)?);
+                }
+            }
+            // A 416 says the server won't serve the range asked for, which
+            // starting over sidesteps.
+            206 | 416 => return Err(discard(folder, part, package.file_id)?),
+            401 | 403 => return Err(Stop::Refused(status)),
+            _ => {
+                return Err(fail(client::status_kind(Endpoint::Download, status, None)));
+            }
+        }
+
+        let mut buffer = vec![0; CHUNK];
+        loop {
+            if cancel() {
+                return Err(fail(ErrorKind::Canceled));
+            }
+            let read = match response.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(fail(client::read_error(&error))),
+            };
+            if have + read as u64 > size {
+                remove(part, Endpoint::Download)?;
+                return Err(fail(ErrorKind::WrongSize));
+            }
+            file.write_all(&buffer[..read]).map_err(disk)?;
+            hasher.update(&buffer[..read]);
+            have += read as u64;
+            progress(have, size);
+        }
+        // Ended cleanly but short: what's there is kept for a resume.
+        if have < size {
+            return Err(fail(ErrorKind::Body));
+        }
+        Ok(hasher)
     }
+
+    /// GOG's checksum for a file, from the link GOG gave for it. A failure
+    /// is tried once more, then fails the attempt: a checksum GOG publishes
+    /// is never skipped. The signed link goes without the access token.
+    fn checksum(&self, url: &str) -> Result<checksum::Checksum, Stop> {
+        let fail = |kind| Stop::Failed(Error::new(Endpoint::Checksum, kind));
+        let url = Url::parse(url).map_err(|_| fail(ErrorKind::Malformed))?;
+        let mut tried = false;
+        loop {
+            let result = self
+                .cdn
+                .get(url.clone())
+                .send()
+                .map_err(|error| client::send_error(&error))
+                .and_then(|response| match response.status().as_u16() {
+                    200 => client::read_limited(response, MAX_CHECKSUM),
+                    // Signed like the file's link, so it has likely expired
+                    // with it.
+                    status @ (401 | 403) => Err(ErrorKind::Status(status)),
+                    status => Err(client::status_kind(Endpoint::Checksum, status, None)),
+                })
+                .and_then(|body| checksum::parse(&body).ok_or(ErrorKind::Malformed));
+            match result {
+                Ok(sum) => return Ok(sum),
+                Err(ErrorKind::Status(status @ (401 | 403))) => {
+                    return Err(Stop::Refused(status));
+                }
+                Err(_) if !tried => tried = true,
+                Err(kind) => return Err(fail(kind)),
+            }
+        }
+    }
+}
+
+/// Syncs a package's folder and each one above it up to the cache, any of
+/// which may be new.
+fn sync_folders(cache: &DownloadCache, folder: &Path) -> Result<(), Error> {
+    cache::sync_dir(folder, Endpoint::Download)?;
+    if let Some(product) = folder.parent() {
+        cache::sync_dir(product, Endpoint::Download)?;
+    }
+    cache::sync_dir(cache.dir(), Endpoint::Download)
 }
 
 /// Drops a partial file the server won't resume properly, so the next
