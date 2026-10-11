@@ -4217,7 +4217,13 @@ mod tests {
                 iced::Size::new(width - 48.0, height - 48.0),
             );
             for (label, page) in &mut pages {
-                for leave_prompt in [false, true] {
+                // Back only asks to discard the draft from Sources.
+                let prompts: &[bool] = if *label == "sources" {
+                    &[false, true]
+                } else {
+                    &[false]
+                };
+                for &leave_prompt in prompts {
                     page.leave_prompt = leave_prompt;
                     let mut view =
                         page.view_with_key_availability(Palette::DARK, width, 0.0, false);
