@@ -151,6 +151,9 @@ fn restore(paths: &Paths, env: &str, label: &str, yes: bool) -> anyhow::Result<E
     match result {
         Ok(outcome) => {
             println!("Restored {env} from snapshot {label}");
+            if let Some(gog_id) = &outcome.gog_id_added {
+                println!("Put gog_id {gog_id} back in {env}'s config.");
+            }
             if let Some(path) = outcome.retained_old_prefix {
                 println!(
                     "The old Btrfs subvolume remains at {}. Remove it manually when you no longer need it.",

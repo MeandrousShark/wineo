@@ -372,6 +372,73 @@ impl Fixture {
         fs::write(path, text).unwrap();
     }
 
+    /// Where wineo looks for files in this fixture, for writing what only
+    /// core can, like GOG folder state.
+    pub fn paths(&self) -> wineo_core::paths::Paths {
+        let root = self.root.path().to_owned();
+        wineo_core::paths::Paths::from_lookup(move |key| {
+            let dir = match key {
+                "HOME" => "home",
+                "XDG_CONFIG_HOME" => "config",
+                "XDG_DATA_HOME" => "data",
+                "XDG_STATE_HOME" => "state",
+                "XDG_CACHE_HOME" => "cache",
+                _ => return None,
+            };
+            Some(root.join(dir).into_os_string())
+        })
+        .unwrap()
+    }
+
+    /// Writes a GOG folder state for `folder` with a committed game, owned
+    /// by `owner`, and with a journal when `mid_update`.
+    pub fn gog_folder(&self, folder: &Path, owner: Option<&str>, gog_id: u64, mid_update: bool) {
+        use wineo_core::gog::folder::{
+            Committed, FolderLock, FolderState, Journal, JournalKind, Platform, Target, Track,
+        };
+        let target = Target {
+            gog_id,
+            platform: Platform::Linux,
+            language: "en-US".to_owned(),
+            track: Track::Installer,
+            products: Vec::new(),
+        };
+        let state = FolderState {
+            device: fs::metadata(folder).ok().map(|meta| {
+                use std::os::unix::fs::MetadataExt;
+                meta.dev()
+            }),
+            committed: Some(Committed {
+                gog_id,
+                platform: target.platform,
+                language: target.language.clone(),
+                track: target.track,
+                products: Vec::new(),
+                files: Vec::new(),
+            }),
+            journal: mid_update.then(|| Journal {
+                operation: "op".to_owned(),
+                kind: JournalKind::Update,
+                target,
+                packages: Vec::new(),
+                attempted: Vec::new(),
+            }),
+            ..FolderState::new(folder.to_owned(), owner.map(str::to_owned))
+        };
+        FolderLock::exclusive(&self.paths(), folder, &|| false)
+            .unwrap()
+            .write(&state)
+            .unwrap();
+    }
+
+    /// The GOG folder state for `folder`, if any.
+    pub fn gog_state(&self, folder: &Path) -> Option<wineo_core::gog::folder::FolderState> {
+        wineo_core::gog::folder::FolderLock::shared(&self.paths(), folder, &|| false)
+            .unwrap()
+            .read()
+            .unwrap()
+    }
+
     pub fn config_dir(&self) -> PathBuf {
         self.root.path().join("config/wineo")
     }
