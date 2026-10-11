@@ -5,6 +5,7 @@ The primary session reads `docs/workflow.md` at the start of each session.
 ## Code boundaries
 
 - `crates/wineo-core` owns environment/config/process logic; `crates/wineo-cli` owns clap commands and interactive UI, and its binary is `wineo`; `crates/wineo-gui` owns the iced desktop app, calls core directly, and its binary is `wineo-gui`.
+- `crates/wineo-gog` owns the GOG API client (login, owned list, products, links, builds) and knows tokens and URLs, never environments, prefixes, configs, or runners; core owns what happens to games and where logins are stored.
 - `crates/wineo-cli/src/main.rs` handles the private supervisor entrypoint and dynamic completion before clap parsing. Background `start` re-enters the binary through `wineo-core::supervisor`.
 - Root `src/`, `pkg/`, and `wineo/` are ignored Arch packaging work directories, not workspace source.
 - Use core `Paths` for storage resolution: `--portable` overrides `WINEO_PORTABLE_DIR`; portable run state and cross-root locks still live in host XDG state.

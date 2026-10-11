@@ -5428,6 +5428,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wineo-gog"
+version = "0.29.1"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "wineo-gui"
 version = "0.29.1"
 dependencies = [

@@ -1,0 +1,30 @@
+//! A blocking client for GOG's web APIs: login, the owned list, product
+//! details, installer links, and Galaxy build lists. It knows tokens and
+//! URLs, never wineo's environments, prefixes, configs, or runners.
+//!
+//! Tokens, authorization codes, the client secret, and pasted redirect
+//! addresses are secrets. None of them can reach an `Error`: every failure is
+//! classified into a fixed message that names the endpoint, never the URL
+//! with its query string, and reqwest's own errors are only inspected, never
+//! formatted. Types that hold a secret redact it in `Debug` and have no
+//! `Display`.
+
+mod auth;
+mod client;
+mod error;
+mod json;
+mod owned;
+mod product;
+
+#[cfg(test)]
+mod fake;
+
+pub use auth::{
+    AuthCode, CLIENT_ID, PasteError, REDIRECT_URI, Secret, Tokens, UserId, login_url, parse_paste,
+};
+pub use client::{Client, Endpoints};
+pub use error::{Class, Endpoint, Error, ErrorKind};
+pub use owned::{OwnedPage, OwnedProduct, Platforms};
+pub use product::{
+    Build, Builds, Compatibility, Download, DownloadFile, Images, Product, ResolvedLink,
+};
