@@ -5444,6 +5444,7 @@ version = "0.29.1"
 dependencies = [
  "md-5",
  "reqwest",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",

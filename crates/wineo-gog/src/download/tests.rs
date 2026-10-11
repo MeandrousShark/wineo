@@ -2,7 +2,9 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
+use std::time::Duration;
 
 use serde_json::json;
 use tempfile::TempDir;
@@ -34,6 +36,8 @@ enum Ranges {
     Whole,
     WrongStart,
     WrongTotal,
+    /// A 206 with a range that never fits, even without a Range request.
+    AlwaysWrong,
 }
 
 struct Script {
@@ -155,6 +159,11 @@ fn handle(script: &Mutex<Script>, request: &Request) -> Reply {
         .and_then(|range| range.strip_suffix('-'))
         .and_then(|start| start.parse::<usize>().ok());
     match (script.ranges, start) {
+        (Ranges::AlwaysWrong, _) => Reply::Send(response(
+            206,
+            &[("Content-Range", format!("bytes 5-9/{}", body.len()))],
+            &body[5..10],
+        )),
         (Ranges::Honor, _) | (_, None) => fake::file(request, body),
         (Ranges::Whole, Some(_)) => Reply::Send(response(200, &[], body)),
         (Ranges::WrongStart, Some(start)) => Reply::Send(response(
@@ -382,22 +391,39 @@ fn a_whole_file_answering_a_range_starts_over() {
 }
 
 #[test]
-fn a_wrong_content_range_fails_and_keeps_the_partial() {
+fn a_wrong_content_range_starts_over_from_zero() {
     for ranges in [Ranges::WrongStart, Ranges::WrongTotal] {
         let gog = Gog::one();
         gog.set(|script| script.ranges = ranges);
         let body = gog.body("en1installer0");
         gog.leave_partial(gog.record("en1installer0"), &body[..1000]);
-        let error = gog.get(&gog.package("en1installer0")).unwrap_err();
-        assert_eq!(
-            (error.endpoint(), error.kind(), error.class()),
-            (Endpoint::Download, ErrorKind::WrongRange, Class::Malformed),
-            "{ranges:?}"
-        );
-        assert_clean(&error);
-        let part = fs::read(gog.folder().join(format!("{SETUP}.part"))).unwrap();
-        assert_eq!(part, &body[..1000]);
+        let downloaded = gog.get(&gog.package("en1installer0")).unwrap();
+        assert_eq!(fs::read(&downloaded.path).unwrap(), body, "{ranges:?}");
+        let files = gog.file_requests();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].header("range"), Some("bytes=1000-"));
+        assert_eq!(files[1].header("range"), None);
+        assert_eq!(gog.script.lock().unwrap().resolves, 2);
     }
+}
+
+#[test]
+fn a_server_that_keeps_sending_the_wrong_range_fails_without_a_partial() {
+    let gog = Gog::one();
+    gog.set(|script| script.ranges = Ranges::AlwaysWrong);
+    let body = gog.body("en1installer0");
+    gog.leave_partial(gog.record("en1installer0"), &body[..1000]);
+    let error = gog.get(&gog.package("en1installer0")).unwrap_err();
+    assert_eq!(
+        (error.endpoint(), error.kind(), error.class()),
+        (Endpoint::Download, ErrorKind::WrongRange, Class::Malformed)
+    );
+    assert_clean(&error);
+    let files = gog.file_requests();
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[1].header("range"), None);
+    // Nothing is left to resume from, so the next try starts clean.
+    assert!(gog.names().is_empty(), "{:?}", gog.names());
 }
 
 #[test]
@@ -744,7 +770,7 @@ fn unsafe_ids_and_names_are_refused() {
             (Endpoint::Link, ErrorKind::Malformed),
             "{name}"
         );
-        assert!(!gog.cache.dir().exists());
+        assert!(!gog.folder().exists());
     }
 }
 
@@ -823,4 +849,78 @@ fn a_partial_file_already_whole_is_verified_without_fetching_it() {
     assert!(matches!(downloaded.verification, Verification::Md5(_)));
     assert!(gog.file_requests().is_empty());
     assert_eq!(gog.names(), [".en1installer0.json", SETUP]);
+}
+
+#[test]
+fn a_second_downloader_waits_for_the_first() {
+    let gog = Gog::one();
+    let held = gog.cache.lock(PRODUCT, Endpoint::Download).unwrap();
+    let (sender, receiver) = mpsc::channel();
+    thread::scope(|scope| {
+        let gog = &gog;
+        scope.spawn(move || sender.send(gog.get(&gog.package("en1installer0"))).unwrap());
+        assert!(receiver.recv_timeout(Duration::from_millis(300)).is_err());
+        assert!(gog.server.requests().is_empty());
+        drop(held);
+        let downloaded = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fs::read(&downloaded.path).unwrap(),
+            gog.body("en1installer0")
+        );
+    });
+}
+
+#[test]
+fn a_downloader_waiting_while_the_product_is_removed_locks_it_again() {
+    let gog = Gog::one();
+    let held = gog.cache.lock(PRODUCT, Endpoint::Cache).unwrap();
+    let (sender, receiver) = mpsc::channel();
+    thread::scope(|scope| {
+        let gog = &gog;
+        scope.spawn(move || sender.send(gog.get(&gog.package("en1installer0"))).unwrap());
+        assert!(receiver.recv_timeout(Duration::from_millis(300)).is_err());
+        // What remove_product does while holding the lock: the lock file
+        // the downloader waits on goes with the product.
+        fs::remove_dir_all(gog.cache.dir().join(PRODUCT.to_string())).unwrap();
+        drop(held);
+        let downloaded = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert!(downloaded.path.exists());
+        assert!(
+            gog.cache
+                .dir()
+                .join(PRODUCT.to_string())
+                .join(".lock")
+                .exists()
+        );
+    });
+    // A lock taken now is the same one the downloader used, not a new file.
+    drop(gog.cache.lock(PRODUCT, Endpoint::Cache).unwrap());
+    gog.cache.remove_product(PRODUCT).unwrap();
+    assert_eq!(gog.cache.files(PRODUCT).unwrap(), []);
+}
+
+#[test]
+fn removing_a_product_waits_for_its_download() {
+    let gog = Gog::one();
+    gog.get(&gog.package("en1installer0")).unwrap();
+    let held = gog.cache.lock(PRODUCT, Endpoint::Download).unwrap();
+    let (sender, receiver) = mpsc::channel();
+    thread::scope(|scope| {
+        let cache = &gog.cache;
+        scope.spawn(move || sender.send(cache.remove_product(PRODUCT)).unwrap());
+        assert!(receiver.recv_timeout(Duration::from_millis(300)).is_err());
+        assert!(gog.folder().join(SETUP).exists());
+        drop(held);
+        receiver
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+    });
+    assert!(!gog.cache.dir().join(PRODUCT.to_string()).exists());
 }

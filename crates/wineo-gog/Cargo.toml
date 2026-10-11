@@ -13,6 +13,7 @@ test-server = []
 [dependencies]
 md-5.workspace = true
 reqwest.workspace = true
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

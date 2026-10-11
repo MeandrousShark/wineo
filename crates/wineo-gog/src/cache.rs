@@ -15,12 +15,19 @@
 //! expected size and MD5, so a file can be found by its GOG file id without
 //! the network, and a partial download is only resumed for the same file.
 //! One file id holds one file at a time: a different one replaces it.
+//!
+//! `<product id>/.lock` is held exclusively, across processes, for as long
+//! as anything writes or removes the product's files. Reading the cache
+//! takes no lock: a finished file is only ever replaced by a rename, so a
+//! reader sees the old file or the new one, never half of either.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use md5::{Digest, Md5};
+use rustix::fs::{FlockOperation, flock};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Endpoint, Error, ErrorKind};
@@ -111,6 +118,45 @@ impl DownloadCache {
         self.dir.join(product_id.to_string())
     }
 
+    /// Takes the product's lock, waiting for whoever holds it.
+    pub(crate) fn lock(&self, product_id: u64, endpoint: Endpoint) -> Result<ProductLock, Error> {
+        let disk = disk(endpoint);
+        let dir = self.product_dir(product_id);
+        let path = dir.join(".lock");
+        loop {
+            fs::create_dir_all(&dir).map_err(disk)?;
+            let file = match OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&path)
+            {
+                Ok(file) => file,
+                // Removed with its product between the two calls.
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(disk(error)),
+            };
+            loop {
+                match flock(&file, FlockOperation::LockExclusive) {
+                    Ok(()) => break,
+                    Err(rustix::io::Errno::INTR) => continue,
+                    Err(error) => return Err(disk(error.into())),
+                }
+            }
+            let lock = ProductLock { file };
+            // The holder before may have removed the product, lock file
+            // and all, which leaves this lock on a file nobody else sees.
+            let held = lock.file.metadata().map_err(disk)?;
+            match fs::metadata(&path) {
+                Ok(now) if now.dev() == held.dev() && now.ino() == held.ino() => return Ok(lock),
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(disk(error)),
+            }
+        }
+    }
+
     /// The finished file for a package, when it's in the cache with its
     /// size and an MD5 that matches. `md5`, like one a journal recorded,
     /// must match the cache's own when both are known; with neither, only
@@ -175,13 +221,29 @@ impl DownloadCache {
     }
 
     /// Removes everything cached for a product, finished or partial.
+    /// Waits for a download of the product in another process to finish.
     pub fn remove_product(&self, product_id: u64) -> Result<(), Error> {
+        let _lock = self.lock(product_id, Endpoint::Cache)?;
+        // The lock file goes too. Anyone waiting on it notices and locks
+        // a new one.
         match fs::remove_dir_all(self.product_dir(product_id)) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => {
                 Err(disk(Endpoint::Cache)(error))
             }
             _ => Ok(()),
         }
+    }
+}
+
+/// Holds a product's lock until dropped.
+pub(crate) struct ProductLock {
+    file: File,
+}
+
+impl Drop for ProductLock {
+    fn drop(&mut self) {
+        // A forked child must not extend this holder's lifetime.
+        let _ = flock(&self.file, FlockOperation::Unlock);
     }
 }
 

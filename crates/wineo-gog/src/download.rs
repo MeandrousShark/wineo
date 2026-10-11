@@ -51,6 +51,9 @@ enum Stop {
     /// The download server refused the link with this status, which most
     /// likely means it expired.
     Refused(u16),
+    /// The answer wasn't the range asked for. The partial file and its
+    /// record are already gone, so the next attempt starts from zero.
+    WrongRange,
     Failed(Error),
 }
 
@@ -72,7 +75,11 @@ impl Client {
     /// A 401 from resolving the link is `ErrorKind::Unauthorized`, so the
     /// caller can renew the token and call again to resume. A download
     /// server refusing the link is resolved again once, then fails with its
-    /// status, never `Unauthorized`.
+    /// status, never `Unauthorized`. A server answering with the wrong
+    /// range gets one more try from zero.
+    ///
+    /// Holds the product's cache lock throughout, so it waits for any other
+    /// process downloading or removing the same product's files.
     pub fn download(
         &self,
         access_token: &str,
@@ -86,6 +93,7 @@ impl Client {
         if package.size == 0 {
             return Err(Error::new(Endpoint::Download, ErrorKind::Malformed));
         }
+        let _lock = cache.lock(package.product_id, Endpoint::Download)?;
         if let Some((path, md5)) =
             cache::reusable(&folder, package, None, cancel, Endpoint::Download)?
         {
@@ -101,7 +109,7 @@ impl Client {
                 reused: true,
             });
         }
-        let mut retried = false;
+        let (mut retried, mut restarted) = (false, false);
         loop {
             match self.attempt(
                 access_token,
@@ -116,6 +124,10 @@ impl Client {
                 Err(Stop::Refused(_)) if !retried => retried = true,
                 Err(Stop::Refused(status)) => {
                     return Err(Error::new(Endpoint::Download, ErrorKind::Status(status)));
+                }
+                Err(Stop::WrongRange) if !restarted => restarted = true,
+                Err(Stop::WrongRange) => {
+                    return Err(Error::new(Endpoint::Download, ErrorKind::WrongRange));
                 }
                 Err(Stop::Failed(error)) => return Err(error),
             }
@@ -232,10 +244,14 @@ impl Client {
                         .and_then(|value| value.to_str().ok())
                         .and_then(content_range);
                     if range != Some((have, size - 1, size)) {
-                        return Err(fail(ErrorKind::WrongRange));
+                        drop(file);
+                        return Err(discard(folder, &part, package.file_id)?);
                     }
                 }
-                206 => return Err(fail(ErrorKind::WrongRange)),
+                206 => {
+                    drop(file);
+                    return Err(discard(folder, &part, package.file_id)?);
+                }
                 401 | 403 => return Err(Stop::Refused(status)),
                 _ => {
                     return Err(fail(client::status_kind(Endpoint::Download, status, None)));
@@ -305,6 +321,14 @@ impl Client {
         let body = client::read_limited(response, MAX_CHECKSUM).ok()?;
         checksum::parse(&body)
     }
+}
+
+/// Drops a partial file the server won't resume properly, so the next
+/// attempt starts from zero instead of failing the same way forever.
+fn discard(folder: &Path, part: &Path, file_id: &str) -> Result<Stop, Error> {
+    remove(part, Endpoint::Download)?;
+    remove(&record_path(folder, file_id), Endpoint::Download)?;
+    Ok(Stop::WrongRange)
 }
 
 /// The file's name: the link's last path segment, decoded.
