@@ -152,7 +152,8 @@ Updates need the installed version, build, language, and DLC.
 - **A (recommended).** Offline installers in this plan, for Windows and
   Linux. Updating downloads the new installer (or GOG's patch installer
   when there is one) and runs it over the old install. Updates are whole
-  downloads, but they work for every game. A later plan adds Galaxy builds
+  downloads, and work for every game installed from an offline installer
+  (Galaxy-installed games wait for 0050, question 12). A later plan adds Galaxy builds
   for Windows, so Windows updates download only what changed.
 - **B.** Galaxy builds for Windows in this plan, offline installers for
   Linux. Windows updates are small from day one, but the plan roughly
@@ -192,7 +193,8 @@ in** and **Log out**, like the Steam Web API key.
 
 - **A (recommended).** Adopt in place: wineo registers the existing game
   folder and Heroic's prefix where they are, and records the GOG id and
-  version. Nothing moves. Heroic's files are never edited, as today. After
+  version. Nothing moves. Heroic's metadata is never edited, as today,
+  though wineo's later updates change the adopted game folder and prefix. After
   migrating, `wineo import gog` says the game should be removed from
   Heroic's library (without deleting files) so both don't update it.
 - **B.** Copy the prefix into wineo's prefix root, like `import prefix`
@@ -207,7 +209,8 @@ and version attached to that environment instead of a new one.
 - **A (recommended).** A new `defaults.games_root` setting, default
   `~/Games`, for both Windows and native games: `~/Games/<title>`. The same
   place Heroic used, so migrated and new games sit together, and a Windows
-  game survives replacing its prefix.
+  game's files survive replacing its prefix (its registry entries and
+  redistributables don't; see `--reinstall`).
 - **B.** Windows games inside their prefix (`drive_c/GOG Games/<title>`),
   native games under `games_root`. Self-contained prefixes, but snapshots
   and clones copy the whole game, and replacing a prefix loses it.
@@ -328,9 +331,50 @@ log you out.
 - **B.** A dry run never renews: with an expired access token it uses
   cached GOG data only and says it couldn't check GOG.
 
+## Second plan review (2026-10-10)
+
+A second review found gaps where the pieces meet: clones and locks, base
+games and DLC, snapshots and receipts, and recovery. The design now
+specifies those. Three points need the maintainer.
+
+### 17. GOG games in portable folders
+
+Ownership of a game folder has to be checked somewhere. Across portable
+roots wineo can't see idle environments in other roots, and a game folder
+inside a portable root moves when the root does.
+
+- **A (recommended).** GOG installs and migrations happen in the host
+  (XDG) root only. Portable copies of GOG games are allowed and, per
+  question 13, don't own the game. Installing into portable roots becomes
+  a backlog row.
+- **B.** Support portable roots now: install folders inside a root are
+  stored relative to it like prefixes, ownership is checked per root, and
+  a host-wide registry tracks folders in use. More code and more cleanup
+  rules.
+
+### 18. GOG's `postinst.sh`
+
+Some native games ship `support/postinst.sh`, which MojoSetup runs after
+installing. Its side effects aren't known, so rerunning it on retry or
+update isn't safe to assume.
+
+- **A (recommended).** Don't run it, like heroic-gogdl, which only extracts
+  the game files. wineo already does what these scripts usually do (exec
+  bits, menu entries).
+- **B.** Run it after a fresh install only, never on update or retry, with
+  a failure leaving `incomplete`.
+
+### 19. DLC bought after installing
+
+- **A (recommended).** `wineo update` also installs owned DLC that isn't
+  installed yet, retries `failed` DLC, and rechecks `unavailable` DLC, and
+  lists each one in its review. That's what Galaxy does.
+- **B.** `update` only updates what's installed. New DLC needs
+  `wineo update NAME --dlc`.
+
 ## Proposed design
 
-Written for the answers above.
+Written for the answers above, and the recommended answers to 17 to 19.
 
 ### The `wineo-gog` crate
 
@@ -381,30 +425,49 @@ Written for the answers above.
 
 ### Game folders and ownership
 
-- Each GOG game has one install folder, recorded by canonical path in its
-  installed state. Windows games install to `<games_root>/<title>`, native
-  games the same; `--dir` overrides.
-- A folder belongs to at most one environment. Installing or migrating into
-  a folder another environment already owns is refused, naming the owner.
-  Per question 13, clones and portable copies drop `gog_id` and the state.
-- A host-wide game-folder lock, keyed by canonical path like prefix locks,
-  is held by launch, install, update, and migration, across portable roots.
-  Updating a running game is refused: `Stop disco-elysium before updating
-  it.`
+- GOG installs and migrations happen in the host root (question 17). Each
+  GOG game has one install folder, recorded by canonical path in its
+  receipt (the installed-state file). New games install to
+  `<games_root>/<title>`, with the title made safe for a folder name
+  (path separators, control characters, and trailing dots and spaces
+  removed); `--dir` overrides.
+- A fresh install, Windows or native, into a folder that exists and isn't
+  empty is refused, unless it's this environment's own partial install
+  (see Recovery).
+- A folder belongs to at most one environment in the host root. Installing
+  or migrating into a folder another environment's receipt names is
+  refused, naming the owner.
+- **Folder records.** Install, update, and migration also write a small
+  host-wide record in the host state directory, keyed by the folder's
+  canonical path, with the folder's status (`installed`, `installing`,
+  `updating`, `incomplete`). This is what clones and portable copies rely
+  on, since they don't own the folder (question 13).
+- **Launching** any environment, owner or not, looks up its target's
+  folder and parents in those records. A folder that isn't `installed`
+  refuses the launch (question 14), and a launch takes the folder's lock
+  shared. Install, update, and migration take it exclusively, so the owner
+  can't update while a clone is playing: `rimworld-copy is running from
+  this game folder. Stop it before updating rimworld.`
+- `rm` of the owner removes the folder record; trash restore puts it back.
 
 ### Installed state
 
-- `gog/<environment>.toml` under the data directory, internal per
-  [Stability](../stability.md). It records: GOG id, platform, install folder,
-  language, the track (`installer` or `galaxy`), the installed installer
-  version or build id, a status (`installed`, `installing`, `updating`,
-  `incomplete`), the target version during an install or update, and per
-  DLC: id, installer version, and status (`installed`, `failed`,
-  `unavailable`). Native games also record the shipped file list with
-  sizes and MD5s.
-- `rm`, trash and restore, and snapshot restore keep it consistent with
-  the environment: removed with it and restored with it. A snapshot restore that doesn't cover the game folder
-  leaves the state alone.
+- The receipt is `gog/<environment>.toml` under the host data directory,
+  internal per [Stability](../stability.md). It records: GOG id, platform,
+  canonical install folder, language as installed, the track (`installer`
+  or `galaxy`), the installed installer version or build id, a status
+  (`installed`, `installing`, `updating`, `incomplete`), the package being
+  installed during an install or update, and per DLC: id, installer
+  version, and status (`installed`, `installing`, `failed`, `unavailable`).
+- Native games also record, per product (the base game and each DLC), the
+  files it shipped with their sizes and MD5s. A migrated native game has
+  no shipped list until its first update (see Migrating).
+- `rm`, trash, and restore keep the receipt with its environment.
+- **Snapshot restore** brings back the environment's config but not the
+  game folder, so the receipt follows the folder: if the restored config
+  has no `gog_id` (a snapshot from before migration), wineo puts the
+  receipt's `gog_id` back into it and says so. If it has a different
+  `gog_id`, the restore is refused before changing anything.
 
 ### Downloads
 
@@ -416,87 +479,134 @@ Written for the answers above.
   when GOG publishes a checksum, size only with a note when it doesn't.
 - Multi-part Windows installers keep their original file names together in
   one folder, since the `.exe` finds its `.bin` parts by name.
-- In `wineo-core`, before anything downloads: the download cache must have
-  room for every installer part and DLC, and the install folder's
-  filesystem must have room for the installers' total size with a margin
-  (GOG doesn't publish installed sizes). Too little room refuses with the
-  sizes. Installers are deleted after a successful install and kept after a
+- In `wineo-core`, before anything downloads, an estimate labeled as one:
+  the download cache needs every installer part and DLC, and the install
+  folder needs twice the installers' total size (GOG doesn't publish
+  installed sizes; compressed installers usually unpack to less than
+  double). When both are on one filesystem, the sum is checked against it.
+  Native installs extract into a staging folder beside the game first, so
+  that is counted too. The check runs again after downloading and before
+  changing anything. Too little room refuses with the sizes.
+- Installers are deleted after a successful install, and kept after a
   failure for the retry.
 
 ### Installing
 
 - One core create-and-install function, used by the CLI and the desktop
   app, replacing today's two copies.
-- **Order:** download everything, then create the environment and write the
-  state as `installing`, then install, then mark it `installed`. A crash,
-  cancel, or failure leaves `incomplete`, which refuses launch (question
-  14) and is finished or retried by `wineo update NAME`.
+- **Order:** download everything, then create the environment, write the
+  receipt and folder record as `installing` with the package, then install,
+  then mark both `installed`.
 - **Windows:** build the prefix, then run the Inno installer with
-  `/SP- /SILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL` and
+  `/SP- /SILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /LOG="<log>"` and
   `/DIR="Z:\..."`, the install folder as a fully qualified Wine path.
-  `/LANG=` takes Inno's internal language name, from a table mapping GOG's
-  language codes to Inno's names, and is left out for English. A Windows
-  install needs a graphical session; without one it refuses before
-  downloading. If the silent run exits with Inno's codes 1, 3, or 7 (setup
-  never started changing files), wineo offers the installer's own wizard
-  once. Codes 2 and 5 are cancellations, 4 is a failure partway, and
-  neither retries.
+  Inno's internal language names vary by installer, so wineo passes
+  `/LANG=` from a table of common names and also runs the installer with
+  the matching locale, since Inno falls back to the locale. Afterward
+  `goggame-<id>.info` says which language actually installed; when it
+  differs from the one asked for, the review and the receipt show the real
+  one: `Installed in French; this installer has no English.`
+- A Windows install needs a graphical session; without one it refuses
+  before downloading.
+- **Inno exit codes:** 0 is success. 1, 3, and 7 mean setup never started
+  changing files, so wineo offers the installer's own wizard once. 2 is a
+  cancel before anything changed. 4, 5 (a cancel or an abort after a file
+  error, both partway), 6, 8 (needs a restart), and any other nonzero code
+  are failures partway: `incomplete`, no wizard.
 - The default target comes from `goggame-<id>.info`'s primary file play
   task (path, working dir, arguments). A game with only a URL task, or no
   info file, gets no default target and the program list, like `new`.
 - **Native:** extract the game files from the `.sh`'s zip (`data/noarch`)
-  without running the MojoSetup installer. Entries with absolute paths or
-  `..` are refused, executable bits are kept, symlinks must point inside
-  the folder, and a fresh install into a non-empty folder is refused. Then
-  run `support/postinst.sh` when present, from the game folder, on install
-  and on update, cancellable, with a failure leaving `incomplete`. The
-  target is `start.sh`.
+  into a staging folder beside the game, without running MojoSetup or
+  `postinst.sh` (question 18), then move them into the game folder.
+  Entries with absolute paths or `..` are refused, executable bits are
+  kept, and symlinks must point inside the folder. Writes and deletes in
+  the game folder never follow an existing symlink out of it. The target
+  is `start.sh`.
 - **DLC:** each owned DLC installs after the game from its own installer,
-  in the chosen language, falling back to English, else marked
-  `unavailable` with a note (for example, no Linux installer). A DLC failure
-  after a finished base game marks that DLC `failed` and the game stays
-  launchable.
-- Replacing a prefix keeps the game folder, but the installer's registry
-  entries and redistributables don't come back on their own.
-  `wineo update NAME --reinstall` reruns the installed version's installer.
+  in the game's language, falling back to English, else marked
+  `unavailable` with a note (for example, no Linux installer). A DLC that
+  was never available, or failed before changing files, leaves the game
+  launchable. A DLC installer that failed partway may have changed shared
+  files, so it leaves the game `incomplete`.
+- **Files shared by the game and DLC (native):** a file shipped by more
+  than one product belongs to the one installed last, which is always the
+  DLC. Updating the base game re-extracts each installed DLC whose files
+  overlap the update's, so its versions win again.
+
+### Recovery
+
+- `installing`, `updating`, and `incomplete` all block launch. After a hard
+  crash the receipt still says `installing` or `updating`; wineo treats
+  that the same as `incomplete`.
+- `wineo update NAME` finishes it: it retries the package the receipt
+  names, or the current one when GOG no longer offers it. A failed patch
+  installer is retried with the full installer, since a patch needs an
+  exact starting version.
+- A retry recognizes its own partial install by the receipt's folder, so
+  the non-empty-folder rule doesn't block it. A native retry re-extracts
+  the whole package over the folder; a Windows retry reruns the full
+  installer.
+- `wineo update NAME --reinstall` installs the current version over the
+  game: GOG keeps no old offline installers, so the installed version's
+  can't be fetched again. It repairs a replaced prefix (registry entries
+  and redistributables) and is refused for Galaxy-tracked games until
+  0050.
 
 ### Updating
 
 - **Eligibility.** A game on the installer track is compared with GOG's
-  current installer version for its platform and language. A string that
+  current installer version for its platform and language; a string that
   differs means an update. A game on the Galaxy track is compared by build
-  only, and isn't updated until 0050 (question 12). When wineo can't tell,
-  for example a missing version or a changed language, it reports
-  **Can't compare** instead of offering an update.
-- DLC is compared per DLC the same way, so a DLC-only update is found and
-  applied alone.
-- **Applying:** the state goes to `updating` with the target version before
-  any file changes. The newer installer (or GOG's patch installer when it
-  starts from the installed version exactly) runs over the game. On
-  success the new version is recorded and the state returns to
-  `installed`; otherwise it's `incomplete`.
-- **Native file ownership:** after extracting the new version, files in the
-  old shipped list but not the new one are deleted when unchanged and kept
-  and listed when changed; changed files the new version still ships
-  follow question 15.
-- If the game's own `goggame-<id>.info` shows a different build than
-  recorded (another tool updated it), wineo records the file's build.
+  only, and isn't updated until 0050 (question 12). A build that isn't on
+  the default branch's list, like a beta Heroic installed, shows **Can't
+  compare** until 0050 handles branches. Whenever wineo can't tell, for
+  example a missing version or a changed language, it reports **Can't
+  compare** instead of offering an update.
+- **DLC:** each installed DLC is compared the same way, so a DLC-only
+  update is found and applied alone. Per question 19, `update` also
+  installs newly owned DLC, retries `failed`, and rechecks `unavailable`.
+  Ownership comes from the account's owned products, intersected with the
+  game's DLC list from product details.
+- **Applying:** the receipt and folder record go to `updating` with the
+  target package before any file changes. The newer installer runs over the
+  game, or GOG's patch installer when it starts from the installed version
+  exactly. Windows then reruns each installed DLC that also has a newer
+  version. On success the new versions are recorded and the state returns
+  to `installed`; otherwise it's `incomplete` (see Recovery).
+- **Native file ownership:** after extracting, a file in a product's old
+  shipped list but not its new one is deleted when unchanged and no other
+  installed product ships it, and kept and listed when changed. Changed
+  files the new version still ships are overwritten and listed (question
+  15).
+- **Another tool's update:** the build in `goggame-<id>.info` is trusted
+  only for Galaxy-tracked Windows games, and only when its `gameId` is the
+  environment's `gog_id`; then wineo records that build.
 
 ### Migrating from Heroic
 
 - Reads Heroic's metadata (`gog_store/installed.json`,
   `GamesConfig/<id>.json`) and the game folder's `goggame-<id>.info` or
-  `gameinfo`. Heroic's metadata is never edited; wineo's later updates do
-  change the adopted game folder and prefix.
+  `gameinfo`, whose id must match Heroic's. Heroic's metadata is never
+  edited; wineo's later updates do change the adopted game folder and
+  prefix.
 - Works without a GOG login: it's all local. Art and playtime from GOG are
   skipped with a note when logged out.
+- **Track:** a Windows game with a `buildId` is Galaxy-tracked; one without
+  is installer-tracked with Heroic's version. Native games are
+  installer-tracked.
+- **No shipped list yet.** Heroic records no file list for native games,
+  and scanning the folder would count mods as shipped files. So a migrated
+  native game's first update deletes nothing: it extracts the new version
+  and records that as the shipped list. Deleting obsolete files starts
+  with the update after.
 - **Matching an existing environment,** by canonical paths: first an
   environment with the same `gog_id`; then one whose default target's exe
   is the game's primary play task (Windows) or `start.sh` (native) and,
   for Windows, whose prefix is Heroic's prefix for the game. More than one
   match, or a match that already has a different `gog_id`, is refused with
   the names. A matched environment keeps every setting; only `gog_id` and
-  the installed state are added.
+  the receipt are added.
 - **New environments** carry over what Heroic import maps today (runner,
   arch, gamemode, environment variables, and the rest), plus Heroic's
   launch arguments, a custom executable when Heroic has one, and the
@@ -516,30 +626,49 @@ Written for the answers above.
 ### Commands
 
 - `wineo import gog --list` shows owned games with state; `--game ID`
-  installs or migrates one; `--all` migrates every Heroic GOG game.
+  installs one, or migrates it when Heroic has it installed; `--all`
+  migrates every Heroic GOG game.
 - Install options: `--platform linux|windows` (default: Linux when a native
   installer exists), `--language CODE` (default from the global
   `gog.language`, English), `--runner` and `--arch` (defaults from the
-  global config, like `new`), `--dir` (install folder).
+  global config, like `new`), `--dir` (install folder). When `--game`
+  would migrate, these are refused, since the game is already installed:
+  `Heroic has rimworld installed, so --game migrates it. Leave out
+  --platform and --dir.`
 - Every install and migration shows a review first, frozen like other
-  imports, unless `--yes`.
+  imports, unless `--yes`. Install sizes in the review are labeled
+  estimates.
 - `wineo update [NAME|--all|--check] [--reinstall]`.
 - **Outcomes:** `Already installed.`, `Already migrated.`, `Up to date.`
   are no-ops that exit 0. A batch continues past a failed game and exits 1
-  with a summary. Cancel exits 130. `--json` follows
-  [JSON output](../json-output.md), and `--dry-run` follows
-  [Dry runs](../dry-run.md) and question 16.
+  with a summary. Cancel exits 130 and leaves `incomplete` when files had
+  changed.
+- **JSON:** `import gog --list --json` gives one object per owned game:
+  `id`, `title`, `platforms`, `state` (`not_installed`, `installed`,
+  `heroic`, `imported`), `environment` (or `null`), `track`, `version`,
+  `update` (`available`, `none`, `galaxy`, `cant_compare`, or `null`), and
+  `dlc` (`id`, `title`, `state`). `update --check --json` gives one object
+  per GOG environment with `environment`, `id`, `track`, `installed`,
+  `available`, `update`, and `dlc`. New fields follow
+  [JSON output](../json-output.md)'s compatibility rule.
+- `--dry-run` follows [Dry runs](../dry-run.md) and question 16.
 
 ### Desktop app
 
 - **Add** gets **Import from GOG**: a poster grid of owned games (GOG's
   images), with installed, Heroic, and update states, platform and
-  language choices in the review, and download and install progress.
+  language choices in the review, and download and install progress. It
+  follows the existing import pages: Back, the leave prompt for a draft,
+  cancel during work, and closing the window during an install asks first
+  and cancels it like Heroic import does.
 - Settings gets a **GOG** section with **Log in** (opens the browser, then a
   field for the address) and **Log out**.
-- Library cards show **Update available**; the panel and the context menu
-  get **Update**. The background check runs once after start when logged
-  in.
+- Library cards show **Update available** for installer-tracked games; the
+  panel and the context menu get **Update**. A Galaxy-tracked game with a
+  newer build shows **Update on GOG** as status text with no Update action,
+  and **Can't compare** likewise has none. An incomplete game shows
+  **Finish install** instead of Play. The background check runs once
+  after start when logged in.
 
 ## Implementation sequence
 
@@ -550,12 +679,14 @@ Written for the answers above.
    `WINEO_TEST_GOG_API` override, like Steam's.
 2. File download in `wineo-gog`: bearer, progress, cancellation, resume,
    and verification. Space checks in `wineo-core`.
-3. Config `gog_id` key and validation, the installed-state file, the
-   game-folder lock, and keeping state consistent through `rm`, trash,
-   restore, clone, and portable copies.
-4. Core create-and-install: Windows installer arguments and exit codes,
-   native extraction and `postinst.sh`, targets from GOG metadata, DLC,
-   and the incomplete state. Move the CLI and desktop app onto it.
+3. Config `gog_id` key and validation, the receipt, folder records and
+   locks (including launches of non-owning environments), and keeping
+   state consistent through `rm`, trash, restore, snapshot restore, clone,
+   and portable copies.
+4. Core create-and-install: Windows installer arguments, language, and
+   exit codes, staged native extraction, targets from GOG metadata, DLC
+   and file precedence, and recovery. Move the CLI and desktop app onto
+   it.
 5. Heroic migration, including matching existing environments.
 6. Updates: eligibility, applying, native file ownership, DLC-only
    updates, and `--reinstall`.
@@ -563,8 +694,9 @@ Written for the answers above.
    runs.
 8. Desktop app: Import from GOG, Settings, update badges and actions.
 9. Playtime import, GOG art, and docs (`gog.md`, config-files, json-output,
-   exit-codes, stability, README), plus a backlog row for copying game
-   folders with snapshots, clones, and portable copies.
+   exit-codes, stability, README), plus backlog rows for copying game
+   folders with snapshots, clones, and portable copies, and for GOG games
+   in portable roots.
 
 ## Testing and acceptance
 
@@ -577,6 +709,11 @@ install and update leaving `incomplete`, a DLC-only update, a failed DLC
 after a finished game, obsolete and changed shipped files on a native
 update, two environments claiming one folder, account switching and
 logout, renewal under contention, and secrets never reaching errors.
+Also: a clone running while its owner updates, a snapshot restore from
+before migration, a migrated native game's first update with no shipped
+list, base and DLC files overlapping, retrying a partial native
+extraction, a stale `updating` receipt after a crash, symlinks in an
+existing game folder, and cache and game folder sharing a filesystem.
 
 The stub can't check real Inno path and language handling, so
 `--ignored` tests install a real small GOG game for Windows and for Linux,
@@ -587,14 +724,16 @@ in from the CLI and the desktop app; listing owned games; installing a
 small Windows game and a small Linux game; migrating RimWorld (attaching to
 its existing environment, keeping `mods-1.5`) and Disco Elysium (its
 Heroic prefix and build, shown as Galaxy-tracked); checking for and
-applying an update; interrupting an install and finishing it; and logging
-out.
+applying an update, checking that the game's files and its
+`goggame-<id>.info` or `gameinfo` version actually changed, not only that
+the installer exited 0; interrupting an install and finishing it; and
+logging out.
 
 ## Scope limits
 
 - Not in this plan: cloud saves, bonus content, posting playtime to GOG,
-  Mac games, and copying game folders with snapshots, clones, and portable
-  copies. Galaxy differential downloads, beta branches, and rollback come
+  Mac games, copying game folders with snapshots, clones, and portable
+  copies, and installing GOG games into portable roots. Galaxy differential downloads, beta branches, and rollback come
   in plan 0050.
 - Epic stays a backlog row.
 - wineo never edits Heroic's metadata.
