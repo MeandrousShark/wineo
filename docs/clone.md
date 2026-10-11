@@ -51,6 +51,8 @@ argument like `--data=/path`, or a launcher that finds the game some other
 way isn't seen. A `wineo exec` from the game folder keeps it in use until
 everything it started has exited, so a launcher that starts the game and
 exits still counts, unless the game leaves the launcher's process group.
+While it waits, it says so: the first Ctrl+C asks those programs to stop,
+and a second one forces them to.
 
 If registration fails after the copy, wineo keeps the copied prefix and reports
 its location for recovery. Remove a clone with `wineo rm NAME`; this trashes
