@@ -124,6 +124,12 @@ pub enum CallError {
     Request(wineo_gog::Error),
 }
 
+impl From<wineo_gog::Error> for CallError {
+    fn from(error: wineo_gog::Error) -> Self {
+        Self::Request(error)
+    }
+}
+
 /// Classifies a token endpoint failure, for a renewal.
 fn renewal_error(error: wineo_gog::Error) -> AccountError {
     match error.class() {
@@ -195,7 +201,10 @@ fn read_generation(paths: &Paths) -> crate::Result<u64> {
     }
 }
 
-/// Moves the generation on. Only called holding the credentials lock.
+/// Moves the generation on. Only called holding the credentials lock, and
+/// always before the credentials change: a crash or failure after the bump
+/// only makes sessions read the login again, while one before a bump that
+/// never happened would leave them trusting a login that is gone.
 fn bump_generation(paths: &Paths, _lock: &CredentialsLock) -> crate::Result<u64> {
     let next = read_generation(paths)?.wrapping_add(1);
     write_atomic(&paths.gog_credentials_generation(), format!("{next}\n"))?;
@@ -209,8 +218,8 @@ pub(crate) fn store(
     login: &StoredLogin,
 ) -> crate::Result<(Saved, u64)> {
     let lock = CredentialsLock::acquire(paths)?;
-    let saved = save(paths, keyring, login)?;
     let generation = bump_generation(paths, &lock)?;
+    let saved = save(paths, keyring, login)?;
     Ok((saved, generation))
 }
 
@@ -284,12 +293,12 @@ pub fn logout(paths: &Paths, keyring: &dyn Keyring) -> Result<LoggedOut, Account
         Err(AccountError::Unreadable) => None,
         Err(error) => return Err(error),
     };
+    bump_generation(paths, &lock)?;
     let cache_removed = match user_id {
         Some(user_id) => owned::remove_cache(paths, user_id)?,
         None => false,
     };
     let removed = key_store::remove_key(&KEY_SPEC, paths, keyring)?;
-    bump_generation(paths, &lock)?;
     Ok(LoggedOut {
         user_id,
         removed,
@@ -425,19 +434,29 @@ impl<'a> Session<'a> {
     /// Runs an authenticated request. When GOG refuses the access token
     /// anyway, it is renewed whatever its lifetime and the request is tried
     /// once more.
+    ///
+    /// The login is checked before each request and again after each
+    /// answer. Holding the credentials lock across the network would stall
+    /// every login and logout behind GOG, so a logout or switch can happen
+    /// while a request is in flight. That request is left to finish, but its
+    /// answer is thrown away: nothing fetched for an account that has left
+    /// is ever returned.
     pub fn call<T>(
         &mut self,
         request: impl Fn(&Client, &str) -> Result<T, wineo_gog::Error>,
     ) -> Result<T, CallError> {
         let token = self.access_token().map_err(CallError::Account)?;
-        match request(&self.client, token.expose()) {
-            Err(error) if error.kind() == ErrorKind::Unauthorized => {
-                self.renew().map_err(CallError::Account)?;
-                let token = self.access_token().map_err(CallError::Account)?;
-                request(&self.client, token.expose()).map_err(CallError::Request)
-            }
-            result => result.map_err(CallError::Request),
+        let mut result = request(&self.client, token.expose());
+        self.check().map_err(CallError::Account)?;
+        if let Err(error) = &result
+            && error.kind() == ErrorKind::Unauthorized
+        {
+            self.renew().map_err(CallError::Account)?;
+            let token = self.access_token().map_err(CallError::Account)?;
+            result = request(&self.client, token.expose());
+            self.check().map_err(CallError::Account)?;
         }
+        result.map_err(CallError::Request)
     }
 
     fn set_access(&mut self, tokens: &Tokens, requested: Instant) {
@@ -463,8 +482,9 @@ impl<'a> Session<'a> {
                     Ok(tokens) if tokens.user_id != started.user_id => Err(AccountError::Switched),
                     Ok(tokens) => {
                         let renewed = StoredLogin::from_tokens(&tokens);
+                        let generation = bump_generation(&self.paths, &lock)?;
                         self.source = source_of(&save(&self.paths, self.keyring, &renewed)?);
-                        self.generation = bump_generation(&self.paths, &lock)?;
+                        self.generation = generation;
                         self.login = renewed;
                         self.set_access(&tokens, requested);
                         Ok(())
@@ -472,8 +492,8 @@ impl<'a> Session<'a> {
                     Err(error) => {
                         let error = renewal_error(error);
                         if matches!(error, AccountError::LoggedOut) {
-                            key_store::remove_key(&KEY_SPEC, &self.paths, self.keyring)?;
                             bump_generation(&self.paths, &lock)?;
+                            key_store::remove_key(&KEY_SPEC, &self.paths, self.keyring)?;
                         }
                         Err(error)
                     }

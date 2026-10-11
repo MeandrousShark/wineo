@@ -465,6 +465,31 @@ fn a_logout_during_a_fetch_is_never_undone() {
 }
 
 #[test]
+fn a_logout_during_page_one_stops_page_two() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, USER);
+    let (server, owned) = load_racing(
+        &paths,
+        &keyring,
+        |paths, keyring| {
+            account::logout(paths, keyring).unwrap();
+            page(1, 2, &[(1, "Alpha")])
+        },
+        T,
+    );
+    assert!(matches!(
+        owned.unwrap_err(),
+        LoadError::Account(AccountError::LoggedOut)
+    ));
+    // The token request and page 1, and nothing after the logout.
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(requests[1].contains("page=1"));
+    assert!(!paths.gog_owned_cache(USER).exists());
+}
+
+#[test]
 fn a_logout_during_a_failing_fetch_never_shows_the_old_list() {
     let (_root, paths) = setup();
     let keyring = Arc::new(FakeKeyring::default());

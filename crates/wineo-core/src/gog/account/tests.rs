@@ -369,6 +369,121 @@ fn every_renewal_attempt_finding_a_newer_login_gives_up() {
     assert_eq!(saved(&paths, &*keyring), Some(login_of("OTHER2", USER)));
 }
 
+fn owned_page_body(page: u32, total: u32) -> Vec<u8> {
+    let body = serde_json::json!({
+        "page": page,
+        "totalPages": total,
+        "products": [{"id": page, "title": "Game"}],
+    });
+    reply(200, &body.to_string())
+}
+
+#[test]
+fn a_logout_during_a_call_discards_its_answer() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, "R1", USER);
+    let server = scripted(&paths, &keyring, |n, paths, keyring| {
+        if n == 0 {
+            tokens("A", "R2", USER, 3600)
+        } else {
+            // The request is already in flight when the logout lands.
+            logout(paths, keyring).unwrap();
+            owned_page_body(1, 1)
+        }
+    });
+    let mut session = Session::open(&paths, &*keyring, client_at(&server.base))
+        .unwrap()
+        .unwrap();
+    let error = session
+        .call(|client, token| client.owned_page(token, 1))
+        .unwrap_err();
+    assert!(
+        matches!(error, CallError::Account(AccountError::LoggedOut)),
+        "{error:?}"
+    );
+    assert_eq!(server.requests().len(), 2);
+    assert!(session.access.is_none());
+}
+
+#[test]
+fn a_switch_during_a_call_discards_its_answer_but_a_same_account_renewal_does_not() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, "R1", USER);
+    let server = scripted(&paths, &keyring, |n, paths, keyring| match n {
+        0 => tokens("A", "R2", USER, 3600),
+        1 => {
+            // Another process renews the same account: the answer stands.
+            replace(paths, keyring, "R3", USER);
+            owned_page_body(1, 1)
+        }
+        _ => {
+            replace(paths, keyring, "THEIRS", OTHER_USER);
+            owned_page_body(1, 1)
+        }
+    });
+    let mut session = Session::open(&paths, &*keyring, client_at(&server.base))
+        .unwrap()
+        .unwrap();
+    let page = session
+        .call(|client, token| client.owned_page(token, 1))
+        .unwrap();
+    assert_eq!(page.products.len(), 1);
+    assert_eq!(session.login, login_of("R3", USER));
+
+    let error = session
+        .call(|client, token| client.owned_page(token, 1))
+        .unwrap_err();
+    assert!(
+        matches!(error, CallError::Account(AccountError::Switched)),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_failed_generation_bump_leaves_the_credentials_alone() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    replace(&paths, &keyring, "R1", USER);
+    let cache = paths.gog_owned_cache(USER);
+    fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    fs::write(&cache, "{}").unwrap();
+    let server = Server::start(vec![tokens("A", "R2", USER, 3600)]);
+    let mut session = open(&paths, &keyring, &server);
+
+    let generation = paths.gog_credentials_generation();
+    let locks = generation.parent().unwrap();
+    fs::set_permissions(locks, fs::Permissions::from_mode(0o500)).unwrap();
+    // Root ignores directory permissions, so there is nothing to test.
+    let can_write_anyway = fs::write(locks.join("probe"), "").is_ok();
+    let results = (!can_write_anyway).then(|| {
+        (
+            store(&paths, &keyring, &login_of("THEIRS", OTHER_USER)).is_err(),
+            logout(&paths, &keyring).is_err(),
+            session.access_token().is_err(),
+        )
+    });
+    fs::set_permissions(locks, fs::Permissions::from_mode(0o700)).unwrap();
+    let Some(results) = results else {
+        return;
+    };
+
+    assert_eq!(results, (true, true, true));
+    // None of the three changed anything: not the login, not the cache.
+    assert_eq!(saved(&paths, &keyring), Some(login_of("R1", USER)));
+    assert!(cache.exists());
+    // The renewal's request went out, but its answer wasn't saved.
+    assert_eq!(server.requests().len(), 1);
+
+    // With the counter writable again, a change reaches the session.
+    replace(&paths, &keyring, "THEIRS", OTHER_USER);
+    assert!(matches!(
+        session.access_token().unwrap_err(),
+        AccountError::Switched
+    ));
+}
+
 /// A session that has a fresh access token, from one renewal.
 fn renewed_session<'a>(paths: &Paths, keyring: &'a FakeKeyring) -> (Server, Session<'a>) {
     seed(paths, keyring, "R1", USER);

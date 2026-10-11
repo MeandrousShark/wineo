@@ -66,7 +66,12 @@ fn load_at(session: &mut Session, refresh: bool, now: i64) -> Result<Owned, Load
             warning: None,
         });
     }
-    let fetched = match session.call(|client, token| client.owned_games(token)) {
+    // Page by page through the session, so the login is checked around
+    // every request and a logout stops the next page from being asked for.
+    let pages = wineo_gog::collect_pages(|page| {
+        session.call(|client, token| client.owned_page(token, page))
+    });
+    let fetched = match pages {
         Ok(games) => Ok(games),
         Err(CallError::Request(error)) => Err((error.to_string(), LoadError::Fetch(error))),
         Err(CallError::Account(
