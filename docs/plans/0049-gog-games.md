@@ -19,6 +19,12 @@ Second half of queue item 5 in [features.md](../features.md), after
   update them (2026-10-10).
 - Updating installed games is a requirement, not a later extra (2026-10-10).
 
+On 2026-10-10 the maintainer answered the open questions below: 1A, 2A,
+4A, 5A, 6A, 7A, 8A, 9A, 10A, and 11 with every recommended extra in.
+Question 3 is waiting on more detail about B, and beta branches and
+rollback are being considered alongside it, since only Galaxy builds offer
+them.
+
 ## What GOG offers
 
 From reading the source of heroic-gogdl 1.3.1, Heroic, Minigalaxy 1.4.3,
