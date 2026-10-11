@@ -444,3 +444,54 @@ fn no_hook_runs_for_an_owner_mid_update_whose_exe_is_gone() {
     assert!(!before.exists());
     assert!(!after.exists());
 }
+
+#[test]
+fn exec_waits_for_what_a_handoff_leaves_running_in_the_folder() {
+    let f = Fixture::new();
+    let folder = rimworld(&f, false);
+    f.environment("copy", "");
+    let prefix = f.root.path().join("prefixes/copy");
+    let started = std::time::Instant::now();
+    let mut running = f
+        .wineo()
+        .args(["exec", "copy", "handoff", &folder.display().to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The fake program exits right after writing this, leaving a descendant
+    // in its group for a couple of seconds.
+    wait_for("the program to hand off", || {
+        prefix.join("fake-pids").exists()
+    });
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!prefix.join("handoff-done").exists());
+    assert!(running.try_wait().unwrap().is_none());
+    assert!(update_refused(&f, &folder));
+    let output = running.wait_with_output().unwrap();
+    assert_success(&output);
+    assert!(prefix.join("handoff-done").exists());
+    assert!(started.elapsed() >= std::time::Duration::from_secs(2));
+    assert!(!update_refused(&f, &folder));
+}
+
+#[test]
+fn exec_away_from_game_folders_returns_when_its_program_exits() {
+    let f = Fixture::new();
+    rimworld(&f, false);
+    f.environment("copy", "");
+    let prefix = f.root.path().join("prefixes/copy");
+    // Not captured, since the descendant would hold a pipe open.
+    let status = f
+        .wineo()
+        .args(["exec", "copy", "handoff"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(!prefix.join("handoff-done").exists());
+    wait_for("the handoff to finish", || {
+        prefix.join("handoff-done").exists()
+    });
+}

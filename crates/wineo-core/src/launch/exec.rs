@@ -37,11 +37,15 @@ pub enum ExecEvent {
 }
 
 /// Runs an arbitrary program for a frontend, without consulting the current
-/// directory. Holds shared launch, build, and GOG folder in-use locks until
-/// the started process exits. Cancellation only signals its process group,
-/// never the whole prefix. A nonzero or canceled process exit is returned as
-/// a status. Cancellation before spawning is an error. No run record or playtime is written, and a
-/// frontend crash leaves the program running while releasing its locks.
+/// directory. Holds shared launch and build locks until the started process
+/// exits. A program run from a GOG game folder also holds the folder's
+/// in-use lock until its whole process group has exited, so a launcher that
+/// hands off to the game keeps the folder in use until the game quits.
+/// Cancellation only signals its process group, never the whole prefix. A
+/// nonzero or canceled process exit is returned as a status, the started
+/// process's own. Cancellation before spawning is an error. No run record or
+/// playtime is written, and a frontend crash leaves the program running
+/// while releasing its locks.
 pub fn exec(
     paths: &Paths,
     name: &str,
@@ -68,7 +72,7 @@ pub fn exec(
         events(ExecEvent::Launch(event));
     })?;
     check_cancel(token)?;
-    let launch = Launch::exec_with_resolution(
+    let mut launch = Launch::exec_with_resolution(
         paths,
         &global,
         &environment,
@@ -78,15 +82,26 @@ pub fn exec(
         ExecResolution::ExplicitPaths,
     )?;
     let prefix = launch.host.prefix().expect("exec always runs in a prefix");
-    let _guard = Locks::new(paths).acquire(Operation::Launch, name, &[prefix])?;
+    let guard = Locks::new(paths).acquire(Operation::Launch, name, &[prefix])?;
     Environment::ensure_exists(paths, name)?;
     Runtime::new(paths, name).check_resolved(name)?;
-    let _folders = super::orchestration::protect_as(paths, &environment, &launch, token, "exec")?;
+    let folders = super::orchestration::protect_as(paths, &environment, &launch, token, "exec")?;
     reconcile(paths, &global, &environment, &launch, |event| {
         events(ExecEvent::Launch(event));
     })?;
     check_cancel(token)?;
-    run(&launch, global.stop_timeout, token, &mut events)
+    let builds = std::mem::take(&mut launch.build_guards);
+    let release = move || drop((guard, _build_guard, builds));
+    let result = run(
+        &launch,
+        global.stop_timeout,
+        token,
+        !folders.is_empty(),
+        release,
+        &mut events,
+    );
+    drop(folders);
+    result
 }
 
 fn check_cancel(token: &Token) -> anyhow::Result<()> {
@@ -96,10 +111,15 @@ fn check_cancel(token: &Token) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Runs the program until it exits, calling `release` then. With `whole_group`
+/// it then keeps going, still cancelable, until nothing in its process group
+/// is left.
 fn run(
     launch: &Launch,
     stop_timeout: u32,
     token: &Token,
+    whole_group: bool,
+    release: impl FnOnce(),
     events: &mut impl FnMut(ExecEvent),
 ) -> anyhow::Result<ExitStatus> {
     // Descendants can inherit output past the immediate child's exit. A file
@@ -119,11 +139,40 @@ fn run(
     let group = child.id();
     let mut stopping = None;
     let mut killing = false;
-    let mut exited = false;
+    let mut exited = None;
+    let mut release = Some(release);
     let result = (|| {
         loop {
-            if let Some(status) = child.try_wait().context("failed to wait for exec")? {
-                exited = true;
+            let status = match exited {
+                Some(status) => status,
+                None => match child.try_wait().context("failed to wait for exec")? {
+                    Some(status) => {
+                        exited = Some(status);
+                        // Waiting on the rest of the group needs only the
+                        // folder locks; otherwise everything lasts through
+                        // the exit event, as it always has.
+                        if whole_group && let Some(release) = release.take() {
+                            release();
+                        }
+                        status
+                    }
+                    None => {
+                        stop(
+                            token,
+                            group,
+                            stop_timeout,
+                            &mut stopping,
+                            &mut killing,
+                            events,
+                        )?;
+                        lines.pump(READ_BATCH, events)?;
+                        token.wait_timeout(POLL);
+                        continue;
+                    }
+                },
+            };
+            // Unknown counts as live, so a folder is never let go early.
+            if !whole_group || crate::process::group_has_live_members(group) == Some(false) {
                 // Read only what is present now; handed-off programs can keep
                 // writing, and must not extend the lifetime of this worker.
                 let end = log.metadata()?.len();
@@ -136,29 +185,50 @@ fn run(
                 });
                 return Ok(status);
             }
-            if token.is_canceled() && stopping.is_none() {
-                stopping = Some(Instant::now());
-                events(ExecEvent::Stopping);
-                signal(group, Signal::TERM)?;
-            }
-            if !killing
-                && stopping.is_some_and(|at| {
-                    token.is_forced() || at.elapsed() >= Duration::from_secs(stop_timeout.into())
-                })
-            {
-                killing = true;
-                events(ExecEvent::Killing);
-                signal(group, Signal::KILL)?;
-            }
+            stop(
+                token,
+                group,
+                stop_timeout,
+                &mut stopping,
+                &mut killing,
+                events,
+            )?;
             lines.pump(READ_BATCH, events)?;
             token.wait_timeout(POLL);
         }
     })();
-    if result.is_err() && !exited {
+    if result.is_err() && exited.is_none() {
         let _ = signal(group, Signal::KILL);
         let _ = child.wait();
     }
     result
+}
+
+/// Signals the group once canceled, and kills it once forced or past the
+/// stop timeout.
+fn stop(
+    token: &Token,
+    group: u32,
+    stop_timeout: u32,
+    stopping: &mut Option<Instant>,
+    killing: &mut bool,
+    events: &mut impl FnMut(ExecEvent),
+) -> anyhow::Result<()> {
+    if token.is_canceled() && stopping.is_none() {
+        *stopping = Some(Instant::now());
+        events(ExecEvent::Stopping);
+        signal(group, Signal::TERM)?;
+    }
+    if !*killing
+        && stopping.is_some_and(|at| {
+            token.is_forced() || at.elapsed() >= Duration::from_secs(stop_timeout.into())
+        })
+    {
+        *killing = true;
+        events(ExecEvent::Killing);
+        signal(group, Signal::KILL)?;
+    }
+    Ok(())
 }
 
 fn signal(group: u32, signal: Signal) -> anyhow::Result<()> {

@@ -339,6 +339,105 @@ pub fn group_has_live_members(group: u32) -> Option<bool> {
     Some(false)
 }
 
+/// Whether this process's own group still has a live member descended from
+/// it, for a program that shares wineo's group, as an attached exec does.
+/// Others in the group, like the rest of a shell pipeline, don't count.
+/// Orphaned descendants are only seen once `become_subreaper` has made
+/// them wineo's. `None` means the processes couldn't be inspected.
+pub fn own_group_has_live_descendants() -> Option<bool> {
+    let me = std::process::id();
+    let group = u32::try_from(rustix::process::getpgrp().as_raw_nonzero().get()).ok()?;
+    let processes = fs::read_dir("/proc").ok()?;
+    for entry in processes {
+        let entry = entry.ok()?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid == me {
+            continue;
+        }
+        match read_family(pid) {
+            Family::Found {
+                state,
+                group: member,
+                ..
+            } if member == group && !matches!(state, 'Z' | 'X' | 'x') => {
+                if descends_from(pid, me)? {
+                    return Some(true);
+                }
+            }
+            Family::Found { .. } | Family::Gone => {}
+            Family::Unknown => return None,
+        }
+    }
+    Some(false)
+}
+
+/// Makes orphaned descendants wineo's children instead of init's, so
+/// `own_group_has_live_descendants` still sees them.
+pub fn become_subreaper() -> io::Result<()> {
+    rustix::process::set_child_subreaper(Some(rustix::process::getpid())).map_err(io::Error::from)
+}
+
+fn descends_from(pid: u32, ancestor: u32) -> Option<bool> {
+    let mut current = pid;
+    // A parent chain can't be longer than the pid space, but stop early on
+    // anything odd rather than loop.
+    for _ in 0..4096 {
+        match read_family(current) {
+            Family::Found { parent, .. } if parent == ancestor => return Some(true),
+            Family::Found { parent, .. } if parent > 1 => current = parent,
+            Family::Found { .. } | Family::Gone => return Some(false),
+            Family::Unknown => return None,
+        }
+    }
+    None
+}
+
+enum Family {
+    Found {
+        state: char,
+        parent: u32,
+        group: u32,
+    },
+    Gone,
+    Unknown,
+}
+
+fn read_family(pid: u32) -> Family {
+    let text = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(text) => text,
+        Err(err)
+            if err.kind() == io::ErrorKind::NotFound
+                || err.raw_os_error() == Some(Errno::SRCH.raw_os_error()) =>
+        {
+            return Family::Gone;
+        }
+        Err(_) => return Family::Unknown,
+    };
+    let Some((_, rest)) = text.rsplit_once(')') else {
+        return Family::Unknown;
+    };
+    let fields: Vec<_> = rest.split_whitespace().collect();
+    let state = fields.first().and_then(|field| field.chars().next());
+    let parent = fields.get(1).and_then(|field| field.parse::<u32>().ok());
+    let group = fields.get(2).and_then(|field| field.parse::<u32>().ok());
+    match (state, parent, group) {
+        (Some(state), Some(parent), Some(group)) => Family::Found {
+            state,
+            parent,
+            group,
+        },
+        // A dead task can linger with fields that no longer parse.
+        (Some('X' | 'x'), _, _) => Family::Gone,
+        _ => Family::Unknown,
+    }
+}
+
 fn pidfd_exited(pidfd: &OwnedFd) -> io::Result<bool> {
     let mut descriptors = [PollFd::new(pidfd, PollFlags::IN)];
     poll(&mut descriptors, Some(&Timespec::default()))?;

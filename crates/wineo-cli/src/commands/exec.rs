@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use anyhow::Context;
 use signal_hook::consts::SIGINT;
@@ -61,7 +62,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         Ok(()) => {}
     }
     drop(cancellation);
-    let launch = Launch::exec(
+    let mut launch = Launch::exec(
         paths,
         &global,
         &environment,
@@ -73,7 +74,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         unreachable!("exec launches always run in a prefix");
     };
     let locks = Locks::new(paths);
-    let _guard = locks.acquire(Operation::Launch, &environment.name, &[prefix])?;
+    let guard = locks.acquire(Operation::Launch, &environment.name, &[prefix])?;
     Environment::ensure_exists(paths, &environment.name)?;
     Runtime::new(paths, &environment.name).check_resolved(&environment.name)?;
     // Claiming a folder can wait on its state lock, so Ctrl+C still works
@@ -81,7 +82,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let cancellation = Cancellation::new()?;
     let folders = launch::protect(paths, &environment, &launch, &cancellation.token);
     drop(cancellation);
-    let _folders = match folders {
+    let folders = match folders {
         Err(err) if matches!(err.downcast_ref(), Some(Error::Canceled(_))) => {
             return Ok(ExitCode::from(130));
         }
@@ -91,7 +92,26 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         build::print_event(paths, &environment.name, event)
     })?;
 
+    // A game folder stays in use until everything the program started has
+    // exited, so a launcher that hands off to the game keeps it held. The
+    // rest of the run needs only the folder locks.
+    let whole_group = !folders.is_empty();
+    if whole_group {
+        process::become_subreaper().context("failed to watch the program's descendants")?;
+    }
     let code = run_attached(&launch)?;
+    if whole_group {
+        drop((
+            guard,
+            _build_guard,
+            std::mem::take(&mut launch.build_guards),
+        ));
+        // Ctrl+C still reaches the whole group, which shares wineo's.
+        while process::own_group_has_live_descendants() != Some(false) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    drop(folders);
     Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
 }
 

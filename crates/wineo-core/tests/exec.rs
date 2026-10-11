@@ -756,6 +756,98 @@ fn exec_from_a_gog_folder_holds_it_until_the_program_exits() {
 }
 
 #[test]
+fn a_handoff_from_a_gog_folder_holds_it_until_the_group_exits() {
+    use wineo_core::gog::folder::{FolderError, lock_for_update};
+
+    let f = Fixture::built();
+    let folder = gog_game(&f, "rimworld", false);
+    let pids = f.prefix.join("fake-pids");
+    let done = f.prefix.join("handoff-done");
+    let (paths, arg) = (f.paths.clone(), folder.display().to_string());
+    let started = Instant::now();
+    let exec = thread::spawn(move || {
+        let mut exited = None;
+        let status = launch::exec(
+            &paths,
+            "app",
+            "handoff",
+            &[arg],
+            &BTreeMap::new(),
+            &Token::new(),
+            |event| {
+                if let ExecEvent::Exited { code } = event {
+                    exited = Some(code);
+                }
+            },
+        )
+        .unwrap();
+        (status, exited)
+    });
+    // The fake program exits once it has written this, leaving its
+    // descendant behind in the group.
+    wait_for(|| pids.exists());
+    thread::sleep(Duration::from_millis(300));
+    assert!(!done.exists(), "the descendant should still be running");
+    assert!(!exec.is_finished());
+    assert!(matches!(
+        lock_for_update(&f.paths, &folder, "rimworld")
+            .unwrap_err()
+            .downcast_ref::<FolderError>(),
+        Some(FolderError::InUse { .. })
+    ));
+    // Only the folder stays held while the descendant runs.
+    drop(
+        Locks::new(&f.paths)
+            .acquire(Operation::Remove, "app", &[&f.prefix])
+            .unwrap(),
+    );
+    assert!(
+        build_lock::try_exclusive(&f.paths, Kind::Runner, "fake")
+            .unwrap()
+            .is_some()
+    );
+    let (status, exited) = exec.join().unwrap();
+    assert!(done.exists());
+    assert!(started.elapsed() >= Duration::from_secs(2));
+    assert!(status.success());
+    assert_eq!(exited, Some(0));
+    assert!(lock_for_update(&f.paths, &folder, "rimworld").is_ok());
+}
+
+#[test]
+fn canceling_while_waiting_on_a_gog_handoff_ends_the_group() {
+    let f = Fixture::built();
+    let folder = gog_game(&f, "rimworld", false);
+    let pids = f.prefix.join("fake-pids");
+    let token = Token::new();
+    let canceler = token.clone();
+    let watcher = thread::spawn(move || {
+        wait_for(|| pids.exists());
+        // The started program exits right after writing it.
+        thread::sleep(Duration::from_millis(300));
+        canceler.cancel();
+    });
+    let mut stopping = false;
+    let status = launch::exec(
+        &f.paths,
+        "app",
+        "handoff",
+        &[folder.display().to_string()],
+        &BTreeMap::new(),
+        &token,
+        |event| stopping |= matches!(event, ExecEvent::Stopping),
+    )
+    .unwrap();
+    watcher.join().unwrap();
+    // The started program had already exited cleanly, and that's its status.
+    assert!(status.success());
+    assert!(stopping);
+    thread::sleep(Duration::from_millis(2500));
+    assert!(!f.prefix.join("handoff-done").exists());
+    assert!(wineo_core::gog::folder::lock_for_update(&f.paths, &folder, "rimworld").is_ok());
+}
+
+#[test]
 fn handoff_releases_locks_without_waiting_for_descendants_or_their_output() {
     let f = Fixture::built();
     let started = Instant::now();
