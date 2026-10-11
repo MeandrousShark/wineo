@@ -1,15 +1,14 @@
 //! The games an account owns, from Steam's Web API, cached for an hour.
 //! Installed games never need this: they come from the local scan.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::fs;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::api::{ApiError, SteamApi};
 use super::{Install, active_steam_id, is_tool};
+use crate::files::write_unique;
 use crate::paths::Paths;
 
 const PATH: &str = "IPlayerService/GetOwnedGames/v1/";
@@ -254,57 +253,14 @@ fn write_cache(path: &std::path::Path, cache: &Cache) -> Result<(), String> {
     write_unique(path, text.as_bytes()).map_err(|error| error.to_string())
 }
 
-/// Writes through a temp file no other writer can share, then renames it
-/// into place. Two commands refreshing at once each get their own file, so
-/// neither can rename a half-written one over the cache.
-fn write_unique(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    write_unique_with(path, contents, &COUNTER)
-}
-
-fn write_unique_with(
-    path: &std::path::Path,
-    contents: &[u8],
-    counter: &AtomicU64,
-) -> std::io::Result<()> {
-    const TRIES: usize = 8;
-    let dir = path.parent().expect("the cache path has a parent");
-    fs::create_dir_all(dir)?;
-    let base = path.file_name().expect("the cache path has a name");
-    for _ in 0..TRIES {
-        let mut name = base.to_owned();
-        name.push(format!(
-            ".{}-{}.tmp",
-            std::process::id(),
-            counter.fetch_add(1, Ordering::Relaxed)
-        ));
-        let tmp = dir.join(name);
-        let mut file = match OpenOptions::new().write(true).create_new(true).open(&tmp) {
-            Ok(file) => file,
-            // Someone else's file, maybe a crash leftover. Leave it alone.
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        };
-        // From here the temp file is this writer's own to clean up.
-        let result = file
-            .write_all(contents)
-            .and_then(|()| fs::rename(&tmp, path));
-        if result.is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
-        return result;
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists,
-        "no free temp file name",
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::super::api::fixture::{Server, refused, reply};
+    use crate::files::write_unique_with;
+
     use super::*;
 
     const KEY: &str = "SECRETKEY0123456789";
