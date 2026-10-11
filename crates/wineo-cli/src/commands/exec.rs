@@ -122,7 +122,7 @@ fn run_settled(launch: &Launch, stop_timeout: Duration, program: &str) -> anyhow
         .spawn()
         .with_context(|| format!("failed to start {}", launch.host.launcher()))?;
     process::quiet_core_dumps(&child);
-    let mut waiting = false;
+    let mut lines = WaitLines::default();
     let settled =
         launch::watch_settled(
             supervisor,
@@ -130,20 +130,46 @@ fn run_settled(launch: &Launch, stop_timeout: Duration, program: &str) -> anyhow
             child,
             stop_timeout,
             |seen| match seen {
-                Settling::StillWaiting => {
-                    waiting = true;
-                    note(&format!(
-                        "Waiting for programs {} started. Press Ctrl+C to stop them.",
-                        file_name(program)
-                    ));
-                }
-                Settling::Stopping if waiting => note("Press Ctrl+C again to force them to stop."),
                 Settling::Warning(err) => note(&format!("warning: {:#}", anyhow::Error::from(err))),
-                _ => {}
+                seen => lines.see(&seen, program, note),
             },
         );
     Ok(exit_code(settled.finish()?))
 }
+
+/// The lines saying why exec is still waiting, and how to stop it.
+#[derive(Default)]
+struct WaitLines {
+    waiting: bool,
+    stopping: bool,
+}
+
+impl WaitLines {
+    fn see(&mut self, seen: &Settling, program: &str, mut say: impl FnMut(&str)) {
+        match seen {
+            Settling::StillWaiting => {
+                self.waiting = true;
+                say(&format!(
+                    "Waiting for programs {} started. Press Ctrl+C to stop them.",
+                    file_name(program)
+                ));
+                // A Ctrl+C before this line has already begun stopping them.
+                if self.stopping {
+                    say(FORCE_HINT);
+                }
+            }
+            Settling::Stopping => {
+                self.stopping = true;
+                if self.waiting {
+                    say(FORCE_HINT);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+const FORCE_HINT: &str = "Press Ctrl+C again to force them to stop.";
 
 /// The last part of a program as given, Windows path or not.
 fn file_name(program: &str) -> &str {
@@ -169,4 +195,44 @@ fn run_attached(launch: &Launch) -> anyhow::Result<i32> {
         .wait()
         .with_context(|| format!("failed to start {}", launch.host.launcher()))?;
     Ok(exit_code(status))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WAITING: &str = "Waiting for programs launcher.exe started. Press Ctrl+C to stop them.";
+
+    fn said(seen: &[Settling]) -> Vec<String> {
+        let mut lines = WaitLines::default();
+        let mut said = Vec::new();
+        for seen in seen {
+            lines.see(seen, "C:\\Games\\launcher.exe", |line| {
+                said.push(line.to_owned())
+            });
+        }
+        said
+    }
+
+    #[test]
+    fn a_ctrl_c_during_the_wait_offers_to_force() {
+        assert_eq!(
+            said(&[Settling::Exited, Settling::StillWaiting, Settling::Stopping]),
+            [WAITING, FORCE_HINT]
+        );
+    }
+
+    #[test]
+    fn a_ctrl_c_before_the_waiting_line_offers_to_force_right_after_it() {
+        assert_eq!(
+            said(&[Settling::Exited, Settling::Stopping, Settling::StillWaiting]),
+            [WAITING, FORCE_HINT]
+        );
+    }
+
+    #[test]
+    fn nothing_is_said_when_the_wait_ends_at_once() {
+        assert!(said(&[Settling::Exited, Settling::Tick]).is_empty());
+        assert!(said(&[Settling::Stopping, Settling::Tick]).is_empty());
+    }
 }
