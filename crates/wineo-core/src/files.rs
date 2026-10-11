@@ -7,6 +7,10 @@ use crate::error::{IoContext, Result};
 
 /// Writes through a temp file and a rename, so readers never see a half-written file.
 pub(crate) fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
+    // Created here, not left to write_unique, so a blocked parent keeps its own error.
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).context(|| format!("failed to create {}", dir.display()))?;
+    }
     write_unique(path, contents.as_ref()).context(|| format!("failed to write {}", path.display()))
 }
 
@@ -73,6 +77,20 @@ mod tests {
         write_atomic(&path, "two").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "two");
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_blocked_parent_reports_the_directory_not_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        let blocker = root.path().join("dir");
+        fs::write(&blocker, "not a directory").unwrap();
+        let error = write_atomic(&blocker.join("state.toml"), "x").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with(&format!("failed to create {}", blocker.display())),
+            "{error}"
+        );
     }
 
     #[test]
