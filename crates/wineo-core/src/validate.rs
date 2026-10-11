@@ -3576,5 +3576,19 @@ mod tests {
             let plain = check_environment(&f.paths, "plain").unwrap();
             assert!(plain.problems.is_empty(), "{:#?}", plain.problems);
         }
+
+        #[test]
+        fn validate_name_shows_an_unreadable_state_when_its_config_doesnt_parse() {
+            let f = Fixture::new();
+            f.write_config("broken", "kind = [");
+            let dir = f.paths.gog_folders_dir();
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("bad.toml"), "version = 9\nfolder = '/x'\n").unwrap();
+            let one = check_environment(&f.paths, "broken").unwrap();
+            assert_eq!(
+                codes(&one),
+                [Code::EnvironmentConfigInvalid, Code::GogStateInvalid]
+            );
+        }
     }
 }

@@ -374,3 +374,46 @@ fn an_unrelated_unreadable_gog_state_doesnt_block_a_restore() {
     fs::write(dir.join("bad.toml"), "version = 9\nfolder = \"/x\"\n").unwrap();
     assert_success(&f.run(&["snapshot", "restore", "game", "plain", "--yes"]));
 }
+
+#[test]
+fn a_restore_fails_closed_on_an_unreadable_gog_state_when_either_config_has_gog_id() {
+    let Some(f) = fixture() else { return };
+    let (prefix, config) = environment(&f);
+    let tracked = config.replacen(
+        "# saved comment\n",
+        "# saved comment\ngog_id = \"1094900565\"\n",
+        1,
+    );
+    let config_path = f.config_dir().join("environments/game.toml");
+    // The snapshot's config has gog_id and the current one doesn't, then
+    // the other way around.
+    fs::write(&config_path, &tracked).unwrap();
+    assert_success(&f.run(&["snapshot", "create", "game", "tracked"]));
+    fs::write(&config_path, &config).unwrap();
+    assert_success(&f.run(&["snapshot", "create", "game", "plain"]));
+    let dir = f.paths().gog_folders_dir();
+    fs::create_dir_all(&dir).unwrap();
+    let bad = dir.join("bad.toml");
+    fs::write(&bad, "version = 9\nfolder = \"/x\"\n").unwrap();
+    fs::write(prefix.join("drive_c/Games/save.dat"), b"after").unwrap();
+
+    for (label, current) in [("tracked", &config), ("plain", &tracked)] {
+        fs::write(&config_path, current).unwrap();
+        let output = f.run(&["snapshot", "restore", "game", label, "--yes"]);
+        assert!(!output.status.success(), "{label}");
+        assert!(
+            stderr(&output).contains(&format!(
+                "game's GOG state can't be checked: {} isn't a valid GOG folder state (unsupported GOG folder state version 9).",
+                bad.display()
+            )),
+            "{label}: {}",
+            stderr(&output)
+        );
+        assert_eq!(&f.created_config("game"), current, "{label}");
+        assert_eq!(
+            fs::read(prefix.join("drive_c/Games/save.dat")).unwrap(),
+            b"after",
+            "{label}"
+        );
+    }
+}
