@@ -729,7 +729,7 @@ impl Draft {
                 part = part.push(note_view(note, palette));
             }
             if selected {
-                part = part.push(remove(kind));
+                part = part.push(remove(kind, palette));
             }
             line = line.push(part);
         }
@@ -900,7 +900,7 @@ impl Draft {
             tile = tile.push(note_view(note, palette));
         }
         if self.is_selected(kind) {
-            tile = tile.push(remove(kind));
+            tile = tile.push(remove(kind, palette));
         }
         tile.into()
     }
@@ -967,10 +967,9 @@ fn note_view(note: Note<'_>, palette: Palette) -> Element<'_, Event> {
     }
 }
 
-fn remove<'a>(kind: Kind) -> Element<'a, Event> {
-    button("Remove")
+fn remove<'a>(kind: Kind, palette: Palette) -> Element<'a, Event> {
+    secondary_button("Remove", palette)
         .on_press(Event::Clear(kind))
-        .padding(2)
         .into()
 }
 
@@ -1235,6 +1234,34 @@ mod tests {
                     .any(|size| size.width >= 148.0 && size.height >= 222.0),
                 "{width}: the poster tile lost its size"
             );
+        }
+    }
+
+    /// Picked art adds a Remove button under each tile, which must not push
+    /// the editor outside a narrow dialog.
+    #[test]
+    fn the_editor_with_picks_fits_narrow_and_wide_dialogs() {
+        use crate::layout_probe::probe;
+        let mut draft = Draft::new();
+        for kind in Kind::ALL {
+            draft.local.insert(
+                kind,
+                Local {
+                    path: "/art.png".to_owned(),
+                    ..Local::default()
+                },
+            );
+        }
+        let gutter = crate::flow::heroic::SCROLL_GUTTER;
+        for width in [280.0_f32 - 48.0 - gutter, 780.0 - gutter] {
+            let mut view: Element<'_, Event> =
+                iced::widget::scrollable(draft.view(Palette::DARK, true))
+                    .height(400)
+                    .into();
+            let probe = probe(&mut view, iced::Size::new(width, 400.0));
+            let frame = iced::Rectangle::with_size(iced::Size::new(width, 400.0));
+            let spilled = probe.outside(frame);
+            assert!(spilled.is_empty(), "{width}: {spilled:?}");
         }
     }
 
