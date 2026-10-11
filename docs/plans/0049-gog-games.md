@@ -26,6 +26,10 @@ After more detail on B, the maintainer chose a phased answer to question
 the next plan, 0050, with differential updates, beta branches, and
 rollback, since only Galaxy builds offer those.
 
+The same day the maintainer chose a new workspace crate, `wineo-gog`, for
+everything that talks to GOG: this plan's client and file download, and
+0050's Galaxy downloader. It is `publish = false` until going public at 1.0.
+
 ## What GOG offers
 
 From reading the source of heroic-gogdl 1.3.1, Heroic, Minigalaxy 1.4.3,
@@ -248,7 +252,23 @@ branches, and rolling back to an older version.
 
 ## Proposed design
 
-Written for the recommended answers. It changes with the maintainer's.
+Written for the answers above.
+
+### The `wineo-gog` crate
+
+- A new workspace crate, `crates/wineo-gog`, `publish = false`, inheriting
+  the workspace lints and `unsafe_code = "forbid"`. It holds the GOG API:
+  login URL, code exchange, refresh, the owned list, product details,
+  installer links, the build list, and the file download (bearer token, MD5,
+  resume, cancellation, progress). Plan 0050 adds manifests, chunks, and
+  diffs to it.
+- It knows tokens, URLs, and folders, never environments, prefixes,
+  configs, or runners. `wineo-core` depends on it and decides where games
+  go and what happens in the prefix: running installers, extracting `.sh`
+  files, Heroic migration, the installed-state file, and keyring storage.
+- Its tests use its own fake GOG server and fixtures, without wineo's
+  environment test harness.
+- `AGENTS.md`'s code boundaries gain a line for it when it lands.
 
 ### Account
 
@@ -320,10 +340,13 @@ Written for the recommended answers. It changes with the maintainer's.
 
 ## Implementation sequence
 
-1. Core GOG client: login URL, code exchange, refresh, token storage, the
-   owned list, product details, and the build list. A debug-only fake
-   server (`WINEO_TEST_GOG_API`, like Steam's) for tests.
-2. Generic file download with bearer, MD5, resume, and free-space check.
+1. Create `wineo-gog` with the GOG client: login URL, code exchange,
+   refresh, the owned list, product details, installer links, and the
+   build list, plus its fake server for tests. In `wineo-core`, token
+   storage and a debug-only `WINEO_TEST_GOG_API` override, like Steam's.
+2. File download in `wineo-gog`: bearer, MD5, resume, cancellation, and
+   progress. The free-space check before an install lives in `wineo-core`,
+   which knows the destination.
 3. Config `gog_id` key and validation, the installed-state file, and
    carrying it through `rm`, `mv`, `clone`, and portable copies.
 4. Core create-and-install with installer arguments (Windows), extraction
