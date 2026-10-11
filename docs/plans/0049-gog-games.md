@@ -950,11 +950,16 @@ Chosen during step 4 and confirmed by the maintainer on 2026-10-11:
 Settled by the maintainer on 2026-10-11, after step 4's second review:
 
 - **Exec holds the folder for the whole run.** An exec that touches a GOG
-  game folder waits until every process in its process group has exited,
-  like installer runs, so a launcher that starts the game and exits still
-  keeps the folder in use until the game quits. Execs that touch no GOG
-  folder return when their program exits, as before. A program that leaves
-  its process group isn't seen, and the docs say so.
+  game folder keeps it in use after its program exits, until the prefix is
+  idle, by the same rule a `start` run ends on (`Runner::wait_settled`:
+  `wineserver -w` for Wine, the process group for Proton). So a launcher
+  that starts the game and exits still keeps the folder in use until the
+  game quits. It also waits for other Wine programs in that prefix, which
+  only holds the folder longer. Execs that touch no GOG folder return when
+  their program exits, as before. Amended the same day: the first answer
+  waited on the process group like installer runs, but four reviews found
+  `/proc` tracking couldn't be made exact, so the maintainer chose the rule
+  `start` already trusts.
 - **Saying why exec is still waiting.** When a CLI exec keeps waiting after
   its program exits, it prints `Waiting for programs launcher.exe started.
   Press Ctrl+C to stop them.`, and after the first Ctrl+C, `Press Ctrl+C
