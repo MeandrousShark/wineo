@@ -106,7 +106,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             _build_guard,
             std::mem::take(&mut launch.build_guards),
         ));
-        wait_for_descendants(&interrupted, global.stop_timeout);
+        wait_for_descendants(&interrupted, global.stop_timeout, &args.program);
     }
     drop(folders);
     Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
@@ -121,25 +121,30 @@ const KILL_GRACE: Duration = Duration::from_secs(2);
 /// second Ctrl+C, they're killed, and the wait then ends even if they can't
 /// be inspected. Only called once the program itself has been waited for,
 /// so reaping can't take its status.
-fn wait_for_descendants(interrupted: &AtomicBool, stop_timeout: u32) {
+fn wait_for_descendants(interrupted: &AtomicBool, stop_timeout: u32, program: &str) {
     wait_with(
         interrupted,
         stop_timeout,
+        program,
         process::own_group_has_live_descendants,
         process::kill_own_group_descendants,
         process::reap_adopted,
+        |line| eprintln!("{line}"),
     );
 }
 
-/// `wait_for_descendants`, with how they're inspected, killed, and reaped
-/// passed in.
+/// `wait_for_descendants`, with how they're inspected, killed, and reaped,
+/// and where its status lines go, passed in.
 fn wait_with(
     interrupted: &AtomicBool,
     stop_timeout: u32,
+    program: &str,
     mut live: impl FnMut() -> Option<bool>,
     mut kill: impl FnMut(),
     mut reap: impl FnMut(),
+    mut say: impl FnMut(&str),
 ) {
+    let mut waiting = false;
     let mut stopping: Option<Instant> = None;
     let mut forced = false;
     let mut killed: Option<Instant> = None;
@@ -149,9 +154,19 @@ fn wait_with(
         if live == Some(false) {
             return;
         }
+        if !waiting {
+            waiting = true;
+            say(&format!(
+                "Waiting for programs {} started. Press Ctrl+C to stop them.",
+                file_name(program)
+            ));
+        }
         if interrupted.swap(false, Ordering::Relaxed) {
             forced |= stopping.is_some();
-            stopping.get_or_insert_with(Instant::now);
+            if stopping.is_none() {
+                stopping = Some(Instant::now());
+                say("Press Ctrl+C again to force them to stop.");
+            }
         }
         if killed.is_none()
             && stopping.is_some_and(|at| {
@@ -167,6 +182,11 @@ fn wait_with(
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// The last part of a program as given, Windows path or not.
+fn file_name(program: &str) -> &str {
+    program.rsplit(['/', '\\']).next().unwrap_or(program)
 }
 
 /// Runs `launch` attached to the terminal. Also returns whether Ctrl+C has
@@ -197,9 +217,11 @@ mod tests {
         let interrupted = AtomicBool::new(true);
         let mut kills = 0;
         let mut polls = 0;
+        let mut said = Vec::new();
         wait_with(
             &interrupted,
             60,
+            "C:\\Games\\launcher.exe",
             || {
                 polls += 1;
                 if polls == 2 {
@@ -209,9 +231,32 @@ mod tests {
             },
             || kills += 1,
             || {},
+            |line| said.push(line.to_owned()),
         );
         assert_eq!(kills, 1);
         assert_eq!(polls, 2);
+        assert_eq!(
+            said,
+            [
+                "Waiting for programs launcher.exe started. Press Ctrl+C to stop them.",
+                "Press Ctrl+C again to force them to stop.",
+            ]
+        );
+    }
+
+    #[test]
+    fn nothing_is_said_when_nothing_is_left() {
+        let mut said = Vec::new();
+        wait_with(
+            &AtomicBool::new(false),
+            60,
+            "launcher.exe",
+            || Some(false),
+            || {},
+            || {},
+            |line| said.push(line.to_owned()),
+        );
+        assert!(said.is_empty());
     }
 
     #[test]
@@ -222,12 +267,14 @@ mod tests {
         wait_with(
             &interrupted,
             0,
+            "/games/launcher",
             || {
                 polls += 1;
                 (polls < 3).then_some(true).or(Some(false))
             },
             || kills += 1,
             || {},
+            |_| {},
         );
         assert_eq!(kills, 1);
         assert_eq!(polls, 3);

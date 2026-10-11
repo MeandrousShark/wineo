@@ -470,9 +470,29 @@ fn exec_waits_for_what_a_handoff_leaves_running_in_the_folder() {
     assert!(update_refused(&f, &folder));
     let output = running.wait_with_output().unwrap();
     assert_success(&output);
+    assert!(
+        stderr(&output)
+            .contains("Waiting for programs handoff started. Press Ctrl+C to stop them.\n"),
+        "{}",
+        stderr(&output)
+    );
     assert!(prefix.join("handoff-done").exists());
     assert!(started.elapsed() >= std::time::Duration::from_secs(2));
     assert!(!update_refused(&f, &folder));
+}
+
+#[test]
+fn exec_from_a_folder_says_nothing_when_nothing_is_left_running() {
+    let f = Fixture::new();
+    let folder = rimworld(&f, false);
+    f.environment("copy", "");
+    let output = f.run(&["exec", "copy", "exit-0", &folder.display().to_string()]);
+    assert_success(&output);
+    assert!(
+        !stderr(&output).contains("Waiting for programs"),
+        "{}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -481,16 +501,22 @@ fn exec_away_from_game_folders_returns_when_its_program_exits() {
     rimworld(&f, false);
     f.environment("copy", "");
     let prefix = f.root.path().join("prefixes/copy");
-    // Not captured, since the descendant would hold a pipe open.
+    // A file rather than a pipe, which the descendant would hold open.
+    let log = f.root.path().join("exec-stderr");
     let status = f
         .wineo()
         .args(["exec", "copy", "handoff"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(fs::File::create(&log).unwrap())
         .status()
         .unwrap();
     assert!(status.success());
     assert!(!prefix.join("handoff-done").exists());
+    assert!(
+        !fs::read_to_string(&log)
+            .unwrap()
+            .contains("Waiting for programs")
+    );
     wait_for("the handoff to finish", || {
         prefix.join("handoff-done").exists()
     });
