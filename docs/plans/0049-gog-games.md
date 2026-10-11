@@ -37,6 +37,13 @@ existing limits, an incomplete game refuses to launch, native updates
 overwrite changed shipped files and list them, and a dry run may renew and
 save the GOG login.
 
+After a second review, the maintainer answered questions 17 to 19 with A
+each: GOG installs and migrations happen in the host root only, GOG's
+`postinst.sh` isn't run, and `wineo update` installs newly owned DLC and
+retries failed or unavailable DLC. If a third review again finds High
+issues, the plan splits into account, migration, and updates first, and
+fresh installs and DLC second.
+
 ## What GOG offers
 
 From reading the source of heroic-gogdl 1.3.1, Heroic, Minigalaxy 1.4.3,
@@ -335,7 +342,8 @@ log you out.
 
 A second review found gaps where the pieces meet: clones and locks, base
 games and DLC, snapshots and receipts, and recovery. The design now
-specifies those. Three points need the maintainer.
+specifies those. Three points needed the maintainer and are questions
+17 to 19, all answered A.
 
 ### 17. GOG games in portable folders
 
@@ -374,7 +382,7 @@ update isn't safe to assume.
 
 ## Proposed design
 
-Written for the answers above, and the recommended answers to 17 to 19.
+Written for the answers above.
 
 ### The `wineo-gog` crate
 
