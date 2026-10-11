@@ -10,6 +10,7 @@ mod downloads_page;
 mod downloads_work;
 mod flow;
 mod focus_button;
+mod fonts;
 mod grid;
 mod grid_motion;
 mod keys;
@@ -1586,15 +1587,23 @@ impl App {
     }
 }
 
+// One value, because `Application::settings` replaces everything set before it.
+fn app_settings() -> Settings {
+    Settings {
+        fonts: vec![fonts::REGULAR.into(), fonts::SEMIBOLD.into()],
+        default_font: fonts::DEFAULT,
+        default_text_size: 14.into(),
+        ..Settings::default()
+    }
+}
+
 fn run() -> anyhow::Result<()> {
     let paths = Paths::from_env(None)?;
+    fonts::install();
     iced::application(move || App::boot(paths.clone()), App::update, App::view)
         .title("wineo")
         .theme(App::theme)
-        .settings(Settings {
-            default_text_size: 14.into(),
-            ..Settings::default()
-        })
+        .settings(app_settings())
         .window(window_settings())
         .window_size((1200.0, 800.0))
         .subscription(App::subscription)
@@ -1694,6 +1703,17 @@ pub(crate) fn event_message(event: iced::Event, status: iced::event::Status) -> 
 mod tests {
     use super::*;
     use std::time::SystemTime;
+
+    #[test]
+    fn app_settings_carry_the_bundled_fonts() {
+        let settings = app_settings();
+
+        assert_eq!(settings.default_text_size, 14.into());
+        assert_eq!(settings.default_font, fonts::DEFAULT);
+        assert_eq!(settings.fonts.len(), 2);
+        assert_eq!(settings.fonts[0].as_ref(), fonts::REGULAR);
+        assert_eq!(settings.fonts[1].as_ref(), fonts::SEMIBOLD);
+    }
 
     pub(crate) fn card(name: &str, state: State, seconds: i64) -> Card {
         Card {
