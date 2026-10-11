@@ -1002,6 +1002,7 @@ impl Page {
         let mut controls = row![text("Showing").size(13).color(palette.muted)]
             .spacing(8)
             .align_y(Center);
+        let wrapped = choices.len() <= 4;
         if choices.len() <= 4 {
             for choice in choices {
                 let chosen = self.showing == choice.0;
@@ -1019,7 +1020,12 @@ impl Page {
                     .wineo_style(palette),
             );
         }
-        controls.into()
+        // Wrapping keeps long target names from squeezing the later buttons.
+        if wrapped {
+            controls.wrap().vertical_spacing(8).into()
+        } else {
+            controls.into()
+        }
     }
 
     fn row_view(
