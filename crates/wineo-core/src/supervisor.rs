@@ -104,6 +104,8 @@ pub(crate) enum Settle {
 #[derive(Debug)]
 pub(crate) struct Ending {
     pub exit_code: Option<i32>,
+    /// The same, as the status it came from, for a caller that reports it.
+    pub exit_status: Option<ExitStatus>,
     /// A stop was requested, so an exit code can't tell a kill apart.
     pub stopped: bool,
     /// Err when it could not be confirmed that nothing is left running.
@@ -318,6 +320,7 @@ impl Supervisor {
         });
 
         let mut exit = None;
+        let mut exit_status = None;
         let mut observed_exit = false;
         let mut stopping = false;
         let mut saw_cancel = false;
@@ -379,7 +382,8 @@ impl Supervisor {
                 Event::Heartbeat => watched(Watched::Notice(Notice::Heartbeat)),
                 Event::Exited(status) => {
                     observed_exit = true;
-                    exit = status.ok().map(exit_code);
+                    exit_status = status.ok();
+                    exit = exit_status.map(exit_code);
                     watched(Watched::Exited(exit));
                     // Launchers often hand off to another process and exit, so
                     // this lasts until nothing is left running in the prefix.
@@ -447,6 +451,7 @@ impl Supervisor {
         }
         Ending {
             exit_code: exit,
+            exit_status,
             stopped: stopping,
             settled,
         }

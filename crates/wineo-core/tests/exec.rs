@@ -46,12 +46,6 @@ corelimit)
     grep 'Max core file size' /proc/self/limits
     exit 0
     ;;
-zombie-group)
-    # A worker that exits at once, left unreaped in this group by a parent
-    # that moves to a session of its own.
-    (sleep 0.1 & exec setsid sleep 3) &
-    exit 0
-    ;;
 forest)
     sleep 60 &
     printf '%s %s\n' "$$" "$!" >"$WINEPREFIX/forest-pids"
@@ -696,7 +690,9 @@ fn exec_from_a_gog_folder_holds_it_until_the_program_exits() {
     let exe = folder.join("game.exe").display().to_string();
     let token = Token::new();
     let mut refused = None;
-    let status = launch::exec(
+    // Canceled, the prefix is asked to close, and the fake program exits
+    // cleanly when asked, so its status says nothing here.
+    launch::exec(
         &f.paths,
         "app",
         &exe,
@@ -715,7 +711,6 @@ fn exec_from_a_gog_folder_holds_it_until_the_program_exits() {
         },
     )
     .unwrap();
-    assert!(!status.success());
     assert!(
         matches!(refused, Some(Some(FolderError::InUse { .. }))),
         "{refused:?}"
@@ -761,163 +756,110 @@ fn exec_from_a_gog_folder_holds_it_until_the_program_exits() {
     );
 }
 
-#[test]
-fn a_handoff_from_a_gog_folder_holds_it_until_the_group_exits() {
-    use wineo_core::gog::folder::{FolderError, lock_for_update};
-
-    let f = Fixture::built();
-    let folder = gog_game(&f, "rimworld", false);
-    let pids = f.prefix.join("fake-pids");
-    let done = f.prefix.join("handoff-done");
-    let (paths, arg) = (f.paths.clone(), folder.display().to_string());
-    let started = Instant::now();
+/// Runs `handoff` from the GOG folder on a thread, returning once the
+/// program has handed off and exited.
+fn gog_handoff(
+    f: &Fixture,
+    folder: &Path,
+    token: &Token,
+) -> thread::JoinHandle<(std::process::ExitStatus, Vec<ExecEvent>)> {
+    let (paths, arg, token) = (f.paths.clone(), folder.display().to_string(), token.clone());
     let exec = thread::spawn(move || {
-        let mut exited = None;
+        let mut events = Vec::new();
         let status = launch::exec(
             &paths,
             "app",
             "handoff",
             &[arg],
             &BTreeMap::new(),
-            &Token::new(),
-            |event| {
-                if let ExecEvent::Exited { code } = event {
-                    exited = Some(code);
-                }
-            },
+            &token,
+            |event| events.push(event),
         )
         .unwrap();
-        (status, exited)
+        (status, events)
     });
-    // The fake program exits once it has written this, leaving its
-    // descendant behind in the group.
-    wait_for(|| pids.exists());
+    // The fake program exits right after writing this.
+    wait_for(|| f.prefix.join("fake-pids").exists());
     thread::sleep(Duration::from_millis(300));
-    assert!(!done.exists(), "the descendant should still be running");
+    exec
+}
+
+#[test]
+fn a_handoff_from_a_gog_folder_holds_it_until_the_prefix_is_idle() {
+    use wineo_core::gog::folder::{FolderError, lock_for_update};
+
+    let f = Fixture::built();
+    let folder = gog_game(&f, "rimworld", false);
+    let started = Instant::now();
+    let exec = gog_handoff(&f, &folder, &Token::new());
     assert!(!exec.is_finished());
+    assert!(!f.prefix.join("handoff-done").exists());
     assert!(matches!(
         lock_for_update(&f.paths, &folder, "rimworld")
             .unwrap_err()
             .downcast_ref::<FolderError>(),
         Some(FolderError::InUse { .. })
     ));
-    // Only the folder stays held while the descendant runs.
-    drop(
-        Locks::new(&f.paths)
-            .acquire(Operation::Remove, "app", &[&f.prefix])
-            .unwrap(),
-    );
-    assert!(
-        build_lock::try_exclusive(&f.paths, Kind::Runner, "fake")
-            .unwrap()
-            .is_some()
-    );
-    let (status, exited) = exec.join().unwrap();
-    assert!(done.exists());
+    let (status, events) = exec.join().unwrap();
+    // The fake wineserver -w returns once the handed-off program is done.
+    assert!(f.prefix.join("handoff-done").exists());
     assert!(started.elapsed() >= Duration::from_secs(2));
     assert!(status.success());
-    assert_eq!(exited, Some(0));
+    assert!(matches!(events.last(), Some(ExecEvent::Exited { code: 0 })));
     assert!(lock_for_update(&f.paths, &folder, "rimworld").is_ok());
 }
 
 #[test]
-fn canceling_while_waiting_on_a_gog_handoff_ends_the_group() {
+fn canceling_a_gog_wait_asks_the_prefix_to_close() {
     let f = Fixture::built();
     let folder = gog_game(&f, "rimworld", false);
-    let pids = f.prefix.join("fake-pids");
     let token = Token::new();
-    let canceler = token.clone();
-    let watcher = thread::spawn(move || {
-        wait_for(|| pids.exists());
-        // The started program exits right after writing it.
-        thread::sleep(Duration::from_millis(300));
-        canceler.cancel();
-    });
-    let mut stopping = false;
-    let status = launch::exec(
-        &f.paths,
-        "app",
-        "handoff",
-        &[folder.display().to_string()],
-        &BTreeMap::new(),
-        &token,
-        |event| stopping |= matches!(event, ExecEvent::Stopping),
-    )
-    .unwrap();
-    watcher.join().unwrap();
-    // The started program had already exited cleanly, and that's its status.
+    let exec = gog_handoff(&f, &folder, &token);
+    token.cancel();
+    let (status, events) = exec.join().unwrap();
+    // The started program's own status, though the wait was stopped.
     assert!(status.success());
-    assert!(stopping);
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ExecEvent::Stopping))
+    );
     thread::sleep(Duration::from_millis(2500));
     assert!(!f.prefix.join("handoff-done").exists());
     assert!(wineo_core::gog::folder::lock_for_update(&f.paths, &folder, "rimworld").is_ok());
 }
 
 #[test]
-fn a_chain_that_keeps_forking_holds_the_folder_until_it_ends() {
-    use wineo_core::gog::folder::lock_for_update;
-
+fn forcing_a_gog_wait_kills_the_prefix() {
     let f = Fixture::built();
     let folder = gog_game(&f, "rimworld", false);
-    let done = f.prefix.join("chain-done");
-    let (paths, arg) = (f.paths.clone(), folder.display().to_string());
-    let exec = thread::spawn(move || {
-        launch::exec(
-            &paths,
-            "app",
-            "fork-chain",
-            &[arg],
-            &BTreeMap::new(),
-            &Token::new(),
-            |_| {},
-        )
-        .unwrap()
-    });
-    wait_for(|| f.prefix.join("chain-started").exists());
-    while !done.exists() {
-        assert!(
-            !exec.is_finished(),
-            "exec returned while the chain was running"
-        );
-        assert!(lock_for_update(&f.paths, &folder, "rimworld").is_err());
-        thread::sleep(Duration::from_millis(5));
-    }
-    assert!(exec.join().unwrap().success());
-    assert!(lock_for_update(&f.paths, &folder, "rimworld").is_ok());
-}
-
-#[test]
-fn a_group_left_with_only_a_zombie_ends_the_wait() {
-    if which("setsid").is_none() {
-        return;
-    }
-    let f = Fixture::built();
-    let folder = gog_game(&f, "rimworld", false);
-    let started = Instant::now();
-    let status = launch::exec(
-        &f.paths,
-        "app",
-        "zombie-group",
-        &[folder.display().to_string()],
-        &BTreeMap::new(),
-        &Token::new(),
-        |_| {},
-    )
-    .unwrap();
+    let token = Token::new();
+    let exec = gog_handoff(&f, &folder, &token);
+    token.force();
+    let (status, events) = exec.join().unwrap();
     assert!(status.success());
-    // The worker's parent lives on for three seconds outside the group.
     assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        started.elapsed()
+        events
+            .iter()
+            .any(|event| matches!(event, ExecEvent::Killing))
     );
+    assert!(!f.prefix.join("handoff-done").exists());
     assert!(wineo_core::gog::folder::lock_for_update(&f.paths, &folder, "rimworld").is_ok());
 }
 
-fn which(program: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| dir.join(program))
-        .find(|path| path.is_file())
+#[test]
+fn a_proton_handoff_from_a_gog_folder_holds_it_until_the_group_is_gone() {
+    let f = Fixture::new();
+    fs::write(
+        f.paths.environment_config("app"),
+        format!(
+            "prefix = '{}'\nrunner = 'proton'\narch = 'win64'\n",
+            f.prefix.display()
+        ),
+    )
+    .unwrap();
+    gog_game(&f, "rimworld", false);
+    f.subprocess("proton-gog", f.root.path());
 }
 
 #[test]
@@ -1117,6 +1059,33 @@ fn exec_subprocess() {
             assert!(started.elapsed() < Duration::from_secs(1));
             assert!(!prefix.join("handoff-done").exists());
             wait_for(|| prefix.join("handoff-done").exists());
+        }
+        "proton-gog" => {
+            use wineo_core::gog::folder::lock_for_update;
+
+            let folder = fs::canonicalize(&root).unwrap().join("Games/RimWorld");
+            let started = Instant::now();
+            let (exec_paths, arg) = (paths.clone(), folder.display().to_string());
+            let exec = thread::spawn(move || {
+                launch::exec(
+                    &exec_paths,
+                    "app",
+                    "handoff",
+                    &[arg],
+                    &BTreeMap::new(),
+                    &Token::new(),
+                    |_| {},
+                )
+                .unwrap()
+            });
+            thread::sleep(Duration::from_millis(1000));
+            assert!(!exec.is_finished());
+            assert!(lock_for_update(&paths, &folder, "rimworld").is_err());
+            assert!(exec.join().unwrap().success());
+            // umu's group is only gone once the handed-off program is.
+            assert!(prefix.join("handoff-done").exists());
+            assert!(started.elapsed() >= Duration::from_secs(2));
+            assert!(lock_for_update(&paths, &folder, "rimworld").is_ok());
         }
         _ => panic!("unknown scenario"),
     }

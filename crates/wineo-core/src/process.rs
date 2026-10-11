@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::path::Path;
 use std::process::Child;
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -358,67 +357,25 @@ fn group_of(pid: u32) -> io::Result<u32> {
 }
 
 fn group_live_in(pids: &[u32], probe: &Probe<'_>, group: u32) -> Option<bool> {
-    group_scan_in(pids, probe, group).map(|scan| scan.live)
-}
-
-/// What one look at a group found: whether anything in it can still run,
-/// and else the zombies it saw, which are what an empty answer rests on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Scan {
-    pub live: bool,
-    pub witness: Vec<u32>,
-}
-
-/// A look at a group that a wait can confirm with `EmptyScans`. `/proc` is
-/// listed before each process is read, so a member that forks and exits
-/// meanwhile hides its child, and a group the kernel says still exists can
-/// look empty. Only a group left with zombies, which stay put, can be
-/// confirmed empty; one where nothing at all is seen counts as live.
-pub fn scan_existing_group(group: u32) -> Option<Scan> {
-    let scan = group_scan_in(&proc_pids()?, &Probe::REAL, group)?;
-    Some(Scan {
-        live: scan.live || scan.witness.is_empty(),
-        witness: scan.witness,
-    })
-}
-
-fn group_scan_in(pids: &[u32], probe: &Probe<'_>, group: u32) -> Option<Scan> {
-    let mut zombies = Vec::new();
     for &pid in pids {
         match (probe.read)(pid) {
             Err(err) if denied(&err) => {
                 if probe.denied_in(pid, group)? {
-                    return Some(Scan {
-                        live: true,
-                        witness: Vec::new(),
-                    });
+                    return Some(true);
                 }
             }
             stat => match parse_stat_read(stat) {
-                ProcRead::Found(stat) if stat.group == group => {
-                    if !matches!(stat.state, 'Z' | 'X' | 'x') {
-                        return Some(Scan {
-                            live: true,
-                            witness: Vec::new(),
-                        });
-                    }
-                    zombies.push(pid);
+                ProcRead::Found(stat)
+                    if stat.group == group && !matches!(stat.state, 'Z' | 'X' | 'x') =>
+                {
+                    return Some(true);
                 }
                 ProcRead::Found(_) | ProcRead::Gone => {}
                 ProcRead::Unknown => return None,
             },
         }
     }
-    Some(Scan {
-        live: false,
-        witness: zombies,
-    })
-}
-
-/// Whether a process group still exists, zombies included, asked of the
-/// kernel rather than `/proc`. `None` for an unexpected answer.
-pub fn group_still_exists(group: u32) -> Option<bool> {
-    group_exists(group)
+    Some(false)
 }
 
 fn proc_pids() -> Option<Vec<u32>> {
@@ -445,275 +402,6 @@ fn denied(err: &io::Error) -> bool {
         err.raw_os_error(),
         Some(code) if code == Errno::ACCESS.raw_os_error() || code == Errno::PERM.raw_os_error()
     )
-}
-
-/// Whether this process's own group still has a live member descended from
-/// it, for a program that shares wineo's group, as an attached exec does.
-/// Others in the group, like the rest of a shell pipeline, don't count.
-/// Orphaned descendants are only seen once `become_subreaper` has made
-/// them wineo's. `None` means the processes couldn't be inspected.
-pub fn own_group_has_live_descendants() -> Option<bool> {
-    own_group_live_descendants().map(|pids| !pids.is_empty())
-}
-
-/// The live members of this process's own group descended from it. Found by
-/// walking down from its own children, whose list the kernel gives in one
-/// read: as a subreaper, a descendant that forks and exits hands its child
-/// to this process, so that child is seen either way. Without the children
-/// lists, every process is looked at instead.
-pub fn own_group_live_descendants() -> Option<Vec<u32>> {
-    let group = u32::try_from(rustix::process::getpgrp().as_raw_nonzero().get()).ok()?;
-    let me = std::process::id();
-    match tree_descendants(me, &Probe::REAL, &children_of, group) {
-        Some(found) => Some(found),
-        None if !Path::new(&format!("/proc/{me}/task/{me}/children")).exists() => {
-            descendants_in(&proc_pids()?, &Probe::REAL, me, group)
-        }
-        None => None,
-    }
-}
-
-/// The children of each of `pid`'s threads. `None` when they can't be
-/// read, and empty for a process that has gone.
-fn children_of(pid: u32) -> Option<Vec<u32>> {
-    let tasks = match fs::read_dir(format!("/proc/{pid}/task")) {
-        Ok(tasks) => tasks,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Some(Vec::new()),
-        Err(_) => return None,
-    };
-    let mut children = Vec::new();
-    for task in tasks {
-        let text = match fs::read_to_string(task.ok()?.path().join("children")) {
-            Ok(text) => text,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
-            Err(_) => return None,
-        };
-        children.extend(
-            text.split_whitespace()
-                .filter_map(|pid| pid.parse::<u32>().ok()),
-        );
-    }
-    Some(children)
-}
-
-fn tree_descendants(
-    me: u32,
-    probe: &Probe<'_>,
-    children_of: &dyn Fn(u32) -> Option<Vec<u32>>,
-    group: u32,
-) -> Option<Vec<u32>> {
-    let mut found = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    let mut stack = children_of(me)?;
-    while let Some(pid) = stack.pop() {
-        // A pid reused mid-walk could close a loop.
-        if !seen.insert(pid) || seen.len() > 1 << 16 {
-            continue;
-        }
-        match read_family((probe.read)(pid)) {
-            Family::Found {
-                state,
-                group: member,
-                ..
-            } => {
-                if matches!(state, 'Z' | 'X' | 'x') {
-                    continue;
-                }
-                if member == group {
-                    found.push(pid);
-                }
-                // One that left the group can still have children in it.
-                stack.extend(children_of(pid).unwrap_or_default());
-            }
-            Family::Denied => {
-                if probe.denied_in(pid, group)? {
-                    found.push(pid);
-                }
-            }
-            Family::Gone => {}
-            Family::Unknown => return None,
-        }
-    }
-    Some(found)
-}
-
-fn descendants_in(pids: &[u32], probe: &Probe<'_>, me: u32, group: u32) -> Option<Vec<u32>> {
-    let mut found = Vec::new();
-    for &pid in pids.iter().filter(|&&pid| pid != me) {
-        match read_family((probe.read)(pid)) {
-            Family::Found {
-                state,
-                group: member,
-                ..
-            } if member == group && !matches!(state, 'Z' | 'X' | 'x') => {
-                if descends_from(probe.read, pid, me)? {
-                    found.push(pid);
-                }
-            }
-            // Its parents can't be read either, so one in the group counts
-            // as a live descendant.
-            Family::Denied => {
-                if probe.denied_in(pid, group)? {
-                    found.push(pid);
-                }
-            }
-            Family::Found { .. } | Family::Gone => {}
-            Family::Unknown => return None,
-        }
-    }
-    Some(found)
-}
-
-/// Kills the live members of this process's own group descended from it,
-/// each through a pidfd checked again once open, so a reused pid is never
-/// signaled.
-pub fn kill_own_group_descendants() {
-    let Some(pids) = own_group_live_descendants() else {
-        return;
-    };
-    let Ok(group) = u32::try_from(rustix::process::getpgrp().as_raw_nonzero().get()) else {
-        return;
-    };
-    let me = std::process::id();
-    for pid in pids {
-        let Some(raw) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
-            continue;
-        };
-        let Ok(pidfd) = pidfd_open(raw, PidfdFlags::empty()) else {
-            continue;
-        };
-        if descendants_in(&[pid], &Probe::REAL, me, group).is_some_and(|live| live == [pid]) {
-            let _ = pidfd_send_signal(&pidfd, Signal::KILL);
-        }
-    }
-}
-
-/// Makes orphaned descendants wineo's children instead of init's, so
-/// `own_group_has_live_descendants` still sees them. `reap_adopted` then
-/// keeps them from lingering as zombies.
-pub fn become_subreaper() -> io::Result<()> {
-    rustix::process::set_child_subreaper(Some(rustix::process::getpid())).map_err(io::Error::from)
-}
-
-/// Reaps every child that has exited, without waiting, and says whether no
-/// child is left at all. Only for a subreaper whose own started program has
-/// already been waited for, since this takes any child's status. A
-/// subreaper with no children has no descendants either, since every
-/// orphan comes to it.
-pub fn reap_adopted() -> bool {
-    use rustix::process::{WaitOptions, waitpid};
-    loop {
-        match waitpid(None, WaitOptions::NOHANG) {
-            Ok(Some(_)) => {}
-            Ok(None) => return false,
-            Err(err) => return err == Errno::CHILD,
-        }
-    }
-}
-
-/// Confirms a scan's "nothing live" before a wait trusts it: an empty answer
-/// only counts once it has held for `NEEDED` looks in a row, resting on the
-/// same witnesses each time. Anything else starts the count over.
-#[derive(Debug, Default)]
-pub struct EmptyScans {
-    streak: u32,
-    witness: Vec<u32>,
-}
-
-impl EmptyScans {
-    pub const NEEDED: u32 = 3;
-
-    /// Feeds one look. Live until an empty answer is confirmed, and unknown
-    /// stays unknown.
-    pub fn observe(&mut self, scan: Option<Scan>) -> Option<bool> {
-        match scan {
-            Some(Scan {
-                live: false,
-                witness,
-            }) => {
-                if witness != self.witness {
-                    self.streak = 0;
-                    self.witness = witness;
-                }
-                self.streak += 1;
-                Some(self.streak < Self::NEEDED)
-            }
-            Some(_) => {
-                self.streak = 0;
-                Some(true)
-            }
-            None => {
-                self.streak = 0;
-                None
-            }
-        }
-    }
-}
-
-fn descends_from(
-    read: &dyn Fn(u32) -> io::Result<String>,
-    pid: u32,
-    ancestor: u32,
-) -> Option<bool> {
-    let mut current = pid;
-    // A parent chain can't be longer than the pid space, but stop early on
-    // anything odd rather than loop.
-    for _ in 0..4096 {
-        match read_family(read(current)) {
-            Family::Found { parent, .. } if parent == ancestor => return Some(true),
-            Family::Found { parent, .. } if parent > 1 => current = parent,
-            // A parent that can't be read is either another user's, which
-            // can't be between wineo and its descendant, or one of ours in
-            // the group, which is counted as live itself, or one that left
-            // the group, which isn't followed.
-            Family::Found { .. } | Family::Gone | Family::Denied => return Some(false),
-            Family::Unknown => return None,
-        }
-    }
-    None
-}
-
-enum Family {
-    Found {
-        state: char,
-        parent: u32,
-        group: u32,
-    },
-    Gone,
-    /// Denied under `hidepid`: another user's, or one made undumpable.
-    Denied,
-    Unknown,
-}
-
-fn read_family(read: io::Result<String>) -> Family {
-    let text = match read {
-        Ok(text) => text,
-        Err(err)
-            if err.kind() == io::ErrorKind::NotFound
-                || err.raw_os_error() == Some(Errno::SRCH.raw_os_error()) =>
-        {
-            return Family::Gone;
-        }
-        Err(err) if denied(&err) => return Family::Denied,
-        Err(_) => return Family::Unknown,
-    };
-    let Some((_, rest)) = text.rsplit_once(')') else {
-        return Family::Unknown;
-    };
-    let fields: Vec<_> = rest.split_whitespace().collect();
-    let state = fields.first().and_then(|field| field.chars().next());
-    let parent = fields.get(1).and_then(|field| field.parse::<u32>().ok());
-    let group = fields.get(2).and_then(|field| field.parse::<u32>().ok());
-    match (state, parent, group) {
-        (Some(state), Some(parent), Some(group)) => Family::Found {
-            state,
-            parent,
-            group,
-        },
-        // A dead task can linger with fields that no longer parse.
-        (Some('X' | 'x'), _, _) => Family::Gone,
-        _ => Family::Unknown,
-    }
 }
 
 fn pidfd_exited(pidfd: &OwnedFd) -> io::Result<bool> {
@@ -902,117 +590,13 @@ mod tests {
         assert_eq!(group_live_in(&fake.pids, &fake.probe(), 55), None);
     }
 
-    fn empty(witness: &[u32]) -> Option<Scan> {
-        Some(Scan {
-            live: false,
-            witness: witness.to_vec(),
-        })
-    }
-
-    #[test]
-    fn an_empty_scan_counts_only_once_it_holds() {
-        let live = Some(Scan {
-            live: true,
-            witness: Vec::new(),
-        });
-        let mut scans = EmptyScans::default();
-        assert_eq!(scans.observe(empty(&[])), Some(true));
-        assert_eq!(scans.observe(empty(&[])), Some(true));
-        // A live or unknown answer, or other witnesses, start over.
-        assert_eq!(scans.observe(live), Some(true));
-        assert_eq!(scans.observe(empty(&[7])), Some(true));
-        assert_eq!(scans.observe(None), None);
-        assert_eq!(scans.observe(empty(&[7])), Some(true));
-        assert_eq!(scans.observe(empty(&[8])), Some(true));
-        assert_eq!(scans.observe(empty(&[8])), Some(true));
-        assert_eq!(scans.observe(empty(&[8])), Some(false));
-        assert_eq!(scans.observe(empty(&[8])), Some(false));
-    }
-
-    #[test]
-    fn a_false_empty_scan_then_a_live_one_isnt_empty() {
-        // The pid list was taken before a member forked and exited.
-        let racing = FakeProc::new(vec![(10, Err(Errno::SRCH)), (11, Ok(('Z', 1, 55)))], vec![]);
-        let caught = FakeProc::new(vec![(12, Ok(('S', 1, 55)))], vec![]);
-        let mut scans = EmptyScans::default();
-        for fake in [&racing, &caught, &racing, &racing] {
-            assert_eq!(
-                scans.observe(group_scan_in(&fake.pids, &fake.probe(), 55)),
-                Some(true)
-            );
-        }
-        assert_eq!(
-            scans.observe(group_scan_in(&racing.pids, &racing.probe(), 55)),
-            Some(false)
-        );
-    }
-
-    #[test]
-    fn a_tree_walk_finds_descendants_through_any_group() {
-        // 100 is wineo: 200 is in its group, 300 left it but has a child
-        // that didn't, and 400 is a zombie.
-        let fake = FakeProc::new(
-            vec![
-                (200, Ok(('S', 100, 55))),
-                (300, Ok(('S', 100, 77))),
-                (301, Ok(('S', 300, 55))),
-                (400, Ok(('Z', 100, 55))),
-                (500, Err(Errno::PERM)),
-            ],
-            vec![(500, Ok(55))],
-        );
-        let children = |pid: u32| {
-            Some(match pid {
-                100 => vec![200, 300, 400, 500, 600],
-                300 => vec![301],
-                _ => Vec::new(),
-            })
-        };
-        let mut found = tree_descendants(100, &fake.probe(), &children, 55).unwrap();
-        found.sort();
-        assert_eq!(found, [200, 301, 500]);
-        let unreadable = |_| None;
-        assert_eq!(tree_descendants(100, &fake.probe(), &unreadable, 55), None);
-    }
-
     #[test]
     fn a_denied_entry_in_the_group_counts_as_live() {
         // One of ours that made itself undumpable, under `hidepid`.
         let fake = FakeProc::new(vec![(10, Err(Errno::PERM))], vec![(10, Ok(55))]);
         assert_eq!(group_live_in(&fake.pids, &fake.probe(), 55), Some(true));
-        assert_eq!(
-            descendants_in(&fake.pids, &fake.probe(), 100, 55),
-            Some(vec![10])
-        );
         let fake = FakeProc::new(vec![(10, Err(Errno::PERM))], vec![(10, Err(Errno::IO))]);
         assert_eq!(group_live_in(&fake.pids, &fake.probe(), 55), None);
-        assert_eq!(descendants_in(&fake.pids, &fake.probe(), 100, 55), None);
-    }
-
-    #[test]
-    fn descendant_scans_skip_vanished_entries_and_others_groups() {
-        let fake = FakeProc::new(
-            vec![
-                (100, Ok(('S', 1, 55))),
-                // A child, and a grandchild whose parent left the group.
-                (200, Ok(('S', 100, 55))),
-                (300, Ok(('S', 100, 77))),
-                (301, Ok(('S', 300, 55))),
-                // A pipeline neighbor, under another user's shell.
-                (400, Ok(('S', 500, 55))),
-                (500, Err(Errno::ACCESS)),
-                (600, Err(Errno::PERM)),
-                (700, Err(Errno::NOENT)),
-                (800, Ok(('Z', 100, 55))),
-            ],
-            vec![(500, Ok(500)), (600, Err(Errno::SRCH))],
-        );
-        assert_eq!(
-            descendants_in(&fake.pids, &fake.probe(), 100, 55),
-            Some(vec![200, 301])
-        );
-        let fake = FakeProc::new(vec![(100, Ok(('S', 1, 55))), (900, Err(Errno::IO))], vec![]);
-        assert_eq!(descendants_in(&fake.pids, &fake.probe(), 100, 55), None);
     }
 
     #[test]

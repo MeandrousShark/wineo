@@ -1,18 +1,21 @@
-use std::process::ExitCode;
+use std::io::Write;
+use std::os::unix::process::CommandExt;
+use std::process::{ExitCode, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use anyhow::Context;
 use signal_hook::consts::SIGINT;
 use wineo_core::config::GlobalConfig;
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
-use wineo_core::launch::{self, Host, Launch, parse_env_assignment};
+use wineo_core::launch::{self, Host, Launch, Settling, parse_env_assignment};
 use wineo_core::operation::{Locks, Operation};
 use wineo_core::paths::Paths;
 use wineo_core::process;
 use wineo_core::runtime::{Runtime, exit_code};
+use wineo_core::supervisor::Supervisor;
 
 use crate::commands::build;
 use crate::commands::transfer::Cancellation;
@@ -62,7 +65,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         Ok(()) => {}
     }
     drop(cancellation);
-    let mut launch = Launch::exec(
+    let launch = Launch::exec(
         paths,
         &global,
         &environment,
@@ -74,7 +77,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         unreachable!("exec launches always run in a prefix");
     };
     let locks = Locks::new(paths);
-    let guard = locks.acquire(Operation::Launch, &environment.name, &[prefix])?;
+    let _guard = locks.acquire(Operation::Launch, &environment.name, &[prefix])?;
     Environment::ensure_exists(paths, &environment.name)?;
     Runtime::new(paths, &environment.name).check_resolved(&environment.name)?;
     // Claiming a folder can wait on its state lock, so Ctrl+C still works
@@ -92,107 +95,54 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         build::print_event(paths, &environment.name, event)
     })?;
 
-    // A game folder stays in use until everything the program started has
-    // exited, so a launcher that hands off to the game keeps it held. The
-    // rest of the run needs only the folder locks.
-    let whole_group = !folders.is_empty();
-    if whole_group {
-        process::become_subreaper().context("failed to watch the program's descendants")?;
-    }
-    let (code, interrupted) = run_attached(&launch)?;
-    if whole_group {
-        drop((
-            guard,
-            _build_guard,
-            std::mem::take(&mut launch.build_guards),
-        ));
-        wait_for_descendants(&interrupted, global.stop_timeout, &args.program);
-    }
+    let code = if folders.is_empty() {
+        run_attached(&launch)?
+    } else {
+        run_settled(
+            &launch,
+            Duration::from_secs(global.stop_timeout.into()),
+            &args.program,
+        )?
+    };
     drop(folders);
     Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
 }
 
-/// How long descendants Ctrl+C killed get to exit before wineo stops
-/// waiting for them regardless.
-const KILL_GRACE: Duration = Duration::from_secs(2);
-
-/// Waits until nothing the program started is left in wineo's group. Ctrl+C
-/// reaches them already, since they share it; past the stop timeout, or on a
-/// second Ctrl+C, they're killed, and the wait then ends even if they can't
-/// be inspected. Only called once the program itself has been waited for,
-/// so reaping can't take its status.
-fn wait_for_descendants(interrupted: &AtomicBool, stop_timeout: u32, program: &str) {
-    wait_with(
-        interrupted,
-        stop_timeout,
-        program,
-        process::own_group_has_live_descendants,
-        process::kill_own_group_descendants,
-        process::reap_adopted,
-        |line| eprintln!("{line}"),
-    );
-}
-
-/// `wait_for_descendants`, with how they're inspected, killed, and reaped,
-/// and where its status lines go, passed in.
-fn wait_with(
-    interrupted: &AtomicBool,
-    stop_timeout: u32,
-    program: &str,
-    mut live: impl FnMut() -> Option<bool>,
-    mut kill: impl FnMut(),
-    mut reap: impl FnMut() -> bool,
-    mut say: impl FnMut(&str),
-) {
-    let mut scans = process::EmptyScans::default();
+/// Runs a program from a GOG game folder until the prefix is idle, the way
+/// `wineo run` does, so the folder stays in use while anything it started
+/// still runs. Its own process group keeps the terminal's Ctrl+C away from
+/// it: the first asks the prefix's programs to close, the next forces them.
+fn run_settled(launch: &Launch, stop_timeout: Duration, program: &str) -> anyhow::Result<i32> {
+    // Listening before the program starts, so an early Ctrl+C still counts.
+    let supervisor = Supervisor::listen()?;
+    let child = launch
+        .command()
+        .stdin(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .with_context(|| format!("failed to start {}", launch.host.launcher()))?;
+    process::quiet_core_dumps(&child);
     let mut waiting = false;
-    let mut stopping: Option<Instant> = None;
-    let mut forced = false;
-    let mut killed: Option<Instant> = None;
-    loop {
-        // No children at all is definitive for a subreaper. wineserver is
-        // usually one once it has left the group, though, so the scan,
-        // confirmed, is what normally ends the wait.
-        if reap() {
-            return;
-        }
-        let scanned = live();
-        let live = scans.observe(scanned.map(|live| process::Scan {
-            live,
-            witness: Vec::new(),
-        }));
-        if live == Some(false) {
-            return;
-        }
-        // Not while an empty scan is only being confirmed.
-        if !waiting && scanned != Some(false) {
-            waiting = true;
-            say(&format!(
-                "Waiting for programs {} started. Press Ctrl+C to stop them.",
-                file_name(program)
-            ));
-        }
-        if interrupted.swap(false, Ordering::Relaxed) {
-            forced |= stopping.is_some();
-            if stopping.is_none() {
-                stopping = Some(Instant::now());
-                say("Press Ctrl+C again to force them to stop.");
-            }
-        }
-        if killed.is_none()
-            && stopping.is_some_and(|at| {
-                forced || at.elapsed() >= Duration::from_secs(stop_timeout.into())
-            })
-        {
-            kill();
-            killed = Some(Instant::now());
-        }
-        if killed.is_some_and(|at| live.is_none() || at.elapsed() >= KILL_GRACE) {
-            let _ = reap();
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let settled =
+        launch::watch_settled(
+            supervisor,
+            &launch.host,
+            child,
+            stop_timeout,
+            |seen| match seen {
+                Settling::StillWaiting => {
+                    waiting = true;
+                    note(&format!(
+                        "Waiting for programs {} started. Press Ctrl+C to stop them.",
+                        file_name(program)
+                    ));
+                }
+                Settling::Stopping if waiting => note("Press Ctrl+C again to force them to stop."),
+                Settling::Warning(err) => note(&format!("warning: {:#}", anyhow::Error::from(err))),
+                _ => {}
+            },
+        );
+    Ok(exit_code(settled.finish()?))
 }
 
 /// The last part of a program as given, Windows path or not.
@@ -200,13 +150,15 @@ fn file_name(program: &str) -> &str {
     program.rsplit(['/', '\\']).next().unwrap_or(program)
 }
 
-/// Runs `launch` attached to the terminal. Also returns whether Ctrl+C has
-/// been pressed since it started.
-fn run_attached(launch: &Launch) -> anyhow::Result<(i32, Arc<AtomicBool>)> {
+fn note(message: &str) {
+    let _ = writeln!(crate::output::stderr(), "{message}");
+}
+
+/// Runs `launch` attached to the terminal.
+fn run_attached(launch: &Launch) -> anyhow::Result<i32> {
     // The program shares our process group and gets Ctrl+C itself. wineo keeps
     // waiting instead of exiting out from under it.
-    let interrupted = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(SIGINT, Arc::clone(&interrupted))
+    signal_hook::flag::register(SIGINT, Arc::new(AtomicBool::new(false)))
         .context("failed to set up signal handling")?;
     let mut child = launch
         .command()
@@ -216,79 +168,5 @@ fn run_attached(launch: &Launch) -> anyhow::Result<(i32, Arc<AtomicBool>)> {
     let status = child
         .wait()
         .with_context(|| format!("failed to start {}", launch.host.launcher()))?;
-    Ok((exit_code(status), interrupted))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_second_ctrl_c_ends_the_wait_even_when_nothing_can_be_inspected() {
-        let interrupted = AtomicBool::new(true);
-        let mut kills = 0;
-        let mut polls = 0;
-        let mut said = Vec::new();
-        wait_with(
-            &interrupted,
-            60,
-            "C:\\Games\\launcher.exe",
-            || {
-                polls += 1;
-                if polls == 2 {
-                    interrupted.store(true, Ordering::Relaxed);
-                }
-                None
-            },
-            || kills += 1,
-            || false,
-            |line| said.push(line.to_owned()),
-        );
-        assert_eq!(kills, 1);
-        assert_eq!(polls, 2);
-        assert_eq!(
-            said,
-            [
-                "Waiting for programs launcher.exe started. Press Ctrl+C to stop them.",
-                "Press Ctrl+C again to force them to stop.",
-            ]
-        );
-    }
-
-    #[test]
-    fn nothing_is_said_when_nothing_is_left() {
-        let mut said = Vec::new();
-        wait_with(
-            &AtomicBool::new(false),
-            60,
-            "launcher.exe",
-            || Some(false),
-            || {},
-            || false,
-            |line| said.push(line.to_owned()),
-        );
-        assert!(said.is_empty());
-    }
-
-    #[test]
-    fn ctrl_c_kills_what_outlives_the_stop_timeout() {
-        let interrupted = AtomicBool::new(true);
-        let mut kills = 0;
-        let mut polls = 0;
-        wait_with(
-            &interrupted,
-            0,
-            "/games/launcher",
-            || {
-                polls += 1;
-                (polls < 3).then_some(true).or(Some(false))
-            },
-            || kills += 1,
-            || false,
-            |_| {},
-        );
-        assert_eq!(kills, 1);
-        // Two live polls, then an empty one confirmed twice more.
-        assert_eq!(polls, 5);
-    }
+    Ok(exit_code(status))
 }

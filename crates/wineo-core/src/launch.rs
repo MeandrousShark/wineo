@@ -20,7 +20,7 @@ use crate::winpath;
 mod exec;
 mod orchestration;
 mod stop;
-pub use exec::{ExecEvent, exec};
+pub use exec::{ExecEvent, Settled, Settling, exec, watch_settled};
 pub use orchestration::{
     AfterHook, LaunchEvent, PreparedLaunch, StartOutcome, ensure_prefix, install_winetricks,
     precheck, prepare, prepare_target, protect, reconcile, runner, runner_locked, start,

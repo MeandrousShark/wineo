@@ -3,7 +3,9 @@ use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt;
 use std::os::unix::process::CommandExt;
-use std::process::{ExitStatus, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -17,14 +19,18 @@ use crate::error::Error;
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::runtime::{Runtime, exit_code};
+use crate::supervisor::{Notice, Settle, Supervisor, Watched};
 
-use super::{ExecResolution, Launch, LaunchEvent, ensure_prefix, reconcile, runner_locked};
+use super::{ExecResolution, Host, Launch, LaunchEvent, ensure_prefix, reconcile, runner_locked};
 
 const POLL: Duration = Duration::from_millis(50);
 const READ_BATCH: u64 = 256 * 1024;
-/// How long a group a cancel killed gets to finish exiting before an exec
-/// stops waiting for it regardless, so a cancel always ends the exec.
-const KILL_GRACE: Duration = Duration::from_secs(2);
+/// How long a program has to have been gone, with the prefix still busy,
+/// before a frontend says why it's waiting.
+const NOTE_AFTER: Duration = Duration::from_millis(250);
+/// How long kills keep being retried before a stopped exec gives up waiting,
+/// as for installers.
+const GIVE_UP: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 pub enum ExecEvent {
@@ -41,14 +47,17 @@ pub enum ExecEvent {
 
 /// Runs an arbitrary program for a frontend, without consulting the current
 /// directory. Holds shared launch and build locks until the started process
-/// exits. A program run from a GOG game folder also holds the folder's
-/// in-use lock until its whole process group has exited, so a launcher that
-/// hands off to the game keeps the folder in use until the game quits.
-/// Cancellation only signals its process group, never the whole prefix. A
-/// nonzero or canceled process exit is returned as a status, the started
-/// process's own. Cancellation before spawning is an error. No run record or
-/// playtime is written, and a frontend crash leaves the program running
-/// while releasing its locks.
+/// exits. Cancellation only signals its process group, never the whole
+/// prefix. A nonzero or canceled process exit is returned as a status.
+/// Cancellation before spawning is an error. No run record or playtime is
+/// written, and a frontend crash leaves the program running while releasing
+/// its locks.
+///
+/// A program run from a GOG game folder is instead waited for the way a
+/// `start` run is: until the prefix is idle, holding every lock, including
+/// the folder's in-use lock, so a launcher that hands off to the game keeps
+/// the folder in use until the game quits. Canceling then asks the
+/// prefix's programs to close, and forcing kills them, like `wineo stop`.
 pub fn exec(
     paths: &Paths,
     name: &str,
@@ -75,7 +84,7 @@ pub fn exec(
         events(ExecEvent::Launch(event));
     })?;
     check_cancel(token)?;
-    let mut launch = Launch::exec_with_resolution(
+    let launch = Launch::exec_with_resolution(
         paths,
         &global,
         &environment,
@@ -85,7 +94,7 @@ pub fn exec(
         ExecResolution::ExplicitPaths,
     )?;
     let prefix = launch.host.prefix().expect("exec always runs in a prefix");
-    let guard = Locks::new(paths).acquire(Operation::Launch, name, &[prefix])?;
+    let _guard = Locks::new(paths).acquire(Operation::Launch, name, &[prefix])?;
     Environment::ensure_exists(paths, name)?;
     Runtime::new(paths, name).check_resolved(name)?;
     let folders = super::orchestration::protect_as(paths, &environment, &launch, token, "exec")?;
@@ -93,18 +102,174 @@ pub fn exec(
         events(ExecEvent::Launch(event));
     })?;
     check_cancel(token)?;
-    let builds = std::mem::take(&mut launch.build_guards);
-    let release = move || drop((guard, _build_guard, builds));
-    let result = run(
+    if folders.is_empty() {
+        return run(&launch, global.stop_timeout, token, &mut events);
+    }
+    run_settled(
         &launch,
-        global.stop_timeout,
+        Duration::from_secs(global.stop_timeout.into()),
         token,
-        !folders.is_empty(),
-        release,
         &mut events,
+    )
+}
+
+/// `run` for a program from a GOG game folder, which lasts until the prefix
+/// is idle.
+fn run_settled(
+    launch: &Launch,
+    stop_timeout: Duration,
+    token: &Token,
+    events: &mut impl FnMut(ExecEvent),
+) -> anyhow::Result<ExitStatus> {
+    let log = tempfile::tempfile().context("failed to create exec output log")?;
+    let mut lines = Lines::new(log.try_clone()?);
+    let child = launch
+        .command()
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log.try_clone()?))
+        .process_group(0)
+        .spawn()
+        .with_context(|| format!("failed to start {}", launch.host.launcher()))?;
+    crate::process::quiet_core_dumps(&child);
+    events(ExecEvent::Started);
+    let mut failed = None;
+    let ended = watch_settled(
+        Supervisor::with_token(token),
+        &launch.host,
+        child,
+        stop_timeout,
+        |seen| match seen {
+            Settling::Tick => {
+                if failed.is_none()
+                    && let Err(err) = lines.pump(READ_BATCH, events)
+                {
+                    failed = Some(err);
+                }
+            }
+            Settling::Stopping => events(ExecEvent::Stopping),
+            Settling::Killing => events(ExecEvent::Killing),
+            Settling::Exited | Settling::StillWaiting | Settling::Warning(_) => {}
+        },
     );
-    drop(folders);
-    result
+    if let Some(err) = failed {
+        return Err(err.into());
+    }
+    let end = log.metadata()?.len();
+    lines.pump(end.saturating_sub(lines.read), events)?;
+    if !lines.pending.is_empty() {
+        lines.finish(events);
+    }
+    let status = ended.finish()?;
+    events(ExecEvent::Exited {
+        code: exit_code(status),
+    });
+    Ok(status)
+}
+
+/// What `watch_settled` reports along the way.
+#[derive(Debug)]
+pub enum Settling {
+    /// The started program exited. Others in the prefix may still run.
+    Exited,
+    /// The program has been gone a moment and the prefix is still busy.
+    StillWaiting,
+    /// Programs were asked to close. Another stop request forces it.
+    Stopping,
+    /// Everything left in the prefix is being killed.
+    Killing,
+    Warning(Error),
+    /// Nothing happened, which comes often, for a caller with work to do.
+    Tick,
+}
+
+/// How a watched program and its prefix came to an end.
+#[derive(Debug)]
+pub struct Settled {
+    status: Option<ExitStatus>,
+    stopped: bool,
+    settled: crate::error::Result<()>,
+}
+
+impl Settled {
+    /// The started program's own status. A stop always ends the wait, so
+    /// only an unstopped run reports a prefix that couldn't be confirmed
+    /// idle.
+    pub fn finish(self) -> anyhow::Result<ExitStatus> {
+        if !self.stopped {
+            self.settled?;
+        }
+        self.status
+            .ok_or_else(|| Error::Unsettled("the program's exit status was lost".to_owned()).into())
+    }
+}
+
+/// Watches `child`, which leads its own process group, and then the prefix
+/// until it's idle, by the rule a `start` run ends on: `wineserver -w`, and
+/// for Proton the process group. `supervisor` brings the stop requests: the
+/// first asks the prefix's programs to close, and the next, or the stop
+/// timeout, kills them, retried until idle or for `GIVE_UP`.
+pub fn watch_settled(
+    supervisor: Supervisor,
+    host: &Host,
+    child: Child,
+    stop_timeout: Duration,
+    mut seen: impl FnMut(Settling),
+) -> Settled {
+    let group = child.id();
+    // Read while the program is at least a zombie, which the watch only
+    // reaps at the end, so its identity can't be lost to a fast exit.
+    let boot_id = crate::process::boot_id();
+    let leader_start = crate::process::start_time(group);
+    let host = host.clone();
+    let (sender, watched) = mpsc::channel();
+    let watcher = thread::spawn(move || {
+        supervisor.watch(
+            &host,
+            Some(group),
+            boot_id,
+            leader_start,
+            child,
+            stop_timeout,
+            Settle::Confirmed,
+            Some(GIVE_UP),
+            |event| {
+                let _ = sender.send(event);
+            },
+        )
+    });
+    let mut exited_at: Option<Instant> = None;
+    let mut noted = false;
+    loop {
+        match watched.recv_timeout(POLL) {
+            Ok(Watched::Exited(_)) => {
+                exited_at = Some(Instant::now());
+                seen(Settling::Exited);
+            }
+            Ok(Watched::Notice(Notice::Stopping)) => seen(Settling::Stopping),
+            Ok(Watched::Notice(Notice::Killing)) => seen(Settling::Killing),
+            Ok(Watched::Notice(Notice::Warning(err))) => seen(Settling::Warning(err)),
+            Ok(Watched::Notice(Notice::Heartbeat)) | Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if !noted && exited_at.is_some_and(|at| at.elapsed() >= NOTE_AFTER) {
+            noted = true;
+            seen(Settling::StillWaiting);
+        }
+        seen(Settling::Tick);
+    }
+    match watcher.join() {
+        Ok(ending) => Settled {
+            status: ending.exit_status,
+            stopped: ending.stopped,
+            settled: ending.settled,
+        },
+        Err(_) => Settled {
+            status: None,
+            stopped: false,
+            settled: Err(Error::Unsettled("the exec watch failed".to_owned())),
+        },
+    }
 }
 
 fn check_cancel(token: &Token) -> anyhow::Result<()> {
@@ -114,15 +279,10 @@ fn check_cancel(token: &Token) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Runs the program until it exits, calling `release` then. With `whole_group`
-/// it then keeps going, still cancelable, until nothing in its process group
-/// is left.
 fn run(
     launch: &Launch,
     stop_timeout: u32,
     token: &Token,
-    whole_group: bool,
-    release: impl FnOnce(),
     events: &mut impl FnMut(ExecEvent),
 ) -> anyhow::Result<ExitStatus> {
     // Descendants can inherit output past the immediate child's exit. A file
@@ -142,41 +302,11 @@ fn run(
     let group = child.id();
     let mut stopping = None;
     let mut killing = false;
-    let mut killed_at = None;
-    let mut scans = crate::process::EmptyScans::default();
-    let mut exited = None;
-    let mut release = Some(release);
+    let mut exited = false;
     let result = (|| {
         loop {
-            let status = match exited {
-                Some(status) => status,
-                None => match child.try_wait().context("failed to wait for exec")? {
-                    Some(status) => {
-                        exited = Some(status);
-                        // Waiting on the rest of the group needs only the
-                        // folder locks; otherwise everything lasts through
-                        // the exit event, as it always has.
-                        if whole_group && let Some(release) = release.take() {
-                            release();
-                        }
-                        status
-                    }
-                    None => {
-                        stop(
-                            token,
-                            group,
-                            stop_timeout,
-                            &mut stopping,
-                            &mut killing,
-                            events,
-                        )?;
-                        lines.pump(READ_BATCH, events)?;
-                        token.wait_timeout(POLL);
-                        continue;
-                    }
-                },
-            };
-            if !whole_group || settled(group_live(group, &mut scans), killing, killed_at) {
+            if let Some(status) = child.try_wait().context("failed to wait for exec")? {
+                exited = true;
                 // Read only what is present now; handed-off programs can keep
                 // writing, and must not extend the lifetime of this worker.
                 let end = log.metadata()?.len();
@@ -189,76 +319,29 @@ fn run(
                 });
                 return Ok(status);
             }
-            stop(
-                token,
-                group,
-                stop_timeout,
-                &mut stopping,
-                &mut killing,
-                events,
-            )?;
-            if killing && killed_at.is_none() {
-                killed_at = Some(Instant::now());
+            if token.is_canceled() && stopping.is_none() {
+                stopping = Some(Instant::now());
+                events(ExecEvent::Stopping);
+                signal(group, Signal::TERM)?;
+            }
+            if !killing
+                && stopping.is_some_and(|at| {
+                    token.is_forced() || at.elapsed() >= Duration::from_secs(stop_timeout.into())
+                })
+            {
+                killing = true;
+                events(ExecEvent::Killing);
+                signal(group, Signal::KILL)?;
             }
             lines.pump(READ_BATCH, events)?;
             token.wait_timeout(POLL);
         }
     })();
-    if result.is_err() && exited.is_none() {
+    if result.is_err() && !exited {
         let _ = signal(group, Signal::KILL);
         let _ = child.wait();
     }
     result
-}
-
-/// Whether anything in the group can still run. The kernel says for sure
-/// when the group is gone, with no `/proc` needed. A group that's left can
-/// hold just a zombie nobody reaps, like a worker whose parent left the
-/// group, so it's then looked at member by member, and only counts as empty
-/// once the same zombies have been all that's there for a few polls.
-fn group_live(group: u32, scans: &mut crate::process::EmptyScans) -> Option<bool> {
-    match crate::process::group_still_exists(group) {
-        Some(false) => Some(false),
-        _ => scans.observe(crate::process::scan_existing_group(group)),
-    }
-}
-
-/// Whether the wait on a group is over. Unknown counts as live, so a folder
-/// is never let go early, unless a cancel has already killed the group,
-/// which then gets `KILL_GRACE` at most.
-fn settled(live: Option<bool>, killing: bool, killed_at: Option<Instant>) -> bool {
-    let gone = match live {
-        Some(live) => !live,
-        None => killing,
-    };
-    gone || killed_at.is_some_and(|at| at.elapsed() >= KILL_GRACE)
-}
-
-/// Signals the group once canceled, and kills it once forced or past the
-/// stop timeout.
-fn stop(
-    token: &Token,
-    group: u32,
-    stop_timeout: u32,
-    stopping: &mut Option<Instant>,
-    killing: &mut bool,
-    events: &mut impl FnMut(ExecEvent),
-) -> anyhow::Result<()> {
-    if token.is_canceled() && stopping.is_none() {
-        *stopping = Some(Instant::now());
-        events(ExecEvent::Stopping);
-        signal(group, Signal::TERM)?;
-    }
-    if !*killing
-        && stopping.is_some_and(|at| {
-            token.is_forced() || at.elapsed() >= Duration::from_secs(stop_timeout.into())
-        })
-    {
-        *killing = true;
-        events(ExecEvent::Killing);
-        signal(group, Signal::KILL)?;
-    }
-    Ok(())
 }
 
 fn signal(group: u32, signal: Signal) -> anyhow::Result<()> {
@@ -336,17 +419,6 @@ mod tests {
         lines.pump(READ_BATCH, &mut events).unwrap();
         lines.finish(&mut events);
         assert_eq!(output, ["first", "", "\u{e9}\r", "last"]);
-    }
-
-    #[test]
-    fn a_killed_group_ends_the_wait_even_when_it_cant_be_inspected() {
-        assert!(settled(Some(false), false, None));
-        assert!(!settled(Some(true), false, None));
-        assert!(!settled(None, false, None));
-        assert!(settled(None, true, Some(Instant::now())));
-        assert!(!settled(Some(true), true, Some(Instant::now())));
-        let long_ago = Instant::now() - KILL_GRACE;
-        assert!(settled(Some(true), true, Some(long_ago)));
     }
 
     #[test]
