@@ -47,7 +47,8 @@ match the docs.
   `templates/gaming.toml`, which replaces the built-in one.
 - **Shell completion output.** It follows the CLI, which is stable.
 - **Files wineo manages for itself.** Run records, locks, and logs in the
-  state directory, caches like `steam-owned-<steamid>.json`, temporary
+  state directory, GOG folder states in the data directory, caches like
+  `steam-owned-<steamid>.json`, temporary
   files, the desktop entries wineo writes, and the on-disk layout of
   snapshots and the trash. Use the commands to work with them.
 - **Test-only variables,** like `WINEO_TEST_*`.

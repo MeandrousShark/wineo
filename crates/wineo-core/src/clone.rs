@@ -332,6 +332,10 @@ pub(crate) fn review_config(
     source_root: &Path,
 ) -> ConfigReview {
     let mut changed_settings = vec!["prefix".to_owned()];
+    // A copy shares the original game folder without owning it.
+    if config.gog_id.is_some() {
+        changed_settings.push("gog_id removed".to_owned());
+    }
     let mut external_target_paths = Vec::new();
     let mut literal_source_paths = Vec::new();
     let source_path = source_root.to_string_lossy();
@@ -384,6 +388,7 @@ pub(crate) fn transform_config(
     if !keep_heroic_id {
         doc.as_table_mut().remove("heroic_id");
     }
+    doc.as_table_mut().remove("gog_id");
     if let Some(targets) = doc
         .get_mut("targets")
         .and_then(|item| item.as_table_like_mut())
@@ -425,6 +430,10 @@ pub(crate) fn native_config(
     let mut doc: DocumentMut = source.parse()?;
     if !keep_heroic_id && doc.as_table_mut().remove("heroic_id").is_some() {
         changed.push("heroic_id removed".to_owned());
+    }
+    // A copy shares the original game folder without owning it.
+    if doc.as_table_mut().remove("gog_id").is_some() {
+        changed.push("gog_id removed".to_owned());
     }
     if let Some(targets) = doc
         .get_mut("targets")

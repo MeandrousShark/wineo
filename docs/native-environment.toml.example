@@ -23,6 +23,11 @@ kind = "native"
 # sets this. Default: unset.
 # heroic_id = "abcdef0123456789"
 
+# The GOG product id of the game this environment owns. Only a GOG migration
+# sets it, and `wineo set` refuses to; `wineo set NAME --unset gog_id` stops
+# tracking the game and releases its folder. Default: unset.
+# gog_id = "1094900565"
+
 # Run every target under gamescope. Every field is optional, and an empty
 # table runs plain `gamescope --`. A target's own [targets.<name>.gamescope]
 # replaces this whole table. Default: off.

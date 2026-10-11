@@ -21,6 +21,7 @@ use crate::config::{EnvironmentConfig, GlobalConfig, Kind};
 use crate::desktop::{self, Entry, Pending};
 use crate::environment::{self, Environment};
 use crate::error::{Error, IoContext, Result, chain};
+use crate::gog::folder::{self, DeviceOf, FolderState};
 use crate::install::{self, Wanted};
 use crate::installer::{self, Cleaned};
 use crate::launch;
@@ -79,6 +80,7 @@ pub enum Area {
     Steam,
     Art,
     Trash,
+    Gog,
 }
 
 impl Area {
@@ -96,6 +98,7 @@ impl Area {
             Area::Steam => "steam",
             Area::Art => "art",
             Area::Trash => "trash",
+            Area::Gog => "gog",
         }
     }
 }
@@ -148,10 +151,16 @@ pub enum Code {
     StatsStray,
     TrashInterrupted,
     TrashInvalid,
+    GogStateInvalid,
+    GogStateMissing,
+    GogFolderMissing,
+    GogFolderTaken,
+    GogMidUpdate,
+    GogOwnerMissing,
 }
 
 impl Code {
-    pub const ALL: [Code; 37] = [
+    pub const ALL: [Code; 43] = [
         Code::GlobalConfigInvalid,
         Code::TemplateInvalid,
         Code::TemplateUnresolved,
@@ -189,6 +198,12 @@ impl Code {
         Code::StatsStray,
         Code::TrashInterrupted,
         Code::TrashInvalid,
+        Code::GogStateInvalid,
+        Code::GogStateMissing,
+        Code::GogFolderMissing,
+        Code::GogFolderTaken,
+        Code::GogMidUpdate,
+        Code::GogOwnerMissing,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -230,6 +245,12 @@ impl Code {
             Code::StatsStray => "stats_stray",
             Code::TrashInterrupted => "trash_interrupted",
             Code::TrashInvalid => "trash_invalid",
+            Code::GogStateInvalid => "gog_state_invalid",
+            Code::GogStateMissing => "gog_state_missing",
+            Code::GogFolderMissing => "gog_folder_missing",
+            Code::GogFolderTaken => "gog_folder_taken",
+            Code::GogMidUpdate => "gog_mid_update",
+            Code::GogOwnerMissing => "gog_owner_missing",
         }
     }
 
@@ -256,6 +277,11 @@ impl Code {
             | Code::RestoreInterrupted
             | Code::ArtConfigInvalid => Level::Error,
             Code::TrashInterrupted | Code::TrashInvalid => Level::Error,
+            Code::GogStateInvalid
+            | Code::GogStateMissing
+            | Code::GogFolderTaken
+            | Code::GogMidUpdate => Level::Error,
+            Code::GogFolderMissing | Code::GogOwnerMissing => Level::Warning,
             Code::TemplateUnresolved
             | Code::PrefixMissing
             | Code::WinetricksMissing
@@ -312,6 +338,12 @@ impl Code {
             | Code::ArtDuplicates
             | Code::ArtDirStray => Area::Art,
             Code::TrashInterrupted | Code::TrashInvalid => Area::Trash,
+            Code::GogStateInvalid
+            | Code::GogStateMissing
+            | Code::GogFolderMissing
+            | Code::GogFolderTaken
+            | Code::GogMidUpdate
+            | Code::GogOwnerMissing => Area::Gog,
         }
     }
 }
@@ -374,6 +406,15 @@ pub enum Fix {
     RecoverSnapshot {
         environment: String,
     },
+    /// Removes the state of a GOG folder that was surely deleted.
+    ForgetGogFolder {
+        folder: PathBuf,
+    },
+    /// Sets a GOG folder's owner to none when that environment is gone.
+    ReleaseGogFolder {
+        folder: PathBuf,
+        owner: String,
+    },
 }
 
 impl Fix {
@@ -429,6 +470,12 @@ impl Fix {
             Fix::RecoverTrash { id } => format!("Recover interrupted trash entry {id}"),
             Fix::RecoverSnapshot { environment } => {
                 format!("Roll back {environment}'s interrupted snapshot restore")
+            }
+            Fix::ForgetGogFolder { folder } => {
+                format!("Forget the deleted GOG folder {}", folder.display())
+            }
+            Fix::ReleaseGogFolder { folder, owner } => {
+                format!("Clear {owner} as the owner of {}", folder.display())
             }
         }
     }
@@ -559,6 +606,14 @@ pub fn check_all(paths: &Paths) -> Result<Report> {
             check_one(paths, &global, name, &mut report)?;
         }
     }
+    check_gog(
+        paths,
+        None,
+        &names,
+        &pending,
+        &folder::device_of,
+        &mut report,
+    );
     let mut protected = names.clone();
     protected.extend(pending);
     if !report
@@ -601,8 +656,170 @@ pub fn check_environment(paths: &Paths, name: &str) -> Result<Report> {
     // defaults, as it does for most commands.
     let global = GlobalConfig::load(paths).unwrap_or_default();
     check_one(paths, &global, name, &mut report)?;
+    let names = environment::names(paths)?;
+    check_gog(
+        paths,
+        Some(name),
+        &names,
+        &pending,
+        &folder::device_of,
+        &mut report,
+    );
     contract(paths, &mut report);
     Ok(report)
+}
+
+/// GOG folder states, and environments whose `gog_id` names a game. Host
+/// root only, since GOG games live in the host library. With `selected`,
+/// only that environment and the folders it owns.
+fn check_gog(
+    paths: &Paths,
+    selected: Option<&str>,
+    names: &[String],
+    pending: &BTreeSet<String>,
+    device_of: DeviceOf<'_>,
+    report: &mut Report,
+) {
+    if paths.portable_root().is_some() {
+        return;
+    }
+    // A state that can't be read may be the selected environment's, unless
+    // its config can't name a game.
+    let show_invalid = selected.is_none_or(|name| folder::may_track_game(paths, name));
+    let listed = match folder::list(paths) {
+        Ok(listed) => listed,
+        Err(err) => {
+            if show_invalid {
+                report.push(Problem::new(
+                    Code::GogStateInvalid,
+                    None,
+                    format!("GOG folder states can't be read: {err:#}"),
+                    None,
+                ));
+            }
+            return;
+        }
+    };
+    let mut states = Vec::new();
+    for (_, state) in listed {
+        match state {
+            Ok(state) => states.push(state),
+            Err(err) if show_invalid => report.push(Problem::new(
+                Code::GogStateInvalid,
+                None,
+                format!("{err:#}"),
+                None,
+            )),
+            Err(_) => {}
+        }
+    }
+    let known = |owner: &str| names.iter().any(|name| name == owner) || pending.contains(owner);
+    for state in &states {
+        if selected.is_some() && state.owner.as_deref() != selected {
+            continue;
+        }
+        let environment = state.owner.as_deref().filter(|owner| known(owner));
+        check_gog_folder(state, environment, device_of, report);
+        if let Some(owner) = &state.owner
+            && !known(owner)
+        {
+            report.push(Problem::new(
+                Code::GogOwnerMissing,
+                None,
+                format!(
+                    "GOG game folder {} names {owner}, which doesn't exist.",
+                    state.folder.display()
+                ),
+                Some(Fix::ReleaseGogFolder {
+                    folder: state.folder.clone(),
+                    owner: owner.clone(),
+                }),
+            ));
+        }
+    }
+    for name in names {
+        if selected.is_some_and(|selected| selected != name) || pending.contains(name) {
+            continue;
+        }
+        let Some(gog_id) = Environment::load(paths, name)
+            .ok()
+            .and_then(|environment| environment.config.gog_id)
+        else {
+            continue;
+        };
+        let game: Vec<&FolderState> = states
+            .iter()
+            .filter(|state| state.is_game(&gog_id))
+            .collect();
+        // An ownerless folder is claimed again by the next launch or update.
+        if game
+            .iter()
+            .any(|state| state.owner.as_deref().is_none_or(|owner| owner == name))
+        {
+            continue;
+        }
+        let (code, message) = match game.first() {
+            Some(taken) => (
+                Code::GogFolderTaken,
+                format!(
+                    "{name}'s GOG game folder {} belongs to {}.",
+                    taken.folder.display(),
+                    taken.owner.as_deref().unwrap_or_default()
+                ),
+            ),
+            None => (
+                Code::GogStateMissing,
+                format!(
+                    "{name}'s GOG state is missing. Migrate it again with wineo import gog --game {gog_id}, or stop tracking it with wineo set {name} --unset gog_id."
+                ),
+            ),
+        };
+        report.push(Problem::new(code, Some(name), message, None));
+    }
+}
+
+/// A folder mid-update, or one that can't be found.
+fn check_gog_folder(
+    state: &FolderState,
+    environment: Option<&str>,
+    device_of: DeviceOf<'_>,
+    report: &mut Report,
+) {
+    let folder = state.folder.display();
+    if state.journal.is_some() {
+        let message = match environment {
+            Some(owner) => {
+                format!("{owner}'s game folder is mid-update. Finish it with wineo update {owner}.")
+            }
+            None => format!(
+                "GOG game folder {folder} is mid-update. Migrate it again with wineo import gog and finish it."
+            ),
+        };
+        report.push(Problem::new(Code::GogMidUpdate, environment, message, None));
+    }
+    match device_of(&state.folder) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            let safe = state.owner.is_none()
+                && state.journal.is_none()
+                && folder::surely_deleted(state, device_of);
+            report.push(Problem::new(
+                Code::GogFolderMissing,
+                environment,
+                format!("GOG game folder {folder} is missing."),
+                safe.then(|| Fix::ForgetGogFolder {
+                    folder: state.folder.clone(),
+                }),
+            ));
+        }
+        // Can't tell whether it's there, so it's never forgotten.
+        Err(err) => report.push(Problem::new(
+            Code::GogFolderMissing,
+            environment,
+            format!("GOG game folder {folder} can't be checked: {err}."),
+            None,
+        )),
+    }
 }
 
 fn check_trash(
@@ -1509,6 +1726,18 @@ pub fn apply(
         Fix::RecoverTrash { id } => trash::recover(paths, id)?,
         Fix::RecoverSnapshot { .. } => {
             anyhow::bail!("snapshot recovery must be applied by itself with apply_single");
+        }
+        Fix::ForgetGogFolder { folder } => {
+            let cancel = || token.is_canceled();
+            if !folder::remove_if_deleted(paths, folder, &folder::device_of, &cancel)? {
+                anyhow::bail!("{} changed. Run wineo validate again.", folder.display());
+            }
+        }
+        Fix::ReleaseGogFolder { folder, .. } => {
+            let cancel = || token.is_canceled();
+            if !folder::release_missing_owner(paths, folder, &cancel)? {
+                anyhow::bail!("{} changed. Run wineo validate again.", folder.display());
+            }
         }
     }
     Ok(Vec::new())
@@ -3051,5 +3280,315 @@ mod tests {
         assert!(report.problems.len() >= 6, "{:#?}", report.problems);
         check_environment(&f.paths, "game").unwrap();
         assert_eq!(tree(&f.root), before);
+    }
+
+    mod gog {
+        use std::collections::HashMap;
+        use std::os::unix::fs::MetadataExt;
+
+        use super::*;
+        use crate::gog::folder::{
+            Committed, FolderLock, Journal, JournalKind, Platform, Target, Track,
+        };
+
+        const NEVER: &dyn Fn() -> bool = &|| false;
+        const ID: u64 = 1094900565;
+
+        fn state(folder: &Path, owner: Option<&str>, journal: bool) -> FolderState {
+            let target = Target {
+                gog_id: ID,
+                platform: Platform::Linux,
+                language: "en-US".to_owned(),
+                track: Track::Installer,
+                products: Vec::new(),
+            };
+            FolderState {
+                device: Some(7),
+                committed: Some(Committed {
+                    gog_id: ID,
+                    platform: target.platform,
+                    language: target.language.clone(),
+                    track: target.track,
+                    products: Vec::new(),
+                    files: Vec::new(),
+                }),
+                journal: journal.then(|| Journal {
+                    operation: "op".to_owned(),
+                    kind: JournalKind::Update,
+                    target,
+                    packages: Vec::new(),
+                    attempted: Vec::new(),
+                }),
+                ..FolderState::new(folder.to_owned(), owner.map(str::to_owned))
+            }
+        }
+
+        fn save(f: &Fixture, state: &FolderState) {
+            FolderLock::exclusive(&f.paths, &state.folder, NEVER)
+                .unwrap()
+                .write(state)
+                .unwrap();
+        }
+
+        fn gog_report(f: &Fixture, devices: &[(&Path, u64)]) -> Report {
+            let map: HashMap<PathBuf, u64> = devices
+                .iter()
+                .map(|(path, device)| (path.to_path_buf(), *device))
+                .collect();
+            let device_of = move |path: &Path| Ok(map.get(path).copied());
+            let names = environment::names(&f.paths).unwrap();
+            let mut report = Report::default();
+            check_gog(
+                &f.paths,
+                None,
+                &names,
+                &BTreeSet::new(),
+                &device_of,
+                &mut report,
+            );
+            report
+        }
+
+        fn apply_fix(f: &Fixture, fix: &Fix) -> anyhow::Result<Vec<Note>> {
+            apply(&f.paths, fix, |_, _| Ok(()))
+        }
+
+        #[test]
+        fn a_missing_folder_is_dropped_only_when_its_drive_is_mounted() {
+            let f = Fixture::new();
+            let folder = Path::new("/mnt/games/rimworld");
+            save(&f, &state(folder, None, false));
+
+            // Unmounted: the mount point sits on the root filesystem.
+            let report = gog_report(&f, &[(Path::new("/"), 1), (Path::new("/mnt/games"), 1)]);
+            assert_eq!(codes(&report), [Code::GogFolderMissing]);
+            assert_eq!(
+                report.problems[0].message,
+                "GOG game folder /mnt/games/rimworld is missing."
+            );
+            assert_eq!(report.problems[0].fix, None);
+
+            // Remounted with the folder there: nothing to report.
+            let report = gog_report(
+                &f,
+                &[
+                    (Path::new("/"), 1),
+                    (Path::new("/mnt/games"), 7),
+                    (folder, 7),
+                ],
+            );
+            assert!(report.problems.is_empty(), "{:#?}", report.problems);
+
+            // Mounted and really deleted: offered, and nothing else.
+            let report = gog_report(&f, &[(Path::new("/"), 1), (Path::new("/mnt/games"), 7)]);
+            assert_eq!(
+                report.problems[0].fix,
+                Some(Fix::ForgetGogFolder {
+                    folder: folder.to_owned()
+                })
+            );
+        }
+
+        #[test]
+        fn forgetting_a_deleted_folder_rechecks_it() {
+            let f = Fixture::new();
+            let folder = f.root.join("Games/gone");
+            fs::create_dir_all(&folder).unwrap();
+            let mut gone = state(&folder, None, false);
+            gone.device = Some(fs::metadata(&folder).unwrap().dev());
+            fs::remove_dir(&folder).unwrap();
+            save(&f, &gone);
+            let fix = f.only(Code::GogFolderMissing).fix.unwrap();
+            apply_fix(&f, &fix).unwrap();
+            assert!(folder::list(&f.paths).unwrap().is_empty());
+            assert!(apply_fix(&f, &fix).is_err());
+        }
+
+        #[test]
+        fn mid_update_folders_name_their_owner() {
+            let f = Fixture::new();
+            f.native("rimworld", &format!("gog_id = '{ID}'\n"));
+            let folder = f.root.join("rimworld");
+            fs::create_dir_all(&folder).unwrap();
+            save(&f, &state(&folder, Some("rimworld"), true));
+            let problem = f.only(Code::GogMidUpdate);
+            assert_eq!(problem.environment.as_deref(), Some("rimworld"));
+            assert_eq!(
+                problem.message,
+                "rimworld's game folder is mid-update. Finish it with wineo update rimworld."
+            );
+            assert_eq!(problem.level, Level::Error);
+            assert_eq!(problem.area, Area::Gog);
+            let one = check_environment(&f.paths, "rimworld").unwrap();
+            assert_eq!(codes(&one), [Code::GogMidUpdate]);
+        }
+
+        #[test]
+        fn a_lost_state_is_reported_with_how_to_fix_it() {
+            let f = Fixture::new();
+            f.native("rimworld", &format!("gog_id = '{ID}'\n"));
+            let problem = f.only(Code::GogStateMissing);
+            assert_eq!(
+                problem.message,
+                "rimworld's GOG state is missing. Migrate it again with wineo import gog --game 1094900565, or stop tracking it with wineo set rimworld --unset gog_id."
+            );
+            assert_eq!(
+                codes(&check_environment(&f.paths, "rimworld").unwrap()),
+                [Code::GogStateMissing]
+            );
+        }
+
+        #[test]
+        fn an_ownerless_folder_is_left_for_claiming_and_another_owner_is_reported() {
+            let f = Fixture::new();
+            f.native("rimworld", &format!("gog_id = '{ID}'\n"));
+            f.native("copy", "");
+            let folder = f.root.join("rimworld");
+            fs::create_dir_all(&folder).unwrap();
+            save(&f, &state(&folder, None, false));
+            assert!(f.check().problems.is_empty(), "{:#?}", f.check().problems);
+
+            save(&f, &state(&folder, Some("copy"), false));
+            let problem = f.only(Code::GogFolderTaken);
+            assert_eq!(
+                problem.message,
+                "rimworld's GOG game folder ~/rimworld belongs to copy."
+            );
+        }
+
+        #[test]
+        fn a_missing_owner_is_released_by_fix_keeping_any_journal() {
+            for journal in [false, true] {
+                let f = Fixture::new();
+                let folder = f.root.join("rimworld");
+                fs::create_dir_all(&folder).unwrap();
+                save(&f, &state(&folder, Some("rimworld"), journal));
+                let problem = f.only(Code::GogOwnerMissing);
+                assert_eq!(
+                    problem.message,
+                    "GOG game folder ~/rimworld names rimworld, which doesn't exist."
+                );
+                let fix = problem.fix.unwrap();
+                assert!(f.check().fixes().contains(&fix));
+                apply_fix(&f, &fix).unwrap();
+                let released = FolderLock::shared(&f.paths, &folder, NEVER)
+                    .unwrap()
+                    .read()
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(released.owner, None);
+                assert_eq!(released.journal.is_some(), journal);
+                assert!(!codes(&f.check()).contains(&Code::GogOwnerMissing));
+            }
+        }
+
+        #[test]
+        fn an_unreadable_state_is_reported() {
+            let f = Fixture::new();
+            let dir = f.paths.gog_folders_dir();
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("bad.toml"), "version = 9\nfolder = '/x'\n").unwrap();
+            f.only(Code::GogStateInvalid);
+        }
+
+        #[test]
+        fn a_portable_root_skips_host_gog_checks() {
+            let f = Fixture::new();
+            save(
+                &f,
+                &state(Path::new("/gone/rimworld"), Some("nobody"), true),
+            );
+            let portable = Fixture::xdg(&f.root, Some(&f.root.join("usb")));
+            let report = check_all(&portable).unwrap();
+            assert!(
+                !report
+                    .problems
+                    .iter()
+                    .any(|problem| problem.area == Area::Gog),
+                "{:#?}",
+                report.problems
+            );
+        }
+
+        #[test]
+        fn folders_that_cant_be_looked_at_still_give_a_full_report() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let f = Fixture::new();
+            f.native("lost", "gog_id = '2'\n");
+            // A parent component that is now a file.
+            let file = f.root.join("was-a-dir");
+            fs::write(&file, "").unwrap();
+            let not_a_dir = file.join("game");
+            save(&f, &state(&not_a_dir, None, false));
+            // A parent that can't be searched.
+            let locked = f.root.join("locked");
+            fs::create_dir_all(locked.join("game")).unwrap();
+            let denied = locked.join("game");
+            save(&f, &state(&denied, None, false));
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+            let readable = fs::symlink_metadata(&denied).is_ok();
+
+            let report = f.check();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+            let unchecked: Vec<&Problem> = report
+                .problems
+                .iter()
+                .filter(|problem| problem.code == Code::GogFolderMissing)
+                .collect();
+            assert!(
+                unchecked
+                    .iter()
+                    .any(|problem| problem.message.contains("was-a-dir/game can't be checked")),
+                "{:#?}",
+                report.problems
+            );
+            // Running as root sees through the permissions.
+            if !readable {
+                assert!(
+                    unchecked
+                        .iter()
+                        .any(|problem| problem.message.contains("locked/game can't be checked")),
+                    "{:#?}",
+                    report.problems
+                );
+            }
+            assert!(unchecked.iter().all(|problem| problem.fix.is_none()));
+            assert!(codes(&report).contains(&Code::GogStateMissing));
+        }
+
+        #[test]
+        fn validate_name_shows_an_unreadable_state_that_could_be_its_own() {
+            let f = Fixture::new();
+            f.native("rimworld", &format!("gog_id = '{ID}'\n"));
+            f.native("plain", "");
+            let dir = f.paths.gog_folders_dir();
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("bad.toml"), "version = 9\nfolder = '/x'\n").unwrap();
+            let one = check_environment(&f.paths, "rimworld").unwrap();
+            assert_eq!(codes(&one), [Code::GogStateInvalid, Code::GogStateMissing]);
+            assert_eq!(
+                one.problems[0].message.matches("bad.toml").count(),
+                1,
+                "{}",
+                one.problems[0].message
+            );
+            let plain = check_environment(&f.paths, "plain").unwrap();
+            assert!(plain.problems.is_empty(), "{:#?}", plain.problems);
+        }
+
+        #[test]
+        fn validate_name_shows_an_unreadable_state_when_its_config_doesnt_parse() {
+            let f = Fixture::new();
+            f.write_config("broken", "kind = [");
+            let dir = f.paths.gog_folders_dir();
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("bad.toml"), "version = 9\nfolder = '/x'\n").unwrap();
+            let one = check_environment(&f.paths, "broken").unwrap();
+            assert_eq!(
+                codes(&one),
+                [Code::EnvironmentConfigInvalid, Code::GogStateInvalid]
+            );
+        }
     }
 }

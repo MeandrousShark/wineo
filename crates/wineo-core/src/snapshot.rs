@@ -1,5 +1,6 @@
 //! Local reflink restore points for registered prefixes.
 
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -12,6 +13,7 @@ use crate::build_lock;
 use crate::cancel::Token;
 use crate::config::{EnvironmentConfig, GlobalConfig};
 use crate::environment::{self, Environment};
+use crate::gog;
 use crate::import::{self, ExternalDependency, ImportLayout, ImportProgress, SourceFingerprint};
 use crate::name;
 use crate::operation::{Locks, Operation};
@@ -72,6 +74,8 @@ pub struct SnapshotInfo {
 #[derive(Debug, Clone)]
 pub struct RestoreOutcome {
     pub retained_old_prefix: Option<PathBuf>,
+    /// The GOG id put back into a config saved before the game was migrated.
+    pub gog_id_added: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +102,9 @@ pub struct RestoreInspection {
     pub current_runner: String,
     pub saved_runner: String,
     pub layout: ImportLayout,
+    /// The game folder's GOG id, which the restore puts back when the saved
+    /// config predates the migration.
+    pub gog_id_added: Option<String>,
     current_fingerprint: SourceFingerprint,
     snapshot_fingerprint: SourceFingerprint,
 }
@@ -332,6 +339,7 @@ pub fn inspect_restore_with(
     let manifest = read_manifest(paths, &snapshot, name, label, &prefix)?;
     let saved_config = fs::read_to_string(snapshot.join("config.toml"))?;
     let saved = EnvironmentConfig::parse(&snapshot.join("config.toml"), &saved_config)?;
+    let gog_id_added = saved_gog_id(paths, name, &saved)?;
     let Some(saved) = saved.wine() else {
         bail!("snapshot config points to a different prefix");
     };
@@ -351,6 +359,7 @@ pub fn inspect_restore_with(
         current_runner: env.wine()?.runner.clone(),
         saved_runner: saved.runner.clone(),
         layout: manifest.layout,
+        gog_id_added,
         current_fingerprint: current.fingerprint,
         snapshot_fingerprint,
     })
@@ -466,6 +475,10 @@ pub fn restore_reviewed_with(
         }
         return Err(err);
     }
+    let saved_config = match &reviewed.gog_id_added {
+        Some(gog_id) => with_gog_id(&reviewed.saved_config, gog_id)?,
+        None => reviewed.saved_config.clone(),
+    };
     let result = (|| -> Result<()> {
         exchange(&reviewed.prefix, &staging_path)?;
         sync_dir(parent)?;
@@ -473,13 +486,8 @@ pub fn restore_reviewed_with(
             paths,
             global,
             &paths.environment_config(&reviewed.name),
-            &reviewed.saved_config,
-            || {
-                write_config_atomic(
-                    &paths.environment_config(&reviewed.name),
-                    &reviewed.saved_config,
-                )
-            },
+            &saved_config,
+            || write_config_atomic(&paths.environment_config(&reviewed.name), &saved_config),
         )?;
         Ok(())
     })();
@@ -527,7 +535,48 @@ pub fn restore_reviewed_with(
     }));
     Ok(RestoreOutcome {
         retained_old_prefix,
+        gog_id_added: reviewed.gog_id_added.clone(),
     })
+}
+
+/// The game folder's state follows the folder, not the snapshot. A saved
+/// config from before migration gets the owned game's id back, and one
+/// naming another game is refused before anything changes.
+fn saved_gog_id(paths: &Paths, name: &str, saved: &EnvironmentConfig) -> Result<Option<String>> {
+    // GOG games live in the host library only.
+    if paths.portable_root().is_some() {
+        return Ok(None);
+    }
+    let strict = saved.gog_id.is_some() || gog::folder::may_track_game(paths, name);
+    let owned = gog::folder::owned_by(paths, name, strict)?;
+    match &saved.gog_id {
+        Some(gog_id) => {
+            if let Some(state) = owned.iter().find(|state| !state.is_game(gog_id))
+                && !owned.iter().any(|state| state.is_game(gog_id))
+            {
+                bail!(
+                    "The snapshot's gog_id {gog_id} doesn't match {name}'s GOG game {}.",
+                    state.gog_id().map_or_else(String::new, |id| id.to_string())
+                );
+            }
+            Ok(None)
+        }
+        None => {
+            let ids: BTreeSet<u64> = owned.iter().filter_map(|state| state.gog_id()).collect();
+            if ids.len() > 1 {
+                bail!("{name} owns more than one GOG game folder.");
+            }
+            Ok(ids.into_iter().next().map(|id| id.to_string()))
+        }
+    }
+}
+
+/// `text` with a `gog_id`, keeping its comments and formatting.
+fn with_gog_id(text: &str, gog_id: &str) -> Result<String> {
+    let mut doc: toml_edit::DocumentMut = text.parse()?;
+    crate::edit::store_value(doc.as_table_mut(), "gog_id", toml_edit::Value::from(gog_id));
+    crate::config::stamp_schema(&mut doc);
+    Ok(doc.to_string())
 }
 
 pub fn delete(paths: &Paths, name: &str, label: &str) -> Result<()> {
@@ -684,6 +733,7 @@ fn ensure_restore_same(a: &RestoreInspection, b: &RestoreInspection) -> Result<(
         || a.current_runner != b.current_runner
         || a.saved_runner != b.saved_runner
         || a.layout != b.layout
+        || a.gog_id_added != b.gog_id_added
         || a.current_fingerprint != b.current_fingerprint
         || a.snapshot_fingerprint != b.snapshot_fingerprint
     {
@@ -1804,5 +1854,42 @@ mod tests {
             config
         );
         assert!(!marker_path(&paths, "game").exists());
+    }
+
+    #[test]
+    fn a_portable_restore_never_consults_host_gog_state() {
+        use crate::gog::folder::{Committed, FolderLock, FolderState, Platform, Track};
+
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_owned();
+        let lookup = move |key: &str| (key == "HOME").then(|| home.clone().into_os_string());
+        let host = Paths::select(lookup.clone(), None).unwrap();
+        let portable = Paths::select(lookup, Some(&root.path().join("usb"))).unwrap();
+        let folder = root.path().join("game");
+        let state = FolderState {
+            committed: Some(Committed {
+                gog_id: 7,
+                platform: Platform::Linux,
+                language: "en".to_owned(),
+                track: Track::Installer,
+                products: Vec::new(),
+                files: Vec::new(),
+            }),
+            ..FolderState::new(folder.clone(), Some("game".to_owned()))
+        };
+        FolderLock::exclusive(&host, &folder, &|| false)
+            .unwrap()
+            .write(&state)
+            .unwrap();
+        let path = Path::new("/test/game.toml");
+        let plain = EnvironmentConfig::parse(path, "kind = 'native'\n").unwrap();
+        let other = EnvironmentConfig::parse(path, "kind = 'native'\ngog_id = '8'\n").unwrap();
+        assert_eq!(
+            saved_gog_id(&host, "game", &plain).unwrap().as_deref(),
+            Some("7")
+        );
+        assert!(saved_gog_id(&host, "game", &other).is_err());
+        assert_eq!(saved_gog_id(&portable, "game", &plain).unwrap(), None);
+        assert_eq!(saved_gog_id(&portable, "game", &other).unwrap(), None);
     }
 }

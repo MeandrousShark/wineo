@@ -24,6 +24,13 @@ discarded, and Wineo desktop entries are removed. Native environments have no
 prefix; their external executable folders and other external game files are
 never part of the trash entry.
 
+Removing a GOG game's environment releases its game folder first, so the
+folder outlives it with no owner. A game that's mid-update is refused:
+finish it with `wineo update`, or remove it anyway with `--force`, which
+keeps the update's record so the folder stays blocked until it's
+finished. Restore claims the folder back, and refuses if another
+environment owns it by then.
+
 `rm` prints the entry ID along with the commands to restore or prune it.
 After a plain `rm` it also lists the prefix and snapshots left in place,
 which pruning does not delete.

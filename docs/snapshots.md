@@ -41,6 +41,12 @@ the same configured prefix. Wineo asks for confirmation in a terminal; use
 wineo snapshot restore Zomboid before-mods --yes
 ```
 
+A snapshot covers the prefix, not a GOG game's folder, which lives outside
+it, so restoring one doesn't undo a game update. If the saved config is from
+before the game was migrated and has no `gog_id`, restore puts the current
+one back and says so. A saved config with a different `gog_id` is refused
+before anything changes.
+
 Wineo stages and validates the restored prefix before changing the live one.
 If a restore is interrupted, ordinary commands refuse to use that environment
 until recovery. Roll back the interrupted restore with:

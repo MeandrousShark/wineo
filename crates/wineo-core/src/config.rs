@@ -245,6 +245,9 @@ pub struct EnvironmentConfig {
     /// The Heroic game id this environment was imported from. Only Heroic
     /// imports set this; older configs load fine without it.
     pub heroic_id: Option<String>,
+    /// The GOG product id of the game this environment owns. Its install
+    /// state lives in the game folder's state file, not here.
+    pub gog_id: Option<String>,
     pub tags: Vec<String>,
     pub winetricks: Vec<String>,
     pub env: BTreeMap<String, String>,
@@ -350,6 +353,7 @@ struct RawEnvironmentConfig {
     dxvk: Option<String>,
     vkd3d: Option<String>,
     heroic_id: Option<String>,
+    gog_id: Option<String>,
     #[serde(default)]
     tags: Vec<String>,
     winetricks: Option<Vec<String>>,
@@ -368,6 +372,11 @@ impl RawEnvironmentConfig {
             && let Some(key) = PROXIED_ONLY_KEYS.iter().find(|key| self.has(key))
         {
             return Err(proxied_only_key_message(name, key));
+        }
+        if kind_name != KindName::Proxied
+            && let Some(gog_id) = &self.gog_id
+        {
+            validate_gog_id(gog_id)?;
         }
         let kind = match kind_name {
             KindName::Wine => Kind::Wine(WineConfig {
@@ -432,6 +441,7 @@ impl RawEnvironmentConfig {
             gamescope: self.gamescope,
             hooks: self.hooks,
             heroic_id: self.heroic_id,
+            gog_id: self.gog_id,
             tags: self.tags,
             winetricks: self.winetricks.unwrap_or_default(),
             env: self.env.unwrap_or_default(),
@@ -454,6 +464,7 @@ impl RawEnvironmentConfig {
             "dxvk" => self.dxvk.is_some(),
             "vkd3d" => self.vkd3d.is_some(),
             "heroic_id" => self.heroic_id.is_some(),
+            "gog_id" => self.gog_id.is_some(),
             "winetricks" => self.winetricks.is_some(),
             "env" => self.env.is_some(),
             "targets" => self.targets.is_some(),
@@ -480,13 +491,28 @@ fn validate_app_id(app_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A GOG product id: a number that fits in 64 bits, with no leading zeros.
+pub fn validate_gog_id(gog_id: &str) -> Result<(), String> {
+    if gog_id.is_empty() {
+        return Err("Invalid gog_id: empty.".to_owned());
+    }
+    if !gog_id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!("Invalid gog_id: {gog_id} isn't a number."));
+    }
+    // Written exactly as the number, so one game has one spelling.
+    if gog_id.parse::<u64>().map(|id| id.to_string()).as_deref() != Ok(gog_id) {
+        return Err(format!("Invalid gog_id: {gog_id} isn't a GOG id."));
+    }
+    Ok(())
+}
+
 /// Keys only a proxied environment can have.
 pub const PROXIED_ONLY_KEYS: [&str; 4] = ["launcher", "app_id", "title", "desktop"];
 
 /// Keys a proxied environment can't have, since its launcher owns the prefix
 /// and the launch. Everything but `schema_version`, `kind`, `tags`, `hooks`,
 /// and the proxied-only keys.
-pub const PROXIED_REFUSED_KEYS: [&str; 15] = [
+pub const PROXIED_REFUSED_KEYS: [&str; 16] = [
     "prefix",
     "runner",
     "arch",
@@ -500,6 +526,7 @@ pub const PROXIED_REFUSED_KEYS: [&str; 15] = [
     "mangohud",
     "gamescope",
     "heroic_id",
+    "gog_id",
     "env",
     "targets",
 ];
@@ -1112,6 +1139,42 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.heroic_id.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn gog_id_is_optional_and_round_trips_for_wine_and_native() {
+        let wine = "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n";
+        assert_eq!(environment(wine).unwrap().gog_id, None);
+        for base in [wine, "kind = \"native\"\n"] {
+            let config = environment(&format!("{base}gog_id = \"1094900565\"")).unwrap();
+            assert_eq!(config.gog_id.as_deref(), Some("1094900565"));
+        }
+    }
+
+    #[test]
+    fn gog_id_must_be_digits() {
+        for (value, message) in [
+            ("\"\"", "Invalid gog_id: empty."),
+            ("\"12a\"", "Invalid gog_id: 12a isn't a number."),
+            ("\"-1\"", "Invalid gog_id: -1 isn't a number."),
+            ("\" 12\"", "Invalid gog_id:  12 isn't a number."),
+            ("\"0123\"", "Invalid gog_id: 0123 isn't a GOG id."),
+            (
+                "\"18446744073709551616\"",
+                "Invalid gog_id: 18446744073709551616 isn't a GOG id.",
+            ),
+        ] {
+            let err = named(
+                "rimworld",
+                &format!("kind = \"native\"\ngog_id = {value}\n"),
+            )
+            .unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("invalid config /test/rimworld.toml: {message}")
+            );
+        }
+        assert!(environment("kind = \"native\"\ngog_id = 12\n").is_err());
     }
 
     #[test]
@@ -1825,6 +1888,7 @@ mod tests {
             ("mangohud", "mangohud = false"),
             ("gamescope", "gamescope = false"),
             ("heroic_id", "heroic_id = \"abc\""),
+            ("gog_id", "gog_id = \"1094900565\""),
             ("env", "[env]"),
             ("targets", "[targets.game]\nexe = \"/bin/true\""),
         ] {

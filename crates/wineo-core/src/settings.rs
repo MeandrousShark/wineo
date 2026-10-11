@@ -17,6 +17,7 @@ use crate::edit::{self, Scope};
 use crate::environment::Environment;
 use crate::error::{Error, IoContext, Result};
 use crate::files::write_atomic;
+use crate::gog;
 use crate::install::{self, Change, Wanted};
 use crate::launch;
 use crate::name;
@@ -80,12 +81,21 @@ pub fn apply(
     {
         bail!("{name}'s kind can't be changed, make a new environment instead");
     }
+    if let ConfigFile::Environment(_) = file
+        && pairs.iter().any(|(key, _)| *key == "gog_id")
+    {
+        return Err(edit::read_only_gog_id().into());
+    }
 
     // Pointing an environment somewhere else has to exclude whatever is using
     // either prefix, so a removal can't delete one this is about to adopt. A
     // running environment holds the same lock, so this refuses that too.
     let guard = match file {
-        ConfigFile::Environment(name) if changes_the_launch(pairs, unset) => {
+        // Unsetting gog_id lets go of a game folder, which takes the folder
+        // locks, and those come after the operation lock.
+        ConfigFile::Environment(name)
+            if changes_the_launch(pairs, unset) || unset.contains(&"gog_id") =>
+        {
             let mut prefixes = Vec::new();
             if let Ok(environment) = Environment::load(paths, name)
                 && let Ok(prefix) = environment.prefix(paths)
@@ -105,6 +115,26 @@ pub fn apply(
         _ => None,
     };
 
+    // Unsetting gog_id lets go of the game folder. A folder mid-update is
+    // refused before anything changes. GOG games live in the host library,
+    // so a portable environment never owns one.
+    let gog = match file {
+        ConfigFile::Environment(name)
+            if unset.contains(&"gog_id") && paths.portable_root().is_none() =>
+        {
+            let strict = gog::folder::may_track_game(paths, name);
+            let held = gog::folder::lock_owned(paths, name, strict, &|| false)?;
+            if held.iter().any(|(_, state)| state.journal.is_some()) {
+                return Err(gog::folder::FolderError::UnsetMidUpdate {
+                    name: name.to_owned(),
+                }
+                .into());
+            }
+            held
+        }
+        _ => Vec::new(),
+    };
+
     let mut applied = Applied::default();
     // Checked under the lock, so a typo never gets written and the runner
     // cannot be removed between the check and the write.
@@ -122,6 +152,11 @@ pub fn apply(
     } else {
         Vec::new()
     };
+    // Released before the config edit, like `rm`, so a crash in between
+    // leaves an environment whose folder has no owner, which claiming heals.
+    for (lock, _) in &gog {
+        lock.release()?;
+    }
     if let Err(err) = write_and_follow(paths, file, pairs, unset, guard.is_some(), &mut applied) {
         applied.failed = Some(err);
     }
@@ -1444,5 +1479,254 @@ stop_timeout = 3 # short
         );
         assert!(applied.not_set.is_empty());
         assert_eq!(applied.changed_runner, None);
+    }
+
+    mod gog_id {
+        use super::*;
+        use crate::gog::folder::{
+            Committed, FolderLock, FolderState, Journal, JournalKind, Platform, Target, Track,
+        };
+
+        const NEVER: &dyn Fn() -> bool = &|| false;
+        const RIMWORLD: &str = "# mine\nkind = \"native\"\ngog_id = \"1094900565\"\n";
+
+        fn game(folder: &Path, journal: bool) -> FolderState {
+            let target = Target {
+                gog_id: 1094900565,
+                platform: Platform::Linux,
+                language: "en-US".to_owned(),
+                track: Track::Installer,
+                products: Vec::new(),
+            };
+            FolderState {
+                committed: Some(Committed {
+                    gog_id: target.gog_id,
+                    platform: target.platform,
+                    language: target.language.clone(),
+                    track: target.track,
+                    products: Vec::new(),
+                    files: Vec::new(),
+                }),
+                journal: journal.then(|| Journal {
+                    operation: "op".to_owned(),
+                    kind: JournalKind::Update,
+                    target,
+                    packages: Vec::new(),
+                    attempted: Vec::new(),
+                }),
+                ..FolderState::new(folder.to_owned(), Some("rimworld".to_owned()))
+            }
+        }
+
+        fn setup(state: Option<bool>) -> (tempfile::TempDir, Paths, PathBuf) {
+            let (root, paths) = super::setup();
+            let config = paths.environment_config("rimworld");
+            fs::create_dir_all(config.parent().unwrap()).unwrap();
+            fs::write(&config, RIMWORLD).unwrap();
+            let folder = root.path().join("Games/RimWorld");
+            if let Some(journal) = state {
+                FolderLock::exclusive(&paths, &folder, NEVER)
+                    .unwrap()
+                    .write(&game(&folder, journal))
+                    .unwrap();
+            }
+            (root, paths, folder)
+        }
+
+        fn owner(paths: &Paths, folder: &Path) -> Option<String> {
+            FolderLock::shared(paths, folder, NEVER)
+                .unwrap()
+                .read()
+                .unwrap()
+                .unwrap()
+                .owner
+        }
+
+        fn text(paths: &Paths) -> String {
+            fs::read_to_string(paths.environment_config("rimworld")).unwrap()
+        }
+
+        #[test]
+        fn setting_gog_id_is_refused() {
+            let (_root, paths, _) = setup(None);
+            let error = apply(
+                &paths,
+                ConfigFile::Environment("rimworld"),
+                &[("gog_id", "1")],
+                &[],
+            )
+            .unwrap_err();
+            assert_eq!(error.to_string(), "gog_id is set by wineo import gog.");
+            assert_eq!(text(&paths), RIMWORLD);
+            let mut doc: DocumentMut = RIMWORLD.parse().unwrap();
+            assert_eq!(
+                edit::set(&mut doc, Scope::Environment, "gog_id", "1")
+                    .unwrap_err()
+                    .to_string(),
+                "gog_id is set by wineo import gog."
+            );
+        }
+
+        #[test]
+        fn unsetting_gog_id_releases_the_folder() {
+            let (_root, paths, folder) = setup(Some(false));
+            let applied = apply(
+                &paths,
+                ConfigFile::Environment("rimworld"),
+                &[],
+                &["gog_id"],
+            )
+            .unwrap();
+            assert!(applied.failed.is_none(), "{:?}", applied.failed);
+            assert_eq!(owner(&paths, &folder), None);
+            assert_eq!(
+                text(&paths),
+                "# mine\nkind = \"native\"\nschema_version = 1\n"
+            );
+        }
+
+        #[test]
+        fn unsetting_gog_id_mid_update_is_refused() {
+            let (_root, paths, folder) = setup(Some(true));
+            let error = apply(
+                &paths,
+                ConfigFile::Environment("rimworld"),
+                &[],
+                &["gog_id"],
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "rimworld is mid-update. Finish it with wineo update rimworld."
+            );
+            assert_eq!(owner(&paths, &folder).as_deref(), Some("rimworld"));
+            assert_eq!(text(&paths), RIMWORLD);
+        }
+
+        #[test]
+        fn unsetting_gog_id_with_a_lost_state_only_edits_the_config() {
+            let (_root, paths, _) = setup(None);
+            let applied = apply(
+                &paths,
+                ConfigFile::Environment("rimworld"),
+                &[],
+                &["gog_id"],
+            )
+            .unwrap();
+            assert!(applied.failed.is_none(), "{:?}", applied.failed);
+            assert!(!text(&paths).contains("gog_id"));
+            assert!(gog::folder::list(&paths).unwrap().is_empty());
+        }
+
+        #[test]
+        fn a_typo_beside_the_unset_leaves_the_owner() {
+            let (_root, paths, folder) = setup(Some(false));
+            let result = apply(
+                &paths,
+                ConfigFile::Environment("rimworld"),
+                &[("runner", "nope")],
+                &["gog_id"],
+            );
+            let error = result.unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "native environment rimworld can't set runner"
+            );
+            assert_eq!(owner(&paths, &folder).as_deref(), Some("rimworld"));
+            assert_eq!(text(&paths), RIMWORLD);
+        }
+
+        #[test]
+        fn unsetting_gog_id_takes_the_operation_lock_first() {
+            let (_root, paths, folder) = setup(Some(false));
+            let _running = Locks::new(&paths)
+                .acquire(Operation::Launch, "rimworld", &[])
+                .unwrap();
+            let error = apply(
+                &paths,
+                ConfigFile::Environment("rimworld"),
+                &[],
+                &["gog_id"],
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error.downcast_ref::<Error>(), Some(Error::Busy { .. })),
+                "{error}"
+            );
+            assert_eq!(owner(&paths, &folder).as_deref(), Some("rimworld"));
+            assert_eq!(text(&paths), RIMWORLD);
+        }
+
+        #[test]
+        fn a_crash_between_release_and_the_config_write_leaves_an_ownerless_folder() {
+            let (_root, paths, folder) = setup(Some(false));
+            gog::folder::set_failpoint(Some("write.after"));
+            assert!(
+                apply(
+                    &paths,
+                    ConfigFile::Environment("rimworld"),
+                    &[],
+                    &["gog_id"],
+                )
+                .is_err()
+            );
+            // The rule for an environment with gog_id and an ownerless
+            // folder covers this: the next claim takes it back.
+            assert_eq!(owner(&paths, &folder), None);
+            assert_eq!(text(&paths), RIMWORLD);
+        }
+
+        #[test]
+        fn a_portable_unset_never_touches_host_state() {
+            let (root, paths, folder) = setup(Some(false));
+            let home = root.path().to_owned();
+            let portable = Paths::select(
+                move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+                Some(&root.path().join("usb")),
+            )
+            .unwrap();
+            let config = portable.environment_config("rimworld");
+            fs::create_dir_all(config.parent().unwrap()).unwrap();
+            fs::write(&config, RIMWORLD).unwrap();
+            let applied = apply(
+                &portable,
+                ConfigFile::Environment("rimworld"),
+                &[],
+                &["gog_id"],
+            )
+            .unwrap();
+            assert!(applied.failed.is_none(), "{:?}", applied.failed);
+            assert!(!fs::read_to_string(&config).unwrap().contains("gog_id"));
+            assert_eq!(owner(&paths, &folder).as_deref(), Some("rimworld"));
+            assert_eq!(text(&paths), RIMWORLD);
+        }
+
+        #[test]
+        fn an_unreadable_state_only_blocks_an_environment_tracking_a_game() {
+            let (_root, paths, folder) = setup(Some(false));
+            let dir = paths.gog_folders_dir();
+            fs::write(dir.join("bad.toml"), "version = 9\nfolder = '/x'\n").unwrap();
+            let error = apply(
+                &paths,
+                ConfigFile::Environment("rimworld"),
+                &[],
+                &["gog_id"],
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "rimworld's GOG state can't be checked: {} isn't a valid GOG folder state (unsupported GOG folder state version 9).",
+                    dir.join("bad.toml").display()
+                )
+            );
+            assert_eq!(owner(&paths, &folder).as_deref(), Some("rimworld"));
+
+            write_env(&paths, NOTEPAD);
+            let applied =
+                apply(&paths, ConfigFile::Environment("notepad"), &[], &["gog_id"]).unwrap();
+            assert!(applied.failed.is_none(), "{:?}", applied.failed);
+            assert_eq!(applied.not_set, ["gog_id"]);
+        }
     }
 }

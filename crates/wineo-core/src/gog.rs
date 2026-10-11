@@ -2,6 +2,7 @@
 //! login is kept, how it is renewed, and the cached owned list.
 
 pub mod account;
+pub mod folder;
 pub mod owned;
 pub mod product;
 

@@ -35,7 +35,8 @@ The clone keeps the source runner, architecture, compatibility settings,
 environment variables, target names, arguments, and default target. Absolute
 Unix target executable and working-directory paths inside the prefix are
 rebased to the clone. Windows paths and paths outside the prefix stay unchanged.
-The Heroic import ID is removed, and target desktop entries are disabled to
+The Heroic import ID and `gog_id` are removed (a clone shares the GOG game's
+folder but doesn't own it), and target desktop entries are disabled to
 avoid duplicates. Literal source-prefix paths in arguments or environment
 variables are reported for review. Registry contents and arbitrary strings are
 not rewritten.

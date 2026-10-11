@@ -25,6 +25,7 @@ use crate::build_lock;
 use crate::config::{self, EnvironmentConfig, GlobalConfig};
 use crate::desktop;
 use crate::environment::{self, Environment};
+use crate::gog::folder::{self, FolderError, FolderLock};
 use crate::name;
 use crate::operation::{Locks, Operation};
 use crate::paths::{self, Paths};
@@ -162,6 +163,10 @@ struct Manifest {
     prefix_identity: Option<Identity>,
     phase: Phase,
     payloads: Vec<Payload>,
+    /// GOG game folders `rm` released from this environment, which a
+    /// restore claims again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    gog_folders: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1382,6 +1387,19 @@ pub fn remove_with(
     name: &str,
     include_prefix: bool,
     token: &crate::cancel::Token,
+    events: impl FnMut(RemoveEvent),
+) -> Result<Entry> {
+    remove_with_force(paths, name, include_prefix, false, token, events)
+}
+
+/// `remove_with`, but with `force` an environment whose GOG game is
+/// mid-update is removed too, leaving the folder's journal in place.
+pub fn remove_with_force(
+    paths: &Paths,
+    name: &str,
+    include_prefix: bool,
+    force: bool,
+    token: &crate::cancel::Token,
     mut events: impl FnMut(RemoveEvent),
 ) -> Result<Entry> {
     Environment::ensure_exists(paths, name)?;
@@ -1397,6 +1415,14 @@ pub fn remove_with(
         name,
         &initial_prefix.as_deref().into_iter().collect::<Vec<_>>(),
     )?;
+    // GOG games live in the host library, so a portable environment of the
+    // same name never owns one.
+    let gog = if paths.portable_root().is_none() {
+        let strict = folder::may_track_game(paths, name);
+        folder::lock_owned(paths, name, strict, &|| token.is_canceled())?
+    } else {
+        Vec::new()
+    };
     let _config = locks.config(&paths.environment_config(name))?;
     let _art_config = locks.config(&paths.art_dir(name).join("art.toml"))?;
     Environment::ensure_exists(paths, name)?;
@@ -1424,6 +1450,12 @@ pub fn remove_with(
         _ => {}
     }
     runtime.check_resolved(name)?;
+    if !force && gog.iter().any(|(_, state)| state.journal.is_some()) {
+        return Err(FolderError::RemoveMidUpdate {
+            name: name.to_owned(),
+        }
+        .into());
+    }
     if include_prefix && let Some(env) = &current {
         match &env.config.kind {
             config::Kind::Wine(_) => {}
@@ -1511,6 +1543,12 @@ pub fn remove_with(
         return Err(crate::error::Error::Canceled("removing environment").into());
     }
     events(RemoveEvent::Moving);
+    // Released before the config goes, so a crash in between leaves an
+    // environment whose folder has no owner, which claiming heals.
+    for (lock, _) in &gog {
+        lock.release()?;
+    }
+    failpoint("gog.after_release")?;
     create_storage(&paths.trash_dir())?;
     let stamp = jiff::Timestamp::now()
         .strftime("%Y%m%dT%H%M%SZ")
@@ -1600,9 +1638,20 @@ pub fn remove_with(
         prefix_identity: prefix_present,
         phase: Phase::Removing,
         payloads,
+        gog_folders: gog
+            .iter()
+            .filter(|(_, state)| {
+                current
+                    .as_ref()
+                    .and_then(|env| env.config.gog_id.as_deref())
+                    .is_some_and(|gog_id| state.is_game(gog_id))
+            })
+            .map(|(_, state)| state.folder.clone())
+            .collect(),
     };
     start_marker(paths, &manifest, Intent::Remove)?;
     write_manifest(paths, &manifest)?;
+    failpoint("remove.after_manifest")?;
     for index in 0..manifest.payloads.len() {
         move_out(paths, &mut manifest, index)?;
     }
@@ -1638,7 +1687,14 @@ fn lock_paths(paths: &Paths, manifest: &Manifest) -> Result<Vec<PathBuf>> {
     Ok(locations)
 }
 
-fn locked(paths: &Paths, id: &str, action: impl FnOnce(&mut Manifest) -> Result<()>) -> Result<()> {
+/// Holds the entry's locks while `action` runs. With `gog`, the GOG folders
+/// the removal released are locked exclusively too and passed along.
+fn locked(
+    paths: &Paths,
+    id: &str,
+    gog: bool,
+    action: impl FnOnce(&mut Manifest, &[FolderLock]) -> Result<()>,
+) -> Result<()> {
     let manifest = read_manifest(paths, id)?;
     let locations = lock_paths(paths, &manifest)?;
     let locks = Locks::new(paths);
@@ -1647,13 +1703,27 @@ fn locked(paths: &Paths, id: &str, action: impl FnOnce(&mut Manifest) -> Result<
         &manifest.name,
         &locations.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
     )?;
+    let mut folders = if gog && paths.portable_root().is_none() {
+        manifest.gog_folders.clone()
+    } else {
+        Vec::new()
+    };
+    folders.sort_by_key(|path| folder::key(path));
+    folders.dedup();
+    let gog_locks = folders
+        .iter()
+        .map(|path| FolderLock::exclusive(paths, path, &|| false))
+        .collect::<Result<Vec<_>>>()?;
     let _config = locks.config_recovery(&paths.environment_config(&manifest.name))?;
     let _art_config = locks.config_recovery(&paths.art_dir(&manifest.name).join("art.toml"))?;
     let mut current = read_manifest(paths, id)?;
-    if current.name != manifest.name || lock_paths(paths, &current)? != locations {
+    if current.name != manifest.name
+        || lock_paths(paths, &current)? != locations
+        || current.gog_folders != manifest.gog_folders
+    {
         bail!("trash entry changed while acquiring locks; retry");
     }
-    action(&mut current)
+    action(&mut current, &gog_locks)
 }
 
 fn verify_parents(paths: &Paths, payload: &Payload) -> Result<(PathBuf, PathBuf)> {
@@ -1906,20 +1976,38 @@ fn complete_entry(paths: &Paths, manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
-fn restore_locked(paths: &Paths, manifest: &mut Manifest, rollback: bool) -> Result<()> {
-    restore_locked_with(paths, manifest, rollback, || Ok(()))
+fn restore_locked(
+    paths: &Paths,
+    manifest: &mut Manifest,
+    rollback: bool,
+    gog: &[FolderLock],
+) -> Result<()> {
+    restore_locked_with(paths, manifest, rollback, gog, || Ok(()))
 }
 
 fn restore_locked_with(
     paths: &Paths,
     manifest: &mut Manifest,
     rollback: bool,
+    gog: &[FolderLock],
     published: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     let config = paths.environment_config(&manifest.name);
     if !rollback && manifest.phase == Phase::Trashed {
         if identity(&config)?.is_some() {
             bail!("environment `{}` already exists", manifest.name);
+        }
+        for lock in gog {
+            if let Some(state) = lock.read()?
+                && let Some(owner) = state.owner
+                && owner != manifest.name
+            {
+                return Err(FolderError::OwnedByOther {
+                    folder: state.folder,
+                    owner,
+                }
+                .into());
+            }
         }
         if manifest.prefix_present == Some(true) && !manifest.include_prefix {
             let original = resolved(
@@ -1983,6 +2071,10 @@ fn restore_locked_with(
         }
         published()
     })?;
+    // The config is back first, so a crash before this leaves an environment
+    // whose folder has no owner, which claiming heals.
+    failpoint("gog.before_reclaim")?;
+    reclaim_gog(paths, manifest, gog)?;
     // Registration and payload restoration have completed. A shortcut failure
     // is reported, but it must not undo or block the returned environment.
     let desktop_error = reconcile(paths, &manifest.name).err();
@@ -1992,6 +2084,38 @@ fn restore_locked_with(
             "environment {} was restored, but its desktop entries need attention: {err:#}",
             manifest.name
         );
+    }
+    Ok(())
+}
+
+/// Claims the released folders again for the returned config's game. A
+/// folder another environment took meanwhile is left to `validate`, so
+/// recovery still finishes.
+fn reclaim_gog(paths: &Paths, manifest: &Manifest, gog: &[FolderLock]) -> Result<()> {
+    if gog.is_empty() {
+        return Ok(());
+    }
+    let path = paths.environment_config(&manifest.name);
+    let Some(gog_id) = fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| EnvironmentConfig::parse(&path, &text).ok())
+        .and_then(|config| config.gog_id)
+    else {
+        return Ok(());
+    };
+    for lock in gog {
+        match lock.read()? {
+            Some(state) if state.is_game(&gog_id) => {}
+            _ => continue,
+        }
+        if let Err(err) = lock.reclaim(&manifest.name)
+            && !matches!(
+                err.downcast_ref::<FolderError>(),
+                Some(FolderError::OwnedByOther { .. })
+            )
+        {
+            return Err(err);
+        }
     }
     Ok(())
 }
@@ -2048,11 +2172,11 @@ fn with_environment_build_locks<T>(
 }
 
 pub fn restore(paths: &Paths, id: &str) -> Result<()> {
-    locked(paths, id, |manifest| {
+    locked(paths, id, true, |manifest, gog| {
         if manifest.phase != Phase::Trashed {
             bail!("entry {id} needs `wineo validate --fix` first");
         }
-        restore_locked(paths, manifest, false)
+        restore_locked(paths, manifest, false, gog)
     })
 }
 
@@ -2179,7 +2303,7 @@ pub fn prune_reviewed(paths: &Paths, review: &PruneReview) -> Vec<(String, Resul
         .iter()
         .enumerate()
         .map(|(index, entry)| {
-            let result = locked(paths, &entry.id, |manifest| {
+            let result = locked(paths, &entry.id, false, |manifest, _| {
                 let raw = fs::read(entry_dir(paths, &entry.id)?.join(MANIFEST))?;
                 if format!("{:x}", Sha256::digest(raw)) != review.fingerprints[index]
                     || info(paths, manifest)? != *entry
@@ -2250,9 +2374,9 @@ pub fn recover(paths: &Paths, id: &str) -> Result<()> {
             );
         }
     }
-    locked(paths, id, |manifest| match manifest.phase {
-        Phase::Removing => restore_locked(paths, manifest, true),
-        Phase::Restoring => restore_locked(paths, manifest, false),
+    locked(paths, id, true, |manifest, gog| match manifest.phase {
+        Phase::Removing => restore_locked(paths, manifest, true, gog),
+        Phase::Restoring => restore_locked(paths, manifest, false, gog),
         Phase::Pruning => prune_locked(paths, manifest),
         Phase::Trashed if marker_for(paths, id)?.is_some() => {
             finish_marker(paths, manifest)?;
@@ -2539,8 +2663,8 @@ mod tests {
         let entry = remove(&f.paths, "game", true).unwrap();
         fs::write(f.paths.global_config(), "invalid = [TOML").unwrap();
 
-        locked(&f.paths, &entry.id, |manifest| {
-            restore_locked_with(&f.paths, manifest, false, || {
+        locked(&f.paths, &entry.id, true, |manifest, gog| {
+            restore_locked_with(&f.paths, manifest, false, gog, || {
                 for (kind, name) in [
                     (build_lock::Kind::Runner, "build"),
                     (build_lock::Kind::Dxvk, "2.0"),
@@ -2622,8 +2746,8 @@ mod tests {
         let paths = f.paths.clone();
         let id = entry.id.clone();
         let worker = std::thread::spawn(move || {
-            locked(&paths, &id, |manifest| {
-                restore_locked_with(&paths, manifest, false, || {
+            locked(&paths, &id, true, |manifest, gog| {
+                restore_locked_with(&paths, manifest, false, gog, || {
                     published_tx.send(()).unwrap();
                     release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
                     Ok(())
@@ -3004,6 +3128,7 @@ mod tests {
             prefix_identity: None,
             phase: Phase::Removing,
             payloads: vec![payload],
+            gog_folders: Vec::new(),
         };
         start_marker(&f.paths, &manifest, Intent::Remove).unwrap();
         assert!(check_pending(&f.paths, "game", &[]).is_err());
@@ -3649,6 +3774,7 @@ mod tests {
             prefix_identity: None,
             phase: Phase::Removing,
             payloads: vec![payload],
+            gog_folders: Vec::new(),
         };
         write_manifest(&paths, &manifest).unwrap();
         manifest.payloads[0].copied_identity = Some(reserve_copy(&source, &dest).unwrap());
@@ -3899,5 +4025,221 @@ mod tests {
         assert!(prune_reviewed(&f.paths, &review)[0].1.is_ok());
         assert!(entry_dir(&f.paths, &bad.id).unwrap().exists());
         assert!(!entry_dir(&f.paths, &good.id).unwrap().exists());
+    }
+
+    mod gog {
+        use super::*;
+        use crate::gog::folder::{
+            Committed, FolderState, Journal, JournalKind, Platform, Target, Track,
+        };
+
+        const NEVER: &dyn Fn() -> bool = &|| false;
+
+        fn game(folder: &Path, owner: Option<&str>, journal: bool) -> FolderState {
+            let target = Target {
+                gog_id: 1094900565,
+                platform: Platform::Linux,
+                language: "en-US".to_owned(),
+                track: Track::Installer,
+                products: Vec::new(),
+            };
+            FolderState {
+                committed: Some(Committed {
+                    gog_id: target.gog_id,
+                    platform: target.platform,
+                    language: target.language.clone(),
+                    track: target.track,
+                    products: Vec::new(),
+                    files: Vec::new(),
+                }),
+                journal: journal.then(|| Journal {
+                    operation: "op-1".to_owned(),
+                    kind: JournalKind::Update,
+                    target,
+                    packages: Vec::new(),
+                    attempted: Vec::new(),
+                }),
+                ..FolderState::new(folder.to_owned(), owner.map(str::to_owned))
+            }
+        }
+
+        fn save(paths: &Paths, state: &FolderState) {
+            FolderLock::exclusive(paths, &state.folder, NEVER)
+                .unwrap()
+                .write(state)
+                .unwrap();
+        }
+
+        fn load(paths: &Paths, folder: &Path) -> FolderState {
+            FolderLock::shared(paths, folder, NEVER)
+                .unwrap()
+                .read()
+                .unwrap()
+                .unwrap()
+        }
+
+        const RIMWORLD: &str = "kind = 'native'\ngog_id = '1094900565'\n";
+
+        fn setup(journal: bool) -> (Fixture, PathBuf) {
+            let f = Fixture::new();
+            f.config("rimworld", RIMWORLD);
+            let folder = f._root.path().join("Games/RimWorld");
+            save(&f.paths, &game(&folder, Some("rimworld"), journal));
+            (f, folder)
+        }
+
+        #[test]
+        fn rm_releases_the_folder_and_restore_claims_it_again() {
+            let (f, folder) = setup(false);
+            let entry = remove(&f.paths, "rimworld", false).unwrap();
+            assert_eq!(load(&f.paths, &folder).owner, None);
+            assert_eq!(
+                read_manifest(&f.paths, &entry.id).unwrap().gog_folders,
+                std::slice::from_ref(&folder)
+            );
+            restore(&f.paths, &entry.id).unwrap();
+            assert_eq!(load(&f.paths, &folder).owner.as_deref(), Some("rimworld"));
+            assert_eq!(
+                fs::read_to_string(f.paths.environment_config("rimworld")).unwrap(),
+                RIMWORLD
+            );
+        }
+
+        #[test]
+        fn rm_mid_update_is_refused_without_force() {
+            let (f, folder) = setup(true);
+            let error = remove(&f.paths, "rimworld", false).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "rimworld is mid-update. Finish it with wineo update rimworld, or remove it anyway with --force."
+            );
+            assert_eq!(load(&f.paths, &folder).owner.as_deref(), Some("rimworld"));
+            assert!(f.paths.environment_config("rimworld").exists());
+            assert!(list(&f.paths).unwrap().is_empty());
+
+            let entry = remove_with_force(
+                &f.paths,
+                "rimworld",
+                false,
+                true,
+                &crate::cancel::Token::new(),
+                |_| {},
+            )
+            .unwrap();
+            let state = load(&f.paths, &folder);
+            assert_eq!(state.owner, None);
+            assert!(state.journal.is_some());
+            assert!(!f.paths.environment_config("rimworld").exists());
+
+            // Restoring claims it back with the journal still there.
+            restore(&f.paths, &entry.id).unwrap();
+            let state = load(&f.paths, &folder);
+            assert_eq!(state.owner.as_deref(), Some("rimworld"));
+            assert!(state.journal.is_some());
+        }
+
+        #[test]
+        fn a_crash_between_rm_state_and_config_writes_leaves_an_ownerless_folder() {
+            let (f, folder) = setup(false);
+            set_trash_failpoint(Some("gog.after_release"));
+            assert!(remove(&f.paths, "rimworld", false).is_err());
+            assert_eq!(load(&f.paths, &folder).owner, None);
+            assert_eq!(
+                fs::read_to_string(f.paths.environment_config("rimworld")).unwrap(),
+                RIMWORLD
+            );
+            assert!(list(&f.paths).unwrap().is_empty());
+            assert!(pending_entries(&f.paths).unwrap().is_empty());
+            // Removing again works from that state.
+            remove(&f.paths, "rimworld", false).unwrap();
+        }
+
+        #[test]
+        fn a_crash_between_restore_config_and_state_writes_is_finished_by_recovery() {
+            let (f, folder) = setup(false);
+            let entry = remove(&f.paths, "rimworld", false).unwrap();
+            set_trash_failpoint(Some("gog.before_reclaim"));
+            assert!(restore(&f.paths, &entry.id).is_err());
+            // The config is back, the folder still has no owner.
+            assert_eq!(
+                fs::read_to_string(f.paths.environment_config("rimworld")).unwrap(),
+                RIMWORLD
+            );
+            assert_eq!(load(&f.paths, &folder).owner, None);
+            recover(&f.paths, &entry.id).unwrap();
+            assert_eq!(load(&f.paths, &folder).owner.as_deref(), Some("rimworld"));
+            assert!(list(&f.paths).unwrap().is_empty());
+        }
+
+        #[test]
+        fn restore_is_refused_when_another_environment_owns_the_folder() {
+            let (f, folder) = setup(false);
+            let entry = remove(&f.paths, "rimworld", false).unwrap();
+            save(&f.paths, &game(&folder, Some("copy"), false));
+            let error = restore(&f.paths, &entry.id).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("{} belongs to copy.", folder.display())
+            );
+            assert!(!f.paths.environment_config("rimworld").exists());
+            assert_eq!(
+                read_manifest(&f.paths, &entry.id).unwrap().phase,
+                Phase::Trashed
+            );
+            assert!(pending_entries(&f.paths).unwrap().is_empty());
+        }
+
+        #[test]
+        fn a_portable_environment_of_the_same_name_never_releases_the_host_folder() {
+            let (f, folder) = setup(false);
+            let home = f._root.path().to_owned();
+            let portable = Paths::select(
+                move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+                Some(&f._root.path().join("usb")),
+            )
+            .unwrap();
+            let config = portable.environment_config("rimworld");
+            fs::create_dir_all(config.parent().unwrap()).unwrap();
+            fs::write(&config, RIMWORLD).unwrap();
+            remove(&portable, "rimworld", false).unwrap();
+            assert_eq!(load(&f.paths, &folder).owner.as_deref(), Some("rimworld"));
+        }
+
+        #[test]
+        fn recovering_an_interrupted_rm_claims_the_folder_back() {
+            let (f, folder) = setup(false);
+            set_trash_failpoint(Some("remove.after_manifest"));
+            assert!(remove(&f.paths, "rimworld", false).is_err());
+            assert_eq!(load(&f.paths, &folder).owner, None);
+            let entries = list(&f.paths).unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].phase, Phase::Removing);
+            recover(&f.paths, &entries[0].id).unwrap();
+            assert_eq!(
+                fs::read_to_string(f.paths.environment_config("rimworld")).unwrap(),
+                RIMWORLD
+            );
+            assert_eq!(load(&f.paths, &folder).owner.as_deref(), Some("rimworld"));
+            assert!(list(&f.paths).unwrap().is_empty());
+        }
+
+        #[test]
+        fn an_unreadable_state_only_blocks_removing_an_environment_tracking_a_game() {
+            let (f, folder) = setup(false);
+            let bad = f.paths.gog_folders_dir().join("bad.toml");
+            fs::write(&bad, "version = 9\nfolder = '/x'\n").unwrap();
+            f.config("plain", "kind = 'native'\n");
+            remove(&f.paths, "plain", false).unwrap();
+
+            let error = remove(&f.paths, "rimworld", false).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("rimworld's GOG state can't be checked: "),
+                "{error}"
+            );
+            assert!(f.paths.environment_config("rimworld").exists());
+            assert_eq!(load(&f.paths, &folder).owner.as_deref(), Some("rimworld"));
+        }
     }
 }

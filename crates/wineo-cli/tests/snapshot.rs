@@ -302,3 +302,118 @@ fn a_restore_that_drops_a_target_keeps_its_art() {
         "warning: art for unknown target `server`\n"
     );
 }
+
+#[test]
+fn a_restore_from_before_migration_keeps_the_gog_id() {
+    let Some(f) = fixture() else { return };
+    let (_, config) = environment(&f);
+    assert_success(&f.run(&["snapshot", "create", "game", "before-gog"]));
+    let migrated = config.replacen(
+        "# saved comment\n",
+        "# saved comment\ngog_id = \"1094900565\"\n",
+        1,
+    );
+    fs::write(f.config_dir().join("environments/game.toml"), &migrated).unwrap();
+    let folder = f.root.path().join("Games/game");
+    fs::create_dir_all(&folder).unwrap();
+    f.gog_folder(&folder, Some("game"), 1094900565, false);
+
+    let output = f.run(&["snapshot", "restore", "game", "before-gog", "--yes"]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("Put gog_id 1094900565 back in game's config.\n"),
+        "{}",
+        stdout(&output)
+    );
+    let restored = f.created_config("game");
+    assert!(restored.starts_with("# saved comment\n"), "{restored}");
+    assert!(restored.contains("gog_id = \"1094900565\""), "{restored}");
+    assert_eq!(f.gog_state(&folder).unwrap().owner.as_deref(), Some("game"));
+}
+
+#[test]
+fn a_restore_naming_another_gog_game_is_refused_before_anything_changes() {
+    let Some(f) = fixture() else { return };
+    let (prefix, config) = environment(&f);
+    let other = config.replacen("# saved comment\n", "# saved comment\ngog_id = \"1\"\n", 1);
+    fs::write(f.config_dir().join("environments/game.toml"), &other).unwrap();
+    assert_success(&f.run(&["snapshot", "create", "game", "other-game"]));
+    let migrated = config.replacen(
+        "# saved comment\n",
+        "# saved comment\ngog_id = \"1094900565\"\n",
+        1,
+    );
+    fs::write(f.config_dir().join("environments/game.toml"), &migrated).unwrap();
+    fs::write(prefix.join("drive_c/Games/save.dat"), b"after").unwrap();
+    let folder = f.root.path().join("Games/game");
+    fs::create_dir_all(&folder).unwrap();
+    f.gog_folder(&folder, Some("game"), 1094900565, false);
+
+    let output = f.run(&["snapshot", "restore", "game", "other-game", "--yes"]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output)
+            .contains("The snapshot's gog_id 1 doesn't match game's GOG game 1094900565."),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(f.created_config("game"), migrated);
+    assert_eq!(
+        fs::read(prefix.join("drive_c/Games/save.dat")).unwrap(),
+        b"after"
+    );
+}
+
+#[test]
+fn an_unrelated_unreadable_gog_state_doesnt_block_a_restore() {
+    let Some(f) = fixture() else { return };
+    environment(&f);
+    assert_success(&f.run(&["snapshot", "create", "game", "plain"]));
+    let dir = f.paths().gog_folders_dir();
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("bad.toml"), "version = 9\nfolder = \"/x\"\n").unwrap();
+    assert_success(&f.run(&["snapshot", "restore", "game", "plain", "--yes"]));
+}
+
+#[test]
+fn a_restore_fails_closed_on_an_unreadable_gog_state_when_either_config_has_gog_id() {
+    let Some(f) = fixture() else { return };
+    let (prefix, config) = environment(&f);
+    let tracked = config.replacen(
+        "# saved comment\n",
+        "# saved comment\ngog_id = \"1094900565\"\n",
+        1,
+    );
+    let config_path = f.config_dir().join("environments/game.toml");
+    // The snapshot's config has gog_id and the current one doesn't, then
+    // the other way around.
+    fs::write(&config_path, &tracked).unwrap();
+    assert_success(&f.run(&["snapshot", "create", "game", "tracked"]));
+    fs::write(&config_path, &config).unwrap();
+    assert_success(&f.run(&["snapshot", "create", "game", "plain"]));
+    let dir = f.paths().gog_folders_dir();
+    fs::create_dir_all(&dir).unwrap();
+    let bad = dir.join("bad.toml");
+    fs::write(&bad, "version = 9\nfolder = \"/x\"\n").unwrap();
+    fs::write(prefix.join("drive_c/Games/save.dat"), b"after").unwrap();
+
+    for (label, current) in [("tracked", &config), ("plain", &tracked)] {
+        fs::write(&config_path, current).unwrap();
+        let output = f.run(&["snapshot", "restore", "game", label, "--yes"]);
+        assert!(!output.status.success(), "{label}");
+        assert!(
+            stderr(&output).contains(&format!(
+                "game's GOG state can't be checked: {} isn't a valid GOG folder state (unsupported GOG folder state version 9).",
+                bad.display()
+            )),
+            "{label}: {}",
+            stderr(&output)
+        );
+        assert_eq!(&f.created_config("game"), current, "{label}");
+        assert_eq!(
+            fs::read(prefix.join("drive_c/Games/save.dat")).unwrap(),
+            b"after",
+            "{label}"
+        );
+    }
+}
