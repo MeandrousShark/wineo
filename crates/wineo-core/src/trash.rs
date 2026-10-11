@@ -4093,7 +4093,7 @@ mod tests {
             assert_eq!(load(&f.paths, &folder).owner, None);
             assert_eq!(
                 read_manifest(&f.paths, &entry.id).unwrap().gog_folders,
-                [folder.clone()]
+                std::slice::from_ref(&folder)
             );
             restore(&f.paths, &entry.id).unwrap();
             assert_eq!(load(&f.paths, &folder).owner.as_deref(), Some("rimworld"));
