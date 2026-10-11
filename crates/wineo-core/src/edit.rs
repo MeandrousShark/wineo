@@ -21,6 +21,9 @@ pub enum EditError {
     InvalidValue { key: String, reason: String },
     #[error("`{key}` can't be changed: {reason}")]
     ReadOnly { key: String, reason: String },
+    /// A key another command owns, with the whole refusal as its message.
+    #[error("{0}")]
+    Managed(String),
     #[error("{0}")]
     InvalidList(String),
 }
@@ -92,6 +95,7 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
             Ok(())
         }
         "arch" => Err(read_only_arch()),
+        "gog_id" => Err(read_only_gog_id()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
                 let var = validate_env_var(key, var)?;
@@ -495,9 +499,8 @@ fn unset_gamescope_field(root: &mut Table, key: &str, field: &str) -> Result<boo
 fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
         "prefix" | "runner" | "gamemode" | "wayland" | "mangohud" | "gamescope" | "hooks"
-        | "gameid" | "tags" | "winetricks" | "store" | "dxvk" | "vkd3d" | "title" | "desktop" => {
-            Ok(root.remove(key).is_some())
-        }
+        | "gameid" | "tags" | "winetricks" | "store" | "dxvk" | "vkd3d" | "title" | "desktop"
+        | "gog_id" => Ok(root.remove(key).is_some()),
         "arch" => Err(read_only_arch()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
@@ -621,6 +624,12 @@ fn unset_target(root: &mut Table, key: &str, rest: &str) -> Result<bool, EditErr
             Ok(removed)
         }
     }
+}
+
+/// `gog_id` names the game folder an environment owns, so only the GOG
+/// import sets it. Unsetting it stays allowed.
+pub fn read_only_gog_id() -> EditError {
+    EditError::Managed("gog_id is set by wineo import gog.".to_owned())
 }
 
 fn read_only_arch() -> EditError {
