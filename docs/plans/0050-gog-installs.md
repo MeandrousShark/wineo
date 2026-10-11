@@ -8,15 +8,16 @@ Install GOG games from wineo: native and Windows games from GOG's offline
 installers, Windows games' updates, and DLC bought after installing. Second
 of three GOG plans. It builds on [0049](0049-gog-games.md), which adds the
 GOG client, the account, Heroic migration, native updates, and the rules
-for game folders, receipts, and recovery. Galaxy builds come in 0051.
+for game folders, their state files, and recovery. Galaxy builds come in 0051.
 
 ## Settled by the maintainer
 
 This plan split from 0049 after that plan's third review (2026-10-10). Its
 answers carry over from 0049's questions:
 
-- **1A, 2A:** a GOG game is a normal Wine, Proton, or native environment
-  with `gog_id`, and its installed state is in a receipt wineo manages.
+- **1A, 2A, 21A:** a GOG game is a normal Wine, Proton, or native
+  environment with `gog_id`, and its installed state is in its folder's
+  state file, with a write-ahead journal.
 - **3, phased:** offline installers here; Galaxy builds in 0051.
 - **7A:** new games install to `<games_root>/<title>`, with a new
   `defaults.games_root` setting, default `~/Games`.
@@ -28,15 +29,15 @@ answers carry over from 0049's questions:
 - **11:** owned DLC, a language setting (default English), and GOG art are
   in.
 - **12A:** Galaxy-tracked games are left to 0051.
-- **14A:** an incomplete game refuses to launch.
+- **14A:** a game mid-install or mid-update (a journal) refuses to launch.
 - **17A:** host root only.
 - **19A:** `wineo update` also installs newly owned DLC, retries failed
   DLC, and rechecks unavailable DLC.
 
 ## Existing foundation
 
-- **0049:** the `wineo-gog` crate (client and downloads), receipts, folder
-  records and locks, launch protection, native package extraction with
+- **0049:** the `wineo-gog` crate (client and downloads), folder state
+  files with their journals, locks, launch protection, native package extraction with
   split files and space checks, native updates with DLC precedence, and
   recovery.
 - **Installer runs.** `wineo new --install-exe` and the desktop app's
@@ -52,8 +53,8 @@ answers carry over from 0049's questions:
   folder name (path separators, control characters, and trailing dots and
   spaces removed). `--dir` overrides.
 - A fresh install, Windows or native, into a folder that exists and isn't
-  empty is refused, unless the receipt says it's this environment's own
-  partial install. 0049's no-overlap rule applies.
+  empty is refused, unless its state file has this environment's own
+  `install` journal. 0049's no-overlap rule applies.
 
 ### Installing
 
@@ -68,11 +69,11 @@ answers carry over from 0049's questions:
   estimate (twice the installer size), and the review says so. When the
   download cache and the game folder share a filesystem, the sum is
   checked.
-- **Order:** download, then create the environment, write the folder
-  record as `installing` and then the receipt with the packages, install,
-  record the versions in the receipt, and mark the record `installed`.
-  0049's authority and recovery rules apply, with `installing` treated
-  like `updating`.
+- **Order:** download, then create the environment and the folder's state
+  file with an `install` journal naming the packages and every path it
+  will write, install, then commit. 0049's journal, durability, and
+  recovery rules apply; a crash leaves the journal, and `wineo update NAME`
+  finishes the install.
 
 ### Windows installers
 
@@ -91,13 +92,14 @@ answers carry over from 0049's questions:
   `/LANG=` from a table of common names and also runs the installer with
   the matching locale, which Inno falls back to. Afterward it reads the
   language from `goggame-<id>.info`. When that differs from the request,
-  the review and the receipt say so without guessing why: `Requested
+  the review and the state file say so without guessing why: `Requested
   English; the installed game reports French.`
 - **Exit codes:** 0 is success. 1, 3, and 7 mean setup never started
   changing files, so wineo offers the installer's own wizard once. 2 is a
   cancel before anything changed. 4, 5 (a cancel or an abort after a file
   error, both partway), 6, 8 (needs a restart), and any other nonzero code
-  are failures partway: `incomplete`, no wizard.
+  are failures partway: the journal stays for `wineo update` to finish, and
+  there's no wizard.
 - The default target comes from `goggame-<id>.info`'s primary file play
   task (path, working dir, arguments). A game with only a URL task, or no
   info file, gets no default target and the program list, like `new`.
@@ -115,7 +117,8 @@ answers carry over from 0049's questions:
   account's owned products, intersected with the game's DLC list from
   product details.
 - A DLC that was never available, or failed before changing files, leaves
-  the game launchable. One that failed partway leaves it `incomplete`.
+  the game launchable. One that failed partway leaves the journal, so the
+  game stays blocked until `wineo update` finishes it.
 - Native DLC joins 0049's install order and precedence.
 - Per question 19, `wineo update` also installs newly owned DLC, retries
   `failed` DLC, and rechecks `unavailable` DLC, each listed in its review.
@@ -167,7 +170,7 @@ answers carry over from 0049's questions:
 1. `defaults.games_root` and `gog.language` settings, safe folder names,
    and the fresh-install folder rules.
 2. Core create-and-install for native games and DLC, on 0049's packages,
-   receipts, and records. Move the CLI and the desktop app's existing
+   state files, and journals. Move the CLI and the desktop app's existing
    installer flow onto it.
 3. Windows installs: installer arguments, language with read-back, exit
    codes, the wizard fallback, and targets from `goggame-<id>.info`.

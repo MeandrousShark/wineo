@@ -64,6 +64,11 @@ installer-tracked ones for 0050.
 After a fourth review, the maintainer answered question 20 with A: every
 native update rebuilds all installed products from current packages.
 
+After a fifth review, the maintainer answered question 21 with A: each
+game folder's state lives in one file with a write-ahead journal, which
+replaces the per-environment receipt (question 2's file) and the status
+matrix.
+
 ## What GOG offers
 
 From reading the source of heroic-gogdl 1.3.1, Heroic, Minigalaxy 1.4.3,
@@ -449,6 +454,26 @@ became a question.
   Smaller downloads, but hard to get right, and still a full rebuild when
   file lists are missing.
 
+## Fifth plan review (2026-10-10)
+
+Every finding, two High, was about crash consistency between two files
+with statuses and a write order: a recovery that crashes again, a
+same-version reinstall whose start and end look alike, files left by a
+failed attempt that no committed version ships, removal and restore
+crashing between writes, and whether the guarantee covers power loss.
+
+### 21. Crash consistency
+
+- **A (recommended).** One file per game folder holds the committed state
+  and, while work is in flight, a write-ahead journal of what it will do.
+  Healthy means no journal. Starting writes the journal durably before
+  touching the folder; committing replaces the state and drops the journal
+  in one atomic write. Recovery finishes or cleans up exactly what the
+  journal names.
+- **B.** Keep the receipt and the folder record, and add rows, a prior
+  health field, an operation id, attempted paths, and ordered removal and
+  restore steps to the matrix.
+
 ## Proposed design
 
 Written for the answers above.
@@ -462,8 +487,8 @@ Written for the answers above.
   manifests, chunks, and diffs to it.
 - It knows tokens, URLs, and folders, never environments, prefixes,
   configs, or runners. `wineo-core` depends on it and decides what happens
-  to games: migration, extracting packages, receipts, folder records,
-  locks, and keyring storage.
+  to games: migration, extracting packages, folder state files and their
+  journals, locks, and keyring storage.
 - Its tests use its own fake GOG server and fixtures, without wineo's
   environment test harness.
 - `AGENTS.md`'s code boundaries gain a line for it when it lands.
@@ -505,86 +530,84 @@ Written for the answers above.
   `WINEO_PORTABLE_DIR`, logging in and listing work, but migrating and
   updating refuse: `GOG games live in the host library. Run this without
   --portable.`
-- Each migrated game has one install folder, recorded by canonical path in
-  its receipt.
 - **No overlap.** A GOG game folder can't be the same as, inside, or around
   another GOG game's folder. Migration refuses an overlap, naming the other
   game.
-- **Folder records.** Each GOG game folder has a host-wide record in the
-  host state directory, keyed by its canonical path, with the folder's
-  status (`installed`, `updating`, `incomplete`) and its owner's name.
-  Records outlive their owner, so a folder's health doesn't depend on any
-  one environment still existing.
+- **Folder state.** Each GOG game folder has one state file in the host
+  data directory, `gog/folders/<hash>.toml`, keyed by the folder's
+  canonical path. It is the only record of the game: internal per
+  [Stability](../stability.md), and it replaces question 2's
+  per-environment file. An environment's game is the folder whose state
+  names it as owner and has its `gog_id`.
 - **Locks.** Each folder has a host-wide lock. A launch takes it shared;
   migration, update, `rm` of the owner, and trash restore of the owner
-  take it exclusively.
+  take it exclusively. Every change to the state file is made holding it.
 
-### Receipts, records, and crashes
+### State, journal, and crashes
 
-- The receipt is `gog/<environment>.toml` under the host data directory,
-  internal per [Stability](../stability.md). It records: GOG id, platform,
-  canonical install folder, language as installed, the track (`installer`
-  or `galaxy`), the installed installer version or build id, a status, the
-  target versions during an update, the products' order, and per DLC: id,
-  installer version, and status (`installed`, `failed`, `unavailable`).
-- Native games also record the winning files: for each file in the folder
-  that a product shipped, its size, MD5, and which product it came from,
-  with split files recorded as their assembled result.
-- **Write order.** An update sets the folder record to `updating`, with its
-  target versions, before the receipt; then the receipt to `updating`; and
-  only then changes files. At the end the receipt gets the new versions and
-  `installed` before the record returns to `installed`. So files change
-  only while both say `updating`, and every crash leaves a combination that
-  says how far it got.
-- **Recovery matrix.** Launch is blocked in every row but the first.
-  `wineo update NAME`, holding the folder lock exclusively, resolves the
-  others:
-
-  | Record | Receipt | Meaning | `wineo update NAME` |
-  |---|---|---|---|
-  | `installed` | `installed` | healthy | a normal update |
-  | `updating` | `installed`, old versions | crashed before any file changed | resets the record, then a normal update |
-  | `updating` | `updating` | crashed while changing files | rebuilds from current packages |
-  | `updating` | `installed`, target versions | crashed after finishing | sets the record to `installed` |
-  | `installed` | `updating` | can't happen in this order: corrupt | refused; `validate --fix` sets both `incomplete` |
-  | `incomplete` | any | a failed or forced-away update | rebuilds from current packages |
-
-- **Missing pieces.** A receipt without a record gets a record from the
-  receipt (`installed` if the receipt is, else `incomplete`), by
-  `validate --fix` or the next update. A record without a receipt is an
-  ownerless folder (below).
-- **Removing the owner.** `rm` takes the folder lock exclusively. It
-  removes the receipt and keeps the folder record, ownerless, with its
-  status, so clones still take the lock and still see its health. One
-  mid-update is refused: `rimworld is mid-update. Finish it with wineo
-  update rimworld, or remove it anyway with --force.` With `--force` the
-  record is left `incomplete`.
-- **Ownerless records** stay until their folder is gone, when `validate
-  --fix` removes them. Launching from an ownerless `installed` folder
-  works; from an ownerless `incomplete` one is refused until it's
-  migrated again and finished.
-- **Reclaiming.** Migrating or trash-restoring an owner into a folder with
-  a record takes the record over and keeps its status: an `incomplete`
-  folder stays `incomplete` until `wineo update` rebuilds it, since
-  Heroic's metadata or an old receipt can't vouch for a half-updated
-  folder. A record owned by another environment refuses either one.
+- **The state file** holds:
+  - `owner` (an environment name, or none) and the canonical `folder`.
+  - `[committed]`: the last finished state. GOG id, platform, language as
+    installed, the track (`installer` or `galaxy`), the installed installer
+    version or build id per product, the products' order, each DLC's
+    status (`installed`, `failed`, `unavailable`), and for native games the
+    winning files: each file in the folder a product shipped, with its
+    size, MD5, and product, split files recorded as their assembled result.
+    A migrated native game has no winning files until its first update.
+  - `[journal]`, present only while work is in flight: an operation id, the
+    kind (`update`, `reinstall`, or `repair`), the exact resolved packages
+    (GOG file ids, sizes, and MD5s), and `attempted`: every path and hash
+    any attempt of this operation is about to write, kept across failed
+    attempts.
+- **Healthy means no journal.** Any journal blocks launch, for the owner
+  and every other environment launching from the folder.
+- **Starting** an operation writes the journal before touching the folder.
+  A retry adds its own paths to `attempted` before it writes them.
+- **Committing** replaces `[committed]` with the new state and removes
+  `[journal]` in one atomic write. There is no moment where part of the
+  state says done.
+- **Durability.** The state file is written to a temporary file, synced,
+  renamed into place, and its directory synced, like trash markers
+  (`trash.rs`), never through the plain `write_atomic`. So the guarantee
+  covers power loss and OS crashes, not just a killed process: a journal
+  is on disk before any game file changes, and a commit is on disk before
+  wineo reports success.
+- **Removing the owner.** `rm` sets `owner` to none in one write and keeps
+  the file, so clones still take the lock and still see a journal. `rm` of
+  a game with a journal is refused: `rimworld is mid-update. Finish it
+  with wineo update rimworld, or remove it anyway with --force.` With
+  `--force` the journal stays.
+- **Ownerless folders.** Launching from an ownerless folder without a
+  journal works; with one it's refused until the game is migrated again
+  and finished. `validate --fix` removes state files whose folder is gone.
+- **Reclaiming.** Migrating or trash-restoring an owner sets `owner` in one
+  write and keeps the journal, so a half-updated folder stays blocked
+  until `wineo update` finishes it; Heroic's metadata can't vouch for it.
+  A folder owned by another environment refuses either one.
+- **Config and state out of step.** A trash restore brings the
+  environment's config back before its `owner` write, so a crash between
+  them leaves an environment with `gog_id` whose folder has no owner: its
+  next migration, update, or launch claims it. One owned by another
+  environment is reported by `validate`. An environment with `gog_id` and
+  no state file at all is reported too, and `--fix` makes a state file
+  with a `repair` journal, so the next update rebuilds it.
 - **Snapshot restore** brings back the environment's config but not the
-  game folder, so the receipt follows the folder: if the restored config
-  has no `gog_id` (a snapshot from before migration), wineo puts the
-  receipt's `gog_id` back into it and says so. If it has a different
-  `gog_id`, the restore is refused before changing anything.
+  game folder, so the state file follows the folder: if the restored
+  config has no `gog_id` (a snapshot from before migration), wineo puts
+  the state file's `gog_id` back into it and says so. If it has a
+  different `gog_id`, the restore is refused before changing anything.
 
 ### Launch protection
 
-- **Owners** are always checked through their receipt and folder record,
+- **Owners** are always checked through their folder's state file,
   whatever target they launch.
 - **Other environments** (clones, portable copies, hand-made ones) are
   checked when the launched program, its working directory, or an absolute
-  path in its arguments is inside a recorded folder. Windows paths are
+  path in its arguments is inside a GOG game folder. Windows paths are
   translated through the prefix's drive letters first. Bare program names
   that Wine resolves, and launchers that find the game some other way,
   can't be seen, and the docs say so.
-- A folder that isn't `installed` refuses the launch, naming the owner:
+- A folder with a journal refuses the launch, naming the owner:
   `rimworld's game folder is mid-update. Finish it with wineo update
   rimworld.` An ownerless one says to migrate it again and finish it.
 - Updating refuses while anything is running from the folder:
@@ -599,9 +622,9 @@ Written for the answers above.
   request, and accepts only a 206 with a matching `Content-Range`; a 200
   restarts the file. Every finished file is verified whole: MD5 and size
   when GOG publishes a checksum, size only with a note when it doesn't.
-- Packages download to the cache, are deleted after a successful update,
-  and are kept after a failure, so a retry with every package still cached
-  needs no network.
+- Packages download to the cache under their GOG file id. They're deleted
+  after a commit and kept while a journal names them, so a retry can work
+  without the network (see Recovery).
 
 ### Native packages
 
@@ -646,17 +669,18 @@ Written for the answers above.
   changing anything. If one isn't offered any more, for example a DLC
   dropped in that language, the update is refused before any change,
   naming it.
-- **Order.** The receipt keeps the products' order: the base game, then
+- **Order.** The state file keeps the products' order: the base game, then
   each DLC in the order it was added. A file shipped by more than one
   product comes from the latest one in that order.
 - **Applying.** Every product is unpacked and split files assembled, then
   the staging folders are layered in order into the new winning files.
-  The record and receipt go to `updating`, and wineo writes every winning
-  file into the game folder, then records the new versions and winning
-  files.
-- **Old files.** A file that was a winning file before and isn't now is
-  deleted when it still matches the old winning file's hash, and kept and
-  listed when it doesn't. A winning file whose current content doesn't
+  wineo writes the journal with those paths and hashes in `attempted`,
+  writes every winning file into the game folder, cleans up, and commits.
+- **Old files.** A path that was a committed winning file, or is in the
+  journal's `attempted`, and isn't a new winning file is deleted when its
+  content matches one of the hashes recorded for it, and kept and listed
+  when it doesn't. So a file from a failed attempt that no version ships
+  any more is still removed, and a file you made there is not. A winning file whose current content doesn't
   match the old winning hash was changed by you, so it's overwritten and
   listed (question 15). Files that were never winning files, like
   RimWorld's `mods-1.5`, are never touched.
@@ -666,10 +690,18 @@ Written for the answers above.
 
 ### Recovery
 
-- `wineo update NAME`, run on the owner, resolves every row of the recovery
-  matrix. A rebuild uses the packages already in the download cache when
-  they're the current ones, so a retry after a failure can work without
-  the network, and fetches them otherwise.
+- `wineo update NAME`, run on the owner with the folder lock held
+  exclusively, finishes any journal. It keeps the journal's kind, so an
+  interrupted `--reinstall` or `repair` still rebuilds even when the
+  versions match.
+- **Packages.** When every package the journal names is in the download
+  cache and verifies against its recorded size and MD5, recovery finishes
+  with that exact set, even offline, and the next check finds anything
+  newer. Otherwise it resolves the current packages online and records
+  them in the journal before writing.
+- A crash during recovery leaves the journal, with every path the attempt
+  wrote already in `attempted`, so recovery can be restarted any number of
+  times.
 - A blocked clone's message names the owner to run it on.
 - `wineo update NAME --reinstall` rebuilds a native game from current
   packages even when nothing changed, repairing changed or missing files.
@@ -696,15 +728,17 @@ Written for the answers above.
   files and records them; with no old winning files it deletes nothing.
 - **Starting order.** A migrated native game's products start as the base
   game, then its DLC in the order Heroic's `installedDLCs` lists them.
-- **Incomplete folders** keep their status when migrated (see
+- **Mid-update folders** keep their journal when migrated (see
   Reclaiming).
+- Migrating writes the state file in one durable write, with `owner` and
+  `[committed]` from Heroic's metadata and no journal.
 - **Matching an existing environment,** by canonical paths: first an
   environment with the same `gog_id`; then one whose default target's exe
   is the game's primary play task (Windows) or `start.sh` (native) and,
   for Windows, whose prefix is Heroic's prefix for the game. More than one
   match, or a match that already has a different `gog_id`, is refused with
   the names. A matched environment keeps every setting; only `gog_id` and
-  the receipt are added.
+  the state file are added.
 - **New environments** carry over what Heroic import maps today (runner,
   arch, gamemode, environment variables, and the rest), plus Heroic's
   launch arguments, a custom executable when Heroic has one, and the
@@ -737,7 +771,7 @@ Written for the answers above.
   commands, and exits 2 without it.
 - **Outcomes:** `Already migrated.` and `Up to date.` are no-ops that exit
   0. A batch continues past a failed game and exits 1 with a summary.
-  Cancel exits 130 and leaves `incomplete` when files had changed.
+  Cancel exits 130 and leaves the journal when files had changed.
 - **JSON**, using the collection envelope from
   [JSON output](../json-output.md): `import gog --list --json` returns
   `{"games": [...], "errors": [...]}`, each game with `id`, `title`,
@@ -764,7 +798,7 @@ Written for the answers above.
   Owned games that aren't installed join the grid with 0050.
 - Library cards show **Update available** for native GOG games; the panel
   and the context menu get **Update**. Windows games show their status as
-  text with no Update action. The owner of an incomplete game shows
+  text with no Update action. The owner of a game with a journal shows
   **Finish update** instead of Play; a blocked clone says which game to
   finish. The background check runs once after start when logged in.
 - In a portable session, the GOG section shows the login but Import from
@@ -779,10 +813,10 @@ Written for the answers above.
    `WINEO_TEST_GOG_API` override, like Steam's.
 2. File download in `wineo-gog`: bearer, progress, cancellation, resume,
    and verification.
-3. Config `gog_id` key and validation, receipts, folder records and locks,
-   the write order, `validate` checks and `--fix`, and keeping state
-   consistent through `rm`, trash, restore, snapshot restore, clone, and
-   portable copies.
+3. Config `gog_id` key and validation, the folder state file with its
+   journal and durable writes, locks, `validate` checks and `--fix`, and
+   keeping state consistent through `rm`, trash, restore, snapshot
+   restore, clone, and portable copies.
 4. Launch protection for owners and other environments.
 5. Native packages: zip reading, staging, safety rules, split-file
    assembly, script recognition, and space checks.
@@ -805,17 +839,21 @@ Unit and CLI tests run against the fake GOG server and fixture packages: a
 including one with split files, one whose `split_files` names a path
 outside the folder, and one with an unknown setup script. They cover the
 failure paths: an interrupted download resumed (including a 200 instead of
-a 206, and an expired link), a crash at every point of the write order with
-each row of the recovery matrix resolved, an interrupted update leaving
-`incomplete`, a DLC-only update, a base and a DLC sharing a file that the
+a 206, and an expired link), a crash before and after each state-file write
+and between every game-file write, a rebuild that started from a journal
+crashing and being recovered again, a same-version `--reinstall` crashing
+before and after its commit, update B writing a file only B ships and
+failing before recovery runs with a newer C that doesn't ship it,
+`rm --force` and trash restore crashing between their config and state
+writes, offline recovery from cached packages and from missing ones, a DLC-only update, a base and a DLC sharing a file that the
 DLC then drops, indirect overlaps across three products, a package no
 longer offered, obsolete and changed winning files, a migrated game's first
 update with DLC, a clone running while its owner updates, removing the owner
 mid-update with and without `--force`, nested game folders, a snapshot
 restore from before migration, symlinks in an existing game folder, launch
 protection through a Windows path and through an argument, removing an
-owner and launching a clone before migrating it again, reclaiming an
-`incomplete` folder, account
+owner and launching a clone before migrating it again, reclaiming a
+folder with a journal, account
 switching and logout, renewal under contention, and secrets never reaching
 errors.
 
