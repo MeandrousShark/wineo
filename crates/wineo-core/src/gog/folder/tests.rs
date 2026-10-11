@@ -301,7 +301,7 @@ fn find_matches_owner_and_gog_id() {
     assert_eq!(find(&paths, "rimworld", "1").unwrap().unwrap().folder, a);
     assert!(find(&paths, "rimworld", "2").unwrap().is_none());
     assert!(find(&paths, "nobody", "1").unwrap().is_none());
-    assert_eq!(owned_by(&paths, "other").unwrap().len(), 1);
+    assert_eq!(owned_by(&paths, "other", true).unwrap().len(), 1);
 }
 
 #[test]
@@ -415,7 +415,7 @@ fn missing_folders_are_only_dropped_when_the_drive_is_mounted() {
         (Path::new("/mnt"), 1),
         (Path::new("/mnt/games"), 1),
     ]);
-    assert!(!surely_deleted(&state, &unmounted).unwrap());
+    assert!(!surely_deleted(&state, &unmounted));
     assert!(!remove_if_deleted(&paths, folder, &unmounted, NEVER).unwrap());
     assert!(state_path(&paths, folder).exists());
 
@@ -425,12 +425,12 @@ fn missing_folders_are_only_dropped_when_the_drive_is_mounted() {
         (Path::new("/mnt/games"), 7),
         (folder, 7),
     ]);
-    assert!(!surely_deleted(&state, &remounted).unwrap());
+    assert!(!surely_deleted(&state, &remounted));
     assert!(!remove_if_deleted(&paths, folder, &remounted, NEVER).unwrap());
 
     // Mounted, and the folder really is gone.
     let deleted = devices(&[(Path::new("/"), 1), (Path::new("/mnt/games"), 7)]);
-    assert!(surely_deleted(&state, &deleted).unwrap());
+    assert!(surely_deleted(&state, &deleted));
 
     // An owner, a journal, or an unknown device keeps it.
     for blocked in [
@@ -482,12 +482,16 @@ fn lock_owned_holds_every_owned_folder() {
     for (folder, owner) in [("a", "rimworld"), ("b", "rimworld"), ("c", "other")] {
         save(&paths, &game(&root.path().join(folder), Some(owner), 1));
     }
-    let held = lock_owned(&paths, "rimworld", NEVER).unwrap();
+    let held = lock_owned(&paths, "rimworld", true, NEVER).unwrap();
     assert_eq!(held.len(), 2);
     for (lock, state) in &held {
         assert_eq!(lock.folder(), state.folder);
     }
-    assert!(lock_owned(&paths, "nobody", NEVER).unwrap().is_empty());
+    assert!(
+        lock_owned(&paths, "nobody", true, NEVER)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -508,4 +512,117 @@ fn a_misfiled_state_is_reported() {
             .read()
             .is_err()
     );
+}
+
+#[test]
+fn non_canonical_folders_are_refused() {
+    let (_root, paths) = setup();
+    for bad in [
+        "games/x",
+        "/games/./x",
+        "/games/../x",
+        "/games/x/",
+        "/games//x",
+    ] {
+        let folder = Path::new(bad);
+        assert!(check_folder(folder).is_err(), "{bad}");
+        assert!(FolderLock::shared(&paths, folder, NEVER).is_err(), "{bad}");
+        let text = format!("version = 1\nfolder = \"{bad}\"\n");
+        assert!(FolderState::parse(&text).is_err(), "{bad}");
+    }
+    check_folder(Path::new("/games/x")).unwrap();
+    check_folder(Path::new("/")).unwrap();
+}
+
+#[test]
+fn a_write_cleans_up_only_its_own_folders_stale_temporaries() {
+    let (root, paths) = setup();
+    let folder = root.path().join("g");
+    let other = root.path().join("h");
+    save(&paths, &game(&folder, None, 1));
+    let dir = paths.gog_folders_dir();
+    let mine = dir.join(format!(".state-{}-crashed", key(&folder)));
+    let theirs = dir.join(format!(".state-{}-crashed", key(&other)));
+    fs::write(&mine, "half").unwrap();
+    fs::write(&theirs, "half").unwrap();
+    save(&paths, &game(&folder, Some("rimworld"), 1));
+    assert!(!mine.exists());
+    assert!(theirs.exists());
+    // Forgetting cleans them up too.
+    fs::write(&mine, "half").unwrap();
+    release(&paths, &folder, NEVER).unwrap();
+    assert!(forget(&paths, &folder, NEVER).unwrap());
+    assert!(!mine.exists());
+    assert!(theirs.exists());
+}
+
+#[test]
+fn a_failure_after_the_write_leaves_the_new_state() {
+    let (root, paths) = setup();
+    let folder = root.path().join("g");
+    save(&paths, &game(&folder, None, 1));
+    let lock = FolderLock::exclusive(&paths, &folder, NEVER).unwrap();
+    set_failpoint(Some("write.after"));
+    assert!(lock.write(&game(&folder, Some("rimworld"), 1)).is_err());
+    drop(lock);
+    assert_eq!(
+        load(&paths, &folder).unwrap().owner.as_deref(),
+        Some("rimworld")
+    );
+}
+
+#[test]
+fn unreadable_states_are_skipped_only_when_not_strict() {
+    let (root, paths) = setup();
+    let folder = root.path().join("g");
+    save(&paths, &game(&folder, Some("rimworld"), 1));
+    let bad = paths.gog_folders_dir().join("bad.toml");
+    fs::write(&bad, "version = 9\nfolder = '/x'\n").unwrap();
+    assert_eq!(owned_by(&paths, "rimworld", false).unwrap().len(), 1);
+    let error = owned_by(&paths, "rimworld", true).unwrap_err();
+    let message = error.to_string();
+    assert_eq!(
+        message,
+        format!(
+            "rimworld's GOG state can't be checked: {} isn't a valid GOG folder state (unsupported GOG folder state version 9).",
+            bad.display()
+        )
+    );
+    assert_eq!(message.matches(bad.to_str().unwrap()).count(), 1);
+    // A TOML error stays on one line.
+    fs::write(&bad, "version = [").unwrap();
+    let error = owned_by(&paths, "rimworld", true).unwrap_err().to_string();
+    assert!(!error.contains('\n'), "{error}");
+}
+
+#[test]
+fn may_track_game_fails_closed() {
+    let (_root, paths) = setup();
+    let config = paths.environment_config("x");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    assert!(!may_track_game(&paths, "x"));
+    fs::write(&config, "kind = 'native'\n").unwrap();
+    assert!(!may_track_game(&paths, "x"));
+    fs::write(&config, "kind = 'native'\ngog_id = '1'\n").unwrap();
+    assert!(may_track_game(&paths, "x"));
+    fs::write(&config, "kind = [").unwrap();
+    assert!(may_track_game(&paths, "x"));
+}
+
+#[test]
+fn a_folder_that_cant_be_looked_at_is_never_surely_deleted() {
+    let mut state = game(Path::new("/mnt/games/x"), None, 1);
+    state.device = Some(7);
+    let denied = |path: &Path| {
+        if path == Path::new("/mnt/games") {
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        } else if path == Path::new("/") {
+            Ok(Some(7))
+        } else {
+            Ok(None)
+        }
+    };
+    assert!(!surely_deleted(&state, &denied));
+    let unreadable_folder = |_: &Path| Err(io::Error::from(io::ErrorKind::PermissionDenied));
+    assert!(!surely_deleted(&state, &unreadable_folder));
 }

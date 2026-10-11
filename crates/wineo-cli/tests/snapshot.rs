@@ -363,3 +363,14 @@ fn a_restore_naming_another_gog_game_is_refused_before_anything_changes() {
         b"after"
     );
 }
+
+#[test]
+fn an_unrelated_unreadable_gog_state_doesnt_block_a_restore() {
+    let Some(f) = fixture() else { return };
+    environment(&f);
+    assert_success(&f.run(&["snapshot", "create", "game", "plain"]));
+    let dir = f.paths().gog_folders_dir();
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("bad.toml"), "version = 9\nfolder = \"/x\"\n").unwrap();
+    assert_success(&f.run(&["snapshot", "restore", "game", "plain", "--yes"]));
+}

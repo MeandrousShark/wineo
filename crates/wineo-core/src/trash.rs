@@ -1418,7 +1418,8 @@ pub fn remove_with_force(
     // GOG games live in the host library, so a portable environment of the
     // same name never owns one.
     let gog = if paths.portable_root().is_none() {
-        folder::lock_owned(paths, name, &|| token.is_canceled())?
+        let strict = folder::may_track_game(paths, name);
+        folder::lock_owned(paths, name, strict, &|| token.is_canceled())?
     } else {
         Vec::new()
     };
@@ -1650,6 +1651,7 @@ pub fn remove_with_force(
     };
     start_marker(paths, &manifest, Intent::Remove)?;
     write_manifest(paths, &manifest)?;
+    failpoint("remove.after_manifest")?;
     for index in 0..manifest.payloads.len() {
         move_out(paths, &mut manifest, index)?;
     }
@@ -4200,6 +4202,43 @@ mod tests {
             fs::create_dir_all(config.parent().unwrap()).unwrap();
             fs::write(&config, RIMWORLD).unwrap();
             remove(&portable, "rimworld", false).unwrap();
+            assert_eq!(load(&f.paths, &folder).owner.as_deref(), Some("rimworld"));
+        }
+
+        #[test]
+        fn recovering_an_interrupted_rm_claims_the_folder_back() {
+            let (f, folder) = setup(false);
+            set_trash_failpoint(Some("remove.after_manifest"));
+            assert!(remove(&f.paths, "rimworld", false).is_err());
+            assert_eq!(load(&f.paths, &folder).owner, None);
+            let entries = list(&f.paths).unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].phase, Phase::Removing);
+            recover(&f.paths, &entries[0].id).unwrap();
+            assert_eq!(
+                fs::read_to_string(f.paths.environment_config("rimworld")).unwrap(),
+                RIMWORLD
+            );
+            assert_eq!(load(&f.paths, &folder).owner.as_deref(), Some("rimworld"));
+            assert!(list(&f.paths).unwrap().is_empty());
+        }
+
+        #[test]
+        fn an_unreadable_state_only_blocks_removing_an_environment_tracking_a_game() {
+            let (f, folder) = setup(false);
+            let bad = f.paths.gog_folders_dir().join("bad.toml");
+            fs::write(&bad, "version = 9\nfolder = '/x'\n").unwrap();
+            f.config("plain", "kind = 'native'\n");
+            remove(&f.paths, "plain", false).unwrap();
+
+            let error = remove(&f.paths, "rimworld", false).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("rimworld's GOG state can't be checked: "),
+                "{error}"
+            );
+            assert!(f.paths.environment_config("rimworld").exists());
             assert_eq!(load(&f.paths, &folder).owner.as_deref(), Some("rimworld"));
         }
     }

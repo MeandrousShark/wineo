@@ -237,7 +237,8 @@ impl FolderState {
     }
 
     pub fn parse(text: &str) -> Result<Self> {
-        let state: Self = toml::from_str(text)?;
+        let state: Self =
+            toml::from_str(text).map_err(|error| anyhow!("{}", error.message().trim_end()))?;
         state.check()?;
         Ok(state)
     }
@@ -251,9 +252,7 @@ impl FolderState {
         if self.version != VERSION {
             bail!("unsupported GOG folder state version {}", self.version);
         }
-        if !self.folder.is_absolute() {
-            bail!("GOG folder {} isn't absolute", self.folder.display());
-        }
+        check_folder(&self.folder)?;
         if let Some(owner) = &self.owner
             && !name::is_valid(owner)
         {
@@ -321,6 +320,22 @@ fn check_entry(
     Ok(())
 }
 
+/// Refuses a folder path that isn't in normal form: relative, or with `.`,
+/// `..`, repeated, or trailing separators, any of which would give the same
+/// folder a second key.
+pub fn check_folder(folder: &Path) -> Result<()> {
+    let normal: PathBuf = folder.components().collect();
+    if !folder.is_absolute()
+        || normal.as_os_str() != folder.as_os_str()
+        || folder
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        bail!("GOG folder {} isn't a canonical path", folder.display());
+    }
+    Ok(())
+}
+
 /// The state file name for a canonical folder.
 pub fn key(folder: &Path) -> String {
     format!(
@@ -359,6 +374,8 @@ pub enum FolderError {
     },
     #[error("No GOG state for {0}.")]
     NoState(PathBuf),
+    #[error("{name}'s GOG state can't be checked: {detail}.")]
+    Unreadable { name: String, detail: String },
     #[error("Canceled.")]
     Canceled,
 }
@@ -390,6 +407,7 @@ impl FolderLock {
         exclusive: bool,
         cancel: &dyn Fn() -> bool,
     ) -> Result<Self> {
+        check_folder(folder)?;
         let path = paths.gog_folder_lock(&key(folder));
         let dir = path.parent().expect("a lock has a parent");
         fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
@@ -474,7 +492,12 @@ impl FolderLock {
             );
         }
         failpoint("write.before")?;
-        write_durable(&self.dir, &self.state, &state.to_toml()?)?;
+        write_durable(
+            &self.dir,
+            &self.state,
+            &key(&self.folder),
+            &state.to_toml()?,
+        )?;
         failpoint("write.after")
     }
 
@@ -531,7 +554,10 @@ impl FolderLock {
     fn remove(&self) -> Result<()> {
         self.require_exclusive()?;
         match fs::remove_file(&self.state) {
-            Ok(()) => sync_dir(&self.dir),
+            Ok(()) => {
+                remove_stale_temps(&self.dir, &key(&self.folder))?;
+                sync_dir(&self.dir)
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
         }
@@ -554,9 +580,12 @@ impl Drop for FolderLock {
 
 fn read_file(path: &Path) -> Result<Option<FolderState>> {
     match fs::read_to_string(path) {
-        Ok(text) => FolderState::parse(&text)
-            .map(Some)
-            .with_context(|| format!("invalid GOG folder state {}", path.display())),
+        Ok(text) => FolderState::parse(&text).map(Some).map_err(|error| {
+            anyhow!(
+                "{} isn't a valid GOG folder state ({error:#})",
+                path.display()
+            )
+        }),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
     }
@@ -604,17 +633,42 @@ fn readable(paths: &Paths) -> Result<Vec<FolderState>> {
 }
 
 /// Every folder whose state names `name` as owner, whatever its game.
-pub fn owned_by(paths: &Paths, name: &str) -> Result<Vec<FolderState>> {
-    Ok(readable(paths)?
-        .into_iter()
-        .filter(|state| state.owner.as_deref() == Some(name))
-        .collect())
+/// With `strict`, an unreadable state file fails, since it could be one of
+/// them. Without, it's skipped, for an environment that tracks no game.
+pub fn owned_by(paths: &Paths, name: &str, strict: bool) -> Result<Vec<FolderState>> {
+    let mut owned = Vec::new();
+    for (_, state) in list(paths)? {
+        match state {
+            Ok(state) if state.owner.as_deref() == Some(name) => owned.push(state),
+            Ok(_) => {}
+            Err(error) if strict => {
+                return Err(FolderError::Unreadable {
+                    name: name.to_owned(),
+                    detail: format!("{error:#}"),
+                }
+                .into());
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(owned)
+}
+
+/// Whether `name`'s config could name a GOG game, so its folder states have
+/// to be readable. Only a config that reads as TOML without `gog_id` can't.
+pub fn may_track_game(paths: &Paths, name: &str) -> bool {
+    match fs::read_to_string(paths.environment_config(name)) {
+        Ok(text) => text
+            .parse::<toml_edit::DocumentMut>()
+            .map_or(true, |doc| doc.get("gog_id").is_some()),
+        Err(error) => error.kind() != io::ErrorKind::NotFound,
+    }
 }
 
 /// An environment's game: the folder whose state names it as owner and is
 /// the game `gog_id`.
 pub fn find(paths: &Paths, name: &str, gog_id: &str) -> Result<Option<FolderState>> {
-    let mut found = owned_by(paths, name)?
+    let mut found = owned_by(paths, name, true)?
         .into_iter()
         .filter(|state| state.is_game(gog_id));
     let first = found.next();
@@ -678,7 +732,8 @@ pub fn forget(paths: &Paths, folder: &Path, cancel: &dyn Fn() -> bool) -> Result
     Ok(true)
 }
 
-/// The device of `path`, or None when it doesn't exist.
+/// The device of `path`, None when it doesn't exist, or an error when that
+/// can't be told, like a permission problem.
 pub type DeviceOf<'a> = &'a dyn Fn(&Path) -> io::Result<Option<u64>>;
 
 /// The real device lookup.
@@ -692,22 +747,24 @@ pub fn device_of(path: &Path) -> io::Result<Option<u64>> {
 
 /// Whether a missing folder was really deleted: its nearest existing parent
 /// is on the filesystem the state recorded. An unmounted drive leaves the
-/// parent on another one, so its state stays.
-pub fn surely_deleted(state: &FolderState, device_of: DeviceOf<'_>) -> io::Result<bool> {
+/// parent on another one, so its state stays, as does anything that can't
+/// be looked at.
+pub fn surely_deleted(state: &FolderState, device_of: DeviceOf<'_>) -> bool {
     let Some(recorded) = state.device else {
-        return Ok(false);
+        return false;
     };
-    if device_of(&state.folder)?.is_some() {
-        return Ok(false);
+    if !matches!(device_of(&state.folder), Ok(None)) {
+        return false;
     }
     let mut current = state.folder.parent();
     while let Some(dir) = current {
-        if let Some(device) = device_of(dir)? {
-            return Ok(device == recorded);
+        match device_of(dir) {
+            Ok(Some(device)) => return device == recorded,
+            Ok(None) => current = dir.parent(),
+            Err(_) => return false,
         }
-        current = dir.parent();
     }
-    Ok(false)
+    false
 }
 
 /// Removes a state that is safe to drop: no journal, no owner, and its
@@ -723,7 +780,7 @@ pub fn remove_if_deleted(
     let Some(state) = lock.read()? else {
         return Ok(false);
     };
-    if state.journal.is_some() || state.owner.is_some() || !surely_deleted(&state, device_of)? {
+    if state.journal.is_some() || state.owner.is_some() || !surely_deleted(&state, device_of) {
         return Ok(false);
     }
     lock.remove()?;
@@ -768,9 +825,10 @@ fn owner_exists(paths: &Paths, owner: &str) -> Result<bool> {
 pub fn lock_owned(
     paths: &Paths,
     name: &str,
+    strict: bool,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<(FolderLock, FolderState)>> {
-    let mut folders: Vec<PathBuf> = owned_by(paths, name)?
+    let mut folders: Vec<PathBuf> = owned_by(paths, name, strict)?
         .into_iter()
         .map(|state| state.folder)
         .collect();
@@ -783,7 +841,7 @@ pub fn lock_owned(
             _ => bail!("{name}'s GOG folders changed while locking; retry"),
         }
     }
-    if owned_by(paths, name)?.len() != held.len() {
+    if owned_by(paths, name, strict)?.len() != held.len() {
         bail!("{name}'s GOG folders changed while locking; retry");
     }
     Ok(held)
@@ -791,10 +849,11 @@ pub fn lock_owned(
 
 /// Writes `text` to `path` through a synced temporary file, then syncs the
 /// directory, so a crash leaves either the old file or the new one.
-fn write_durable(dir: &Path, path: &Path, text: &str) -> Result<()> {
+fn write_durable(dir: &Path, path: &Path, key: &str, text: &str) -> Result<()> {
     create_dir_durable(dir)?;
+    remove_stale_temps(dir, key)?;
     let mut temp = tempfile::Builder::new()
-        .prefix(".state-")
+        .prefix(&temp_prefix(key))
         .tempfile_in(dir)
         .with_context(|| format!("failed to write in {}", dir.display()))?;
     temp.write_all(text.as_bytes())?;
@@ -802,6 +861,28 @@ fn write_durable(dir: &Path, path: &Path, text: &str) -> Result<()> {
     failpoint("write.before_rename")?;
     temp.persist(path).map_err(|error| error.error)?;
     sync_dir(dir)
+}
+
+fn temp_prefix(key: &str) -> String {
+    format!(".state-{key}-")
+}
+
+/// Removes temporary files an interrupted write of this folder's state left.
+/// Only called under the folder's exclusive lock, so none is in use.
+fn remove_stale_temps(dir: &Path, key: &str) -> Result<()> {
+    let prefix = temp_prefix(key);
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(&prefix))
+        {
+            fs::remove_file(entry.path())
+                .with_context(|| format!("failed to remove {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Creates `dir` and any missing parents, syncing each new entry's parent.

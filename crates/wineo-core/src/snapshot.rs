@@ -547,7 +547,8 @@ fn saved_gog_id(paths: &Paths, name: &str, saved: &EnvironmentConfig) -> Result<
     if paths.portable_root().is_some() {
         return Ok(None);
     }
-    let owned = gog::folder::owned_by(paths, name)?;
+    let strict = saved.gog_id.is_some() || gog::folder::may_track_game(paths, name);
+    let owned = gog::folder::owned_by(paths, name, strict)?;
     match &saved.gog_id {
         Some(gog_id) => {
             if let Some(state) = owned.iter().find(|state| !state.is_game(gog_id))
@@ -1853,5 +1854,42 @@ mod tests {
             config
         );
         assert!(!marker_path(&paths, "game").exists());
+    }
+
+    #[test]
+    fn a_portable_restore_never_consults_host_gog_state() {
+        use crate::gog::folder::{Committed, FolderLock, FolderState, Platform, Track};
+
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_owned();
+        let lookup = move |key: &str| (key == "HOME").then(|| home.clone().into_os_string());
+        let host = Paths::select(lookup.clone(), None).unwrap();
+        let portable = Paths::select(lookup, Some(&root.path().join("usb"))).unwrap();
+        let folder = root.path().join("game");
+        let state = FolderState {
+            committed: Some(Committed {
+                gog_id: 7,
+                platform: Platform::Linux,
+                language: "en".to_owned(),
+                track: Track::Installer,
+                products: Vec::new(),
+                files: Vec::new(),
+            }),
+            ..FolderState::new(folder.clone(), Some("game".to_owned()))
+        };
+        FolderLock::exclusive(&host, &folder, &|| false)
+            .unwrap()
+            .write(&state)
+            .unwrap();
+        let path = Path::new("/test/game.toml");
+        let plain = EnvironmentConfig::parse(path, "kind = 'native'\n").unwrap();
+        let other = EnvironmentConfig::parse(path, "kind = 'native'\ngog_id = '8'\n").unwrap();
+        assert_eq!(
+            saved_gog_id(&host, "game", &plain).unwrap().as_deref(),
+            Some("7")
+        );
+        assert!(saved_gog_id(&host, "game", &other).is_err());
+        assert_eq!(saved_gog_id(&portable, "game", &plain).unwrap(), None);
+        assert_eq!(saved_gog_id(&portable, "game", &other).unwrap(), None);
     }
 }

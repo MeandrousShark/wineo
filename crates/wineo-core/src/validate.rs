@@ -613,7 +613,7 @@ pub fn check_all(paths: &Paths) -> Result<Report> {
         &pending,
         &folder::device_of,
         &mut report,
-    )?;
+    );
     let mut protected = names.clone();
     protected.extend(pending);
     if !report
@@ -664,7 +664,7 @@ pub fn check_environment(paths: &Paths, name: &str) -> Result<Report> {
         &pending,
         &folder::device_of,
         &mut report,
-    )?;
+    );
     contract(paths, &mut report);
     Ok(report)
 }
@@ -679,14 +679,17 @@ fn check_gog(
     pending: &BTreeSet<String>,
     device_of: DeviceOf<'_>,
     report: &mut Report,
-) -> Result<()> {
+) {
     if paths.portable_root().is_some() {
-        return Ok(());
+        return;
     }
+    // A state that can't be read may be the selected environment's, unless
+    // its config can't name a game.
+    let show_invalid = selected.is_none_or(|name| folder::may_track_game(paths, name));
     let listed = match folder::list(paths) {
         Ok(listed) => listed,
         Err(err) => {
-            if selected.is_none() {
+            if show_invalid {
                 report.push(Problem::new(
                     Code::GogStateInvalid,
                     None,
@@ -694,17 +697,17 @@ fn check_gog(
                     None,
                 ));
             }
-            return Ok(());
+            return;
         }
     };
     let mut states = Vec::new();
-    for (path, state) in listed {
+    for (_, state) in listed {
         match state {
             Ok(state) => states.push(state),
-            Err(err) if selected.is_none() => report.push(Problem::new(
+            Err(err) if show_invalid => report.push(Problem::new(
                 Code::GogStateInvalid,
                 None,
-                format!("{}: {err:#}", path.display()),
+                format!("{err:#}"),
                 None,
             )),
             Err(_) => {}
@@ -716,7 +719,7 @@ fn check_gog(
             continue;
         }
         let environment = state.owner.as_deref().filter(|owner| known(owner));
-        check_gog_folder(state, environment, device_of, report)?;
+        check_gog_folder(state, environment, device_of, report);
         if let Some(owner) = &state.owner
             && !known(owner)
         {
@@ -773,7 +776,6 @@ fn check_gog(
         };
         report.push(Problem::new(code, Some(name), message, None));
     }
-    Ok(())
 }
 
 /// A folder mid-update, or one that can't be found.
@@ -782,7 +784,7 @@ fn check_gog_folder(
     environment: Option<&str>,
     device_of: DeviceOf<'_>,
     report: &mut Report,
-) -> Result<()> {
+) {
     let folder = state.folder.display();
     if state.journal.is_some() {
         let message = match environment {
@@ -795,24 +797,29 @@ fn check_gog_folder(
         };
         report.push(Problem::new(Code::GogMidUpdate, environment, message, None));
     }
-    let missing = device_of(&state.folder)
-        .context(|| format!("failed to inspect {folder}"))?
-        .is_none();
-    if missing {
-        let safe = state.owner.is_none()
-            && state.journal.is_none()
-            && folder::surely_deleted(state, device_of)
-                .context(|| format!("failed to inspect {folder}"))?;
-        report.push(Problem::new(
+    match device_of(&state.folder) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            let safe = state.owner.is_none()
+                && state.journal.is_none()
+                && folder::surely_deleted(state, device_of);
+            report.push(Problem::new(
+                Code::GogFolderMissing,
+                environment,
+                format!("GOG game folder {folder} is missing."),
+                safe.then(|| Fix::ForgetGogFolder {
+                    folder: state.folder.clone(),
+                }),
+            ));
+        }
+        // Can't tell whether it's there, so it's never forgotten.
+        Err(err) => report.push(Problem::new(
             Code::GogFolderMissing,
             environment,
-            format!("GOG game folder {folder} is missing."),
-            safe.then(|| Fix::ForgetGogFolder {
-                folder: state.folder.clone(),
-            }),
-        ));
+            format!("GOG game folder {folder} can't be checked: {err}."),
+            None,
+        )),
     }
-    Ok(())
 }
 
 fn check_trash(
@@ -3338,8 +3345,7 @@ mod tests {
                 &BTreeSet::new(),
                 &device_of,
                 &mut report,
-            )
-            .unwrap();
+            );
             report
         }
 
@@ -3502,6 +3508,73 @@ mod tests {
                 "{:#?}",
                 report.problems
             );
+        }
+
+        #[test]
+        fn folders_that_cant_be_looked_at_still_give_a_full_report() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let f = Fixture::new();
+            f.native("lost", "gog_id = '2'\n");
+            // A parent component that is now a file.
+            let file = f.root.join("was-a-dir");
+            fs::write(&file, "").unwrap();
+            let not_a_dir = file.join("game");
+            save(&f, &state(&not_a_dir, None, false));
+            // A parent that can't be searched.
+            let locked = f.root.join("locked");
+            fs::create_dir_all(locked.join("game")).unwrap();
+            let denied = locked.join("game");
+            save(&f, &state(&denied, None, false));
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+            let readable = fs::symlink_metadata(&denied).is_ok();
+
+            let report = f.check();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+            let unchecked: Vec<&Problem> = report
+                .problems
+                .iter()
+                .filter(|problem| problem.code == Code::GogFolderMissing)
+                .collect();
+            assert!(
+                unchecked
+                    .iter()
+                    .any(|problem| problem.message.contains("was-a-dir/game can't be checked")),
+                "{:#?}",
+                report.problems
+            );
+            // Running as root sees through the permissions.
+            if !readable {
+                assert!(
+                    unchecked
+                        .iter()
+                        .any(|problem| problem.message.contains("locked/game can't be checked")),
+                    "{:#?}",
+                    report.problems
+                );
+            }
+            assert!(unchecked.iter().all(|problem| problem.fix.is_none()));
+            assert!(codes(&report).contains(&Code::GogStateMissing));
+        }
+
+        #[test]
+        fn validate_name_shows_an_unreadable_state_that_could_be_its_own() {
+            let f = Fixture::new();
+            f.native("rimworld", &format!("gog_id = '{ID}'\n"));
+            f.native("plain", "");
+            let dir = f.paths.gog_folders_dir();
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("bad.toml"), "version = 9\nfolder = '/x'\n").unwrap();
+            let one = check_environment(&f.paths, "rimworld").unwrap();
+            assert_eq!(codes(&one), [Code::GogStateInvalid, Code::GogStateMissing]);
+            assert_eq!(
+                one.problems[0].message.matches("bad.toml").count(),
+                1,
+                "{}",
+                one.problems[0].message
+            );
+            let plain = check_environment(&f.paths, "plain").unwrap();
+            assert!(plain.problems.is_empty(), "{:#?}", plain.problems);
         }
     }
 }

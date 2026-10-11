@@ -233,3 +233,44 @@ fn validate_reports_a_lost_state_and_fixes_a_missing_owner() {
         assert_eq!(state.journal.is_some(), mid_update);
     }
 }
+
+/// An unreadable state, like one a newer wineo wrote before a downgrade.
+fn bad_state(f: &Fixture) -> PathBuf {
+    let dir = f.paths().gog_folders_dir();
+    fs::create_dir_all(&dir).unwrap();
+    let bad = dir.join("bad.toml");
+    fs::write(&bad, "version = 9\nfolder = \"/x\"\n").unwrap();
+    bad
+}
+
+#[test]
+fn an_unrelated_unreadable_state_doesnt_block_plain_environments() {
+    let f = Fixture::new();
+    let folder = rimworld(&f, false);
+    let bad = bad_state(&f);
+    write_config(&f, "plain", "kind = \"native\"\n");
+    write_config(&f, "other", "kind = \"native\"\n");
+    assert_success(&f.run(&["set", "plain", "--unset", "gog_id"]));
+    assert_success(&f.run(&["rm", "plain"]));
+
+    // An environment with a game fails closed, naming the file once.
+    for args in [
+        &["rm", "rimworld"][..],
+        &["set", "rimworld", "--unset", "gog_id"][..],
+    ] {
+        let refused = f.run(args);
+        assert!(!refused.status.success(), "{args:?}");
+        let message = stderr(&refused);
+        assert!(
+            message.contains(&format!(
+                "rimworld's GOG state can't be checked: {} isn't a valid GOG folder state (unsupported GOG folder state version 9).",
+                bad.display()
+            )),
+            "{message}"
+        );
+        assert_eq!(message.matches("bad.toml").count(), 1, "{message}");
+    }
+    assert!(f.created_config("rimworld").contains("gog_id"));
+    assert_eq!(owner(&f, &folder).as_deref(), Some("rimworld"));
+    assert_success(&f.run(&["rm", "other"]));
+}
