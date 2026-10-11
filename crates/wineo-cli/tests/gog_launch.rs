@@ -552,3 +552,46 @@ fn exec_away_from_game_folders_returns_when_its_program_exits() {
         prefix.join("handoff-done").exists()
     });
 }
+
+#[test]
+fn a_terminal_ctrl_c_stops_the_wait_in_order() {
+    use std::os::unix::process::CommandExt;
+
+    let f = Fixture::new();
+    let folder = rimworld(&f, false);
+    f.environment("copy", "");
+    let prefix = f.root.path().join("prefixes/copy");
+    let log = f.root.path().join("exec-stderr");
+    // A group of its own stands in for the terminal's foreground job, so the
+    // test's own processes aren't signaled with it.
+    let mut running = f
+        .wineo()
+        .args(["exec", "copy", "handoff", &folder.display().to_string()])
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(&log).unwrap())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    wait_for("the waiting line", || {
+        fs::read_to_string(&log).is_ok_and(|text| text.contains(WAITING))
+    });
+    let sent = std::process::Command::new("kill")
+        .args(["-INT", &format!("-{}", running.id())])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+    // What the handoff left behind still runs for a moment after it's asked
+    // to close, and the folder stays held until it's gone.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(running.try_wait().unwrap().is_none());
+    assert!(update_refused(&f, &folder));
+    let status = running.wait().unwrap();
+    let text = fs::read_to_string(&log).unwrap();
+    assert!(status.success(), "{text}");
+    assert!(
+        text.contains("Press Ctrl+C again to force them to stop.\n"),
+        "{text}"
+    );
+    assert!(!prefix.join("handoff-done").exists());
+    assert!(!update_refused(&f, &folder));
+}
