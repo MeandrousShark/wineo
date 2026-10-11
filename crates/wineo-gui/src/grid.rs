@@ -835,7 +835,7 @@ impl App {
                 text("wineo")
                     .size(18)
                     .font(Font {
-                        weight: font::Weight::Bold,
+                        weight: font::Weight::Semibold,
                         ..Font::DEFAULT
                     })
                     .color(palette.foreground),

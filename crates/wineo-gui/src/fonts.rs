@@ -1,12 +1,13 @@
 //! Bundled Noto Sans, so every machine renders the same text.
 //!
 //! Arch's noto-fonts ships no SemiBold, which made iced fall back to a
-//! monospace font for every semibold title.
+//! monospace font for every semibold title. The app only asks for Regular and
+//! SemiBold, so those are the two weights bundled.
 
 use std::borrow::Cow;
 
 use iced::Font;
-use iced::advanced::graphics::text::cosmic_text::fontdb::{Database, Style, Weight};
+use iced::advanced::graphics::text::cosmic_text::fontdb::Database;
 use iced::advanced::graphics::text::font_system;
 
 pub(crate) const REGULAR: &[u8] = include_bytes!("../fonts/NotoSans-Regular.ttf");
@@ -18,155 +19,156 @@ const FAMILY: &str = "Noto Sans";
 
 /// Makes the bundled Noto Sans the one every font request resolves to.
 ///
-/// Widgets build their fonts from `Font::DEFAULT`, which is the generic
-/// sans-serif family. Without pointing that at Noto Sans, `Font { weight:
-/// Semibold, ..Font::DEFAULT }` would skip the bundled font, since only
-/// `Settings::default_font` names it.
-///
 /// The bundled faces load here, ahead of the settings' font list, because
 /// fontdb picks the first of several equal matches and system fonts are
 /// already in the database. Iced skips the later load of the same bytes.
 pub(crate) fn install() {
     let mut system = font_system().write().expect("font system lock");
-    drop_system_faces(system.raw().db_mut());
+    prepare(system.raw().db_mut());
     system.load_font(Cow::Borrowed(REGULAR));
     system.load_font(Cow::Borrowed(SEMIBOLD));
-    system.raw().db_mut().set_sans_serif_family(FAMILY);
 }
 
-/// Removes installed static Noto Sans faces at the weights the bundle covers.
+/// Clears the way for the bundled faces and points sans-serif at them.
 ///
-/// Other weights, like the system Bold, stay. Variable fonts stay too, since
-/// one file carries every weight and removing it would take Bold with it.
-fn drop_system_faces(db: &mut Database) {
+/// Every installed "Noto Sans" face goes, whatever its weight or file kind,
+/// so a system copy can never win over the bundle or be picked for a weight
+/// the bundle lacks. Other families, like "Noto Sans CJK", stay.
+///
+/// Widgets build their fonts from `Font::DEFAULT`, which is the generic
+/// sans-serif family. Without pointing that at Noto Sans, `Font { weight:
+/// Semibold, ..Font::DEFAULT }` would skip the bundled font, since only
+/// `Settings::default_font` names it.
+fn prepare(db: &mut Database) {
     let stale: Vec<_> = db
         .faces()
-        .filter(|face| {
-            face.families.iter().any(|(name, _)| name == FAMILY)
-                && face.style == Style::Normal
-                && (face.weight == Weight::NORMAL || face.weight == Weight::SEMIBOLD)
-        })
+        .filter(|face| face.families.iter().any(|(name, _)| name == FAMILY))
         .map(|face| face.id)
         .collect();
     for id in stale {
-        let variable = db
-            .with_face_data(id, |data, _| is_variable(data))
-            .unwrap_or(true);
-        if !variable {
-            db.remove_face(id);
-        }
+        db.remove_face(id);
     }
-}
-
-/// Whether an sfnt file has an `fvar` table. Collections count as variable so
-/// they are left alone.
-fn is_variable(data: &[u8]) -> bool {
-    let Some(count) = data.get(4..6) else {
-        return true;
-    };
-    if data.starts_with(b"ttcf") {
-        return true;
-    }
-    let count = usize::from(u16::from_be_bytes([count[0], count[1]]));
-    (0..count).any(|n| {
-        let start = 12 + n * 16;
-        data.get(start..start + 4) == Some(b"fvar".as_slice())
-    })
+    db.set_sans_serif_family(FAMILY);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced::advanced::graphics::text::cosmic_text::fontdb::{Family, Query, Source, Stretch};
+    use iced::advanced::graphics::text::cosmic_text::fontdb::{
+        Family, Query, Source, Stretch, Style, Weight,
+    };
     use std::sync::Arc;
 
-    fn bundled_db() -> Database {
+    fn be16(data: &[u8], at: usize) -> usize {
+        usize::from(u16::from_be_bytes([data[at], data[at + 1]]))
+    }
+
+    fn table_record(data: &[u8], tag: &[u8; 4]) -> usize {
+        (0..be16(data, 4))
+            .map(|n| 12 + n * 16)
+            .find(|start| &data[*start..*start + 4] == tag)
+            .expect("table")
+    }
+
+    /// A copy of a bundled font standing in for a system face.
+    fn fake(font: &[u8], family: &str, weight: u16) -> Vec<u8> {
+        let mut data = font.to_vec();
+
+        let os2 = table_record(&data, b"OS/2");
+        let offset = u32::from_be_bytes(data[os2 + 8..os2 + 12].try_into().unwrap()) as usize;
+        data[offset + 4..offset + 6].copy_from_slice(&weight.to_be_bytes());
+
+        // A new name table at the end, with the family as ids 1 and 16 and
+        // the PostScript name fontdb insists on as id 6.
+        let utf16 =
+            |text: &str| -> Vec<u8> { text.encode_utf16().flat_map(u16::to_be_bytes).collect() };
+        let names = [
+            (1u16, utf16(family)),
+            (6, utf16("Fake")),
+            (16, utf16(family)),
+        ];
+        let mut name = Vec::new();
+        for value in [0u16, names.len() as u16, 6 + 12 * names.len() as u16] {
+            name.extend_from_slice(&value.to_be_bytes());
+        }
+        let mut strings = Vec::new();
+        for (id, text) in &names {
+            let at = strings.len() as u16;
+            for value in [3u16, 1, 0x409, *id, text.len() as u16, at] {
+                name.extend_from_slice(&value.to_be_bytes());
+            }
+            strings.extend_from_slice(text);
+        }
+        name.extend_from_slice(&strings);
+        while !data.len().is_multiple_of(4) {
+            data.push(0);
+        }
+        let record = table_record(&data, b"name");
+        let start = u32::try_from(data.len()).unwrap();
+        data[record + 8..record + 12].copy_from_slice(&start.to_be_bytes());
+        data[record + 12..record + 16].copy_from_slice(&(name.len() as u32).to_be_bytes());
+        data.extend_from_slice(&name);
+        data
+    }
+
+    /// Makes a face look like a variable font by tagging an unused table `fvar`.
+    fn variable(mut data: Vec<u8>) -> Vec<u8> {
+        let record = table_record(&data, b"gasp");
+        data[record..record + 4].copy_from_slice(b"fvar");
+        data
+    }
+
+    fn pointer(source: &Source) -> *const u8 {
+        match source {
+            Source::Binary(data) => (**data).as_ref().as_ptr(),
+            _ => panic!("expected a binary source"),
+        }
+    }
+
+    fn resolve(db: &Database, weight: Weight) -> *const u8 {
+        let id = db
+            .query(&Query {
+                families: &[Family::SansSerif],
+                weight,
+                stretch: Stretch::Normal,
+                style: Style::Normal,
+            })
+            .expect("a face");
+        pointer(&db.face(id).expect("face").source)
+    }
+
+    fn named(db: &Database, family: &str) -> usize {
+        db.faces()
+            .filter(|face| face.families.iter().any(|(name, _)| name == family))
+            .count()
+    }
+
+    #[test]
+    fn prepare_leaves_only_the_bundled_noto_sans_and_other_families() {
         let mut db = Database::new();
+        for (weight, font) in [(400, REGULAR), (600, SEMIBOLD), (700, REGULAR)] {
+            db.load_font_source(Source::Binary(Arc::new(fake(font, FAMILY, weight))));
+        }
+        db.load_font_source(Source::Binary(Arc::new(variable(fake(
+            REGULAR, FAMILY, 400,
+        )))));
+        db.load_font_source(Source::Binary(Arc::new(fake(
+            REGULAR,
+            "Noto Sans CJK",
+            400,
+        ))));
+        assert_eq!(named(&db, FAMILY), 4, "the fakes load as system faces");
+        assert_eq!(named(&db, "Noto Sans CJK"), 1);
+
+        prepare(&mut db);
         db.load_font_source(Source::Binary(Arc::new(REGULAR)));
         db.load_font_source(Source::Binary(Arc::new(SEMIBOLD)));
-        db.set_sans_serif_family(FAMILY);
-        db
-    }
 
-    fn face_count(db: &Database, weight: Weight) -> usize {
-        db.faces().filter(|face| face.weight == weight).count()
-    }
-
-    // Uses its own database so the shared font system, and the other tests
-    // measuring text with it, stay untouched.
-    #[test]
-    fn semibold_sans_serif_resolves_to_bundled_noto_sans() {
-        let db = bundled_db();
-
-        let weight = |weight| {
-            let id = db
-                .query(&Query {
-                    families: &[Family::SansSerif],
-                    weight,
-                    stretch: Stretch::Normal,
-                    style: Style::Normal,
-                })
-                .expect("bundled face");
-            db.face(id).expect("face").weight
-        };
-        assert_eq!(weight(Weight::NORMAL), Weight::NORMAL);
-        assert_eq!(weight(Weight::SEMIBOLD), Weight::SEMIBOLD);
-    }
-
-    #[test]
-    fn installed_static_faces_at_bundled_weights_are_dropped() {
-        // Owned copies stand in for faces loaded from the system.
-        let mut db = Database::new();
-        db.load_font_source(Source::Binary(Arc::new(REGULAR.to_vec())));
-        db.load_font_source(Source::Binary(Arc::new(SEMIBOLD.to_vec())));
-
-        drop_system_faces(&mut db);
-
-        assert_eq!(face_count(&db, Weight::NORMAL), 0);
-        assert_eq!(face_count(&db, Weight::SEMIBOLD), 0);
-    }
-
-    #[test]
-    fn the_bundled_faces_survive_when_loaded_after_the_drop() {
-        let mut db = Database::new();
-        db.load_font_source(Source::Binary(Arc::new(REGULAR.to_vec())));
-        drop_system_faces(&mut db);
-        db.load_font_source(Source::Binary(Arc::new(REGULAR)));
-
-        assert_eq!(face_count(&db, Weight::NORMAL), 1);
-    }
-
-    #[test]
-    fn other_weights_are_kept() {
-        // A Regular copy with its OS/2 weight class patched to 700 stands in
-        // for a system Bold.
-        let mut bold = REGULAR.to_vec();
-        let count = usize::from(u16::from_be_bytes([bold[4], bold[5]]));
-        let record = (0..count)
-            .map(|n| 12 + n * 16)
-            .find(|start| &bold[*start..*start + 4] == b"OS/2")
-            .expect("OS/2 table");
-        let offset = u32::from_be_bytes(bold[record + 8..record + 12].try_into().unwrap());
-        let weight_class = offset as usize + 4;
-        bold[weight_class..weight_class + 2].copy_from_slice(&700u16.to_be_bytes());
-
-        let mut db = Database::new();
-        db.load_font_source(Source::Binary(Arc::new(bold)));
-        drop_system_faces(&mut db);
-
-        assert_eq!(face_count(&db, Weight::BOLD), 1);
-    }
-
-    #[test]
-    fn variable_fonts_are_recognised() {
-        assert!(!is_variable(REGULAR));
-        assert!(!is_variable(SEMIBOLD));
-
-        let mut variable = vec![0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
-        variable.extend_from_slice(b"fvar");
-        variable.extend_from_slice(&[0; 12]);
-        assert!(is_variable(&variable));
-        assert!(is_variable(b"ttcf\0\0\0\0\0\0\0\0"));
-        assert!(is_variable(b""));
+        assert_eq!(named(&db, FAMILY), 2);
+        assert_eq!(named(&db, "Noto Sans CJK"), 1);
+        assert_eq!(resolve(&db, Weight::NORMAL), REGULAR.as_ptr());
+        assert_eq!(resolve(&db, Weight::SEMIBOLD), SEMIBOLD.as_ptr());
+        // A weight the bundle lacks lands on a bundled face, not a system one.
+        assert_eq!(resolve(&db, Weight::BOLD), SEMIBOLD.as_ptr());
     }
 }
