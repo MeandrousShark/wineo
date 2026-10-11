@@ -69,6 +69,12 @@ case. `wineo art key --remove` deletes the key from both the keyring and the
 file, printing `Removed the SteamGridDB key` or `No SteamGridDB key was
 saved`.
 
+Each save writes a private temporary file beside the key file and renames it
+into place, so two saves at once can't corrupt it. If wineo stops partway
+through, the temporary file (`steamgriddb.key.<pid>-<n>.tmp`) can be left
+behind with a copy of the key. `--remove`, and moving the key into the
+keyring, delete those leftovers along with the key file.
+
 Lookup order for commands that need the key: `WINEO_STEAMGRIDDB_KEY`, then
 the keyring, then the plain text file. When the variable is set, `art key`
 and `art key --remove` add `note: WINEO_STEAMGRIDDB_KEY is set and overrides

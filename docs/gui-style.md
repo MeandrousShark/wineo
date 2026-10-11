@@ -24,6 +24,9 @@ and oversized preview posters are not implementation requirements.
   subtle shadow. Keep hero art bounded and actions easy to reach.
 - Page titles use 22 px semibold text. Section headings use 16 px semibold;
   body and controls use 14 px; supporting labels use 12-13 px muted text.
+- Text uses the bundled Noto Sans, which has only regular and semibold.
+  Don't ask for other weights such as bold or medium: they would fall back
+  to whatever the system has. The wordmark is semibold too.
 - Use 24 px outer page padding, 16 px inside grouped surfaces, and 8-12 px
   between related controls. Related rows share one surface with subtle
   separators rather than becoming individual cards.
