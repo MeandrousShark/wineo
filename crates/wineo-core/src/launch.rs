@@ -23,7 +23,7 @@ mod stop;
 pub use exec::{ExecEvent, exec};
 pub use orchestration::{
     AfterHook, LaunchEvent, PreparedLaunch, StartOutcome, ensure_prefix, install_winetricks,
-    prepare, prepare_target, protect, reconcile, runner, runner_locked, start,
+    precheck, prepare, prepare_target, protect, reconcile, runner, runner_locked, start,
 };
 pub(crate) use stop::{
     LostRunOutcome, busy_with, clean_up_installer, clean_up_lost_run, stop_timeout,

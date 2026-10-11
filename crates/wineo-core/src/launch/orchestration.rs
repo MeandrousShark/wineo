@@ -268,6 +268,7 @@ pub fn prepare(
     } else {
         None
     };
+    precheck(paths, &global, &environment, overrides)?;
     // Leave ordinary target errors to preparation, which checks the runner first.
     let selected = if environment.config.hooks.is_some()
         || environment
@@ -428,6 +429,31 @@ pub fn prepare(
         _reservation: reservation,
         folders,
     })
+}
+
+/// Refuses a launch `protect` would refuse, before any hook runs or a
+/// restart stops the old run. Holds nothing afterwards. A target that
+/// doesn't resolve yet is left to preparation, which reports it.
+pub fn precheck(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    overrides: &Overrides,
+) -> anyhow::Result<()> {
+    if matches!(environment.config.kind, Kind::Proxied(_))
+        || (environment.config.gog_id.is_none() && !paths.gog_folders_dir().exists())
+    {
+        return Ok(());
+    }
+    let Ok(launch) = Launch::target(paths, global, environment, overrides) else {
+        return Ok(());
+    };
+    crate::gog::folder::precheck(
+        paths,
+        &environment.name,
+        environment.config.gog_id.as_deref(),
+        &launch.named_paths(),
+    )
 }
 
 /// Checks the GOG game folders a launch runs from and takes their in-use

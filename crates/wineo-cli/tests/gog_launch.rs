@@ -310,3 +310,69 @@ fn exec_holds_the_folder_until_the_program_exits() {
     f.gog_folder(&folder, Some("rimworld"), ID, true);
     assert_refused(&f.run(&["exec", "copy", &exe]), MID_UPDATE);
 }
+
+/// Hooks that leave a marker file each, so a test can tell whether they ran.
+fn hooks(f: &Fixture) -> (String, PathBuf, PathBuf) {
+    let before = f.root.path().join("before-ran");
+    let after = f.root.path().join("after-ran");
+    let table = format!(
+        "[hooks]\nbefore = \"touch '{}'\"\nafter = \"touch '{}'\"\n",
+        before.display(),
+        after.display()
+    );
+    (table, before, after)
+}
+
+#[test]
+fn no_hook_runs_for_an_owner_refused_mid_update() {
+    let f = Fixture::new();
+    let folder = folder(&f);
+    let (table, before, after) = hooks(&f);
+    write_config(
+        &f,
+        "rimworld",
+        &format!(
+            "kind = \"native\"\ngog_id = \"{ID}\"\n\n{table}\n[targets.game]\nexe = \"{}\"\n",
+            folder.join("RimWorldLinux").display()
+        ),
+    );
+    f.gog_folder(&folder, Some("rimworld"), ID, true);
+    assert_refused(&f.run(&["start", "rimworld"]), MID_UPDATE);
+    assert!(!before.exists());
+    assert!(!after.exists());
+
+    f.gog_folder(&folder, Some("rimworld"), ID, false);
+    assert_success(&f.run(&["start", "rimworld"]));
+    assert!(before.exists());
+    assert_success(&f.run(&["stop", "rimworld"]));
+    f.wait_for_run_end("rimworld", "stopped");
+}
+
+#[test]
+fn no_hook_runs_for_a_clone_refused_mid_update() {
+    let f = Fixture::new();
+    let folder = rimworld(&f, true);
+    let (table, before, after) = hooks(&f);
+    f.environment(
+        "copy",
+        &format!(
+            "{table}\n[targets.game]\nexe = \"{}\"\n",
+            folder.join("RimWorld.exe").display()
+        ),
+    );
+    assert_refused(&f.run(&["start", "copy"]), MID_UPDATE);
+    assert!(!before.exists());
+    assert!(!after.exists());
+}
+
+#[test]
+fn restart_keeps_the_run_when_the_folder_went_mid_update() {
+    let f = Fixture::new();
+    let folder = rimworld(&f, false);
+    assert_success(&f.run(&["start", "rimworld"]));
+    f.gog_folder(&folder, Some("rimworld"), ID, true);
+    assert_refused(&f.run(&["restart", "rimworld"]), MID_UPDATE);
+    assert!(f.runtime("rimworld").is_running().unwrap());
+    assert_success(&f.run(&["stop", "rimworld"]));
+    f.wait_for_run_end("rimworld", "stopped");
+}

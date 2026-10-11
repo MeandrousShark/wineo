@@ -11,96 +11,108 @@ use anyhow::Result;
 use super::{FolderError, FolderLock, FolderState, InUseGuard, InUseLock, find, key, read_file};
 use crate::paths::Paths;
 
-/// Checks a launch of `name` and takes the in-use lock of every GOG folder it
-/// touches, in key order: its own game's when `gog_id` is set, and any folder
-/// holding one of `touched`, the host paths it names. An ownerless folder of
-/// its own game is claimed on the way. Refuses a folder that is mid-update
-/// or being updated, and a game whose state is lost.
-pub fn protect(
-    paths: &Paths,
-    name: &str,
-    gog_id: Option<&str>,
-    touched: &[PathBuf],
-    cancel: &dyn Fn() -> bool,
-) -> Result<Vec<InUseGuard>> {
-    let mut matched = Vec::new();
-    for path in touched.iter().filter(|path| path.is_absolute()) {
-        if let Some(state) = folder_holding(paths, path)? {
-            matched.push(state);
-        }
-    }
+/// The GOG folders a launch touches, as found without locks.
+struct Touched<'a> {
+    name: &'a str,
+    gog_id: Option<&'a str>,
+    /// By key, which is lock order.
+    states: BTreeMap<String, FolderState>,
+    /// The environment's own game folder.
+    own: Option<PathBuf>,
+    /// Whether that folder is ownerless and gets claimed.
+    claim: bool,
+}
 
-    // A portable root holds no GOG games, so a `gog_id` there names nothing
-    // it could own, and only the paths it touches count.
-    let gog_id = gog_id.filter(|_| paths.portable_root().is_none());
-    let mut claim = None;
-    let own = match gog_id {
-        None => None,
-        Some(gog_id) => match find(paths, name, gog_id)? {
-            Some(state) => Some(state),
-            None => {
-                let ownerless = matched
-                    .iter()
-                    .find(|state| state.owner.is_none() && state.is_game(gog_id))
-                    .ok_or_else(|| FolderError::StateMissing {
-                        name: name.to_owned(),
-                        gog_id: gog_id.to_owned(),
-                    })?;
-                claim = Some(ownerless.folder.clone());
-                Some(ownerless.clone())
+impl<'a> Touched<'a> {
+    fn find(
+        paths: &Paths,
+        name: &'a str,
+        gog_id: Option<&'a str>,
+        touched: &[PathBuf],
+    ) -> Result<Self> {
+        let mut matched = Vec::new();
+        for path in touched.iter().filter(|path| path.is_absolute()) {
+            if let Some(state) = folder_holding(paths, path)? {
+                matched.push(state);
             }
-        },
-    };
-    let own_folder = own.as_ref().map(|state| state.folder.clone());
+        }
 
-    let mut folders: BTreeMap<String, FolderState> = BTreeMap::new();
-    for state in own.into_iter().chain(matched) {
-        folders.entry(key(&state.folder)).or_insert(state);
-    }
-
-    let mut guards = Vec::new();
-    for state in folders.values() {
-        match InUseLock::new(paths, &state.folder)?.try_shared()? {
-            Some(guard) => guards.push(guard),
-            None => {
-                return Err(FolderError::Updating {
-                    name: state.label(),
+        // A portable root holds no GOG games, so a `gog_id` there names
+        // nothing it could own, and only the paths it touches count.
+        let gog_id = gog_id.filter(|_| paths.portable_root().is_none());
+        let mut claim = false;
+        let own = match gog_id {
+            None => None,
+            Some(gog_id) => match find(paths, name, gog_id)? {
+                Some(state) => Some(state),
+                None => {
+                    let ownerless = matched
+                        .iter()
+                        .find(|state| state.owner.is_none() && state.is_game(gog_id))
+                        .ok_or_else(|| FolderError::StateMissing {
+                            name: name.to_owned(),
+                            gog_id: gog_id.to_owned(),
+                        })?;
+                    claim = true;
+                    Some(ownerless.clone())
                 }
-                .into());
+            },
+        };
+        let own_folder = own.as_ref().map(|state| state.folder.clone());
+        let mut states = BTreeMap::new();
+        for state in own.into_iter().chain(matched) {
+            states.entry(key(&state.folder)).or_insert(state);
+        }
+        Ok(Self {
+            name,
+            gog_id,
+            states,
+            own: own_folder,
+            claim,
+        })
+    }
+
+    /// Takes every in-use lock shared, refusing one an update holds.
+    fn lock_in_use(&self, paths: &Paths) -> Result<Vec<InUseGuard>> {
+        let mut guards = Vec::new();
+        for state in self.states.values() {
+            match InUseLock::new(paths, &state.folder)?.try_shared()? {
+                Some(guard) => guards.push(guard),
+                None => {
+                    return Err(FolderError::Updating {
+                        name: state.label(),
+                    }
+                    .into());
+                }
             }
         }
+        Ok(guards)
     }
 
-    if let Some(folder) = &claim {
-        FolderLock::exclusive(paths, folder, cancel)?.reclaim(name)?;
-    }
-
-    for folder in folders.values().map(|state| &state.folder) {
-        let state = {
-            let lock = FolderLock::shared(paths, folder, cancel)?;
-            lock.read().map_err(|error| FolderError::UnreadableFolder {
-                folder: folder.clone(),
-                detail: format!("{error:#}"),
-            })?
-        };
-        let own = own_folder.as_ref() == Some(folder);
-        let Some(state) = state else {
+    /// Refuses a folder whose state is lost, taken, or mid-update. A folder
+    /// to be claimed is judged as its claimant's.
+    fn check(&self, folder: &Path, state: Option<FolderState>) -> Result<()> {
+        let own = self.own.as_deref() == Some(folder);
+        let Some(mut state) = state else {
             if own {
                 return Err(FolderError::StateMissing {
-                    name: name.to_owned(),
-                    gog_id: gog_id.unwrap_or_default().to_owned(),
+                    name: self.name.to_owned(),
+                    gog_id: self.gog_id.unwrap_or_default().to_owned(),
                 }
                 .into());
             }
             // Forgotten since it was found, so no longer a game folder.
-            continue;
+            return Ok(());
         };
+        if own && self.claim && state.owner.is_none() {
+            state.owner = Some(self.name.to_owned());
+        }
         if own
             && let Some(owner) = &state.owner
-            && owner != name
+            && owner != self.name
         {
             return Err(FolderError::OwnedByOther {
-                folder: folder.clone(),
+                folder: folder.to_owned(),
                 owner: owner.clone(),
             }
             .into());
@@ -116,8 +128,57 @@ pub fn protect(
             }
             .into());
         }
+        Ok(())
+    }
+}
+
+/// Checks a launch of `name` and takes the in-use lock of every GOG folder it
+/// touches, in key order: its own game's when `gog_id` is set, and any folder
+/// holding one of `touched`, the host paths it names. An ownerless folder of
+/// its own game is claimed on the way. Refuses a folder that is mid-update
+/// or being updated, and a game whose state is lost.
+pub fn protect(
+    paths: &Paths,
+    name: &str,
+    gog_id: Option<&str>,
+    touched: &[PathBuf],
+    cancel: &dyn Fn() -> bool,
+) -> Result<Vec<InUseGuard>> {
+    let found = Touched::find(paths, name, gog_id, touched)?;
+    let guards = found.lock_in_use(paths)?;
+    if found.claim
+        && let Some(folder) = &found.own
+    {
+        FolderLock::exclusive(paths, folder, cancel)?.reclaim(name)?;
+    }
+    for folder in found.states.values().map(|state| &state.folder) {
+        let state = {
+            let lock = FolderLock::shared(paths, folder, cancel)?;
+            lock.read().map_err(|error| FolderError::UnreadableFolder {
+                folder: folder.clone(),
+                detail: format!("{error:#}"),
+            })?
+        };
+        found.check(folder, state)?;
     }
     Ok(guards)
+}
+
+/// What `protect` would refuse, found without claiming, writing, or keeping
+/// any lock, so a launch can be refused before its hooks run. `protect`
+/// still decides once the launch holds its operation lock.
+pub fn precheck(
+    paths: &Paths,
+    name: &str,
+    gog_id: Option<&str>,
+    touched: &[PathBuf],
+) -> Result<()> {
+    let found = Touched::find(paths, name, gog_id, touched)?;
+    drop(found.lock_in_use(paths)?);
+    for state in found.states.values() {
+        found.check(&state.folder, Some(state.clone()))?;
+    }
+    Ok(())
 }
 
 /// The state of the GOG folder holding `path`, if any. Only the state files
@@ -448,6 +509,43 @@ mod tests {
             )),
             "{error}"
         );
+    }
+
+    #[test]
+    fn precheck_refuses_what_protect_would_without_claiming_or_holding() {
+        let (root, paths) = setup();
+        let lost =
+            refusal(precheck(&paths, "rimworld", Some("1094900565"), &[]).map(|()| Vec::new()));
+        assert!(matches!(lost, FolderError::StateMissing { .. }));
+
+        let folder = game(&paths, root.path(), None, false);
+        let written = fs::metadata(state_path(&paths, &folder)).unwrap().ino();
+        let touched = [folder.join("RimWorldLinux")];
+        precheck(&paths, "rimworld", Some("1094900565"), &touched).unwrap();
+        assert_eq!(owner(&paths, &folder), None);
+        assert_eq!(
+            fs::metadata(state_path(&paths, &folder)).unwrap().ino(),
+            written
+        );
+        let updating = lock_for_update(&paths, &folder, "rimworld").unwrap();
+        let error = refusal(
+            precheck(&paths, "rimworld", Some("1094900565"), &touched).map(|()| Vec::new()),
+        );
+        assert!(matches!(error, FolderError::Updating { .. }));
+        drop(updating);
+
+        game(&paths, root.path(), None, true);
+        let error = refusal(
+            precheck(&paths, "rimworld", Some("1094900565"), &touched).map(|()| Vec::new()),
+        );
+        assert!(matches!(&error, FolderError::MidUpdate { name } if name == "rimworld"));
+        let error = refusal(precheck(&paths, "copy", None, &touched).map(|()| Vec::new()));
+        assert!(matches!(
+            error,
+            FolderError::OwnerlessMidUpdate { gog_id: ID }
+        ));
+        assert_eq!(owner(&paths, &folder), None);
+        assert!(lock_for_update(&paths, &folder, "rimworld").is_ok());
     }
 
     #[test]

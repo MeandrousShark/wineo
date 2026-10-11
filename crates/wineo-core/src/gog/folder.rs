@@ -31,7 +31,7 @@ mod in_use;
 mod protect;
 
 pub use in_use::{InUseGuard, InUseLock, lock_for_update};
-pub use protect::{folder_holding, protect};
+pub use protect::{folder_holding, precheck, protect};
 
 /// The state file format. A file with any other version is refused.
 pub const VERSION: u32 = 1;
