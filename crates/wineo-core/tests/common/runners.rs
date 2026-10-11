@@ -3,6 +3,7 @@
 /// wineserver can see it, noisy writes megabytes in bursts, noisy-exit leaves
 /// a background writer behind, handoff exits and leaves something running for
 /// a couple of seconds the way an installer hands off to its child,
+/// handoff-two does the same but also leaves a child that exits at once,
 /// break-wineserver deletes the wineserver beside it, a program whose name ends
 /// in install-game.exe installs a game into the prefix, and any other program
 /// runs until `wineboot --end-session` or `wineserver -k` ends it.
@@ -89,6 +90,12 @@ noisy-exit)
     exit 0
     ;;
 handoff)
+    (sleep 2; touch "$WINEPREFIX/handoff-done"; rm -f "$pids") &
+    echo "$! $!" >"$pids"
+    exit 0
+    ;;
+handoff-two)
+    (sleep 0.1) &
     (sleep 2; touch "$WINEPREFIX/handoff-done"; rm -f "$pids") &
     echo "$! $!" >"$pids"
     exit 0

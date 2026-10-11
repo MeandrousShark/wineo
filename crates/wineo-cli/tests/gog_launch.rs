@@ -495,3 +495,44 @@ fn exec_away_from_game_folders_returns_when_its_program_exits() {
         prefix.join("handoff-done").exists()
     });
 }
+
+/// The children of `pid` that have exited but haven't been reaped.
+fn zombie_children(pid: u32) -> Vec<u32> {
+    fs::read_dir("/proc")
+        .unwrap()
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|child| {
+            fs::read_to_string(format!("/proc/{child}/stat")).is_ok_and(|stat| {
+                let fields: Vec<_> = stat
+                    .rsplit_once(')')
+                    .map(|(_, rest)| rest.split_whitespace().collect())
+                    .unwrap_or_default();
+                fields.first() == Some(&"Z") && fields.get(1) == Some(&pid.to_string().as_str())
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn exec_reaps_what_it_adopts_while_it_waits() {
+    let f = Fixture::new();
+    let folder = rimworld(&f, false);
+    f.environment("copy", "");
+    let prefix = f.root.path().join("prefixes/copy");
+    let mut running = f
+        .wineo()
+        .args(["exec", "copy", "handoff-two", &folder.display().to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for("the program to hand off", || {
+        prefix.join("fake-pids").exists()
+    });
+    // Long enough for the short-lived child to exit and be reaped.
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    assert!(running.try_wait().unwrap().is_none());
+    assert_eq!(zombie_children(running.id()), Vec::<u32>::new());
+    assert!(running.wait().unwrap().success());
+    assert!(prefix.join("handoff-done").exists());
+}

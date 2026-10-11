@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use signal_hook::consts::SIGINT;
@@ -99,27 +99,83 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     if whole_group {
         process::become_subreaper().context("failed to watch the program's descendants")?;
     }
-    let code = run_attached(&launch)?;
+    let (code, interrupted) = run_attached(&launch)?;
     if whole_group {
         drop((
             guard,
             _build_guard,
             std::mem::take(&mut launch.build_guards),
         ));
-        // Ctrl+C still reaches the whole group, which shares wineo's.
-        while process::own_group_has_live_descendants() != Some(false) {
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        wait_for_descendants(&interrupted, global.stop_timeout);
     }
     drop(folders);
     Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
 }
 
-/// Runs `launch` attached to the terminal.
-fn run_attached(launch: &Launch) -> anyhow::Result<i32> {
+/// How long descendants Ctrl+C killed get to exit before wineo stops
+/// waiting for them regardless.
+const KILL_GRACE: Duration = Duration::from_secs(2);
+
+/// Waits until nothing the program started is left in wineo's group. Ctrl+C
+/// reaches them already, since they share it; past the stop timeout, or on a
+/// second Ctrl+C, they're killed, and the wait then ends even if they can't
+/// be inspected. Only called once the program itself has been waited for,
+/// so reaping can't take its status.
+fn wait_for_descendants(interrupted: &AtomicBool, stop_timeout: u32) {
+    wait_with(
+        interrupted,
+        stop_timeout,
+        process::own_group_has_live_descendants,
+        process::kill_own_group_descendants,
+        process::reap_adopted,
+    );
+}
+
+/// `wait_for_descendants`, with how they're inspected, killed, and reaped
+/// passed in.
+fn wait_with(
+    interrupted: &AtomicBool,
+    stop_timeout: u32,
+    mut live: impl FnMut() -> Option<bool>,
+    mut kill: impl FnMut(),
+    mut reap: impl FnMut(),
+) {
+    let mut stopping: Option<Instant> = None;
+    let mut forced = false;
+    let mut killed: Option<Instant> = None;
+    loop {
+        reap();
+        let live = live();
+        if live == Some(false) {
+            return;
+        }
+        if interrupted.swap(false, Ordering::Relaxed) {
+            forced |= stopping.is_some();
+            stopping.get_or_insert_with(Instant::now);
+        }
+        if killed.is_none()
+            && stopping.is_some_and(|at| {
+                forced || at.elapsed() >= Duration::from_secs(stop_timeout.into())
+            })
+        {
+            kill();
+            killed = Some(Instant::now());
+        }
+        if killed.is_some_and(|at| live.is_none() || at.elapsed() >= KILL_GRACE) {
+            reap();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Runs `launch` attached to the terminal. Also returns whether Ctrl+C has
+/// been pressed since it started.
+fn run_attached(launch: &Launch) -> anyhow::Result<(i32, Arc<AtomicBool>)> {
     // The program shares our process group and gets Ctrl+C itself. wineo keeps
     // waiting instead of exiting out from under it.
-    signal_hook::flag::register(SIGINT, Arc::new(AtomicBool::new(false)))
+    let interrupted = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(SIGINT, Arc::clone(&interrupted))
         .context("failed to set up signal handling")?;
     let mut child = launch
         .command()
@@ -129,5 +185,51 @@ fn run_attached(launch: &Launch) -> anyhow::Result<i32> {
     let status = child
         .wait()
         .with_context(|| format!("failed to start {}", launch.host.launcher()))?;
-    Ok(exit_code(status))
+    Ok((exit_code(status), interrupted))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_second_ctrl_c_ends_the_wait_even_when_nothing_can_be_inspected() {
+        let interrupted = AtomicBool::new(true);
+        let mut kills = 0;
+        let mut polls = 0;
+        wait_with(
+            &interrupted,
+            60,
+            || {
+                polls += 1;
+                if polls == 2 {
+                    interrupted.store(true, Ordering::Relaxed);
+                }
+                None
+            },
+            || kills += 1,
+            || {},
+        );
+        assert_eq!(kills, 1);
+        assert_eq!(polls, 2);
+    }
+
+    #[test]
+    fn ctrl_c_kills_what_outlives_the_stop_timeout() {
+        let interrupted = AtomicBool::new(true);
+        let mut kills = 0;
+        let mut polls = 0;
+        wait_with(
+            &interrupted,
+            0,
+            || {
+                polls += 1;
+                (polls < 3).then_some(true).or(Some(false))
+            },
+            || kills += 1,
+            || {},
+        );
+        assert_eq!(kills, 1);
+        assert_eq!(polls, 3);
+    }
 }

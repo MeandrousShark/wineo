@@ -314,29 +314,65 @@ pub fn leaderless_group_settled(group: u32) -> Option<bool> {
     }
 }
 
-/// Returns whether a group has a process that can still run or fork.
+/// Returns whether a group has a process that can still run or fork. An
+/// entry whose stat is denied, as with `/proc` mounted `hidepid`, belongs to
+/// another user, which no member of a group wineo started is.
 pub fn group_has_live_members(group: u32) -> Option<bool> {
-    let processes = fs::read_dir("/proc").ok()?;
-    for entry in processes {
-        let entry = entry.ok()?;
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        match read_stat(pid) {
-            ProcRead::Found(stat)
-                if stat.group == group && !matches!(stat.state, 'Z' | 'X' | 'x') =>
-            {
-                return Some(true);
-            }
-            ProcRead::Found(_) | ProcRead::Gone => {}
-            ProcRead::Unknown => return None,
+    group_live_in(&proc_pids()?, &read_proc_stat, group)
+}
+
+fn group_live_in(
+    pids: &[u32],
+    read: &dyn Fn(u32) -> io::Result<String>,
+    group: u32,
+) -> Option<bool> {
+    for &pid in pids {
+        match read(pid) {
+            Err(err) if denied(&err) => {}
+            stat => match parse_stat_read(stat) {
+                ProcRead::Found(stat)
+                    if stat.group == group && !matches!(stat.state, 'Z' | 'X' | 'x') =>
+                {
+                    return Some(true);
+                }
+                ProcRead::Found(_) | ProcRead::Gone => {}
+                ProcRead::Unknown => return None,
+            },
         }
     }
     Some(false)
+}
+
+/// Whether a process group still exists, zombies included, asked of the
+/// kernel rather than `/proc`. `None` for an unexpected answer.
+pub fn group_still_exists(group: u32) -> Option<bool> {
+    group_exists(group)
+}
+
+fn proc_pids() -> Option<Vec<u32>> {
+    let mut pids = Vec::new();
+    for entry in fs::read_dir("/proc").ok()? {
+        if let Some(pid) = entry
+            .ok()?
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        {
+            pids.push(pid);
+        }
+    }
+    Some(pids)
+}
+
+fn read_proc_stat(pid: u32) -> io::Result<String> {
+    fs::read_to_string(format!("/proc/{pid}/stat"))
+}
+
+fn denied(err: &io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        Some(code) if code == Errno::ACCESS.raw_os_error() || code == Errno::PERM.raw_os_error()
+    )
 }
 
 /// Whether this process's own group still has a live member descended from
@@ -345,53 +381,94 @@ pub fn group_has_live_members(group: u32) -> Option<bool> {
 /// Orphaned descendants are only seen once `become_subreaper` has made
 /// them wineo's. `None` means the processes couldn't be inspected.
 pub fn own_group_has_live_descendants() -> Option<bool> {
-    let me = std::process::id();
+    own_group_live_descendants().map(|pids| !pids.is_empty())
+}
+
+/// The live members of this process's own group descended from it.
+pub fn own_group_live_descendants() -> Option<Vec<u32>> {
     let group = u32::try_from(rustix::process::getpgrp().as_raw_nonzero().get()).ok()?;
-    let processes = fs::read_dir("/proc").ok()?;
-    for entry in processes {
-        let entry = entry.ok()?;
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        if pid == me {
-            continue;
-        }
-        match read_family(pid) {
+    descendants_in(&proc_pids()?, &read_proc_stat, std::process::id(), group)
+}
+
+fn descendants_in(
+    pids: &[u32],
+    read: &dyn Fn(u32) -> io::Result<String>,
+    me: u32,
+    group: u32,
+) -> Option<Vec<u32>> {
+    let mut found = Vec::new();
+    for &pid in pids.iter().filter(|&&pid| pid != me) {
+        match read_family(read(pid)) {
             Family::Found {
                 state,
                 group: member,
                 ..
             } if member == group && !matches!(state, 'Z' | 'X' | 'x') => {
-                if descends_from(pid, me)? {
-                    return Some(true);
+                if descends_from(read, pid, me)? {
+                    found.push(pid);
                 }
             }
-            Family::Found { .. } | Family::Gone => {}
+            Family::Found { .. } | Family::Gone | Family::Denied => {}
             Family::Unknown => return None,
         }
     }
-    Some(false)
+    Some(found)
+}
+
+/// Kills the live members of this process's own group descended from it,
+/// each through a pidfd checked again once open, so a reused pid is never
+/// signaled.
+pub fn kill_own_group_descendants() {
+    let Some(pids) = own_group_live_descendants() else {
+        return;
+    };
+    let Ok(group) = u32::try_from(rustix::process::getpgrp().as_raw_nonzero().get()) else {
+        return;
+    };
+    let me = std::process::id();
+    for pid in pids {
+        let Some(raw) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
+            continue;
+        };
+        let Ok(pidfd) = pidfd_open(raw, PidfdFlags::empty()) else {
+            continue;
+        };
+        if descendants_in(&[pid], &read_proc_stat, me, group).is_some_and(|live| live == [pid]) {
+            let _ = pidfd_send_signal(&pidfd, Signal::KILL);
+        }
+    }
 }
 
 /// Makes orphaned descendants wineo's children instead of init's, so
-/// `own_group_has_live_descendants` still sees them.
+/// `own_group_has_live_descendants` still sees them. `reap_adopted` then
+/// keeps them from lingering as zombies.
 pub fn become_subreaper() -> io::Result<()> {
     rustix::process::set_child_subreaper(Some(rustix::process::getpid())).map_err(io::Error::from)
 }
 
-fn descends_from(pid: u32, ancestor: u32) -> Option<bool> {
+/// Reaps every child that has exited, without waiting. Only for a subreaper
+/// whose own started program has already been waited for, since this takes
+/// any child's status.
+pub fn reap_adopted() {
+    use rustix::process::{WaitOptions, waitpid};
+    while let Ok(Some(_)) = waitpid(None, WaitOptions::NOHANG) {}
+}
+
+fn descends_from(
+    read: &dyn Fn(u32) -> io::Result<String>,
+    pid: u32,
+    ancestor: u32,
+) -> Option<bool> {
     let mut current = pid;
     // A parent chain can't be longer than the pid space, but stop early on
     // anything odd rather than loop.
     for _ in 0..4096 {
-        match read_family(current) {
+        match read_family(read(current)) {
             Family::Found { parent, .. } if parent == ancestor => return Some(true),
             Family::Found { parent, .. } if parent > 1 => current = parent,
-            Family::Found { .. } | Family::Gone => return Some(false),
+            // Another user's process can't be between wineo and its own
+            // descendant.
+            Family::Found { .. } | Family::Gone | Family::Denied => return Some(false),
             Family::Unknown => return None,
         }
     }
@@ -405,11 +482,13 @@ enum Family {
         group: u32,
     },
     Gone,
+    /// Another user's, under `hidepid`.
+    Denied,
     Unknown,
 }
 
-fn read_family(pid: u32) -> Family {
-    let text = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+fn read_family(read: io::Result<String>) -> Family {
+    let text = match read {
         Ok(text) => text,
         Err(err)
             if err.kind() == io::ErrorKind::NotFound
@@ -417,6 +496,7 @@ fn read_family(pid: u32) -> Family {
         {
             return Family::Gone;
         }
+        Err(err) if denied(&err) => return Family::Denied,
         Err(_) => return Family::Unknown,
     };
     let Some((_, rest)) = text.rsplit_once(')') else {
@@ -551,6 +631,63 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    /// A process's state, parent, and group, or how reading its stat fails.
+    type FakeStat = Result<(char, u32, u32), Errno>;
+
+    /// A `/proc/<pid>/stat` line, or an error the way reading one fails.
+    fn fake_proc(entries: Vec<(u32, FakeStat)>) -> (Vec<u32>, impl Fn(u32) -> io::Result<String>) {
+        let pids = entries.iter().map(|(pid, _)| *pid).collect();
+        let read = move |pid: u32| match entries
+            .iter()
+            .find(|(entry, _)| *entry == pid)
+            .map(|(_, stat)| *stat)
+        {
+            Some(Ok((state, parent, group))) => Ok(format!(
+                "{pid} (fake) {state} {parent} {group} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 42 0\n"
+            )),
+            Some(Err(errno)) => Err(io::Error::from_raw_os_error(errno.raw_os_error())),
+            None => Err(io::Error::from_raw_os_error(Errno::NOENT.raw_os_error())),
+        };
+        (pids, read)
+    }
+
+    #[test]
+    fn group_scans_skip_denied_and_vanished_entries() {
+        let (pids, read) = fake_proc(vec![
+            (10, Err(Errno::ACCESS)),
+            (11, Err(Errno::PERM)),
+            (12, Err(Errno::NOENT)),
+            (13, Err(Errno::SRCH)),
+            (14, Ok(('Z', 1, 55))),
+            (15, Ok(('S', 1, 66))),
+        ]);
+        assert_eq!(group_live_in(&pids, &read, 55), Some(false));
+        let (pids, read) = fake_proc(vec![(10, Err(Errno::ACCESS)), (16, Ok(('S', 1, 55)))]);
+        assert_eq!(group_live_in(&pids, &read, 55), Some(true));
+        let (pids, read) = fake_proc(vec![(17, Err(Errno::IO))]);
+        assert_eq!(group_live_in(&pids, &read, 55), None);
+    }
+
+    #[test]
+    fn descendant_scans_skip_denied_and_vanished_entries() {
+        let (pids, read) = fake_proc(vec![
+            (100, Ok(('S', 1, 55))),
+            // A child, and a grandchild whose parent left the group.
+            (200, Ok(('S', 100, 55))),
+            (300, Ok(('S', 100, 77))),
+            (301, Ok(('S', 300, 55))),
+            // A pipeline neighbor, under another user's shell.
+            (400, Ok(('S', 500, 55))),
+            (500, Err(Errno::ACCESS)),
+            (600, Err(Errno::PERM)),
+            (700, Err(Errno::NOENT)),
+            (800, Ok(('Z', 100, 55))),
+        ]);
+        assert_eq!(descendants_in(&pids, &read, 100, 55), Some(vec![200, 301]));
+        let (pids, read) = fake_proc(vec![(100, Ok(('S', 1, 55))), (900, Err(Errno::IO))]);
+        assert_eq!(descendants_in(&pids, &read, 100, 55), None);
+    }
 
     #[test]
     fn vanished_proc_stat_is_gone_but_unreadable_or_malformed_stat_is_unknown() {

@@ -22,6 +22,9 @@ use super::{ExecResolution, Launch, LaunchEvent, ensure_prefix, reconcile, runne
 
 const POLL: Duration = Duration::from_millis(50);
 const READ_BATCH: u64 = 256 * 1024;
+/// How long a group a cancel killed gets to finish exiting before an exec
+/// stops waiting for it regardless, so a cancel always ends the exec.
+const KILL_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub enum ExecEvent {
@@ -139,6 +142,7 @@ fn run(
     let group = child.id();
     let mut stopping = None;
     let mut killing = false;
+    let mut killed_at = None;
     let mut exited = None;
     let mut release = Some(release);
     let result = (|| {
@@ -171,8 +175,13 @@ fn run(
                     }
                 },
             };
-            // Unknown counts as live, so a folder is never let go early.
-            if !whole_group || crate::process::group_has_live_members(group) == Some(false) {
+            if !whole_group
+                || settled(
+                    crate::process::group_still_exists(group),
+                    killing,
+                    killed_at,
+                )
+            {
                 // Read only what is present now; handed-off programs can keep
                 // writing, and must not extend the lifetime of this worker.
                 let end = log.metadata()?.len();
@@ -193,6 +202,9 @@ fn run(
                 &mut killing,
                 events,
             )?;
+            if killing && killed_at.is_none() {
+                killed_at = Some(Instant::now());
+            }
             lines.pump(READ_BATCH, events)?;
             token.wait_timeout(POLL);
         }
@@ -202,6 +214,19 @@ fn run(
         let _ = child.wait();
     }
     result
+}
+
+/// Whether the wait on a group is over. The program led its own group and
+/// was reaped here, and orphans are reaped by init, so the kernel's answer
+/// on whether the group exists needs no `/proc`. Unknown counts as live, so
+/// a folder is never let go early, unless a cancel has already killed the
+/// group, which then gets `KILL_GRACE` at most.
+fn settled(exists: Option<bool>, killing: bool, killed_at: Option<Instant>) -> bool {
+    let gone = match exists {
+        Some(exists) => !exists,
+        None => killing,
+    };
+    gone || killed_at.is_some_and(|at| at.elapsed() >= KILL_GRACE)
 }
 
 /// Signals the group once canceled, and kills it once forced or past the
@@ -306,6 +331,17 @@ mod tests {
         lines.pump(READ_BATCH, &mut events).unwrap();
         lines.finish(&mut events);
         assert_eq!(output, ["first", "", "\u{e9}\r", "last"]);
+    }
+
+    #[test]
+    fn a_killed_group_ends_the_wait_even_when_it_cant_be_inspected() {
+        assert!(settled(Some(false), false, None));
+        assert!(!settled(Some(true), false, None));
+        assert!(!settled(None, false, None));
+        assert!(settled(None, true, Some(Instant::now())));
+        assert!(!settled(Some(true), true, Some(Instant::now())));
+        let long_ago = Instant::now() - KILL_GRACE;
+        assert!(settled(Some(true), true, Some(long_ago)));
     }
 
     #[test]
