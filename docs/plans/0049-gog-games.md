@@ -947,6 +947,15 @@ Chosen during step 4 and confirmed by the maintainer on 2026-10-11:
 - **The update-side refusal** reads `Something is running from rimworld's
   game folder. Stop it first.` until step 7 can name what's running.
 
+Settled by the maintainer on 2026-10-11, after step 4's second review:
+
+- **Exec holds the folder for the whole run.** An exec that touches a GOG
+  game folder waits until every process in its process group has exited,
+  like installer runs, so a launcher that starts the game and exits still
+  keeps the folder in use until the game quits. Execs that touch no GOG
+  folder return when their program exits, as before. A program that leaves
+  its process group isn't seen, and the docs say so.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,
