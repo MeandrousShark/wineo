@@ -2,10 +2,13 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
+use rustix::fs::{FlockOperation, flock};
+use rustix::io::Errno;
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -693,10 +696,10 @@ fn a_multi_part_installer_lands_in_one_folder_under_its_own_names() {
     assert!(files[0].complete);
     assert_eq!(gog.cache.files(7).unwrap(), []);
 
-    gog.cache.remove_product(PRODUCT).unwrap();
+    gog.cache.remove_product(PRODUCT, &|| false).unwrap();
     assert_eq!(gog.cache.files(PRODUCT).unwrap(), []);
     assert!(!gog.cache.dir().join(PRODUCT.to_string()).exists());
-    gog.cache.remove_product(PRODUCT).unwrap();
+    gog.cache.remove_product(PRODUCT, &|| false).unwrap();
 }
 
 #[test]
@@ -854,7 +857,10 @@ fn a_partial_file_already_whole_is_verified_without_fetching_it() {
 #[test]
 fn a_second_downloader_waits_for_the_first() {
     let gog = Gog::one();
-    let held = gog.cache.lock(PRODUCT, Endpoint::Download).unwrap();
+    let held = gog
+        .cache
+        .lock(PRODUCT, &|| false, Endpoint::Download)
+        .unwrap();
     let (sender, receiver) = mpsc::channel();
     thread::scope(|scope| {
         let gog = &gog;
@@ -876,7 +882,7 @@ fn a_second_downloader_waits_for_the_first() {
 #[test]
 fn a_downloader_waiting_while_the_product_is_removed_locks_it_again() {
     let gog = Gog::one();
-    let held = gog.cache.lock(PRODUCT, Endpoint::Cache).unwrap();
+    let held = gog.cache.lock(PRODUCT, &|| false, Endpoint::Cache).unwrap();
     let (sender, receiver) = mpsc::channel();
     thread::scope(|scope| {
         let gog = &gog;
@@ -900,8 +906,8 @@ fn a_downloader_waiting_while_the_product_is_removed_locks_it_again() {
         );
     });
     // A lock taken now is the same one the downloader used, not a new file.
-    drop(gog.cache.lock(PRODUCT, Endpoint::Cache).unwrap());
-    gog.cache.remove_product(PRODUCT).unwrap();
+    drop(gog.cache.lock(PRODUCT, &|| false, Endpoint::Cache).unwrap());
+    gog.cache.remove_product(PRODUCT, &|| false).unwrap();
     assert_eq!(gog.cache.files(PRODUCT).unwrap(), []);
 }
 
@@ -909,11 +915,18 @@ fn a_downloader_waiting_while_the_product_is_removed_locks_it_again() {
 fn removing_a_product_waits_for_its_download() {
     let gog = Gog::one();
     gog.get(&gog.package("en1installer0")).unwrap();
-    let held = gog.cache.lock(PRODUCT, Endpoint::Download).unwrap();
+    let held = gog
+        .cache
+        .lock(PRODUCT, &|| false, Endpoint::Download)
+        .unwrap();
     let (sender, receiver) = mpsc::channel();
     thread::scope(|scope| {
         let cache = &gog.cache;
-        scope.spawn(move || sender.send(cache.remove_product(PRODUCT)).unwrap());
+        scope.spawn(move || {
+            sender
+                .send(cache.remove_product(PRODUCT, &|| false))
+                .unwrap()
+        });
         assert!(receiver.recv_timeout(Duration::from_millis(300)).is_err());
         assert!(gog.folder().join(SETUP).exists());
         drop(held);
@@ -923,4 +936,71 @@ fn removing_a_product_waits_for_its_download() {
             .unwrap();
     });
     assert!(!gog.cache.dir().join(PRODUCT.to_string()).exists());
+}
+
+#[test]
+fn canceling_a_wait_for_the_lock_leaves_the_holder_alone() {
+    let gog = Gog::one();
+    let first = gog
+        .cache
+        .lock(PRODUCT, &|| false, Endpoint::Download)
+        .unwrap();
+    let canceled = AtomicBool::new(false);
+    let (sender, receiver) = mpsc::channel();
+    thread::scope(|scope| {
+        let (gog, canceled) = (&gog, &canceled);
+        scope.spawn(move || {
+            sender
+                .send(gog.get_with(
+                    &gog.package("en1installer0"),
+                    &|| canceled.load(Ordering::Relaxed),
+                    &|_, _| {},
+                ))
+                .unwrap()
+        });
+        assert!(receiver.recv_timeout(Duration::from_millis(300)).is_err());
+        canceled.store(true, Ordering::Relaxed);
+        let error = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            (error.endpoint(), error.kind()),
+            (Endpoint::Download, ErrorKind::Canceled)
+        );
+        assert!(gog.server.requests().is_empty());
+
+        // A removal waiting on the lock can be canceled the same way.
+        let (sender, receiver) = mpsc::channel();
+        scope.spawn(move || {
+            sender
+                .send(
+                    gog.cache
+                        .remove_product(PRODUCT, &|| canceled.load(Ordering::Relaxed)),
+                )
+                .unwrap()
+        });
+        let error = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            (error.endpoint(), error.kind()),
+            (Endpoint::Cache, ErrorKind::Canceled)
+        );
+    });
+
+    // The holder still has the lock: nobody else can take it.
+    let other = gog.cache.dir().join(PRODUCT.to_string()).join(".lock");
+    let file = fs::File::open(&other).unwrap();
+    assert_eq!(
+        flock(&file, FlockOperation::NonBlockingLockExclusive),
+        Err(Errno::WOULDBLOCK)
+    );
+    drop(first);
+    let downloaded = gog.get(&gog.package("en1installer0")).unwrap();
+    assert_eq!(
+        fs::read(&downloaded.path).unwrap(),
+        gog.body("en1installer0")
+    );
 }

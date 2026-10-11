@@ -79,7 +79,8 @@ impl Client {
     /// range gets one more try from zero.
     ///
     /// Holds the product's cache lock throughout, so it waits for any other
-    /// process downloading or removing the same product's files.
+    /// process downloading or removing the same product's files. `cancel`
+    /// is checked while it waits too.
     pub fn download(
         &self,
         access_token: &str,
@@ -93,7 +94,7 @@ impl Client {
         if package.size == 0 {
             return Err(Error::new(Endpoint::Download, ErrorKind::Malformed));
         }
-        let _lock = cache.lock(package.product_id, Endpoint::Download)?;
+        let _lock = cache.lock(package.product_id, cancel, Endpoint::Download)?;
         if let Some((path, md5)) =
             cache::reusable(&folder, package, None, cancel, Endpoint::Download)?
         {

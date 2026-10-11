@@ -25,13 +25,19 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use md5::{Digest, Md5};
 use rustix::fs::{FlockOperation, flock};
+use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Endpoint, Error, ErrorKind};
 use crate::product::{Download, DownloadFile};
+
+/// How long a wait for a product's lock sleeps between tries.
+const LOCK_RETRY: Duration = Duration::from_millis(100);
 
 /// How much of a file is read or written at once.
 pub(crate) const CHUNK: usize = 256 * 1024;
@@ -118,8 +124,15 @@ impl DownloadCache {
         self.dir.join(product_id.to_string())
     }
 
-    /// Takes the product's lock, waiting for whoever holds it.
-    pub(crate) fn lock(&self, product_id: u64, endpoint: Endpoint) -> Result<ProductLock, Error> {
+    /// Takes the product's lock, waiting for whoever holds it. The wait is
+    /// polled rather than blocking, so `cancel` still works while another
+    /// process downloads a large file.
+    pub(crate) fn lock(
+        &self,
+        product_id: u64,
+        cancel: &dyn Fn() -> bool,
+        endpoint: Endpoint,
+    ) -> Result<ProductLock, Error> {
         let disk = disk(endpoint);
         let dir = self.product_dir(product_id);
         let path = dir.join(".lock");
@@ -138,9 +151,15 @@ impl DownloadCache {
                 Err(error) => return Err(disk(error)),
             };
             loop {
-                match flock(&file, FlockOperation::LockExclusive) {
+                match flock(&file, FlockOperation::NonBlockingLockExclusive) {
                     Ok(()) => break,
-                    Err(rustix::io::Errno::INTR) => continue,
+                    Err(Errno::WOULDBLOCK) => {
+                        if cancel() {
+                            return Err(Error::new(endpoint, ErrorKind::Canceled));
+                        }
+                        thread::sleep(LOCK_RETRY);
+                    }
+                    Err(Errno::INTR) => {}
                     Err(error) => return Err(disk(error.into())),
                 }
             }
@@ -221,9 +240,10 @@ impl DownloadCache {
     }
 
     /// Removes everything cached for a product, finished or partial.
-    /// Waits for a download of the product in another process to finish.
-    pub fn remove_product(&self, product_id: u64) -> Result<(), Error> {
-        let _lock = self.lock(product_id, Endpoint::Cache)?;
+    /// Waits for a download of the product in another process to finish,
+    /// checking `cancel` while it waits.
+    pub fn remove_product(&self, product_id: u64, cancel: &dyn Fn() -> bool) -> Result<(), Error> {
+        let _lock = self.lock(product_id, cancel, Endpoint::Cache)?;
         // The lock file goes too. Anyone waiting on it notices and locks
         // a new one.
         match fs::remove_dir_all(self.product_dir(product_id)) {
