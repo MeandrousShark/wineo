@@ -112,9 +112,10 @@ New-environment reviews use one grouped summary with Application, Source,
 and Runtime sections as applicable. Render the frozen reviewed data directly.
 Warnings and missing prerequisites stay prominent below the summary. Long
 paths stay complete and wrap or scroll. Keep Back/Create outside the scrolling
-summary so they remain reachable in a short window. Import grid pages work
-the same way: the title, notes, and posters scroll together, Back stays at the
-top, and the selection and Import row is pinned at the bottom.
+summary so they remain reachable in a short window. Import pages work the
+same way: Back stays at the top, the content scrolls (on grid pages the title
+and notes scroll with the posters), and each step's main action row is pinned
+at the bottom.
 
 Settings uses grouped sections and a fixed Save/Revert footer with the edit
 count. Snapshots uses compact rows and bounded, complete reviews. Downloads
