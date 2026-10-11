@@ -118,7 +118,14 @@ paths stay complete and wrap or scroll. Keep Back/Create outside the scrolling
 summary so they remain reachable in a short window. Import pages work the
 same way: Back stays at the top, the content scrolls (on grid pages the title
 and notes scroll with the posters), and each step's main action row is pinned
-at the bottom.
+at the bottom. The art picker matches: Back and Filters stay at the top, the
+title, filters, and images scroll, and only progress and **Use** are pinned.
+
+A header or card with a left group and a right group uses `ends` (in
+`ends.rs`), not a row with a fill spacer. It keeps the right group at the
+right edge when both fit, gives the left side the rest of the line, and
+stacks the right group underneath in a narrow window instead of squeezing
+its buttons. Rows of buttons that can run out of room wrap.
 
 Settings uses grouped sections and a fixed Save/Revert footer with the edit
 count. Snapshots uses compact rows and bounded, complete reviews. Downloads
