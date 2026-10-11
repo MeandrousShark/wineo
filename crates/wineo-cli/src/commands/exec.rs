@@ -76,6 +76,12 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let _guard = locks.acquire(Operation::Launch, &environment.name, &[prefix])?;
     Environment::ensure_exists(paths, &environment.name)?;
     Runtime::new(paths, &environment.name).check_resolved(&environment.name)?;
+    let _folders = launch::protect(
+        paths,
+        &environment,
+        &launch,
+        &wineo_core::cancel::Token::new(),
+    )?;
     launch::reconcile(paths, &global, &environment, &launch, |event| {
         build::print_event(paths, &environment.name, event)
     })?;

@@ -28,8 +28,10 @@ use crate::name;
 use crate::paths::Paths;
 
 mod in_use;
+mod protect;
 
 pub use in_use::{InUseGuard, InUseLock, lock_for_update};
+pub use protect::{folder_holding, protect};
 
 /// The state file format. A file with any other version is refused.
 pub const VERSION: u32 = 1;
@@ -387,9 +389,26 @@ pub enum FolderError {
     Unreadable { name: String, detail: String },
     #[error("Canceled.")]
     Canceled,
+    #[error(
+        "{name}'s GOG state is missing. Migrate it again with wineo import gog --game {gog_id}, or stop tracking it with wineo set {name} --unset gog_id."
+    )]
+    StateMissing { name: String, gog_id: String },
+    /// A launch found the folder's in-use lock held by an update or
+    /// migration.
+    #[error("{name}'s game folder is being updated.")]
+    Updating { name: String },
+    #[error("{name}'s game folder is mid-update. Finish it with wineo update {name}.")]
+    MidUpdate { name: String },
+    #[error(
+        "GOG game {gog_id}'s folder is mid-update. Migrate it again with wineo import gog --game {gog_id} and finish it."
+    )]
+    OwnerlessMidUpdate { gog_id: u64 },
     /// An update or migration found something running from the folder.
     #[error("Something is running from {name}'s game folder. Stop it first.")]
     InUse { name: String },
+    /// A state file that would cover a launched path can't be read.
+    #[error("The GOG state for {folder} can't be checked: {detail}.")]
+    UnreadableFolder { folder: PathBuf, detail: String },
 }
 
 /// Holds a folder's state lock until dropped.

@@ -18,7 +18,9 @@ use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::runtime::{Runtime, exit_code};
 
-use super::{ExecResolution, Launch, LaunchEvent, ensure_prefix, reconcile, runner_locked};
+use super::{
+    ExecResolution, Launch, LaunchEvent, ensure_prefix, protect, reconcile, runner_locked,
+};
 
 const POLL: Duration = Duration::from_millis(50);
 const READ_BATCH: u64 = 256 * 1024;
@@ -37,8 +39,8 @@ pub enum ExecEvent {
 }
 
 /// Runs an arbitrary program for a frontend, without consulting the current
-/// directory. Holds shared launch and build locks until the started process
-/// exits. Cancellation only signals its process group, never the whole prefix.
+/// directory. Holds shared launch, build, and GOG folder in-use locks until
+/// the started process exits. Cancellation only signals its process group, never the whole prefix.
 /// A nonzero or canceled process exit is returned as a status. Cancellation
 /// before spawning is an error. No run record or playtime is written, and a
 /// frontend crash leaves the program running while releasing its locks.
@@ -81,6 +83,7 @@ pub fn exec(
     let _guard = Locks::new(paths).acquire(Operation::Launch, name, &[prefix])?;
     Environment::ensure_exists(paths, name)?;
     Runtime::new(paths, name).check_resolved(name)?;
+    let _folders = protect(paths, &environment, &launch, token)?;
     reconcile(paths, &global, &environment, &launch, |event| {
         events(ExecEvent::Launch(event));
     })?;

@@ -518,6 +518,9 @@ pub struct Claim {
     pub config: PathBuf,
     #[serde(default)]
     pub builds: Vec<crate::build_lock::Lock>,
+    /// The in-use locks of the GOG folders the run uses.
+    #[serde(default)]
+    pub folders: Vec<crate::gog::folder::InUseLock>,
 }
 
 /// How handing a run to a new supervisor went.
@@ -667,6 +670,21 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         .builds
         .iter()
         .map(crate::build_lock::Lock::shared)
+        .collect::<Result<Vec<_>>>()?;
+    // `start` still holds these, so no update can have taken one since.
+    let _folder_guards = spec
+        .claim
+        .folders
+        .iter()
+        .map(|lock| {
+            lock.try_shared()
+                .and_then(|guard| {
+                    guard.ok_or_else(|| {
+                        anyhow::anyhow!("{} is being updated", lock.folder().display())
+                    })
+                })
+                .map_err(|err| Error::StartFailed(format!("{err:#}")))
+        })
         .collect::<Result<Vec<_>>>()?;
     // The spec was prepared before the lock, so it can be stale by now.
     if !spec.claim.config.is_file() {
@@ -1023,6 +1041,7 @@ mod tests {
                 locks: Locks::at(PathBuf::from("/state/wineo/.locks")),
                 config: PathBuf::from("/config/wineo/environments/app.toml"),
                 builds: Vec::new(),
+                folders: Vec::new(),
             },
             runtime_dir: PathBuf::from("/state/wineo/app"),
             stats_log: PathBuf::from("/data/wineo/stats/app.jsonl"),

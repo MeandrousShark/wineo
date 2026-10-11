@@ -8,6 +8,7 @@ use crate::config::{GlobalConfig, Kind};
 use crate::desktop;
 use crate::environment::Environment;
 use crate::error::Error;
+use crate::gog::folder::InUseGuard;
 use crate::hooks::{self, Hook, Phase};
 use crate::install::{self, Wanted};
 use crate::installer::Output;
@@ -147,6 +148,9 @@ pub struct PreparedLaunch {
     guard: Option<Guard>,
     hook_output: hooks::Output,
     _reservation: Option<LaunchReservation>,
+    /// The in-use locks of the GOG folders it runs from, held until the run
+    /// ends or a supervisor takes them over.
+    folders: Vec<InUseGuard>,
 }
 
 impl PreparedLaunch {
@@ -362,6 +366,7 @@ pub fn prepare(
         }
     }
     let mut guard = None;
+    let mut folders = Vec::new();
     let result = (|| {
         prepare_target_reserved(
             paths,
@@ -383,6 +388,7 @@ pub fn prepare(
         });
         Environment::ensure_exists(paths, name)?;
         runtime.check_resolved(name)?;
+        folders = protect(paths, &environment, &launch, token)?;
         reconcile(paths, &global, &environment, &launch, &mut events)?;
         Ok::<_, anyhow::Error>(launch)
     })();
@@ -420,7 +426,29 @@ pub fn prepare(
         guard,
         hook_output,
         _reservation: reservation,
+        folders,
     })
+}
+
+/// Checks the GOG game folders a launch runs from and takes their in-use
+/// locks, which the caller holds until the program exits. Called holding
+/// the environment's operation lock, which comes first in lock order.
+pub fn protect(
+    paths: &Paths,
+    environment: &Environment,
+    launch: &Launch,
+    token: &Token,
+) -> anyhow::Result<Vec<InUseGuard>> {
+    if matches!(launch.host, Host::Proxied { .. }) {
+        return Ok(Vec::new());
+    }
+    crate::gog::folder::protect(
+        paths,
+        &environment.name,
+        environment.config.gog_id.as_deref(),
+        &launch.named_paths(),
+        &|| token.is_canceled(),
+    )
 }
 
 fn check_not_running(
@@ -665,6 +693,7 @@ pub fn start(
         mut guard,
         hook_output,
         _reservation,
+        folders,
     } = match prepare(paths, name, &overrides, token, hook_output, &mut events) {
         Err(err)
             if matches!(
@@ -722,6 +751,7 @@ pub fn start(
                     .iter()
                     .map(|guard| guard.lock().clone())
                     .collect(),
+                folders: folders.iter().map(|guard| guard.lock().clone()).collect(),
             },
             runtime_dir: runtime.dir().to_owned(),
             stats_log: paths.stats_log(name),

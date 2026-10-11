@@ -23,7 +23,7 @@ mod stop;
 pub use exec::{ExecEvent, exec};
 pub use orchestration::{
     AfterHook, LaunchEvent, PreparedLaunch, StartOutcome, ensure_prefix, install_winetricks,
-    prepare, prepare_target, reconcile, runner, runner_locked, start,
+    prepare, prepare_target, protect, reconcile, runner, runner_locked, start,
 };
 pub(crate) use stop::{
     LostRunOutcome, busy_with, clean_up_installer, clean_up_lost_run, stop_timeout,
@@ -594,6 +594,32 @@ impl Launch {
             store: None,
             build_guards: Vec::new(),
         }
+    }
+
+    /// The host paths this launch names: its program, working directory, and
+    /// every absolute path among its arguments, Windows ones translated
+    /// through the prefix's drives. Bare names Wine resolves can't be seen.
+    /// A Steam launch names none, since Steam finds the game itself.
+    pub fn named_paths(&self) -> Vec<PathBuf> {
+        let mut named = vec![self.cwd.clone()];
+        let wine_prefix = match &self.host {
+            Host::Wine { runner, prefix } => Some(runner.wine_prefix(prefix)),
+            Host::Native { exe } => {
+                named.push(exe.clone());
+                None
+            }
+            Host::Proxied { .. } => return Vec::new(),
+        };
+        for arg in &self.args {
+            match &wine_prefix {
+                Some(prefix) if winpath::is_windows_path(arg) => {
+                    named.extend(winpath::to_unix_lenient(prefix, arg));
+                }
+                _ if Path::new(arg).is_absolute() => named.push(PathBuf::from(arg)),
+                _ => {}
+            }
+        }
+        named
     }
 
     pub fn command(&self) -> Command {
