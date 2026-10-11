@@ -15,8 +15,9 @@ use crate::paths::Paths;
 /// Where one service's key lives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeySpec {
-    /// Overrides every saved key, for scripts and CI.
-    pub env_var: &'static str,
+    /// Overrides every saved key, for scripts and CI. None for secrets that
+    /// change as they are used, which a variable can't keep up with.
+    pub env_var: Option<&'static str>,
     /// The `account` attribute of the keyring item.
     pub account: &'static str,
     /// The plain text fallback, under the host data dir.
@@ -90,15 +91,17 @@ pub fn key_file(spec: &KeySpec, paths: &Paths) -> PathBuf {
     paths.host_data().join(spec.file_name)
 }
 
-/// Looks for the key in the spec's variable, then the keyring, then the key
-/// file. An empty value counts as unset.
+/// Looks for the key in the spec's variable, if it has one, then the keyring,
+/// then the key file. An empty value counts as unset.
 pub fn find_key(
     spec: &KeySpec,
     paths: &Paths,
     lookup: impl Fn(&str) -> Option<OsString>,
     keyring: &dyn Keyring,
 ) -> Result<Option<Key>> {
-    if let Some(value) = lookup(spec.env_var)
+    if let Some(value) = spec
+        .env_var
+        .and_then(&lookup)
         .and_then(|value| value.into_string().ok())
         .and_then(clean)
     {
@@ -370,7 +373,7 @@ mod tests {
         )
         .unwrap();
         let spec = KeySpec {
-            env_var: "WINEO_TEST_NO_SUCH_VAR",
+            env_var: Some("WINEO_TEST_NO_SUCH_VAR"),
             account: "test",
             file_name: "test-key",
             label: "Test",
@@ -394,7 +397,7 @@ mod tests {
     }
 
     const SPEC: KeySpec = KeySpec {
-        env_var: "WINEO_TEST_NO_SUCH_VAR",
+        env_var: Some("WINEO_TEST_NO_SUCH_VAR"),
         account: "test",
         file_name: "test-key",
         label: "Test",

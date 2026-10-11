@@ -1,0 +1,682 @@
+use std::os::unix::fs::PermissionsExt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use wineo_gog::ErrorKind;
+
+use super::*;
+use crate::gog::test_support::{FakeKeyring, Scripted, client, client_at, setup, tokens};
+use crate::key_store::NoKeyring;
+use crate::steam::api::fixture::{Server, refused, reply};
+
+const USER: u64 = 48_628_349_957_132_247;
+const OTHER_USER: u64 = 77;
+const CODE: &str = "CODESECRET0123456789";
+const LOGGED_OUT: &str = "Log in to GOG again: wineo import gog --login.";
+
+fn login_of(refresh: &str, user_id: u64) -> StoredLogin {
+    StoredLogin {
+        refresh_token: refresh.to_owned(),
+        user_id: UserId::new(user_id),
+    }
+}
+
+fn seed(paths: &Paths, keyring: &dyn Keyring, refresh: &str, user_id: u64) {
+    save(paths, keyring, &login_of(refresh, user_id)).unwrap();
+}
+
+fn open<'a>(paths: &Paths, keyring: &'a dyn Keyring, server: &Server) -> Session<'a> {
+    Session::open(paths, keyring, client(server))
+        .unwrap()
+        .unwrap()
+}
+
+fn saved(paths: &Paths, keyring: &dyn Keyring) -> Option<StoredLogin> {
+    saved_login(paths, keyring).unwrap()
+}
+
+fn invalid_grant() -> Vec<u8> {
+    reply(
+        400,
+        r#"{"error":"invalid_grant","error_description":"The refresh token is invalid."}"#,
+    )
+}
+
+/// The refresh token a token request line sent.
+fn sent_refresh(line: &str) -> String {
+    let url = reqwest::Url::parse(&format!(
+        "http://x{}",
+        line.split(' ').nth(1).unwrap_or_default()
+    ))
+    .unwrap();
+    url.query_pairs()
+        .find(|(name, _)| name == "refresh_token")
+        .map(|(_, value)| value.into_owned())
+        .unwrap_or_default()
+}
+
+#[test]
+fn logging_in_saves_the_login_to_the_keyring() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    let server = Server::start(vec![tokens("ACCESS1", "REFRESH1", USER, 3600)]);
+    let pasted = format!("https://embed.gog.com/on_login_success?origin=client&code={CODE}");
+    let logged_in = login(&paths, &keyring, client(&server), &pasted).unwrap();
+    assert_eq!(logged_in.user_id, UserId::new(USER));
+    assert_eq!(logged_in.saved, Saved::Keyring);
+    assert!(server.requests()[0].contains(&format!("code={CODE}")));
+
+    let (login, source) = stored_login(&paths, &keyring).unwrap().unwrap();
+    assert_eq!(login, login_of("REFRESH1", USER));
+    assert_eq!(source, KeySource::Keyring);
+    assert_eq!(
+        keyring.0.lock().unwrap().as_deref(),
+        Some(r#"{"refresh_token":"REFRESH1","user_id":"48628349957132247"}"#)
+    );
+    assert!(!key_store::key_file(&KEY_SPEC, &paths).exists());
+
+    // The login's own access token is used without renewing.
+    let mut session = logged_in.session;
+    assert_eq!(session.access_token().unwrap().expose(), "ACCESS1");
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn without_a_keyring_the_login_is_a_private_file_and_logout_deletes_it() {
+    let (_root, paths) = setup();
+    let server = Server::start(vec![tokens("A", "REFRESH1", USER, 3600)]);
+    let logged_in = login(&paths, &NoKeyring, client(&server), CODE).unwrap();
+    let file = key_store::key_file(&KEY_SPEC, &paths);
+    assert_eq!(logged_in.saved, Saved::File(file.clone()));
+    assert_eq!(file.file_name().unwrap(), "gog.key");
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let (login, source) = stored_login(&paths, &NoKeyring).unwrap().unwrap();
+    assert_eq!(
+        (login, source),
+        (login_of("REFRESH1", USER), KeySource::File)
+    );
+
+    let cache = paths.gog_owned_cache(USER);
+    fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    fs::write(&cache, "{}").unwrap();
+    let other_cache = paths.gog_owned_cache(OTHER_USER);
+    fs::write(&other_cache, "{}").unwrap();
+
+    let out = logout(&paths, &NoKeyring).unwrap();
+    assert_eq!(out.user_id, Some(UserId::new(USER)));
+    assert!(out.removed.file && out.cache_removed);
+    assert!(!file.exists());
+    assert!(!cache.exists());
+    assert!(other_cache.exists(), "only that account's cache goes");
+    assert_eq!(stored_login(&paths, &NoKeyring).unwrap(), None);
+
+    // Logging out again finds nothing to remove.
+    let again = logout(&paths, &NoKeyring).unwrap();
+    assert_eq!((again.user_id, again.cache_removed), (None, false));
+}
+
+#[test]
+fn no_variable_overrides_the_saved_login() {
+    assert_eq!(KEY_SPEC.env_var, None);
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "SAVED", USER);
+    let value = r#"{"refresh_token":"FROMENV","user_id":"5"}"#;
+    // Whatever variable is set, the saved login is the one found.
+    let key = key_store::find_key(&KEY_SPEC, &paths, |_| Some(value.into()), &keyring)
+        .unwrap()
+        .unwrap();
+    assert_eq!(key.source, KeySource::Keyring);
+    assert_eq!(
+        StoredLogin::from_secret(&key.value).unwrap(),
+        login_of("SAVED", USER)
+    );
+}
+
+#[test]
+fn a_bad_paste_or_a_rejected_code_saves_nothing() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    let server = Server::start(vec![invalid_grant()]);
+    let error = login(
+        &paths,
+        &keyring,
+        client(&server),
+        "https://example.com/SECRET",
+    )
+    .unwrap_err();
+    assert!(matches!(error, AccountError::Paste(_)), "{error:?}");
+    assert!(!format!("{error} {error:?}").contains("SECRET"));
+    assert!(server.requests().is_empty());
+
+    let error = login(&paths, &keyring, client(&server), CODE).unwrap_err();
+    assert!(matches!(error, AccountError::CodeRejected), "{error:?}");
+    assert!(!format!("{error} {error:?}").contains(CODE));
+    assert_eq!(saved(&paths, &keyring), None);
+}
+
+#[test]
+fn a_renewal_saves_the_new_refresh_token() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "REFRESH1", USER);
+    let server = Server::start(vec![tokens("ACCESS2", "REFRESH2", USER, 3600)]);
+    let mut session = open(&paths, &keyring, &server);
+    assert_eq!(session.user_id(), UserId::new(USER));
+    assert_eq!(session.access_token().unwrap().expose(), "ACCESS2");
+    assert_eq!(sent_refresh(&server.requests()[0]), "REFRESH1");
+    assert!(server.requests()[0].contains("grant_type=refresh_token"));
+    assert_eq!(saved(&paths, &keyring), Some(login_of("REFRESH2", USER)));
+
+    // Still fresh, so GOG isn't asked again.
+    assert_eq!(session.access_token().unwrap().expose(), "ACCESS2");
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn a_token_within_a_minute_of_expiring_is_renewed() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "R1", USER);
+    let server = Server::start(vec![
+        tokens("A2", "R2", USER, 60),
+        tokens("A3", "R3", USER, 3600),
+    ]);
+    let mut session = open(&paths, &keyring, &server);
+    assert_eq!(session.access_token().unwrap().expose(), "A2");
+    assert_eq!(session.access_token().unwrap().expose(), "A3");
+    let sent: Vec<_> = server.requests().iter().map(|l| sent_refresh(l)).collect();
+    assert_eq!(sent, ["R1", "R2"]);
+    assert_eq!(saved(&paths, &keyring), Some(login_of("R3", USER)));
+}
+
+#[test]
+fn invalid_grant_or_401_clears_the_login() {
+    for answer in [invalid_grant(), reply(401, "{}")] {
+        let (_root, paths) = setup();
+        let keyring = FakeKeyring::default();
+        seed(&paths, &keyring, "R1", USER);
+        let server = Server::start(vec![answer]);
+        let error = open(&paths, &keyring, &server).access_token().unwrap_err();
+        assert!(matches!(error, AccountError::LoggedOut), "{error:?}");
+        assert_eq!(error.to_string(), LOGGED_OUT);
+        assert!(!error.is_temporary());
+        assert_eq!(saved(&paths, &keyring), None);
+    }
+}
+
+#[test]
+fn temporary_failures_keep_the_login() {
+    let answers = [
+        (reply(500, "{}"), ErrorKind::Server(500)),
+        (reply(503, "{}"), ErrorKind::Server(503)),
+        (reply(429, "{}"), ErrorKind::RateLimited),
+    ];
+    for (answer, kind) in answers {
+        let (_root, paths) = setup();
+        let keyring = FakeKeyring::default();
+        seed(&paths, &keyring, "R1", USER);
+        let server = Server::start(vec![answer]);
+        let error = open(&paths, &keyring, &server).access_token().unwrap_err();
+        match &error {
+            AccountError::Temporary(inner) => assert_eq!(inner.kind(), kind),
+            other => panic!("{other:?}"),
+        }
+        assert!(error.is_temporary());
+        assert_eq!(saved(&paths, &keyring), Some(login_of("R1", USER)));
+    }
+
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "R1", USER);
+    let unreachable = wineo_gog::Client::with_base("wineo-test", &refused()).unwrap();
+    let mut session = Session::open(&paths, &keyring, unreachable)
+        .unwrap()
+        .unwrap();
+    assert!(session.access_token().unwrap_err().is_temporary());
+    assert_eq!(saved(&paths, &keyring), Some(login_of("R1", USER)));
+}
+
+#[test]
+fn a_malformed_answer_keeps_the_login() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "R1", USER);
+    let server = Server::start(vec![reply(200, r#"{"access_token":"x"}"#)]);
+    let error = open(&paths, &keyring, &server).access_token().unwrap_err();
+    assert!(matches!(error, AccountError::Gog(_)), "{error:?}");
+    assert_eq!(saved(&paths, &keyring), Some(login_of("R1", USER)));
+}
+
+/// Saves a login the way another process's login or renewal would, bumping
+/// the generation.
+fn replace(paths: &Paths, keyring: &dyn Keyring, refresh: &str, user_id: u64) {
+    store(paths, keyring, &login_of(refresh, user_id)).unwrap();
+}
+
+/// A shared keyring and a scripted server whose handler gets the request's
+/// number (from 0), the paths, and the keyring.
+fn scripted(
+    paths: &Paths,
+    keyring: &Arc<FakeKeyring>,
+    handler: impl Fn(usize, &Paths, &FakeKeyring) -> Vec<u8> + Send + 'static,
+) -> Scripted {
+    let (paths, keyring) = (paths.clone(), Arc::clone(keyring));
+    let count = AtomicUsize::new(0);
+    Scripted::start(move |_| handler(count.fetch_add(1, Ordering::SeqCst), &paths, &keyring))
+}
+
+#[test]
+fn switching_accounts_during_a_renewal_ends_the_session() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, "OLD", USER);
+    let server = scripted(&paths, &keyring, |_, paths, keyring| {
+        // Another account logs in while this renewal is in flight.
+        replace(paths, keyring, "NEWER", OTHER_USER);
+        tokens("STALEACCESS", "STALE", USER, 3600)
+    });
+    let mut session = Session::open(&paths, &*keyring, client_at(&server.base))
+        .unwrap()
+        .unwrap();
+
+    let error = session.access_token().unwrap_err();
+    assert!(matches!(error, AccountError::Switched), "{error:?}");
+    assert!(!error.is_temporary());
+    assert_eq!(
+        saved(&paths, &*keyring),
+        Some(login_of("NEWER", OTHER_USER))
+    );
+    assert_eq!(session.user_id(), UserId::new(USER));
+    assert!(session.access.is_none());
+
+    // It stays ended, without asking GOG again.
+    assert!(matches!(
+        session.access_token().unwrap_err(),
+        AccountError::Switched
+    ));
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn a_stale_invalid_grant_never_clears_a_newer_login() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, "OLD", USER);
+    let server = scripted(&paths, &keyring, |n, paths, keyring| {
+        if n == 0 {
+            // Another process renewed first, and GOG retired the old token.
+            replace(paths, keyring, "NEWER", USER);
+            invalid_grant()
+        } else {
+            tokens("A", "NEWER2", USER, 3600)
+        }
+    });
+    let mut session = Session::open(&paths, &*keyring, client_at(&server.base))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.access_token().unwrap().expose(), "A");
+    let sent: Vec<_> = server.requests().iter().map(|l| sent_refresh(l)).collect();
+    assert_eq!(sent, ["OLD", "NEWER"]);
+    assert_eq!(saved(&paths, &*keyring), Some(login_of("NEWER2", USER)));
+}
+
+#[test]
+fn a_renewal_racing_a_logout_brings_nothing_back() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, "R1", USER);
+    let server = scripted(&paths, &keyring, |_, paths, keyring| {
+        logout(paths, keyring).unwrap();
+        tokens("A", "R2", USER, 3600)
+    });
+    let mut session = Session::open(&paths, &*keyring, client_at(&server.base))
+        .unwrap()
+        .unwrap();
+
+    let error = session.access_token().unwrap_err();
+    assert!(matches!(error, AccountError::LoggedOut), "{error:?}");
+    assert_eq!(saved(&paths, &*keyring), None);
+    assert!(!key_store::key_file(&KEY_SPEC, &paths).exists());
+    // The renewal's answer isn't usable either.
+    assert!(session.access.is_none());
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn every_renewal_attempt_finding_a_newer_login_gives_up() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, "R0", USER);
+    let server = scripted(&paths, &keyring, |n, paths, keyring| {
+        // Each attempt loses to another renewal of the same account.
+        replace(paths, keyring, &format!("OTHER{n}"), USER);
+        tokens("A", &format!("MINE{n}"), USER, 3600)
+    });
+    let mut session = Session::open(&paths, &*keyring, client_at(&server.base))
+        .unwrap()
+        .unwrap();
+
+    let error = session.access_token().unwrap_err();
+    assert!(matches!(error, AccountError::Changed), "{error:?}");
+    assert!(error.is_temporary());
+    let sent: Vec<_> = server.requests().iter().map(|l| sent_refresh(l)).collect();
+    assert_eq!(sent, ["R0", "OTHER0", "OTHER1"]);
+    // None of this session's answers was saved.
+    assert_eq!(saved(&paths, &*keyring), Some(login_of("OTHER2", USER)));
+}
+
+fn owned_page_body(page: u32, total: u32) -> Vec<u8> {
+    let body = serde_json::json!({
+        "page": page,
+        "totalPages": total,
+        "products": [{"id": page, "title": "Game"}],
+    });
+    reply(200, &body.to_string())
+}
+
+#[test]
+fn a_logout_during_a_call_discards_its_answer() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, "R1", USER);
+    let server = scripted(&paths, &keyring, |n, paths, keyring| {
+        if n == 0 {
+            tokens("A", "R2", USER, 3600)
+        } else {
+            // The request is already in flight when the logout lands.
+            logout(paths, keyring).unwrap();
+            owned_page_body(1, 1)
+        }
+    });
+    let mut session = Session::open(&paths, &*keyring, client_at(&server.base))
+        .unwrap()
+        .unwrap();
+    let error = session
+        .call(|client, token| client.owned_page(token, 1))
+        .unwrap_err();
+    assert!(
+        matches!(error, CallError::Account(AccountError::LoggedOut)),
+        "{error:?}"
+    );
+    assert_eq!(server.requests().len(), 2);
+    assert!(session.access.is_none());
+}
+
+#[test]
+fn a_switch_during_a_call_discards_its_answer_but_a_same_account_renewal_does_not() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, "R1", USER);
+    let server = scripted(&paths, &keyring, |n, paths, keyring| match n {
+        0 => tokens("A", "R2", USER, 3600),
+        1 => {
+            // Another process renews the same account: the answer stands.
+            replace(paths, keyring, "R3", USER);
+            owned_page_body(1, 1)
+        }
+        _ => {
+            replace(paths, keyring, "THEIRS", OTHER_USER);
+            owned_page_body(1, 1)
+        }
+    });
+    let mut session = Session::open(&paths, &*keyring, client_at(&server.base))
+        .unwrap()
+        .unwrap();
+    let page = session
+        .call(|client, token| client.owned_page(token, 1))
+        .unwrap();
+    assert_eq!(page.products.len(), 1);
+    assert_eq!(session.login, login_of("R3", USER));
+
+    let error = session
+        .call(|client, token| client.owned_page(token, 1))
+        .unwrap_err();
+    assert!(
+        matches!(error, CallError::Account(AccountError::Switched)),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_failed_generation_bump_leaves_the_credentials_alone() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    replace(&paths, &keyring, "R1", USER);
+    let cache = paths.gog_owned_cache(USER);
+    fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    fs::write(&cache, "{}").unwrap();
+    let server = Server::start(vec![tokens("A", "R2", USER, 3600)]);
+    let mut session = open(&paths, &keyring, &server);
+
+    let generation = paths.gog_credentials_generation();
+    let locks = generation.parent().unwrap();
+    fs::set_permissions(locks, fs::Permissions::from_mode(0o500)).unwrap();
+    // Root ignores directory permissions, so there is nothing to test.
+    let can_write_anyway = fs::write(locks.join("probe"), "").is_ok();
+    let results = (!can_write_anyway).then(|| {
+        (
+            store(&paths, &keyring, &login_of("THEIRS", OTHER_USER)).is_err(),
+            logout(&paths, &keyring).is_err(),
+            session.access_token().is_err(),
+        )
+    });
+    fs::set_permissions(locks, fs::Permissions::from_mode(0o700)).unwrap();
+    let Some(results) = results else {
+        return;
+    };
+
+    assert_eq!(results, (true, true, true));
+    // None of the three changed anything: not the login, not the cache.
+    assert_eq!(saved(&paths, &keyring), Some(login_of("R1", USER)));
+    assert!(cache.exists());
+    // The renewal's request went out, but its answer wasn't saved.
+    assert_eq!(server.requests().len(), 1);
+
+    // With the counter writable again, a change reaches the session.
+    replace(&paths, &keyring, "THEIRS", OTHER_USER);
+    assert!(matches!(
+        session.access_token().unwrap_err(),
+        AccountError::Switched
+    ));
+}
+
+/// A session that has a fresh access token, from one renewal.
+fn renewed_session<'a>(paths: &Paths, keyring: &'a FakeKeyring) -> (Server, Session<'a>) {
+    seed(paths, keyring, "R1", USER);
+    let server = Server::start(vec![tokens("ACCESS", "R2", USER, 3600)]);
+    let mut session = open(paths, keyring, &server);
+    session.access_token().unwrap();
+    (server, session)
+}
+
+#[test]
+fn an_existing_session_ends_after_a_logout() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    let (server, mut session) = renewed_session(&paths, &keyring);
+    logout(&paths, &keyring).unwrap();
+    let error = session.access_token().unwrap_err();
+    assert!(matches!(error, AccountError::LoggedOut), "{error:?}");
+    assert!(session.access.is_none());
+    assert_eq!(server.requests().len(), 1);
+
+    // Logging back in to the same account lets it carry on.
+    replace(&paths, &keyring, "R9", USER);
+    let server = Server::start(vec![tokens("FRESH", "R10", USER, 3600)]);
+    session.client = client(&server);
+    assert_eq!(session.access_token().unwrap().expose(), "FRESH");
+}
+
+#[test]
+fn an_existing_session_ends_after_a_switch_and_never_follows_it() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    let (server, mut session) = renewed_session(&paths, &keyring);
+    replace(&paths, &keyring, "THEIRS", OTHER_USER);
+    let error = session.access_token().unwrap_err();
+    assert!(matches!(error, AccountError::Switched), "{error:?}");
+    assert_eq!(session.user_id(), UserId::new(USER));
+    assert_eq!(server.requests().len(), 1);
+    assert_eq!(
+        saved(&paths, &keyring),
+        Some(login_of("THEIRS", OTHER_USER))
+    );
+}
+
+#[test]
+fn an_existing_session_adopts_its_own_account_s_newer_login() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    let (server, mut session) = renewed_session(&paths, &keyring);
+    replace(&paths, &keyring, "R9", USER);
+    // Its own access token is still good, so GOG isn't asked.
+    assert_eq!(session.access_token().unwrap().expose(), "ACCESS");
+    assert_eq!(session.login, login_of("R9", USER));
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn every_change_to_the_login_moves_the_generation() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    assert_eq!(read_generation(&paths).unwrap(), 0);
+    let server = Server::start(vec![
+        tokens("A", "R1", USER, 3600),
+        tokens("B", "R2", USER, 60),
+        invalid_grant(),
+    ]);
+    let mut session = login(&paths, &keyring, client(&server), CODE)
+        .unwrap()
+        .session;
+    let after_login = read_generation(&paths).unwrap();
+    assert!(after_login > 0);
+    session.access = None;
+    session.access_token().unwrap();
+    let after_renewal = read_generation(&paths).unwrap();
+    assert!(after_renewal > after_login);
+    assert_eq!(session.generation, after_renewal);
+    // Renewing again is refused, which clears the login.
+    session.access_token().unwrap_err();
+    let after_clear = read_generation(&paths).unwrap();
+    assert!(after_clear > after_renewal);
+    logout(&paths, &keyring).unwrap();
+    assert!(read_generation(&paths).unwrap() > after_clear);
+}
+
+#[test]
+fn concurrent_renewals_leave_one_consistent_login() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "R1", USER);
+    let server = Server::start(vec![
+        tokens("A2", "R2", USER, 3600),
+        tokens("A3", "R3", USER, 3600),
+        tokens("A4", "R4", USER, 3600),
+        tokens("A5", "R5", USER, 3600),
+    ]);
+    let barrier = std::sync::Barrier::new(2);
+    let logins: Vec<StoredLogin> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let (paths, keyring, server, barrier) = (&paths, &keyring, &server, &barrier);
+                scope.spawn(move || {
+                    let mut session = open(paths, keyring, server);
+                    barrier.wait();
+                    session.access_token().unwrap();
+                    session.login.clone()
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let stored = saved(&paths, &keyring).unwrap();
+    assert!(logins.contains(&stored), "{stored:?} not in {logins:?}");
+    assert_ne!(stored.refresh_token, "R1");
+}
+
+#[test]
+fn an_unreadable_login_is_never_shown_and_logout_still_removes_it() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    *keyring.0.lock().unwrap() = Some("SECRETJUNK not json".to_owned());
+    let error = stored_login(&paths, &keyring).unwrap_err();
+    assert!(matches!(error, AccountError::Unreadable));
+    assert!(!format!("{error} {error:?}").contains("SECRETJUNK"));
+    let error = Session::open(&paths, &keyring, client(&Server::start(vec![]))).unwrap_err();
+    assert!(matches!(error, AccountError::Unreadable));
+
+    let out = logout(&paths, &keyring).unwrap();
+    assert_eq!(out.user_id, None);
+    assert!(out.removed.keyring);
+    assert_eq!(*keyring.0.lock().unwrap(), None);
+}
+
+#[test]
+fn no_secret_reaches_debug_or_any_error() {
+    let login = login_of("REFRESHSECRET", USER);
+    assert!(!format!("{login:?}").contains("REFRESHSECRET"));
+
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "REFRESHSECRET", USER);
+    let server = Server::start(vec![tokens("ACCESSSECRET", "REFRESHSECRET2", USER, 3600)]);
+    let mut session = open(&paths, &keyring, &server);
+    session.access_token().unwrap();
+    let shown = format!("{session:?}");
+    assert!(!shown.contains("SECRET"), "{shown}");
+
+    let answers = [
+        invalid_grant(),
+        reply(401, "REFRESHSECRET"),
+        reply(429, "REFRESHSECRET"),
+        reply(500, "REFRESHSECRET"),
+        reply(200, "{\"echo\":\"REFRESHSECRET\""),
+    ];
+    for answer in answers {
+        let (_root, paths) = setup();
+        let keyring = FakeKeyring::default();
+        seed(&paths, &keyring, "REFRESHSECRET", USER);
+        let server = Server::start(vec![answer]);
+        let error = open(&paths, &keyring, &server).access_token().unwrap_err();
+        let shown = format!("{error} {error:?} {error:#?}");
+        for secret in ["SECRET", wineo_gog::CLIENT_ID, "127.0.0.1", "token="] {
+            assert!(!shown.contains(secret), "{secret} in {shown}");
+        }
+    }
+}
+
+#[test]
+fn opening_waits_for_a_login_change_in_progress() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "RA", USER);
+    let server = Server::start(Vec::new());
+    let session_client = client(&server);
+    // Another process has announced a switch but not saved it yet.
+    let lock = CredentialsLock::acquire(&paths).unwrap();
+    bump_generation(&paths, &lock).unwrap();
+    std::thread::scope(|scope| {
+        let (sent, received) = std::sync::mpsc::channel();
+        let (paths_ref, keyring_ref) = (&paths, &keyring);
+        let opener = scope.spawn(move || {
+            let session = Session::open(paths_ref, keyring_ref, session_client)
+                .unwrap()
+                .unwrap();
+            sent.send(()).unwrap();
+            session.user_id()
+        });
+        assert!(
+            received
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "opening must wait for the change instead of pairing the new generation with the old login"
+        );
+        save(&paths, &keyring, &login_of("RB", OTHER_USER)).unwrap();
+        drop(lock);
+        assert_eq!(opener.join().unwrap(), UserId::new(OTHER_USER));
+    });
+}

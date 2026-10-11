@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/wineo-core", "crates/wineo-cli", "crates/wineo-gui"]
+members = ["crates/wineo-core", "crates/wineo-cli", "crates/wineo-gog", "crates/wineo-gui"]
 
 [workspace.package]
 version = "0.29.1"
@@ -9,6 +9,7 @@ license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
 wineo-core = { path = "crates/wineo-core" }
+wineo-gog = { path = "crates/wineo-gog" }
 anstream = "1.0"
 anstyle = "1.0"
 anyhow = "1"

@@ -206,6 +206,31 @@ impl Paths {
         self.cache.join(format!("steam-owned-{steam_id}.json"))
     }
 
+    /// The cached list of GOG games an account owns, on the host like
+    /// Steam's.
+    pub fn gog_owned_cache(&self, user_id: u64) -> PathBuf {
+        self.cache.join(format!("gog-owned-{user_id}.json"))
+    }
+
+    /// The lock that GOG login, logout, and renewal share. Host-wide, since
+    /// the saved login is too.
+    pub fn gog_credentials_lock(&self) -> PathBuf {
+        self.host_state.join(".locks").join("gog-credentials.lock")
+    }
+
+    /// A counter bumped whenever the saved GOG login changes, so a session
+    /// can tell cheaply that it has to look again.
+    pub fn gog_credentials_generation(&self) -> PathBuf {
+        self.host_state
+            .join(".locks")
+            .join("gog-credentials.generation")
+    }
+
+    /// A GOG product's cached details. They are the same for every account.
+    pub fn gog_product_cache(&self, product_id: u64) -> PathBuf {
+        self.cache.join(format!("gog-product-{product_id}.json"))
+    }
+
     /// An environment's playtime log. A portable folder carries it, so it
     /// moves with the folder, like art.
     pub fn stats_log(&self, name: &str) -> PathBuf {
@@ -815,6 +840,11 @@ mod tests {
         let one = portable(&[("HOME", "/home/me")], Some("/mnt/a/wineo")).unwrap();
         assert_eq!(xdg.prefix_locks_dir(), xdg.locks_dir());
         assert_eq!(one.prefix_locks_dir(), xdg.prefix_locks_dir());
+        assert_eq!(one.gog_credentials_lock(), xdg.gog_credentials_lock());
+        assert_eq!(
+            xdg.gog_credentials_lock(),
+            Path::new("/home/me/.local/state/wineo/.locks/gog-credentials.lock")
+        );
         assert_eq!(
             xdg.restore_marker("hades"),
             Path::new("/home/me/.local/state/wineo/.locks/snapshot-restore-hades-restore.json")

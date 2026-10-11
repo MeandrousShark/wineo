@@ -27,6 +27,10 @@ signal-hook.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
+wineo-gog.workspace = true
+
+[dev-dependencies]
+wineo-gog = { workspace = true, features = ["test-server"] }
 
 [lints]
 workspace = true
