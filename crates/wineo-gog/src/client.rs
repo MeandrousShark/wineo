@@ -187,7 +187,12 @@ impl Client {
             .append_pair("expand", "downloads,expanded_dlcs")
             .append_pair("locale", "en-US");
         let json = self.get_json(Endpoint::Product, url, access_token)?;
-        product::parse_product(&json)
+        let product = product::parse_product(&json)?;
+        // Details for another product would be filed under the wrong id.
+        if product.id != id {
+            return Err(Error::new(Endpoint::Product, ErrorKind::Malformed));
+        }
+        Ok(product)
     }
 
     /// Asks GOG where an installer file's `downlink` really downloads from.

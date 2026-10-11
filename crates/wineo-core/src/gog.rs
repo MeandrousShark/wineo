@@ -3,6 +3,7 @@
 
 pub mod account;
 pub mod owned;
+pub mod product;
 
 pub use wineo_gog as api;
 
@@ -26,7 +27,11 @@ pub fn client_from_env() -> Result<api::Client, api::Error> {
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::ffi::OsString;
-    use std::sync::Mutex;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use crate::key_store::{Keyring, KeyringError};
     use crate::paths::Paths;
@@ -63,7 +68,75 @@ pub(crate) mod test_support {
     }
 
     pub fn client(server: &Server) -> super::api::Client {
-        super::api::Client::with_base("wineo-test", &server.base).unwrap()
+        client_at(&server.base)
+    }
+
+    pub fn client_at(base: &str) -> super::api::Client {
+        super::api::Client::with_base("wineo-test", base).unwrap()
+    }
+
+    /// A server that answers each request line through a handler, one
+    /// request at a time. The handler runs while the client waits for its
+    /// answer, so a test can change the saved login at exactly that point.
+    pub struct Scripted {
+        pub base: String,
+        requests: Arc<Mutex<Vec<String>>>,
+        stop: Arc<AtomicBool>,
+    }
+
+    impl Scripted {
+        pub fn start(handler: impl Fn(&str) -> Vec<u8> + Send + 'static) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let (seen, stopped) = (Arc::clone(&requests), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !stopped.load(Ordering::Relaxed) {
+                    let mut stream = match listener.accept() {
+                        Ok((stream, _)) => stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2));
+                            continue;
+                        }
+                        Err(_) => return,
+                    };
+                    stream.set_nonblocking(false).unwrap();
+                    let mut head = Vec::new();
+                    let mut chunk = [0; 1024];
+                    while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+                        match stream.read(&mut chunk) {
+                            Ok(0) | Err(_) => break,
+                            Ok(read) => head.extend_from_slice(&chunk[..read]),
+                        }
+                    }
+                    let line = String::from_utf8_lossy(&head)
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .to_owned();
+                    seen.lock().unwrap().push(line.clone());
+                    let _ = stream.write_all(&handler(&line));
+                    let _ = stream.flush();
+                }
+            });
+            Self {
+                base,
+                requests,
+                stop,
+            }
+        }
+
+        pub fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl Drop for Scripted {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+        }
     }
 
     /// A token endpoint answer.

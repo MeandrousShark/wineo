@@ -50,6 +50,8 @@ pub fn load(session: &mut Session, refresh: bool) -> Result<Owned, LoadError> {
 }
 
 fn load_at(session: &mut Session, refresh: bool, now: i64) -> Result<Owned, LoadError> {
+    // A session left over from another account never reads its cache.
+    session.check().map_err(LoadError::Account)?;
     let user_id = session.user_id();
     let path = session.paths().gog_owned_cache(user_id.get());
     let cached = read_cache(&path).filter(|cache| cache.user_id == user_id);
@@ -79,7 +81,11 @@ fn load_at(session: &mut Session, refresh: bool, now: i64) -> Result<Owned, Load
                 user_id,
                 games,
             };
-            let warning = write_cache(&path, &cache)
+            // Published under the credentials lock, so a logout that ran
+            // during the fetch can't have its deletion undone.
+            let warning = session
+                .while_current(|| write_cache(&path, &cache))
+                .map_err(LoadError::Account)?
                 .err()
                 .map(|reason| format!("Couldn't save owned GOG games: {reason}"));
             Ok(Owned {
@@ -88,10 +94,14 @@ fn load_at(session: &mut Session, refresh: bool, now: i64) -> Result<Owned, Load
             })
         }
         Err((reason, error)) => match cached {
-            Some(cache) => Ok(Owned {
-                games: cache.games,
-                warning: Some(format!("Couldn't refresh owned GOG games: {reason}")),
-            }),
+            Some(cache) => {
+                // The copy in memory was read before the fetch.
+                session.while_current(|| ()).map_err(LoadError::Account)?;
+                Ok(Owned {
+                    games: cache.games,
+                    warning: Some(format!("Couldn't refresh owned GOG games: {reason}")),
+                })
+            }
             None => Err(error),
         },
     }

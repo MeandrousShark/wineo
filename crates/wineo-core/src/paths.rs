@@ -218,6 +218,19 @@ impl Paths {
         self.host_state.join(".locks").join("gog-credentials.lock")
     }
 
+    /// A counter bumped whenever the saved GOG login changes, so a session
+    /// can tell cheaply that it has to look again.
+    pub fn gog_credentials_generation(&self) -> PathBuf {
+        self.host_state
+            .join(".locks")
+            .join("gog-credentials.generation")
+    }
+
+    /// A GOG product's cached details. They are the same for every account.
+    pub fn gog_product_cache(&self, product_id: u64) -> PathBuf {
+        self.cache.join(format!("gog-product-{product_id}.json"))
+    }
+
     /// An environment's playtime log. A portable folder carries it, so it
     /// moves with the folder, like art.
     pub fn stats_log(&self, name: &str) -> PathBuf {

@@ -391,9 +391,19 @@ fn a_page_total_that_changes_mid_fetch_fails_the_whole_list() {
 #[test]
 fn product_details_round_trip_through_serde() {
     let server = FakeGog::start(|_| reply(200, &product_body("https://api.gog.com")));
-    let product = server.client().product(1, None).unwrap();
+    let product = server.client().product(1094900565, None).unwrap();
     let text = serde_json::to_string(&product).unwrap();
     assert_eq!(serde_json::from_str::<Product>(&text).unwrap(), product);
+}
+
+#[test]
+fn details_for_another_product_are_malformed() {
+    let server = FakeGog::start(|_| reply(200, &product_body("https://api.gog.com")));
+    let error = server.client().product(7, None).unwrap_err();
+    assert_eq!(
+        (error.endpoint(), error.kind()),
+        (Endpoint::Product, ErrorKind::Malformed)
+    );
 }
 
 fn product_body(base: &str) -> String {

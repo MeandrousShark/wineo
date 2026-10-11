@@ -1,6 +1,8 @@
+use std::sync::Arc;
+
 use super::*;
 use crate::gog::account::{self, Session};
-use crate::gog::test_support::{FakeKeyring, client, setup, tokens};
+use crate::gog::test_support::{FakeKeyring, Scripted, client, client_at, setup, tokens};
 use crate::key_store::{KeySpec, Keyring};
 use crate::steam::api::fixture::{Server, reply};
 
@@ -413,4 +415,130 @@ fn a_second_refusal_falls_back_to_the_cache_and_keeps_the_login() {
         other => panic!("{other:?}"),
     }
     assert!(account::stored_login(&paths, &keyring).unwrap().is_some());
+}
+
+/// Runs a load against a scripted server: the token request answers
+/// normally, and `on_page` answers the owned list request after doing what
+/// it likes to the saved login.
+fn load_racing(
+    paths: &Paths,
+    keyring: &Arc<FakeKeyring>,
+    on_page: impl Fn(&Paths, &FakeKeyring) -> Vec<u8> + Send + 'static,
+    now: i64,
+) -> (Scripted, Result<Owned, LoadError>) {
+    let (handler_paths, handler_keyring) = (paths.clone(), Arc::clone(keyring));
+    let server = Scripted::start(move |line| {
+        if line.contains("/token") {
+            tokens("ACCESS", "R-next", USER, 3600)
+        } else {
+            on_page(&handler_paths, &handler_keyring)
+        }
+    });
+    let mut session = Session::open(paths, &**keyring, client_at(&server.base))
+        .unwrap()
+        .unwrap();
+    let result = load_at(&mut session, true, now);
+    (server, result)
+}
+
+#[test]
+fn a_logout_during_a_fetch_is_never_undone() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, USER);
+    let (_, owned) = load_racing(
+        &paths,
+        &keyring,
+        |paths, keyring| {
+            account::logout(paths, keyring).unwrap();
+            page(1, 1, &[(1, "Alpha")])
+        },
+        T,
+    );
+    let error = owned.unwrap_err();
+    assert!(
+        matches!(error, LoadError::Account(AccountError::LoggedOut)),
+        "{error:?}"
+    );
+    assert!(!paths.gog_owned_cache(USER).exists());
+    assert!(account::stored_login(&paths, &*keyring).unwrap().is_none());
+}
+
+#[test]
+fn a_logout_during_a_failing_fetch_never_shows_the_old_list() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, USER);
+    let (_, first) = run(
+        &paths,
+        &keyring,
+        vec![token(), page(1, 1, &[(1, "Alpha")])],
+        false,
+        T,
+    );
+    first.unwrap();
+    let (_, owned) = load_racing(
+        &paths,
+        &keyring,
+        |paths, keyring| {
+            account::logout(paths, keyring).unwrap();
+            reply(500, "{}")
+        },
+        T + 10,
+    );
+    assert!(matches!(
+        owned.unwrap_err(),
+        LoadError::Account(AccountError::LoggedOut)
+    ));
+    assert!(!paths.gog_owned_cache(USER).exists());
+}
+
+#[test]
+fn a_switch_during_a_fetch_saves_nothing_for_either_account() {
+    let (_root, paths) = setup();
+    let keyring = Arc::new(FakeKeyring::default());
+    seed(&paths, &*keyring, USER);
+    let (_, owned) = load_racing(
+        &paths,
+        &keyring,
+        |paths, keyring| {
+            let theirs = account::StoredLogin {
+                refresh_token: "THEIRS".to_owned(),
+                user_id: UserId::new(OTHER_USER),
+            };
+            account::store(paths, keyring, &theirs).unwrap();
+            page(1, 1, &[(1, "Mine")])
+        },
+        T,
+    );
+    assert!(matches!(
+        owned.unwrap_err(),
+        LoadError::Account(AccountError::Switched)
+    ));
+    assert!(!paths.gog_owned_cache(USER).exists());
+    assert!(!paths.gog_owned_cache(OTHER_USER).exists());
+}
+
+#[test]
+fn a_session_left_from_another_account_never_reads_its_cache() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, USER);
+    let server = Server::start(vec![token(), page(1, 1, &[(1, "Mine")])]);
+    let mut session = Session::open(&paths, &keyring, client(&server))
+        .unwrap()
+        .unwrap();
+    load_at(&mut session, false, T).unwrap();
+
+    let theirs = account::StoredLogin {
+        refresh_token: "THEIRS".to_owned(),
+        user_id: UserId::new(OTHER_USER),
+    };
+    account::store(&paths, &keyring, &theirs).unwrap();
+    // The cache is fresh, but the session is for an account that left.
+    assert!(matches!(
+        load_at(&mut session, false, T + 1).unwrap_err(),
+        LoadError::Account(AccountError::Switched)
+    ));
+    assert_eq!(server.requests().len(), 2);
 }

@@ -6,6 +6,11 @@
 //! its request without the lock, then saves only if the stored login is
 //! still the one it started from, so a stale renewal can't overwrite a newer
 //! login or bring one back after a logout.
+//!
+//! Every change to the saved login under the lock also bumps a generation
+//! counter. A session is bound to one account for its whole life: before
+//! each authenticated request it compares the counter, and when it moved it
+//! reads the login again, carrying on only if it is still the same account.
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -18,6 +23,7 @@ use wineo_gog::{Class, Client, ErrorKind, PasteError, Secret, Tokens, UserId};
 
 use super::owned;
 use crate::error::IoContext;
+use crate::files::write_atomic;
 use crate::key_store::{self, KeySource, KeySpec, Keyring, Removed, Saved};
 use crate::paths::Paths;
 
@@ -94,6 +100,10 @@ pub enum AccountError {
     Unreadable,
     #[error("The GOG login changed while it was being renewed. Try again.")]
     Changed,
+    /// Another account logged in. A session never switches accounts, so
+    /// nothing it fetched is kept for either one.
+    #[error("Another GOG account logged in while this was running. Try again.")]
+    Switched,
     #[error(transparent)]
     Store(#[from] crate::Error),
 }
@@ -174,6 +184,43 @@ impl Drop for CredentialsLock {
     }
 }
 
+/// The current credentials generation. A missing or unreadable counter is
+/// zero, which the next bump moves past.
+fn read_generation(paths: &Paths) -> crate::Result<u64> {
+    let path = paths.gog_credentials_generation();
+    match fs::read_to_string(&path) {
+        Ok(text) => Ok(text.trim().parse().unwrap_or(0)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error).context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+/// Moves the generation on. Only called holding the credentials lock.
+fn bump_generation(paths: &Paths, _lock: &CredentialsLock) -> crate::Result<u64> {
+    let next = read_generation(paths)?.wrapping_add(1);
+    write_atomic(&paths.gog_credentials_generation(), format!("{next}\n"))?;
+    Ok(next)
+}
+
+/// Saves a login as the current one, under the lock.
+pub(crate) fn store(
+    paths: &Paths,
+    keyring: &dyn Keyring,
+    login: &StoredLogin,
+) -> crate::Result<(Saved, u64)> {
+    let lock = CredentialsLock::acquire(paths)?;
+    let saved = save(paths, keyring, login)?;
+    let generation = bump_generation(paths, &lock)?;
+    Ok((saved, generation))
+}
+
+fn source_of(saved: &Saved) -> KeySource {
+    match saved {
+        Saved::Keyring => KeySource::Keyring,
+        Saved::File(_) => KeySource::File,
+    }
+}
+
 #[derive(Debug)]
 pub struct LoggedIn<'a> {
     pub user_id: UserId,
@@ -200,19 +247,14 @@ pub fn login<'a>(
             Class::Malformed | Class::Other => AccountError::Gog(error),
         })?;
     let login = StoredLogin::from_tokens(&tokens);
-    let saved = {
-        let _lock = CredentialsLock::acquire(paths)?;
-        save(paths, keyring, &login)?
-    };
+    let (saved, generation) = store(paths, keyring, &login)?;
     let mut session = Session {
         paths: paths.clone(),
         keyring,
         client,
         login,
-        source: match saved {
-            Saved::Keyring => KeySource::Keyring,
-            Saved::File(_) => KeySource::File,
-        },
+        source: source_of(&saved),
+        generation,
         access: None,
     };
     session.set_access(&tokens, requested);
@@ -232,9 +274,10 @@ pub struct LoggedOut {
 }
 
 /// Deletes the saved login and its account's cached library. The cache goes
-/// first, so a failure leaves the login there to try again with.
+/// first, so a failure leaves the login there to try again with. Sessions
+/// publish their caches under the same lock, so none can bring it back.
 pub fn logout(paths: &Paths, keyring: &dyn Keyring) -> Result<LoggedOut, AccountError> {
-    let _lock = CredentialsLock::acquire(paths)?;
+    let lock = CredentialsLock::acquire(paths)?;
     let user_id = match saved_login(paths, keyring) {
         Ok(login) => login.map(|login| login.user_id),
         // Unreadable logins are removed all the same.
@@ -246,6 +289,7 @@ pub fn logout(paths: &Paths, keyring: &dyn Keyring) -> Result<LoggedOut, Account
         None => false,
     };
     let removed = key_store::remove_key(&KEY_SPEC, paths, keyring)?;
+    bump_generation(paths, &lock)?;
     Ok(LoggedOut {
         user_id,
         removed,
@@ -259,13 +303,17 @@ struct Access {
 }
 
 /// A logged-in account, renewing its access token as needed. Every renewal
-/// saves the refresh token GOG hands back.
+/// saves the refresh token GOG hands back. A session stays with the account
+/// it opened with: a newer refresh token for that account is adopted, but
+/// another account or a logout ends it.
 pub struct Session<'a> {
     paths: Paths,
     keyring: &'a dyn Keyring,
     client: Client,
     login: StoredLogin,
     source: KeySource,
+    /// The credentials generation `login` was read or saved at.
+    generation: u64,
     access: Option<Access>,
 }
 
@@ -287,12 +335,16 @@ impl<'a> Session<'a> {
         keyring: &'a dyn Keyring,
         client: Client,
     ) -> Result<Option<Self>, AccountError> {
+        // Read before the login, so a change in between shows up as a newer
+        // generation on the next check rather than going unnoticed.
+        let generation = read_generation(paths)?;
         Ok(stored_login(paths, keyring)?.map(|(login, source)| Self {
             paths: paths.clone(),
             keyring,
             client,
             login,
             source,
+            generation,
             access: None,
         }))
     }
@@ -313,9 +365,49 @@ impl<'a> Session<'a> {
         &self.paths
     }
 
+    /// Whether the saved login is still this session's account. Cheap when
+    /// nothing changed: one small file read.
+    pub fn check(&mut self) -> Result<(), AccountError> {
+        if read_generation(&self.paths)? == self.generation {
+            return Ok(());
+        }
+        let _lock = CredentialsLock::acquire(&self.paths)?;
+        self.resync()
+    }
+
+    /// Reads the saved login again. Only called holding the lock.
+    fn resync(&mut self) -> Result<(), AccountError> {
+        let generation = read_generation(&self.paths)?;
+        match saved_login(&self.paths, self.keyring)? {
+            Some(login) if login.user_id == self.login.user_id => {
+                self.login = login;
+                self.generation = generation;
+                Ok(())
+            }
+            other => {
+                self.access = None;
+                Err(if other.is_some() {
+                    AccountError::Switched
+                } else {
+                    AccountError::LoggedOut
+                })
+            }
+        }
+    }
+
+    /// Runs `write` holding the credentials lock, only while the saved login
+    /// is still this session's account. Whatever it writes for the account
+    /// can't land after a logout or a switch.
+    pub fn while_current<T>(&mut self, write: impl FnOnce() -> T) -> Result<T, AccountError> {
+        let _lock = CredentialsLock::acquire(&self.paths)?;
+        self.resync()?;
+        Ok(write())
+    }
+
     /// A current access token, renewing it first when it is within a minute
     /// of expiring.
     pub fn access_token(&mut self) -> Result<Secret, AccountError> {
+        self.check()?;
         if let Some(access) = &self.access
             && Instant::now() < access.renew_at
         {
@@ -362,16 +454,17 @@ impl<'a> Session<'a> {
             let started = self.login.clone();
             let requested = Instant::now();
             let result = self.client.refresh(&started.refresh_token);
-            let _lock = CredentialsLock::acquire(&self.paths)?;
+            let lock = CredentialsLock::acquire(&self.paths)?;
             let current = saved_login(&self.paths, self.keyring)?;
             if current.as_ref() == Some(&started) {
                 return match result {
+                    // GOG never should, but tokens for another account
+                    // mustn't be saved over this one's.
+                    Ok(tokens) if tokens.user_id != started.user_id => Err(AccountError::Switched),
                     Ok(tokens) => {
                         let renewed = StoredLogin::from_tokens(&tokens);
-                        self.source = match save(&self.paths, self.keyring, &renewed)? {
-                            Saved::Keyring => KeySource::Keyring,
-                            Saved::File(_) => KeySource::File,
-                        };
+                        self.source = source_of(&save(&self.paths, self.keyring, &renewed)?);
+                        self.generation = bump_generation(&self.paths, &lock)?;
                         self.login = renewed;
                         self.set_access(&tokens, requested);
                         Ok(())
@@ -380,17 +473,16 @@ impl<'a> Session<'a> {
                         let error = renewal_error(error);
                         if matches!(error, AccountError::LoggedOut) {
                             key_store::remove_key(&KEY_SPEC, &self.paths, self.keyring)?;
+                            bump_generation(&self.paths, &lock)?;
                         }
                         Err(error)
                     }
                 };
             }
             // Another login, logout, or renewal got there first, so this
-            // answer is stale whatever it was.
-            match current {
-                None => return Err(AccountError::LoggedOut),
-                Some(newer) => self.login = newer,
-            }
+            // answer is stale whatever it was. The same account's newer
+            // login is tried; anything else ends the session.
+            self.resync()?;
         }
         Err(AccountError::Changed)
     }
