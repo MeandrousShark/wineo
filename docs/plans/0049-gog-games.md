@@ -562,10 +562,16 @@ Written for the answers above.
   [Stability](../stability.md), and it replaces question 2's
   per-environment file. An environment's game is the folder whose state
   names it as owner and has its `gog_id`.
-- **Locks.** Each folder has a host-wide lock. A launch takes it shared;
-  migration, update, `rm` of the owner, trash restore of the owner, and
-  claiming an ownerless folder take it exclusively. Every change to the
-  state file is made holding it exclusively.
+- **Locks.** Each folder has two host-wide locks (see Decisions during
+  implementation). The **state lock** is held briefly: reads take it
+  shared, and every change to the state file is made holding it
+  exclusively (migration, update, `rm` of the owner, `--unset gog_id`,
+  trash restore of the owner, claiming an ownerless folder, and `validate
+  --fix`). The **in-use lock** is held shared by a launch for the whole
+  run. Update and migration try it exclusively without waiting and refuse
+  while anything runs from the folder. `rm`, `--unset gog_id`, and restore
+  never take it, since changing the owner doesn't touch a running game's
+  files. When both are needed, the in-use lock comes first.
 
 ### State, journal, and crashes
 
@@ -665,11 +671,14 @@ Written for the answers above.
   translated through the prefix's drive letters first. Bare program names
   that Wine resolves, and launchers that find the game some other way,
   can't be seen, and the docs say so.
-- **Claiming at launch.** A launch that needs to claim an ownerless
-  folder for its environment takes the lock exclusively, reads the state
-  again, writes `owner` if it's still unowned, and releases it. It then
-  takes the lock shared and reads the state once more before starting the
-  program. A launch never changes the state while holding the lock shared.
+- **Claiming at launch.** A launch first takes the folder's in-use lock
+  shared and keeps it for the run. A launch that can't, because an update
+  holds it, refuses like a folder with a journal. If it needs to claim an
+  ownerless folder for its environment, it takes the state lock
+  exclusively, reads the state again, writes `owner` if it's still
+  unowned, and releases it. It then reads the state once more under the
+  state lock shared, releases that, and starts the program. A launch never
+  changes the state without the state lock held exclusively.
 - A folder with a journal refuses the launch, naming the owner:
   `rimworld's game folder is mid-update. Finish it with wineo update
   rimworld.` An ownerless one says to migrate it again and finish it.
@@ -901,6 +910,17 @@ Settled by the maintainer on 2026-10-11, during step 3:
   deleted by hand, since `rm` releases the folder before trashing the
   config. `validate` reports it, and `validate --fix` sets `owner` to none,
   keeping any journal, so the folder then follows the ownerless rules.
+
+After step 3's review, also on 2026-10-11:
+
+- **Two folder locks.** One lock held shared for a whole game run made
+  `rm`, `--unset gog_id`, and restore of an owner wait, uncancelably,
+  until a clone's game exited. The folder lock is split into a short-held
+  state lock (step 3's lock) and a run-long in-use lock that only launches
+  hold and only update and migration check (step 4). See Locks.
+- **`gog_mid_update` stays an error.** `validate` exits 1 while an
+  update is interrupted, since healthy means no journal and the game
+  can't launch until `wineo update` finishes it.
 
 ## Implementation sequence
 
