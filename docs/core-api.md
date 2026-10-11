@@ -153,6 +153,15 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   while releasing locks. It doesn't record playtime or install declared verbs.
   `Launch::exec` retains CLI cwd-relative resolution; frontend
   `ExecResolution::ExplicitPaths` never consults the current directory.
+- GOG game folders: `launch::start` and `launch::exec` refuse a launch whose
+  game folder is mid-update, being updated, or has lost its state, before
+  any hook runs, and hold the folder's in-use lock until the program exits
+  (through the supervisor for `start`), so updates refuse while it runs. The
+  refusals are `gog::folder::FolderError` variants: `MidUpdate`,
+  `OwnerlessMidUpdate`, `Updating`, `StateMissing`, `UnreadableFolder`, and
+  `OwnedByOther`. A frontend that runs its own launch flow calls
+  `launch::precheck` before side effects and holds the guards from
+  `launch::protect`, taken after the operation lock, for the whole run.
 - `winetricks::ensure(...)`: installs the environment's missing declared
   verbs in an existing prefix. `ensure_in(...)` builds a missing prefix first,
   then calls the locking `ensure`; its events are `EnsureEvent`.

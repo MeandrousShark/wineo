@@ -930,6 +930,23 @@ Settled by the maintainer on 2026-10-11, before step 4:
   rules. Winetricks isn't covered, since it writes to the prefix, not the
   game folder.
 
+Chosen during step 4, on 2026-10-11, for the maintainer to confirm:
+
+- **Refusing before hooks.** A read-only precheck refuses a blocked launch
+  before any `before` hook runs, and `wineo restart` runs it before stopping
+  the old run. The authoritative check still runs after the operation lock.
+- **Which paths count.** The program, its working directory, and arguments
+  that are whole absolute or Windows drive paths. `--data=/path` isn't
+  seen, and the docs say so.
+- **Portable roots** ignore `gog_id`: no owner lookup, claim, or lost-state
+  refusal, only the paths a launch names. GOG games live in the host root,
+  and claiming would record a portable name as owner.
+- **Unreadable state files** block launches of any environment with
+  `gog_id`, since one could be its folder's. Launches without `gog_id` only
+  refuse a broken state covering a path they name.
+- **The update-side refusal** reads `Something is running from rimworld's
+  game folder. Stop it first.` until step 7 can name what's running.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,
