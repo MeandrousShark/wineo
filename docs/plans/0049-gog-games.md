@@ -646,7 +646,7 @@ Written for the answers above.
   DLC, the language, and the order. An environment with `gog_id` and no
   state file refuses to launch and update: `rimworld's GOG state is
   missing. Migrate it again with wineo import gog --game 1094900565, or
-  stop tracking it with wineo set rimworld gog_id=.` Migrating again works
+  stop tracking it with wineo set rimworld --unset gog_id.` Migrating again works
   while Heroic still has the game; wineo never invents an installation
   from the product id.
 - **Snapshot restore** brings back the environment's config but not the
@@ -884,6 +884,23 @@ Written for the answers above.
   finish. The background check runs once after start when logged in.
 - In a portable session, the GOG section shows the login but Import from
   GOG and Update say GOG games live in the host library.
+
+## Decisions during implementation
+
+Settled by the maintainer on 2026-10-11, during step 3:
+
+- **Setting `gog_id` by hand.** `wineo set NAME gog_id=VALUE` is refused:
+  `gog_id is set by wineo import gog.` Only migration sets it, since a
+  `gog_id` without a state file is a lost state that blocks launch.
+- **Unsetting `gog_id`.** `wineo set NAME --unset gog_id` also releases
+  the folder: it takes the folder lock exclusively and sets `owner` to none
+  in one write, like `rm`. A folder with a journal refuses it: `rimworld is
+  mid-update. Finish it with wineo update rimworld.` With no state file (a
+  lost state), it only edits the config.
+- **An owner whose config is gone.** That only happens when a config is
+  deleted by hand, since `rm` releases the folder before trashing the
+  config. `validate` reports it, and `validate --fix` sets `owner` to none,
+  keeping any journal, so the folder then follows the ownerless rules.
 
 ## Implementation sequence
 
