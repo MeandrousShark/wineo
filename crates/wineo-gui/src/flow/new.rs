@@ -1696,7 +1696,7 @@ impl Page {
             760
         };
         let scroll = scrollable(container(body).max_width(max_width).width(Fill).padding(24))
-            .wineo_style(palette)
+            .wineo_edge_style(palette)
             .height(Fill);
         let content: Element<'_, Event> = if let Some(footer) = review_footer {
             column![
