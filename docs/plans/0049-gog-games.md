@@ -30,6 +30,13 @@ The same day the maintainer chose a new workspace crate, `wineo-gog`, for
 everything that talks to GOG: this plan's client and file download, and
 0050's Galaxy downloader. It is `publish = false` until going public at 1.0.
 
+After a plan review the same day, the maintainer answered questions 12 to
+16 with A each: Galaxy-installed games are compared by build and not
+updated until 0050, snapshots, clones, and portable copies keep their
+existing limits, an incomplete game refuses to launch, native updates
+overwrite changed shipped files and list them, and a dry run may renew and
+save the GOG login.
+
 ## What GOG offers
 
 From reading the source of heroic-gogdl 1.3.1, Heroic, Minigalaxy 1.4.3,
@@ -257,7 +264,7 @@ branches, and rolling back to an older version.
 A review found the first draft described the successful paths but not
 ownership, recovery, versions, or several contracts. The design below now
 specifies them. Five points needed the maintainer and are questions 12 to
-16.
+16, all answered A.
 
 ### 12. Games Heroic installed through Galaxy
 
@@ -323,7 +330,7 @@ log you out.
 
 ## Proposed design
 
-Written for the answers above and the recommended answers to 12 to 16.
+Written for the answers above.
 
 ### The `wineo-gog` crate
 
