@@ -28,6 +28,7 @@ use sha2::{Digest, Sha256};
 use crate::name;
 use crate::paths::Paths;
 
+mod holders;
 mod in_use;
 mod protect;
 
@@ -405,11 +406,25 @@ pub enum FolderError {
     )]
     OwnerlessMidUpdate { gog_id: u64 },
     /// An update or migration found something running from the folder.
-    #[error("Something is running from {name}'s game folder. Stop it first.")]
-    InUse { name: String },
+    /// `holders` names the environments running from it, sorted, and is
+    /// empty when none could be named.
+    #[error("{}", in_use_message(.name, .holders))]
+    InUse { name: String, holders: Vec<String> },
     /// A state file that would cover a launched path can't be read.
     #[error("The GOG state for {folder} can't be checked: {detail}.")]
     UnreadableFolder { folder: PathBuf, detail: String },
+}
+
+/// The refusal for an update or migration of `name`'s game folder while
+/// something runs from it.
+fn in_use_message(name: &str, holders: &[String]) -> String {
+    let (who, verb, stop) = match holders {
+        [] => return format!("Something is running from {name}'s game folder. Stop it first."),
+        [one] => (one.clone(), "is", "it"),
+        [one, two] => (format!("{one} and {two}"), "are", "them"),
+        [rest @ .., last] => (format!("{}, and {last}", rest.join(", ")), "are", "them"),
+    };
+    format!("{who} {verb} running from this game folder. Stop {stop} before updating {name}.")
 }
 
 /// Holds a folder's state lock until dropped.

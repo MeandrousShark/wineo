@@ -84,11 +84,12 @@ impl<'a> Touched<'a> {
         })
     }
 
-    /// Takes every in-use lock shared, refusing one an update holds.
+    /// Takes every in-use lock shared as this launch's environment, refusing
+    /// one an update holds.
     fn lock_in_use(&self, paths: &Paths) -> Result<Vec<InUseGuard>> {
         let mut guards = Vec::new();
         for state in self.states.values() {
-            match InUseLock::new(paths, &state.folder)?.try_shared()? {
+            match InUseLock::new(paths, &state.folder)?.try_shared(self.name)? {
                 Some(guard) => guards.push(guard),
                 None => {
                     return Err(FolderError::Updating {
