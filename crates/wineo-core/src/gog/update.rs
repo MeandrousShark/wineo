@@ -167,18 +167,13 @@ pub enum UpdateError {
     /// isn't taken for one that doesn't.
     #[error("{name} can't be checked: its config can't be read ({detail}).")]
     Unloadable { name: String, detail: String },
-    #[error(
-        "Updating {name} comes in a later wineo release (plan 0050): wineo can't update Windows GOG games installed from GOG's offline installers yet."
-    )]
+    /// The same sentence `update --check` gives for these games.
+    #[error("Updating Windows installer games comes in a later release.")]
     WindowsInstaller { name: String },
-    #[error(
-        "Updating {name} comes in a later wineo release (plan 0051): wineo can't install GOG Galaxy builds yet."
-    )]
+    #[error("Updating Galaxy builds comes in a later release.")]
     Galaxy { name: String },
     /// A journal of plan 0050's kinds, `install` or `repair`.
-    #[error(
-        "{name}'s game folder has an unfinished GOG {kind}, which a later wineo release finishes."
-    )]
+    #[error("{name} has an unfinished GOG {kind}, and finishing it comes in a later release.")]
     LaterRelease { name: String, kind: &'static str },
     #[error("{name} can't be updated: {why}")]
     CantCompare { name: String, why: String },
@@ -186,7 +181,7 @@ pub enum UpdateError {
     #[error("{name} can't be updated: {why}")]
     NoInstaller { name: String, why: String },
     #[error(
-        "{path} from GOG product {product} is inside {parent}, which GOG product {other} ships as a file or symlink."
+        "{path} from GOG product {product} can't go inside {parent}, which GOG product {other} ships as a file or symlink."
     )]
     Layers {
         path: String,
@@ -196,7 +191,7 @@ pub enum UpdateError {
     },
     #[error("{name} is running. Stop it before updating.")]
     Running { name: String },
-    #[error("{name}'s GOG game changed since the update was planned; plan it again.")]
+    #[error("{name}'s GOG game changed while updating; run it again.")]
     Changed { name: String },
     /// `journal` says whether the update had started changing the folder,
     /// which leaves it to finish with `wineo update`.

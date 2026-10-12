@@ -308,10 +308,12 @@ fn action(pending: &Pending) -> &'static str {
     }
 }
 
-fn product_label(id: u64, title: Option<&str>, game: u64) -> String {
+/// A product's title, which a recovery from saved packages doesn't have:
+/// then the game is named by its environment.
+fn product_label(pending: &Pending, id: u64, title: Option<&str>) -> String {
     match title {
         Some(title) => title.to_owned(),
-        None if id == game => format!("GOG game {id}"),
+        None if id == pending.target().gog_id => pending.environment().to_owned(),
         None => format!("DLC {id}"),
     }
 }
@@ -326,10 +328,9 @@ fn change(installed: Option<&str>, version: &str) -> String {
 }
 
 fn review_lines(paths: &Paths, pending: &Pending) -> Vec<String> {
-    let game = pending.target().gog_id;
     let mut rows = vec![("folder".to_owned(), style::path(paths, pending.folder()))];
     for product in pending.products() {
-        let label = product_label(product.id, product.title.as_deref(), game);
+        let label = product_label(pending, product.id, product.title.as_deref());
         let value = match &product.version {
             Some(version) => change(product.installed.as_deref(), version),
             None => "left as it is".to_owned(),
@@ -438,7 +439,6 @@ struct Reporter {
 
 impl Reporter {
     fn new(pending: &Pending) -> Self {
-        let game = pending.target().gog_id;
         Self {
             labels: pending
                 .products()
@@ -446,7 +446,7 @@ impl Reporter {
                 .map(|product| {
                     (
                         product.id,
-                        product_label(product.id, product.title.as_deref(), game),
+                        product_label(pending, product.id, product.title.as_deref()),
                     )
                 })
                 .collect(),
@@ -531,7 +531,6 @@ impl Reporter {
 
 /// Says what an update changed, and the files of yours it touched.
 fn report(paths: &Paths, pending: &Pending, updated: &Updated) {
-    let game = pending.target().gog_id;
     println!("{}.", finished(pending));
     let rows: Vec<(String, String)> = updated
         .products
@@ -539,7 +538,11 @@ fn report(paths: &Paths, pending: &Pending, updated: &Updated) {
         .filter_map(|product| {
             let version = product.version.as_ref()?;
             let planned = pending.products().iter().find(|p| p.id == product.id);
-            let label = product_label(product.id, planned.and_then(|p| p.title.as_deref()), game);
+            let label = product_label(
+                pending,
+                product.id,
+                planned.and_then(|p| p.title.as_deref()),
+            );
             let installed = planned.and_then(|p| p.installed.as_deref());
             Some((label, change(installed, version)))
         })

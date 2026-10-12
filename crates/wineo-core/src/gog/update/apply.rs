@@ -1045,7 +1045,9 @@ fn remove_packages(paths: &Paths, folder: &Path, products: &[u64], warnings: &mu
                 }
             }
             Err(error) => {
-                warnings.push(format!("Kept the downloaded GOG packages: {error:#}"));
+                warnings.push(format!(
+                    "Kept the downloaded GOG packages in case another game needs them: {error:#}"
+                ));
             }
         }
     }
