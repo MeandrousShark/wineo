@@ -378,9 +378,14 @@ goes through `gog::update::plan` and `apply`:
   releases (`LaterRelease`). `Running` means the environment is running,
   `Changed` that the folder changed since planning, and
   `Canceled { journal }` says whether a journal was left for recovery.
-  Wording is placeholder until the CLI settles it.
 - Downloaded packages live in `Paths::gog_download_cache()` and are removed
   after the commit unless another folder's journal still names them.
+- For a dry run, pass `read_only: true` in `Options` (and `Check {
+  refresh, read_only }` to `check_with` and `check_all_with`): nothing is
+  cached or recorded, and a build another tool installed is used without
+  being written down. `product::load_with(.., save: false)` reads details
+  without caching them. `account::Session::open` creates no files; the
+  credentials lock appears only when a login, logout, or renewal saves.
 
 A folder in use refuses an update or migration with `FolderError::InUse`,
 which names the environments running from it (`rimworld-copy is running

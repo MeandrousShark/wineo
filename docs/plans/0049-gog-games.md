@@ -1225,6 +1225,43 @@ Settled by the maintainer on 2026-10-12, after step 8a:
 - Step 8a's other choices stand as recorded, including the secret prompt
   fixes and the wording.
 
+Chosen during step 8b:
+
+- **The update review** lists the folder, each product's version change
+  (`unknown -> NEW` for a migrated DLC, `(rebuilt)` when the same), the
+  download size, and the unpacked size labeled as an estimate, plus
+  `owner none yet, rimworld takes this folder` when it claims one and
+  `download none, uses the packages already downloaded` offline. Its
+  header says `Update`, `Reinstall`, or `Finish the interrupted update of`.
+- **Progress** goes to stderr, at most once a second: downloading,
+  verifying, unpacking, publishing.
+- **The result** heads each list only when it's not empty: `Moved your
+  files aside where the new version has files:`, `Kept these old files you
+  changed, which the new version no longer ships:`, `Overwrote these files
+  that differed from the new version:`.
+- **Ctrl+C** says `Update canceled.` before any change, or `Update
+  interrupted.` with how to finish it.
+- **`update` with no name** and no `--all` is a usage error, as is
+  `--all --reinstall`. Logged out, `--all` says to log in, since checking
+  needs GOG; finishing one game from cached packages works with `update
+  NAME`.
+- **`--all`** updates native games with an update or an unfinished update,
+  lists Windows games as skipped with their reason, asks once, and counts
+  only games that planned in its `Updated X of N games.`
+- **Dry runs** write nothing at all, apart from a renewed login: GOG's
+  details aren't cached, another tool's build isn't recorded, and the
+  credentials lock is only created by a save.
+- **After migrating,** GOG playtime is reported only when it rose, and art
+  as the kinds added and their source. Nothing about extras fails a
+  migration.
+- **Wording** for updates says `Updating Windows installer games comes in
+  a later release.` and `Updating Galaxy builds comes in a later release.`
+  without plan numbers, and `NAME's GOG game changed while updating; run
+  wineo update NAME again.`
+- **Test hook:** debug builds read `WINEO_TEST_UPDATE_PAUSE` to hold an
+  update at a step, so tests can press Ctrl+C mid-publish. Release builds
+  never read it.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,
