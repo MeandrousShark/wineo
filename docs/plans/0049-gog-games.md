@@ -1155,6 +1155,28 @@ Chosen during step 7b:
 - **Staging folders** left by a failure or cancel stay until recovery
   removes them, along with the operation's other `.wineo-<op>-*` files.
 
+Chosen during step 10 (core):
+
+- **Where GOG's playtime and art come from.** The total is `time_sum`
+  (minutes) from `gameplay.gog.com/games/<id>/users/<user>/sessions`, the
+  path Heroic posts sessions to; a 404 means none. Art comes from
+  `api.gog.com/v2/games/<id>`: poster `boxArtImage` (GOG's vertical cover,
+  342x482 at most), hero `galaxyBackgroundImage` else `backgroundImage`,
+  logo `logo` (a transparent PNG), icon `iconSquare` else `icon`. Product
+  details' `logo` is a JPG tile, so it isn't used.
+- **`art.toml` gains a source key,** `gog = <GOG game id>`, beside
+  `steamgriddb` and `manual`, one per kind as before.
+- **The SteamGridDB fallback** uses the environment's saved SteamGridDB
+  game, else accepts only an exact title match from a search, and covers
+  only kinds GOG has no image for. A failed GOG art request falls back to
+  nothing, so a GOG outage doesn't fill art from elsewhere.
+- **The art fetch setting** limits which kinds are filled, as it does for
+  other imports.
+- **Running it again** changes nothing: playtime only rises, and art never
+  replaces what's there. A replaced or changed environment gets nothing
+  written, checked under the config and `art.toml` locks after each
+  network call.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,

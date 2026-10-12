@@ -39,7 +39,8 @@ wineo does not convert or resize anything there. A desktop entry's icon is a
 converted copy; see [Desktop entries](#desktop-entries) below.
 
 `art/<env>/art.toml` records where each file came from: a SteamGridDB asset
-ID, or a manual file with its original name. See [Config file
+ID, a manual file with its original name, or a GOG game ID for art a GOG
+migration added. See [Config file
 versioning](config-files.md) for its layout. A file that art.toml does not
 record, including every file when art.toml is absent, is unrecorded; `art
 fetch` never replaces it without `--replace` or `--asset`.
