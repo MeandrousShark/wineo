@@ -10,7 +10,7 @@ use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
 use super::transfer::{self, Cancellation};
-use super::{download, external_runners, import_heroic, import_steam, setup};
+use super::{download, external_runners, import_gog, import_heroic, import_steam, setup};
 use crate::picker;
 use crate::prompt::{self, Canceled, Choice, Input, Prompt, Reply, Terminal, numbered};
 
@@ -28,6 +28,8 @@ enum Source {
     Heroic(import_heroic::Args),
     /// Import a Steam game, installed or owned
     Steam(import_steam::Args),
+    /// Log in to GOG, list your games, or migrate the ones Heroic installed
+    Gog(import_gog::Args),
 }
 
 #[derive(clap::Args, Default)]
@@ -73,6 +75,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
     match args.source {
         Some(Source::Heroic(args)) => import_heroic::run(paths, args, verbose, true),
         Some(Source::Steam(args)) => import_steam::run(paths, args, true),
+        Some(Source::Gog(args)) => import_gog::run(paths, args, verbose, true),
         Some(Source::Prefix(args)) => prefix(paths, args, verbose, true),
         None => {
             anyhow::ensure!(
@@ -90,6 +93,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
                             ("An existing prefix".to_owned(), 1),
                             ("A manually added Heroic game".to_owned(), 2),
                             ("A Steam game".to_owned(), 3),
+                            ("A GOG game".to_owned(), 4),
                         ]),
                         Some("1"),
                         true,
@@ -113,8 +117,14 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
                             result => return result,
                         }
                     }
-                    Ok(Reply::Value(_)) => {
+                    Ok(Reply::Value(3)) => {
                         match import_steam::run(paths, import_steam::Args::default(), false) {
+                            Err(error) if error.is::<ReturnToSourceMenu>() => continue,
+                            result => return result,
+                        }
+                    }
+                    Ok(Reply::Value(_)) => {
+                        match import_gog::run(paths, import_gog::Args::default(), verbose, false) {
                             Err(error) if error.is::<ReturnToSourceMenu>() => continue,
                             result => return result,
                         }

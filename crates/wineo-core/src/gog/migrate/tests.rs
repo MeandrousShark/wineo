@@ -1120,7 +1120,7 @@ fn a_change_after_planning_is_refused() {
     .unwrap();
     assert!(matches!(
         migrate_error(fx.apply(&migration)),
-        MigrateError::Changed
+        MigrateError::Changed(Changed::Heroic)
     ));
     assert!(!fx.config("rimworld").contains("gog_id"));
     heroic.assert_unchanged();
@@ -1190,7 +1190,10 @@ fn a_new_environment_removed_or_changed_before_its_state_is_written_gets_none() 
             }
         });
         assert!(
-            matches!(migrate_error(fx.apply(&migration)), MigrateError::Changed),
+            matches!(
+                migrate_error(fx.apply(&migration)),
+                MigrateError::Changed(_)
+            ),
             "{change}"
         );
         assert!(fx.state(&folder).is_none(), "{change}");
@@ -1220,7 +1223,7 @@ fn an_install_path_leading_elsewhere_since_planning_is_refused() {
     std::os::unix::fs::symlink(&second, &link).unwrap();
     assert!(matches!(
         migrate_error(fx.apply(&migration)),
-        MigrateError::Changed
+        MigrateError::Changed(Changed::Folder)
     ));
     assert!(fx.state(&first).is_none());
     assert!(fx.state(&second).is_none());
@@ -1286,7 +1289,7 @@ fn a_config_recording_the_game_that_cannot_be_loaded_is_refused_by_name() {
     assert!(
         error
             .to_string()
-            .starts_with("broken records GOG game 1094900565 but can't be loaded: ")
+            .starts_with("broken records GOG game 1094900565, but its config can't be read (")
     );
 
     // It counts toward more than one match.
@@ -1370,7 +1373,7 @@ fn a_target_edited_after_matching_is_not_attached() {
     });
     assert!(matches!(
         migrate_error(fx.apply(&migration)),
-        MigrateError::Changed
+        MigrateError::Changed(Changed::Environment(_))
     ));
     let config = fx.config("rimworld");
     assert!(config.contains("unrelated.sh"), "{config}");
@@ -1397,7 +1400,7 @@ fn a_target_edited_after_matching_is_not_attached() {
     });
     assert!(matches!(
         migrate_error(fx.apply(&migration)),
-        MigrateError::Changed
+        MigrateError::Changed(Changed::Environment(_))
     ));
     assert!(fx.state(&folder).is_none());
     heroic.assert_unchanged();
@@ -1415,7 +1418,7 @@ fn heroic_changing_while_planning_is_refused() {
     });
     assert!(matches!(
         migrate_error(fx.plan(RIMWORLD)),
-        MigrateError::Changed
+        MigrateError::Changed(Changed::Heroic)
     ));
     // Planned again, it describes what Heroic has now.
     let migration = fx.migration(RIMWORLD);
@@ -1432,7 +1435,7 @@ fn heroic_changing_while_planning_is_refused() {
     });
     assert!(matches!(
         migrate_error(fx.plan(RIMWORLD)),
-        MigrateError::Changed
+        MigrateError::Changed(Changed::Heroic)
     ));
 }
 
@@ -1463,4 +1466,25 @@ fn an_exe_that_leads_to_a_folder_is_refused() {
     .unwrap();
     assert!(matches!(fx.plan(DISCO).unwrap(), Plan::Migrate(_)));
     heroic.assert_unchanged();
+}
+
+#[test]
+fn a_changed_migration_says_what_changed() {
+    let say = |what| MigrateError::Changed(what).to_string();
+    assert_eq!(
+        say(Changed::Heroic),
+        "Heroic's files changed while migrating; run it again."
+    );
+    assert_eq!(
+        say(Changed::Folder),
+        "The game folder changed while migrating; run it again."
+    );
+    assert_eq!(
+        say(Changed::Environment(Some("rimworld".to_owned()))),
+        "rimworld changed while migrating; run it again."
+    );
+    assert_eq!(
+        say(Changed::Environment(None)),
+        "The environment changed while migrating; run it again."
+    );
 }

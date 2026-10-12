@@ -121,6 +121,27 @@ pub fn environments(current: &OsStr) -> Vec<CompletionCandidate> {
         .collect()
 }
 
+/// Completes the environments that record a GOG game.
+pub fn gog_environments(current: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(prefix) = current.to_str() else {
+        return Vec::new();
+    };
+    let (portable, _) = split_portable(words_before_current());
+    let Ok(paths) = Paths::from_env(portable.as_deref()) else {
+        return Vec::new();
+    };
+    environment::names(&paths)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| {
+            name.starts_with(prefix)
+                && wineo_core::gog::update::recorded_gog_id(&paths, name)
+                    .is_ok_and(|id| id.is_some())
+        })
+        .map(CompletionCandidate::new)
+        .collect()
+}
+
 pub fn tags(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(prefix) = current.to_str() else {
         return Vec::new();
