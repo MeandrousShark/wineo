@@ -976,13 +976,17 @@ mod tests {
         assert!(page.token.as_ref().unwrap().is_canceled());
     }
 
+    /// Cancels once bytes have arrived and while more are still coming,
+    /// from a fake GOG that sends the installer slowly.
     #[test]
     fn canceling_during_a_download_changes_nothing() {
         let (root, paths) = setup();
         let folder = native_game(&paths, root.path(), "rimworld", RIMWORLD, "1.0", false);
         let keyring = keyring();
         save_login(&paths, &keyring);
-        let server = product_server(vec![native_product(RIMWORLD, "RimWorld", "1.1")]);
+        let server = crate::gog_fake::product_server_streaming(vec![native_product(
+            RIMWORLD, "RimWorld", "1.1",
+        )]);
         let Planned::Update(pending) =
             plan_with(&paths, &keyring, server.client(), "rimworld", &Token::new()).unwrap()
         else {
@@ -990,6 +994,9 @@ mod tests {
         };
         let before = wineo_core::gog::folder::peek(&paths, &folder).unwrap();
         let token = Token::new();
+        let total = format_bytes(crate::gog_fake::FILE_SIZE);
+        let started = format!("Downloading RimWorld: {} / {total}", format_bytes(0));
+        let finished = format!("Downloading RimWorld: {total} / {total}");
         let mut said = Vec::new();
         let failure = apply_with(
             &paths,
@@ -998,7 +1005,8 @@ mod tests {
             &pending,
             &token,
             |line| {
-                if line.starts_with("Downloading") {
+                // Some bytes are in, and the rest aren't yet.
+                if line.starts_with("Downloading") && line != started && line != finished {
                     token.cancel();
                 }
                 said.push(line);
@@ -1007,13 +1015,11 @@ mod tests {
         .unwrap_err();
         assert_eq!(failure, Failure::Canceled { journal: false }, "{said:?}");
         assert_eq!(failure.message("rimworld"), "Update canceled.");
-        assert!(said[0].starts_with("Downloading RimWorld"), "{said:?}");
+        assert_eq!(said[0], started);
+        assert!(!said.contains(&finished), "{said:?}");
         assert!(
-            server
-                .requests()
-                .iter()
-                .any(|line| line.contains("/files/")),
-            "the download had started"
+            !said.iter().any(|line| line.starts_with("Verifying")),
+            "{said:?}"
         );
         assert_eq!(
             wineo_core::gog::folder::peek(&paths, &folder).unwrap(),

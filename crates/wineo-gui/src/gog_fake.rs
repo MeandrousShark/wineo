@@ -18,6 +18,16 @@ pub(crate) struct Server {
 
 impl Server {
     pub(crate) fn start(handler: impl Fn(&str) -> Vec<u8> + Send + 'static) -> Self {
+        Self::start_paced(handler, usize::MAX, Duration::ZERO)
+    }
+
+    /// `start`, writing each answer `chunk` bytes at a time with `pause`
+    /// between them, like a slow connection.
+    pub(crate) fn start_paced(
+        handler: impl Fn(&str) -> Vec<u8> + Send + 'static,
+        piece_size: usize,
+        pause: Duration,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -49,7 +59,13 @@ impl Server {
                     .unwrap_or_default()
                     .to_owned();
                 seen.lock().unwrap().push(line.clone());
-                let _ = stream.write_all(&handler(&line));
+                for piece in handler(&line).chunks(piece_size) {
+                    if stream.write_all(piece).is_err() {
+                        break;
+                    }
+                    let _ = stream.flush();
+                    std::thread::sleep(pause);
+                }
                 let _ = stream.flush();
             }
         });
@@ -104,46 +120,70 @@ pub(crate) fn product_server(products: Vec<serde_json::Value>) -> Server {
 /// `product_server`, taking `delay` to answer each `/products` request, like
 /// a slow GOG.
 pub(crate) fn product_server_slow(products: Vec<serde_json::Value>, delay: Duration) -> Server {
+    product_server_with(products, delay, usize::MAX, Duration::ZERO)
+}
+
+/// `product_server`, sending every answer 64 KiB at a time a few
+/// milliseconds apart, so a download is still coming in when it's canceled.
+pub(crate) fn product_server_streaming(products: Vec<serde_json::Value>) -> Server {
+    product_server_with(
+        products,
+        Duration::ZERO,
+        64 * 1024,
+        Duration::from_millis(5),
+    )
+}
+
+fn product_server_with(
+    products: Vec<serde_json::Value>,
+    delay: Duration,
+    chunk: usize,
+    pause: Duration,
+) -> Server {
     let base = Arc::new(std::sync::OnceLock::<String>::new());
     let seen = Arc::clone(&base);
-    let server = Server::start(move |line| {
-        let base = seen.get().cloned().unwrap_or_default();
-        let path = line.split(' ').nth(1).unwrap_or_default();
-        let path = path.split('?').next().unwrap_or_default();
-        if path == "/token" {
-            return tokens("REFRESH", USER);
-        }
-        let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
-        match parts.as_slice() {
-            ["products", id] => {
-                std::thread::sleep(delay);
-                products
-                    .iter()
-                    .find(|product| id.parse::<u64>().ok() == product["id"].as_u64())
-                    .map_or_else(
-                        || reply(404, "{}"),
-                        |body| reply(200, &body.to_string().replace("{BASE}", &base)),
-                    )
+    let server = Server::start_paced(
+        move |line| {
+            let base = seen.get().cloned().unwrap_or_default();
+            let path = line.split(' ').nth(1).unwrap_or_default();
+            let path = path.split('?').next().unwrap_or_default();
+            if path == "/token" {
+                return tokens("REFRESH", USER);
             }
-            ["downlink", name] => reply(
-                200,
-                &serde_json::json!({
-                    "downlink": format!("{base}/files/{name}"),
-                    "checksum": null,
-                })
-                .to_string(),
-            ),
-            ["files", _] => {
-                let mut answer = format!(
+            let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
+            match parts.as_slice() {
+                ["products", id] => {
+                    std::thread::sleep(delay);
+                    products
+                        .iter()
+                        .find(|product| id.parse::<u64>().ok() == product["id"].as_u64())
+                        .map_or_else(
+                            || reply(404, "{}"),
+                            |body| reply(200, &body.to_string().replace("{BASE}", &base)),
+                        )
+                }
+                ["downlink", name] => reply(
+                    200,
+                    &serde_json::json!({
+                        "downlink": format!("{base}/files/{name}"),
+                        "checksum": null,
+                    })
+                    .to_string(),
+                ),
+                ["files", _] => {
+                    let mut answer = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {FILE_SIZE}\r\nConnection: close\r\n\r\n"
                 )
                 .into_bytes();
-                answer.resize(answer.len() + FILE_SIZE as usize, 0);
-                answer
+                    answer.resize(answer.len() + FILE_SIZE as usize, 0);
+                    answer
+                }
+                _ => reply(404, "{}"),
             }
-            _ => reply(404, "{}"),
-        }
-    });
+        },
+        chunk,
+        pause,
+    );
     let _ = base.set(server.base.clone());
     server
 }
