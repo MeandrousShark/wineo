@@ -310,7 +310,22 @@ fn report(
         Outcome::Migrated(migrated) => {
             if let Some(registered) = &migrated.registered {
                 report_playtime(&registered.playtime);
-                finish_registered(paths, global, registered)?;
+            }
+            // Before the desktop entries, so a new icon is in them.
+            let game = migration.game();
+            let icon = game.id.parse().is_ok_and(|gog_id| {
+                super::extras::import(paths, global, &migrated.environment, gog_id, &game.title)
+            });
+            match &migrated.registered {
+                Some(registered) => finish_registered(paths, global, registered)?,
+                None if icon => {
+                    if let Err(error) =
+                        crate::commands::art::apply_desktop(paths, &migrated.environment)
+                    {
+                        warn(format!("Couldn't update desktop entries: {error:#}"));
+                    }
+                }
+                None => {}
             }
             println!(
                 "Migrated {} as {}.",

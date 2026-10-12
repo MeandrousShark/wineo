@@ -113,7 +113,8 @@ impl Fixture {
             .env_remove("WINEO_STEAMGRIDDB_KEY")
             .env_remove("WINEO_STEAM_KEY")
             .env_remove("WINEO_TEST_STEAM_API")
-            .env_remove("WINEO_TEST_GOG_API")
+            // A closed port, so nothing a test runs can reach the real GOG.
+            .env("WINEO_TEST_GOG_API", "http://127.0.0.1:9")
             // No session bus, so nothing a test runs can reach the real keyring.
             .env(
                 "DBUS_SESSION_BUS_ADDRESS",

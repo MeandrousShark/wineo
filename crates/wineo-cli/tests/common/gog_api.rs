@@ -42,6 +42,11 @@ pub struct Config {
     pub builds: BTreeMap<u64, Value>,
     /// Package files to download, by file name.
     pub files: BTreeMap<String, Vec<u8>>,
+    /// Total playtime in minutes by game id. A game not listed has none (404).
+    pub playtime: BTreeMap<u64, u64>,
+    /// Artwork links by game id, as `_links` holds them. A game not listed
+    /// is a 404.
+    pub art: BTreeMap<u64, Value>,
     /// File names whose downloads GOG publishes no checksum for.
     pub no_checksum: BTreeSet<String>,
     renewals: u32,
@@ -68,6 +73,8 @@ impl Default for Config {
             builds: BTreeMap::new(),
             files: BTreeMap::new(),
             no_checksum: BTreeSet::new(),
+            playtime: BTreeMap::new(),
+            art: BTreeMap::new(),
             renewals: 0,
         }
     }
@@ -237,6 +244,31 @@ fn answer(config: &mut Config, base: &str, target: &str, bearer: Option<&str>) -
                 &json!({"downlink": format!("{base}/files/{name}"), "checksum": checksum})
                     .to_string(),
             )
+        }
+        ["games", id, "users", _user, "sessions"] => {
+            if !signed_in {
+                return unauthorized();
+            }
+            match id
+                .parse::<u64>()
+                .ok()
+                .and_then(|id| config.playtime.get(&id))
+            {
+                Some(minutes) => reply(200, &json!({"time_sum": minutes}).to_string()),
+                None => reply(404, "{}"),
+            }
+        }
+        ["v2", "games", id] => {
+            let Ok(id) = id.parse::<u64>() else {
+                return reply(404, "{}");
+            };
+            match config.art.get(&id) {
+                Some(links) => reply(
+                    200,
+                    &json!({"_embedded": {"product": {"id": id}}, "_links": links}).to_string(),
+                ),
+                None => reply(404, "{}"),
+            }
         }
         ["sums", name] => match config.files.get(*name) {
             Some(bytes) => reply(
