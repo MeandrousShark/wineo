@@ -312,11 +312,12 @@ fn list_marks_a_game_whose_details_cant_be_fetched() {
     // The games that were checked still print, and the one that couldn't be
     // checked is still the migrated one.
     assert_eq!(json["games"].as_array().unwrap().len(), 3);
+    let id = RIMWORLD.to_string();
     let rimworld = json["games"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|game| game["id"] == RIMWORLD.to_string())
+        .find(|game| game["id"] == id.as_str())
         .unwrap();
     assert_eq!(rimworld["state"], "imported");
     assert_eq!(rimworld["environment"], "rimworld");
