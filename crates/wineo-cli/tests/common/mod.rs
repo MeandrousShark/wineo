@@ -113,8 +113,7 @@ impl Fixture {
             .env_remove("WINEO_STEAMGRIDDB_KEY")
             .env_remove("WINEO_STEAM_KEY")
             .env_remove("WINEO_TEST_STEAM_API")
-            // A closed port, so nothing a test runs can reach the real GOG.
-            .env("WINEO_TEST_GOG_API", "http://127.0.0.1:9")
+            .env_remove("WINEO_TEST_GOG_API")
             // No session bus, so nothing a test runs can reach the real keyring.
             .env(
                 "DBUS_SESSION_BUS_ADDRESS",
@@ -130,7 +129,11 @@ impl Fixture {
     /// ones `external_dir` names.
     pub fn wineo_at_home(&self) -> Command {
         let mut command = self.wineo();
-        command.env("HOME", self.root.path());
+        // A closed port, so nothing a GOG test runs can reach the real GOG.
+        // Not in `wineo`, since wine programs would inherit it.
+        command
+            .env("HOME", self.root.path())
+            .env("WINEO_TEST_GOG_API", "http://127.0.0.1:9");
         command
     }
 
