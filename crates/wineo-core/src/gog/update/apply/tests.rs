@@ -530,6 +530,7 @@ fn base_v1() -> Vec<Item> {
         file("old/deep/readme", "an obsolete folder"),
         file("kept/readme", "dropped from a folder you use"),
         file("notes/readme.txt", "a folder that becomes a file"),
+        file("notes/deep/readme", "inside a folder that becomes a file"),
     ]
 }
 
@@ -579,6 +580,7 @@ fn ready_for_v2(fx: &Fixture) {
     fx.write("Data/new.dat", "mine");
     fx.write("kept/user.txt", "mine too");
     fx.write("notes/mine.txt", "my notes");
+    fx.write("notes/deep/mine.txt", "my deep notes");
 }
 
 fn expected_v2() -> BTreeMap<String, String> {
@@ -600,6 +602,8 @@ fn expected_v2() -> BTreeMap<String, String> {
         ("kept/user.txt", "644 mine too"),
         ("notes", "644 notes is a file now"),
         ("notes.wineo-saved", "/"),
+        ("notes.wineo-saved/deep", "/"),
+        ("notes.wineo-saved/deep/mine.txt", "644 my deep notes"),
         ("notes.wineo-saved/mine.txt", "644 my notes"),
         ("lib", "644 lib is a file now"),
         ("mods-1.5", "/"),
@@ -804,10 +808,10 @@ fn assert_synced(fx: &Fixture, before: &FolderState, syncs: &[String]) {
     };
     let mut paths = recorded_paths(before);
     paths.extend(recorded_paths(&fx.state()));
+    let tree = fx.tree();
+    let is_dir = |dir: &str| dir.is_empty() || tree.get(dir).is_some_and(|kind| kind == "/");
     for path in paths {
         let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
-        let is_dir =
-            |dir: &str| fs::symlink_metadata(fx.folder.join(dir)).is_ok_and(|meta| meta.is_dir());
         if is_dir(parent) {
             assert!(
                 synced(parent),
@@ -815,19 +819,35 @@ fn assert_synced(fx: &Fixture, before: &FolderState, syncs: &[String]) {
             );
             continue;
         }
-        // A folder moved aside carries the changes made in it.
-        let tree = fx.tree();
-        for saved in tree.keys().filter(|saved| {
-            saved
-                .strip_prefix(parent)
-                .is_some_and(|rest| rest.starts_with(".wineo-saved") && !rest.contains('/'))
-                && is_dir(saved)
-        }) {
+        // A folder moved aside, or inside one, carries the changes made in
+        // it: find it under every name an ancestor was saved as.
+        let mut found = Vec::new();
+        let mut ancestor = parent;
+        loop {
+            let rest = &parent[ancestor.len()..];
+            for saved in tree.keys().filter(|saved| {
+                saved.strip_prefix(ancestor).is_some_and(|suffix| {
+                    suffix.starts_with(".wineo-saved") && !suffix.contains('/')
+                })
+            }) {
+                let moved = format!("{saved}{rest}");
+                if is_dir(&moved) {
+                    found.push(moved);
+                }
+            }
+            match ancestor.rsplit_once('/') {
+                Some((up, _)) => ancestor = up,
+                None => break,
+            }
+        }
+        for moved in &found {
             assert!(
-                synced(saved),
-                "{saved:?} wasn't synced before the commit: {syncs:?}"
+                synced(moved),
+                "{moved:?} wasn't synced before the commit: {syncs:?}"
             );
         }
+        // Found nowhere, here or under any name an ancestor was saved as,
+        // means the operation removed it, and its parent's sync covers that.
     }
 }
 

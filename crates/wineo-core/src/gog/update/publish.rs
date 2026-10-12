@@ -576,13 +576,31 @@ impl<'a> Publisher<'a> {
     fn save_aside(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<()> {
         failpoint("update.save.before")?;
         // Changes already made inside a folder are made durable before it
-        // moves, since a recovery looks for it under its old name.
-        let moving_folder = match open_dir_at(dir, leaf) {
+        // moves, since a recovery looks for its folders under their old
+        // names: every recorded folder inside it, deepest first, then it.
+        let moved_folders: Vec<String> = match open_dir_at(dir, leaf) {
             Ok(folder) => {
+                let inside = format!("{path}/");
+                let mut nested: Vec<String> = self
+                    .recorded_folders
+                    .iter()
+                    .filter(|recorded| recorded.starts_with(&inside))
+                    .cloned()
+                    .collect();
+                nested.sort_by_key(|nested| std::cmp::Reverse(depth(nested)));
+                let mut synced = Vec::new();
+                for nested in nested {
+                    if let Some(fd) = self.open_folder_if_there(&nested)? {
+                        rustix::fs::fsync(&fd)
+                            .with_context(|| format!("failed to sync {nested}"))?;
+                        synced.push(nested);
+                    }
+                }
                 rustix::fs::fsync(&folder).with_context(|| format!("failed to sync {path}"))?;
-                true
+                synced.push(path.to_owned());
+                synced
             }
-            Err(Errno::NOTDIR | Errno::LOOP | Errno::NOENT) => false,
+            Err(Errno::NOTDIR | Errno::LOOP | Errno::NOENT) => Vec::new(),
             Err(error) => return Err(error).with_context(|| format!("failed to open {path}")),
         };
         let mut number = 1;
@@ -638,8 +656,8 @@ impl<'a> Publisher<'a> {
                 }
             })
             .collect();
-        if moving_folder {
-            record_sync(format!("dir:{saved_as}"));
+        for moved in moved_folders {
+            record_sync(format!("dir:{saved_as}{}", &moved[path.len()..]));
         }
         self.changed.insert(parent.to_owned());
         self.report.saved.push(SavedAside {
