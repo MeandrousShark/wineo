@@ -46,6 +46,12 @@ pub(super) fn before_record() {
     run_hook("before_record");
 }
 
+/// In planning, after the game's files were read and before they are
+/// checked again.
+pub(super) fn after_reading() {
+    run_hook("after_reading");
+}
+
 fn on_create(hook: impl FnOnce() + 'static) {
     on("after_create", hook);
 }
@@ -1375,4 +1381,37 @@ fn a_target_edited_after_matching_is_not_attached() {
     ));
     assert!(fx.state(&folder).is_none());
     heroic.assert_unchanged();
+}
+
+#[test]
+fn heroic_changing_while_planning_is_refused() {
+    let mut fx = Fixture::new();
+    let folder = fx.rimworld();
+    fx.native("rimworld", &folder.join("start.sh"), "");
+    let installed = fx.heroic().join("gog_store/installed.json");
+    on("after_reading", move || {
+        let text = fs::read_to_string(&installed).unwrap();
+        fs::write(&installed, text.replace("1.6.4871 rev588", "1.6.5000")).unwrap();
+    });
+    assert!(matches!(
+        migrate_error(fx.plan(RIMWORLD)),
+        MigrateError::Changed
+    ));
+    // Planned again, it describes what Heroic has now.
+    let migration = fx.migration(RIMWORLD);
+    assert_eq!(
+        migration.committed().products[0].version.as_deref(),
+        Some("1.6.5000")
+    );
+
+    // The game folder's info file counts too.
+    let gameinfo = folder.join("gameinfo");
+    on("after_reading", move || {
+        let text = fs::read_to_string(&gameinfo).unwrap();
+        fs::write(&gameinfo, text.replace("93132", "1")).unwrap();
+    });
+    assert!(matches!(
+        migrate_error(fx.plan(RIMWORLD)),
+        MigrateError::Changed
+    ));
 }

@@ -283,16 +283,23 @@ impl Migration {
 /// only, and takes no locks.
 pub fn plan(paths: &Paths, source: &HeroicSource, gog_id: &str) -> Result<Plan> {
     host_only(paths)?;
-    let Some(game) = source.gog_game(gog_id)? else {
+    let Some(listed) = source.gog_game(gog_id)? else {
         return Ok(Plan::NotInstalled {
             gog_id: gog_id.to_owned(),
         });
+    };
+    let folder = game_folder(&listed)?;
+    // Taken before anything the plan uses is read, and checked again once
+    // it all has been, so the plan and its fingerprint describe the same
+    // bytes. Heroic's entry is read again for the same reason.
+    let fingerprint = source.gog_fingerprint(&listed, &info_path(&folder, &listed))?;
+    let Some(game) = source.gog_game(gog_id)?.filter(|game| *game == listed) else {
+        return Err(MigrateError::Changed.into());
     };
     let id: u64 = game
         .id
         .parse()
         .with_context(|| format!("{} isn't a GOG game id", game.id))?;
-    let folder = game_folder(&game)?;
     let launch = read_launch(&folder, &game)?;
     let committed = committed(&game, id);
 
@@ -319,7 +326,11 @@ pub fn plan(paths: &Paths, source: &HeroicSource, gog_id: &str) -> Result<Plan> 
         Platform::Windows => source.gog_prefixes(&game)?,
         Platform::Linux => Vec::new(),
     };
-    let fingerprint = source.gog_fingerprint(&game, &launch.info)?;
+    #[cfg(test)]
+    tests::after_reading();
+    if !source.unchanged(&game.id, &fingerprint)? {
+        return Err(MigrateError::Changed.into());
+    }
 
     let found = match_environment(paths, &game, &launch.exe, &prefixes)?;
     let target = match found {
@@ -715,11 +726,19 @@ fn committed(game: &HeroicGogGame, gog_id: u64) -> Committed {
     }
 }
 
+/// The file in the folder that says which game it holds.
+fn info_path(folder: &Path, game: &HeroicGogGame) -> PathBuf {
+    match game.platform {
+        Platform::Linux => folder.join("gameinfo"),
+        Platform::Windows => folder.join(format!("goggame-{}.info", game.id)),
+    }
+}
+
 /// Checks the folder holds the game Heroic says, and reads how it starts.
 fn read_launch(folder: &Path, game: &HeroicGogGame) -> Result<Launch> {
     match game.platform {
         Platform::Linux => {
-            let info = folder.join("gameinfo");
+            let info = info_path(folder, game);
             let text = match fs::read_to_string(&info) {
                 Ok(text) => text,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -747,8 +766,8 @@ fn read_launch(folder: &Path, game: &HeroicGogGame) -> Result<Launch> {
             })
         }
         Platform::Windows => {
+            let info = info_path(folder, game);
             let file = format!("goggame-{}.info", game.id);
-            let info = folder.join(&file);
             let text = match fs::read_to_string(&info) {
                 Ok(text) => text,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
