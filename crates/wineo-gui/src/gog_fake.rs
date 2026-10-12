@@ -94,9 +94,20 @@ pub(crate) fn tokens(refresh: &str, user_id: u64) -> Vec<u8> {
     reply(200, &body.to_string())
 }
 
-/// Answers GOG's token endpoint and `/products/<id>` from `products`.
+/// Answers GOG's token endpoint and `/products/<id>` from `products`, and
+/// serves their installers: `/downlink/<file>` resolves a file and
+/// `/files/<file>` sends `FILE_SIZE` bytes.
 pub(crate) fn product_server(products: Vec<serde_json::Value>) -> Server {
-    Server::start(move |line| {
+    product_server_slow(products, Duration::ZERO)
+}
+
+/// `product_server`, taking `delay` to answer each `/products` request, like
+/// a slow GOG.
+pub(crate) fn product_server_slow(products: Vec<serde_json::Value>, delay: Duration) -> Server {
+    let base = Arc::new(std::sync::OnceLock::<String>::new());
+    let seen = Arc::clone(&base);
+    let server = Server::start(move |line| {
+        let base = seen.get().cloned().unwrap_or_default();
         let path = line.split(' ').nth(1).unwrap_or_default();
         let path = path.split('?').next().unwrap_or_default();
         if path == "/token" {
@@ -104,14 +115,41 @@ pub(crate) fn product_server(products: Vec<serde_json::Value>) -> Server {
         }
         let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
         match parts.as_slice() {
-            ["products", id] => products
-                .iter()
-                .find(|product| id.parse::<u64>().ok() == product["id"].as_u64())
-                .map_or_else(|| reply(404, "{}"), |body| reply(200, &body.to_string())),
+            ["products", id] => {
+                std::thread::sleep(delay);
+                products
+                    .iter()
+                    .find(|product| id.parse::<u64>().ok() == product["id"].as_u64())
+                    .map_or_else(
+                        || reply(404, "{}"),
+                        |body| reply(200, &body.to_string().replace("{BASE}", &base)),
+                    )
+            }
+            ["downlink", name] => reply(
+                200,
+                &serde_json::json!({
+                    "downlink": format!("{base}/files/{name}"),
+                    "checksum": null,
+                })
+                .to_string(),
+            ),
+            ["files", _] => {
+                let mut answer = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {FILE_SIZE}\r\nConnection: close\r\n\r\n"
+                )
+                .into_bytes();
+                answer.resize(answer.len() + FILE_SIZE as usize, 0);
+                answer
+            }
             _ => reply(404, "{}"),
         }
-    })
+    });
+    let _ = base.set(server.base.clone());
+    server
 }
+
+/// The size of every installer the fake GOG serves.
+pub(crate) const FILE_SIZE: u64 = 7340032;
 
 pub(crate) const USER: u64 = 1001;
 
@@ -125,8 +163,12 @@ pub(crate) fn native_product(id: u64, title: &str, version: &str) -> serde_json:
             "os": "linux",
             "language": "en",
             "version": version,
-            "total_size": 7340032,
-            "files": [{"id": "f", "size": 7340032, "downlink": "https://api.gog.com/x"}],
+            "total_size": FILE_SIZE,
+            "files": [{
+                "id": "f",
+                "size": FILE_SIZE,
+                "downlink": format!("{{BASE}}/downlink/game_{id}.sh"),
+            }],
         }]},
         "expanded_dlcs": [],
     })

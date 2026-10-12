@@ -26,6 +26,8 @@ use crate::ui::{accent_base, secondary_button};
 /// What a logged-out update that can't finish from saved packages says.
 pub(crate) const LOGGED_OUT: &str = "Log in to GOG first, in Settings.";
 
+const CANCELED: &str = "Update canceled.";
+
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +62,7 @@ impl Failure {
             Self::Canceled { journal: true } => {
                 format!("Update interrupted. Use Finish update on {name} to finish it.")
             }
-            Self::Canceled { journal: false } => "Update canceled.".to_owned(),
+            Self::Canceled { journal: false } => CANCELED.to_owned(),
             Self::Failed(error) => error.clone(),
         }
     }
@@ -179,12 +181,16 @@ impl Page {
         self.status = format!("Checking {} with GOG...", self.name);
         let generation = self.next_generation();
         let (paths, name) = (self.paths.clone(), self.name.clone());
+        // Planning is work too: Back waits for it, Cancel stops it, and
+        // closing the window asks first.
+        let token = Token::new();
+        self.token = Some(token.clone());
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
                     let client =
                         wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
-                    plan_with(&paths, &keyring(), client, &name, &Token::new())
+                    plan_with(&paths, &keyring(), client, &name, &token)
                 })
                 .await
                 .map_err(|error| error.to_string())?
@@ -231,6 +237,7 @@ impl Page {
             Event::Back => self.back(),
             Event::Planned(generation, result) if generation == self.generation => {
                 self.status.clear();
+                self.token = None;
                 match result {
                     Ok(Planned::UpToDate) => {
                         self.note = Some("Up to date.".to_owned());
@@ -246,11 +253,11 @@ impl Page {
                 Task::none()
             }
             Event::Update if self.step == Step::Review => self.start(),
-            Event::Cancel if self.step == Step::Working => {
+            Event::Cancel if matches!(self.step, Step::Planning | Step::Working) => {
                 self.cancel(false);
                 Task::none()
             }
-            Event::Force if self.step == Step::Working => {
+            Event::Force if matches!(self.step, Step::Planning | Step::Working) => {
                 self.cancel(true);
                 Task::none()
             }
@@ -369,7 +376,7 @@ impl Page {
                     .on_press(Event::Update)
                     .into()
             }),
-            Step::Working => self.token.as_ref().map(|token| {
+            Step::Planning | Step::Working => self.token.as_ref().map(|token| {
                 let (label, event) = if token.is_canceled() {
                     ("Force stop", Event::Force)
                 } else {
@@ -382,7 +389,6 @@ impl Page {
                     .on_press(Event::BackToLibrary)
                     .into(),
             ),
-            Step::Planning => None,
         };
         if let Some(footer) = footer {
             page = page.push(container(footer).padding(12).width(Fill).style(move |_| {
@@ -401,6 +407,8 @@ fn keyring() -> SecretServiceKeyring {
 
 /// Plans updating `name`. Logged out, a game whose interrupted update has
 /// its packages saved can still finish; anything else needs the login.
+/// GOG's answers can't be interrupted, so a cancel takes effect once they
+/// arrive, and the plan is then dropped.
 pub(crate) fn plan_with(
     paths: &Paths,
     keyring: &dyn Keyring,
@@ -410,7 +418,11 @@ pub(crate) fn plan_with(
 ) -> Result<Planned, String> {
     let mut session = Session::open(paths, keyring, client).map_err(|error| error.to_string())?;
     let logged_out = session.is_none();
-    match update::plan(paths, session.as_mut(), name, Options::default(), token) {
+    let planned = update::plan(paths, session.as_mut(), name, Options::default(), token);
+    if token.is_canceled() {
+        return Err(CANCELED.to_owned());
+    }
+    match planned {
         Ok(Plan::UpToDate { .. }) => Ok(Planned::UpToDate),
         Ok(Plan::Update(pending)) => Ok(Planned::Update(Box::new(pending))),
         Err(error)
@@ -901,6 +913,65 @@ mod tests {
         assert!(app.closing);
         let Some(super::super::Page::GogUpdate(page)) = &app.flow else {
             panic!("the page stays until its work ends");
+        };
+        assert!(page.token.as_ref().unwrap().is_canceled());
+    }
+
+    #[test]
+    fn canceling_while_gog_answers_drops_the_plan() {
+        let (root, paths) = setup();
+        native_game(&paths, root.path(), "rimworld", RIMWORLD, "1.0", false);
+        let keyring = keyring();
+        save_login(&paths, &keyring);
+        let server = crate::gog_fake::product_server_slow(
+            vec![native_product(RIMWORLD, "RimWorld", "1.1")],
+            std::time::Duration::from_millis(300),
+        );
+        let token = Token::new();
+        let result = std::thread::scope(|scope| {
+            let (paths, server, token) = (&paths, &server, &token);
+            let worker =
+                scope.spawn(move || plan_with(paths, &keyring, server.client(), "rimworld", token));
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !server
+                .requests()
+                .iter()
+                .any(|line| line.contains("/products/"))
+            {
+                assert!(Instant::now() < deadline, "GOG was never asked");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            token.cancel();
+            worker.join().unwrap()
+        });
+        assert_eq!(result.unwrap_err(), "Update canceled.");
+    }
+
+    #[test]
+    fn planning_is_work_for_back_cancel_and_close() {
+        let (_root, paths) = setup();
+        let (mut page, _) = Page::new(paths.clone(), "rimworld".to_owned());
+        assert!(page.busy());
+        let _ = page.update(Event::Back);
+        assert!(page.take_action().is_none(), "Back waits for planning");
+        let _ = page.update(Event::Cancel);
+        assert!(page.token.as_ref().unwrap().is_canceled());
+        assert_eq!(page.status, "Canceling...");
+        let generation = page.generation;
+        let _ = page.update(Event::Planned(generation, Err(CANCELED.to_owned())));
+        assert!(!page.busy());
+        assert_eq!(page.error.as_deref(), Some("Update canceled."));
+        let _ = page.update(Event::Back);
+        assert!(matches!(page.take_action(), Some(Action::Library { .. })));
+
+        let (page, _) = Page::new(paths.clone(), "rimworld".to_owned());
+        let mut app = crate::App::boot(paths).0;
+        app.flow = Some(super::super::Page::GogUpdate(Box::new(page)));
+        let _ = app.update(crate::Message::Window(iced::window::Event::CloseRequested));
+        assert!(app.close_prompt, "closing while planning asks first");
+        let _ = app.update(crate::Message::CancelAndClose);
+        let Some(super::super::Page::GogUpdate(page)) = &app.flow else {
+            panic!("the page stays until planning ends");
         };
         assert!(page.token.as_ref().unwrap().is_canceled());
     }
