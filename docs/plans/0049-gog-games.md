@@ -721,8 +721,9 @@ Written for the answers above.
   anything changes: `This GOG package has a setup script wineo doesn't
   support.`
 - **Space.** After downloading and before changing anything, wineo sums the
-  zip's unpacked sizes for every package, plus the staging copies and the
-  assembled split files, and refuses with the sizes when the filesystem is
+  zip's unpacked sizes for every package plus the assembled split files
+  (staging shares the folder's filesystem, so it's moved, not copied, into
+  place), and refuses with the sizes when the filesystem is
   short. Before downloading it shows the download size and an unpacked
   estimate labeled as one.
 
