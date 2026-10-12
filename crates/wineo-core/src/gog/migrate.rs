@@ -63,6 +63,13 @@ pub enum MigrateError {
         gog_id: String,
         other: String,
     },
+    /// A config recording the game that wineo can't load.
+    #[error("{name} records GOG game {gog_id} but can't be loaded: {detail}")]
+    Unloadable {
+        name: String,
+        gog_id: String,
+        detail: String,
+    },
     #[error("{folder} holds the state of GOG game {other}, not {gog_id}.")]
     StateOtherGame {
         folder: PathBuf,
@@ -898,9 +905,21 @@ fn match_environment(
         .collect();
     let mut by_id = Vec::new();
     let mut by_paths = Vec::new();
+    let mut unloadable = Vec::new();
     for name in environment::names(paths)? {
-        let Ok(environment) = Environment::load(paths, &name) else {
-            continue;
+        let environment = match Environment::load(paths, &name) {
+            Ok(environment) => environment,
+            Err(error) => {
+                // One that still reads as TOML naming this game is this
+                // game's, so it can't be skipped; it can't be attached
+                // either. A file that isn't TOML at all can't say, so it
+                // is skipped, which is a known limit.
+                if recorded_gog_id(paths, &name).as_deref() == Some(game.id.as_str()) {
+                    by_id.push(name.clone());
+                    unloadable.push((name, error.to_string()));
+                }
+                continue;
+            }
         };
         if environment.config.gog_id.as_deref() == Some(game.id.as_str()) {
             by_id.push(name);
@@ -915,6 +934,14 @@ fn match_environment(
     match by_id.len() {
         0 => {}
         1 => {
+            if let Some((name, detail)) = unloadable.pop() {
+                return Err(MigrateError::Unloadable {
+                    name,
+                    gog_id: game.id.clone(),
+                    detail,
+                }
+                .into());
+            }
             return Ok(Found::Existing {
                 name: by_id.remove(0),
                 gog_id: Some(game.id.clone()),
@@ -938,6 +965,17 @@ fn match_environment(
         }
         _ => Err(ambiguous(by_paths.into_iter().map(|(name, _)| name).collect()).into()),
     }
+}
+
+/// The `gog_id` a config records, read as plain TOML.
+fn recorded_gog_id(paths: &Paths, name: &str) -> Option<String> {
+    fs::read_to_string(paths.environment_config(name))
+        .ok()?
+        .parse::<toml_edit::DocumentMut>()
+        .ok()?
+        .get("gog_id")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// Whether `environment`'s default target runs `exe`, and for a Windows

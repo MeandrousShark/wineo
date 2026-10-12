@@ -1202,3 +1202,51 @@ fn a_windows_environment_is_found_even_when_heroic_s_runner_is_unusable() {
     assert_eq!(fx.state(&folder).unwrap().owner.as_deref(), Some("disco"));
     heroic.assert_unchanged();
 }
+
+#[test]
+fn a_config_recording_the_game_that_cannot_be_loaded_is_refused_by_name() {
+    let mut fx = Fixture::new();
+    let folder = fx.rimworld();
+    fx.native("rimworld", &folder.join("start.sh"), "");
+    // Valid TOML, but a Wine environment with no arch doesn't load.
+    fx.environment(
+        "broken",
+        &format!(
+            "schema_version = 1\nrunner = \"fake\"\nprefix = \"/p\"\ngog_id = \"{RIMWORLD}\"\n"
+        ),
+    );
+    let heroic = fx.heroic_files();
+    let error = migrate_error(fx.plan(RIMWORLD));
+    assert!(
+        matches!(&error, MigrateError::Unloadable { name, .. } if name == "broken"),
+        "{error}"
+    );
+    assert!(
+        error
+            .to_string()
+            .starts_with("broken records GOG game 1094900565 but can't be loaded: ")
+    );
+
+    // It counts toward more than one match.
+    fx.native(
+        "tracked",
+        &fx.path("x/run.sh"),
+        &format!("gog_id = \"{RIMWORLD}\"\n"),
+    );
+    assert!(matches!(
+        migrate_error(fx.plan(RIMWORLD)),
+        MigrateError::Ambiguous { names, .. } if names == ["broken", "tracked"]
+    ));
+    fs::remove_file(fx.paths.environment_config("tracked")).unwrap();
+
+    // A file that isn't TOML at all can't say which game it is, so it's
+    // skipped.
+    fx.environment("broken", &format!("gog_id = \"{RIMWORLD}\" [[[ not toml"));
+    let migration = fx.migration(RIMWORLD);
+    assert!(matches!(
+        migration.target(),
+        Target::Existing { name, .. } if name == "rimworld"
+    ));
+    assert!(fx.state(&folder).is_none());
+    heroic.assert_unchanged();
+}
