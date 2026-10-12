@@ -997,6 +997,22 @@ Settled by the maintainer on 2026-10-11, before step 5:
   files. Staging shares the game folder's filesystem and publishing moves
   staged files into place, so the staging copies no longer count twice.
 
+Chosen during step 5:
+
+- **Implied folders are recorded.** A parent folder the zip only implies
+  is created `0o755` and recorded as a directory entry, so every folder
+  staging creates is in the winning entries.
+- **Recorded modes.** Files are `0o755` when the package gives any execute
+  bit and `0o644` otherwise, directories `0o755`, and symlinks `0o777`, set
+  explicitly so the umask can't change them. An assembled split file takes
+  the package's mode for its path if it ships one, else `0o644`, like the
+  script's `cat >`.
+- **Symlink targets** must be relative and resolve inside the game folder,
+  following other links in the package, with Linux's limit of 40 links. A
+  target that doesn't exist is allowed.
+- **Split pieces** must still be the files staging wrote (same inode and
+  size) when they're joined, so nothing swapped in between gets copied in.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,
