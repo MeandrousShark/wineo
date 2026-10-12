@@ -859,7 +859,7 @@ Written for the answers above.
   the reason. `--check` with `--reinstall` is a usage error (exit 2).
   `--all --dry-run` previews every game. Without a terminal, a migration or
   update that would ask for confirmation needs `--yes`, like other
-  commands, and exits 2 without it.
+  commands, and exits 1 without it (amended after step 8a).
 - **Outcomes:** `Already migrated.` and `Up to date.` are no-ops that exit
   0. A batch continues past a failed game and exits 1 with a summary.
   Cancel exits 130 and leaves the journal when files had changed.
@@ -1212,6 +1212,18 @@ Chosen during step 8a (for the maintainer to review):
   (DETAIL).`, `A Windows game needs a runner.`, and `WHAT changed while
   migrating; run it again.`, where WHAT is Heroic's files, the game folder,
   or the environment's name.
+
+Settled by the maintainer on 2026-10-12, after step 8a:
+
+- **Needing `--yes` without a terminal exits 1,** like `prune`, `runners
+  rm`, `builds rm`, and `import heroic`, with `error: ... needs --yes`. The
+  Commands section's "exits 2" assumed those commands did that; they
+  don't, and exit 2 stays for a wrong command line.
+- **Migrated games get desktop entries** outside portable roots, like
+  Heroic import.
+- **A DLC that's up to date** says `none` in JSON, like a game's `update`.
+- Step 8a's other choices stand as recorded, including the secret prompt
+  fixes and the wording.
 
 ## Implementation sequence
 
