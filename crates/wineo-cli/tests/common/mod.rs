@@ -17,6 +17,9 @@ use wineo_core::runtime::Runtime;
 #[path = "../../../wineo-core/tests/common/runners.rs"]
 mod runners;
 pub use runners::{FAKE_GAMEMODERUN, FAKE_UMU, FAKE_WINE, FAKE_WINESERVER};
+pub mod gog_api;
+pub mod gog_world;
+pub mod pty;
 #[allow(unused_imports)]
 pub mod snapshot;
 pub mod steam;
@@ -110,6 +113,7 @@ impl Fixture {
             .env_remove("WINEO_STEAMGRIDDB_KEY")
             .env_remove("WINEO_STEAM_KEY")
             .env_remove("WINEO_TEST_STEAM_API")
+            .env_remove("WINEO_TEST_GOG_API")
             // No session bus, so nothing a test runs can reach the real keyring.
             .env(
                 "DBUS_SESSION_BUS_ADDRESS",
@@ -127,6 +131,21 @@ impl Fixture {
         let mut command = self.wineo();
         command.env("HOME", self.root.path());
         command
+    }
+
+    /// `wineo_at_home` talking to a fake GOG instead of the real one.
+    pub fn gog_command(&self, api: &gog_api::GogApi) -> Command {
+        let mut command = self.wineo_at_home();
+        command.env("WINEO_TEST_GOG_API", &api.base);
+        command
+    }
+
+    /// Runs wineo at home against a fake GOG.
+    pub fn gog(&self, api: &gog_api::GogApi, args: &[&str]) -> Output {
+        self.gog_command(api)
+            .args(args)
+            .output()
+            .expect("wineo should start")
     }
 
     pub fn run_at_home(&self, args: &[&str]) -> Output {

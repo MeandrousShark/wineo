@@ -1,0 +1,287 @@
+//! A local HTTP server standing in for GOG. Debug builds of wineo send every
+//! GOG request to the server named by `WINEO_TEST_GOG_API`, where all the
+//! services share one base, so requests are routed by path.
+
+use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use serde_json::{Value, json};
+
+/// What the server answers with. Tests change it between runs.
+pub struct Config {
+    /// The only authorization code the token endpoint accepts.
+    pub code: String,
+    pub user_id: u64,
+    /// Refresh tokens are refused with `invalid_grant`.
+    pub revoked: bool,
+    /// The token endpoint fails with this status instead of answering.
+    pub token_status: Option<u16>,
+    /// Owned games as `getFilteredProducts` lists them.
+    pub owned: Vec<Value>,
+    /// The owned list fails with this status instead of answering.
+    pub owned_status: Option<u16>,
+    /// Product details by id. A product not listed is a 404.
+    pub products: BTreeMap<u64, Value>,
+    /// Products whose details fail with this status.
+    pub product_status: BTreeMap<u64, u16>,
+    /// Windows build lists by product id.
+    pub builds: BTreeMap<u64, Value>,
+    renewals: u32,
+}
+
+pub const CODE: &str = "GoodCode-SECRET-1234";
+pub const USER: u64 = 4242;
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            code: CODE.to_owned(),
+            user_id: USER,
+            revoked: false,
+            token_status: None,
+            owned: Vec::new(),
+            owned_status: None,
+            products: BTreeMap::new(),
+            product_status: BTreeMap::new(),
+            builds: BTreeMap::new(),
+            renewals: 0,
+        }
+    }
+}
+
+pub struct GogApi {
+    pub base: String,
+    config: Arc<Mutex<Config>>,
+    requests: Arc<Mutex<Vec<String>>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+/// The address GOG's login ends on, with `code` in it.
+pub fn success_address(code: &str) -> String {
+    format!("https://embed.gog.com/on_login_success?origin=client&code={code}")
+}
+
+/// An owned game as the list shows it.
+pub fn owned_game(id: u64, title: &str, linux: bool, windows: bool) -> Value {
+    json!({
+        "id": id,
+        "title": title,
+        "image": format!("//images.example/{id}"),
+        "worksOn": {"Windows": windows, "Mac": false, "Linux": linux},
+        "slug": title.to_lowercase().replace(' ', "_"),
+        "dlcCount": 0,
+    })
+}
+
+/// One installer or patch in a product's details.
+pub fn installer(os: &str, language: &str, version: &str) -> Value {
+    json!({
+        "id": format!("installer_{os}_{language}"),
+        "name": "Installer",
+        "os": os,
+        "language": language,
+        "language_full": language,
+        "version": version,
+        "total_size": 1,
+        "files": [{"id": format!("{language}1installer0"), "size": 1, "downlink": "http://unused.example/link"}],
+    })
+}
+
+/// A product's details with the given installers and expanded DLC.
+pub fn product(id: u64, title: &str, installers: &[Value], dlcs: &[Value]) -> Value {
+    json!({
+        "id": id,
+        "title": title,
+        "slug": title.to_lowercase().replace(' ', "_"),
+        "game_type": "game",
+        "content_system_compatibility": {"windows": true, "osx": false, "linux": true},
+        "languages": {"en": "English"},
+        "images": {},
+        "downloads": {"installers": installers, "patches": []},
+        "dlcs": {"products": dlcs.iter().map(|dlc| json!({"id": dlc["id"]})).collect::<Vec<_>>()},
+        "expanded_dlcs": dlcs,
+    })
+}
+
+/// A Windows build list, newest first, each as `(build id, branch)`.
+pub fn builds(items: &[(&str, Option<&str>)]) -> Value {
+    json!({
+        "items": items.iter().map(|(id, branch)| json!({
+            "build_id": id,
+            "version_name": "1.0",
+            "branch": branch,
+            "date_published": "2026-01-01T00:00:00+0000",
+            "generation": 2,
+            "link": "http://unused.example/manifest",
+        })).collect::<Vec<_>>(),
+        "has_private_branches": false,
+    })
+}
+
+fn reply(status: u16, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status} Reply\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+fn query(target: &str, name: &str) -> Option<String> {
+    target
+        .split_once('?')?
+        .1
+        .split('&')
+        .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
+        .map(str::to_owned)
+}
+
+fn answer(config: &mut Config, target: &str) -> String {
+    let path = target.split('?').next().unwrap_or_default();
+    let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    match segments.as_slice() {
+        ["token"] => {
+            if let Some(status) = config.token_status {
+                return reply(status, "{}");
+            }
+            let granted = match query(target, "grant_type").as_deref() {
+                Some("authorization_code") => {
+                    query(target, "code").as_deref() == Some(&config.code)
+                }
+                Some("refresh_token") => !config.revoked,
+                _ => false,
+            };
+            if !granted {
+                return reply(400, r#"{"error":"invalid_grant"}"#);
+            }
+            config.renewals += 1;
+            reply(
+                200,
+                &json!({
+                    "access_token": format!("ACCESS-SECRET-{}", config.renewals),
+                    "refresh_token": format!("REFRESH-SECRET-{}", config.renewals),
+                    "expires_in": 3600,
+                    "user_id": config.user_id.to_string(),
+                })
+                .to_string(),
+            )
+        }
+        ["account", "getFilteredProducts"] => match config.owned_status {
+            Some(status) => reply(status, "{}"),
+            None => reply(
+                200,
+                &json!({"page": 1, "totalPages": 1, "products": config.owned}).to_string(),
+            ),
+        },
+        ["products", id] => {
+            let Ok(id) = id.parse::<u64>() else {
+                return reply(404, "{}");
+            };
+            if let Some(status) = config.product_status.get(&id) {
+                return reply(*status, "{}");
+            }
+            match config.products.get(&id) {
+                Some(product) => reply(200, &product.to_string()),
+                None => reply(404, "{}"),
+            }
+        }
+        ["products", id, "os", "windows", "builds"] => {
+            match id.parse::<u64>().ok().and_then(|id| config.builds.get(&id)) {
+                Some(builds) => reply(200, &builds.to_string()),
+                None => reply(404, "{}"),
+            }
+        }
+        _ => reply(404, "{}"),
+    }
+}
+
+impl GogApi {
+    pub fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let config = Arc::new(Mutex::new(Config::default()));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let (config, requests, stop) = (config.clone(), requests.clone(), stop.clone());
+            thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut request = Vec::new();
+                    let mut chunk = [0_u8; 1024];
+                    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        match stream.read(&mut chunk) {
+                            Ok(0) | Err(_) => break,
+                            Ok(read) => request.extend_from_slice(&chunk[..read]),
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&request);
+                    let line = text.lines().next().unwrap_or_default().to_owned();
+                    requests.lock().unwrap().push(line.clone());
+                    let target = line.split(' ').nth(1).unwrap_or("/");
+                    let response = answer(&mut config.lock().unwrap(), target);
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            })
+        };
+        Self {
+            base,
+            config,
+            requests,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// A server with `owned` games and their `products` already set up.
+    pub fn with_library(owned: Vec<Value>, products: Vec<Value>) -> Self {
+        let api = Self::start();
+        api.with(|config| {
+            config.owned = owned;
+            for product in products {
+                config
+                    .products
+                    .insert(product["id"].as_u64().unwrap(), product);
+            }
+        });
+        api
+    }
+
+    pub fn with(&self, change: impl FnOnce(&mut Config)) {
+        change(&mut self.config.lock().unwrap());
+    }
+
+    /// The request lines seen so far, like `GET /path?query HTTP/1.1`.
+    pub fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
+
+    /// How many requests went to the owned list.
+    pub fn owned_requests(&self) -> usize {
+        self.requests()
+            .iter()
+            .filter(|line| line.contains("/account/getFilteredProducts"))
+            .count()
+    }
+}
+
+impl Drop for GogApi {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
