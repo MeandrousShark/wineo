@@ -1029,21 +1029,40 @@ fn sync_dir(dir: &Path) -> Result<()> {
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    static FAILPOINT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    /// The armed point, and how many times it passes before it fails.
+    static FAILPOINT: std::cell::Cell<Option<(&'static str, usize)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// Makes the next write on this thread fail at `at`, once.
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_failpoint(at: Option<&'static str>) {
-    FAILPOINT.with(|point| point.set(at));
+    FAILPOINT.with(|point| point.set(at.map(|at| (at, 0))));
 }
 
-fn failpoint(_at: &str) -> Result<()> {
+/// Makes the write on this thread fail at `at` after passing it `skip`
+/// times, once, so a test can stop between any two writes of a loop.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_failpoint_nth(at: &'static str, skip: usize) {
+    FAILPOINT.with(|point| point.set(Some((at, skip))));
+}
+
+/// Whether a failpoint is still waiting to fire on this thread.
+#[cfg(any(test, feature = "test-support"))]
+pub fn failpoint_armed() -> bool {
+    FAILPOINT.with(|point| point.get().is_some())
+}
+
+pub(crate) fn failpoint(_at: &str) -> Result<()> {
     #[cfg(any(test, feature = "test-support"))]
     FAILPOINT.with(|point| {
-        if point.get() == Some(_at) {
-            point.set(None);
-            bail!("injected GOG folder interruption at {_at}");
+        match point.get() {
+            Some((at, 0)) if at == _at => {
+                point.set(None);
+                bail!("injected GOG folder interruption at {_at}");
+            }
+            Some((at, skip)) if at == _at => point.set(Some((at, skip - 1))),
+            _ => {}
         }
         Ok(())
     })?;
