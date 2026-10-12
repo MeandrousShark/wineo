@@ -86,6 +86,38 @@ impl Fixture {
         self.write_installed(&[]);
     }
 
+    /// A Flatpak Heroic's config folder under the fixture's home.
+    pub fn heroic_flatpak(&self) -> PathBuf {
+        self.root
+            .path()
+            .join(".var/app/com.heroicgameslauncher.hgl/config/heroic")
+    }
+
+    /// A Flatpak Heroic that also lists RimWorld, at `folder`. The default
+    /// is where the native Heroic from `heroic_rimworld` has it.
+    pub fn flatpak_lists_rimworld(&self, folder: &Path) {
+        let heroic = self.heroic_flatpak();
+        fs::create_dir_all(heroic.join("gog_store")).unwrap();
+        fs::create_dir_all(heroic.join("store_cache")).unwrap();
+        fs::write(heroic.join("config.json"), r#"{"defaultSettings":{}}"#).unwrap();
+        fs::copy(
+            self.heroic().join("store_cache/gog_library.json"),
+            heroic.join("store_cache/gog_library.json"),
+        )
+        .unwrap();
+        fs::write(
+            heroic.join("gog_store/installed.json"),
+            json!({"installed": [{
+                "platform": "linux", "executable": "", "install_path": folder,
+                "install_size": "5.03 GiB", "is_dlc": false, "version": "1.6.4871 rev588",
+                "appName": RIMWORLD.to_string(), "installedDLCs": RIMWORLD_DLC,
+                "language": "en", "versionEtag": "", "buildId": "", "pinnedVersion": false,
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+    }
+
     fn installed_path(&self) -> PathBuf {
         self.heroic().join("gog_store/installed.json")
     }

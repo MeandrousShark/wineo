@@ -176,6 +176,14 @@ fn settle(mut listed: Vec<(&HeroicSource, HeroicGogGame)>) -> HeroicGogLookup<'_
     if listed.is_empty() {
         return HeroicGogLookup::NotInstalled;
     }
+    // The sources arrive in a stable order, which breaks any remaining tie.
+    // A conflict lists the preferred config first too.
+    listed.sort_by_cached_key(|(source, _)| {
+        (
+            matches!(source.origin(), HeroicOrigin::Flatpak),
+            Reverse(modified(source)),
+        )
+    });
     let folders: Vec<PathBuf> = listed
         .iter()
         .map(|(_, game)| {
@@ -192,13 +200,6 @@ fn settle(mut listed: Vec<(&HeroicSource, HeroicGogGame)>) -> HeroicGogLookup<'_
                 .collect(),
         });
     }
-    // The sources arrive in a stable order, which breaks any remaining tie.
-    listed.sort_by_cached_key(|(source, _)| {
-        (
-            matches!(source.origin(), HeroicOrigin::Flatpak),
-            Reverse(modified(source)),
-        )
-    });
     let mut listed = listed.into_iter();
     let (source, game) = listed.next().expect("checked not empty");
     HeroicGogLookup::Found(HeroicGogEntry {
@@ -655,7 +656,8 @@ mod tests {
             &[("7", &one), ("8", &one)],
         );
         let flatpak = config(root.path(), "f", HeroicOrigin::Flatpak, &[("7", &two)]);
-        let sources = [native, flatpak];
+        // Native comes first in the message however the configs are ordered.
+        let sources = [flatpak, native];
 
         let listing = gog_games(&sources);
         let ids: Vec<_> = listing.games.iter().map(|e| e.game.id.as_str()).collect();
