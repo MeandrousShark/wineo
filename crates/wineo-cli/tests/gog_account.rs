@@ -653,3 +653,47 @@ fn logging_in_works_in_a_portable_folder() {
     // The login is the host's, so it shows without --portable too.
     assert_success(&f.gog(&api, &["import", "gog", "--list"]));
 }
+
+#[test]
+fn the_fake_gog_checks_tokens_like_gog_does() {
+    let api = library();
+    let owned = "/account/getFilteredProducts?mediaType=1&page=1";
+    let builds = "/products/1771589310/os/windows/builds?generation=2";
+    api.with(|config| {
+        config.builds.insert(DISCO, gog_api::builds(&[("1", None)]));
+    });
+
+    // No token, and a token nobody was given.
+    for target in [owned, builds] {
+        assert_eq!(api.get(target, None).0, 401, "{target} without a token");
+        assert_eq!(
+            api.get(target, Some("made-up")).0,
+            401,
+            "{target} with a bad one"
+        );
+    }
+
+    // A refresh token that was never handed out, and the right code.
+    let refresh = |token: &str| {
+        api.get(
+            &format!("/token?grant_type=refresh_token&refresh_token={token}"),
+            None,
+        )
+    };
+    assert_eq!(refresh("made-up").0, 400);
+    let (status, body) = api.get(
+        &format!("/token?grant_type=authorization_code&code={CODE}"),
+        None,
+    );
+    assert_eq!(status, 200);
+    let tokens: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let access = tokens["access_token"].as_str().unwrap();
+    for target in [owned, builds] {
+        assert_eq!(api.get(target, Some(access)).0, 200, "{target}");
+    }
+
+    // Renewing hands out a new refresh token, and the old one stops working.
+    let old = tokens["refresh_token"].as_str().unwrap();
+    assert_eq!(refresh(old).0, 200);
+    assert_eq!(refresh(old).0, 400);
+}

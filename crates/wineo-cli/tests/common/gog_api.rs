@@ -340,6 +340,30 @@ impl GogApi {
         change(&mut self.config.lock().unwrap());
     }
 
+    /// Asks the server directly, the way a client would. The status and body.
+    pub fn get(&self, target: &str, bearer: Option<&str>) -> (u16, String) {
+        use std::io::{Read, Write};
+        let mut stream =
+            std::net::TcpStream::connect(self.base.trim_start_matches("http://")).unwrap();
+        let auth = bearer
+            .map(|token| format!("Authorization: Bearer {token}\r\n"))
+            .unwrap_or_default();
+        write!(
+            stream,
+            "GET {target} HTTP/1.1\r\nHost: fake\r\n{auth}Connection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        let status = response.split(' ').nth(1).unwrap().parse().unwrap();
+        let body = response
+            .split("\r\n\r\n")
+            .nth(1)
+            .unwrap_or_default()
+            .to_owned();
+        (status, body)
+    }
+
     /// The request lines seen so far, like `GET /path?query HTTP/1.1`.
     pub fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
