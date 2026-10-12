@@ -1465,3 +1465,33 @@ fn a_launch_claiming_first_wins_the_race() {
         .unwrap();
     assert_finished_v2(&fx);
 }
+
+#[test]
+fn failed_and_unavailable_products_are_carried_over_without_downloading() {
+    let fx = Fixture::new();
+    fx.offer(RIMWORLD, "RimWorld", "2", &[file("start.sh", "s")]);
+    fx.offer(ROYALTY, "Royalty", "2", &[file("r", "r")]);
+    fx.offer(IDEOLOGY, "Ideology", "2", &[file("i", "i")]);
+    fx.migrated(&[(RIMWORLD, Some("1")), (ROYALTY, None), (IDEOLOGY, None)]);
+    let mut state = fx.state();
+    let products = &mut state.committed.as_mut().unwrap().products;
+    products[1].status = ProductStatus::Failed;
+    products[2].status = ProductStatus::Unavailable;
+    fx.save(&state);
+    let pending = fx.pending(true, Options::default());
+    assert_eq!(pending.products()[1].download_size, 0);
+    fx.apply_with(true, &pending, &Token::new(), |_| {})
+        .unwrap();
+    assert_eq!(fx.downloads(), 1);
+    assert!(!fx.folder.join("r").exists() && !fx.folder.join("i").exists());
+    let committed = fx.state().committed.unwrap();
+    assert_eq!(committed.products[1].status, ProductStatus::Failed);
+    assert_eq!(committed.products[2].status, ProductStatus::Unavailable);
+    assert_eq!(committed.products[1].version, None);
+    assert!(
+        committed
+            .files
+            .iter()
+            .all(|entry| entry.product == RIMWORLD)
+    );
+}

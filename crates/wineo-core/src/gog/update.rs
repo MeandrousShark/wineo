@@ -1,8 +1,9 @@
-//! Whether a GOG game has an update on GOG, without applying it.
+//! Whether a GOG game has an update on GOG, and, in `apply` and `publish`,
+//! applying a native game's update.
 //!
 //! Status is computed from a folder's `[committed]` state, even while a
 //! journal is present, so a half-finished update never hides what is
-//! installed. Nothing here touches the game's files. The one write is
+//! installed. Checking never touches the game's files. Its one write is
 //! recording a build another tool installed (see `adopt_build`).
 //!
 //! State files are read without their lock: they are replaced atomically,
@@ -272,8 +273,9 @@ fn named_paths(paths: &Paths, name: &str) -> Vec<PathBuf> {
     named
 }
 
-/// Checks every game folder an environment owns whose `gog_id` matches.
-/// Ownerless folders are skipped. A game that can't be checked is reported
+/// Checks every game folder an environment owns whose `gog_id` matches, and
+/// an ownerless folder of its game that an environment's targets run from,
+/// without claiming it. Other ownerless folders are skipped. A game that can't be checked is reported
 /// in `errors` and the rest carry on.
 pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
     let paths = session.paths().clone();
