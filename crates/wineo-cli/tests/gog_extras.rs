@@ -56,7 +56,10 @@ fn a_migration_imports_gogs_playtime() {
     assert!(text.contains("Imported 41 h of GOG playtime.\n"), "{text}");
     // GOG has no art for it, which isn't worth a line.
     assert!(!text.contains("Added "), "{text}");
-    assert_eq!(stderr(&out), "");
+    assert_eq!(
+        stderr(&out),
+        "Added a desktop entry for game in rimworld, with no icon\n"
+    );
     assert!(text.contains("Migrated RimWorld as rimworld."), "{text}");
 
     // It is only said once: the game is already migrated now.

@@ -297,8 +297,10 @@ pub fn plan(
             &state,
             &journal.target.language,
             &journal.target.products,
-            options.refresh,
-            options.read_only,
+            Check {
+                refresh: options.refresh,
+                read_only: options.read_only,
+            },
         )?;
         return Ok(Plan::Update(resolved.pending(
             name,
@@ -356,8 +358,10 @@ pub fn plan(
         &state,
         &committed.language,
         &committed.products,
-        refresh,
-        options.read_only,
+        Check {
+            refresh,
+            read_only: options.read_only,
+        },
     )?;
     let kind = if options.reinstall {
         JournalKind::Reinstall
@@ -508,13 +512,12 @@ fn resolve(
     state: &FolderState,
     language: &str,
     products: &[Product],
-    refresh: bool,
-    read_only: bool,
+    how: Check,
 ) -> Result<Resolved> {
     let gog_id = state
         .gog_id()
         .ok_or_else(|| anyhow::anyhow!("{name}'s GOG state names no game"))?;
-    let details = product::load_with(paths, session.client(), gog_id, refresh, !read_only)?;
+    let details = product::load_with(paths, session.client(), gog_id, how.refresh, !how.read_only)?;
     let warnings: Vec<String> = details.warning.into_iter().collect();
     let refuse = |why: String| UpdateError::NoInstaller {
         name: name.to_owned(),
