@@ -82,7 +82,7 @@ pub enum MigrateError {
     /// A new Windows environment's plan copies the prefix.
     #[error("A migrated game keeps Heroic's prefix where it is.")]
     PrefixCopied,
-    #[error("{0} changed while migrating. Run it again.")]
+    #[error("{0} changed while migrating; run it again.")]
     Changed(Changed),
 }
 

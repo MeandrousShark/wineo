@@ -1473,18 +1473,18 @@ fn a_changed_migration_says_what_changed() {
     let say = |what| MigrateError::Changed(what).to_string();
     assert_eq!(
         say(Changed::Heroic),
-        "Heroic's files changed while migrating. Run it again."
+        "Heroic's files changed while migrating; run it again."
     );
     assert_eq!(
         say(Changed::Folder),
-        "The game folder changed while migrating. Run it again."
+        "The game folder changed while migrating; run it again."
     );
     assert_eq!(
         say(Changed::Environment(Some("rimworld".to_owned()))),
-        "rimworld changed while migrating. Run it again."
+        "rimworld changed while migrating; run it again."
     );
     assert_eq!(
         say(Changed::Environment(None)),
-        "The environment changed while migrating. Run it again."
+        "The environment changed while migrating; run it again."
     );
 }
