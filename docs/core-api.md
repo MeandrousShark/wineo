@@ -153,6 +153,24 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
   while releasing locks. It doesn't record playtime or install declared verbs.
   `Launch::exec` retains CLI cwd-relative resolution; frontend
   `ExecResolution::ExplicitPaths` never consults the current directory.
+- GOG game folders: `launch::start` and `launch::exec` refuse a launch whose
+  game folder is mid-update, being updated, or has lost its state, before
+  any hook runs, and hold the folder's in-use lock for the whole run, so
+  updates refuse while it runs. `start` hands the lock to the supervisor.
+  An `exec` from a game folder holds it, and its launch and build locks,
+  until the prefix is idle by the rule a `start` run ends on, so a launcher
+  that starts the game and exits still counts, and only then sends
+  `ExecEvent::Exited` with the started program's status. Canceling during
+  that wait asks the prefix's programs to close, and forces them after the
+  stop timeout. If the frontend is killed during the wait, the locks are
+  released and the idle waiter keeps running until the prefix is idle,
+  holding nothing. The refusals are
+  `gog::folder::FolderError` variants: `MidUpdate`, `OwnerlessMidUpdate`,
+  `Updating`, `StateMissing`, `UnreadableFolder`, `Unreadable`, and
+  `OwnedByOther`. Canceling while waiting for a folder's lock returns
+  `Error::Canceled`. A frontend that runs its own launch flow calls
+  `launch::precheck` before side effects and holds the guards from
+  `launch::protect`, taken after the operation lock, for the whole run.
 - `winetricks::ensure(...)`: installs the environment's missing declared
   verbs in an existing prefix. `ensure_in(...)` builds a missing prefix first,
   then calls the locking `ensure`; its events are `EnsureEvent`.

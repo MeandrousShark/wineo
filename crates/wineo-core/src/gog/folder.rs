@@ -2,9 +2,14 @@
 //! last installed there, and a write-ahead journal while work is in flight.
 //!
 //! State files live in the host data dir, keyed by the SHA-256 of the
-//! folder's canonical path, and every change is made holding the folder's
-//! host-wide lock exclusively. Lock order: an environment's operation lock,
-//! then folder locks in key order, then config locks.
+//! folder's canonical path. Each folder has two host-wide locks: the state
+//! lock (`FolderLock`), held briefly, and every change to the state file is
+//! made holding it exclusively; and the in-use lock (`InUseLock`), held
+//! shared by a launch for its whole run and taken exclusively, without
+//! waiting, by update and migration.
+//!
+//! Lock order: an environment's operation lock, then in-use locks in key
+//! order, then state locks in key order, then config locks.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -21,6 +26,12 @@ use sha2::{Digest, Sha256};
 
 use crate::name;
 use crate::paths::Paths;
+
+mod in_use;
+mod protect;
+
+pub use in_use::{InUseGuard, InUseLock, lock_for_update};
+pub use protect::{folder_holding, precheck, protect};
 
 /// The state file format. A file with any other version is refused.
 pub const VERSION: u32 = 1;
@@ -378,9 +389,29 @@ pub enum FolderError {
     Unreadable { name: String, detail: String },
     #[error("Canceled.")]
     Canceled,
+    #[error(
+        "{name}'s GOG state is missing. Migrate it again with wineo import gog --game {gog_id}, or stop tracking it with wineo set {name} --unset gog_id."
+    )]
+    StateMissing { name: String, gog_id: String },
+    /// A launch found the folder's in-use lock held by an update or
+    /// migration.
+    #[error("{name}'s game folder is being updated.")]
+    Updating { name: String },
+    #[error("{name}'s game folder is mid-update. Finish it with wineo update {name}.")]
+    MidUpdate { name: String },
+    #[error(
+        "GOG game {gog_id}'s folder is mid-update. Migrate it again with wineo import gog --game {gog_id} and finish it."
+    )]
+    OwnerlessMidUpdate { gog_id: u64 },
+    /// An update or migration found something running from the folder.
+    #[error("Something is running from {name}'s game folder. Stop it first.")]
+    InUse { name: String },
+    /// A state file that would cover a launched path can't be read.
+    #[error("The GOG state for {folder} can't be checked: {detail}.")]
+    UnreadableFolder { folder: PathBuf, detail: String },
 }
 
-/// Holds a folder's lock until dropped.
+/// Holds a folder's state lock until dropped.
 pub struct FolderLock {
     file: File,
     folder: PathBuf,

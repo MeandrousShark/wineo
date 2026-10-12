@@ -639,6 +639,281 @@ fn cancel_escalates_a_stubborn_program_without_prefix_wide_killing() {
     assert!(!status.success());
 }
 
+/// A GOG game folder with a program in it, owned by `owner`.
+fn gog_game(f: &Fixture, owner: &str, mid_update: bool) -> PathBuf {
+    use wineo_core::gog::folder::{
+        Committed, FolderLock, FolderState, Journal, JournalKind, Platform, Target, Track,
+    };
+    let folder = fs::canonicalize(f.root.path())
+        .unwrap()
+        .join("Games/RimWorld");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join("game.exe"), "").unwrap();
+    let target = Target {
+        gog_id: 1094900565,
+        platform: Platform::Windows,
+        language: "en-US".to_owned(),
+        track: Track::Installer,
+        products: Vec::new(),
+    };
+    let state = FolderState {
+        committed: Some(Committed {
+            gog_id: target.gog_id,
+            platform: target.platform,
+            language: target.language.clone(),
+            track: target.track,
+            products: Vec::new(),
+            files: Vec::new(),
+        }),
+        journal: mid_update.then(|| Journal {
+            operation: "op".to_owned(),
+            kind: JournalKind::Update,
+            target,
+            packages: Vec::new(),
+            attempted: Vec::new(),
+        }),
+        ..FolderState::new(folder.clone(), Some(owner.to_owned()))
+    };
+    FolderLock::exclusive(&f.paths, &folder, &|| false)
+        .unwrap()
+        .write(&state)
+        .unwrap();
+    folder
+}
+
+#[test]
+fn exec_from_a_gog_folder_holds_it_until_the_program_exits() {
+    use wineo_core::gog::folder::{FolderError, lock_for_update};
+
+    let f = Fixture::built();
+    let folder = gog_game(&f, "rimworld", false);
+    let exe = folder.join("game.exe").display().to_string();
+    let token = Token::new();
+    let mut refused = None;
+    // Canceled, the prefix is asked to close, and the fake program exits
+    // cleanly when asked, so its status says nothing here.
+    launch::exec(
+        &f.paths,
+        "app",
+        &exe,
+        &[],
+        &BTreeMap::new(),
+        &token,
+        |event| {
+            if matches!(event, ExecEvent::Started) {
+                refused = Some(
+                    lock_for_update(&f.paths, &folder, "rimworld")
+                        .err()
+                        .and_then(|error| error.downcast::<FolderError>().ok()),
+                );
+                token.cancel();
+            }
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(refused, Some(Some(FolderError::InUse { .. }))),
+        "{refused:?}"
+    );
+    assert!(lock_for_update(&f.paths, &folder, "rimworld").is_ok());
+
+    let updating = lock_for_update(&f.paths, &folder, "rimworld").unwrap();
+    let error = launch::exec(
+        &f.paths,
+        "app",
+        &exe,
+        &[],
+        &BTreeMap::new(),
+        &Token::new(),
+        |_| {},
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "rimworld's game folder is being updated."
+    );
+    drop(updating);
+
+    gog_game(&f, "rimworld", true);
+    let mut started = false;
+    let error = launch::exec(
+        &f.paths,
+        "app",
+        &exe,
+        &[],
+        &BTreeMap::new(),
+        &Token::new(),
+        |event| started |= matches!(event, ExecEvent::Started),
+    )
+    .unwrap_err();
+    assert!(!started);
+    assert!(
+        matches!(
+            error.downcast_ref::<FolderError>(),
+            Some(FolderError::MidUpdate { name }) if name == "rimworld"
+        ),
+        "{error}"
+    );
+}
+
+/// Runs `handoff` from the GOG folder on a thread, returning once the
+/// program has handed off and exited.
+fn gog_handoff(
+    f: &Fixture,
+    folder: &Path,
+    token: &Token,
+) -> thread::JoinHandle<(std::process::ExitStatus, Vec<ExecEvent>)> {
+    let (paths, arg, token) = (f.paths.clone(), folder.display().to_string(), token.clone());
+    let exec = thread::spawn(move || {
+        let mut events = Vec::new();
+        let status = launch::exec(
+            &paths,
+            "app",
+            "handoff",
+            &[arg],
+            &BTreeMap::new(),
+            &token,
+            |event| events.push(event),
+        )
+        .unwrap();
+        (status, events)
+    });
+    // The fake program exits right after writing this.
+    wait_for(|| f.prefix.join("fake-pids").exists());
+    thread::sleep(Duration::from_millis(300));
+    exec
+}
+
+#[test]
+fn a_handoff_from_a_gog_folder_holds_it_until_the_prefix_is_idle() {
+    use wineo_core::gog::folder::{FolderError, lock_for_update};
+
+    let f = Fixture::built();
+    let folder = gog_game(&f, "rimworld", false);
+    let started = Instant::now();
+    let exec = gog_handoff(&f, &folder, &Token::new());
+    assert!(!exec.is_finished());
+    assert!(!f.prefix.join("handoff-done").exists());
+    assert!(matches!(
+        lock_for_update(&f.paths, &folder, "rimworld")
+            .unwrap_err()
+            .downcast_ref::<FolderError>(),
+        Some(FolderError::InUse { .. })
+    ));
+    let (status, events) = exec.join().unwrap();
+    // The fake wineserver -w returns once the handed-off program is done.
+    assert!(f.prefix.join("handoff-done").exists());
+    assert!(started.elapsed() >= Duration::from_secs(2));
+    assert!(status.success());
+    assert!(matches!(events.last(), Some(ExecEvent::Exited { code: 0 })));
+    assert!(lock_for_update(&f.paths, &folder, "rimworld").is_ok());
+}
+
+#[test]
+fn canceling_a_gog_wait_asks_the_prefix_to_close() {
+    let f = Fixture::built();
+    let folder = gog_game(&f, "rimworld", false);
+    let token = Token::new();
+    let exec = gog_handoff(&f, &folder, &token);
+    token.cancel();
+    let (status, events) = exec.join().unwrap();
+    // The started program's own status, though the wait was stopped.
+    assert!(status.success());
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ExecEvent::Stopping))
+    );
+    thread::sleep(Duration::from_millis(2500));
+    assert!(!f.prefix.join("handoff-done").exists());
+    assert!(wineo_core::gog::folder::lock_for_update(&f.paths, &folder, "rimworld").is_ok());
+}
+
+#[test]
+fn forcing_a_gog_wait_kills_the_prefix() {
+    let f = Fixture::built();
+    let folder = gog_game(&f, "rimworld", false);
+    let token = Token::new();
+    let exec = gog_handoff(&f, &folder, &token);
+    token.force();
+    let (status, events) = exec.join().unwrap();
+    assert!(status.success());
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ExecEvent::Killing))
+    );
+    assert!(!f.prefix.join("handoff-done").exists());
+    assert!(wineo_core::gog::folder::lock_for_update(&f.paths, &folder, "rimworld").is_ok());
+}
+
+#[test]
+fn a_gog_wait_that_cant_settle_says_so_even_when_canceled() {
+    let f = Fixture::built();
+    let folder = gog_game(&f, "rimworld", false);
+    let wineserver = f.paths.default_runner_root().join("fake/bin/wineserver");
+    script(
+        &wineserver,
+        &runners::FAKE_WINESERVER.replacen("    done\n    ;;", "    done\n    exit 42\n    ;;", 1),
+    );
+    let token = Token::new();
+    let (paths, arg, waiter) = (f.paths.clone(), folder.display().to_string(), token.clone());
+    let exec = thread::spawn(move || {
+        launch::exec(
+            &paths,
+            "app",
+            "handoff",
+            &[arg],
+            &BTreeMap::new(),
+            &waiter,
+            |_| {},
+        )
+    });
+    wait_for(|| f.prefix.join("fake-pids").exists());
+    thread::sleep(Duration::from_millis(300));
+    token.cancel();
+    let error = exec.join().unwrap().unwrap_err();
+    assert!(
+        format!("{error:#}").contains("wineserver -w failed"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn a_gog_wait_shows_what_failed_while_stopping() {
+    let f = Fixture::built();
+    let folder = gog_game(&f, "rimworld", false);
+    let token = Token::new();
+    let exec = gog_handoff(&f, &folder, &token);
+    // The running wineserver -w keeps going, but the kill can't start.
+    fs::remove_file(f.paths.default_runner_root().join("fake/bin/wineserver")).unwrap();
+    token.force();
+    let (_, events) = exec.join().unwrap();
+    let warnings: Vec<_> = output_lines(&events)
+        .into_iter()
+        .filter(|line| line.starts_with("warning: "))
+        .collect();
+    assert!(
+        warnings.iter().any(|line| line.contains("wineserver -k")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn a_proton_handoff_from_a_gog_folder_holds_it_until_the_group_is_gone() {
+    let f = Fixture::new();
+    fs::write(
+        f.paths.environment_config("app"),
+        format!(
+            "prefix = '{}'\nrunner = 'proton'\narch = 'win64'\n",
+            f.prefix.display()
+        ),
+    )
+    .unwrap();
+    gog_game(&f, "rimworld", false);
+    f.subprocess("proton-gog", f.root.path());
+}
+
 #[test]
 fn handoff_releases_locks_without_waiting_for_descendants_or_their_output() {
     let f = Fixture::built();
@@ -836,6 +1111,33 @@ fn exec_subprocess() {
             assert!(started.elapsed() < Duration::from_secs(1));
             assert!(!prefix.join("handoff-done").exists());
             wait_for(|| prefix.join("handoff-done").exists());
+        }
+        "proton-gog" => {
+            use wineo_core::gog::folder::lock_for_update;
+
+            let folder = fs::canonicalize(&root).unwrap().join("Games/RimWorld");
+            let started = Instant::now();
+            let (exec_paths, arg) = (paths.clone(), folder.display().to_string());
+            let exec = thread::spawn(move || {
+                launch::exec(
+                    &exec_paths,
+                    "app",
+                    "handoff",
+                    &[arg],
+                    &BTreeMap::new(),
+                    &Token::new(),
+                    |_| {},
+                )
+                .unwrap()
+            });
+            thread::sleep(Duration::from_millis(1000));
+            assert!(!exec.is_finished());
+            assert!(lock_for_update(&paths, &folder, "rimworld").is_err());
+            assert!(exec.join().unwrap().success());
+            // umu's group is only gone once the handed-off program is.
+            assert!(prefix.join("handoff-done").exists());
+            assert!(started.elapsed() >= Duration::from_secs(2));
+            assert!(lock_for_update(&paths, &folder, "rimworld").is_ok());
         }
         _ => panic!("unknown scenario"),
     }

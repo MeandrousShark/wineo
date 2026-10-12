@@ -287,9 +287,14 @@ impl Runner {
         let Some(mut command) = self.wineserver(prefix) else {
             return Ok(());
         };
-        quietly(command.arg("-w"))
+        let status = on_its_own(command.arg("-w"))
             .status()
             .context(|| "failed to run wineserver -w".to_owned())?;
+        if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
+            return Err(Error::Unsettled(format!(
+                "wineserver -w was ended by signal {signal}"
+            )));
+        }
         Ok(())
     }
 
@@ -327,7 +332,7 @@ impl Runner {
         let Some(mut command) = self.wineserver(prefix) else {
             return wait_for_group(group);
         };
-        let status = quietly(command.arg("-w"))
+        let status = on_its_own(command.arg("-w"))
             .status()
             .context(|| "failed to run wineserver -w".to_owned())?;
         if status.success() {
@@ -419,7 +424,7 @@ impl Runner {
         leader_start: Option<u64>,
     ) -> Result<()> {
         if let Some(mut command) = self.wineserver(prefix) {
-            let status = quietly(command.arg("-w"))
+            let status = on_its_own(command.arg("-w"))
                 .status()
                 .context(|| "failed to run wineserver -w".to_owned())?;
             if !status.success() {
@@ -438,7 +443,7 @@ impl Runner {
         leader_start: Option<u64>,
     ) -> Result<()> {
         if let Some(mut command) = self.wineserver(prefix) {
-            let status = quietly(command.arg("-w"))
+            let status = on_its_own(command.arg("-w"))
                 .status()
                 .context(|| "failed to run wineserver -w".to_owned())?;
             if !status.success() {
@@ -455,7 +460,7 @@ impl Runner {
             signal_group(group, Signal::TERM)?;
             return Ok(());
         }
-        quietly(
+        on_its_own(
             self.command(prefix, &[])?
                 .args(["wineboot", "--end-session"]),
         )
@@ -485,7 +490,7 @@ impl Runner {
             )
             .context(|| "failed to signal tracked process group".to_owned());
         }
-        quietly(
+        on_its_own(
             self.command(prefix, &[])?
                 .args(["wineboot", "--end-session"]),
         )
@@ -513,7 +518,7 @@ impl Runner {
         if ownership != crate::process::GroupOwnership::Owned {
             return Ok(ownership);
         }
-        quietly(
+        on_its_own(
             self.command(prefix, &[])?
                 .args(["wineboot", "--end-session"]),
         )
@@ -527,7 +532,7 @@ impl Runner {
         let Some(mut command) = self.wineserver(prefix) else {
             return signal_group(group, Signal::KILL);
         };
-        quietly(command.arg("-k"))
+        on_its_own(command.arg("-k"))
             .status()
             .context(|| "failed to run wineserver -k".to_owned())?;
         Ok(Killed::Done)
@@ -823,6 +828,13 @@ fn quietly(command: &mut Command) -> &mut Command {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+}
+
+/// `quietly`, in a process group of its own. A terminal's Ctrl+C reaches
+/// wineo's whole group, and a run's waiter or the stop it asks for must
+/// outlive that, since wineo handles it by stopping the run in order.
+fn on_its_own(command: &mut Command) -> &mut Command {
+    quietly(command).process_group(0)
 }
 
 /// Looks `program` up on the current PATH.

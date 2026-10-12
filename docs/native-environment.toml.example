@@ -25,7 +25,8 @@ kind = "native"
 
 # The GOG product id of the game this environment owns. Only a GOG migration
 # sets it, and `wineo set` refuses to; `wineo set NAME --unset gog_id` stops
-# tracking the game and releases its folder. Default: unset.
+# tracking the game and releases its folder. A game that is mid-update, or
+# whose GOG state is missing, can't be launched. Default: unset.
 # gog_id = "1094900565"
 
 # Run every target under gamescope. Every field is optional, and an empty

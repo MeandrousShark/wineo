@@ -3,7 +3,9 @@ use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt;
 use std::os::unix::process::CommandExt;
-use std::process::{ExitStatus, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -17,11 +19,18 @@ use crate::error::Error;
 use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::runtime::{Runtime, exit_code};
+use crate::supervisor::{Notice, Settle, Supervisor, Watched};
 
-use super::{ExecResolution, Launch, LaunchEvent, ensure_prefix, reconcile, runner_locked};
+use super::{ExecResolution, Host, Launch, LaunchEvent, ensure_prefix, reconcile, runner_locked};
 
 const POLL: Duration = Duration::from_millis(50);
 const READ_BATCH: u64 = 256 * 1024;
+/// How long a program has to have been gone, with the prefix still busy,
+/// before a frontend says why it's waiting.
+const NOTE_AFTER: Duration = Duration::from_millis(250);
+/// How long kills keep being retried before a stopped exec gives up waiting,
+/// as for installers.
+const GIVE_UP: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 pub enum ExecEvent {
@@ -38,10 +47,17 @@ pub enum ExecEvent {
 
 /// Runs an arbitrary program for a frontend, without consulting the current
 /// directory. Holds shared launch and build locks until the started process
-/// exits. Cancellation only signals its process group, never the whole prefix.
-/// A nonzero or canceled process exit is returned as a status. Cancellation
-/// before spawning is an error. No run record or playtime is written, and a
-/// frontend crash leaves the program running while releasing its locks.
+/// exits. Cancellation only signals its process group, never the whole
+/// prefix. A nonzero or canceled process exit is returned as a status.
+/// Cancellation before spawning is an error. No run record or playtime is
+/// written, and a frontend crash leaves the program running while releasing
+/// its locks.
+///
+/// A program run from a GOG game folder is instead waited for the way a
+/// `start` run is: until the prefix is idle, holding every lock, including
+/// the folder's in-use lock, so a launcher that hands off to the game keeps
+/// the folder in use until the game quits. Canceling then asks the
+/// prefix's programs to close, and forcing kills them, like `wineo stop`.
 pub fn exec(
     paths: &Paths,
     name: &str,
@@ -81,11 +97,178 @@ pub fn exec(
     let _guard = Locks::new(paths).acquire(Operation::Launch, name, &[prefix])?;
     Environment::ensure_exists(paths, name)?;
     Runtime::new(paths, name).check_resolved(name)?;
+    let folders = super::orchestration::protect_as(paths, &environment, &launch, token, "exec")?;
     reconcile(paths, &global, &environment, &launch, |event| {
         events(ExecEvent::Launch(event));
     })?;
     check_cancel(token)?;
-    run(&launch, global.stop_timeout, token, &mut events)
+    if folders.is_empty() {
+        return run(&launch, global.stop_timeout, token, &mut events);
+    }
+    run_settled(
+        &launch,
+        Duration::from_secs(global.stop_timeout.into()),
+        token,
+        &mut events,
+    )
+}
+
+/// `run` for a program from a GOG game folder, which lasts until the prefix
+/// is idle.
+fn run_settled(
+    launch: &Launch,
+    stop_timeout: Duration,
+    token: &Token,
+    events: &mut impl FnMut(ExecEvent),
+) -> anyhow::Result<ExitStatus> {
+    let log = tempfile::tempfile().context("failed to create exec output log")?;
+    let mut lines = Lines::new(log.try_clone()?);
+    let child = launch
+        .command()
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log.try_clone()?))
+        .process_group(0)
+        .spawn()
+        .with_context(|| format!("failed to start {}", launch.host.launcher()))?;
+    crate::process::quiet_core_dumps(&child);
+    events(ExecEvent::Started);
+    let mut failed = None;
+    let ended = watch_settled(
+        Supervisor::with_token(token),
+        &launch.host,
+        child,
+        stop_timeout,
+        |seen| match seen {
+            Settling::Tick => {
+                if failed.is_none()
+                    && let Err(err) = lines.pump(READ_BATCH, events)
+                {
+                    failed = Some(err);
+                }
+            }
+            Settling::Stopping => events(ExecEvent::Stopping),
+            Settling::Killing => events(ExecEvent::Killing),
+            // Shown with the program's output, the way the CLI prints one.
+            Settling::Warning(err) => events(ExecEvent::OutputLine(format!(
+                "warning: {}",
+                crate::error::chain(&err)
+            ))),
+            Settling::Exited | Settling::StillWaiting => {}
+        },
+    );
+    if let Some(err) = failed {
+        return Err(err.into());
+    }
+    let end = log.metadata()?.len();
+    lines.pump(end.saturating_sub(lines.read), events)?;
+    if !lines.pending.is_empty() {
+        lines.finish(events);
+    }
+    let status = ended.finish()?;
+    events(ExecEvent::Exited {
+        code: exit_code(status),
+    });
+    Ok(status)
+}
+
+/// What `watch_settled` reports along the way.
+#[derive(Debug)]
+pub enum Settling {
+    /// The started program exited. Others in the prefix may still run.
+    Exited,
+    /// The program has been gone a moment and the prefix is still busy.
+    StillWaiting,
+    /// Programs were asked to close. Another stop request forces it.
+    Stopping,
+    /// Everything left in the prefix is being killed.
+    Killing,
+    Warning(Error),
+    /// Nothing happened, which comes often, for a caller with work to do.
+    Tick,
+}
+
+/// How a watched program and its prefix came to an end.
+#[derive(Debug)]
+pub struct Settled {
+    status: Option<ExitStatus>,
+    settled: crate::error::Result<()>,
+}
+
+impl Settled {
+    /// The started program's own status, or, stopped or not, why the prefix
+    /// couldn't be confirmed idle, as a `start` run reports it.
+    pub fn finish(self) -> anyhow::Result<ExitStatus> {
+        self.settled?;
+        self.status
+            .ok_or_else(|| Error::Unsettled("the program's exit status was lost".to_owned()).into())
+    }
+}
+
+/// Watches `child`, which leads its own process group, and then the prefix
+/// until it's idle, by the rule a `start` run ends on: `wineserver -w`, and
+/// for Proton the process group. `supervisor` brings the stop requests: the
+/// first asks the prefix's programs to close, and the next, or the stop
+/// timeout, kills them, retried until idle or for `GIVE_UP`.
+pub fn watch_settled(
+    supervisor: Supervisor,
+    host: &Host,
+    child: Child,
+    stop_timeout: Duration,
+    mut seen: impl FnMut(Settling),
+) -> Settled {
+    let group = child.id();
+    // Read while the program is at least a zombie, which the watch only
+    // reaps at the end, so its identity can't be lost to a fast exit.
+    let boot_id = crate::process::boot_id();
+    let leader_start = crate::process::start_time(group);
+    let host = host.clone();
+    let (sender, watched) = mpsc::channel();
+    let watcher = thread::spawn(move || {
+        supervisor.watch(
+            &host,
+            Some(group),
+            boot_id,
+            leader_start,
+            child,
+            stop_timeout,
+            Settle::Confirmed,
+            Some(GIVE_UP),
+            |event| {
+                let _ = sender.send(event);
+            },
+        )
+    });
+    let mut exited_at: Option<Instant> = None;
+    let mut noted = false;
+    loop {
+        match watched.recv_timeout(POLL) {
+            Ok(Watched::Exited(_)) => {
+                exited_at = Some(Instant::now());
+                seen(Settling::Exited);
+            }
+            Ok(Watched::Notice(Notice::Stopping)) => seen(Settling::Stopping),
+            Ok(Watched::Notice(Notice::Killing)) => seen(Settling::Killing),
+            Ok(Watched::Notice(Notice::Warning(err))) => seen(Settling::Warning(err)),
+            Ok(Watched::Notice(Notice::Heartbeat)) | Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if !noted && exited_at.is_some_and(|at| at.elapsed() >= NOTE_AFTER) {
+            noted = true;
+            seen(Settling::StillWaiting);
+        }
+        seen(Settling::Tick);
+    }
+    match watcher.join() {
+        Ok(ending) => Settled {
+            status: ending.exit_status,
+            settled: ending.settled,
+        },
+        Err(_) => Settled {
+            status: None,
+            settled: Err(Error::Unsettled("the exec watch failed".to_owned())),
+        },
+    }
 }
 
 fn check_cancel(token: &Token) -> anyhow::Result<()> {

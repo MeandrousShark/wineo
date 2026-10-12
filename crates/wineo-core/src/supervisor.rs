@@ -104,6 +104,8 @@ pub(crate) enum Settle {
 #[derive(Debug)]
 pub(crate) struct Ending {
     pub exit_code: Option<i32>,
+    /// The same, as the status it came from, for a caller that reports it.
+    pub exit_status: Option<ExitStatus>,
     /// A stop was requested, so an exit code can't tell a kill apart.
     pub stopped: bool,
     /// Err when it could not be confirmed that nothing is left running.
@@ -318,6 +320,7 @@ impl Supervisor {
         });
 
         let mut exit = None;
+        let mut exit_status = None;
         let mut observed_exit = false;
         let mut stopping = false;
         let mut saw_cancel = false;
@@ -379,7 +382,8 @@ impl Supervisor {
                 Event::Heartbeat => watched(Watched::Notice(Notice::Heartbeat)),
                 Event::Exited(status) => {
                     observed_exit = true;
-                    exit = status.ok().map(exit_code);
+                    exit_status = status.ok();
+                    exit = exit_status.map(exit_code);
                     watched(Watched::Exited(exit));
                     // Launchers often hand off to another process and exit, so
                     // this lasts until nothing is left running in the prefix.
@@ -447,6 +451,7 @@ impl Supervisor {
         }
         Ending {
             exit_code: exit,
+            exit_status,
             stopped: stopping,
             settled,
         }
@@ -518,6 +523,9 @@ pub struct Claim {
     pub config: PathBuf,
     #[serde(default)]
     pub builds: Vec<crate::build_lock::Lock>,
+    /// The in-use locks of the GOG folders the run uses.
+    #[serde(default)]
+    pub folders: Vec<crate::gog::folder::InUseLock>,
 }
 
 /// How handing a run to a new supervisor went.
@@ -667,6 +675,21 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         .builds
         .iter()
         .map(crate::build_lock::Lock::shared)
+        .collect::<Result<Vec<_>>>()?;
+    // `start` still holds these, so no update can have taken one since.
+    let _folder_guards = spec
+        .claim
+        .folders
+        .iter()
+        .map(|lock| {
+            lock.try_shared()
+                .and_then(|guard| {
+                    guard.ok_or_else(|| {
+                        anyhow::anyhow!("{} is being updated", lock.folder().display())
+                    })
+                })
+                .map_err(|err| Error::StartFailed(format!("{err:#}")))
+        })
         .collect::<Result<Vec<_>>>()?;
     // The spec was prepared before the lock, so it can be stale by now.
     if !spec.claim.config.is_file() {
@@ -1023,6 +1046,7 @@ mod tests {
                 locks: Locks::at(PathBuf::from("/state/wineo/.locks")),
                 config: PathBuf::from("/config/wineo/environments/app.toml"),
                 builds: Vec::new(),
+                folders: Vec::new(),
             },
             runtime_dir: PathBuf::from("/state/wineo/app"),
             stats_log: PathBuf::from("/data/wineo/stats/app.jsonl"),

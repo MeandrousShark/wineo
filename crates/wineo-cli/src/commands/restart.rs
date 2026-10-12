@@ -67,6 +67,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
         launch::Launch::target(paths, &global, &environment, &overrides)?;
     }
+    // A game folder that can't be launched from must not lose its run.
+    launch::precheck(paths, &global, &environment, &overrides)?;
 
     let token = wineo_core::cancel::Token::new();
     let mut cancellation = None;

@@ -41,6 +41,20 @@ avoid duplicates. Literal source-prefix paths in arguments or environment
 variables are reported for review. Registry contents and arbitrary strings are
 not rewritten.
 
+A clone of a GOG game still runs from the original game folder, so it
+follows that game's state. While the game is mid-update, launching the clone
+is refused with the name of the game to finish, and while the clone runs,
+the game can't be updated. wineo finds the folder through the paths a
+launch names: the program, its working directory, and arguments that are
+whole absolute or Windows paths. A program Wine finds by bare name, an
+argument like `--data=/path`, or a launcher that finds the game some other
+way isn't seen. A `wineo exec` from the game folder keeps it in use until
+the prefix is idle, the same way a `wineo start` run ends, so a launcher
+that starts the game and exits still counts. It also waits for any other
+program running in that prefix. While it waits, it says so: the first
+Ctrl+C asks the prefix's programs to close, and a second one forces them
+to. Such an exec runs without a terminal on its input, like `wineo run`.
+
 If registration fails after the copy, wineo keeps the copied prefix and reports
 its location for recovery. Remove a clone with `wineo rm NAME`; this trashes
 its config and art, leaving the copied prefix in place. Add

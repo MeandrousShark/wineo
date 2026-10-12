@@ -930,6 +930,56 @@ Settled by the maintainer on 2026-10-11, before step 4:
   rules. Winetricks isn't covered, since it writes to the prefix, not the
   game folder.
 
+Chosen during step 4 and confirmed by the maintainer on 2026-10-11:
+
+- **Refusing before hooks.** A read-only precheck refuses a blocked launch
+  before any `before` hook runs, and `wineo restart` runs it before stopping
+  the old run. The authoritative check still runs after the operation lock.
+- **Which paths count.** The program, its working directory, and arguments
+  that are whole absolute or Windows drive paths. `--data=/path` isn't
+  seen, and the docs say so.
+- **Portable roots** ignore `gog_id`: no owner lookup, claim, or lost-state
+  refusal, only the paths a launch names. GOG games live in the host root,
+  and claiming would record a portable name as owner.
+- **Unreadable state files** block launches of any environment with
+  `gog_id`, since one could be its folder's. Launches without `gog_id` only
+  refuse a broken state covering a path they name.
+- **The update-side refusal** reads `Something is running from rimworld's
+  game folder. Stop it first.` until step 7 can name what's running.
+
+Settled by the maintainer on 2026-10-11, after step 4's second review:
+
+- **Exec holds the folder for the whole run.** An exec that touches a GOG
+  game folder keeps it in use after its program exits, until the prefix is
+  idle, by the same rule a `start` run ends on (`Runner::wait_settled`:
+  `wineserver -w` for Wine, the process group for Proton). So a launcher
+  that starts the game and exits still keeps the folder in use until the
+  game quits. It also waits for other Wine programs in that prefix, which
+  only holds the folder longer. Execs that touch no GOG folder return when
+  their program exits, as before. Amended the same day: the first answer
+  waited on the process group like installer runs, but four reviews found
+  `/proc` tracking couldn't be made exact, so the maintainer chose the rule
+  `start` already trusts.
+- **Saying why exec is still waiting.** When a CLI exec keeps waiting after
+  its program exits, it prints `Waiting for programs launcher.exe started.
+  Press Ctrl+C to stop them.`, and after the first Ctrl+C, `Press Ctrl+C
+  again to force them to stop.`
+
+Settled by the maintainer on 2026-10-11, after step 4's seventh review:
+
+- **Exec from a game folder has no terminal input.** It runs in its own
+  process group with stdin closed, like `wineo run`, so a console program
+  there can't read the keyboard. Games don't need it.
+- **The idle waiter can outlive wineo.** A run's waiter (`wineserver -w`)
+  and stop helpers run in their own process group so a terminal Ctrl+C
+  can't end the wait early. If wineo is killed with SIGKILL, the waiter
+  keeps sleeping until the prefix is idle, then exits. It holds no locks
+  and blocks nothing. Tying it to wineo's life needs parent-death signals,
+  which need `unsafe` or a `setpriv` wrapper, so it's a documented limit.
+- **A hung `wineserver -k`** blocking the supervisor's give-up deadline is
+  older than this step and shared with `start` and the installer, so it's
+  a backlog row, not a step 4 fix.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,

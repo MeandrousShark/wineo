@@ -11,13 +11,43 @@ pub fn is_windows_path(s: &str) -> bool {
 
 /// Maps a Windows path to the Unix path it refers to inside `prefix`.
 pub fn to_unix(prefix: &Path, windows_path: &str) -> Option<PathBuf> {
+    let (drive_root, components) = split(prefix, windows_path)?;
+    let mut current = drive_root;
+    for name in components {
+        current = resolve_component(&current, name)?;
+    }
+    Some(current)
+}
+
+/// Like `to_unix`, but a path that doesn't exist yet keeps its missing part
+/// as written below the part that does. None only without the drive.
+pub fn to_unix_lenient(prefix: &Path, windows_path: &str) -> Option<PathBuf> {
+    let (drive_root, components) = split(prefix, windows_path)?;
+    let mut current = drive_root;
+    let mut missing = false;
+    for name in components {
+        let next = if missing {
+            None
+        } else {
+            resolve_component(&current, name)
+        };
+        current = next.unwrap_or_else(|| {
+            missing = true;
+            current.join(name)
+        });
+    }
+    Some(current)
+}
+
+/// The drive's root in `prefix` and the path's components below it.
+fn split<'a>(prefix: &Path, windows_path: &'a str) -> Option<(PathBuf, Vec<&'a str>)> {
     if !is_windows_path(windows_path) {
         return None;
     }
 
     let drive = char::from(windows_path.as_bytes()[0].to_ascii_lowercase());
     // Only the drive root is canonicalized; everything below it is walked by
-    // hand so the case-insensitive fallback below decides the result.
+    // hand so the case-insensitive fallback decides the result.
     let drive_link = prefix.join("dosdevices").join(format!("{drive}:"));
     let drive_root = std::fs::canonicalize(drive_link).ok()?;
 
@@ -33,12 +63,7 @@ pub fn to_unix(prefix: &Path, windows_path: &str) -> Option<PathBuf> {
             name => components.push(name),
         }
     }
-
-    let mut current = drive_root;
-    for name in components {
-        current = resolve_component(&current, name)?;
-    }
-    Some(current)
+    Some((drive_root, components))
 }
 
 /// The `C:` path of a Unix path inside the prefix's `drive_c`, which is how a
@@ -225,6 +250,20 @@ mod tests {
     fn missing_component_returns_none() {
         let (root, _canonical_root, _z, _canonical_z) = setup();
         assert_eq!(to_unix(root.path(), r"C:\Program Files\Nonexistent"), None);
+    }
+
+    #[test]
+    fn lenient_keeps_the_missing_part_as_written() {
+        let (root, canonical_root, _z, _canonical_z) = setup();
+        assert_eq!(
+            to_unix_lenient(root.path(), r"c:\program files\ADOBE\New\x.EXE"),
+            Some(canonical_root.join("drive_c/Program Files/Adobe/New/x.EXE"))
+        );
+        assert_eq!(
+            to_unix_lenient(root.path(), r"C:\Program Files\Adobe\Photoshop.exe"),
+            to_unix(root.path(), r"C:\Program Files\Adobe\Photoshop.exe")
+        );
+        assert_eq!(to_unix_lenient(root.path(), r"D:\x"), None);
     }
 
     #[test]
