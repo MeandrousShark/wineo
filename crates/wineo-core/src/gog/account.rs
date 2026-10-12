@@ -183,6 +183,26 @@ impl CredentialsLock {
     }
 }
 
+impl CredentialsLock {
+    /// The lock if its file exists, else None. No file means nothing has
+    /// ever been saved, so there is nothing to wait for, and a read-only
+    /// caller doesn't create one.
+    fn acquire_existing(paths: &Paths) -> crate::Result<Option<Self>> {
+        let path = paths.gog_credentials_lock();
+        let file = match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error).context(|| format!("failed to open {}", path.display()));
+            }
+        };
+        flock(&file, FlockOperation::LockExclusive)
+            .map_err(std::io::Error::from)
+            .context(|| format!("failed to lock {}", path.display()))?;
+        Ok(Some(Self { file }))
+    }
+}
+
 impl Drop for CredentialsLock {
     fn drop(&mut self) {
         // A forked child must not extend this holder's lifetime.
@@ -346,7 +366,9 @@ impl<'a> Session<'a> {
     ) -> Result<Option<Self>, AccountError> {
         // Changes bump the generation before they save, so reading the two
         // without the lock could pair a new generation with the old login.
-        let _lock = CredentialsLock::acquire(paths)?;
+        // Opening only reads, so it doesn't create the lock: a dry run that
+        // never renews leaves no file behind.
+        let _lock = CredentialsLock::acquire_existing(paths)?;
         let generation = read_generation(paths)?;
         Ok(stored_login(paths, keyring)?.map(|(login, source)| Self {
             paths: paths.clone(),

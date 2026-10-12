@@ -32,6 +32,13 @@ impl Account {
         &self.keyring
     }
 
+    /// The saved login, ready to use, or None when logged out. Finishing an
+    /// interrupted update from saved packages works without one.
+    pub fn open(&self, paths: &Paths) -> anyhow::Result<Option<Session<'_>>> {
+        let client = gog::client_from_env()?;
+        Ok(Session::open(paths, &self.keyring, client)?)
+    }
+
     /// The saved login, ready to use. Logged out is an error that says how
     /// to log in.
     pub fn session(&self, paths: &Paths) -> anyhow::Result<Session<'_>> {

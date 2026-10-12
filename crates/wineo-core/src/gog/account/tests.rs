@@ -680,3 +680,15 @@ fn opening_waits_for_a_login_change_in_progress() {
         assert_eq!(opener.join().unwrap(), UserId::new(OTHER_USER));
     });
 }
+
+#[test]
+fn opening_a_session_creates_no_lock_file() {
+    let (_root, paths) = setup();
+    let keyring = FakeKeyring::default();
+    seed(&paths, &keyring, "REFRESH", USER);
+    let lock = paths.gog_credentials_lock();
+    let server = Server::start(vec![]);
+    let session = open(&paths, &keyring, &server);
+    assert_eq!(session.user_id(), UserId::new(USER));
+    assert!(!lock.exists());
+}

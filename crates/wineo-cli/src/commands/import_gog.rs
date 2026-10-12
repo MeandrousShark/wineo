@@ -8,6 +8,7 @@ use wineo_core::gog::folder::FolderError;
 use crate::prompt::Canceled;
 
 mod account;
+mod extras;
 mod list;
 mod migrate;
 

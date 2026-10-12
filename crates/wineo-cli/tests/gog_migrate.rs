@@ -5,6 +5,7 @@ mod common;
 
 use std::fs;
 
+use common::gog_api;
 use common::gog_world::{DISCO, RIMWORLD, RIMWORLD_DLC};
 use common::pty::Pty;
 use common::snapshot::Snapshot;
@@ -25,11 +26,43 @@ fn fixture() -> Fixture {
 fn import(f: &Fixture, args: &[&str]) -> std::process::Output {
     let mut all = vec!["import", "gog"];
     all.extend_from_slice(args);
-    f.run_at_home(&all)
+    gog_api::checked(f.gog_offline_command().args(&all).output().unwrap())
 }
 
 fn game(id: u64) -> String {
     id.to_string()
+}
+
+/// The desktop entries wineo wrote under the fixture's data folder.
+fn desktop_entries(f: &Fixture) -> Vec<String> {
+    let dir = f.root.path().join("data/applications");
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn a_new_environment_gets_desktop_entries_and_a_portable_root_refuses_the_game() {
+    let f = fixture();
+    f.heroic_rimworld();
+    let portable = f.root.path().join("portable");
+    let refused = f
+        .wineo_at_home()
+        .arg("--portable")
+        .arg(&portable)
+        .args(["import", "gog", "--game", &game(RIMWORLD), "--yes"])
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(desktop_entries(&f).is_empty());
+
+    assert_success(&import(&f, &["--game", &game(RIMWORLD), "--yes"]));
+    assert_eq!(desktop_entries(&f), ["wineo-rimworld-game.desktop"]);
 }
 
 #[test]
@@ -109,6 +142,8 @@ fn a_game_with_an_environment_attaches_to_it_and_keeps_its_settings() {
         f.gog_state(&folder).unwrap().owner.as_deref(),
         Some("my-rimworld")
     );
+    // An environment that was already there keeps its own desktop setting.
+    assert!(desktop_entries(&f).is_empty(), "{:?}", desktop_entries(&f));
 }
 
 #[test]
@@ -225,7 +260,7 @@ fn migrating_without_a_terminal_needs_yes() {
     let before = Snapshot::capture(f.root.path()).unwrap();
     for args in [&["--game", "1094900565"][..], &["--all"]] {
         let out = import(&f, args);
-        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
         assert!(
             stderr(&out).contains("error: Migrating without a terminal needs --yes."),
             "{}",
@@ -393,7 +428,7 @@ fn migrating_refuses_a_portable_folder() {
 fn a_single_game_asks_before_migrating() {
     let f = fixture();
     let folder = f.heroic_rimworld();
-    let mut command = f.wineo_at_home();
+    let mut command = f.gog_offline_command();
     command.args(["import", "gog", "--game", "1094900565"]);
     let mut pty = Pty::spawn(command);
     pty.expect("Migrate RimWorld (1094900565)");
@@ -421,7 +456,7 @@ fn canceling_the_question_exits_130_and_changes_nothing() {
     let f = fixture();
     let folder = f.heroic_rimworld();
     let before = Snapshot::capture(f.root.path()).unwrap();
-    let mut command = f.wineo_at_home();
+    let mut command = f.gog_offline_command();
     command.args(["import", "gog", "--game", "1094900565"]);
     let mut pty = Pty::spawn(command);
     pty.expect("Migrate it?");
@@ -440,7 +475,7 @@ fn the_picker_lists_the_games_to_migrate() {
     f.install_proton("GE-Proton10-4");
     f.heroic_rimworld();
     let disco = f.heroic_disco(proton("GE-Proton10-4"));
-    let mut command = f.wineo_at_home();
+    let mut command = f.gog_offline_command();
     command.args(["import", "gog"]);
     let mut pty = Pty::spawn(command);
     pty.expect("Which GOG game?");
@@ -467,7 +502,7 @@ fn the_picker_lists_the_games_to_migrate() {
     );
 
     // What is migrated no longer shows up.
-    let mut command = f.wineo_at_home();
+    let mut command = f.gog_offline_command();
     command.args(["import", "gog"]);
     let mut pty = Pty::spawn(command);
     pty.expect("RimWorld (1094900565, Linux)");
@@ -481,7 +516,7 @@ fn the_picker_lists_the_games_to_migrate() {
 fn the_guided_import_menu_offers_gog() {
     let f = fixture();
     let folder = f.heroic_rimworld();
-    let mut command = f.wineo_at_home();
+    let mut command = f.gog_offline_command();
     command.arg("import");
     let mut pty = Pty::spawn(command);
     pty.expect("Import from where?");
@@ -513,7 +548,7 @@ fn the_pickers_dry_run_writes_nothing() {
     let f = fixture();
     let folder = f.heroic_rimworld();
     let before = Snapshot::capture(f.root.path()).unwrap();
-    let mut command = f.wineo_at_home();
+    let mut command = f.gog_offline_command();
     command.args(["import", "gog", "--dry-run"]);
     let mut pty = Pty::spawn(command);
     pty.expect("Game: ");
@@ -535,7 +570,7 @@ fn the_pickers_dry_run_writes_nothing() {
 fn the_picker_with_yes_doesnt_ask() {
     let f = fixture();
     let folder = f.heroic_rimworld();
-    let mut command = f.wineo_at_home();
+    let mut command = f.gog_offline_command();
     command.args(["import", "gog", "--yes"]);
     let mut pty = Pty::spawn(command);
     pty.expect("Game: ");
@@ -565,7 +600,7 @@ fn a_dry_run_never_copies_heroics_runner() {
     before.assert_unchanged(f.root.path());
 
     // The picker doesn't offer the copy under --dry-run either.
-    let mut command = f.wineo_at_home();
+    let mut command = f.gog_offline_command();
     command.args(["import", "gog", "--dry-run"]);
     let mut pty = Pty::spawn(command);
     pty.expect("Game: ");
@@ -590,7 +625,7 @@ fn declining_the_runner_copy_and_canceling_leaves_no_runner_behind() {
     let runners = f.root.path().join("data/wineo/runners");
     let before = Snapshot::capture(&runners).unwrap();
 
-    let mut command = f.wineo_at_home();
+    let mut command = f.gog_offline_command();
     command.args(["import", "gog", "--game", &game(DISCO)]);
     let mut pty = Pty::spawn(command);
     pty.expect("Heroic runner is not installed");

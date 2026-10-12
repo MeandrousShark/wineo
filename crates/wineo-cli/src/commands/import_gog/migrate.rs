@@ -15,7 +15,7 @@ use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 
 use super::Args;
-use crate::commands::gog_support::{usage_error, warn};
+use crate::commands::gog_support::warn;
 use crate::commands::import::{ReturnToSourceMenu, check_review};
 use crate::commands::import_heroic::{
     ChosenRunner, ensure_components_available, finish_registered, pick_runner, report_playtime,
@@ -158,7 +158,14 @@ fn prepare(
             plan.set_runner_dependencies(chosen.dependencies);
         }
     }
+    // A new environment gets desktop entries like a Heroic import's, except
+    // in a portable root. An attached one keeps its own setting.
+    let desktop = paths.portable_root().is_none();
+    if let Some(plan) = migration.native_plan_mut() {
+        plan.set_desktop_enabled(desktop);
+    }
     if let Some(plan) = migration.game_plan_mut() {
+        plan.set_desktop_enabled(desktop);
         match ask {
             Some(prompt) => ensure_components_available(paths, global, plan, prompt)?,
             None => plan.check_builds(paths, global)?,
@@ -310,7 +317,22 @@ fn report(
         Outcome::Migrated(migrated) => {
             if let Some(registered) = &migrated.registered {
                 report_playtime(&registered.playtime);
-                finish_registered(paths, global, registered)?;
+            }
+            // Before the desktop entries, so a new icon is in them.
+            let game = migration.game();
+            let icon = game.id.parse().is_ok_and(|gog_id| {
+                super::extras::import(paths, global, &migrated.environment, gog_id, &game.title)
+            });
+            match &migrated.registered {
+                Some(registered) => finish_registered(paths, global, registered)?,
+                None if icon => {
+                    if let Err(error) =
+                        crate::commands::art::apply_desktop(paths, &migrated.environment)
+                    {
+                        warn(format!("Couldn't update desktop entries: {error:#}"));
+                    }
+                }
+                None => {}
             }
             println!(
                 "Migrated {} as {}.",
@@ -365,7 +387,7 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str, verbose: bool) -> anyhow
     };
     let asking = !args.yes && !args.dry_run;
     if asking && !prompt::interactive() {
-        return Ok(usage_error(NEEDS_YES));
+        anyhow::bail!(NEEDS_YES);
     }
     let mut prompt = if asking { Some(terminal()?) } else { None };
     prepare(paths, &global, &mut migration, prompt.as_mut(), verbose)?;
@@ -386,7 +408,7 @@ pub(super) fn all(paths: &Paths, args: &Args, verbose: bool) -> anyhow::Result<E
     host_only(paths)?;
     let asking = !args.yes && !args.dry_run;
     if asking && !prompt::interactive() {
-        return Ok(usage_error(NEEDS_YES));
+        anyhow::bail!(NEEDS_YES);
     }
     let global = GlobalConfig::load(paths)?;
     let heroic = Heroic::load(paths)?;

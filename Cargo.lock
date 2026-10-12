@@ -5408,6 +5408,7 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "jiff",
+ "md-5",
  "rustix 1.1.4",
  "rustyline",
  "serde",
@@ -5416,6 +5417,7 @@ dependencies = [
  "tempfile",
  "unicode-width",
  "wineo-core",
+ "zip",
 ]
 
 [[package]]

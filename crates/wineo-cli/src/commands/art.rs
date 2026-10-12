@@ -155,7 +155,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 
 /// Brings the entries in line with a changed icon. Portable environments have
 /// none, so they get nothing said about them either.
-fn apply_desktop(paths: &Paths, env: &str) -> anyhow::Result<()> {
+pub(crate) fn apply_desktop(paths: &Paths, env: &str) -> anyhow::Result<()> {
     if wineo_core::desktop::supported(paths).is_err() {
         return Ok(());
     }
