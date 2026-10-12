@@ -1565,14 +1565,33 @@ pub(crate) fn write_config_once(path: &Path, contents: &str) -> Result<()> {
     staging.as_file().write_all(contents.as_bytes())?;
     staging.as_file().sync_all()?;
     match fs::hard_link(&staging_path, path) {
-        Ok(()) => Ok(()),
+        Ok(()) => {}
         Err(err) => {
             if err.kind() == io::ErrorKind::AlreadyExists {
                 bail!("environment config already exists: {}", path.display());
             }
-            Err(err).with_context(|| format!("failed to register {}", path.display()))
+            return Err(err).with_context(|| format!("failed to register {}", path.display()));
         }
     }
+    // The new name has to be on disk before anything that relies on the
+    // environment existing, like a GOG folder state naming it, is written.
+    // The staging name goes first, so a power loss can't leave it behind.
+    drop(staging);
+    sync_config_dir(parent)
+}
+
+fn sync_config_dir(dir: &Path) -> Result<()> {
+    #[cfg(test)]
+    SYNCED_DIRS.with(|synced| synced.borrow_mut().push(dir.to_owned()));
+    File::open(dir)
+        .and_then(|dir| dir.sync_all())
+        .with_context(|| format!("failed to sync {}", dir.display()))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Every directory `write_config_once` synced on this thread.
+    static SYNCED_DIRS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Copy an existing runner tree into a wineo runner root without replacing an
@@ -2999,5 +3018,35 @@ mod tests {
                 0
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod config_once_tests {
+    use super::*;
+
+    #[test]
+    fn a_new_config_is_synced_into_its_directory_with_no_staging_left() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("environments");
+        let path = dir.join("game.toml");
+        SYNCED_DIRS.with(|synced| synced.borrow_mut().clear());
+        write_config_once(&path, "kind = \"native\"\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "kind = \"native\"\n");
+        assert_eq!(
+            SYNCED_DIRS.with(|synced| synced.borrow().clone()),
+            [dir.as_path()]
+        );
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["game.toml"]);
+
+        // A config that's already there is neither replaced nor synced for.
+        SYNCED_DIRS.with(|synced| synced.borrow_mut().clear());
+        assert!(write_config_once(&path, "other").is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "kind = \"native\"\n");
+        assert!(SYNCED_DIRS.with(|synced| synced.borrow().is_empty()));
     }
 }
