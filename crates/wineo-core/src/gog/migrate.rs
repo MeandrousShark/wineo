@@ -860,8 +860,10 @@ fn windows_launch(folder: &Path, info: PathBuf, root: &Value) -> Result<Launch> 
         .filter(|path| !path.is_empty())
         .ok_or_else(|| bad("it has no path".to_owned()))?;
     // The folder itself is a working directory, but not a program.
+    // A missing exe is left for the launch to report, as before, but one
+    // that leads to a folder, like a link to the game folder, isn't one.
     let exe = inside(folder, path)
-        .filter(|exe| exe != folder)
+        .filter(|exe| exe != folder && !fs::metadata(exe).is_ok_and(|meta| meta.is_dir()))
         .ok_or_else(|| bad(format!("{path} isn't a program in the game")))?;
     let cwd = match task
         .get("workingDir")

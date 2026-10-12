@@ -1415,3 +1415,32 @@ fn heroic_changing_while_planning_is_refused() {
         MigrateError::Changed
     ));
 }
+
+#[test]
+fn an_exe_that_leads_to_a_folder_is_refused() {
+    let mut fx = Fixture::new();
+    let folder = fx.disco();
+    let heroic = fx.heroic_files();
+    let info = folder.join(format!("goggame-{DISCO}.info"));
+    let text = fs::read_to_string(&info).unwrap();
+    std::os::unix::fs::symlink(".", folder.join("self.exe")).unwrap();
+    fs::write(&info, text.replace("\"Disco Elysium.exe\"", "\"self.exe\"")).unwrap();
+    assert!(matches!(
+        migrate_error(fx.plan(DISCO)),
+        MigrateError::BadPlayTask { .. }
+    ));
+    // So is a plain folder.
+    fs::write(&info, text.replace("\"Disco Elysium.exe\"", "\"bin\"")).unwrap();
+    assert!(matches!(
+        migrate_error(fx.plan(DISCO)),
+        MigrateError::BadPlayTask { .. }
+    ));
+    // A missing exe is still left for the launch to report.
+    fs::write(
+        &info,
+        text.replace("\"Disco Elysium.exe\"", "\"missing.exe\""),
+    )
+    .unwrap();
+    assert!(matches!(fx.plan(DISCO).unwrap(), Plan::Migrate(_)));
+    heroic.assert_unchanged();
+}
