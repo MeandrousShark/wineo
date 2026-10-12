@@ -749,6 +749,8 @@ enum Tamper {
     Fifo,
     Symlink,
     Folder,
+    /// A same-size hard link to a file outside the staging folder.
+    HardLink,
 }
 
 fn tamper(piece: &Path, how: Tamper) {
@@ -777,6 +779,13 @@ fn tamper(piece: &Path, how: Tamper) {
             fs::remove_file(piece).unwrap();
             fs::create_dir(piece).unwrap();
         }
+        Tamper::HardLink => {
+            let size = fs::metadata(piece).unwrap().len() as usize;
+            let outside = piece.ancestors().nth(4).unwrap().join("outside-secret");
+            fs::write(&outside, vec![b'S'; size]).unwrap();
+            fs::remove_file(piece).unwrap();
+            fs::hard_link(&outside, piece).unwrap();
+        }
     }
 }
 
@@ -788,6 +797,7 @@ fn pieces_changed_before_assembly_are_refused() {
         Tamper::Fifo,
         Tamper::Symlink,
         Tamper::Folder,
+        Tamper::HardLink,
     ] {
         let temp = tempfile::tempdir().unwrap();
         let mut package = open_bytes(temp.path(), &split_package(b"game/big.bin")).unwrap();

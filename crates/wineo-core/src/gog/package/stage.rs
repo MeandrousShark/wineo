@@ -2,6 +2,7 @@
 //! directory fds opened without following symlinks, so nothing the package
 //! or anyone else puts in the folder can redirect a write outside it.
 
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -197,6 +198,9 @@ pub fn stage(
         since_check: 0,
     };
     let mut staged = Vec::new();
+    // Each written file's (device, inode), so assembly reads only the files
+    // staging wrote.
+    let mut written = HashMap::new();
 
     let entries = package.entries.clone();
     for entry in entries.iter().filter(|e| e.kind == EntryType::Directory) {
@@ -239,6 +243,9 @@ pub fn stage(
         }
         file.sync_all()
             .with_context(|| format!("failed to sync {} in staging", entry.path))?;
+        let stat = rustix::fs::fstat(&file)
+            .with_context(|| format!("failed to check {} in staging", entry.path))?;
+        written.insert(entry.path.as_str(), (stat.st_dev, stat.st_ino));
         staged.push(WinningEntry {
             size: Some(size),
             md5: Some(md5),
@@ -267,9 +274,10 @@ pub fn stage(
         let pieces = split
             .pieces
             .iter()
-            .map(|piece| {
-                let size = package.file_size(piece).expect("pieces are files");
-                (piece.as_str(), size)
+            .map(|piece| Piece {
+                path: piece.as_str(),
+                size: package.file_size(piece).expect("pieces are files"),
+                identity: written[piece.as_str()],
             })
             .collect::<Vec<_>>();
         let (size, md5) = assemble(&root, split, &pieces, operation, number, mode, &mut copier)?;
@@ -311,7 +319,7 @@ fn winning(path: &str, kind: EntryType, mode: u32, product: u64) -> WinningEntry
 fn assemble<F: FnMut(StageProgress)>(
     root: &OwnedFd,
     split: &Split,
-    pieces: &[(&str, u64)],
+    pieces: &[Piece<'_>],
     operation: &str,
     number: usize,
     mode: u32,
@@ -323,8 +331,13 @@ fn assemble<F: FnMut(StageProgress)>(
         .with_context(|| format!("failed to assemble {} in staging", split.path))?;
     let mut hasher = Md5::new();
     let mut size = 0;
-    for &(piece, declared) in pieces {
-        let file = open_piece(root, piece, declared)?;
+    for &Piece {
+        path: piece,
+        size: declared,
+        identity,
+    } in pieces
+    {
+        let file = open_piece(root, piece, declared, identity)?;
         let mut tee = Tee {
             inner: file.take(declared),
             hasher: &mut hasher,
@@ -350,10 +363,21 @@ fn assemble<F: FnMut(StageProgress)>(
     Ok((size, lowercase_hex(hasher)))
 }
 
-/// Opens a staged piece, refusing anything that replaced or changed it
-/// since it was written. Nonblocking, so a FIFO put there can't hang the
-/// open.
-fn open_piece(root: &OwnedFd, piece: &str, declared: u64) -> Result<File> {
+/// A split piece staging wrote, with its declared size and the (device,
+/// inode) it was written to.
+#[derive(Clone, Copy)]
+struct Piece<'a> {
+    path: &'a str,
+    size: u64,
+    identity: (u64, u64),
+}
+
+/// Opens a staged piece, refusing it unless it's still the regular file
+/// staging wrote (same device and inode) at its declared size. That catches
+/// a piece replaced by anything else, including a hard link elsewhere, but
+/// not one rewritten in place at the same size. Nonblocking, so a FIFO put
+/// there can't hang the open.
+fn open_piece(root: &OwnedFd, piece: &str, declared: u64, identity: (u64, u64)) -> Result<File> {
     let changed = || invalid(format!("{piece} changed while staging"));
     let (dir, leaf) = open_parent(root, piece)?;
     let fd = match rustix::fs::openat(
@@ -372,6 +396,7 @@ fn open_piece(root: &OwnedFd, piece: &str, declared: u64) -> Result<File> {
         rustix::fs::fstat(&fd).with_context(|| format!("failed to check {piece} in staging"))?;
     if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
         || u64::try_from(stat.st_size).ok() != Some(declared)
+        || (stat.st_dev, stat.st_ino) != identity
     {
         return Err(changed().into());
     }
