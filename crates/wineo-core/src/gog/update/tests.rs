@@ -359,6 +359,38 @@ fn a_migrated_dlc_without_a_version_does_not_decide_the_game() {
 }
 
 #[test]
+fn a_migrated_dlc_stays_unknown_when_gog_lists_its_installer_without_a_version() {
+    let mut fx = Fixture::new();
+    let unversioned = vec![installer("linux", "en", None)];
+    fx.products.insert(
+        RIMWORLD,
+        product(
+            RIMWORLD,
+            "RimWorld",
+            linux("2"),
+            vec![dlc(ROYALTY, "Royalty", unversioned)],
+        ),
+    );
+    fx.native(vec![
+        installed(RIMWORLD, Some("1")),
+        installed(ROYALTY, None),
+    ]);
+    // The base decides, whatever GOG says about the DLC's version.
+    let status = fx.status("rimworld");
+    assert_eq!(status.state, UpdateState::Available);
+    assert_eq!(dlc_state(&status, ROYALTY), DlcState::Unknown);
+    assert_eq!(status.dlc[0].available, None);
+
+    fx.native(vec![
+        installed(RIMWORLD, Some("2")),
+        installed(ROYALTY, None),
+    ]);
+    let status = fx.status("rimworld");
+    assert_eq!(status.state, UpdateState::UpToDate);
+    assert_eq!(dlc_state(&status, ROYALTY), DlcState::Unknown);
+}
+
+#[test]
 fn the_language_matches_exactly_before_its_primary_subtag() {
     let mut fx = Fixture::new();
     fx.native(vec![installed(RIMWORLD, Some("2"))]);
@@ -682,6 +714,36 @@ fn a_state_that_changed_since_it_was_read_is_not_overwritten() {
 }
 
 #[test]
+fn a_check_that_lost_a_race_never_writes_an_older_build_over_a_newer_one() {
+    let mut fx = Fixture::new();
+    disco_on_gog(&mut fx, &[("500", None), ("400", None), ("300", None)]);
+    let state = fx.galaxy(Some("300"));
+    info(&state.folder, &DISCO.to_string(), "400");
+
+    // Another check reads the same state, sees build 500 on disk, and records
+    // it between this check's read of the info file and its lock.
+    let (paths, other) = (fx.paths.clone(), state.clone());
+    BEFORE_LOCK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            info(&other.folder, &DISCO.to_string(), "500");
+            assert!(adopt_build(&paths, &other).unwrap().unwrap().recorded);
+            // The file was 400 when this check read it.
+            info(&other.folder, &DISCO.to_string(), "400");
+        }));
+    });
+    let status = fx.status("disco");
+    assert_eq!(status.installed.as_deref(), Some("500"));
+    assert_eq!(status.state, UpdateState::UpToDate);
+    assert!(status.warnings.is_empty(), "{:?}", status.warnings);
+    assert_eq!(
+        fx.state(&state).committed.unwrap().products[0]
+            .build
+            .as_deref(),
+        Some("500")
+    );
+}
+
+#[test]
 fn a_failed_record_of_another_tools_build_fails_that_game() {
     let mut fx = Fixture::new();
     disco_on_gog(&mut fx, &[("400", None), ("300", None)]);
@@ -925,8 +987,9 @@ fn a_batch_checks_every_owned_game_and_keeps_going_past_a_bad_one() {
     };
     // A game whose details can't be fetched.
     one("aaa-broken", 42);
-    // An ownerless folder, one whose owner tracks another game, and one
-    // whose owner is gone are skipped.
+    // An ownerless folder and one whose owner tracks another game aren't
+    // checked, and their environments have no state of their own, which
+    // `check` calls a lost one. One whose owner is gone is skipped.
     let ownerless = one("ownerless", 7);
     FolderLock::exclusive(&fx.paths, &ownerless.folder, NEVER)
         .unwrap()
@@ -958,7 +1021,7 @@ fn a_batch_checks_every_owned_game_and_keeps_going_past_a_bad_one() {
     assert_eq!(batch.statuses[0].state, UpdateState::UpToDate);
     assert_eq!(batch.statuses[1].state, UpdateState::Available);
 
-    assert_eq!(batch.errors.len(), 2, "{:?}", batch.errors);
+    assert_eq!(batch.errors.len(), 4, "{:?}", batch.errors);
     assert_eq!(batch.errors[0].environment, None);
     assert_eq!(batch.errors[0].id, None);
     assert!(
@@ -975,8 +1038,73 @@ fn a_batch_checks_every_owned_game_and_keeps_going_past_a_bad_one() {
             .message
             .starts_with("Couldn't get GOG product details: ")
     );
+    // The same answers `check` gives for them.
+    for (error, name, id) in [
+        (&batch.errors[2], "elsewhere", 9),
+        (&batch.errors[3], "ownerless", 7),
+    ] {
+        assert_eq!(error.environment.as_deref(), Some(name));
+        assert_eq!(error.id, Some(id));
+        assert_eq!(error.message, fx.check(name).unwrap_err().to_string());
+        // With an unreadable state file about, any of them could be theirs.
+        assert!(error.message.contains("can't be checked"), "{error:?}");
+    }
     assert_eq!(fx.state(&rimworld), rimworld);
     assert_eq!(fx.state(&disco), disco);
+}
+
+#[test]
+fn a_batch_reports_a_lost_state_once() {
+    let mut fx = Fixture::new();
+    fx.products
+        .insert(RIMWORLD, product(RIMWORLD, "RimWorld", linux("1"), vec![]));
+    fx.products
+        .insert(DISCO, product(DISCO, "Disco Elysium", vec![], vec![]));
+    fx.builds.insert(DISCO, builds(&[("400", None)]));
+    fx.native(vec![installed(RIMWORLD, Some("1"))]);
+    let disco = fx.galaxy(Some("400"));
+    // Disco's state file is gone, and a broken config that owns nothing says
+    // nothing about any game.
+    fs::remove_file(folder::state_path(&fx.paths, &disco.folder)).unwrap();
+    fs::write(fx.paths.environment_config("broken"), "gog_id = [").unwrap();
+    let plain = fx.paths.environment_config("plain");
+    fs::write(plain, "kind = \"native\"\n\n[targets.game]\nexe = \"/x\"\n").unwrap();
+
+    // An environment whose folder is another game's has no state of its own
+    // either, which is the same answer `check` gives.
+    fx.game(
+        "elsewhere",
+        8,
+        Platform::Linux,
+        Track::Installer,
+        "en",
+        vec![installed(8, Some("1"))],
+    );
+    fs::write(
+        fx.paths.environment_config("elsewhere"),
+        "kind = \"native\"\ngog_id = \"9\"\n",
+    )
+    .unwrap();
+
+    let batch = fx.with(|session| check_all(session, true)).unwrap();
+    assert_eq!(batch.statuses.len(), 1);
+    assert_eq!(batch.statuses[0].environment, "rimworld");
+    assert_eq!(batch.errors.len(), 2, "{:?}", batch.errors);
+    let elsewhere = &batch.errors[1];
+    assert_eq!(elsewhere.environment.as_deref(), Some("elsewhere"));
+    assert_eq!(elsewhere.id, Some(9));
+    assert!(elsewhere.message.contains("GOG state is missing"));
+    assert_eq!(
+        elsewhere.message,
+        fx.check("elsewhere").unwrap_err().to_string()
+    );
+    let lost = &batch.errors[0];
+    assert_eq!(lost.environment.as_deref(), Some("disco"));
+    assert_eq!(lost.id, Some(DISCO));
+    assert_eq!(
+        lost.message,
+        "disco's GOG state is missing. Migrate it again with wineo import gog --game 1771589310, or stop tracking it with wineo set disco --unset gog_id."
+    );
 }
 
 #[test]
