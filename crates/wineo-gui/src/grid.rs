@@ -141,6 +141,29 @@ impl App {
                     .padding(8),
             );
         }
+        if let Some(badge) =
+            crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.get(&card.name))
+        {
+            let color = match badge {
+                crate::gog_library::Badge::UpdateAvailable => palette.primary,
+                crate::gog_library::Badge::FinishUpdate => palette.warning,
+            };
+            let pill = container(text(badge.label()).size(11).color(ui::accent_ink(color)))
+                .padding([2, 8])
+                .style(move |_| {
+                    container::Style::default()
+                        .background(color)
+                        .border(border::rounded(8))
+                });
+            layers = layers.push(
+                container(pill)
+                    .width(Fill)
+                    .height(Fill)
+                    .align_left(Fill)
+                    .align_top(Fill)
+                    .padding(8),
+            );
+        }
         if let Some(percent) = card.install_progress() {
             layers = layers.push(
                 container(install_bar(percent, palette))
@@ -408,11 +431,13 @@ impl App {
             let wine_actions = self.wine_actions(name);
             let transfer_actions = self.transfer_actions(name);
             let uninstall_action = self.uninstall_action(name);
+            let update_action = self.gog_update_action(name);
             let removal_reason = self.remove_reason(name);
             let menu_buttons = 4
                 + usize::from(wine_actions) * 3
                 + usize::from(transfer_actions) * 2
-                + usize::from(uninstall_action);
+                + usize::from(uninstall_action)
+                + usize::from(update_action);
             let menu_dividers = 1 + usize::from(wine_actions);
             let body_content_height =
                 action_menu_body_height(menu_buttons, menu_dividers, removal_reason.as_deref());
@@ -433,6 +458,19 @@ impl App {
                 ),
             ]
             .spacing(ACTION_MENU_SPACING);
+            if update_action {
+                let enabled = self
+                    .cards
+                    .iter()
+                    .find(|card| &card.name == name)
+                    .is_some_and(|card| self.gog_update_enabled(card));
+                scroll_items = scroll_items.push(context_menu_button(
+                    "Update",
+                    palette,
+                    false,
+                    enabled.then(|| Message::GogUpdate(name.clone())),
+                ));
+            }
             if uninstall_action {
                 // Steam's own dialog asks before anything is removed.
                 scroll_items = scroll_items.push(context_menu_button(

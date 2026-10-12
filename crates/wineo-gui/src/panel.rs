@@ -208,6 +208,7 @@ pub(crate) fn play_enabled(card: &Card, operation_busy: bool, target: Option<&st
         && !card.busy
         && !card.active()
         && card.install_allows_play()
+        && !card.gog_blocks_play()
         && !operation_busy
         && target.is_some()
 }
@@ -215,6 +216,30 @@ pub(crate) fn play_enabled(card: &Card, operation_busy: bool, target: Option<&st
 /// Install hands off to Steam, so it only waits on another Steam request.
 pub(crate) fn install_enabled(card: &Card, request_busy: bool) -> bool {
     card.error.is_none() && !card.busy && !card.active() && card.installable() && !request_busy
+}
+
+impl App {
+    /// Whether Update or Finish update can start for `card` now.
+    pub(crate) fn gog_update_enabled(&self, card: &Card) -> bool {
+        card.error.is_none()
+            && !card.busy
+            && !card.active()
+            && self.operation.is_none()
+            && !self.management_busy()
+            && self.remove_reason(&card.name).is_none()
+    }
+
+    /// Whether the menu offers Update: a native GOG game the background
+    /// check found an update for, with nothing to finish first.
+    pub(crate) fn gog_update_action(&self, name: &str) -> bool {
+        self.gog_updates
+            .get(name)
+            .is_some_and(crate::gog_library::updatable)
+            && self
+                .cards
+                .iter()
+                .any(|card| card.name == name && card.gog.is_some() && !card.finish_update())
+    }
 }
 
 pub(crate) fn stop_enabled(card: &Card, operation_busy: bool) -> bool {
@@ -758,6 +783,14 @@ impl App {
                     Message::Install,
                     PANEL_INSTALL_ID,
                 )
+            } else if card.finish_update() {
+                panel_action_button(
+                    "Finish update",
+                    palette.primary,
+                    self.gog_update_enabled(card),
+                    Message::GogUpdate(card.name.clone()),
+                    PANEL_PLAY_ID,
+                )
             } else {
                 panel_action_button(
                     card.launch_button_label(),
@@ -837,6 +870,29 @@ impl App {
                 }
                 if let Some(warning) = card.install_warning() {
                     inner = inner.push(text(warning).size(14).color(palette.warning));
+                }
+            }
+            if let Some(note) = card.gog.as_ref().and_then(|gog| gog.blocked_note()) {
+                inner = inner.push(text(note).size(14).color(palette.warning));
+            }
+            if card.finish_update() {
+                inner = inner.push(
+                    text("Its last update was interrupted. Finish it before playing.")
+                        .size(14)
+                        .color(palette.warning),
+                );
+            } else if let Some(status) = self.gog_updates.get(&card.name) {
+                inner = inner.push(detail_row(
+                    "Update",
+                    crate::gog_library::state_label(status.state),
+                    palette,
+                ));
+                if let Some(reason) = &status.reason {
+                    inner = inner.push(
+                        text(crate::gog_library::reason_note(reason))
+                            .size(13)
+                            .color(palette.muted),
+                    );
                 }
             }
             inner = inner.push(detail_row("Playtime", &card.playtime, palette));
@@ -1097,6 +1153,7 @@ mod tests {
             default_target: Some("game".into()),
             art: None,
             panel_art: HashMap::new(),
+            gog: None,
         }
     }
 

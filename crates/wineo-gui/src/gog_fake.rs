@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use wineo_core::gog::api::Client;
+use wineo_core::key_store::Keyring;
 
 pub(crate) struct Server {
     pub(crate) base: String,
@@ -91,4 +92,131 @@ pub(crate) fn tokens(refresh: &str, user_id: u64) -> Vec<u8> {
         "user_id": user_id.to_string(),
     });
     reply(200, &body.to_string())
+}
+
+/// Answers GOG's token endpoint and `/products/<id>` from `products`.
+pub(crate) fn product_server(products: Vec<serde_json::Value>) -> Server {
+    Server::start(move |line| {
+        let path = line.split(' ').nth(1).unwrap_or_default();
+        let path = path.split('?').next().unwrap_or_default();
+        if path == "/token" {
+            return tokens("REFRESH", USER);
+        }
+        let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
+        match parts.as_slice() {
+            ["products", id] => products
+                .iter()
+                .find(|product| id.parse::<u64>().ok() == product["id"].as_u64())
+                .map_or_else(|| reply(404, "{}"), |body| reply(200, &body.to_string())),
+            _ => reply(404, "{}"),
+        }
+    })
+}
+
+pub(crate) const USER: u64 = 1001;
+
+/// GOG's details for a native game with one Linux installer.
+pub(crate) fn native_product(id: u64, title: &str, version: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "title": title,
+        "downloads": {"installers": [{
+            "id": format!("installer_linux_en_{id}"),
+            "os": "linux",
+            "language": "en",
+            "version": version,
+            "total_size": 7340032,
+            "files": [{"id": "f", "size": 7340032, "downlink": "https://api.gog.com/x"}],
+        }]},
+        "expanded_dlcs": [],
+    })
+}
+
+/// Saves a login the fake server's token endpoint renews.
+pub(crate) fn save_login(paths: &wineo_core::paths::Paths, keyring: &dyn Keyring) {
+    let secret = format!(r#"{{"refresh_token":"R","user_id":"{USER}"}}"#);
+    wineo_core::key_store::save_key(&wineo_core::gog::account::KEY_SPEC, paths, keyring, &secret)
+        .unwrap();
+}
+
+/// A native GOG game folder under `root` owned by environment `name`, which
+/// launches its `start.sh`, at installed `version`, with a journal when
+/// `interrupted`.
+pub(crate) fn native_game(
+    paths: &wineo_core::paths::Paths,
+    root: &std::path::Path,
+    name: &str,
+    gog_id: u64,
+    version: &str,
+    interrupted: bool,
+) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    use wineo_core::gog::folder::{
+        Committed, FolderLock, FolderState, Journal, JournalKind, Platform, Product, ProductStatus,
+        Target, Track,
+    };
+    let folder = std::fs::canonicalize(root)
+        .unwrap()
+        .join("Games")
+        .join(name);
+    std::fs::create_dir_all(&folder).unwrap();
+    let start = folder.join("start.sh");
+    std::fs::write(&start, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&start, std::fs::Permissions::from_mode(0o755)).unwrap();
+    native_environment(paths, name, &start, Some(gog_id));
+    let products = vec![Product {
+        id: gog_id,
+        version: Some(version.to_owned()),
+        build: None,
+        status: ProductStatus::Installed,
+    }];
+    let state = FolderState {
+        committed: Some(Committed {
+            gog_id,
+            platform: Platform::Linux,
+            language: "en-US".to_owned(),
+            track: Track::Installer,
+            products: products.clone(),
+            files: Vec::new(),
+        }),
+        journal: interrupted.then(|| Journal {
+            operation: "op".to_owned(),
+            kind: JournalKind::Update,
+            target: Target {
+                gog_id,
+                platform: Platform::Linux,
+                language: "en-US".to_owned(),
+                track: Track::Installer,
+                products,
+            },
+            packages: Vec::new(),
+            attempted: Vec::new(),
+        }),
+        ..FolderState::new(folder.clone(), Some(name.to_owned()))
+    };
+    FolderLock::exclusive(paths, &folder, &|| false)
+        .unwrap()
+        .write(&state)
+        .unwrap();
+    folder
+}
+
+/// A native environment that runs `exe`, tracking `gog_id` when given.
+pub(crate) fn native_environment(
+    paths: &wineo_core::paths::Paths,
+    name: &str,
+    exe: &std::path::Path,
+    gog_id: Option<u64>,
+) {
+    let config = paths.environment_config(name);
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    let gog = gog_id.map_or_else(String::new, |id| format!("gog_id = \"{id}\"\n"));
+    std::fs::write(
+        config,
+        format!(
+            "kind = \"native\"\ntags = [\"game\"]\n{gog}\n[targets.game]\nexe = \"{}\"\ndefault = true\n",
+            exe.display()
+        ),
+    )
+    .unwrap();
 }

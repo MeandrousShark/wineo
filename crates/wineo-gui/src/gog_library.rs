@@ -1,0 +1,354 @@
+//! GOG games in the library: what the disk says about each card (an
+//! interrupted update to finish, or a clone it blocks), and what the
+//! background check says GOG offers.
+
+use wineo_core::config::{GlobalConfig, Kind};
+use wineo_core::environment::Environment;
+use wineo_core::gog::folder::{self, FolderError, FolderState};
+use wineo_core::gog::update::{Reason, Status, UpdateState};
+use wineo_core::launch::{self, Overrides};
+use wineo_core::paths::Paths;
+
+/// What a card knows about GOG without asking GOG.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GogCard {
+    /// Its `gog_id`, when it tracks a GOG game.
+    pub(crate) gog_id: Option<String>,
+    /// It owns its game's folder, and an update there was interrupted.
+    pub(crate) unfinished: bool,
+    /// Another environment owns a game folder this one launches from, and
+    /// its update was interrupted. Holds that owner.
+    pub(crate) blocked_by: Option<String>,
+}
+
+impl GogCard {
+    /// Why Play is off for a clone, naming the game to finish.
+    pub(crate) fn blocked_note(&self) -> Option<String> {
+        self.blocked_by.as_deref().map(blocked_note)
+    }
+}
+
+pub(crate) fn blocked_note(owner: &str) -> String {
+    format!("{owner}'s game folder is mid-update. Use Finish update on {owner}.")
+}
+
+/// The GOG folder states, read once per library load.
+pub(crate) struct Folders {
+    states: Vec<FolderState>,
+    /// Loaded only when a journal exists, since only then can a clone be
+    /// blocked.
+    global: Option<GlobalConfig>,
+}
+
+impl Folders {
+    pub(crate) fn read(paths: &Paths) -> Self {
+        // GOG games live in the host library only.
+        let states: Vec<FolderState> =
+            if paths.portable_root().is_none() && paths.gog_folders_dir().exists() {
+                folder::list(paths)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|(_, state)| state.ok())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        let journal = states.iter().any(|state| state.journal.is_some());
+        Self {
+            global: journal.then(|| GlobalConfig::load(paths).ok()).flatten(),
+            states,
+        }
+    }
+
+    /// What `env`'s card shows about GOG, None for one that has nothing to do
+    /// with it.
+    pub(crate) fn card(&self, paths: &Paths, env: &Environment) -> Option<GogCard> {
+        if matches!(env.config.kind, Kind::Proxied(_)) || paths.portable_root().is_some() {
+            return None;
+        }
+        let gog_id = env.config.gog_id.clone();
+        let unfinished = gog_id.as_deref().is_some_and(|id| {
+            self.states.iter().any(|state| {
+                state.owner.as_deref() == Some(env.name.as_str())
+                    && state.is_game(id)
+                    && state.journal.is_some()
+            })
+        });
+        let blocked_by = match &self.global {
+            Some(global) if !unfinished => blocking_owner(paths, global, env),
+            _ => None,
+        };
+        (gog_id.is_some() || blocked_by.is_some()).then_some(GogCard {
+            gog_id,
+            unfinished,
+            blocked_by,
+        })
+    }
+}
+
+/// The owner whose interrupted update stops `env` from launching, found the
+/// way a launch would refuse it. Anything else a launch would refuse is left
+/// for Play to report.
+fn blocking_owner(paths: &Paths, global: &GlobalConfig, env: &Environment) -> Option<String> {
+    let error = launch::precheck(paths, global, env, &Overrides::default()).err()?;
+    match error.downcast_ref::<FolderError>() {
+        Some(FolderError::MidUpdate { name }) if *name != env.name => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// The badge on a card's poster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Badge {
+    UpdateAvailable,
+    FinishUpdate,
+}
+
+impl Badge {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::UpdateAvailable => "Update available",
+            Self::FinishUpdate => "Finish update",
+        }
+    }
+}
+
+pub(crate) fn badge(gog: Option<&GogCard>, status: Option<&Status>) -> Option<Badge> {
+    if gog.is_some_and(|gog| gog.unfinished) {
+        Some(Badge::FinishUpdate)
+    } else if status.is_some_and(updatable) {
+        Some(Badge::UpdateAvailable)
+    } else {
+        None
+    }
+}
+
+/// Whether this wineo can update the game now: a native game with an update.
+pub(crate) fn updatable(status: &Status) -> bool {
+    status.applicable && status.state == UpdateState::Available
+}
+
+/// How a game's update state reads in the panel.
+pub(crate) fn state_label(state: UpdateState) -> &'static str {
+    match state {
+        UpdateState::UpToDate => "Up to date",
+        UpdateState::Available => "Update available",
+        UpdateState::OnGog => "Update on GOG",
+        UpdateState::CantCompare => "Can't compare",
+    }
+}
+
+/// Why an update can't be applied, or can't be told, as `update --check`
+/// says it.
+pub(crate) fn reason_note(reason: &Reason) -> String {
+    match reason {
+        Reason::WindowsInstaller => {
+            "Updating Windows installer games comes in a later release.".to_owned()
+        }
+        Reason::Galaxy => "Updating Galaxy builds comes in a later release.".to_owned(),
+        Reason::CantCompare(why) => why.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use wineo_core::gog::folder::{Platform, Track};
+    use wineo_core::runtime::State;
+
+    use super::*;
+    use crate::Message;
+    use crate::gog_fake::{native_environment, native_game};
+    use crate::tests::{app, card};
+
+    const RIMWORLD: u64 = 1094900565;
+
+    fn setup() -> (tempfile::TempDir, Paths) {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_owned();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(home.as_os_str())))
+                .unwrap();
+        (root, paths)
+    }
+
+    fn card_of(paths: &Paths, name: &str) -> Option<GogCard> {
+        let env = Environment::load(paths, name).unwrap();
+        Folders::read(paths).card(paths, &env)
+    }
+
+    #[test]
+    fn an_interrupted_update_marks_its_owner_and_names_it_for_clones() {
+        let (root, paths) = setup();
+        let folder = native_game(&paths, root.path(), "rimworld", RIMWORLD, "1.0", true);
+        native_environment(&paths, "rimworld-copy", &folder.join("start.sh"), None);
+        let elsewhere = root.path().join("other.sh");
+        std::fs::write(&elsewhere, "#!/bin/sh\n").unwrap();
+        native_environment(&paths, "notes", &elsewhere, None);
+
+        let owner = card_of(&paths, "rimworld").unwrap();
+        assert!(owner.unfinished);
+        assert_eq!(owner.blocked_by, None);
+        let copy = card_of(&paths, "rimworld-copy").unwrap();
+        assert!(!copy.unfinished);
+        assert_eq!(copy.blocked_by.as_deref(), Some("rimworld"));
+        assert_eq!(
+            copy.blocked_note().unwrap(),
+            "rimworld's game folder is mid-update. Use Finish update on rimworld."
+        );
+        assert_eq!(card_of(&paths, "notes"), None);
+    }
+
+    #[test]
+    fn a_finished_game_is_just_a_gog_game() {
+        let (root, paths) = setup();
+        let folder = native_game(&paths, root.path(), "rimworld", RIMWORLD, "1.0", false);
+        native_environment(&paths, "rimworld-copy", &folder.join("start.sh"), None);
+        let owner = card_of(&paths, "rimworld").unwrap();
+        assert_eq!(owner.gog_id.as_deref(), Some("1094900565"));
+        assert!(!owner.unfinished);
+        assert_eq!(card_of(&paths, "rimworld-copy"), None);
+    }
+
+    #[test]
+    fn a_portable_session_reads_no_gog_state() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let host = Paths::from_lookup({
+            let home = home.clone();
+            move |key| (key == "HOME").then(|| OsString::from(&home))
+        })
+        .unwrap();
+        native_game(&host, root.path(), "rimworld", RIMWORLD, "1.0", true);
+        let portable = Paths::select(
+            move |key| (key == "HOME").then(|| OsString::from(&home)),
+            Some(&root.path().join("portable")),
+        )
+        .unwrap();
+        assert!(Folders::read(&portable).states.is_empty());
+    }
+
+    pub(crate) fn status(name: &str, state: UpdateState, applicable: bool) -> Status {
+        Status {
+            environment: name.to_owned(),
+            gog_id: RIMWORLD,
+            title: "RimWorld".to_owned(),
+            folder: "/games/rimworld".into(),
+            platform: if applicable {
+                Platform::Linux
+            } else {
+                Platform::Windows
+            },
+            track: Track::Installer,
+            language: "en-US".to_owned(),
+            installed: Some("1.0".to_owned()),
+            available: Some("1.1".to_owned()),
+            state,
+            applicable,
+            reason: (!applicable).then_some(Reason::WindowsInstaller),
+            unfinished: false,
+            warnings: Vec::new(),
+            dlc: Vec::new(),
+        }
+    }
+
+    fn gog_card(unfinished: bool, blocked_by: Option<&str>) -> Option<GogCard> {
+        Some(GogCard {
+            gog_id: Some(RIMWORLD.to_string()),
+            unfinished,
+            blocked_by: blocked_by.map(str::to_owned),
+        })
+    }
+
+    #[test]
+    fn badges_say_update_available_or_finish_update() {
+        let native = status("rimworld", UpdateState::Available, true);
+        let windows = status("disco", UpdateState::Available, false);
+        let finish = gog_card(true, None);
+        let plain = gog_card(false, None);
+        assert_eq!(
+            badge(plain.as_ref(), Some(&native)),
+            Some(Badge::UpdateAvailable)
+        );
+        assert_eq!(badge(plain.as_ref(), Some(&windows)), None);
+        assert_eq!(badge(plain.as_ref(), None), None);
+        assert_eq!(
+            badge(finish.as_ref(), Some(&native)),
+            Some(Badge::FinishUpdate)
+        );
+        assert_eq!(Badge::UpdateAvailable.label(), "Update available");
+        assert_eq!(Badge::FinishUpdate.label(), "Finish update");
+        assert_eq!(state_label(UpdateState::OnGog), "Update on GOG");
+        assert_eq!(
+            reason_note(&Reason::WindowsInstaller),
+            "Updating Windows installer games comes in a later release."
+        );
+    }
+
+    #[test]
+    fn update_is_offered_for_native_updates_and_finish_update_replaces_play() {
+        let mut app = app();
+        let mut rimworld = card("rimworld", State::Inactive, 0);
+        rimworld.gog = gog_card(false, None);
+        let mut disco = card("disco", State::Inactive, 0);
+        disco.gog = gog_card(false, None);
+        let mut copy = card("rimworld-copy", State::Inactive, 0);
+        copy.gog = gog_card(false, Some("rimworld"));
+        let mut broken = card("broken", State::Inactive, 0);
+        broken.gog = gog_card(true, None);
+        app.cards = vec![rimworld, disco, copy, broken];
+        assert!(!app.gog_update_action("rimworld"), "nothing checked yet");
+        app.gog_updates.insert(
+            "rimworld".to_owned(),
+            status("rimworld", UpdateState::Available, true),
+        );
+        app.gog_updates.insert(
+            "disco".to_owned(),
+            status("disco", UpdateState::Available, false),
+        );
+        assert!(app.gog_update_action("rimworld"));
+        assert!(
+            !app.gog_update_action("disco"),
+            "Windows games show status only"
+        );
+        assert!(!app.gog_update_action("broken"));
+
+        let target = Some("game");
+        assert!(crate::panel::play_enabled(&app.cards[0], false, target));
+        assert!(!crate::panel::play_enabled(&app.cards[2], false, target));
+        assert!(!crate::panel::play_enabled(&app.cards[3], false, target));
+        assert!(app.cards[3].finish_update());
+
+        // The context menu lays out with its Update row.
+        app.action_menu = Some("rimworld".to_owned());
+        let _ = crate::layout_probe::layout(&mut app.view(), iced::Size::new(1200.0, 800.0));
+
+        // Update opens the review; a game without one can't.
+        let _ = app.update(Message::GogUpdate("disco".to_owned()));
+        assert!(app.flow.is_none());
+        let _ = app.update(Message::GogUpdate("broken".to_owned()));
+        assert!(matches!(app.flow, Some(crate::flow::Page::GogUpdate(_))));
+    }
+
+    #[test]
+    fn the_panel_shows_finish_update_the_blocked_note_and_windows_status() {
+        let mut app = app();
+        let mut broken = card("broken", State::Inactive, 0);
+        broken.gog = gog_card(true, None);
+        let mut copy = card("rimworld-copy", State::Inactive, 0);
+        copy.gog = gog_card(false, Some("rimworld"));
+        let mut disco = card("disco", State::Inactive, 0);
+        disco.gog = gog_card(false, None);
+        app.gog_updates.insert(
+            "disco".to_owned(),
+            status("disco", UpdateState::Available, false),
+        );
+        app.cards = vec![broken, copy, disco];
+        for card in &app.cards {
+            let mut view = app.panel(card);
+            let _ = crate::layout_probe::layout(&mut view, iced::Size::new(420.0, 800.0));
+        }
+    }
+}

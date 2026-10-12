@@ -14,6 +14,7 @@ mod focus_button;
 mod fonts;
 #[cfg(test)]
 mod gog_fake;
+mod gog_library;
 mod grid;
 mod grid_motion;
 mod keys;
@@ -133,6 +134,9 @@ pub(crate) struct App {
     steamgriddb_late_result: Option<settings::Event>,
     steam_key_work: settings::SteamKeyWork,
     gog_work: settings::GogWork,
+    /// What the background check found, by environment. Kept here rather
+    /// than on cards, which every library refresh rebuilds.
+    pub(crate) gog_updates: HashMap<String, wineo_core::gog::update::Status>,
     art_page: Option<String>,
     art_pages: HashMap<String, art_page::Page>,
     pending_art_writes: HashSet<(String, u64, u64, art_page::EnvironmentIdentity)>,
@@ -259,6 +263,8 @@ pub(crate) enum Message {
     Tool(String, tools_page::Kind, tools_page::Event),
     Add,
     CloneEnvironment(String),
+    /// Updates a GOG game, or finishes its interrupted update.
+    GogUpdate(String),
     Context(String),
     PointerMoved(iced::Point),
     OverlayInput,
@@ -347,6 +353,7 @@ impl App {
             steamgriddb_late_result: None,
             steam_key_work: settings::SteamKeyWork::default(),
             gog_work: settings::GogWork::default(),
+            gog_updates: HashMap::new(),
             art_page: None,
             art_pages: HashMap::new(),
             pending_art_writes: HashSet::new(),
@@ -566,6 +573,7 @@ impl App {
                     | Message::Hover(_)
                     | Message::Add
                     | Message::CloneEnvironment(_)
+                    | Message::GogUpdate(_)
                     | Message::Checkup(
                         checkup::Event::Fix(_)
                             | checkup::Event::Check(_)
@@ -1153,6 +1161,35 @@ impl App {
                     iced::advanced::widget::operation::focusable::unfocus(),
                 )
             }
+            Message::GogUpdate(name) => {
+                let enabled = self
+                    .cards
+                    .iter()
+                    .find(|card| card.name == name)
+                    .is_some_and(|card| {
+                        (card.finish_update() || self.gog_update_action(&name))
+                            && self.gog_update_enabled(card)
+                    });
+                if !enabled
+                    || self.settings.is_some()
+                    || self.art_page.is_some()
+                    || self.flow.is_some()
+                {
+                    return Task::none();
+                }
+                self.close_log();
+                self.action_menu = None;
+                self.flow_generation = self.flow_generation.wrapping_add(1);
+                let generation = self.flow_generation;
+                let (page, task) = flow::Page::gog_update(self.paths.clone(), name);
+                self.flow = Some(page);
+                Task::batch([
+                    task.map(move |event| Message::Flow(generation, event)),
+                    iced::advanced::widget::operate(
+                        iced::advanced::widget::operation::focusable::unfocus(),
+                    ),
+                ])
+            }
             Message::CloneEnvironment(name) => {
                 if self.management_busy()
                     || !self.transfer_actions(&name)
@@ -1311,6 +1348,12 @@ impl App {
         let task = page
             .update_with_key_availability(event, self.steamgriddb_available)
             .map(move |event| Message::Flow(generation, event));
+        if let Some(name) = page.take_updated() {
+            self.gog_updates.remove(&name);
+        }
+        let Some(page) = &mut self.flow else {
+            return task;
+        };
         if self.closing && !page.busy() {
             return task;
         }
@@ -1742,6 +1785,7 @@ mod tests {
             default_target: Some("game".into()),
             art: None,
             panel_art: HashMap::new(),
+            gog: None,
         }
     }
     pub(crate) fn app() -> App {
