@@ -1064,6 +1064,24 @@ Chosen during step 6:
 - **The working directory** may be the game folder itself; the program
   may not be a folder, even through a symlink.
 
+Settled by the maintainer on 2026-10-12, before step 7:
+
+- **Migrated DLC with no version.** Nothing Heroic or GOG leaves on disk
+  records a DLC's version, so a migrated native game is compared by its
+  base version alone until its first rebuild (an update or `--reinstall`)
+  records every product's version. Its DLC are listed as version unknown
+  until then. A DLC-only update is missed until that rebuild; the base
+  game and RimWorld's DLC share a version, so RimWorld can't miss one.
+- **Matching the language.** A recorded language matches GOG's installer
+  language exactly, else by its primary subtag (`en-US` matches `en`).
+  Anything else is Can't compare.
+- **Naming what's running.** A launch holding a folder's in-use lock also
+  leaves a record naming its environment beside the lock, checked for
+  liveness, so the update refusal can name it: `rimworld-copy is running
+  from this game folder. Stop it before updating rimworld.` A holder that
+  can't be named falls back to `Something is running from rimworld's game
+  folder. Stop it first.`
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,
