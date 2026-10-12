@@ -777,6 +777,7 @@ fn a_playtime_answer_without_a_whole_total_is_malformed() {
         r#"{"time_sum": -5}"#,
         r#"{"time_sum": 1.5}"#,
         r#"{"time_sum": "lots"}"#,
+        r#"{"time_sum": "123"}"#,
         r#"{"time_sum": [1]}"#,
         "[]",
     ] {

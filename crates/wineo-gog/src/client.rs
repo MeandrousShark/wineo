@@ -7,7 +7,6 @@ use serde_json::Value;
 use crate::art::{self, GameArt};
 use crate::auth::{self, AuthCode, CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, Tokens, UserId};
 use crate::error::{Endpoint, Error, ErrorKind};
-use crate::json;
 use crate::owned::{self, OwnedPage, OwnedProduct};
 use crate::product::{self, Builds, Product, ResolvedLink};
 
@@ -246,8 +245,9 @@ impl Client {
         let Some(body) = self.fetch_json(Endpoint::Playtime, url, Some(access_token), true)? else {
             return Ok(None);
         };
+        // Minutes are a JSON integer. Unlike ids, a string isn't accepted.
         body.get("time_sum")
-            .and_then(json::id)
+            .and_then(Value::as_u64)
             .map(Some)
             .ok_or_else(|| Error::new(Endpoint::Playtime, ErrorKind::Malformed))
     }
