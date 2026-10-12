@@ -297,8 +297,24 @@ impl DownloadCache {
         cancel: &dyn Fn() -> bool,
         between: &dyn Fn(),
     ) -> Result<(), Error> {
-        let disk = disk(Endpoint::Cache);
         let _lock = self.lock(product_id, cancel, Endpoint::Cache)?;
+        self.remove_locked(product_id, between)
+    }
+
+    /// Holds a product's lock, so nothing downloads or removes its files
+    /// until the pin is dropped. Waits for whoever holds it, checking
+    /// `cancel`. Pin several products in id order, so two holders never
+    /// wait on each other.
+    pub fn pin(&self, product_id: u64, cancel: &dyn Fn() -> bool) -> Result<Pin<'_>, Error> {
+        Ok(Pin {
+            cache: self,
+            product_id,
+            _lock: self.lock(product_id, cancel, Endpoint::Cache)?,
+        })
+    }
+
+    fn remove_locked(&self, product_id: u64, between: &dyn Fn()) -> Result<(), Error> {
+        let disk = disk(Endpoint::Cache);
         let dir = self.product_dir(product_id);
         for entry in fs::read_dir(&dir).map_err(disk)? {
             let entry = entry.map_err(disk)?;
@@ -317,6 +333,47 @@ impl DownloadCache {
             between();
         }
         sync_dir(&dir, Endpoint::Cache)
+    }
+}
+
+/// A product's files held in place: see `DownloadCache::pin`.
+pub struct Pin<'a> {
+    cache: &'a DownloadCache,
+    product_id: u64,
+    _lock: ProductLock,
+}
+
+impl Pin<'_> {
+    pub fn product_id(&self) -> u64 {
+        self.product_id
+    }
+
+    /// `DownloadCache::complete`, for one of this product's files.
+    pub fn complete(
+        &self,
+        package: &Package<'_>,
+        md5: Option<&str>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Option<PathBuf>, Error> {
+        if package.product_id != self.product_id {
+            return Err(Error::new(Endpoint::Cache, ErrorKind::Malformed));
+        }
+        self.cache.complete(package, md5, cancel)
+    }
+
+    /// `DownloadCache::remove_product`, without letting go of the lock in
+    /// between, so whatever decided the files could go still holds.
+    pub fn remove(self) -> Result<(), Error> {
+        self.cache.remove_locked(self.product_id, &|| {})
+    }
+}
+
+impl std::fmt::Debug for Pin<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Pin")
+            .field("product_id", &self.product_id)
+            .finish_non_exhaustive()
     }
 }
 

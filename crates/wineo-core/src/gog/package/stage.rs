@@ -43,7 +43,7 @@ fn check_operation(operation: &str) -> Result<()> {
     Ok(())
 }
 
-fn open_folder(folder: &Path) -> Result<OwnedFd> {
+pub(crate) fn open_folder(folder: &Path) -> Result<OwnedFd> {
     rustix::fs::open(
         folder,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
@@ -52,7 +52,10 @@ fn open_folder(folder: &Path) -> Result<OwnedFd> {
     .with_context(|| format!("failed to open {}", folder.display()))
 }
 
-fn open_dir_at(dir: impl AsFd, name: impl rustix::path::Arg) -> rustix::io::Result<OwnedFd> {
+pub(crate) fn open_dir_at(
+    dir: impl AsFd,
+    name: impl rustix::path::Arg,
+) -> rustix::io::Result<OwnedFd> {
     rustix::fs::openat(
         dir,
         name,
@@ -63,7 +66,7 @@ fn open_dir_at(dir: impl AsFd, name: impl rustix::path::Arg) -> rustix::io::Resu
 
 /// Opens the folder holding `path` inside the staging root, one component
 /// at a time so no symlink is ever followed.
-fn open_parent<'a>(root: &OwnedFd, path: &'a str) -> Result<(OwnedFd, &'a str)> {
+pub(crate) fn open_parent<'a>(root: &OwnedFd, path: &'a str) -> Result<(OwnedFd, &'a str)> {
     let (parent, leaf) = match path.rsplit_once('/') {
         Some((parent, leaf)) => (Some(parent), leaf),
         None => (None, path),
@@ -92,7 +95,7 @@ fn create_file(dir: &OwnedFd, name: &str, mode: u32) -> rustix::io::Result<File>
     Ok(File::from(fd))
 }
 
-fn lowercase_hex(hasher: Md5) -> String {
+pub(crate) fn lowercase_hex(hasher: Md5) -> String {
     hasher
         .finalize()
         .iter()
@@ -457,7 +460,7 @@ pub fn remove_staging(folder: &Path, operation: &str, product: u64) -> Result<()
         .with_context(|| format!("failed to sync {}", folder.display()))
 }
 
-fn remove_at(dir: &OwnedFd, name: &CStr) -> Result<()> {
+pub(crate) fn remove_at(dir: &OwnedFd, name: &CStr) -> Result<()> {
     let stat = match rustix::fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(stat) => stat,
         Err(Errno::NOENT) => return Ok(()),

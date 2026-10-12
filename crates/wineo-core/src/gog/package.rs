@@ -21,6 +21,7 @@ use crate::units;
 mod stage;
 
 pub use stage::{StageProgress, remove_staging, stage, staging_name};
+pub(crate) use stage::{lowercase_hex, open_dir_at, open_folder, open_parent, remove_at};
 
 /// SHA-256 of every GOG `support/postinst.sh` wineo knows how to stand in
 /// for. Each only assembles split files.
@@ -550,7 +551,7 @@ pub fn check_space(paths: &Paths, folder: &Path, packages: &[&Package]) -> Resul
     Ok(())
 }
 
-fn check_space_with(
+pub(crate) fn check_space_with(
     paths: &Paths,
     folder: &Path,
     needed: SpaceNeeded,

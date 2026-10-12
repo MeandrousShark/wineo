@@ -231,6 +231,12 @@ impl Paths {
         self.cache.join(format!("gog-product-{product_id}.json"))
     }
 
+    /// GOG installer downloads, as `<product id>/<download id>/<file name>`.
+    /// On the host, like any cache, and kept while a journal names them.
+    pub fn gog_download_cache(&self) -> PathBuf {
+        self.cache.join("gog-downloads")
+    }
+
     /// GOG game folder state files. Always in the host data dir, since GOG
     /// games live in the host library only.
     pub fn gog_folders_dir(&self) -> PathBuf {
@@ -788,6 +794,10 @@ mod tests {
         assert_eq!(
             paths.art_cache_dir(),
             Path::new("/home/me/.cache/wineo/art")
+        );
+        assert_eq!(
+            paths.gog_download_cache(),
+            Path::new("/home/me/.cache/wineo/gog-downloads")
         );
         let state = Path::new("/home/me/.local/state/wineo/.portable");
         assert!(paths.runtime_dir("hades").starts_with(state));
