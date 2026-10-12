@@ -1013,16 +1013,40 @@ fn an_environment_replaced_during_the_steamgriddb_download_is_left_alone() {
     );
 }
 
-/// Cancels `token` as an image download starts, like Cancel pressed while
-/// the bytes come in.
-struct CancelingTransport<'a> {
-    inner: FakeApi,
-    token: &'a Token,
+/// Streams the bodies of URLs containing `when` a few bytes at a time, and
+/// runs `hook` once the first bytes have been read, like Cancel pressed
+/// while an image comes in slowly.
+struct Streaming<'a> {
+    inner: &'a FakeApi,
+    when: String,
+    hook: Arc<dyn Fn() + Send + Sync>,
 }
 
-impl Transport for CancelingTransport<'_> {
+struct Trickle {
+    body: Box<dyn std::io::Read>,
+    reads: usize,
+    hook: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl std::io::Read for Trickle {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.reads == 1 {
+            (self.hook)();
+        }
+        self.reads += 1;
+        let len = buffer.len().min(4);
+        self.body.read(&mut buffer[..len])
+    }
+}
+
+impl Transport for Streaming<'_> {
     fn get(&self, url: &str) -> Result<Box<dyn std::io::Read>> {
         self.inner.get(url)
+    }
+
+    fn request(&self, url: &str, bearer: Option<&str>) -> Result<crate::download::Response> {
+        self.request_with_length(url, bearer)
+            .map(|(response, _)| response)
     }
 
     fn request_with_length(
@@ -1030,8 +1054,21 @@ impl Transport for CancelingTransport<'_> {
         url: &str,
         bearer: Option<&str>,
     ) -> Result<(crate::download::Response, Option<u64>)> {
-        self.token.cancel();
-        self.inner.request_with_length(url, bearer)
+        let (response, length) = self.inner.request_with_length(url, bearer)?;
+        if !url.contains(&self.when) {
+            return Ok((response, length));
+        }
+        Ok((
+            crate::download::Response {
+                status: response.status,
+                body: Box::new(Trickle {
+                    body: response.body,
+                    reads: 0,
+                    hook: Arc::clone(&self.hook),
+                }),
+            },
+            length,
+        ))
     }
 }
 
@@ -1080,29 +1117,25 @@ fn a_cancel_during_a_download_keeps_what_was_done_and_writes_nothing_more() {
     let server = Scripted::start(gog(Some(120), art_body(&[])));
     let mut session = fixture.session(&server.base);
     let token = Token::new();
-    let transport = CancelingTransport {
-        inner: images(),
-        token: &token,
-    };
-    let request = Request {
-        name: "rimworld",
-        gog_id: GAME,
-        title: "RimWorld",
-        kinds: &Kind::ALL,
-        transport: &transport,
-        steamgriddb_key: Some("key"),
-        language: "en",
+    let images = images();
+    let canceling = token.clone();
+    let transport = Streaming {
+        inner: &images,
+        when: "gog-statics".to_owned(),
+        hook: Arc::new(move || canceling.cancel()),
     };
     let report = run(
         &fixture.paths,
         Some(&mut session),
-        &request,
+        &request(&transport, &Kind::ALL, Some("key")),
         Ok(client_at(&server.base)),
         &token,
     )
     .unwrap();
     // Playtime came first and stays.
     assert_eq!(fixture.imported().unwrap().seconds, 7200);
+    // Exactly one image started, and stopped after its first bytes.
+    assert_eq!(images.urls().len(), 1, "{:?}", images.urls());
     assert!(report.art.is_empty(), "{:?}", report.art);
     assert_eq!(report.notes.len(), Kind::ALL.len());
     assert!(
@@ -1135,6 +1168,84 @@ fn request<'a>(
         steamgriddb_key: key,
         language: "en",
     }
+}
+
+#[test]
+fn a_cancel_during_the_steamgriddb_search_saves_no_game() {
+    let fixture = Fixture::new();
+    let server = Scripted::start(gog(None, art_body(&["logo"])));
+    let inner = images();
+    inner.json(
+        format!("{}/search/autocomplete/RimWorld", steamgriddb::API),
+        json!([{"id": 7, "name": "RimWorld"}]),
+    );
+    serve(&inner, Kind::Logo, 41, PNG);
+    let token = Token::new();
+    let transport = Hooked {
+        inner: &inner,
+        when: "/search/autocomplete/".to_owned(),
+        hook: Box::new(|| token.cancel()),
+    };
+    let report = run(
+        &fixture.paths,
+        None,
+        &request(&transport, &Kind::ALL, Some("sgdb-key")),
+        Ok(client_at(&server.base)),
+        &token,
+    )
+    .unwrap();
+    assert_eq!(
+        report.art.len(),
+        3,
+        "GOG's art came first: {:?}",
+        report.art
+    );
+    assert_eq!(art::saved_game(&fixture.paths, "rimworld").unwrap(), None);
+    assert_eq!(fixture.art_config().record(None, Kind::Logo), None);
+    assert!(!inner.urls().iter().any(|url| url.contains("cdn.example")));
+    assert!(
+        art_notes(&report).contains(&"Skipped logo artwork: canceled."),
+        "{:?}",
+        report.notes
+    );
+}
+
+#[test]
+fn a_cancel_during_a_steamgriddb_download_writes_nothing() {
+    let fixture = Fixture::new();
+    art::save_game(&fixture.paths, "rimworld", 7).unwrap();
+    let server = Scripted::start(gog(None, art_body(&["logo"])));
+    let inner = images();
+    serve(&inner, Kind::Logo, 41, PNG);
+    let token = Token::new();
+    let canceling = token.clone();
+    let transport = Streaming {
+        inner: &inner,
+        when: "cdn.example/41".to_owned(),
+        hook: Arc::new(move || canceling.cancel()),
+    };
+    let report = run(
+        &fixture.paths,
+        None,
+        &request(&transport, &Kind::ALL, Some("sgdb-key")),
+        Ok(client_at(&server.base)),
+        &token,
+    )
+    .unwrap();
+    assert!(
+        inner
+            .urls()
+            .iter()
+            .any(|url| url.contains("cdn.example/41"))
+    );
+    assert_eq!(report.art.len(), 3, "{:?}", report.art);
+    assert_eq!(fixture.art_config().record(None, Kind::Logo), None);
+    assert!(!fixture.art_file("logo.png").exists());
+    assert!(
+        art_notes(&report).contains(&"Skipped logo artwork: canceled."),
+        "{:?}",
+        report.notes
+    );
 }
 
 #[test]

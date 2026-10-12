@@ -385,8 +385,24 @@ fn steamgriddb(
                 note(format!("SteamGridDB has no game titled {title}."));
                 return;
             };
-            if let Err(error) = art::save_game_for(paths, name, game.id, Some(identity)) {
-                note(format!("Couldn't save the SteamGridDB game: {error}"));
+            // The search can't be interrupted, so a cancel that came
+            // meanwhile is honored before saving anything.
+            if token.is_canceled() {
+                for kind in kinds {
+                    note(canceled(&format!("{kind} artwork")));
+                }
+                return;
+            }
+            if let Err(error) =
+                art::save_game_for(paths, name, game.id, Some(identity), Some(token))
+            {
+                if token.is_canceled() {
+                    for kind in kinds {
+                        note(canceled(&format!("{kind} artwork")));
+                    }
+                } else {
+                    note(format!("Couldn't save the SteamGridDB game: {error}"));
+                }
                 return;
             }
             game.id
@@ -411,7 +427,9 @@ fn steamgriddb(
             request.language,
             Mode::Fill,
             Some(identity),
+            token,
         ) {
+            Err(_) if token.is_canceled() => note(canceled(&format!("{kind} artwork"))),
             Ok(Fetched::Stored { asset, .. }) => report.art.push(Filled {
                 kind,
                 source: Source::SteamGridDb(asset),

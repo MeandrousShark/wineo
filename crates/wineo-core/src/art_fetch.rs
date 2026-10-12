@@ -51,12 +51,24 @@ pub fn fetch_kind(
     language: &str,
     mode: Mode,
 ) -> Result<Fetched> {
-    fetch_kind_for(paths, env, target, kind, api, game, language, mode, None)
+    fetch_kind_for(
+        paths,
+        env,
+        target,
+        kind,
+        api,
+        game,
+        language,
+        mode,
+        None,
+        &Token::new(),
+    )
 }
 
 /// Like `fetch_kind`, except that nothing is written unless the environment
-/// is still the one `expected_identity` was read from. The check is made
-/// under the art lock, after the download.
+/// is still the one `expected_identity` was read from, and `cancel` stops
+/// the download and anything after it. Both are checked under the art lock,
+/// after the download.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fetch_kind_for(
     paths: &Paths,
@@ -68,14 +80,18 @@ pub(crate) fn fetch_kind_for(
     language: &str,
     mode: Mode,
     expected_identity: Option<EnvironmentIdentity>,
+    cancel: &Token,
 ) -> Result<Fetched> {
+    if cancel.is_canceled() {
+        return Err(crate::Error::Canceled("download").into());
+    }
     art::check_spot(paths, env, target)?;
     if mode == Mode::Fill
         && let Some(skipped) = existing(paths, env, target, kind)?
     {
         return Ok(skipped);
     }
-    let image = match choose_for(api, game, kind, language, mode)? {
+    let image = match choose_for(api, game, kind, language, mode, cancel)? {
         Choice::Image(image) => image,
         Choice::NoneFound => return Ok(Fetched::NoneFound),
         Choice::AssetNotFound => return Ok(Fetched::AssetNotFound),
@@ -87,7 +103,7 @@ pub(crate) fn fetch_kind_for(
         kind,
         &image,
         mode,
-        None,
+        Some(cancel),
         expected_identity,
     )
 }
@@ -131,7 +147,7 @@ pub fn fetch_steam(
 
 /// Chooses and downloads the best usable ranked image without an environment.
 pub fn choose(api: &Api, game: u64, kind: Kind, language: &str) -> Result<Option<Downloaded>> {
-    match choose_for(api, game, kind, language, Mode::Fill)? {
+    match choose_for(api, game, kind, language, Mode::Fill, &Token::new())? {
         Choice::Image(image) => Ok(Some(image)),
         Choice::NoneFound | Choice::AssetNotFound => Ok(None),
     }
@@ -180,7 +196,14 @@ enum Choice {
     AssetNotFound,
 }
 
-fn choose_for(api: &Api, game: u64, kind: Kind, language: &str, mode: Mode) -> Result<Choice> {
+fn choose_for(
+    api: &Api,
+    game: u64,
+    kind: Kind,
+    language: &str,
+    mode: Mode,
+    cancel: &Token,
+) -> Result<Choice> {
     // The user picked an asset by hand, so none of ranking's filters apply.
     let filters = match mode {
         Mode::Asset(_) => Filters::None,
@@ -195,7 +218,7 @@ fn choose_for(api: &Api, game: u64, kind: Kind, language: &str, mode: Mode) -> R
     }
     rank(kind, &mut images, language);
     for image in images {
-        let bytes = api.download(&image.url)?;
+        let bytes = api.download_with_progress(&image.url, |_, _| {}, cancel)?;
         let Some(format) = detect(&bytes).filter(|format| kind.accepts(*format)) else {
             if let Mode::Asset(asset) = mode {
                 bail!("asset {asset} is not a {} image", art::accepted(kind));
