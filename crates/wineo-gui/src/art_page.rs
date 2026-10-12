@@ -1271,6 +1271,10 @@ fn source_label(row: &RowData) -> String {
             source: Some(Source::SteamGridDb(id)),
             ..
         }) => format!("SteamGridDB {id}"),
+        Some(Resolved {
+            source: Some(Source::Gog(game)),
+            ..
+        }) => format!("GOG, game {game}"),
         Some(Resolved { .. }) => "Manual".to_owned(),
         None => "None".to_owned(),
     };
