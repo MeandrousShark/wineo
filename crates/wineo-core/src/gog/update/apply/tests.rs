@@ -490,6 +490,7 @@ fn base_v1() -> Vec<Item> {
         Item::Split("Data/big.dat", b"big v1 big v1 big v1".to_vec()),
         file("old/deep/readme", "an obsolete folder"),
         file("kept/readme", "dropped from a folder you use"),
+        file("notes/readme.txt", "a folder that becomes a file"),
     ]
 }
 
@@ -504,6 +505,7 @@ fn base_v2() -> Vec<Item> {
         file("docs/readme.txt", "readme"),
         file("shared.txt", "base shared"),
         Item::Split("Data/big.dat", b"big v2 big v2 big v2".to_vec()),
+        file("notes", "notes is a file now"),
     ]
 }
 
@@ -537,6 +539,7 @@ fn ready_for_v2(fx: &Fixture) {
     fx.write("Data/old2.dat", "my old2");
     fx.write("Data/new.dat", "mine");
     fx.write("kept/user.txt", "mine too");
+    fx.write("notes/mine.txt", "my notes");
 }
 
 fn expected_v2() -> BTreeMap<String, String> {
@@ -556,6 +559,9 @@ fn expected_v2() -> BTreeMap<String, String> {
         ("gameinfo", "644 RimWorld\n2.0\n"),
         ("kept", "/"),
         ("kept/user.txt", "644 mine too"),
+        ("notes", "644 notes is a file now"),
+        ("notes.wineo-saved", "/"),
+        ("notes.wineo-saved/mine.txt", "644 my notes"),
         ("lib", "644 lib is a file now"),
         ("mods-1.5", "/"),
         ("mods-1.5/mod.txt", "644 my mod"),
@@ -632,10 +638,16 @@ fn an_update_rebuilds_every_product_and_reports_what_was_yours() {
     assert_finished_v2(&fx);
     assert_eq!(
         updated.saved,
-        [SavedAside {
-            path: "Data/new.dat".to_owned(),
-            saved_as: "Data/new.dat.wineo-saved".to_owned(),
-        }]
+        [
+            SavedAside {
+                path: "notes".to_owned(),
+                saved_as: "notes.wineo-saved".to_owned(),
+            },
+            SavedAside {
+                path: "Data/new.dat".to_owned(),
+                saved_as: "Data/new.dat.wineo-saved".to_owned(),
+            }
+        ]
     );
     assert_eq!(updated.kept, ["Data/old2.dat"]);
     assert_eq!(updated.overwritten, ["Data/core.dat"]);
@@ -743,23 +755,40 @@ fn recorded_paths(state: &FolderState) -> Vec<String> {
 fn assert_synced(fx: &Fixture, before: &FolderState, syncs: &[String]) {
     let commit = syncs
         .iter()
-        .position(|event| event == "commit")
+        .rposition(|event| event == "commit")
         .unwrap_or_else(|| panic!("no commit in {syncs:?}"));
+    let synced = |dir: &str| {
+        syncs
+            .iter()
+            .position(|event| *event == format!("dir:{dir}"))
+            .is_some_and(|at| at < commit)
+    };
     let mut paths = recorded_paths(before);
     paths.extend(recorded_paths(&fx.state()));
     for path in paths {
         let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
-        let dir = fx.folder.join(parent);
-        if !fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir()) {
+        let is_dir =
+            |dir: &str| fs::symlink_metadata(fx.folder.join(dir)).is_ok_and(|meta| meta.is_dir());
+        if is_dir(parent) {
+            assert!(
+                synced(parent),
+                "{parent:?} wasn't synced before the commit: {syncs:?}"
+            );
             continue;
         }
-        let at = syncs
-            .iter()
-            .position(|event| *event == format!("dir:{parent}"));
-        assert!(
-            at.is_some_and(|at| at < commit),
-            "{parent:?} wasn't synced before the commit: {syncs:?}"
-        );
+        // A folder moved aside carries the changes made in it.
+        let tree = fx.tree();
+        for saved in tree.keys().filter(|saved| {
+            saved
+                .strip_prefix(parent)
+                .is_some_and(|rest| rest.starts_with(".wineo-saved") && !rest.contains('/'))
+                && is_dir(saved)
+        }) {
+            assert!(
+                synced(saved),
+                "{saved:?} wasn't synced before the commit: {syncs:?}"
+            );
+        }
     }
 }
 
@@ -785,6 +814,8 @@ fn crash_and_recover(point: &'static str, skip: usize, again: Option<&'static st
         format!("{error:#}").contains("injected"),
         "{point}#{skip}: {error:#}"
     );
+    // What the interrupted attempts made durable counts too.
+    let mut syncs = take_syncs();
     if let Some(again) = again {
         assert!(fx.state().journal.is_some(), "{point}#{skip}");
         set_failpoint(Some(again));
@@ -799,9 +830,9 @@ fn crash_and_recover(point: &'static str, skip: usize, again: Option<&'static st
             "{again}: {error:#}"
         );
         assert!(fx.state().journal.is_some(), "{again}");
+        syncs.extend(take_syncs());
     }
     let before = fx.state();
-    take_syncs();
     if before.journal.is_none()
         && before.committed.as_ref().unwrap().products[0]
             .version
@@ -818,7 +849,7 @@ fn crash_and_recover(point: &'static str, skip: usize, again: Option<&'static st
         fx.apply_with(true, &pending, &Token::new(), |_| {})
             .unwrap_or_else(|error| panic!("{point}#{skip}: {error:#}"));
     }
-    let syncs = take_syncs();
+    syncs.extend(take_syncs());
     assert_finished_v2(&fx);
     assert!(fx.temporaries().is_empty(), "{point}#{skip}");
     if syncs.iter().any(|event| event == "commit") {

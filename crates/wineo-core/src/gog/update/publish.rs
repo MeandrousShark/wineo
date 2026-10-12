@@ -575,6 +575,16 @@ impl<'a> Publisher<'a> {
     /// when that's taken, never replacing anything.
     fn save_aside(&mut self, dir: &OwnedFd, leaf: &str, path: &str) -> Result<()> {
         failpoint("update.save.before")?;
+        // Changes already made inside a folder are made durable before it
+        // moves, since a recovery looks for it under its old name.
+        let moving_folder = match open_dir_at(dir, leaf) {
+            Ok(folder) => {
+                rustix::fs::fsync(&folder).with_context(|| format!("failed to sync {path}"))?;
+                true
+            }
+            Err(Errno::NOTDIR | Errno::LOOP | Errno::NOENT) => false,
+            Err(error) => return Err(error).with_context(|| format!("failed to open {path}")),
+        };
         let mut number = 1;
         let saved = loop {
             let saved = if number == 1 {
@@ -628,6 +638,9 @@ impl<'a> Publisher<'a> {
                 }
             })
             .collect();
+        if moving_folder {
+            record_sync(format!("dir:{saved_as}"));
+        }
         self.changed.insert(parent.to_owned());
         self.report.saved.push(SavedAside {
             path: path.to_owned(),
