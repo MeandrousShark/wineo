@@ -12,6 +12,8 @@ mod ends;
 mod flow;
 mod focus_button;
 mod fonts;
+#[cfg(test)]
+mod gog_fake;
 mod grid;
 mod grid_motion;
 mod keys;
@@ -130,6 +132,7 @@ pub(crate) struct App {
     steamgriddb_pending: HashSet<(u64, u64)>,
     steamgriddb_late_result: Option<settings::Event>,
     steam_key_work: settings::SteamKeyWork,
+    gog_work: settings::GogWork,
     art_page: Option<String>,
     art_pages: HashMap<String, art_page::Page>,
     pending_art_writes: HashSet<(String, u64, u64, art_page::EnvironmentIdentity)>,
@@ -343,6 +346,7 @@ impl App {
             steamgriddb_pending: HashSet::new(),
             steamgriddb_late_result: None,
             steam_key_work: settings::SteamKeyWork::default(),
+            gog_work: settings::GogWork::default(),
             art_page: None,
             art_pages: HashMap::new(),
             pending_art_writes: HashSet::new(),
