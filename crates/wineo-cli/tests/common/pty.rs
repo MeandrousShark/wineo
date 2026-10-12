@@ -17,6 +17,9 @@ use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 pub struct Pty {
     master: File,
     child: Child,
+    /// The command's process group, which outlives the command itself when
+    /// it started something and exited.
+    group: u32,
     seen: Arc<Mutex<String>>,
     /// How much of the output earlier expectations have used up.
     cursor: usize,
@@ -43,6 +46,7 @@ impl Pty {
             .stdout(slave.try_clone().unwrap())
             .stderr(slave);
         let child = command.spawn().unwrap();
+        let group = child.id();
         // The command holds the only other copies of the terminal's end, and
         // dropping them is what lets reading see the end once wineo exits.
         drop(command);
@@ -64,6 +68,7 @@ impl Pty {
         Self {
             master,
             child,
+            group,
             seen,
             cursor: 0,
             reader: Some(reader),
@@ -115,7 +120,9 @@ impl Pty {
     }
 
     /// A command still running when time runs out fails the test instead of
-    /// hanging it, and is killed.
+    /// hanging it, and is killed. So is anything it started that is still
+    /// running once it has exited. The whole call keeps to `limit`, give or
+    /// take the polling.
     pub fn finish_within(mut self, limit: Duration) -> (ExitStatus, Seen) {
         let deadline = Instant::now() + limit;
         let status = loop {
@@ -127,10 +134,18 @@ impl Pty {
                 let seen = strip_escapes(&self.seen.lock().unwrap());
                 panic!("wineo didn't exit; it had printed:\n{}", redact(&seen));
             }
-            thread::sleep(Duration::from_millis(20));
+            thread::sleep(Duration::from_millis(5));
         };
+        // What it left running holds the terminal open, which keeps the
+        // reader from seeing the end.
+        self.kill();
         if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
+            while !reader.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
+            if reader.is_finished() {
+                let _ = reader.join();
+            }
         }
         let seen = strip_escapes(&self.seen.lock().unwrap());
         (status, Seen(seen))
@@ -141,13 +156,12 @@ impl Pty {
         self.child.id()
     }
 
-    /// Kills the command's whole process group and reaps it.
+    /// Kills the command's whole process group, even when the command
+    /// itself is gone, and reaps the command.
     fn kill(&mut self) {
-        if self.child.try_wait().ok().flatten().is_some() {
-            return;
+        if let Some(group) = rustix::process::Pid::from_raw(self.group as i32) {
+            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
         }
-        let group = format!("-{}", self.child.id());
-        let _ = Command::new("kill").args(["-KILL", "--", &group]).status();
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
