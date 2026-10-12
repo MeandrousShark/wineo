@@ -41,7 +41,7 @@ pub enum MigrateError {
     Portable,
     #[error("{name} is running. Stop it before migrating.")]
     Running { name: String },
-    #[error("{0} doesn't exist.")]
+    #[error("Heroic's game folder {0} doesn't exist.")]
     MissingFolder(PathBuf),
     #[error("{folder} has no {file}.")]
     MissingInfo { folder: PathBuf, file: String },
@@ -64,7 +64,7 @@ pub enum MigrateError {
         other: String,
     },
     /// A config recording the game that wineo can't load.
-    #[error("{name} records GOG game {gog_id} but can't be loaded: {detail}")]
+    #[error("{name} records GOG game {gog_id}, but its config can't be read ({detail}).")]
     Unloadable {
         name: String,
         gog_id: String,
@@ -77,14 +77,12 @@ pub enum MigrateError {
         other: String,
     },
     /// A new Windows environment has no runner chosen yet.
-    #[error("a runner is needed to import Windows games")]
+    #[error("A Windows game needs a runner.")]
     NeedsRunner,
     /// A new Windows environment's plan copies the prefix.
     #[error("A migrated game keeps Heroic's prefix where it is.")]
     PrefixCopied,
-    #[error(
-        "Heroic's game or wineo's environments changed since the migration was planned; plan it again"
-    )]
+    #[error("Something changed while migrating. Try again.")]
     Changed,
 }
 

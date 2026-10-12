@@ -1286,7 +1286,7 @@ fn a_config_recording_the_game_that_cannot_be_loaded_is_refused_by_name() {
     assert!(
         error
             .to_string()
-            .starts_with("broken records GOG game 1094900565 but can't be loaded: ")
+            .starts_with("broken records GOG game 1094900565, but its config can't be read (")
     );
 
     // It counts toward more than one match.
