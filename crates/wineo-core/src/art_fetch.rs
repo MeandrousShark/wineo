@@ -248,7 +248,12 @@ fn publish_with_cancel(
 }
 
 /// The skip for a kind that already has art, if it has any.
-fn existing(paths: &Paths, env: &str, target: Option<&str>, kind: Kind) -> Result<Option<Fetched>> {
+pub(crate) fn existing(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+) -> Result<Option<Fetched>> {
     let art_dir = paths.art_dir(env);
     let config = art::ArtConfig::load(&art_dir)?;
     let record = config.record(target, kind);
