@@ -1527,3 +1527,29 @@ fn an_obsolete_folder_and_one_that_becomes_a_file_are_removed() {
         ])
     );
 }
+
+#[test]
+fn recovery_syncs_folders_an_earlier_attempt_changed() {
+    let fx = Fixture::new();
+    fx.offer(
+        RIMWORLD,
+        "RimWorld",
+        "1",
+        &[file("start.sh", "s"), file("kept/readme", "old")],
+    );
+    fx.migrated(&[(RIMWORLD, Some("0"))]);
+    fx.update();
+    fx.write("kept/user.txt", "mine");
+    fx.offer(RIMWORLD, "RimWorld", "2", &[file("start.sh", "s2")]);
+    set_failpoint(Some("update.delete.after"));
+    fx.update_err();
+    assert!(!fx.folder.join("kept/readme").exists());
+
+    // Recovery finds the deletion done, but it may not be on disk yet.
+    take_syncs();
+    fx.update();
+    let syncs = take_syncs();
+    let commit = syncs.iter().position(|event| event == "commit").unwrap();
+    let synced = syncs.iter().position(|event| event == "dir:kept");
+    assert!(synced.is_some_and(|at| at < commit), "{syncs:?}");
+}

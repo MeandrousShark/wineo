@@ -87,6 +87,11 @@ pub(super) struct Publisher<'a> {
     changed: BTreeSet<String>,
     /// Files published, which are synced before the commit.
     written: Vec<String>,
+    /// The folders of every entry wineo recorded or publishes. An earlier,
+    /// interrupted attempt may have changed any of them without syncing,
+    /// and its changes can't be told from what is on disk now, so each one
+    /// that is still a folder is synced too.
+    recorded_folders: BTreeSet<String>,
     report: Report,
 }
 
@@ -99,6 +104,7 @@ impl<'a> Publisher<'a> {
             next_temp: 0,
             changed: BTreeSet::new(),
             written: Vec::new(),
+            recorded_folders: BTreeSet::new(),
             report: Report::default(),
         }
     }
@@ -134,6 +140,12 @@ impl<'a> Publisher<'a> {
         let shipped: BTreeMap<&str, &WinningEntry> = new
             .iter()
             .map(|entry| (entry.path.as_str(), entry))
+            .collect();
+        self.recorded_folders = recorded
+            .keys()
+            .copied()
+            .chain(new.iter().map(|entry| entry.path.as_str()))
+            .map(|path| parent_of(path).to_owned())
             .collect();
         let tracked: BTreeMap<&str, &WinningEntry> = committed
             .iter()
@@ -351,10 +363,21 @@ impl<'a> Publisher<'a> {
             rustix::fs::fsync(&file).with_context(|| format!("failed to sync {path}"))?;
             record_sync(format!("file:{path}"));
         }
-        let mut dirs: Vec<String> = std::mem::take(&mut self.changed).into_iter().collect();
+        let changed = std::mem::take(&mut self.changed);
+        let recorded = std::mem::take(&mut self.recorded_folders);
+        let mut dirs: Vec<&String> = changed.union(&recorded).collect();
         dirs.sort_by_key(|dir| std::cmp::Reverse(depth(dir)));
         for dir in dirs {
-            let fd = self.open_folder(&dir)?;
+            // A recorded folder that is gone, or isn't a folder any more,
+            // was changed in its parent, which is synced too.
+            let fd = if changed.contains(dir) {
+                self.open_folder(dir)?
+            } else {
+                match self.open_folder_if_there(dir)? {
+                    Some(fd) => fd,
+                    None => continue,
+                }
+            };
             rustix::fs::fsync(&fd).with_context(|| format!("failed to sync {dir:?}"))?;
             record_sync(format!("dir:{dir}"));
         }
@@ -403,6 +426,18 @@ impl<'a> Publisher<'a> {
             .open_parent(path)?
             .ok_or_else(|| anyhow!("{path} is missing"))?;
         open_dir_at(&parent, leaf_of(path)).with_context(|| format!("failed to open {path}"))
+    }
+
+    /// `open_folder`, or None when the path isn't a real folder.
+    fn open_folder_if_there(&self, path: &str) -> Result<Option<OwnedFd>> {
+        let Some(parent) = self.open_parent(path)? else {
+            return Ok(None);
+        };
+        match open_dir_at(&parent, leaf_of(path)) {
+            Ok(fd) => Ok(Some(fd)),
+            Err(Errno::NOENT | Errno::NOTDIR | Errno::LOOP) => Ok(None),
+            Err(error) => Err(error).with_context(|| format!("failed to open {path}")),
+        }
     }
 
     fn open_staged_parent(&self, product: u64, path: &str) -> Result<OwnedFd> {
