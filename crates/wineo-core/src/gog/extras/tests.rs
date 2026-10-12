@@ -444,8 +444,8 @@ fn an_environment_replaced_while_fetching_gets_no_playtime() {
         report.notes
     );
     assert_eq!(fixture.imported(), None);
-    // The art phase starts after, and describes the environment as it is
-    // then, so it is not what this guards.
+    // Art is refused for the replaced config too.
+    assert!(report.art.is_empty());
 }
 
 #[test]
