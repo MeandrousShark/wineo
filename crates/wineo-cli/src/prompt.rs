@@ -98,7 +98,7 @@ pub fn secret(label: &str) -> anyhow::Result<Option<String>> {
         &mut stdin.lock(),
         &mut io::stdout(),
         label,
-        &|fd, attrs| tcsetattr(fd, OptionalActions::Now, attrs),
+        &Hooks::real(),
     );
     if let Err(error) = &result
         && let Some(error) = error.downcast_ref::<io::Error>()
@@ -109,8 +109,42 @@ pub fn secret(label: &str) -> anyhow::Result<Option<String>> {
     result
 }
 
-/// Sets a terminal's modes. A parameter so a test can make it fail.
-type SetModes<'a> = &'a dyn Fn(BorrowedFd<'_>, &Termios) -> rustix::io::Result<()>;
+/// Sets a terminal's modes.
+type SetModes = Arc<dyn Fn(BorrowedFd<'_>, &Termios) -> rustix::io::Result<()> + Send + Sync>;
+
+/// The parts of reading a secret a test replaces.
+struct Hooks {
+    set_modes: SetModes,
+    /// Ends the process once a signal has put the terminal back.
+    exit: Arc<dyn Fn() + Send + Sync>,
+    /// Runs between saving the terminal's modes and turning echo off.
+    before_echo_off: Arc<dyn Fn() + Send + Sync>,
+    /// The signals that restore the terminal.
+    signals: Vec<i32>,
+}
+
+impl Hooks {
+    fn real() -> Self {
+        Self {
+            set_modes: Arc::new(|fd, modes| tcsetattr(fd, OptionalActions::Now, modes)),
+            exit: Arc::new(|| {
+                println!();
+                std::process::exit(130)
+            }),
+            before_echo_off: Arc::new(|| {}),
+            signals: vec![SIGINT, SIGTERM, SIGHUP],
+        }
+    }
+}
+
+/// Whether a signal has taken over and is ending the process.
+type Leaving = Arc<std::sync::Mutex<bool>>;
+
+fn locked(leaving: &Leaving) -> std::sync::MutexGuard<'_, bool> {
+    leaving
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn read_secret(
     fd: BorrowedFd<'_>,
@@ -118,54 +152,73 @@ fn read_secret(
     input: &mut dyn BufRead,
     out: &mut dyn Write,
     label: &str,
-    set_modes: SetModes<'_>,
+    hooks: &Hooks,
 ) -> anyhow::Result<Option<String>> {
     let mut restore_on_exit = None;
     if terminal {
         let saved = tcgetattr(fd)
             .map_err(|_| anyhow::anyhow!("Can't turn off echo here, so nothing was read."))?;
-        // A signal puts the terminal back before wineo exits.
-        let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP])?;
+        // A signal puts the terminal back before wineo exits. Changing the
+        // terminal's modes and that restore-then-exit share one lock, which
+        // the signal thread keeps until the process is gone, so a signal can
+        // never restore the modes and leave echo to be turned off afterwards.
+        let leaving = Leaving::default();
+        let mut signals = Signals::new(hooks.signals.iter().copied())?;
         let guard = signals.handle();
-        let restore = saved.clone();
         let for_thread = fd.try_clone_to_owned()?;
-        thread::spawn(move || {
-            if signals.forever().next().is_some() {
-                let _ = tcsetattr(&for_thread, OptionalActions::Now, &restore);
-                println!();
-                std::process::exit(130);
-            }
-        });
+        {
+            let (leaving, restore) = (leaving.clone(), saved.clone());
+            let (set_modes, exit) = (hooks.set_modes.clone(), hooks.exit.clone());
+            thread::spawn(move || {
+                if signals.forever().next().is_some() {
+                    let mut leaving = locked(&leaving);
+                    *leaving = true;
+                    let _ = set_modes(for_thread.as_fd(), &restore);
+                    exit();
+                }
+            });
+        }
+        (hooks.before_echo_off)();
         let mut quiet = saved.clone();
         quiet.local_modes.remove(LocalModes::ECHO);
-        if set_modes(fd, &quiet).is_err() {
-            guard.close();
-            anyhow::bail!("Can't turn off echo here, so nothing was read.");
+        {
+            let leaving = locked(&leaving);
+            if *leaving {
+                guard.close();
+                return Err(Canceled.into());
+            }
+            if (hooks.set_modes)(fd, &quiet).is_err() {
+                guard.close();
+                anyhow::bail!("Can't turn off echo here, so nothing was read.");
+            }
         }
-        restore_on_exit = Some((saved, guard));
+        restore_on_exit = Some((saved, guard, leaving));
         // Only now is it safe to ask, so a paste that arrives at once
         // doesn't show.
         let shown = write!(out, "{label}").and_then(|()| out.flush());
         if let Err(error) = shown {
-            put_back(fd, restore_on_exit.take(), out, set_modes);
+            put_back(fd, restore_on_exit.take(), out, hooks);
             return Err(error.into());
         }
     }
     let mut line = String::new();
     let read = input.read_line(&mut line);
-    put_back(fd, restore_on_exit, out, set_modes);
+    put_back(fd, restore_on_exit, out, hooks);
     Ok((read? > 0).then(|| line.trim().to_owned()))
 }
 
 /// Turns echo back on and ends the signal watch.
 fn put_back(
     fd: BorrowedFd<'_>,
-    saved: Option<(Termios, signal_hook::iterator::Handle)>,
+    saved: Option<(Termios, signal_hook::iterator::Handle, Leaving)>,
     out: &mut dyn Write,
-    set_modes: SetModes<'_>,
+    hooks: &Hooks,
 ) {
-    if let Some((saved, guard)) = saved {
-        let _ = set_modes(fd, &saved);
+    if let Some((saved, guard, leaving)) = saved {
+        {
+            let _held = locked(&leaving);
+            let _ = (hooks.set_modes)(fd, &saved);
+        }
         let _ = writeln!(out);
         guard.close();
     }
@@ -1271,8 +1324,24 @@ mod tests {
         }
     }
 
-    fn real_modes(fd: BorrowedFd<'_>, modes: &Termios) -> rustix::io::Result<()> {
-        tcsetattr(fd, OptionalActions::Now, modes)
+    /// Tests that watch signals take turns, since a signal reaches every
+    /// reader at once.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The real thing, except that a signal no other test listens for stands
+    /// in for Ctrl+C and the process isn't ended.
+    fn hooks() -> Hooks {
+        Hooks {
+            exit: Arc::new(|| {}),
+            signals: vec![signal_hook::consts::SIGUSR2],
+            ..Hooks::real()
+        }
     }
 
     fn echo_is_on(terminal: &std::fs::File) -> bool {
@@ -1298,6 +1367,7 @@ mod tests {
 
     #[test]
     fn a_secret_turns_echo_off_before_the_prompt_is_shown() {
+        let _serial = serial();
         let (_master, slave) = pty_slave();
         let mut probe = Probe {
             terminal: slave.try_clone().unwrap(),
@@ -1310,7 +1380,7 @@ mod tests {
             &mut input,
             &mut probe,
             "Key: ",
-            &real_modes,
+            &hooks(),
         )
         .unwrap();
         assert_eq!(read.as_deref(), Some("pasted"));
@@ -1334,7 +1404,7 @@ mod tests {
             &mut input,
             &mut out,
             "Key: ",
-            &real_modes,
+            &hooks(),
         )
         .unwrap_err();
         assert_eq!(
@@ -1356,7 +1426,7 @@ mod tests {
             &mut input,
             &mut out,
             "Key: ",
-            &real_modes,
+            &hooks(),
         )
         .unwrap();
         assert_eq!(read.as_deref(), Some("piped"));
@@ -1365,16 +1435,20 @@ mod tests {
 
     #[test]
     fn a_secret_is_not_read_when_the_terminal_wont_take_the_change() {
+        let _serial = serial();
         let (_master, slave) = pty_slave();
         let mut input = io::Cursor::new(b"pasted\n".to_vec());
         let mut out = Vec::new();
         // Reading modes works, but turning echo off is refused.
-        let refuse_quiet = |_: BorrowedFd<'_>, modes: &Termios| {
-            if modes.local_modes.contains(LocalModes::ECHO) {
-                Ok(())
-            } else {
-                Err(rustix::io::Errno::IO)
-            }
+        let refuse_quiet = Hooks {
+            set_modes: Arc::new(|_, modes| {
+                if modes.local_modes.contains(LocalModes::ECHO) {
+                    Ok(())
+                } else {
+                    Err(rustix::io::Errno::IO)
+                }
+            }),
+            ..hooks()
         };
         let error = read_secret(
             slave.as_fd(),
@@ -1405,6 +1479,7 @@ mod tests {
                 Err(io::ErrorKind::BrokenPipe.into())
             }
         }
+        let _serial = serial();
         let (_master, slave) = pty_slave();
         let mut input = io::Cursor::new(b"pasted\n".to_vec());
         let error = read_secret(
@@ -1413,7 +1488,7 @@ mod tests {
             &mut input,
             &mut Closed,
             "Key: ",
-            &real_modes,
+            &hooks(),
         )
         .unwrap_err();
         let error = error.downcast::<io::Error>().unwrap();
@@ -1436,6 +1511,7 @@ mod tests {
             }
             fn consume(&mut self, _: usize) {}
         }
+        let _serial = serial();
         let (_master, slave) = pty_slave();
         let mut out = Vec::new();
         let error = read_secret(
@@ -1444,13 +1520,108 @@ mod tests {
             &mut Broken,
             &mut out,
             "Key: ",
-            &real_modes,
+            &hooks(),
         )
         .unwrap_err();
         assert_eq!(
             error.downcast::<io::Error>().unwrap().kind(),
             io::ErrorKind::Other
         );
+        assert!(echo_is_on(&slave));
+    }
+
+    #[test]
+    fn a_signal_before_echo_goes_off_stops_it_going_off_afterwards() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Duration, Instant};
+
+        let _serial = serial();
+        let (_master, slave) = pty_slave();
+        let exited = Arc::new(AtomicBool::new(false));
+        let echo_set_to = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let hooks = Hooks {
+            set_modes: {
+                let echo_set_to = echo_set_to.clone();
+                Arc::new(move |fd, modes| {
+                    echo_set_to
+                        .lock()
+                        .unwrap()
+                        .push(modes.local_modes.contains(LocalModes::ECHO));
+                    tcsetattr(fd, OptionalActions::Now, modes)
+                })
+            },
+            exit: {
+                let exited = exited.clone();
+                Arc::new(move || exited.store(true, Ordering::SeqCst))
+            },
+            // The signal arrives after the modes were saved and before echo
+            // would be turned off, and is handled completely first.
+            before_echo_off: {
+                let exited = exited.clone();
+                Arc::new(move || {
+                    signal_hook::low_level::raise(signal_hook::consts::SIGUSR2).unwrap();
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while !exited.load(Ordering::SeqCst) {
+                        assert!(Instant::now() < deadline, "the signal wasn't handled");
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                })
+            },
+            ..hooks()
+        };
+        let mut input = io::Cursor::new(b"pasted\n".to_vec());
+        let mut out = Vec::new();
+        let error =
+            read_secret(slave.as_fd(), true, &mut input, &mut out, "Key: ", &hooks).unwrap_err();
+        assert!(error.is::<Canceled>());
+        // Only the signal's restore touched the terminal: echo was never
+        // turned off for it to be left that way.
+        assert_eq!(*echo_set_to.lock().unwrap(), [true]);
+        assert!(echo_is_on(&slave));
+        assert!(out.is_empty(), "no prompt was shown");
+        assert_eq!(input.position(), 0, "nothing was read");
+    }
+
+    #[test]
+    fn a_signal_while_a_secret_is_read_restores_echo() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Duration, Instant};
+
+        let _serial = serial();
+        let (_master, slave) = pty_slave();
+        let exited = Arc::new(AtomicBool::new(false));
+        let echo_when_exited = Arc::new(std::sync::Mutex::new(None));
+        let terminal = slave.try_clone().unwrap();
+        let hooks = Hooks {
+            exit: {
+                let (exited, echo_when_exited) = (exited.clone(), echo_when_exited.clone());
+                Arc::new(move || {
+                    *echo_when_exited.lock().unwrap() = Some(echo_is_on(&terminal));
+                    exited.store(true, Ordering::SeqCst);
+                })
+            },
+            ..hooks()
+        };
+        // Reading waits for a line that arrives after the signal.
+        let (mut reader, mut writer) = io::pipe().unwrap();
+        let mut input = io::BufReader::new(&mut reader);
+        let signaller = thread::spawn({
+            let exited = exited.clone();
+            move || {
+                thread::sleep(Duration::from_millis(100));
+                signal_hook::low_level::raise(signal_hook::consts::SIGUSR2).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !exited.load(Ordering::SeqCst) && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                writer.write_all(b"late\n").unwrap();
+            }
+        });
+        let mut out = Vec::new();
+        let read = read_secret(slave.as_fd(), true, &mut input, &mut out, "Key: ", &hooks);
+        signaller.join().unwrap();
+        assert!(read.is_ok());
+        assert_eq!(*echo_when_exited.lock().unwrap(), Some(true));
         assert!(echo_is_on(&slave));
     }
 }
