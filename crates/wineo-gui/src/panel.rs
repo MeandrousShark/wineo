@@ -1059,9 +1059,19 @@ fn panel_action_button(
     id: &'static str,
 ) -> Element<'static, Message> {
     let content = ui::accent_control(label, color, enabled, message.clone())
-        .width(PANEL_ACTION_WIDTH)
+        .width(panel_action_width(label))
         .into();
     focus_button::control(content, enabled, id, message)
+}
+
+/// Play, Stop, and Log share one width; a longer label like Finish update
+/// grows its button to fit on one line instead of wrapping.
+fn panel_action_width(label: &str) -> f32 {
+    // The accent button's padding on both sides, and a pixel of slack so
+    // rounding never wraps the last letter.
+    const PADDING: f32 = 2.0 * 16.0 + 2.0;
+    let text = crate::tile_title::wrapped_size(label, f32::INFINITY, 14.0, iced::Font::DEFAULT);
+    PANEL_ACTION_WIDTH.max((text.width + PADDING).ceil())
 }
 
 fn panel_secondary_button(
@@ -1128,6 +1138,28 @@ pub(crate) fn action_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn primary_action_labels_fit_on_one_line() {
+        let one_line =
+            crate::tile_title::wrapped_size("Play", f32::INFINITY, 14.0, iced::Font::DEFAULT)
+                .height;
+        for label in ["Play", "Launch", "Install", "Finish update", "Force stop"] {
+            let mut button =
+                panel_action_button(label, Color::BLACK, true, Message::Play, PANEL_PLAY_ID);
+            let node = crate::layout_probe::layout(&mut button, iced::Size::new(420.0, 100.0));
+            // The room the label gets inside the laid out button's padding.
+            let room = node.bounds().width - 2.0 * 16.0;
+            let text = crate::tile_title::wrapped_size(label, room, 14.0, iced::Font::DEFAULT);
+            assert!(
+                text.height <= one_line + 0.5,
+                "{label} wraps in {room} px: {text:?}"
+            );
+        }
+        // Play keeps its look.
+        assert_eq!(panel_action_width("Play"), PANEL_ACTION_WIDTH);
+        assert!(panel_action_width("Finish update") > PANEL_ACTION_WIDTH);
+    }
     use std::collections::HashMap;
     use wineo_core::operation::Operation;
     use wineo_core::winetricks::Step;
