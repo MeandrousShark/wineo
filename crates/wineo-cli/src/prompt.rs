@@ -4,6 +4,7 @@
 
 use std::fmt;
 use std::io::{self, BufRead, IsTerminal, Write};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -85,41 +86,73 @@ pub fn interactive() -> bool {
 /// Reads one line without echoing it, for a secret like an API key. A signal
 /// puts the terminal back before wineo exits, so echo is never left off.
 /// Piped input is read as is, without a prompt. None is the end of input.
+/// At a terminal where echo can't be turned off, nothing is read.
 pub fn secret(label: &str) -> anyhow::Result<Option<String>> {
     let stdin = io::stdin();
-    let saved = if stdin.is_terminal() {
-        tcgetattr(&stdin).ok()
-    } else {
-        None
-    };
-    let mut guard = None;
-    if let Some(saved) = &saved {
-        print!("{label}");
-        crate::output::stdout().flush()?;
+    read_secret(
+        stdin.as_fd(),
+        stdin.is_terminal(),
+        &mut stdin.lock(),
+        &mut crate::output::stdout(),
+        label,
+    )
+}
+
+fn read_secret(
+    fd: BorrowedFd<'_>,
+    terminal: bool,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    label: &str,
+) -> anyhow::Result<Option<String>> {
+    let mut restore_on_exit = None;
+    if terminal {
+        let saved = tcgetattr(fd)
+            .map_err(|_| anyhow::anyhow!("Can't turn off echo here, so nothing was read."))?;
+        // A signal puts the terminal back before wineo exits.
         let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP])?;
-        guard = Some(signals.handle());
+        let guard = signals.handle();
         let restore = saved.clone();
+        let for_thread = fd.try_clone_to_owned()?;
         thread::spawn(move || {
             if signals.forever().next().is_some() {
-                let _ = tcsetattr(io::stdin(), OptionalActions::Now, &restore);
+                let _ = tcsetattr(&for_thread, OptionalActions::Now, &restore);
                 println!();
                 std::process::exit(130);
             }
         });
         let mut quiet = saved.clone();
         quiet.local_modes.remove(LocalModes::ECHO);
-        tcsetattr(&stdin, OptionalActions::Now, &quiet)?;
+        if tcsetattr(fd, OptionalActions::Now, &quiet).is_err() {
+            guard.close();
+            anyhow::bail!("Can't turn off echo here, so nothing was read.");
+        }
+        restore_on_exit = Some((saved, guard));
+        // Only now is it safe to ask, so a paste that arrives at once
+        // doesn't show.
+        let shown = write!(out, "{label}").and_then(|()| out.flush());
+        if let Err(error) = shown {
+            put_back(fd, restore_on_exit.take(), out);
+            return Err(error.into());
+        }
     }
     let mut line = String::new();
-    let read = stdin.lock().read_line(&mut line);
-    if let Some(saved) = &saved {
-        let _ = tcsetattr(&stdin, OptionalActions::Now, saved);
-        println!();
-    }
-    if let Some(guard) = guard {
+    let read = input.read_line(&mut line);
+    put_back(fd, restore_on_exit, out);
+    Ok((read? > 0).then(|| line.trim().to_owned()))
+}
+
+/// Turns echo back on and ends the signal watch.
+fn put_back(
+    fd: BorrowedFd<'_>,
+    saved: Option<(Termios, signal_hook::iterator::Handle)>,
+    out: &mut dyn Write,
+) {
+    if let Some((saved, guard)) = saved {
+        let _ = tcsetattr(fd, OptionalActions::Now, &saved);
+        let _ = writeln!(out);
         guard.close();
     }
-    Ok((read? > 0).then(|| line.trim().to_owned()))
 }
 
 /// One entry of a menu. Keys are numbers for the usual entries and letters
@@ -1201,5 +1234,83 @@ mod tests {
         assert!(parse_numbers("", 3).is_err());
         assert!(parse_numbers("1-", 3).is_err());
         assert!(parse_numbers("4", 3).is_err());
+    }
+
+    /// A terminal that records whether echo was on each time it is written.
+    struct Probe {
+        terminal: std::fs::File,
+        echo_when_written: Vec<bool>,
+    }
+
+    impl Write for Probe {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let modes = tcgetattr(&self.terminal).unwrap().local_modes;
+            self.echo_when_written
+                .push(modes.contains(LocalModes::ECHO));
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn pty_slave() -> (rustix::fd::OwnedFd, std::fs::File) {
+        use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
+        let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
+        grantpt(&master).unwrap();
+        unlockpt(&master).unwrap();
+        let name = ptsname(&master, Vec::new()).unwrap();
+        let slave = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(name.to_str().unwrap())
+            .unwrap();
+        (master, slave)
+    }
+
+    #[test]
+    fn a_secret_turns_echo_off_before_the_prompt_is_shown() {
+        let (_master, slave) = pty_slave();
+        let mut probe = Probe {
+            terminal: slave.try_clone().unwrap(),
+            echo_when_written: Vec::new(),
+        };
+        let mut input = io::Cursor::new(b"pasted\n".to_vec());
+        let read = read_secret(slave.as_fd(), true, &mut input, &mut probe, "Key: ").unwrap();
+        assert_eq!(read.as_deref(), Some("pasted"));
+        // The label went out with echo off, and the newline after it is back
+        // on.
+        assert_eq!(probe.echo_when_written, [false, true]);
+        // And it stays on afterwards.
+        let modes = tcgetattr(&slave).unwrap().local_modes;
+        assert!(modes.contains(LocalModes::ECHO));
+    }
+
+    #[test]
+    fn a_secret_is_not_read_when_echo_cant_be_turned_off() {
+        // Not a terminal, though told to treat it as one.
+        let not_a_terminal = std::fs::File::open("/dev/null").unwrap();
+        let mut input = io::Cursor::new(b"pasted\n".to_vec());
+        let mut out = Vec::new();
+        let error =
+            read_secret(not_a_terminal.as_fd(), true, &mut input, &mut out, "Key: ").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Can't turn off echo here, so nothing was read."
+        );
+        assert!(out.is_empty(), "no prompt was shown");
+        assert_eq!(input.position(), 0, "nothing was read");
+    }
+
+    #[test]
+    fn piped_input_is_read_as_is_without_a_prompt() {
+        let not_a_terminal = std::fs::File::open("/dev/null").unwrap();
+        let mut input = io::Cursor::new(b"  piped  \n".to_vec());
+        let mut out = Vec::new();
+        let read =
+            read_secret(not_a_terminal.as_fd(), false, &mut input, &mut out, "Key: ").unwrap();
+        assert_eq!(read.as_deref(), Some("piped"));
+        assert!(out.is_empty());
     }
 }
