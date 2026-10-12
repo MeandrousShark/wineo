@@ -1032,6 +1032,13 @@ Settled by the maintainer on 2026-10-11, before step 6:
   so no launch starts in between. A game started some other way (Heroic,
   a clone, a hand-made environment) isn't seen, and the docs say so.
 
+Settled by the maintainer on 2026-10-11, during step 6:
+
+- **A game already tracked in another folder.** When an environment with
+  the game's `gog_id` already owns a different folder for it, migrating
+  reports it as already migrated, naming that folder, and changes nothing.
+  Heroic's copy isn't adopted.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,
