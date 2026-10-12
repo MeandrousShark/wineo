@@ -14,7 +14,7 @@ use wineo_core::gog::account::Session;
 use wineo_core::gog::extras::{self, Request};
 use wineo_core::gog::folder::{Platform, Track};
 use wineo_core::gog::migrate::{self, MigrateError, Migration, Outcome, Plan, StateChange, Target};
-use wineo_core::heroic::{HeroicGogGame, HeroicSource};
+use wineo_core::heroic::{HeroicGogEntry, HeroicGogGame, HeroicOrigin, HeroicSource, gog_games};
 use wineo_core::heroic_import::{self, Policy, RunnerSuggestion};
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
@@ -49,6 +49,9 @@ pub(crate) struct Candidate {
     source: HeroicSource,
     game: HeroicGogGame,
     standing: Standing,
+    /// Which Heroic the game is read from, when another config that lists
+    /// it was set aside.
+    heroic: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -63,6 +66,7 @@ pub(crate) struct Listing {
 #[derive(Debug, Clone)]
 pub(crate) struct Prepared {
     source: HeroicSource,
+    heroic: Option<String>,
     migration: Box<Migration>,
     runners: Vec<Choice>,
     runner: String,
@@ -246,6 +250,7 @@ impl Page {
             return Task::none();
         };
         let source = candidate.source.clone();
+        let heroic = candidate.heroic.clone();
         let migration = migration.clone();
         self.error = None;
         self.status = format!("Checking {}...", candidate.game.title);
@@ -254,7 +259,7 @@ impl Page {
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    prepare(&paths, source, migration, runner).map(Box::new)
+                    prepare(&paths, source, heroic, migration, runner).map(Box::new)
                 })
                 .await
                 .map_err(|error| error.to_string())?
@@ -614,7 +619,7 @@ impl Page {
             palette
         )]
         .spacing(8);
-        for (label, value) in review_rows(&prepared.migration) {
+        for (label, value) in review_rows(&prepared.migration, prepared.heroic.as_deref()) {
             summary = summary.push(
                 row![
                     text(label).color(palette.muted).width(120),
@@ -729,7 +734,7 @@ fn platform_label(platform: Platform) -> &'static str {
 }
 
 /// The review's rows, the same ones `wineo import gog` prints.
-fn review_rows(migration: &Migration) -> Vec<(&'static str, String)> {
+fn review_rows(migration: &Migration, heroic: Option<&str>) -> Vec<(&'static str, String)> {
     let committed = migration.committed();
     let kind = match migration.target() {
         Target::Existing { .. } => "existing",
@@ -749,6 +754,11 @@ fn review_rows(migration: &Migration) -> Vec<(&'static str, String)> {
     let mut rows = vec![
         ("Environment", format!("{environment} ({kind})")),
         ("Folder", migration.folder().display().to_string()),
+    ];
+    if let Some(heroic) = heroic {
+        rows.push(("Heroic", heroic.to_owned()));
+    }
+    rows.extend([
         (
             "Track",
             match committed.track {
@@ -759,7 +769,7 @@ fn review_rows(migration: &Migration) -> Vec<(&'static str, String)> {
         ),
         ("Version", version),
         ("Language", committed.language.clone()),
-    ];
+    ]);
     let dlc: Vec<String> = committed
         .products
         .iter()
@@ -803,36 +813,43 @@ fn load_listing(paths: &Paths) -> Result<Listing, String> {
 /// Every GOG game the Heroic configurations installed, planned so the page
 /// can mark the ones already migrated. Planning only reads.
 pub(crate) fn listing_from(paths: &Paths, sources: &[HeroicSource]) -> Listing {
+    let found = gog_games(sources);
     let mut listing = Listing::default();
-    for source in sources {
-        let found = match source.gog_installed() {
-            Ok(found) => found,
-            Err(error) => {
-                listing
-                    .issues
-                    .push(format!("Couldn't read Heroic's GOG games: {error:#}"));
-                continue;
-            }
-        };
-        listing
-            .issues
-            .extend(found.issues.into_iter().map(|issue| match issue.field {
-                Some(id) => format!("GOG game {id}: {}", issue.message),
-                None => format!("Heroic: {}", issue.message),
-            }));
-        for game in found.games {
-            let standing = match migrate::plan(paths, source, &game.id) {
-                Ok(Plan::Migrate(migration)) => Standing::Ready(Box::new(migration)),
-                Ok(Plan::AlreadyMigrated { environment, .. }) => Standing::Already { environment },
-                Ok(Plan::NotInstalled { .. }) => continue,
-                Err(error) => Standing::Failed(format!("{error:#}")),
+    listing
+        .issues
+        .extend(found.problems.into_iter().map(|problem| match problem.id {
+            Some(id) => format!("GOG game {id}: {}", problem.message),
+            None => format!("Heroic: {}", problem.message),
+        }));
+    // A game the configs put in different folders is never dropped quietly.
+    listing
+        .issues
+        .extend(found.conflicts.iter().map(|conflict| {
+            let count = match conflict.places.len() {
+                2 => "two".to_owned(),
+                count => count.to_string(),
             };
-            listing.games.push(Candidate {
-                source: source.clone(),
-                game,
-                standing,
-            });
-        }
+            format!(
+                "GOG game {} is installed in {count} places: {}.",
+                conflict.id,
+                conflict.places_text(|folder| folder.display().to_string())
+            )
+        }));
+    for entry in found.games {
+        let source = entry.source;
+        let heroic = heroic_row(&entry);
+        let standing = match migrate::plan(paths, source, &entry.game.id) {
+            Ok(Plan::Migrate(migration)) => Standing::Ready(Box::new(migration)),
+            Ok(Plan::AlreadyMigrated { environment, .. }) => Standing::Already { environment },
+            Ok(Plan::NotInstalled { .. }) => continue,
+            Err(error) => Standing::Failed(format!("{error:#}")),
+        };
+        listing.games.push(Candidate {
+            source: source.clone(),
+            game: entry.game,
+            standing,
+            heroic,
+        });
     }
     listing
         .games
@@ -840,17 +857,54 @@ pub(crate) fn listing_from(paths: &Paths, sources: &[HeroicSource]) -> Listing {
     listing
 }
 
+/// Which Heroic a migration reads from, in `import gog`'s words, when
+/// another config lists the same game and was set aside.
+fn heroic_row(entry: &HeroicGogEntry) -> Option<String> {
+    if entry.also_listed_by.is_empty() {
+        return None;
+    }
+    let used = entry.source.origin();
+    let others: Vec<String> = entry
+        .also_listed_by
+        .iter()
+        .map(|other| {
+            // Two configs of one kind need the folder to tell them apart.
+            if other.origin() == used {
+                format!(
+                    "{} ({})",
+                    other.origin().label(),
+                    other.config_dir().display()
+                )
+            } else {
+                other.origin().label().to_owned()
+            }
+        })
+        .collect();
+    let name = match used {
+        HeroicOrigin::Native => "native",
+        HeroicOrigin::Flatpak => "Flatpak",
+        HeroicOrigin::Explicit => "Heroic",
+    };
+    Some(format!(
+        "{name} ({}), also listed by {}",
+        entry.source.config_dir().display(),
+        others.join(" and ")
+    ))
+}
+
 /// Settles what the review shows: the runner for a new Windows environment,
 /// as Heroic import picks it, and whatever would stop `apply`.
 fn prepare(
     paths: &Paths,
     source: HeroicSource,
+    heroic: Option<String>,
     mut migration: Box<Migration>,
     runner: Option<String>,
 ) -> Result<Prepared, String> {
     let global = GlobalConfig::load(paths).map_err(|error| error.to_string())?;
     let mut prepared = Prepared {
         source,
+        heroic,
         migration: Box::new(Migration::clone(&migration)),
         runners: Vec::new(),
         runner: String::new(),
@@ -1259,7 +1313,14 @@ mod tests {
             let Standing::Ready(migration) = candidate.standing else {
                 panic!("{id} isn't ready");
             };
-            prepare(&self.paths, candidate.source, migration, None).unwrap()
+            prepare(
+                &self.paths,
+                candidate.source,
+                candidate.heroic,
+                migration,
+                None,
+            )
+            .unwrap()
         }
 
         fn page(&self) -> Page {
@@ -1314,13 +1375,112 @@ mod tests {
         );
     }
 
+    /// Copies the fixture's Heroic config to where native and Flatpak
+    /// Heroic keep theirs, with `flatpak` edited first, and finds both.
+    fn two_heroics(fx: &Fixture, flatpak: impl FnOnce(&std::path::Path)) -> Vec<HeroicSource> {
+        let home = fx.root.path();
+        let native = home.join(".config/heroic");
+        let other = home.join(".var/app/com.heroicgameslauncher.hgl/config/heroic");
+        for dir in [&native, &other] {
+            for sub in ["gog_store", "store_cache", "GamesConfig"] {
+                fs::create_dir_all(dir.join(sub)).unwrap();
+            }
+            for file in [
+                "config.json",
+                "gog_store/installed.json",
+                "store_cache/gog_library.json",
+            ] {
+                fs::copy(fx.source.config_dir().join(file), dir.join(file)).unwrap();
+            }
+        }
+        flatpak(&other);
+        HeroicSource::discover(home, None, None).unwrap()
+    }
+
+    #[test]
+    fn a_game_both_heroics_list_at_one_folder_shows_once_and_says_which() {
+        let mut fx = Fixture::new();
+        fx.native(RIMWORLD, "RimWorld", &[]);
+        let sources = two_heroics(&fx, |_| {});
+        assert_eq!(sources.len(), 2);
+        let listing = listing_from(&fx.paths, &sources);
+        assert_eq!(titles(&listing), ["RimWorld"]);
+        assert!(listing.issues.is_empty(), "{:?}", listing.issues);
+        let candidate = listing.games.into_iter().next().unwrap();
+        assert_eq!(candidate.source.origin(), HeroicOrigin::Native);
+        let Standing::Ready(migration) = candidate.standing else {
+            panic!("RimWorld isn't ready");
+        };
+        let prepared = prepare(
+            &fx.paths,
+            candidate.source,
+            candidate.heroic,
+            migration,
+            None,
+        )
+        .unwrap();
+        let rows = review_rows(&prepared.migration, prepared.heroic.as_deref());
+        let native = fx.root.path().join(".config/heroic");
+        assert_eq!(
+            rows[2],
+            (
+                "Heroic",
+                format!(
+                    "native ({}), also listed by Flatpak Heroic",
+                    native.display()
+                )
+            )
+        );
+        // One config, as before: no Heroic row.
+        let single = fx.prepared(RIMWORLD);
+        assert!(
+            !review_rows(&single.migration, single.heroic.as_deref())
+                .iter()
+                .any(|(label, _)| *label == "Heroic")
+        );
+    }
+
+    #[test]
+    fn a_game_the_heroics_put_in_two_folders_is_an_issue() {
+        let mut fx = Fixture::new();
+        let folder = fx.native(RIMWORLD, "RimWorld", &[]);
+        let elsewhere = fx.root.path().join("Elsewhere/RimWorld");
+        let sources = two_heroics(&fx, |flatpak| {
+            let installed = flatpak.join("gog_store/installed.json");
+            let text = fs::read_to_string(&installed).unwrap();
+            let moved = text.replace(
+                &serde_json::to_string(&folder).unwrap(),
+                &serde_json::to_string(&elsewhere).unwrap(),
+            );
+            assert_ne!(text, moved);
+            fs::write(installed, moved).unwrap();
+        });
+        let listing = listing_from(&fx.paths, &sources);
+        assert!(listing.games.is_empty());
+        assert_eq!(
+            listing.issues,
+            [format!(
+                "GOG game {RIMWORLD} is installed in two places: {} (native Heroic) and {} (Flatpak Heroic).",
+                folder.display(),
+                elsewhere.display()
+            )]
+        );
+        let mut page = fx.page();
+        let generation = page.generation;
+        let _ = page.update(Event::Listed(generation, Ok(listing)));
+        crate::layout_probe::layout(
+            &mut page.view(Palette::DARK, 0.0),
+            iced::Size::new(680.0, 560.0),
+        );
+    }
+
     #[test]
     fn the_review_says_what_migrating_does() {
         let mut fx = Fixture::new();
         let folder = fx.native(RIMWORLD, "RimWorld", &[1233017772, 1827857764]);
         let prepared = fx.prepared(RIMWORLD);
         assert!(prepared.ready(), "{:?}", prepared.blocking);
-        let rows = review_rows(&prepared.migration);
+        let rows = review_rows(&prepared.migration, prepared.heroic.as_deref());
         let canonical = folder.canonicalize().unwrap();
         assert_eq!(
             rows,
@@ -1348,7 +1508,7 @@ mod tests {
             Target::Windows { .. }
         ));
         assert!(prepared.suggestion.is_some());
-        let rows = review_rows(&prepared.migration);
+        let rows = review_rows(&prepared.migration, prepared.heroic.as_deref());
         assert_eq!(rows[2], ("Track", "galaxy".to_owned()));
         assert_eq!(rows[3], ("Version", "build 59781086834418085".to_owned()));
         // Without a runner the game can't be migrated yet.
