@@ -965,6 +965,21 @@ Settled by the maintainer on 2026-10-11, after step 4's second review:
   Press Ctrl+C to stop them.`, and after the first Ctrl+C, `Press Ctrl+C
   again to force them to stop.`
 
+Settled by the maintainer on 2026-10-11, after step 4's seventh review:
+
+- **Exec from a game folder has no terminal input.** It runs in its own
+  process group with stdin closed, like `wineo run`, so a console program
+  there can't read the keyboard. Games don't need it.
+- **The idle waiter can outlive wineo.** A run's waiter (`wineserver -w`)
+  and stop helpers run in their own process group so a terminal Ctrl+C
+  can't end the wait early. If wineo is killed with SIGKILL, the waiter
+  keeps sleeping until the prefix is idle, then exits. It holds no locks
+  and blocks nothing. Tying it to wineo's life needs parent-death signals,
+  which need `unsafe` or a `setpriv` wrapper, so it's a documented limit.
+- **A hung `wineserver -k`** blocking the supervisor's give-up deadline is
+  older than this step and shared with `start` and the installer, so it's
+  a backlog row, not a step 4 fix.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,
