@@ -1349,3 +1349,50 @@ fn a_cancel_while_waiting_for_the_config_lock_writes_no_playtime() {
         report.notes
     );
 }
+
+#[test]
+fn a_cancel_while_waiting_for_the_art_lock_publishes_nothing() {
+    use std::sync::mpsc;
+    let fixture = Fixture::new();
+    let server = Scripted::start(gog(None, art_body(&[])));
+    let inner = images();
+    let token = Token::new();
+    let art_lock = fixture.paths.art_dir("rimworld").join(art::ART_FILE);
+    let (paths, canceling) = (fixture.paths.clone(), token.clone());
+    let holder = std::sync::Mutex::new(None);
+    let transport = Hooked {
+        inner: &inner,
+        when: "box.jpg".to_owned(),
+        hook: Box::new(|| {
+            // Someone else holds the art lock when the image arrives, and
+            // Cancel is pressed while the import waits for it.
+            let (paths, art_lock, canceling) = (paths.clone(), art_lock.clone(), canceling.clone());
+            let (taken_tx, taken) = mpsc::channel();
+            *holder.lock().unwrap() = Some(std::thread::spawn(move || {
+                std::fs::create_dir_all(art_lock.parent().unwrap()).unwrap();
+                let _lock = Locks::new(&paths).config(&art_lock).unwrap();
+                taken_tx.send(()).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                canceling.cancel();
+            }));
+            taken.recv().unwrap();
+        }),
+    };
+    let report = run(
+        &fixture.paths,
+        None,
+        &request(&transport, &[Kind::Grid], None),
+        Ok(client_at(&server.base)),
+        &token,
+    )
+    .unwrap();
+    holder.lock().unwrap().take().unwrap().join().unwrap();
+    assert!(token.is_canceled());
+    assert!(report.art.is_empty(), "{:?}", report.art);
+    assert_eq!(fixture.art_config().record(None, Kind::Grid), None);
+    assert!(
+        art_notes(&report).contains(&"Skipped grid artwork: canceled."),
+        "{:?}",
+        report.notes
+    );
+}

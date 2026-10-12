@@ -345,7 +345,9 @@ fn store(
         format,
         Source::Gog(request.gog_id),
         false,
-        None,
+        // Checked again under the art lock, so a cancel that came while
+        // waiting for it publishes nothing.
+        Some(token),
         Some(identity),
     )?;
     Ok(stored.is_some())
