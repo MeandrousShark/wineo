@@ -14,7 +14,7 @@ use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 
 use super::holders::{self, Record};
-use super::{FolderError, check_folder, key};
+use super::{FolderError, InUseAction, check_folder, key};
 use crate::paths::Paths;
 
 /// A folder's in-use lock, described so a supervisor can reopen it before
@@ -137,15 +137,24 @@ impl Drop for InUseGuard {
     }
 }
 
-/// Takes a folder's in-use lock exclusively for an update or migration,
-/// refusing while anything runs from it. `name` is how the game is named in
-/// the refusal.
+/// Takes a folder's in-use lock exclusively for an update, refusing while
+/// anything runs from it. `name` is how the game is named in the refusal.
 pub fn lock_for_update(paths: &Paths, folder: &Path, name: &str) -> Result<InUseGuard> {
+    lock_for(paths, folder, name, InUseAction::Update)
+}
+
+/// `lock_for_update`, for a migration.
+pub fn lock_for_migration(paths: &Paths, folder: &Path, name: &str) -> Result<InUseGuard> {
+    lock_for(paths, folder, name, InUseAction::Migrate)
+}
+
+fn lock_for(paths: &Paths, folder: &Path, name: &str, action: InUseAction) -> Result<InUseGuard> {
     let lock = InUseLock::new(paths, folder)?;
     lock.try_exclusive()?.ok_or_else(|| {
         FolderError::InUse {
             name: name.to_owned(),
             holders: lock.holders(),
+            action,
         }
         .into()
     })
@@ -253,6 +262,35 @@ mod tests {
         assert_eq!(
             refusal(&paths, &folder),
             "a-third, rimworld-2, and rimworld-copy are running from this game folder. Stop them before updating rimworld."
+        );
+    }
+
+    #[test]
+    fn a_migration_refusal_says_migrating() {
+        let (root, paths) = setup();
+        let folder = root.path().join("g");
+        let lock = InUseLock::new(&paths, &folder).unwrap();
+        let migrate = |paths: &Paths| {
+            lock_for_migration(paths, &folder, "rimworld")
+                .unwrap_err()
+                .to_string()
+        };
+        let _first = lock.try_shared("rimworld-copy").unwrap().unwrap();
+        assert_eq!(
+            migrate(&paths),
+            "rimworld-copy is running from this game folder. Stop it before migrating rimworld."
+        );
+        let _second = lock.try_shared("rimworld-2").unwrap().unwrap();
+        assert_eq!(
+            migrate(&paths),
+            "rimworld-2 and rimworld-copy are running from this game folder. Stop them before migrating rimworld."
+        );
+        for entry in fs::read_dir(&lock.holders).unwrap() {
+            fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+        assert_eq!(
+            migrate(&paths),
+            "Something is running from rimworld's game folder. Stop it first."
         );
     }
 

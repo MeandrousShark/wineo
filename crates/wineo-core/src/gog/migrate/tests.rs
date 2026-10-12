@@ -1039,6 +1039,26 @@ fn a_running_environment_or_a_folder_in_use_is_refused() {
 }
 
 #[test]
+fn a_migration_refused_for_something_running_says_migrating() {
+    let mut fx = Fixture::new();
+    let folder = fx.rimworld();
+    fx.native("rimworld", &folder.join("start.sh"), "");
+    let migration = fx.migration(RIMWORLD);
+    let canonical = folder::canonical(&folder).unwrap();
+    let lock = InUseLock::new(&fx.paths, &canonical).unwrap();
+    let _copy = lock.try_shared("rimworld-copy").unwrap().unwrap();
+    assert_eq!(
+        fx.apply(&migration).unwrap_err().to_string(),
+        "rimworld-copy is running from this game folder. Stop it before migrating rimworld."
+    );
+    let _other = lock.try_shared("other").unwrap().unwrap();
+    assert_eq!(
+        fx.apply(&migration).unwrap_err().to_string(),
+        "other and rimworld-copy are running from this game folder. Stop them before migrating rimworld."
+    );
+}
+
+#[test]
 fn a_portable_root_is_refused() {
     let mut fx = Fixture::new();
     let folder = fx.rimworld();

@@ -477,7 +477,7 @@ fn attach(
         }
         .into());
     }
-    let _in_use = folder::lock_for_update(paths, &migration.folder, name)?;
+    let _in_use = folder::lock_for_migration(paths, &migration.folder, name)?;
     let lock = FolderLock::exclusive(paths, &migration.folder, cancel)?;
     let state = decide(
         lock.read()?.as_ref(),
@@ -552,7 +552,7 @@ fn create(
     // the adoption lock keeps other migrations out until the state is
     // written.
     {
-        let _in_use = folder::lock_for_update(paths, &migration.folder, &name)?;
+        let _in_use = folder::lock_for_migration(paths, &migration.folder, &name)?;
         let state = folder::peek(paths, &migration.folder)?;
         if decide(state.as_ref(), &migration.folder, &name, migration.gog_id)? == StateChange::Adopt
         {
@@ -582,7 +582,7 @@ fn create(
         }
         Err(error) => return Err(error.into()),
     }
-    let _in_use = folder::lock_for_update(paths, &migration.folder, &name)?;
+    let _in_use = folder::lock_for_migration(paths, &migration.folder, &name)?;
     let lock = FolderLock::exclusive(paths, &migration.folder, cancel)?;
     let state = decide(
         lock.read()?.as_ref(),
