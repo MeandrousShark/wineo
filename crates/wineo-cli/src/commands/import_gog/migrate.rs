@@ -70,23 +70,36 @@ impl Heroic {
     }
 
     /// Every GOG game Heroic installed, and what couldn't be read.
-    fn games(&self) -> (Vec<(&HeroicSource, HeroicGogGame)>, Vec<String>) {
+    fn games(&self) -> (Vec<(&HeroicSource, HeroicGogGame)>, Vec<Unreadable>) {
         let mut games = Vec::new();
-        let mut notes = Vec::new();
+        let mut unreadable = Vec::new();
         for source in &self.sources {
             match source.gog_installed() {
                 Ok(listing) => {
                     games.extend(listing.games.into_iter().map(|game| (source, game)));
-                    notes.extend(listing.issues.into_iter().map(|issue| match issue.field {
-                        Some(field) => format!("{field}: {}", issue.message),
-                        None => issue.message,
+                    unreadable.extend(listing.issues.into_iter().map(|issue| {
+                        Unreadable {
+                            subject: issue
+                                .field
+                                .map_or_else(|| "Heroic".to_owned(), |id| format!("GOG game {id}")),
+                            message: issue.message,
+                        }
                     }));
                 }
-                Err(error) => notes.push(format!("Couldn't read Heroic's GOG games: {error:#}")),
+                Err(error) => unreadable.push(Unreadable {
+                    subject: "Heroic".to_owned(),
+                    message: format!("Couldn't read its GOG games: {error:#}"),
+                }),
             }
         }
-        (games, notes)
+        (games, unreadable)
     }
+}
+
+/// Something in Heroic's records that can't be used, and what it is.
+struct Unreadable {
+    subject: String,
+    message: String,
 }
 
 enum Planned {
@@ -377,18 +390,19 @@ pub(super) fn all(paths: &Paths, args: &Args, verbose: bool) -> anyhow::Result<E
     }
     let global = GlobalConfig::load(paths)?;
     let heroic = Heroic::load(paths)?;
-    let (games, notes) = heroic.games();
-    for note in notes {
-        warn(note);
-    }
-    if games.is_empty() {
+    let (games, unreadable) = heroic.games();
+    // A record that can't be read is a game that can't be migrated.
+    let mut failures: Vec<(String, String)> = unreadable
+        .into_iter()
+        .map(|entry| (entry.subject, entry.message))
+        .collect();
+    if games.is_empty() && failures.is_empty() {
         println!("Heroic has no GOG games.");
         return Ok(ExitCode::SUCCESS);
     }
     let mut prompt = if asking { Some(terminal()?) } else { None };
 
     let mut ready: Vec<(&HeroicSource, Migration)> = Vec::new();
-    let mut failures: Vec<(String, String)> = Vec::new();
     let mut already: Vec<String> = Vec::new();
     let mut names = HashSet::new();
     for (source, game) in games {
@@ -490,9 +504,9 @@ pub(super) fn guided(
     host_only(paths)?;
     let global = GlobalConfig::load(paths)?;
     let heroic = Heroic::load(paths)?;
-    let (games, notes) = heroic.games();
-    for note in notes {
-        warn(note);
+    let (games, unreadable) = heroic.games();
+    for entry in unreadable {
+        warn(format!("{}: {}", entry.subject, entry.message));
     }
     let mut candidates: Vec<(&HeroicSource, Migration)> = Vec::new();
     for (source, game) in games {

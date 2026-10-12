@@ -607,3 +607,64 @@ fn declining_the_runner_copy_and_canceling_leaves_no_runner_behind() {
     before.assert_unchanged(&runners);
     assert!(f.created_config("disco-elysium").is_empty());
 }
+
+#[test]
+fn all_fails_on_a_heroic_record_it_cant_read() {
+    let f = fixture();
+    f.heroic_broken_entry(555);
+    let before = Snapshot::capture(f.root.path()).unwrap();
+
+    // A library of only unreadable records isn't an empty one.
+    let out = import(&f, &["--all", "--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        !stdout(&out).contains("Heroic has no GOG games."),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        stdout(&out).contains("1 failed: GOG game 555"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("Failed GOG game 555: installed entry has no install_path"),
+        "{}",
+        stderr(&out)
+    );
+    let dry = import(&f, &["--all", "--dry-run"]);
+    assert_eq!(dry.status.code(), Some(1));
+    assert!(
+        stderr(&dry).contains("GOG game 555: would fail: "),
+        "{}",
+        stderr(&dry)
+    );
+    before.assert_unchanged(f.root.path());
+
+    // The games that can be read still migrate.
+    let folder = f.heroic_rimworld();
+    let out = import(&f, &["--all", "--yes"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stdout(&out).contains("Migrated 1 of 1 game."),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(
+        f.gog_state(&folder).unwrap().owner.as_deref(),
+        Some("rimworld")
+    );
+}
+
+#[test]
+fn a_single_game_with_a_record_it_cant_read_fails() {
+    let f = fixture();
+    f.heroic_broken_entry(555);
+    let out = import(&f, &["--game", "555", "--yes"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("installed entry has no install_path"),
+        "{}",
+        stderr(&out)
+    );
+}

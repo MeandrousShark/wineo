@@ -62,6 +62,11 @@ impl Fixture {
         fs::write(self.installed_path(), root.to_string()).unwrap();
     }
 
+    /// An installed entry Heroic wrote without a folder, which can't be used.
+    pub fn heroic_broken_entry(&self, id: u64) {
+        self.add_installed(json!({"appName": id.to_string(), "platform": "linux"}));
+    }
+
     /// RimWorld, native, installed by Heroic in `Games/RimWorld`, with a mod
     /// folder it doesn't ship.
     pub fn heroic_rimworld(&self) -> PathBuf {
