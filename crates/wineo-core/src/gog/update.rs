@@ -197,9 +197,8 @@ pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
     let paths = session.paths().clone();
     host_only(&paths)?;
     let mut batch = Batch::default();
-    // Every environment that owns a folder, whatever its game, so the lost
-    // states below are only the ones with no folder at all.
-    let mut owners = BTreeSet::new();
+    // The environments whose game was checked or reported in the loop.
+    let mut seen = BTreeSet::new();
     for (_, state) in folder::list(&paths)? {
         let state = match state {
             Ok(state) => state,
@@ -215,12 +214,14 @@ pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
         let Some(owner) = state.owner.clone() else {
             continue;
         };
-        owners.insert(owner.clone());
         let id = state.gog_id();
         match recorded_gog_id(&paths, &owner) {
-            Ok(Some(recorded)) if state.is_game(&recorded) => {}
+            Ok(Some(recorded)) if state.is_game(&recorded) => {
+                seen.insert(owner.clone());
+            }
             Ok(_) => continue,
             Err(error) => {
+                seen.insert(owner.clone());
                 batch.errors.push(GameError {
                     environment: Some(owner),
                     id,
@@ -238,24 +239,31 @@ pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
             }),
         }
     }
-    // An environment that records a game but owns no folder lost its state
-    // file. A config that can't be read is only reported above, when it owns
-    // a folder, since nothing says it records a game.
+    // An environment that records a game but owns no folder for it lost its
+    // state, the same answer `check` gives. A config that can't be read is
+    // only reported above, when it owns a folder, since nothing says it
+    // records a game.
     for name in environment::names(&paths)? {
-        if owners.contains(&name) {
+        if seen.contains(&name) {
             continue;
         }
         let Ok(Some(gog_id)) = recorded_gog_id(&paths, &name) else {
             continue;
         };
-        // An unreadable state file was reported above, and could be this one.
-        if !matches!(folder::find(&paths, &name, &gog_id), Ok(None)) {
-            continue;
-        }
+        let message = match folder::find(&paths, &name, &gog_id) {
+            Ok(Some(_)) => continue,
+            Ok(None) => FolderError::StateMissing {
+                name: name.clone(),
+                gog_id: gog_id.clone(),
+            }
+            .to_string(),
+            // A state file that can't be read could be this one's.
+            Err(error) => format!("{error:#}"),
+        };
         batch.errors.push(GameError {
-            environment: Some(name.clone()),
+            environment: Some(name),
             id: gog_id.parse().ok(),
-            message: FolderError::StateMissing { name, gog_id }.to_string(),
+            message,
         });
     }
     batch

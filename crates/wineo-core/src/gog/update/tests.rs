@@ -987,8 +987,9 @@ fn a_batch_checks_every_owned_game_and_keeps_going_past_a_bad_one() {
     };
     // A game whose details can't be fetched.
     one("aaa-broken", 42);
-    // An ownerless folder, one whose owner tracks another game, and one
-    // whose owner is gone are skipped.
+    // An ownerless folder and one whose owner tracks another game aren't
+    // checked, and their environments have no state of their own, which
+    // `check` calls a lost one. One whose owner is gone is skipped.
     let ownerless = one("ownerless", 7);
     FolderLock::exclusive(&fx.paths, &ownerless.folder, NEVER)
         .unwrap()
@@ -1020,7 +1021,7 @@ fn a_batch_checks_every_owned_game_and_keeps_going_past_a_bad_one() {
     assert_eq!(batch.statuses[0].state, UpdateState::UpToDate);
     assert_eq!(batch.statuses[1].state, UpdateState::Available);
 
-    assert_eq!(batch.errors.len(), 2, "{:?}", batch.errors);
+    assert_eq!(batch.errors.len(), 4, "{:?}", batch.errors);
     assert_eq!(batch.errors[0].environment, None);
     assert_eq!(batch.errors[0].id, None);
     assert!(
@@ -1037,6 +1038,17 @@ fn a_batch_checks_every_owned_game_and_keeps_going_past_a_bad_one() {
             .message
             .starts_with("Couldn't get GOG product details: ")
     );
+    // The same answers `check` gives for them.
+    for (error, name, id) in [
+        (&batch.errors[2], "elsewhere", 9),
+        (&batch.errors[3], "ownerless", 7),
+    ] {
+        assert_eq!(error.environment.as_deref(), Some(name));
+        assert_eq!(error.id, Some(id));
+        assert_eq!(error.message, fx.check(name).unwrap_err().to_string());
+        // With an unreadable state file about, any of them could be theirs.
+        assert!(error.message.contains("can't be checked"), "{error:?}");
+    }
     assert_eq!(fx.state(&rimworld), rimworld);
     assert_eq!(fx.state(&disco), disco);
 }
@@ -1058,10 +1070,34 @@ fn a_batch_reports_a_lost_state_once() {
     let plain = fx.paths.environment_config("plain");
     fs::write(plain, "kind = \"native\"\n\n[targets.game]\nexe = \"/x\"\n").unwrap();
 
+    // An environment whose folder is another game's has no state of its own
+    // either, which is the same answer `check` gives.
+    fx.game(
+        "elsewhere",
+        8,
+        Platform::Linux,
+        Track::Installer,
+        "en",
+        vec![installed(8, Some("1"))],
+    );
+    fs::write(
+        fx.paths.environment_config("elsewhere"),
+        "kind = \"native\"\ngog_id = \"9\"\n",
+    )
+    .unwrap();
+
     let batch = fx.with(|session| check_all(session, true)).unwrap();
     assert_eq!(batch.statuses.len(), 1);
     assert_eq!(batch.statuses[0].environment, "rimworld");
-    assert_eq!(batch.errors.len(), 1, "{:?}", batch.errors);
+    assert_eq!(batch.errors.len(), 2, "{:?}", batch.errors);
+    let elsewhere = &batch.errors[1];
+    assert_eq!(elsewhere.environment.as_deref(), Some("elsewhere"));
+    assert_eq!(elsewhere.id, Some(9));
+    assert!(elsewhere.message.contains("GOG state is missing"));
+    assert_eq!(
+        elsewhere.message,
+        fx.check("elsewhere").unwrap_err().to_string()
+    );
     let lost = &batch.errors[0];
     assert_eq!(lost.environment.as_deref(), Some("disco"));
     assert_eq!(lost.id, Some(DISCO));
