@@ -69,6 +69,10 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
 ## Working with the maintainer
 
 - Record the answers to design questions in the plan.
+- The private Vikunja project `wineo` mirrors status: a task per plan step,
+  open questions and acceptance items in "Waiting on you", and raw ideas in
+  "Ideas". Only the primary session writes to it, and the repo stays the
+  source of truth. An idea joins the roadmap as a `features.md` row.
 - When asking them to pick between options for how something looks or feels
   to use (CLI syntax, config shape, layout), show the same scenarios in every
   option side by side first, with a recommendation.
