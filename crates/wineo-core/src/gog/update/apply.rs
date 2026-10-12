@@ -744,6 +744,7 @@ fn run(
     }
     let winning = publish::layer(staged);
 
+    let earlier = journal.attempted.clone();
     for entry in &winning {
         let attempt = Attempted {
             path: entry.path.clone(),
@@ -770,6 +771,7 @@ fn run(
         &winning,
         &committed_files,
         &journal.attempted,
+        &earlier,
         |step: PublishProgress| {
             (progress.borrow_mut())(Progress::Publish {
                 done: step.done,

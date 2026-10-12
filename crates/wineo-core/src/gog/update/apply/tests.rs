@@ -1553,3 +1553,14 @@ fn recovery_syncs_folders_an_earlier_attempt_changed() {
     let synced = syncs.iter().position(|event| event == "dir:kept");
     assert!(synced.is_some_and(|at| at < commit), "{syncs:?}");
 }
+
+#[test]
+fn a_changed_shipped_file_is_listed_even_when_it_matches_the_new_one() {
+    let fx = installed_v1();
+    fx.offer(RIMWORLD, "RimWorld", "2.0", &base_v2());
+    fx.offer(ROYALTY, "Royalty", "2.0", &royalty_v2());
+    fx.write("Data/core.dat", "core v2");
+    let updated = fx.update();
+    assert_eq!(updated.overwritten, ["Data/core.dat"]);
+    assert_eq!(fx.read("Data/core.dat"), "core v2");
+}

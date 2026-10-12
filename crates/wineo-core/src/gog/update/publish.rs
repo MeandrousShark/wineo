@@ -122,6 +122,7 @@ impl<'a> Publisher<'a> {
         new: &[WinningEntry],
         committed: &[WinningEntry],
         attempted: &[Attempted],
+        earlier: &[Attempted],
         mut progress: impl FnMut(PublishProgress),
     ) -> Result<()> {
         let mut recorded: BTreeMap<&str, Vec<Recorded>> = BTreeMap::new();
@@ -153,7 +154,7 @@ impl<'a> Publisher<'a> {
             .collect();
 
         self.remove_old(&recorded, &shipped)?;
-        self.clear_new(new, &recorded, &tracked, committed.is_empty())?;
+        self.clear_new(new, &recorded, &tracked, earlier, committed.is_empty())?;
         let total = new.len();
         for (done, entry) in new.iter().enumerate() {
             self.check_cancel()?;
@@ -219,9 +220,19 @@ impl<'a> Publisher<'a> {
         new: &[WinningEntry],
         recorded: &BTreeMap<&str, Vec<Recorded>>,
         tracked: &BTreeMap<&str, &WinningEntry>,
+        earlier: &[Attempted],
         migrated: bool,
     ) -> Result<()> {
         let none = Vec::new();
+        // What an earlier attempt of this operation wrote there, which isn't
+        // a change of yours.
+        let wrote_earlier = |path: &str, kind: EntryType, content: Option<&str>| {
+            earlier.iter().any(|entry| {
+                entry.path == path
+                    && entry.kind == kind
+                    && content_of(entry.kind, &entry.md5, &entry.target).as_deref() == content
+            })
+        };
         for entry in new {
             self.check_cancel()?;
             let path = entry.path.as_str();
@@ -234,11 +245,21 @@ impl<'a> Publisher<'a> {
             let Some(current) = current(&dir, leaf, path)? else {
                 continue;
             };
-            let was_tracked = |kind| tracked.get(path).is_some_and(|old| old.kind == kind);
             match (&current, entry.kind) {
                 (Current::Directory, EntryType::Directory) => {}
                 (Current::File, EntryType::File) => {
                     let hash = self.hash(&dir, leaf, path)?;
+                    // A shipped file is overwritten, and listed when it isn't
+                    // what was committed, whatever the new one holds.
+                    if let Some(old) = tracked.get(path).filter(|old| old.kind == EntryType::File) {
+                        if hash.is_some()
+                            && hash != old.md5
+                            && !wrote_earlier(path, EntryType::File, hash.as_deref())
+                        {
+                            self.report.overwritten.push(path.to_owned());
+                        }
+                        continue;
+                    }
                     let same = hash.is_some() && hash == entry.md5;
                     let ours = records
                         .iter()
@@ -246,13 +267,20 @@ impl<'a> Publisher<'a> {
                     if same || ours || migrated {
                         continue;
                     }
-                    if was_tracked(EntryType::File) {
-                        self.report.overwritten.push(path.to_owned());
-                    } else {
-                        self.save_aside(&dir, leaf, path)?;
-                    }
+                    self.save_aside(&dir, leaf, path)?;
                 }
                 (Current::Symlink(target), EntryType::Symlink) => {
+                    if let Some(old) = tracked
+                        .get(path)
+                        .filter(|old| old.kind == EntryType::Symlink)
+                    {
+                        if old.target.as_deref() != Some(target.as_str())
+                            && !wrote_earlier(path, EntryType::Symlink, Some(target))
+                        {
+                            self.report.overwritten.push(path.to_owned());
+                        }
+                        continue;
+                    }
                     let same = entry.target.as_deref() == Some(target.as_str());
                     let ours = records.iter().any(|r| {
                         r.kind == EntryType::Symlink && r.content.as_deref() == Some(target)
@@ -260,11 +288,7 @@ impl<'a> Publisher<'a> {
                     if same || ours || migrated {
                         continue;
                     }
-                    if was_tracked(EntryType::Symlink) {
-                        self.report.overwritten.push(path.to_owned());
-                    } else {
-                        self.save_aside(&dir, leaf, path)?;
-                    }
+                    self.save_aside(&dir, leaf, path)?;
                 }
                 // Another type. Pass 1 already took away wineo's own entries
                 // whose type changes, so this is yours.
