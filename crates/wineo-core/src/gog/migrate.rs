@@ -477,7 +477,7 @@ fn attach(
         }
         .into());
     }
-    let _in_use = folder::lock_for_update(paths, &migration.folder, name)?;
+    let _in_use = folder::lock_for_migration(paths, &migration.folder, name)?;
     let lock = FolderLock::exclusive(paths, &migration.folder, cancel)?;
     let state = decide(
         lock.read()?.as_ref(),
@@ -552,7 +552,7 @@ fn create(
     // the adoption lock keeps other migrations out until the state is
     // written.
     {
-        let _in_use = folder::lock_for_update(paths, &migration.folder, &name)?;
+        let _in_use = folder::lock_for_migration(paths, &migration.folder, &name)?;
         let state = folder::peek(paths, &migration.folder)?;
         if decide(state.as_ref(), &migration.folder, &name, migration.gog_id)? == StateChange::Adopt
         {
@@ -582,7 +582,7 @@ fn create(
         }
         Err(error) => return Err(error.into()),
     }
-    let _in_use = folder::lock_for_update(paths, &migration.folder, &name)?;
+    let _in_use = folder::lock_for_migration(paths, &migration.folder, &name)?;
     let lock = FolderLock::exclusive(paths, &migration.folder, cancel)?;
     let state = decide(
         lock.read()?.as_ref(),
@@ -631,7 +631,7 @@ fn write_state(
     }
 }
 
-fn host_only(paths: &Paths) -> Result<()> {
+pub(super) fn host_only(paths: &Paths) -> Result<()> {
     if paths.portable_root().is_some() {
         return Err(MigrateError::Portable.into());
     }
@@ -810,7 +810,7 @@ fn mismatch(folder: &Path, game: &HeroicGogGame, found: &str) -> anyhow::Error {
 }
 
 /// GOG writes ids as strings, but a number means the same.
-fn id_text(value: &Value) -> String {
+pub(super) fn id_text(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
         Value::Number(number) => number.to_string(),

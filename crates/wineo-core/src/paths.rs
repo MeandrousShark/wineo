@@ -259,6 +259,14 @@ impl Paths {
             .join(format!("gog-folder-{key}.in-use.lock"))
     }
 
+    /// The records naming what holds a GOG game folder's in-use lock: one
+    /// file per holder. Host-wide like the lock.
+    pub fn gog_folder_holders(&self, key: &str) -> PathBuf {
+        self.host_state
+            .join(".locks")
+            .join(format!("gog-folder-{key}.holders"))
+    }
+
     /// An environment's playtime log. A portable folder carries it, so it
     /// moves with the folder, like art.
     pub fn stats_log(&self, name: &str) -> PathBuf {
@@ -886,6 +894,11 @@ mod tests {
         assert_eq!(
             xdg.gog_folder_in_use_lock("ab"),
             Path::new("/home/me/.local/state/wineo/.locks/gog-folder-ab.in-use.lock")
+        );
+        assert_eq!(one.gog_folder_holders("ab"), xdg.gog_folder_holders("ab"));
+        assert_eq!(
+            xdg.gog_folder_holders("ab"),
+            Path::new("/home/me/.local/state/wineo/.locks/gog-folder-ab.holders")
         );
         assert_eq!(
             xdg.gog_credentials_lock(),

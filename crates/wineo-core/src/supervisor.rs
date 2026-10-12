@@ -682,7 +682,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
         .folders
         .iter()
         .map(|lock| {
-            lock.try_shared()
+            lock.try_shared(&spec.claim.name)
                 .and_then(|guard| {
                     guard.ok_or_else(|| {
                         anyhow::anyhow!("{} is being updated", lock.folder().display())

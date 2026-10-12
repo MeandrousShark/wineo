@@ -290,6 +290,56 @@ fn a_background_run_holds_the_folder_until_it_stops() {
     assert!(!f.runtime("rimworld").is_running().unwrap());
 }
 
+/// What an update of rimworld would say, or None when it can take the folder.
+fn update_refusal(f: &Fixture, folder: &Path) -> Option<String> {
+    lock_for_update(&f.paths(), folder, "rimworld")
+        .err()
+        .map(|error| error.to_string())
+}
+
+#[test]
+fn the_refusal_names_a_background_run_from_the_moment_start_returns() {
+    let f = Fixture::new();
+    let folder = rimworld(&f, false);
+    // The supervisor re-takes the lock and leaves its own record before
+    // start lets go of its, so there is never a running game with no name.
+    assert_success(&f.run(&["start", "rimworld"]));
+    assert_eq!(
+        update_refusal(&f, &folder).as_deref(),
+        Some("rimworld is running from this game folder. Stop it before updating rimworld.")
+    );
+    assert_success(&f.run(&["stop", "rimworld"]));
+    wait_for("the supervisor to release the folder", || {
+        update_refusal(&f, &folder).is_none()
+    });
+}
+
+#[test]
+fn the_refusal_names_the_environment_running_an_exec() {
+    let f = Fixture::new();
+    let folder = rimworld(&f, false);
+    f.environment("copy", "");
+    let exe = folder.join("RimWorld.exe").display().to_string();
+    let mut running = f
+        .wineo()
+        .args(["exec", "copy", &exe])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pids = f.root.path().join("prefixes/copy/fake-pids");
+    wait_for("the program to start", || pids.exists());
+    assert_eq!(
+        update_refusal(&f, &folder).as_deref(),
+        Some("copy is running from this game folder. Stop it before updating rimworld.")
+    );
+    running.kill().unwrap();
+    running.wait().unwrap();
+    wait_for("the exec to release the folder", || {
+        update_refusal(&f, &folder).is_none()
+    });
+}
+
 #[test]
 fn exec_holds_the_folder_until_the_program_exits() {
     let f = Fixture::new();

@@ -1011,12 +1011,12 @@ fn a_running_environment_or_a_folder_in_use_is_refused() {
     let canonical = folder::canonical(&folder).unwrap();
     let in_use = InUseLock::new(&fx.paths, &canonical)
         .unwrap()
-        .try_shared()
+        .try_shared("rimworld-copy")
         .unwrap()
         .unwrap();
     assert!(matches!(
         folder_error(fx.apply(&migration)),
-        FolderError::InUse { name } if name == "rimworld"
+        FolderError::InUse { name, .. } if name == "rimworld"
     ));
     drop(in_use);
     assert_eq!(fx.config("rimworld"), before);
@@ -1027,7 +1027,7 @@ fn a_running_environment_or_a_folder_in_use_is_refused() {
     let migration = fx.migration(RIMWORLD);
     let _in_use = InUseLock::new(&fx.paths, &canonical)
         .unwrap()
-        .try_shared()
+        .try_shared("rimworld-copy")
         .unwrap()
         .unwrap();
     assert!(matches!(
@@ -1036,6 +1036,26 @@ fn a_running_environment_or_a_folder_in_use_is_refused() {
     ));
     assert!(!fx.paths.environment_config("rimworld").exists());
     heroic.assert_unchanged();
+}
+
+#[test]
+fn a_migration_refused_for_something_running_says_migrating() {
+    let mut fx = Fixture::new();
+    let folder = fx.rimworld();
+    fx.native("rimworld", &folder.join("start.sh"), "");
+    let migration = fx.migration(RIMWORLD);
+    let canonical = folder::canonical(&folder).unwrap();
+    let lock = InUseLock::new(&fx.paths, &canonical).unwrap();
+    let _copy = lock.try_shared("rimworld-copy").unwrap().unwrap();
+    assert_eq!(
+        fx.apply(&migration).unwrap_err().to_string(),
+        "rimworld-copy is running from this game folder. Stop it before migrating rimworld."
+    );
+    let _other = lock.try_shared("other").unwrap().unwrap();
+    assert_eq!(
+        fx.apply(&migration).unwrap_err().to_string(),
+        "other and rimworld-copy are running from this game folder. Stop them before migrating rimworld."
+    );
 }
 
 #[test]
