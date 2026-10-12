@@ -1039,6 +1039,31 @@ Settled by the maintainer on 2026-10-11, during step 6:
   reports it as already migrated, naming that folder, and changes nothing.
   Heroic's copy isn't adopted.
 
+Chosen during step 6:
+
+- **Lock order for migration.** A host-wide adoption lock comes first and
+  lasts the whole migration, so two migrations of nested folders can't
+  both pass the overlap check. Then the environment's operation lock, the
+  folder's in-use lock, the state lock, and the config lock.
+- **Write order.** `gog_id` goes into the config before the state file is
+  written. A crash between them leaves a lost state, which migrating again
+  finishes. Writing `gog_id` is a compare-and-set: it's refused if the
+  environment no longer matches the game, and so is a new environment
+  removed or changed before its state is written.
+- **What's recorded.** The language is Heroic's `language` as is, since
+  that's what Heroic downloaded with. DLC have no version, since Heroic
+  doesn't record one.
+- **New environments** also record `heroic_id` and carry over Heroic's
+  playtime, like a Heroic import; attached ones gain only `gog_id`. With a
+  custom executable, the play task's working directory and arguments still
+  apply.
+- **Matching** reads Heroic's prefix without resolving its runner, so an
+  existing environment attaches even when Heroic's Wine setting is
+  unusable. A config that can't be loaded but records the game's `gog_id`
+  is refused by name; one that isn't TOML at all can't be seen.
+- **The working directory** may be the game folder itself; the program
+  may not be a folder, even through a symlink.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,

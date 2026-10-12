@@ -274,6 +274,38 @@ A whole library, for `--all`:
 `SkipReason` and `Warning` carry no wording. The CLI keeps its own text, such
 as "Proton runner, needs --runner", and a GUI shows its own.
 
+### GOG migration
+
+`gog::migrate` moves a GOG game Heroic installed into wineo. It works only
+in the host root, needs no GOG login, and never edits Heroic's files.
+
+- `HeroicSource::gog_installed()` lists Heroic's installed GOG games
+  (`HeroicGogGame`: id, title, platform, folder, version, language, build,
+  and DLC), with unusable entries as `issues`. `gog_game(id)` returns one,
+  or None when Heroic hasn't installed it.
+- `plan(paths, &source, gog_id) -> Plan` only reads and takes no locks. It
+  returns `NotInstalled`, `AlreadyMigrated { environment, folder }`, or
+  `Migrate(Migration)`. A `Migration` says which environment the game
+  attaches to or creates (`target()`: `Existing`, `Windows`, or `Native`),
+  what happens to the folder's state (`state()`: `Adopt`, `Reclaim`, or
+  `Keep`), and the state a first adoption commits (`committed()`). A new
+  Windows environment needs a runner first, through `plan_runner`; its
+  prefix is always adopted in place. `game_plan_mut` and `native_plan_mut`
+  edit a new environment like a Heroic import.
+- `apply(paths, global, &source, &migration, &token, progress) -> Outcome`
+  checks everything again under the locks and writes `gog_id` into the
+  config before the folder's state. It returns `AlreadyMigrated` or
+  `Migrated`. For a new environment, call `registered.finish(paths,
+  global)` afterwards to write desktop entries.
+
+The refusals are `MigrateError` variants, plus `FolderError`'s `Overlap`,
+`OwnedByOther`, and `InUse`. `Running` means the environment it attaches to
+is running: apply holds its operation lock, so no launch starts meanwhile.
+A game started another way (from Heroic, a clone, or another environment)
+before migrating isn't seen. `Changed` means Heroic's files, the game
+folder, or the environment changed since planning; plan again. Most
+wording is a placeholder until the CLI settles it.
+
 ## Not in core yet
 
 - `StopOutcome` carries ready-made message strings rather than typed
