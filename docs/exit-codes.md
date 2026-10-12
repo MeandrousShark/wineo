@@ -23,9 +23,11 @@ read. With `--json`, the readable ones are in the output and the rest are in
 `validate` also exits 1 when an error-level problem is left after checking
 and fixing; warnings alone exit 0. See [Validate](validate.md).
 
-`import heroic --all` imports what it can and exits 1 if any game failed,
-after a summary of what did and didn't import. Its [dry run](dry-run.md)
-does the same for games that would fail.
+`import heroic --all` and `import gog --all` import what they can and exit
+1 if any game failed, after a summary of what did and didn't import. Their
+[dry runs](dry-run.md) do the same for games that would fail.
+`import gog --list` and `update --check` print what they could check and
+exit 1 if any game couldn't be.
 
 ## Canceling
 

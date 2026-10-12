@@ -1,6 +1,7 @@
 # JSON output
 
-`status`, `list`, `validate`, and `stats` accept `--json` for scripting:
+`status`, `list`, `validate`, `stats`, `import gog --list`, and `update
+--check` accept `--json` for scripting:
 
 ```sh
 wineo status hades --json
@@ -8,6 +9,8 @@ wineo status --json
 wineo list --json
 wineo validate --json
 wineo stats --json
+wineo import gog --list --json
+wineo update --check --json
 ```
 
 Each command writes one compact JSON document and a newline to stdout. Fields
@@ -114,6 +117,75 @@ The command still prints the complete partial result and exits with status 1.
 Failures before a complete collection can be gathered, and failures of named
 status, exit 1 with a diagnostic on stderr and no JSON on stdout. Clap
 argument errors keep their normal stderr output.
+
+## GOG
+
+`wineo import gog --list --json` lists the games your GOG account owns:
+
+```json
+{
+  "games": [
+    {
+      "id": "1094900565",
+      "title": "RimWorld",
+      "platforms": ["linux"],
+      "state": "imported",
+      "environment": "rimworld",
+      "track": "installer",
+      "version": "1.6.4871 rev588",
+      "update": "available",
+      "applicable": true,
+      "reason": null,
+      "dlc": [{"id": "1233017772", "title": "Royalty", "state": "unknown"}]
+    }
+  ],
+  "errors": [],
+  "warnings": []
+}
+```
+
+`state` is `not_installed`, `heroic` (installed by Heroic, not migrated
+yet), or `imported`. Only an imported game has `environment`, `track`
+(`installer` or `galaxy`), `version`, `update`, and `dlc`; the rest have
+`null`, `false` for `applicable`, and an empty `dlc`.
+
+`wineo update --check --json` checks the environments that track a GOG
+game:
+
+```json
+{
+  "environments": [
+    {
+      "name": "rimworld",
+      "id": "1094900565",
+      "track": "installer",
+      "installed": "1.6.4871 rev588",
+      "available": "1.6.4900 rev600",
+      "update": "available",
+      "applicable": true,
+      "reason": null,
+      "dlc": [{"id": "1233017772", "title": "Royalty", "state": "available"}]
+    }
+  ],
+  "errors": [],
+  "warnings": []
+}
+```
+
+In both, `update` is `available`, `none`, `galaxy` (an update on GOG that
+a later release applies), or `cant_compare`. `applicable` says whether this
+wineo can apply it, and `reason` says why not: `windows_installer`,
+`galaxy`, or a sentence when the versions can't be compared. A DLC's
+`state` is `up_to_date`, `available`, `unknown` (a migrated DLC whose version
+Heroic never recorded), `cant_compare`, `failed`, or `unavailable`. GOG ids
+are strings.
+
+A game that can't be checked goes in `errors` with its `name` (the
+environment, or `null`), `id` (or `null`), and `message`; the rest still
+print and the command exits 1. `warnings` holds notes like an older saved
+list standing in for one GOG couldn't send, and they also go to stderr.
+A failure of `update --check NAME` exits 1 with a diagnostic on stderr and
+no JSON, like named status.
 
 ## Validate
 
