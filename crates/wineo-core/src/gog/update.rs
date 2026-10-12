@@ -502,6 +502,11 @@ fn compare_one(
             );
         }
     };
+    // Nothing to compare with, so GOG's version, or the lack of one, can't
+    // change what is said.
+    let Some(version) = installed else {
+        return (Verdict::InstalledUnknown, installer.version.clone());
+    };
     let Some(available) = installer.version.clone() else {
         return (
             Verdict::Cant(format!(
@@ -510,10 +515,10 @@ fn compare_one(
             None,
         );
     };
-    let verdict = match installed {
-        None => Verdict::InstalledUnknown,
-        Some(version) if version == available => Verdict::Same,
-        Some(_) => Verdict::Differs,
+    let verdict = if version == available {
+        Verdict::Same
+    } else {
+        Verdict::Differs
     };
     (verdict, Some(available))
 }

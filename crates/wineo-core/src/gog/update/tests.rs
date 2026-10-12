@@ -359,6 +359,38 @@ fn a_migrated_dlc_without_a_version_does_not_decide_the_game() {
 }
 
 #[test]
+fn a_migrated_dlc_stays_unknown_when_gog_lists_its_installer_without_a_version() {
+    let mut fx = Fixture::new();
+    let unversioned = vec![installer("linux", "en", None)];
+    fx.products.insert(
+        RIMWORLD,
+        product(
+            RIMWORLD,
+            "RimWorld",
+            linux("2"),
+            vec![dlc(ROYALTY, "Royalty", unversioned)],
+        ),
+    );
+    fx.native(vec![
+        installed(RIMWORLD, Some("1")),
+        installed(ROYALTY, None),
+    ]);
+    // The base decides, whatever GOG says about the DLC's version.
+    let status = fx.status("rimworld");
+    assert_eq!(status.state, UpdateState::Available);
+    assert_eq!(dlc_state(&status, ROYALTY), DlcState::Unknown);
+    assert_eq!(status.dlc[0].available, None);
+
+    fx.native(vec![
+        installed(RIMWORLD, Some("2")),
+        installed(ROYALTY, None),
+    ]);
+    let status = fx.status("rimworld");
+    assert_eq!(status.state, UpdateState::UpToDate);
+    assert_eq!(dlc_state(&status, ROYALTY), DlcState::Unknown);
+}
+
+#[test]
 fn the_language_matches_exactly_before_its_primary_subtag() {
     let mut fx = Fixture::new();
     fx.native(vec![installed(RIMWORLD, Some("2"))]);
