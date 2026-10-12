@@ -100,7 +100,20 @@ impl Pty {
 
     /// Waits for wineo to exit. The status, and everything it printed.
     pub fn finish(mut self) -> (ExitStatus, String) {
-        let status = self.child.wait().unwrap();
+        // A command stuck at a question fails the test instead of hanging it.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() > deadline {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                let seen = strip_escapes(&self.seen.lock().unwrap());
+                panic!("wineo didn't exit; it had printed:\n{seen}");
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }

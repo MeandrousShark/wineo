@@ -65,7 +65,7 @@ pub fn run(
     } else if let Some(id) = &args.game {
         migrate::one(paths, &args, id, verbose)
     } else {
-        migrate::guided(paths, first_question, verbose)
+        migrate::guided(paths, &args, first_question, verbose)
     };
     match result {
         Err(error) if canceled(&error) => {

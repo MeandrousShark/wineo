@@ -500,3 +500,110 @@ fn the_guided_import_menu_offers_gog() {
         Some("rimworld")
     );
 }
+
+/// Heroic's own Proton, which wineo doesn't have, so it can be copied.
+fn copyable_proton(f: &Fixture) -> serde_json::Value {
+    f.install_external_proton("heroic-proton", "GE-Proton9-1", "9-1");
+    let bin = f.external_dir("heroic-proton").join("GE-Proton9-1/proton");
+    json!({"type": "proton", "name": "GE-Proton9-1", "bin": bin})
+}
+
+#[test]
+fn the_pickers_dry_run_writes_nothing() {
+    let f = fixture();
+    let folder = f.heroic_rimworld();
+    let before = Snapshot::capture(f.root.path()).unwrap();
+    let mut command = f.wineo_at_home();
+    command.args(["import", "gog", "--dry-run"]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Game: ");
+    pty.send("1");
+    pty.expect("Migrate RimWorld (1094900565)");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(
+        output.contains("Dry run, nothing was migrated."),
+        "{output}"
+    );
+    assert!(!output.contains("Migrate it?"), "{output}");
+    assert!(!output.contains("Migrated RimWorld"), "{output}");
+    before.assert_unchanged(f.root.path());
+    assert!(f.gog_state(&folder).is_none());
+}
+
+#[test]
+fn the_picker_with_yes_doesnt_ask() {
+    let f = fixture();
+    let folder = f.heroic_rimworld();
+    let mut command = f.wineo_at_home();
+    command.args(["import", "gog", "--yes"]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Game: ");
+    pty.send("1");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(!output.contains("Migrate it?"), "{output}");
+    assert!(
+        output.contains("Migrated RimWorld as rimworld."),
+        "{output}"
+    );
+    assert_eq!(
+        f.gog_state(&folder).unwrap().owner.as_deref(),
+        Some("rimworld")
+    );
+}
+
+#[test]
+fn a_dry_run_never_copies_heroics_runner() {
+    let f = fixture();
+    let runner = copyable_proton(&f);
+    f.heroic_disco(runner);
+    let before = Snapshot::capture(f.root.path()).unwrap();
+
+    let out = import(&f, &["--game", &game(DISCO), "--dry-run"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    before.assert_unchanged(f.root.path());
+
+    // The picker doesn't offer the copy under --dry-run either.
+    let mut command = f.wineo_at_home();
+    command.args(["import", "gog", "--dry-run"]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Game: ");
+    pty.send("1");
+    pty.expect("Can't migrate: ");
+    pty.expect("Game: ");
+    pty.ctrl_c();
+    let (_, output) = pty.finish();
+    assert!(
+        !output.contains("Heroic runner is not installed"),
+        "{output}"
+    );
+    before.assert_unchanged(f.root.path());
+}
+
+#[test]
+fn declining_the_runner_copy_and_canceling_leaves_no_runner_behind() {
+    let f = fixture();
+    f.install_proton("GE-Proton10-4");
+    let runner = copyable_proton(&f);
+    f.heroic_disco(runner);
+    let runners = f.root.path().join("data/wineo/runners");
+    let before = Snapshot::capture(&runners).unwrap();
+
+    let mut command = f.wineo_at_home();
+    command.args(["import", "gog", "--game", &game(DISCO)]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Heroic runner is not installed");
+    pty.expect("Runner [1]: ");
+    // Choose another runner than copying Heroic's.
+    pty.send("2");
+    pty.expect("Which runner?");
+    pty.expect("Runner: ");
+    pty.send("1");
+    pty.expect("Migrate it?");
+    pty.ctrl_c();
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    before.assert_unchanged(&runners);
+    assert!(f.created_config("disco-elysium").is_empty());
+}

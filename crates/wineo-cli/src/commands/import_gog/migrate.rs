@@ -479,6 +479,7 @@ pub(super) fn all(paths: &Paths, args: &Args, verbose: bool) -> anyhow::Result<E
 
 pub(super) fn guided(
     paths: &Paths,
+    args: &Args,
     first_question: bool,
     verbose: bool,
 ) -> anyhow::Result<ExitCode> {
@@ -537,9 +538,16 @@ pub(super) fn guided(
             _ => {
                 let (source, planned) = &candidates[picked];
                 let mut migration = planned.clone();
-                if let Err(error) =
-                    prepare(paths, &global, &mut migration, Some(&mut prompt), verbose)
-                {
+                // A dry run asks nothing that could write, and --yes
+                // prepares the way it does everywhere else.
+                let asking = !args.dry_run && !args.yes;
+                if let Err(error) = prepare(
+                    paths,
+                    &global,
+                    &mut migration,
+                    asking.then_some(&mut prompt),
+                    verbose,
+                ) {
                     if super::canceled(&error) {
                         return Err(error);
                     }
@@ -550,8 +558,17 @@ pub(super) fn guided(
                 for line in review_lines(paths, &migration) {
                     prompt.say(line)?;
                 }
-                prompt.say("Press Enter to migrate it, Esc to go back, Ctrl+C to cancel.")?;
-                match prompt.confirm("Migrate it?", true)? {
+                if args.dry_run {
+                    prompt.say("Dry run, nothing was migrated.")?;
+                    return Ok(ExitCode::SUCCESS);
+                }
+                let answer = if args.yes {
+                    Reply::Value(true)
+                } else {
+                    prompt.say("Press Enter to migrate it, Esc to go back, Ctrl+C to cancel.")?;
+                    prompt.confirm("Migrate it?", true)?
+                };
+                match answer {
                     Reply::Back => step = 0,
                     Reply::Value(false) => return Err(Canceled.into()),
                     Reply::Value(true) => {
