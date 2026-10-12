@@ -1135,3 +1135,33 @@ fn a_new_environment_removed_or_changed_before_its_state_is_written_gets_none() 
         heroic.assert_unchanged();
     }
 }
+
+#[test]
+fn an_install_path_leading_elsewhere_since_planning_is_refused() {
+    let mut fx = Fixture::new();
+    let first = fx.rimworld_in("Games/A");
+    let second = fx.path("Games/B");
+    fs::create_dir_all(&second).unwrap();
+    for file in ["gameinfo", "start.sh"] {
+        fs::copy(first.join(file), second.join(file)).unwrap();
+    }
+    let link = fx.path("Games/RimWorld");
+    std::os::unix::fs::symlink(&first, &link).unwrap();
+    fx.installed[0]["install_path"] = serde_json::json!(link);
+    fx.write_installed();
+    fx.native("rimworld", &first.join("start.sh"), "");
+    let heroic = fx.heroic_files();
+
+    let migration = fx.migration(RIMWORLD);
+    assert_eq!(migration.folder(), folder::canonical(&first).unwrap());
+    fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&second, &link).unwrap();
+    assert!(matches!(
+        migrate_error(fx.apply(&migration)),
+        MigrateError::Changed
+    ));
+    assert!(fx.state(&first).is_none());
+    assert!(fx.state(&second).is_none());
+    assert!(!fx.config("rimworld").contains("gog_id"));
+    heroic.assert_unchanged();
+}

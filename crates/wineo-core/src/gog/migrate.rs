@@ -387,6 +387,15 @@ pub fn apply(
     if !source.unchanged(&migration.game.id, &migration.fingerprint)? {
         return Err(MigrateError::Changed.into());
     }
+    // The same install path can lead somewhere else by now, through a
+    // symlink retargeted since planning.
+    let folder = match source.gog_game(&migration.game.id)? {
+        Some(game) => game_folder(&game).ok(),
+        None => None,
+    };
+    if folder.as_deref() != Some(migration.folder.as_path()) {
+        return Err(MigrateError::Changed.into());
+    }
     let found = migration.rematch(paths)?;
     match (&migration.target, found) {
         (Target::Existing { name, .. }, Found::Existing { name: found, .. }) if *name == found => {
