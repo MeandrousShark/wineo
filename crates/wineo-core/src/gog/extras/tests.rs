@@ -174,6 +174,7 @@ fn go(
         session,
         &request,
         Ok(client_at(&server.base)),
+        &Token::new(),
     )
 }
 
@@ -802,7 +803,14 @@ fn a_portable_root_is_refused_before_anything_is_fetched() {
         steamgriddb_key: None,
         language: "en",
     };
-    let error = run(&portable, None, &request, Ok(client_at(&server.base))).unwrap_err();
+    let error = run(
+        &portable,
+        None,
+        &request,
+        Ok(client_at(&server.base)),
+        &Token::new(),
+    )
+    .unwrap_err();
     assert_eq!(
         error.to_string(),
         "GOG games live in the host library. Run this without --portable."
@@ -842,7 +850,7 @@ fn a_gog_client_that_cant_be_built_skips_art_with_a_note() {
     let error = wineo_gog::Client::with_base("wineo-test", "not a url")
         .err()
         .unwrap();
-    let report = run(&fixture.paths, None, &request, Err(error)).unwrap();
+    let report = run(&fixture.paths, None, &request, Err(error), &Token::new()).unwrap();
     assert!(report.art.is_empty());
     assert_eq!(report.notes.len(), 2, "{:?}", report.notes);
     assert!(
@@ -943,7 +951,14 @@ fn an_environment_replaced_during_the_steamgriddb_search_is_left_alone() {
         steamgriddb_key: Some("sgdb-key"),
         language: "en",
     };
-    let report = run(&fixture.paths, None, &request, Ok(client_at(&server.base))).unwrap();
+    let report = run(
+        &fixture.paths,
+        None,
+        &request,
+        Ok(client_at(&server.base)),
+        &Token::new(),
+    )
+    .unwrap();
     assert_eq!(report.art.len(), 3, "{:?}", report.art);
     assert!(!report.art.iter().any(|filled| filled.kind == Kind::Logo));
     assert_eq!(art::saved_game(&fixture.paths, "rimworld").unwrap(), None);
@@ -978,7 +993,14 @@ fn an_environment_replaced_during_the_steamgriddb_download_is_left_alone() {
         steamgriddb_key: Some("sgdb-key"),
         language: "en",
     };
-    let report = run(&fixture.paths, None, &request, Ok(client_at(&server.base))).unwrap();
+    let report = run(
+        &fixture.paths,
+        None,
+        &request,
+        Ok(client_at(&server.base)),
+        &Token::new(),
+    )
+    .unwrap();
     assert_eq!(report.art.len(), 3, "{:?}", report.art);
     assert!(!fixture.art_file("logo.png").exists());
     assert_eq!(fixture.art_config().record(None, Kind::Logo), None);
@@ -989,4 +1011,112 @@ fn an_environment_replaced_during_the_steamgriddb_download_is_left_alone() {
         "{:?}",
         report.notes
     );
+}
+
+/// Cancels `token` as an image download starts, like Cancel pressed while
+/// the bytes come in.
+struct CancelingTransport<'a> {
+    inner: FakeApi,
+    token: &'a Token,
+}
+
+impl Transport for CancelingTransport<'_> {
+    fn get(&self, url: &str) -> Result<Box<dyn std::io::Read>> {
+        self.inner.get(url)
+    }
+
+    fn request_with_length(
+        &self,
+        url: &str,
+        bearer: Option<&str>,
+    ) -> Result<(crate::download::Response, Option<u64>)> {
+        self.token.cancel();
+        self.inner.request_with_length(url, bearer)
+    }
+}
+
+#[test]
+fn a_cancel_before_starting_skips_everything_and_says_so() {
+    let fixture = Fixture::new();
+    fixture.login();
+    let server = Scripted::start(gog(Some(120), art_body(&[])));
+    let mut session = fixture.session(&server.base);
+    let token = Token::new();
+    token.cancel();
+    let request = Request {
+        name: "rimworld",
+        gog_id: GAME,
+        title: "RimWorld",
+        kinds: &Kind::ALL,
+        transport: &images(),
+        steamgriddb_key: None,
+        language: "en",
+    };
+    let report = run(
+        &fixture.paths,
+        Some(&mut session),
+        &request,
+        Ok(client_at(&server.base)),
+        &token,
+    )
+    .unwrap();
+    assert_eq!(
+        report.notes,
+        [
+            "Skipped GOG playtime: canceled.",
+            "Skipped GOG artwork: canceled."
+        ]
+    );
+    assert_eq!(report.playtime, None);
+    assert!(report.art.is_empty());
+    assert!(fixture.imported().is_none());
+    assert!(server.requests().is_empty(), "nothing was asked of GOG");
+}
+
+#[test]
+fn a_cancel_during_a_download_keeps_what_was_done_and_writes_nothing_more() {
+    let fixture = Fixture::new();
+    fixture.login();
+    let server = Scripted::start(gog(Some(120), art_body(&[])));
+    let mut session = fixture.session(&server.base);
+    let token = Token::new();
+    let transport = CancelingTransport {
+        inner: images(),
+        token: &token,
+    };
+    let request = Request {
+        name: "rimworld",
+        gog_id: GAME,
+        title: "RimWorld",
+        kinds: &Kind::ALL,
+        transport: &transport,
+        steamgriddb_key: Some("key"),
+        language: "en",
+    };
+    let report = run(
+        &fixture.paths,
+        Some(&mut session),
+        &request,
+        Ok(client_at(&server.base)),
+        &token,
+    )
+    .unwrap();
+    // Playtime came first and stays.
+    assert_eq!(fixture.imported().unwrap().seconds, 7200);
+    assert!(report.art.is_empty(), "{:?}", report.art);
+    assert_eq!(report.notes.len(), Kind::ALL.len());
+    assert!(
+        report
+            .notes
+            .iter()
+            .all(|note| note.starts_with("Skipped ") && note.ends_with(" artwork: canceled.")),
+        "{:?}",
+        report.notes
+    );
+    for kind in Kind::ALL {
+        assert!(
+            fixture.art_config().record(None, kind).is_none(),
+            "{kind} was written"
+        );
+    }
 }

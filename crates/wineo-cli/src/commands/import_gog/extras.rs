@@ -56,7 +56,10 @@ pub(super) fn import(
         steamgriddb_key: key.as_deref(),
         language: &language,
     };
-    match extras::import(paths, session.as_mut(), &request) {
+    // Ctrl+C here keeps its usual meaning; the migration is already done and
+    // this part is short, so it isn't canceled separately.
+    let token = wineo_core::cancel::Token::new();
+    match extras::import(paths, session.as_mut(), &request, &token) {
         Ok(report) => {
             for line in lines(&report) {
                 println!("{line}");

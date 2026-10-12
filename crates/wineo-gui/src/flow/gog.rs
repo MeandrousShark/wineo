@@ -904,14 +904,14 @@ fn prepare(
 }
 
 /// Migrates, then imports GOG's playtime and art and writes desktop entries.
-/// A migration that finished stays done even when canceled at the end; what
-/// comes after it is skipped then, since it isn't needed.
+/// A migration that finished stays done even when canceled at the end; the
+/// extras after it stop at the cancel and say what they skipped.
 fn run(
     paths: &Paths,
     prepared: &Prepared,
     token: &Token,
     mut progress: impl FnMut(String),
-    extras: impl FnOnce(&Paths, &GlobalConfig, &str, u64, &str) -> Extras,
+    extras: impl FnOnce(&Paths, &GlobalConfig, &str, u64, &str, &Token) -> Extras,
 ) -> Result<Report, String> {
     let global = GlobalConfig::load(paths).map_err(|error| error.to_string())?;
     let migration = &prepared.migration;
@@ -946,12 +946,15 @@ fn run(
             .extend(heroic::playtime_note(&registered.playtime));
     }
     let icon = if token.is_canceled() {
+        report
+            .warnings
+            .push("Skipped GOG playtime and art: canceled.".to_owned());
         false
     } else {
         progress(format!("Adding GOG playtime and art for {title}..."));
         match migration.game().id.parse::<u64>() {
             Ok(gog_id) => {
-                let extras = extras(paths, &global, &migrated.environment, gog_id, &title);
+                let extras = extras(paths, &global, &migrated.environment, gog_id, &title, token);
                 report.lines.extend(extras.lines);
                 report.warnings.extend(extras.notes);
                 extras.icon
@@ -1005,6 +1008,7 @@ fn import_extras(
     environment: &str,
     gog_id: u64,
     title: &str,
+    token: &Token,
 ) -> Extras {
     let mut out = Extras::default();
     let keyring = SecretServiceKeyring::for_spec(&wineo_core::gog::account::KEY_SPEC);
@@ -1053,7 +1057,7 @@ fn import_extras(
         steamgriddb_key: key.as_deref(),
         language: &language,
     };
-    match extras::import(paths, session.as_mut(), &request) {
+    match extras::import(paths, session.as_mut(), &request, token) {
         Ok(report) => {
             out.lines = extras_lines(&report);
             out.notes.extend(report.notes.iter().cloned());
@@ -1266,7 +1270,7 @@ mod tests {
         }
     }
 
-    fn no_extras(_: &Paths, _: &GlobalConfig, _: &str, _: u64, _: &str) -> Extras {
+    fn no_extras(_: &Paths, _: &GlobalConfig, _: &str, _: u64, _: &str, _: &Token) -> Extras {
         Extras::default()
     }
 
@@ -1378,7 +1382,7 @@ mod tests {
             &prepared,
             &Token::new(),
             |line| said.push(line),
-            |_, _, name, id, title| {
+            |_, _, name, id, title, _| {
                 assert_eq!((name, id, title), ("rimworld", 1094900565, "RimWorld"));
                 Extras {
                     lines: vec!["Imported 41 h of GOG playtime.".to_owned()],
@@ -1401,11 +1405,58 @@ mod tests {
         assert!(config.contains(RIMWORLD), "{config}");
     }
 
-    /// Core decides whether a cancel came in time. A native game has
-    /// nothing to copy, so its migration finishes and stays done, and the
-    /// extras after it are skipped.
+    /// A cancel that comes after the migration committed, while GOG's
+    /// playtime and art are being fetched, reaches that work through the
+    /// page's token: it stops, and the migration stays done.
     #[test]
-    fn a_late_cancel_keeps_the_migration_and_skips_the_extras() {
+    fn a_cancel_during_the_extras_stops_them_and_keeps_the_migration() {
+        use std::sync::mpsc;
+        let mut fx = Fixture::new();
+        fx.native(RIMWORLD, "RimWorld", &[]);
+        let prepared = fx.prepared(RIMWORLD);
+        let token = Token::new();
+        let (started, extras_started) = mpsc::channel();
+        let report = std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                run(
+                    &fx.paths,
+                    &prepared,
+                    &token,
+                    |_| {},
+                    |paths, _, name, _, _, extras_token| {
+                        // The migration is committed before the extras start.
+                        assert!(paths.environment_config(name).exists());
+                        started.send(()).unwrap();
+                        // Stands in for a slow GOG request that checks the
+                        // token, as `extras::import` does between steps.
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(10);
+                        while !extras_token.is_canceled() {
+                            assert!(std::time::Instant::now() < deadline, "never canceled");
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Extras {
+                            notes: vec!["Skipped GOG artwork: canceled.".to_owned()],
+                            ..Extras::default()
+                        }
+                    },
+                )
+            });
+            extras_started.recv().unwrap();
+            token.cancel();
+            worker.join().unwrap()
+        })
+        .unwrap();
+        assert_eq!(report.lines[0], "Migrated RimWorld as rimworld.");
+        assert_eq!(report.warnings, ["Skipped GOG artwork: canceled."]);
+        assert!(fx.paths.environment_config("rimworld").exists());
+    }
+
+    /// Core decides whether a cancel before the migration comes in time. A
+    /// native game has nothing to copy, so it finishes and stays done, and
+    /// the extras are skipped with a note.
+    #[test]
+    fn a_cancel_before_a_native_migration_keeps_it_and_skips_the_extras() {
         let mut fx = Fixture::new();
         fx.native(RIMWORLD, "RimWorld", &[]);
         let prepared = fx.prepared(RIMWORLD);
@@ -1416,10 +1467,11 @@ mod tests {
             &prepared,
             &token,
             |_| {},
-            |_, _, _, _, _| panic!("no extras after a cancel"),
+            |_, _, _, _, _, _| panic!("no extras after a cancel"),
         )
         .unwrap();
         assert_eq!(report.lines[0], "Migrated RimWorld as rimworld.");
+        assert_eq!(report.warnings, ["Skipped GOG playtime and art: canceled."]);
         assert!(fx.paths.environment_config("rimworld").exists());
     }
 

@@ -86,12 +86,22 @@ pub struct Report {
 
 /// Imports GOG's playtime (with a login) and artwork (without one) for the
 /// environment that runs `request.gog_id`. Read-only toward GOG.
+///
+/// `token` is checked before playtime, before each kind of art, and while
+/// GOG's images download. A cancel keeps what was already written and adds
+/// a note for each part it skipped.
 pub fn import(
     paths: &Paths,
     session: Option<&mut Session<'_>>,
     request: &Request<'_>,
+    token: &Token,
 ) -> Result<Report> {
-    run(paths, session, request, super::client_from_env())
+    run(paths, session, request, super::client_from_env(), token)
+}
+
+/// The note for a part a cancel skipped.
+fn canceled(what: &str) -> String {
+    format!("Skipped {what}: canceled.")
 }
 
 fn run(
@@ -99,6 +109,7 @@ fn run(
     session: Option<&mut Session<'_>>,
     request: &Request<'_>,
     client: Result<Client, wineo_gog::Error>,
+    token: &Token,
 ) -> Result<Report> {
     host_only(paths)?;
     let name = request.name;
@@ -122,13 +133,15 @@ fn run(
 
     let mut report = Report::default();
     match session {
+        Some(_) if token.is_canceled() => report.notes.push(canceled("GOG playtime")),
         Some(session) => playtime(paths, request, session, identity, &mut report),
         None => report
             .notes
             .push("Skipped GOG playtime: not logged in to GOG.".to_owned()),
     }
     match client {
-        Ok(client) => artwork(paths, request, &client, identity, &mut report),
+        Ok(_) if token.is_canceled() => report.notes.push(canceled("GOG artwork")),
+        Ok(client) => artwork(paths, request, &client, identity, token, &mut report),
         Err(error) => report.notes.push(format!("Skipped GOG artwork: {error}.")),
     }
     Ok(report)
@@ -219,6 +232,7 @@ fn artwork(
     request: &Request<'_>,
     client: &Client,
     identity: EnvironmentIdentity,
+    token: &Token,
     report: &mut Report,
 ) {
     let name = request.name;
@@ -250,11 +264,18 @@ fn artwork(
     };
     let mut lacking = Vec::new();
     for kind in missing {
+        if token.is_canceled() {
+            report.notes.push(canceled(&format!("{kind} artwork")));
+            continue;
+        }
         let Some(url) = link(&links, kind) else {
             lacking.push(kind);
             continue;
         };
-        match store(paths, request, kind, url, identity) {
+        match store(paths, request, kind, url, identity, token) {
+            Err(_) if token.is_canceled() => {
+                report.notes.push(canceled(&format!("{kind} artwork")));
+            }
             Ok(true) => report.art.push(Filled {
                 kind,
                 source: Source::Gog(request.gog_id),
@@ -266,7 +287,7 @@ fn artwork(
                 .push(format!("Couldn't fetch GOG {kind} artwork: {error}")),
         }
     }
-    steamgriddb(paths, request, &lacking, identity, report);
+    steamgriddb(paths, request, &lacking, identity, token, report);
 }
 
 /// The link for a kind: the cover for the poster, the wider Galaxy
@@ -291,8 +312,13 @@ fn store(
     kind: Kind,
     url: &str,
     identity: EnvironmentIdentity,
+    token: &Token,
 ) -> Result<bool> {
-    let bytes = download_image(request.transport, url, |_, _| {}, &Token::new())?;
+    let bytes = download_image(request.transport, url, |_, _| {}, token)?;
+    // A cancel that came during the download writes nothing.
+    if token.is_canceled() {
+        anyhow::bail!("canceled");
+    }
     let Some(format) = art::detect(&bytes).filter(|format| kind.accepts(*format)) else {
         anyhow::bail!("it isn't a {} image", art::accepted(kind));
     };
@@ -318,6 +344,7 @@ fn steamgriddb(
     request: &Request<'_>,
     kinds: &[Kind],
     identity: EnvironmentIdentity,
+    token: &Token,
     report: &mut Report,
 ) {
     let (Some(key), false) = (request.steamgriddb_key, kinds.is_empty()) else {
@@ -356,6 +383,10 @@ fn steamgriddb(
         }
     };
     for &kind in kinds {
+        if token.is_canceled() {
+            note(canceled(&format!("{kind} artwork")));
+            continue;
+        }
         match art_fetch::fetch_kind_for(
             paths,
             name,
