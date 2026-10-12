@@ -703,3 +703,180 @@ fn a_single_game_with_a_record_it_cant_read_fails() {
         stderr(&out)
     );
 }
+
+#[test]
+fn a_game_both_heroics_list_in_one_folder_migrates_from_the_native_one() {
+    let f = fixture();
+    let folder = f.heroic_rimworld();
+    // Spelled another way, but the same folder.
+    f.flatpak_lists_rimworld(&f.root.path().join("Games/../Games/RimWorld"));
+    let flatpak = Snapshot::capture(&f.heroic_flatpak()).unwrap();
+    let native = Snapshot::capture(&f.heroic()).unwrap();
+
+    let out = import(&f, &["--game", &game(RIMWORLD), "--yes"]);
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(
+        text.lines().any(|l| {
+            l == "  heroic       native (~/config/heroic), also listed by Flatpak Heroic"
+        }),
+        "{text}"
+    );
+    assert!(text.contains("Migrated RimWorld as rimworld."), "{text}");
+    assert_eq!(
+        f.gog_state(&folder).unwrap().owner.as_deref(),
+        Some("rimworld")
+    );
+    flatpak.assert_unchanged(&f.heroic_flatpak());
+    native.assert_unchanged(&f.heroic());
+}
+
+#[test]
+fn the_review_names_heroic_only_when_another_config_was_set_aside() {
+    // Only the native Heroic has it.
+    let f = fixture();
+    f.heroic_rimworld();
+    let out = import(&f, &["--game", &game(RIMWORLD), "--dry-run"]);
+    assert_success(&out);
+    assert!(!stdout(&out).contains("  heroic "), "{}", stdout(&out));
+
+    // Only the Flatpak Heroic has it, so it is the one used.
+    let f = fixture();
+    let folder = f.heroic_rimworld();
+    f.flatpak_lists_rimworld(&folder);
+    fs::write(
+        f.heroic().join("gog_store/installed.json"),
+        r#"{"installed":[]}"#,
+    )
+    .unwrap();
+    let out = import(&f, &["--game", &game(RIMWORLD), "--yes"]);
+    assert_success(&out);
+    assert!(!stdout(&out).contains("  heroic "), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("Migrated RimWorld as rimworld."),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn all_and_the_picker_list_a_game_both_heroics_have_once() {
+    let f = fixture();
+    let folder = f.heroic_rimworld();
+    f.flatpak_lists_rimworld(&folder);
+
+    let dry = import(&f, &["--all", "--dry-run"]);
+    assert_success(&dry);
+    assert_eq!(
+        stdout(&dry)
+            .matches("Migrate RimWorld (1094900565)")
+            .count(),
+        1,
+        "{}",
+        stdout(&dry)
+    );
+
+    let mut command = f.gog_offline_command();
+    command.args(["import", "gog", "--dry-run"]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Game: ");
+    pty.send("1");
+    pty.expect("Migrate RimWorld (1094900565)");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert_eq!(
+        output.raw().matches("RimWorld (1094900565, Linux)").count(),
+        1,
+        "{output}"
+    );
+
+    let out = import(&f, &["--all", "--yes"]);
+    assert_success(&out);
+    assert!(
+        stdout(&out).contains("Migrated 1 of 1 game."),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(
+        f.gog_state(&folder).unwrap().owner.as_deref(),
+        Some("rimworld")
+    );
+}
+
+#[test]
+fn heroics_that_list_a_game_in_different_folders_refuse_naming_both() {
+    let f = fixture();
+    f.heroic_rimworld();
+    f.flatpak_lists_rimworld(&f.root.path().join("Games/Elsewhere"));
+    let before = Snapshot::capture(f.root.path()).unwrap();
+
+    let out = import(&f, &["--game", &game(RIMWORLD), "--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains(
+            "GOG game 1094900565 is installed in two places: ~/Games/RimWorld (native Heroic) and ~/Games/Elsewhere (Flatpak Heroic)."
+        ),
+        "{}",
+        stderr(&out)
+    );
+
+    let all = import(&f, &["--all", "--yes"]);
+    assert_eq!(all.status.code(), Some(1), "{}", stdout(&all));
+    assert!(
+        stderr(&all).contains("Failed GOG game 1094900565: installed in two places: "),
+        "{}",
+        stderr(&all)
+    );
+    assert!(
+        stdout(&all).contains("1 failed: GOG game 1094900565"),
+        "{}",
+        stdout(&all)
+    );
+    before.assert_unchanged(f.root.path());
+}
+
+#[test]
+fn a_windows_game_both_heroics_list_takes_the_native_prefix_and_settings() {
+    let f = fixture();
+    f.install_proton("GE-Proton10-4");
+    let folder = f.heroic_disco(proton("GE-Proton10-4"));
+    fs::write(
+        f.heroic().join(format!("GamesConfig/{DISCO}.json")),
+        json!({ DISCO.to_string(): {
+            "winePrefix": f.root.path().join("Prefixes/Disco"),
+            "wineVersion": proton("GE-Proton10-4"),
+            "launcherArgs": "--from native",
+            "enviromentOptions": [{"key": "FROM_HEROIC", "value": "native"}],
+        } })
+        .to_string(),
+    )
+    .unwrap();
+    let flatpak_prefix = f.flatpak_lists_disco(&folder, proton("GE-Proton10-4"));
+    let flatpak = Snapshot::capture(&f.heroic_flatpak()).unwrap();
+    let flatpak_prefix_before = Snapshot::capture(&flatpak_prefix).unwrap();
+
+    let out = import(&f, &["--game", &game(DISCO), "--yes"]);
+    assert_success(&out);
+    let text = stdout(&out);
+    for line in [
+        "  heroic       native (~/config/heroic), also listed by Flatpak Heroic",
+        "  prefix       ~/Prefixes/Disco (Heroic's, kept where it is)",
+        "Migrated Disco Elysium as disco-elysium.",
+    ] {
+        assert!(
+            text.lines().any(|l| l == line),
+            "missing {line:?} in:\n{text}"
+        );
+    }
+    let config = f.created_config("disco-elysium");
+    assert!(config.contains("prefix = \"~/Prefixes/Disco\""), "{config}");
+    assert!(config.contains("FROM_HEROIC = \"native\""), "{config}");
+    assert!(
+        config.contains(r#"args = ["--from", "native"]"#),
+        "{config}"
+    );
+    assert!(!config.contains("flatpak"), "{config}");
+    assert!(!config.contains("FlatpakDisco"), "{config}");
+    flatpak.assert_unchanged(&f.heroic_flatpak());
+    flatpak_prefix_before.assert_unchanged(&flatpak_prefix);
+}
