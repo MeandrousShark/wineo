@@ -3,6 +3,7 @@
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -634,4 +635,133 @@ fn ctrl_c_stops_a_batch_and_keeps_what_finished() {
     );
     assert!(f.root.path().join("Games/gamma/Data/gamma.txt").exists());
     assert!(journal_left(&f, &folder));
+}
+
+/// Every file under `root` with its contents and time, and every folder,
+/// except the files named in `skip`.
+fn tree(root: &Path, skip: &[&str]) -> BTreeMap<PathBuf, (String, Vec<u8>)> {
+    fn walk(path: &Path, skip: &[&str], out: &mut BTreeMap<PathBuf, (String, Vec<u8>)>) {
+        let meta = fs::symlink_metadata(path).unwrap();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if skip.contains(&name) {
+            return;
+        }
+        let when = format!("{:?}", meta.modified().unwrap());
+        if meta.is_dir() {
+            // A folder's time moves when the login is saved by rename; what
+            // was added or removed shows as its entries.
+            out.insert(path.to_owned(), (String::new(), Vec::new()));
+            for entry in fs::read_dir(path).unwrap() {
+                walk(&entry.unwrap().path(), skip, out);
+            }
+        } else if meta.is_file() {
+            out.insert(path.to_owned(), (when, fs::read(path).unwrap()));
+        } else {
+            let target = fs::read_link(path).unwrap();
+            out.insert(
+                path.to_owned(),
+                (when, target.display().to_string().into_bytes()),
+            );
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(root, skip, &mut out);
+    out
+}
+
+#[track_caller]
+fn assert_same_tree(
+    before: &BTreeMap<PathBuf, (String, Vec<u8>)>,
+    after: &BTreeMap<PathBuf, (String, Vec<u8>)>,
+) {
+    let mut differ: Vec<String> = Vec::new();
+    for (path, entry) in after {
+        if before.get(path) != Some(entry) {
+            differ.push(format!("changed or new: {}", path.display()));
+        }
+    }
+    for path in before.keys().filter(|path| !after.contains_key(*path)) {
+        differ.push(format!("gone: {}", path.display()));
+    }
+    assert!(differ.is_empty(), "{}", differ.join("\n"));
+}
+
+#[test]
+fn a_dry_run_of_one_game_writes_nothing_at_all() {
+    let (f, api, _) = world();
+    // A login made without the lock file, which nothing here renews.
+    let lock = f.paths().gog_credentials_lock();
+    fs::remove_file(&lock).unwrap();
+    let before = tree(f.root.path(), &[]);
+    let out = f.gog(&api, &["update", "rimworld", "--dry-run"]);
+    assert_success(&out);
+    assert!(stdout(&out).ends_with("Dry run, nothing was updated.\n"));
+    assert_same_tree(&before, &tree(f.root.path(), &[]));
+    assert!(!lock.exists());
+    // The details it fetched weren't kept, so a real run fetches them.
+    assert!(
+        !f.paths().gog_product_cache(RIMWORLD).exists(),
+        "product details were cached"
+    );
+}
+
+#[test]
+fn a_dry_run_of_all_writes_nothing_but_a_renewed_login() {
+    let (f, api, _) = world();
+    f.galaxy_game_with_update(&api);
+    // Another tool updated Disco Elysium, which a real check would record.
+    let info = f.root.path().join(format!(
+        "Games/Disco/goggame-{}.info",
+        common::gog_world::DISCO
+    ));
+    let text = fs::read_to_string(&info).unwrap();
+    fs::write(
+        &info,
+        text.replace("59781086834418085", "59781086834418087"),
+    )
+    .unwrap();
+    let paths = f.paths();
+    let generation = paths.gog_credentials_generation();
+    let generation = generation.file_name().unwrap().to_str().unwrap();
+    let login = ["gog.key", generation];
+    let disco = fs::canonicalize(f.root.path().join("Games/Disco")).unwrap();
+    let build = |f: &Fixture| {
+        f.gog_state(&disco).unwrap().committed.unwrap().products[0]
+            .build
+            .clone()
+    };
+    let before = tree(f.root.path(), &login);
+    let out = f.gog(&api, &["update", "--all", "--dry-run"]);
+    assert_success(&out);
+    assert_same_tree(&before, &tree(f.root.path(), &login));
+    assert_eq!(build(&f).as_deref(), Some("59781086834418085"));
+
+    // Outside a dry run the same check records it.
+    assert_success(&f.gog(&api, &["update", "--check", "--all"]));
+    assert_eq!(build(&f).as_deref(), Some("59781086834418087"));
+}
+
+#[test]
+fn all_with_nothing_to_update_needs_no_terminal() {
+    let f = Fixture::new();
+    let api = GogApi::start();
+    logged_in(&f, &api);
+    let out = f.gog(&api, &["update", "--all"]);
+    assert_success(&out);
+    assert_eq!(stdout(&out), "Nothing to update.\n");
+}
+
+#[test]
+fn all_with_something_to_confirm_needs_yes_without_a_terminal() {
+    let (f, api, folder) = world();
+    f.galaxy_game_with_update(&api);
+    let out = f.gog(&api, &["update", "--all"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("error: Updating without a terminal needs --yes."),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(stdout(&out), "");
+    assert!(!folder.join("Data/core.txt").exists());
 }

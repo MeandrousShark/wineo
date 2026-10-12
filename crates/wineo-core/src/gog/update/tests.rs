@@ -681,6 +681,18 @@ fn a_build_on_disk_is_not_recorded_while_a_journal_is_present() {
 }
 
 #[test]
+fn a_read_only_check_uses_another_tools_build_without_recording_it() {
+    let mut fx = Fixture::new();
+    disco_on_gog(&mut fx, &[("400", None), ("300", None)]);
+    let state = fx.galaxy(Some("300"));
+    info(&state.folder, &DISCO.to_string(), "400");
+    let adopted = seen_build(&state).unwrap();
+    assert!(!adopted.recorded);
+    assert_eq!(base_build(&adopted.committed), Some("400"));
+    assert_eq!(fx.state(&state), state);
+}
+
+#[test]
 fn a_state_that_changed_since_it_was_read_is_not_overwritten() {
     let mut fx = Fixture::new();
     disco_on_gog(&mut fx, &[("400", None), ("300", None)]);

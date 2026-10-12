@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use wineo_core::gog::account::{AccountError, Session};
 use wineo_core::gog::folder::{FolderError, JournalKind, Platform, Track};
 use wineo_core::gog::migrate::MigrateError;
-use wineo_core::gog::update::{self, Options, Pending, Plan, Progress, UpdateError, Updated};
+use wineo_core::gog::update::{
+    self, Check, Options, Pending, Plan, Progress, UpdateError, Updated,
+};
 use wineo_core::paths::Paths;
 
 use super::Args;
@@ -111,6 +113,8 @@ fn plan(
         Options {
             reinstall: args.reinstall,
             refresh: args.refresh,
+            // A dry run caches nothing and records nothing.
+            read_only: args.dry_run,
         },
         &cancellation.token,
     )
@@ -159,13 +163,16 @@ fn one(paths: &Paths, args: &Args, name: &str) -> anyhow::Result<ExitCode> {
 
 fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     let asking = !args.yes && !args.dry_run;
-    if asking && !prompt::interactive() {
-        return Ok(usage_error(NEEDS_YES));
-    }
     let account = Account::new();
     let mut session = account.open(paths)?;
     let batch = match session.as_mut() {
-        Some(session) => update::check_all(session, args.refresh)?,
+        Some(session) => update::check_all_with(
+            session,
+            Check {
+                refresh: args.refresh,
+                read_only: args.dry_run,
+            },
+        )?,
         None => anyhow::bail!(LOGGED_OUT),
     };
 
@@ -182,6 +189,7 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         })
         .collect();
     let mut names = Vec::new();
+    let mut skipped = Vec::new();
     for status in &batch.statuses {
         // A game with a journal is finished whatever GOG offers now.
         let finishes = status.unfinished
@@ -190,7 +198,11 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         if status.applicable || finishes {
             names.push(status.environment.clone());
         } else if let Some(reason) = &status.reason {
-            println!("Skipped {}: {}", status.environment, reason_note(reason));
+            skipped.push(format!(
+                "Skipped {}: {}",
+                status.environment,
+                reason_note(reason)
+            ));
         }
     }
 
@@ -201,10 +213,7 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
             return Err(Canceled.into());
         }
         match plan(paths, &mut session, name, args, &planning) {
-            Ok(Plan::Update(pending)) => {
-                print_review(paths, &pending);
-                ready.push(pending);
-            }
+            Ok(Plan::Update(pending)) => ready.push(pending),
             Ok(Plan::UpToDate { .. }) => {}
             Err(error) if stopped(&error).is_some() => return Err(error),
             Err(error) => failures.push((name.clone(), format!("{error:#}"))),
@@ -212,6 +221,17 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     }
     drop(planning);
 
+    // Only something to confirm needs a terminal, so a library with nothing
+    // to update is fine without one.
+    if asking && !ready.is_empty() && !prompt::interactive() {
+        return Ok(usage_error(NEEDS_YES));
+    }
+    for line in &skipped {
+        println!("{line}");
+    }
+    for pending in &ready {
+        print_review(paths, pending);
+    }
     let total = ready.len();
     if ready.is_empty() && failures.is_empty() {
         println!("Nothing to update.");
