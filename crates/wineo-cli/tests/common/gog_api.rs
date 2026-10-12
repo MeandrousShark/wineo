@@ -2,7 +2,7 @@
 //! GOG request to the server named by `WINEO_TEST_GOG_API`, where all the
 //! services share one base, so requests are routed by path.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,12 +19,21 @@ pub struct Config {
     pub user_id: u64,
     /// Refresh tokens are refused with `invalid_grant`.
     pub revoked: bool,
+    /// The one refresh token that works: the last one handed out. Setting
+    /// it to anything else makes the saved login stale.
+    pub refresh: Option<String>,
+    /// The access tokens handed out, which are the ones that work.
+    access: BTreeSet<String>,
     /// The token endpoint fails with this status instead of answering.
     pub token_status: Option<u16>,
     /// Owned games as `getFilteredProducts` lists them.
     pub owned: Vec<Value>,
     /// The owned list fails with this status instead of answering.
     pub owned_status: Option<u16>,
+    /// Owned games per page. All on one page when unset.
+    pub page_size: Option<usize>,
+    /// This page of the owned list fails with this status.
+    pub owned_page_status: Option<(u32, u16)>,
     /// Product details by id. A product not listed is a 404.
     pub products: BTreeMap<u64, Value>,
     /// Products whose details fail with this status.
@@ -43,9 +52,13 @@ impl Default for Config {
             code: CODE.to_owned(),
             user_id: USER,
             revoked: false,
+            refresh: None,
+            access: BTreeSet::new(),
             token_status: None,
             owned: Vec::new(),
             owned_status: None,
+            page_size: None,
+            owned_page_status: None,
             products: BTreeMap::new(),
             product_status: BTreeMap::new(),
             builds: BTreeMap::new(),
@@ -140,9 +153,24 @@ fn query(target: &str, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn answer(config: &mut Config, target: &str) -> String {
+/// The token a request sent as its bearer, if any.
+fn bearer(head: &str) -> Option<String> {
+    head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("authorization")
+            .then(|| value.trim().strip_prefix("Bearer ").map(str::to_owned))
+            .flatten()
+    })
+}
+
+fn unauthorized() -> String {
+    reply(401, "{}")
+}
+
+fn answer(config: &mut Config, target: &str, bearer: Option<&str>) -> String {
     let path = target.split('?').next().unwrap_or_default();
     let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let signed_in = bearer.is_some_and(|token| config.access.contains(token));
     match segments.as_slice() {
         ["token"] => {
             if let Some(status) = config.token_status {
@@ -152,31 +180,60 @@ fn answer(config: &mut Config, target: &str) -> String {
                 Some("authorization_code") => {
                     query(target, "code").as_deref() == Some(&config.code)
                 }
-                Some("refresh_token") => !config.revoked,
+                Some("refresh_token") => {
+                    !config.revoked
+                        && query(target, "refresh_token")
+                            .is_some_and(|token| config.refresh.as_deref() == Some(token.as_str()))
+                }
                 _ => false,
             };
             if !granted {
                 return reply(400, r#"{"error":"invalid_grant"}"#);
             }
             config.renewals += 1;
+            let access = format!("ACCESS-SECRET-{}", config.renewals);
+            let refresh = format!("REFRESH-SECRET-{}", config.renewals);
+            config.access.insert(access.clone());
+            config.refresh = Some(refresh.clone());
             reply(
                 200,
                 &json!({
-                    "access_token": format!("ACCESS-SECRET-{}", config.renewals),
-                    "refresh_token": format!("REFRESH-SECRET-{}", config.renewals),
+                    "access_token": access,
+                    "refresh_token": refresh,
                     "expires_in": 3600,
                     "user_id": config.user_id.to_string(),
                 })
                 .to_string(),
             )
         }
-        ["account", "getFilteredProducts"] => match config.owned_status {
-            Some(status) => reply(status, "{}"),
-            None => reply(
+        ["account", "getFilteredProducts"] => {
+            if !signed_in {
+                return unauthorized();
+            }
+            if let Some(status) = config.owned_status {
+                return reply(status, "{}");
+            }
+            let page: u32 = query(target, "page")
+                .and_then(|page| page.parse().ok())
+                .unwrap_or(1);
+            if let Some((failing, status)) = config.owned_page_status
+                && failing == page
+            {
+                return reply(status, "{}");
+            }
+            let size = config.page_size.unwrap_or(config.owned.len().max(1));
+            let total = config.owned.len().div_ceil(size).max(1) as u32;
+            let products: Vec<&Value> = config
+                .owned
+                .iter()
+                .skip(size * (page as usize - 1))
+                .take(size)
+                .collect();
+            reply(
                 200,
-                &json!({"page": 1, "totalPages": 1, "products": config.owned}).to_string(),
-            ),
-        },
+                &json!({"page": page, "totalPages": total, "products": products}).to_string(),
+            )
+        }
         ["products", id] => {
             let Ok(id) = id.parse::<u64>() else {
                 return reply(404, "{}");
@@ -190,6 +247,9 @@ fn answer(config: &mut Config, target: &str) -> String {
             }
         }
         ["products", id, "os", "windows", "builds"] => {
+            if !signed_in {
+                return unauthorized();
+            }
             match id.parse::<u64>().ok().and_then(|id| config.builds.get(&id)) {
                 Some(builds) => reply(200, &builds.to_string()),
                 None => reply(404, "{}"),
@@ -231,7 +291,8 @@ impl GogApi {
                     let line = text.lines().next().unwrap_or_default().to_owned();
                     requests.lock().unwrap().push(line.clone());
                     let target = line.split(' ').nth(1).unwrap_or("/");
-                    let response = answer(&mut config.lock().unwrap(), target);
+                    let token = bearer(&text);
+                    let response = answer(&mut config.lock().unwrap(), target, token.as_deref());
                     let _ = stream.write_all(response.as_bytes());
                 }
             })

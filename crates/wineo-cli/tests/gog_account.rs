@@ -26,11 +26,12 @@ fn logged_in(f: &Fixture, api: &GogApi) {
     assert!(status.success(), "{output}");
 }
 
-/// No secret may show up in anything wineo prints.
+/// No secret may show up in anything wineo prints. A failure names the
+/// stream and never shows its text, which would print the secret.
 #[track_caller]
-fn assert_no_secrets(text: &str) {
+fn assert_no_secrets(stream: &str, text: &str) {
     for secret in ["SECRET", "GoodCode"] {
-        assert!(!text.contains(secret), "{secret} in:\n{text}");
+        assert!(!text.contains(secret), "a secret showed up on {stream}");
     }
 }
 
@@ -78,15 +79,15 @@ fn login_saves_the_login_and_prints_no_secret() {
     );
     // The address was typed at a prompt that doesn't echo, and nothing
     // printed it back.
-    assert_no_secrets(&output);
+    assert_no_secrets("the terminal", &output);
 
     // The saved login works for the next command, which renews it.
     api.with(|config| config.owned = vec![owned_game(777, "Hades", true, true)]);
     let listed = f.gog(&api, &["import", "gog", "--list"]);
     assert_success(&listed);
     assert!(stdout(&listed).contains("Hades"), "{}", stdout(&listed));
-    assert_no_secrets(&stdout(&listed));
-    assert_no_secrets(&stderr(&listed));
+    assert_no_secrets("stdout", &stdout(&listed));
+    assert_no_secrets("stderr", &stderr(&listed));
 }
 
 #[test]
@@ -95,7 +96,7 @@ fn a_bare_code_is_accepted_too() {
     let api = GogApi::start();
     let (status, output) = login(&f, &api, CODE);
     assert!(status.success(), "{output}");
-    assert_no_secrets(&output);
+    assert_no_secrets("the terminal", &output);
 }
 
 #[test]
@@ -110,7 +111,7 @@ fn a_bad_address_is_refused_without_echoing_it() {
         let (status, output) = login(&f, &api, pasted);
         assert_eq!(status.code(), Some(1), "{output}");
         assert!(output.contains("error: "), "{output}");
-        assert_no_secrets(&output);
+        assert_no_secrets("the terminal", &output);
         assert!(!output.contains("evil"), "{output}");
     }
     // Nothing reached GOG, and nothing was saved.
@@ -130,7 +131,7 @@ fn a_login_gog_refuses_is_not_saved() {
         output.contains("GOG didn't accept that login. Log in again and paste the new address."),
         "{output}"
     );
-    assert_no_secrets(&output);
+    assert_no_secrets("the terminal", &output);
     let listed = f.gog(&api, &["import", "gog", "--list"]);
     assert!(
         stderr(&listed).contains("Log in to GOG first"),
@@ -144,7 +145,7 @@ fn a_login_gog_refuses_is_not_saved() {
     let (status, output) = login(&f, &api, &success_address(CODE));
     assert_eq!(status.code(), Some(1), "{output}");
     assert!(output.contains("GOG answered with status 503"), "{output}");
-    assert_no_secrets(&output);
+    assert_no_secrets("the terminal", &output);
 }
 
 #[test]
@@ -367,7 +368,7 @@ fn list_falls_back_to_the_saved_list_with_a_warning() {
             .starts_with("Couldn't refresh owned GOG games: "),
         "{warnings:?}"
     );
-    assert_no_secrets(&stderr(&stale));
+    assert_no_secrets("stderr", &stderr(&stale));
 }
 
 #[test]
@@ -487,4 +488,161 @@ fn modes_that_dont_go_together_are_usage_errors() {
         let out = f.run_at_home(args);
         assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
     }
+}
+
+fn saved_login(f: &Fixture) -> String {
+    fs::read_to_string(f.root.path().join("data/wineo/gog.key")).unwrap_or_default()
+}
+
+#[test]
+fn each_renewal_saves_the_new_refresh_token() {
+    let f = Fixture::new();
+    let api = library();
+    logged_in(&f, &api);
+    assert!(saved_login(&f).contains("REFRESH-SECRET-1"));
+    // The server only honors the latest refresh token, so a third run
+    // working shows the second saved what it was handed.
+    for run in 2..=3 {
+        let out = f.gog(&api, &["import", "gog", "--list", "--refresh"]);
+        assert_success(&out);
+        assert!(saved_login(&f).contains(&format!("REFRESH-SECRET-{run}")));
+    }
+}
+
+#[test]
+fn a_login_gog_no_longer_accepts_is_removed() {
+    for stale in [true, false] {
+        let f = Fixture::new();
+        let api = library();
+        logged_in(&f, &api);
+        api.with(|config| {
+            if stale {
+                config.refresh = Some("an-older-token".to_owned());
+            } else {
+                config.revoked = true;
+            }
+        });
+        let out = f.gog(&api, &["import", "gog", "--list", "--json"]);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(
+            stderr(&out).contains("error: Log in to GOG again: wineo import gog --login."),
+            "{}",
+            stderr(&out)
+        );
+        assert_eq!(stdout(&out), "");
+        assert_no_secrets("stderr", &stderr(&out));
+        assert_eq!(saved_login(&f), "", "the refused login is gone");
+
+        let next = f.gog(&api, &["import", "gog", "--list"]);
+        assert!(
+            stderr(&next).contains("Log in to GOG first"),
+            "{}",
+            stderr(&next)
+        );
+    }
+}
+
+#[test]
+fn a_gog_that_is_down_keeps_the_login() {
+    let f = Fixture::new();
+    let api = library();
+    logged_in(&f, &api);
+    let saved = saved_login(&f);
+    api.with(|config| config.token_status = Some(503));
+    for args in [&["--list", "--json"][..], &["--list"]] {
+        let mut all = vec!["import", "gog"];
+        all.extend_from_slice(args);
+        let out = f.gog(&api, &all);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(
+            stderr(&out).contains("GOG answered with status 503"),
+            "{}",
+            stderr(&out)
+        );
+        assert_no_secrets("stdout", &stdout(&out));
+        assert_no_secrets("stderr", &stderr(&out));
+    }
+    assert_eq!(saved_login(&f), saved);
+    api.with(|config| config.token_status = None);
+    assert_success(&f.gog(&api, &["import", "gog", "--list"]));
+}
+
+#[test]
+fn json_error_paths_print_no_secret() {
+    let f = Fixture::new();
+    f.heroic_gog();
+    let rimworld = f.heroic_rimworld();
+    f.gog_environment("rimworld", &rimworld, RIMWORLD, "1", &[]);
+    let api = library();
+    logged_in(&f, &api);
+    api.with(|config| {
+        config.product_status.insert(RIMWORLD, 500);
+    });
+    let out = f.gog(&api, &["import", "gog", "--list", "--json", "--refresh"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_no_secrets("stdout", &stdout(&out));
+    assert_no_secrets("stderr", &stderr(&out));
+
+    api.with(|config| config.owned_status = Some(500));
+    let out = f.gog(&api, &["import", "gog", "--list", "--json", "--refresh"]);
+    assert_no_secrets("stdout", &stdout(&out));
+    assert_no_secrets("stderr", &stderr(&out));
+}
+
+#[test]
+fn a_list_in_pages_is_whole_or_not_used() {
+    let f = Fixture::new();
+    let api = library();
+    api.with(|config| config.page_size = Some(1));
+    logged_in(&f, &api);
+
+    // Three pages fetched and joined.
+    let out = f.gog(&api, &["import", "gog", "--list", "--json"]);
+    assert_success(&out);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(json["games"].as_array().unwrap().len(), 3);
+    assert_eq!(api.owned_requests(), 3);
+
+    // A page that fails falls back on the last whole list, with a warning.
+    api.with(|config| config.owned_page_status = Some((2, 500)));
+    let out = f.gog(&api, &["import", "gog", "--list", "--json", "--refresh"]);
+    assert_success(&out);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(json["games"].as_array().unwrap().len(), 3);
+    assert_eq!(json["warnings"].as_array().unwrap().len(), 1);
+    assert!(stderr(&out).contains("warning: Couldn't refresh owned GOG games: "));
+
+    // With no whole list to fall back on, a partial one is never shown.
+    let fresh = Fixture::new();
+    logged_in(&fresh, &api);
+    let out = fresh.gog(&api, &["import", "gog", "--list", "--json"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout(&out), "");
+    assert!(
+        stderr(&out).contains("Couldn't get owned GOG games"),
+        "{}",
+        stderr(&out)
+    );
+    assert_no_secrets("stderr", &stderr(&out));
+}
+
+#[test]
+fn logging_in_works_in_a_portable_folder() {
+    let f = Fixture::new();
+    let api = GogApi::start();
+    let portable = f.root.path().join("portable");
+    let mut command = f.gog_command(&api);
+    command
+        .arg("--portable")
+        .arg(&portable)
+        .args(["import", "gog", "--login"]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Address: ");
+    pty.send(&success_address(CODE));
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(output.contains("Logged in to GOG as account"), "{output}");
+    assert_no_secrets("the terminal", &output);
+    // The login is the host's, so it shows without --portable too.
+    assert_success(&f.gog(&api, &["import", "gog", "--list"]));
 }
