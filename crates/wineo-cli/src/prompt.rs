@@ -89,14 +89,28 @@ pub fn interactive() -> bool {
 /// At a terminal where echo can't be turned off, nothing is read.
 pub fn secret(label: &str) -> anyhow::Result<Option<String>> {
     let stdin = io::stdin();
-    read_secret(
+    // Plain stdout, not the wrapper that exits on a closed pipe: that would
+    // skip putting the terminal back. A closed pipe takes the usual exit
+    // once echo is restored.
+    let result = read_secret(
         stdin.as_fd(),
         stdin.is_terminal(),
         &mut stdin.lock(),
-        &mut crate::output::stdout(),
+        &mut io::stdout(),
         label,
-    )
+        &|fd, attrs| tcsetattr(fd, OptionalActions::Now, attrs),
+    );
+    if let Err(error) = &result
+        && let Some(error) = error.downcast_ref::<io::Error>()
+        && error.kind() == io::ErrorKind::BrokenPipe
+    {
+        crate::output::handle(Err(io::Error::from(io::ErrorKind::BrokenPipe)));
+    }
+    result
 }
+
+/// Sets a terminal's modes. A parameter so a test can make it fail.
+type SetModes<'a> = &'a dyn Fn(BorrowedFd<'_>, &Termios) -> rustix::io::Result<()>;
 
 fn read_secret(
     fd: BorrowedFd<'_>,
@@ -104,6 +118,7 @@ fn read_secret(
     input: &mut dyn BufRead,
     out: &mut dyn Write,
     label: &str,
+    set_modes: SetModes<'_>,
 ) -> anyhow::Result<Option<String>> {
     let mut restore_on_exit = None;
     if terminal {
@@ -123,7 +138,7 @@ fn read_secret(
         });
         let mut quiet = saved.clone();
         quiet.local_modes.remove(LocalModes::ECHO);
-        if tcsetattr(fd, OptionalActions::Now, &quiet).is_err() {
+        if set_modes(fd, &quiet).is_err() {
             guard.close();
             anyhow::bail!("Can't turn off echo here, so nothing was read.");
         }
@@ -132,13 +147,13 @@ fn read_secret(
         // doesn't show.
         let shown = write!(out, "{label}").and_then(|()| out.flush());
         if let Err(error) = shown {
-            put_back(fd, restore_on_exit.take(), out);
+            put_back(fd, restore_on_exit.take(), out, set_modes);
             return Err(error.into());
         }
     }
     let mut line = String::new();
     let read = input.read_line(&mut line);
-    put_back(fd, restore_on_exit, out);
+    put_back(fd, restore_on_exit, out, set_modes);
     Ok((read? > 0).then(|| line.trim().to_owned()))
 }
 
@@ -147,9 +162,10 @@ fn put_back(
     fd: BorrowedFd<'_>,
     saved: Option<(Termios, signal_hook::iterator::Handle)>,
     out: &mut dyn Write,
+    set_modes: SetModes<'_>,
 ) {
     if let Some((saved, guard)) = saved {
-        let _ = tcsetattr(fd, OptionalActions::Now, &saved);
+        let _ = set_modes(fd, &saved);
         let _ = writeln!(out);
         guard.close();
     }
@@ -1255,6 +1271,17 @@ mod tests {
         }
     }
 
+    fn real_modes(fd: BorrowedFd<'_>, modes: &Termios) -> rustix::io::Result<()> {
+        tcsetattr(fd, OptionalActions::Now, modes)
+    }
+
+    fn echo_is_on(terminal: &std::fs::File) -> bool {
+        tcgetattr(terminal)
+            .unwrap()
+            .local_modes
+            .contains(LocalModes::ECHO)
+    }
+
     fn pty_slave() -> (rustix::fd::OwnedFd, std::fs::File) {
         use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
         let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
@@ -1277,7 +1304,15 @@ mod tests {
             echo_when_written: Vec::new(),
         };
         let mut input = io::Cursor::new(b"pasted\n".to_vec());
-        let read = read_secret(slave.as_fd(), true, &mut input, &mut probe, "Key: ").unwrap();
+        let read = read_secret(
+            slave.as_fd(),
+            true,
+            &mut input,
+            &mut probe,
+            "Key: ",
+            &real_modes,
+        )
+        .unwrap();
         assert_eq!(read.as_deref(), Some("pasted"));
         // The label went out with echo off, and the newline after it is back
         // on.
@@ -1293,8 +1328,15 @@ mod tests {
         let not_a_terminal = std::fs::File::open("/dev/null").unwrap();
         let mut input = io::Cursor::new(b"pasted\n".to_vec());
         let mut out = Vec::new();
-        let error =
-            read_secret(not_a_terminal.as_fd(), true, &mut input, &mut out, "Key: ").unwrap_err();
+        let error = read_secret(
+            not_a_terminal.as_fd(),
+            true,
+            &mut input,
+            &mut out,
+            "Key: ",
+            &real_modes,
+        )
+        .unwrap_err();
         assert_eq!(
             error.to_string(),
             "Can't turn off echo here, so nothing was read."
@@ -1308,9 +1350,107 @@ mod tests {
         let not_a_terminal = std::fs::File::open("/dev/null").unwrap();
         let mut input = io::Cursor::new(b"  piped  \n".to_vec());
         let mut out = Vec::new();
-        let read =
-            read_secret(not_a_terminal.as_fd(), false, &mut input, &mut out, "Key: ").unwrap();
+        let read = read_secret(
+            not_a_terminal.as_fd(),
+            false,
+            &mut input,
+            &mut out,
+            "Key: ",
+            &real_modes,
+        )
+        .unwrap();
         assert_eq!(read.as_deref(), Some("piped"));
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_secret_is_not_read_when_the_terminal_wont_take_the_change() {
+        let (_master, slave) = pty_slave();
+        let mut input = io::Cursor::new(b"pasted\n".to_vec());
+        let mut out = Vec::new();
+        // Reading modes works, but turning echo off is refused.
+        let refuse_quiet = |_: BorrowedFd<'_>, modes: &Termios| {
+            if modes.local_modes.contains(LocalModes::ECHO) {
+                Ok(())
+            } else {
+                Err(rustix::io::Errno::IO)
+            }
+        };
+        let error = read_secret(
+            slave.as_fd(),
+            true,
+            &mut input,
+            &mut out,
+            "Key: ",
+            &refuse_quiet,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Can't turn off echo here, so nothing was read."
+        );
+        assert!(out.is_empty(), "no prompt was shown");
+        assert_eq!(input.position(), 0, "nothing was read");
+        assert!(echo_is_on(&slave));
+    }
+
+    #[test]
+    fn echo_comes_back_when_the_prompt_cant_be_written() {
+        struct Closed;
+        impl Write for Closed {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+        }
+        let (_master, slave) = pty_slave();
+        let mut input = io::Cursor::new(b"pasted\n".to_vec());
+        let error = read_secret(
+            slave.as_fd(),
+            true,
+            &mut input,
+            &mut Closed,
+            "Key: ",
+            &real_modes,
+        )
+        .unwrap_err();
+        let error = error.downcast::<io::Error>().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(input.position(), 0, "nothing was read");
+        assert!(echo_is_on(&slave));
+    }
+
+    #[test]
+    fn echo_comes_back_when_reading_fails() {
+        struct Broken;
+        impl io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::Other.into())
+            }
+        }
+        impl BufRead for Broken {
+            fn fill_buf(&mut self) -> io::Result<&[u8]> {
+                Err(io::ErrorKind::Other.into())
+            }
+            fn consume(&mut self, _: usize) {}
+        }
+        let (_master, slave) = pty_slave();
+        let mut out = Vec::new();
+        let error = read_secret(
+            slave.as_fd(),
+            true,
+            &mut Broken,
+            &mut out,
+            "Key: ",
+            &real_modes,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast::<io::Error>().unwrap().kind(),
+            io::ErrorKind::Other
+        );
+        assert!(echo_is_on(&slave));
     }
 }
