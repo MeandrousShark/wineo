@@ -8,6 +8,7 @@ pub mod migrate;
 pub mod owned;
 pub mod package;
 pub mod product;
+pub mod update;
 
 pub use wineo_gog as api;
 

@@ -631,7 +631,7 @@ fn write_state(
     }
 }
 
-fn host_only(paths: &Paths) -> Result<()> {
+pub(super) fn host_only(paths: &Paths) -> Result<()> {
     if paths.portable_root().is_some() {
         return Err(MigrateError::Portable.into());
     }
@@ -810,7 +810,7 @@ fn mismatch(folder: &Path, game: &HeroicGogGame, found: &str) -> anyhow::Error {
 }
 
 /// GOG writes ids as strings, but a number means the same.
-fn id_text(value: &Value) -> String {
+pub(super) fn id_text(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
         Value::Number(number) => number.to_string(),
@@ -1018,7 +1018,7 @@ fn resolved(prefixes: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// The `gog_id` a config records, read as plain TOML.
-fn recorded_gog_id(paths: &Paths, name: &str) -> Option<String> {
+pub(super) fn recorded_gog_id(paths: &Paths, name: &str) -> Option<String> {
     fs::read_to_string(paths.environment_config(name))
         .ok()?
         .parse::<toml_edit::DocumentMut>()
