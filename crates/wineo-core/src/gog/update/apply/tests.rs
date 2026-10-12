@@ -1924,3 +1924,14 @@ fn cleanup_keeps_packages_while_a_state_cant_be_read() {
         "{warnings:?}"
     );
 }
+
+#[test]
+fn the_changed_message_names_the_command_to_run() {
+    let error = UpdateError::Changed {
+        name: "rimworld".to_owned(),
+    };
+    assert_eq!(
+        error.to_string(),
+        "rimworld's GOG game changed while updating; run wineo update rimworld again."
+    );
+}
