@@ -20,6 +20,9 @@ pub struct Pty {
     /// The command's process group, which outlives the command itself when
     /// it started something and exited.
     group: u32,
+    /// Set once the group has been killed, so a later drop doesn't signal
+    /// an id the system may have handed to someone else by then.
+    killed: bool,
     seen: Arc<Mutex<String>>,
     /// How much of the output earlier expectations have used up.
     cursor: usize,
@@ -69,6 +72,7 @@ impl Pty {
             master,
             child,
             group,
+            killed: false,
             seen,
             cursor: 0,
             reader: Some(reader),
@@ -159,6 +163,10 @@ impl Pty {
     /// Kills the command's whole process group, even when the command
     /// itself is gone, and reaps the command.
     fn kill(&mut self) {
+        if self.killed {
+            return;
+        }
+        self.killed = true;
         if let Some(group) = rustix::process::Pid::from_raw(self.group as i32) {
             let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
         }
