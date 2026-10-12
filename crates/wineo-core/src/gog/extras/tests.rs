@@ -1120,3 +1120,121 @@ fn a_cancel_during_a_download_keeps_what_was_done_and_writes_nothing_more() {
         );
     }
 }
+
+fn request<'a>(
+    transport: &'a dyn Transport,
+    kinds: &'a [Kind],
+    key: Option<&'a str>,
+) -> Request<'a> {
+    Request {
+        name: "rimworld",
+        gog_id: GAME,
+        title: "RimWorld",
+        kinds,
+        transport,
+        steamgriddb_key: key,
+        language: "en",
+    }
+}
+
+#[test]
+fn a_cancel_while_gog_answers_with_playtime_writes_none() {
+    let fixture = Fixture::new();
+    fixture.login();
+    let token = Token::new();
+    let answering = token.clone();
+    let inner = gog(Some(120), art_body(&[]));
+    let server = Scripted::start(move |line| {
+        if line.contains("/sessions") {
+            // The cancel lands while the client waits for this answer.
+            answering.cancel();
+        }
+        inner(line)
+    });
+    let mut session = fixture.session(&server.base);
+    let report = run(
+        &fixture.paths,
+        Some(&mut session),
+        &request(&images(), &Kind::ALL, None),
+        Ok(client_at(&server.base)),
+        &token,
+    )
+    .unwrap();
+    assert!(
+        server
+            .requests()
+            .iter()
+            .any(|line| line.contains("/sessions"))
+    );
+    assert_eq!(report.playtime, None);
+    assert!(fixture.imported().is_none(), "nothing was written");
+    assert_eq!(
+        report.notes,
+        [
+            "Skipped GOG playtime: canceled.",
+            "Skipped GOG artwork: canceled."
+        ]
+    );
+}
+
+#[test]
+fn a_cancel_while_waiting_for_the_config_lock_writes_no_playtime() {
+    use std::sync::mpsc;
+    let fixture = Fixture::new();
+    fixture.login();
+    let token = Token::new();
+    let (locked_tx, locked) = mpsc::channel::<()>();
+    let (release, release_rx) = mpsc::channel::<()>();
+    let held = std::sync::Mutex::new(Some((locked_tx, release_rx)));
+    let config = fixture.paths.environment_config("rimworld");
+    let paths = fixture.paths.clone();
+    let inner = gog(Some(120), art_body(&[]));
+    let server = Scripted::start(move |line| {
+        if line.contains("/sessions")
+            && let Some((locked_tx, release_rx)) = held.lock().unwrap().take()
+        {
+            // Someone else takes the config lock before GOG answers, so the
+            // import has to wait for it.
+            let (paths, config) = (paths.clone(), config.clone());
+            let (taken_tx, taken) = mpsc::channel();
+            std::thread::spawn(move || {
+                let _lock = Locks::new(&paths).config(&config).unwrap();
+                taken_tx.send(()).unwrap();
+                let _ = release_rx.recv();
+            });
+            taken.recv().unwrap();
+            locked_tx.send(()).unwrap();
+        }
+        inner(line)
+    });
+    let report = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| {
+            let mut session = fixture.session(&server.base);
+            run(
+                &fixture.paths,
+                Some(&mut session),
+                &request(&images(), &[], None),
+                Ok(client_at(&server.base)),
+                &token,
+            )
+        });
+        locked
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("GOG was asked for playtime");
+        // Give it time to reach the lock, then cancel while it waits.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        token.cancel();
+        release.send(()).unwrap();
+        worker.join().unwrap()
+    })
+    .unwrap();
+    assert_eq!(report.playtime, None);
+    assert!(fixture.imported().is_none(), "nothing was written");
+    assert!(
+        report
+            .notes
+            .contains(&"Skipped GOG playtime: canceled.".to_owned()),
+        "{:?}",
+        report.notes
+    );
+}

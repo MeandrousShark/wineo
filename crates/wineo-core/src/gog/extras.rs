@@ -134,7 +134,7 @@ fn run(
     let mut report = Report::default();
     match session {
         Some(_) if token.is_canceled() => report.notes.push(canceled("GOG playtime")),
-        Some(session) => playtime(paths, request, session, identity, &mut report),
+        Some(session) => playtime(paths, request, session, identity, token, &mut report),
         None => report
             .notes
             .push("Skipped GOG playtime: not logged in to GOG.".to_owned()),
@@ -152,10 +152,18 @@ fn playtime(
     request: &Request<'_>,
     session: &mut Session<'_>,
     identity: EnvironmentIdentity,
+    token: &Token,
     report: &mut Report,
 ) {
     let (user, gog_id) = (session.user_id(), request.gog_id);
-    let minutes = match session.call(|client, token| client.playtime(token, user, gog_id)) {
+    let answer = session.call(|client, access| client.playtime(access, user, gog_id));
+    // GOG's answer can't be interrupted, so a cancel that came meanwhile is
+    // honored here, before anything is written.
+    if token.is_canceled() {
+        report.notes.push(canceled("GOG playtime"));
+        return;
+    }
+    let minutes = match answer {
         Ok(Some(minutes)) => minutes,
         Ok(None) => {
             report
@@ -179,8 +187,9 @@ fn playtime(
             .push("Couldn't import GOG playtime: the total is out of range.".to_owned());
         return;
     };
-    match raise_baseline(paths, request.name, gog_seconds, identity) {
+    match raise_baseline(paths, request.name, gog_seconds, identity, token) {
         Ok(Some(playtime)) => report.playtime = Some(playtime),
+        Err(_) if token.is_canceled() => report.notes.push(canceled("GOG playtime")),
         Ok(None) => report.notes.push(format!(
             "Skipped GOG playtime: {} changed while it was being fetched.",
             request.name
@@ -200,10 +209,15 @@ fn raise_baseline(
     name: &str,
     gog_seconds: i64,
     identity: EnvironmentIdentity,
+    token: &Token,
 ) -> crate::Result<Option<Playtime>> {
     // Held across the read and the append, so two runs can't each read a
     // small baseline and the smaller total be the one that lands last.
     let _lock = Locks::new(paths).config(&paths.environment_config(name))?;
+    // A cancel that came while waiting for the lock still writes nothing.
+    if token.is_canceled() {
+        return Err(crate::Error::Canceled("playtime import"));
+    }
     if EnvironmentIdentity::read(paths, name) != Some(identity) {
         return Ok(None);
     }
