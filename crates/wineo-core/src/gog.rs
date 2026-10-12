@@ -4,6 +4,7 @@
 pub mod account;
 pub mod folder;
 pub mod owned;
+pub mod package;
 pub mod product;
 
 pub use wineo_gog as api;

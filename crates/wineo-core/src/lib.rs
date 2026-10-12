@@ -56,6 +56,7 @@ pub mod templates;
 pub(crate) mod test_snapshot;
 pub mod time;
 pub mod trash;
+pub mod units;
 pub mod validate;
 pub mod view;
 pub mod winetricks;
