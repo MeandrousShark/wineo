@@ -945,8 +945,9 @@ Chosen during step 4 and confirmed by the maintainer on 2026-10-11:
 - **Unreadable state files** block launches of any environment with
   `gog_id`, since one could be its folder's. Launches without `gog_id` only
   refuse a broken state covering a path they name.
-- **The update-side refusal** reads `Something is running from rimworld's
-  game folder. Stop it first.` until step 7 can name what's running.
+- **The update-side refusal** read `Something is running from rimworld's
+  game folder. Stop it first.` until step 7 named what's running; it's now
+  the fallback when no holder can be named.
 
 Settled by the maintainer on 2026-10-11, after step 4's second review:
 
@@ -1081,6 +1082,47 @@ Settled by the maintainer on 2026-10-12, before step 7:
   from this game folder. Stop it before updating rimworld.` A holder that
   can't be named falls back to `Something is running from rimworld's game
   folder. Stop it first.`
+
+Chosen during step 7a:
+
+- **Wording.** Several holders read `rimworld-copy and rimworld-2 are
+  running from this game folder. Stop them before updating rimworld.`, and
+  a migration says "before migrating". A config that can't be read is
+  refused, not treated as untracked: `rimworld can't be checked: its config
+  can't be read (...).`
+- **Holder records** are files beside the in-use lock, each locked by its
+  launch for its life, so a record a reader can lock is stale and deleted.
+  No pids. A record that can't be written doesn't stop a launch; the
+  refusal falls back to the unnamed wording.
+- **The latest Galaxy build** is the first default-branch build in GOG's
+  list, which is newest first (checked against Disco Elysium's).
+- **Status reads take no state lock,** since state files are replaced
+  atomically. Recording another tool's build is the only write: it takes
+  the state lock, reads `goggame-<id>.info` again, and writes only if the
+  committed build is still the one the check started from.
+- **What can't be compared:** an installed base with an unknown version, an
+  installed product with no installer offered for its language, or GOG
+  listing no version for the base. Can't compare outranks Available,
+  since the rebuild would refuse it. A migrated DLC with no version stays
+  unknown whatever GOG lists.
+- **`check_all`** walks environment configs as well as state files, so a
+  lost state is reported, and reports every environment exactly as `check`
+  would.
+
+Settled by the maintainer on 2026-10-12, during step 7b:
+
+- **Downloading holds no locks.** An update downloads and verifies its
+  packages first, changing nothing, so the game can still be played. Only
+  then does it take the environment's operation lock, the in-use lock, and
+  the state lock, and check everything again. If something is running from
+  the folder by then, it refuses as usual, and the packages stay cached so
+  running it again doesn't download them twice.
+- **A migrated game's first rebuild** has no recorded winning files, so a
+  file at a path a product ships isn't known to be yours. Like question
+  15, it's overwritten, and listed when its content differed from the new
+  file, rather than saved aside.
+- **No real-GOG `--ignored` update test.** The acceptance run updating
+  RimWorld covers it, and the fake server covers the download paths.
 
 ## Implementation sequence
 
