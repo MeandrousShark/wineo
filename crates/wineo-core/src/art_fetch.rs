@@ -209,7 +209,7 @@ fn choose_for(
         Mode::Asset(_) => Filters::None,
         Mode::Fill | Mode::Replace => Filters::Ranked,
     };
-    let mut images = api.images(game, kind, filters)?;
+    let mut images = api.images_with_cancel(game, kind, filters, cancel)?;
     if let Mode::Asset(asset) = mode {
         images.retain(|image| image.id == asset);
         if images.is_empty() {
