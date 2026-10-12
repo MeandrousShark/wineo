@@ -302,9 +302,8 @@ The refusals are `MigrateError` variants, plus `FolderError`'s `Overlap`,
 `OwnedByOther`, and `InUse`. `Running` means the environment it attaches to
 is running: apply holds its operation lock, so no launch starts meanwhile.
 A game started another way (from Heroic, a clone, or another environment)
-before migrating isn't seen. `Changed` means Heroic's files, the game
-folder, or the environment changed since planning; plan again. Most
-wording is a placeholder until the CLI settles it.
+before migrating isn't seen. `Changed` carries which one changed since planning (`Changed::Heroic`,
+`Folder`, or `Environment`); plan again.
 
 After a migration, `gog::extras::import(paths, session, &request) ->
 Report` adds GOG's playtime and art. With a session, the environment's

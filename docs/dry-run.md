@@ -67,6 +67,13 @@ heroic --game` prints the game's summary.
 - A game that would fail prints `NAME: would fail: REASON`. The rest still
   preview, and the dry run exits 1, like the real run's summary.
 
+`import gog --game`, `--all`, and the picker print the same review as the
+real migration and change nothing. A dry run may renew your GOG login and
+save the new one, since GOG can retire the old one when it hands out
+another; it changes nothing else. `import gog --all --dry-run` reports a
+game that would fail as `TITLE: would fail: REASON` and exits 1, like
+`import heroic --all`.
+
 ## Art
 
 With `--art`, a dry run searches SteamGridDB the way the real run would,

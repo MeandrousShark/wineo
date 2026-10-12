@@ -1177,6 +1177,42 @@ Chosen during step 10 (core):
   written, checked under the config and `art.toml` locks after each
   network call.
 
+Chosen during step 8a (for the maintainer to review):
+
+- **Logging in** reads the pasted address without echo and needs a
+  terminal. wineo prints the login URL and tries `xdg-open`, never failing
+  when it can't open a browser.
+- **JSON.** GOG ids are strings, like `gog_id` in configs and Steam's
+  `app_id`. `errors` entries carry `name` (or `null`) as well as `id` (or
+  `null`), since an unreadable state file has neither. Both `import gog
+  --list --json` and `update --check --json` gained a top-level `warnings`
+  array, also printed on stderr. A DLC's `state` uses `up_to_date` where a
+  game's `update` says `none`.
+- **"Imported"** in `--list` comes from the configs that record a
+  `gog_id`, so a game whose update check fails still shows its
+  environment, with the failure in `errors`.
+- **Unreadable Heroic records** fail `--all` (counted in the summary, exit
+  1) and a single `--game`; the picker and `--list` show them as warnings.
+- **Runners.** With a terminal and no `--yes`, each Windows game asks for
+  its runner, including inside `--all`. Otherwise Heroic's runner is used
+  when wineo has it, else the newest Proton. Copying Heroic's runner and
+  downloading DXVK or vkd3d each ask first, as Heroic import does. There
+  are no `--runner` or `--name` flags, and a taken name is an error.
+- **No desktop entries** are written for migrated games, unlike Heroic
+  import, which writes them outside portable roots.
+- **After migrating,** wineo reminds you to remove the game from Heroic's
+  library, without deleting its files, so both don't update it.
+- **Secret prompts** (GOG login, `wineo art key`, `import steam --key`)
+  turn echo off before showing the prompt, refuse to read when echo can't
+  be turned off, and put the terminal back on every exit, including a
+  closed stdout and signals. This fixed older problems those commands
+  shared.
+- **Wording** settled for `MigrateError`: `Heroic's game folder PATH
+  doesn't exist.`, `NAME records GOG game ID, but its config can't be read
+  (DETAIL).`, `A Windows game needs a runner.`, and `WHAT changed while
+  migrating; run it again.`, where WHAT is Heroic's files, the game folder,
+  or the environment's name.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,
