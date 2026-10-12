@@ -108,26 +108,7 @@ pub fn path_with_color(paths: &Paths, path: &Path, enabled: bool) -> String {
     dim_with_color(text, enabled)
 }
 
-/// Formats a byte count in binary units, e.g. `320 MiB`, rounded to one
-/// decimal place.
-pub fn size(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        return format!("{bytes} B");
-    }
-    let rounded = (value * 10.0).round() / 10.0;
-    if rounded.fract() == 0.0 {
-        format!("{rounded:.0} {}", UNITS[unit])
-    } else {
-        format!("{rounded:.1} {}", UNITS[unit])
-    }
-}
+pub use wineo_core::units::size;
 
 #[cfg(test)]
 mod tests {
