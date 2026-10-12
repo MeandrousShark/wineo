@@ -1042,6 +1042,36 @@ fn a_batch_checks_every_owned_game_and_keeps_going_past_a_bad_one() {
 }
 
 #[test]
+fn a_batch_reports_a_lost_state_once() {
+    let mut fx = Fixture::new();
+    fx.products
+        .insert(RIMWORLD, product(RIMWORLD, "RimWorld", linux("1"), vec![]));
+    fx.products
+        .insert(DISCO, product(DISCO, "Disco Elysium", vec![], vec![]));
+    fx.builds.insert(DISCO, builds(&[("400", None)]));
+    fx.native(vec![installed(RIMWORLD, Some("1"))]);
+    let disco = fx.galaxy(Some("400"));
+    // Disco's state file is gone, and a broken config that owns nothing says
+    // nothing about any game.
+    fs::remove_file(folder::state_path(&fx.paths, &disco.folder)).unwrap();
+    fs::write(fx.paths.environment_config("broken"), "gog_id = [").unwrap();
+    let plain = fx.paths.environment_config("plain");
+    fs::write(plain, "kind = \"native\"\n\n[targets.game]\nexe = \"/x\"\n").unwrap();
+
+    let batch = fx.with(|session| check_all(session, true)).unwrap();
+    assert_eq!(batch.statuses.len(), 1);
+    assert_eq!(batch.statuses[0].environment, "rimworld");
+    assert_eq!(batch.errors.len(), 1, "{:?}", batch.errors);
+    let lost = &batch.errors[0];
+    assert_eq!(lost.environment.as_deref(), Some("disco"));
+    assert_eq!(lost.id, Some(DISCO));
+    assert_eq!(
+        lost.message,
+        "disco's GOG state is missing. Migrate it again with wineo import gog --game 1771589310, or stop tracking it with wineo set disco --unset gog_id."
+    );
+}
+
+#[test]
 fn a_portable_root_is_refused() {
     let fx = Fixture::new();
     let home = fx.root.path().to_owned();

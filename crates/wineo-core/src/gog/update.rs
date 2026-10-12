@@ -9,6 +9,7 @@
 //! so a read is always a whole file, and a check mustn't leave lock files
 //! behind.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -21,7 +22,7 @@ use super::folder::{
 };
 use super::migrate::{host_only, id_text};
 use super::product;
-use crate::environment::Environment;
+use crate::environment::{self, Environment};
 use crate::paths::Paths;
 
 /// Whether a game is behind GOG.
@@ -196,6 +197,9 @@ pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
     let paths = session.paths().clone();
     host_only(&paths)?;
     let mut batch = Batch::default();
+    // Every environment that owns a folder, whatever its game, so the lost
+    // states below are only the ones with no folder at all.
+    let mut owners = BTreeSet::new();
     for (_, state) in folder::list(&paths)? {
         let state = match state {
             Ok(state) => state,
@@ -211,6 +215,7 @@ pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
         let Some(owner) = state.owner.clone() else {
             continue;
         };
+        owners.insert(owner.clone());
         let id = state.gog_id();
         match recorded_gog_id(&paths, &owner) {
             Ok(Some(recorded)) if state.is_game(&recorded) => {}
@@ -232,6 +237,26 @@ pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
                 message: format!("{error:#}"),
             }),
         }
+    }
+    // An environment that records a game but owns no folder lost its state
+    // file. A config that can't be read is only reported above, when it owns
+    // a folder, since nothing says it records a game.
+    for name in environment::names(&paths)? {
+        if owners.contains(&name) {
+            continue;
+        }
+        let Ok(Some(gog_id)) = recorded_gog_id(&paths, &name) else {
+            continue;
+        };
+        // An unreadable state file was reported above, and could be this one.
+        if !matches!(folder::find(&paths, &name, &gog_id), Ok(None)) {
+            continue;
+        }
+        batch.errors.push(GameError {
+            environment: Some(name.clone()),
+            id: gog_id.parse().ok(),
+            message: FolderError::StateMissing { name, gog_id }.to_string(),
+        });
     }
     batch
         .statuses
