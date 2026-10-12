@@ -335,17 +335,15 @@ fn status_of(
     if installed.platform == Platform::Windows
         && installed.track == Track::Galaxy
         && !unfinished
-        && let Some(committed) = adopt_build(paths, &state)?
+        && let Some(adopted) = adopt_build(paths, &state)?
     {
-        warnings.push(format!(
-            "Recorded the build {}, which another tool installed.",
-            committed
-                .products
-                .first()
-                .and_then(|product| product.build.as_deref())
-                .unwrap_or_default()
-        ));
-        installed = Installed::committed(&committed, false);
+        if adopted.recorded {
+            warnings.push(format!(
+                "Recorded the build {}, which another tool installed.",
+                base_build(&adopted.committed).unwrap_or_default()
+            ));
+        }
+        installed = Installed::committed(&adopted.committed, false);
     }
 
     let compared = if installed.unfinished_install {
@@ -690,29 +688,52 @@ fn by_build(
     })
 }
 
+/// A Galaxy game's committed state after looking for a build another tool
+/// installed.
+#[derive(Debug, PartialEq, Eq)]
+struct Adopted {
+    committed: Committed,
+    /// Whether this check wrote the build.
+    recorded: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_LOCK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs a test's hook between reading the info file and taking the lock.
+fn before_lock() {
+    #[cfg(test)]
+    if let Some(hook) = BEFORE_LOCK.with(|hook| hook.borrow_mut().take()) {
+        hook();
+    }
+}
+
 /// Records the build `goggame-<id>.info` names when it differs from the
 /// committed one, since another tool (GOG Galaxy, Heroic) updated the game.
 /// Only a Galaxy-tracked Windows game with no journal is adopted, and only
-/// when the file's `gameId` is the game's own. Returns the new committed
-/// state when it wrote one.
+/// when the file's `gameId` is the game's own. Returns the committed state
+/// to use from here on, or None when `state` stands.
 ///
-/// The folder's state lock is taken exclusively and the state read again,
-/// so a change made since it was read is never overwritten.
-fn adopt_build(paths: &Paths, state: &FolderState) -> Result<Option<Committed>> {
+/// The file is read once to skip the lock when it has nothing new. Under the
+/// exclusive state lock the state is read again and the file once more, and
+/// the build is written only if the committed build is still the one `state`
+/// had. A check that lost a race with another one therefore never writes an
+/// older build over a newer one, and uses what is committed now.
+fn adopt_build(paths: &Paths, state: &FolderState) -> Result<Option<Adopted>> {
     let (Some(committed), None) = (&state.committed, &state.journal) else {
         return Ok(None);
     };
+    let seen = base_build(committed);
     let Some(build) = info_build(&state.folder, committed.gog_id) else {
         return Ok(None);
     };
-    if committed
-        .products
-        .iter()
-        .find(|product| product.id == committed.gog_id)
-        .is_some_and(|base| base.build.as_deref() == Some(&build))
-    {
+    if seen == Some(build.as_str()) {
         return Ok(None);
     }
+    before_lock();
     let lock = FolderLock::exclusive(paths, &state.folder, &|| false)?;
     let Some(current) = lock.read()? else {
         return Ok(None);
@@ -728,7 +749,16 @@ fn adopt_build(paths: &Paths, state: &FolderState) -> Result<Option<Committed>> 
     {
         return Ok(None);
     }
+    if base_build(&committed) != seen {
+        return Ok(Some(Adopted {
+            committed,
+            recorded: false,
+        }));
+    }
     let gog_id = committed.gog_id;
+    let Some(build) = info_build(&state.folder, gog_id) else {
+        return Ok(None);
+    };
     let Some(base) = committed
         .products
         .iter_mut()
@@ -741,7 +771,18 @@ fn adopt_build(paths: &Paths, state: &FolderState) -> Result<Option<Committed>> 
     }
     base.build = Some(build);
     lock.commit(committed.clone())?;
-    Ok(Some(committed))
+    Ok(Some(Adopted {
+        committed,
+        recorded: true,
+    }))
+}
+
+fn base_build(committed: &Committed) -> Option<&str> {
+    committed
+        .products
+        .iter()
+        .find(|product| product.id == committed.gog_id)
+        .and_then(|base| base.build.as_deref())
 }
 
 /// The `buildId` in the folder's `goggame-<id>.info`, when the file is for

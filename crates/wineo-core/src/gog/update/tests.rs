@@ -682,6 +682,36 @@ fn a_state_that_changed_since_it_was_read_is_not_overwritten() {
 }
 
 #[test]
+fn a_check_that_lost_a_race_never_writes_an_older_build_over_a_newer_one() {
+    let mut fx = Fixture::new();
+    disco_on_gog(&mut fx, &[("500", None), ("400", None), ("300", None)]);
+    let state = fx.galaxy(Some("300"));
+    info(&state.folder, &DISCO.to_string(), "400");
+
+    // Another check reads the same state, sees build 500 on disk, and records
+    // it between this check's read of the info file and its lock.
+    let (paths, other) = (fx.paths.clone(), state.clone());
+    BEFORE_LOCK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            info(&other.folder, &DISCO.to_string(), "500");
+            assert!(adopt_build(&paths, &other).unwrap().unwrap().recorded);
+            // The file was 400 when this check read it.
+            info(&other.folder, &DISCO.to_string(), "400");
+        }));
+    });
+    let status = fx.status("disco");
+    assert_eq!(status.installed.as_deref(), Some("500"));
+    assert_eq!(status.state, UpdateState::UpToDate);
+    assert!(status.warnings.is_empty(), "{:?}", status.warnings);
+    assert_eq!(
+        fx.state(&state).committed.unwrap().products[0]
+            .build
+            .as_deref(),
+        Some("500")
+    );
+}
+
+#[test]
 fn a_failed_record_of_another_tools_build_fails_that_game() {
     let mut fx = Fixture::new();
     disco_on_gog(&mut fx, &[("400", None), ("300", None)]);
