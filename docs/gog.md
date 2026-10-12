@@ -92,6 +92,11 @@ stays where Heroic put it.
 - Afterwards, remove the game from Heroic's library without deleting its
   files, so the two don't both update it.
 
+If both a native and a Flatpak Heroic list a game in the same folder,
+it's one game, read from the native Heroic (or the one used last), and the
+review says which. If they list it in different folders, wineo asks you to
+remove one.
+
 A game already moved says `Already migrated.` Every move shows a review
 first; `--yes` skips the question and is needed without a terminal.
 `--dry-run` shows the review and changes nothing.

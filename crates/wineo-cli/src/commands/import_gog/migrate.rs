@@ -9,7 +9,10 @@ use std::process::ExitCode;
 use wineo_core::config::GlobalConfig;
 use wineo_core::gog::folder::{self, Platform, Track};
 use wineo_core::gog::migrate::{self, MigrateError, Migration, Outcome, Plan, StateChange, Target};
-use wineo_core::heroic::{HeroicGogGame, HeroicImport, HeroicRunnerKind, HeroicSource};
+use wineo_core::heroic::{
+    self, HeroicGogConflict, HeroicGogEntry, HeroicGogLookup, HeroicImport, HeroicOrigin,
+    HeroicRunnerKind, HeroicSource,
+};
 use wineo_core::heroic_import::{self, RunnerSuggestion, suggest_runner};
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
@@ -55,45 +58,82 @@ impl Heroic {
     }
 
     /// The configuration that installed game `id`, None when no Heroic did.
-    fn find(&self, id: &str) -> anyhow::Result<Option<&HeroicSource>> {
-        let mut found = Vec::new();
-        for source in &self.sources {
-            if source.gog_game(id)?.is_some() {
-                found.push(source);
+    /// Refuses a game the configs put in different folders.
+    fn find(&self, paths: &Paths, id: &str) -> anyhow::Result<Option<HeroicGogEntry<'_>>> {
+        match heroic::find_gog_game(&self.sources, id)? {
+            HeroicGogLookup::NotInstalled => Ok(None),
+            HeroicGogLookup::Found(entry) => Ok(Some(entry)),
+            HeroicGogLookup::Conflict(conflict) => {
+                anyhow::bail!("GOG game {id} is {}.", conflict_text(paths, &conflict))
             }
-        }
-        match found.as_slice() {
-            [] => Ok(None),
-            [only] => Ok(Some(only)),
-            _ => anyhow::bail!("More than one Heroic configuration has installed GOG game {id}."),
         }
     }
 
-    /// Every GOG game Heroic installed, and what couldn't be read.
-    fn games(&self) -> (Vec<(&HeroicSource, HeroicGogGame)>, Vec<Unreadable>) {
-        let mut games = Vec::new();
-        let mut unreadable = Vec::new();
-        for source in &self.sources {
-            match source.gog_installed() {
-                Ok(listing) => {
-                    games.extend(listing.games.into_iter().map(|game| (source, game)));
-                    unreadable.extend(listing.issues.into_iter().map(|issue| {
-                        Unreadable {
-                            subject: issue
-                                .field
-                                .map_or_else(|| "Heroic".to_owned(), |id| format!("GOG game {id}")),
-                            message: issue.message,
-                        }
-                    }));
-                }
-                Err(error) => unreadable.push(Unreadable {
-                    subject: "Heroic".to_owned(),
-                    message: format!("Couldn't read its GOG games: {error:#}"),
-                }),
-            }
-        }
-        (games, unreadable)
+    /// Every GOG game Heroic installed, once each, and what couldn't be used.
+    fn games(&self, paths: &Paths) -> (Vec<HeroicGogEntry<'_>>, Vec<Unreadable>) {
+        let listing = heroic::gog_games(&self.sources);
+        let mut unreadable: Vec<Unreadable> = listing
+            .problems
+            .into_iter()
+            .map(|problem| Unreadable {
+                subject: problem
+                    .id
+                    .map_or_else(|| "Heroic".to_owned(), |id| format!("GOG game {id}")),
+                message: problem.message,
+            })
+            .collect();
+        unreadable.extend(listing.conflicts.iter().map(|conflict| Unreadable {
+            subject: format!("GOG game {}", conflict.id),
+            message: conflict_text(paths, conflict),
+        }));
+        (listing.games, unreadable)
     }
+}
+
+fn conflict_text(paths: &Paths, conflict: &HeroicGogConflict) -> String {
+    let count = match conflict.places.len() {
+        2 => "two".to_owned(),
+        count => count.to_string(),
+    };
+    format!(
+        "installed in {count} places: {}",
+        conflict.places_text(|folder| style::path(paths, folder))
+    )
+}
+
+/// Which Heroic a migration reads from, when another config lists the same
+/// game and was set aside. None when only one does.
+fn heroic_row(paths: &Paths, entry: &HeroicGogEntry) -> Option<String> {
+    if entry.also_listed_by.is_empty() {
+        return None;
+    }
+    let used = entry.source.origin();
+    let others: Vec<String> = entry
+        .also_listed_by
+        .iter()
+        .map(|other| {
+            // Two configs of one kind need the folder to tell them apart.
+            if other.origin() == used {
+                format!(
+                    "{} ({})",
+                    other.origin().label(),
+                    style::path(paths, other.config_dir())
+                )
+            } else {
+                other.origin().label().to_owned()
+            }
+        })
+        .collect();
+    let name = match used {
+        HeroicOrigin::Native => "native",
+        HeroicOrigin::Flatpak => "Flatpak",
+        HeroicOrigin::Explicit => "Heroic",
+    };
+    Some(format!(
+        "{name} ({}), also listed by {}",
+        style::path(paths, entry.source.config_dir()),
+        others.join(" and ")
+    ))
 }
 
 /// Something in Heroic's records that can't be used, and what it is.
@@ -202,7 +242,7 @@ fn automatic_runner(
     )
 }
 
-fn review_lines(paths: &Paths, migration: &Migration) -> Vec<String> {
+fn review_lines(paths: &Paths, migration: &Migration, entry: &HeroicGogEntry) -> Vec<String> {
     let game = migration.game();
     let committed = migration.committed();
     let environment = migration.environment().unwrap_or("?");
@@ -223,6 +263,11 @@ fn review_lines(paths: &Paths, migration: &Migration) -> Vec<String> {
     let mut rows = vec![
         ("environment", format!("{environment} ({kind})")),
         ("folder", style::path(paths, migration.folder())),
+    ];
+    if let Some(row) = heroic_row(paths, entry) {
+        rows.push(("heroic", row));
+    }
+    rows.extend([
         (
             "track",
             match committed.track {
@@ -233,7 +278,7 @@ fn review_lines(paths: &Paths, migration: &Migration) -> Vec<String> {
         ),
         ("version", version),
         ("language", committed.language.clone()),
-    ];
+    ]);
     let dlc: Vec<String> = committed
         .products
         .iter()
@@ -275,8 +320,8 @@ fn review_lines(paths: &Paths, migration: &Migration) -> Vec<String> {
     lines
 }
 
-fn print_review(paths: &Paths, migration: &Migration) {
-    for line in review_lines(paths, migration) {
+fn print_review(paths: &Paths, migration: &Migration, entry: &HeroicGogEntry) {
+    for line in review_lines(paths, migration, entry) {
         println!("{line}");
     }
 }
@@ -369,9 +414,10 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str, verbose: bool) -> anyhow
     host_only(paths)?;
     let global = GlobalConfig::load(paths)?;
     let heroic = Heroic::load(paths)?;
-    let Some(source) = heroic.find(id)? else {
+    let Some(entry) = heroic.find(paths, id)? else {
         anyhow::bail!(not_installed(id));
     };
+    let source = entry.source;
     let mut migration = match plan_one(paths, source, id)? {
         Planned::Already {
             environment,
@@ -391,7 +437,7 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str, verbose: bool) -> anyhow
     }
     let mut prompt = if asking { Some(terminal()?) } else { None };
     prepare(paths, &global, &mut migration, prompt.as_mut(), verbose)?;
-    print_review(paths, &migration);
+    print_review(paths, &migration, &entry);
     if args.dry_run {
         println!("Dry run, nothing was migrated.");
         return Ok(ExitCode::SUCCESS);
@@ -412,7 +458,7 @@ pub(super) fn all(paths: &Paths, args: &Args, verbose: bool) -> anyhow::Result<E
     }
     let global = GlobalConfig::load(paths)?;
     let heroic = Heroic::load(paths)?;
-    let (games, unreadable) = heroic.games();
+    let (games, unreadable) = heroic.games(paths);
     // A record that can't be read is a game that can't be migrated.
     let mut failures: Vec<(String, String)> = unreadable
         .into_iter()
@@ -424,21 +470,22 @@ pub(super) fn all(paths: &Paths, args: &Args, verbose: bool) -> anyhow::Result<E
     }
     let mut prompt = if asking { Some(terminal()?) } else { None };
 
-    let mut ready: Vec<(&HeroicSource, Migration)> = Vec::new();
+    let mut ready: Vec<(HeroicGogEntry, Migration)> = Vec::new();
     let mut already: Vec<String> = Vec::new();
     let mut names = HashSet::new();
-    for (source, game) in games {
-        let planned = plan_one(paths, source, &game.id).and_then(|planned| match planned {
-            Planned::Ready(mut migration) => {
-                prepare(paths, &global, &mut migration, prompt.as_mut(), verbose)?;
-                let name = migration.environment().unwrap_or_default().to_owned();
-                if !names.insert(name.clone()) {
-                    return Err(wineo_core::Error::EnvironmentExists(name).into());
+    for entry in games {
+        let planned =
+            plan_one(paths, entry.source, &entry.game.id).and_then(|planned| match planned {
+                Planned::Ready(mut migration) => {
+                    prepare(paths, &global, &mut migration, prompt.as_mut(), verbose)?;
+                    let name = migration.environment().unwrap_or_default().to_owned();
+                    if !names.insert(name.clone()) {
+                        return Err(wineo_core::Error::EnvironmentExists(name).into());
+                    }
+                    Ok(Planned::Ready(migration))
                 }
-                Ok(Planned::Ready(migration))
-            }
-            already => Ok(already),
-        });
+                already => Ok(already),
+            });
         match planned {
             Ok(Planned::Already {
                 environment,
@@ -448,11 +495,11 @@ pub(super) fn all(paths: &Paths, args: &Args, verbose: bool) -> anyhow::Result<E
                 already.push(environment);
             }
             Ok(Planned::Ready(migration)) => {
-                print_review(paths, &migration);
-                ready.push((source, *migration));
+                print_review(paths, &migration, &entry);
+                ready.push((entry, *migration));
             }
             Err(error) if super::canceled(&error) => return Err(error),
-            Err(error) => failures.push((game.title, format!("{error:#}"))),
+            Err(error) => failures.push((entry.game.title, format!("{error:#}"))),
         }
     }
 
@@ -477,8 +524,8 @@ pub(super) fn all(paths: &Paths, args: &Args, verbose: bool) -> anyhow::Result<E
                 _ => return Err(Canceled.into()),
             }
         }
-        for (source, migration) in &ready {
-            match apply(paths, &global, source, migration)
+        for (entry, migration) in &ready {
+            match apply(paths, &global, entry.source, migration)
                 .and_then(|outcome| report(paths, &global, migration, outcome))
             {
                 Ok(true) => done += 1,
@@ -526,16 +573,16 @@ pub(super) fn guided(
     host_only(paths)?;
     let global = GlobalConfig::load(paths)?;
     let heroic = Heroic::load(paths)?;
-    let (games, unreadable) = heroic.games();
+    let (games, unreadable) = heroic.games(paths);
     for entry in unreadable {
         warn(format!("{}: {}", entry.subject, entry.message));
     }
-    let mut candidates: Vec<(&HeroicSource, Migration)> = Vec::new();
-    for (source, game) in games {
-        match plan_one(paths, source, &game.id) {
-            Ok(Planned::Ready(migration)) => candidates.push((source, *migration)),
+    let mut candidates: Vec<(HeroicGogEntry, Migration)> = Vec::new();
+    for entry in games {
+        match plan_one(paths, entry.source, &entry.game.id) {
+            Ok(Planned::Ready(migration)) => candidates.push((entry, *migration)),
             Ok(Planned::Already { .. }) => {}
-            Err(error) => warn(format!("{}: {error:#}", game.title)),
+            Err(error) => warn(format!("{}: {error:#}", entry.game.title)),
         }
     }
     anyhow::ensure!(
@@ -572,7 +619,7 @@ pub(super) fn guided(
                 Reply::Back => return Err(ReturnToSourceMenu.into()),
             },
             _ => {
-                let (source, planned) = &candidates[picked];
+                let (entry, planned) = &candidates[picked];
                 let mut migration = planned.clone();
                 // A dry run asks nothing that could write, and --yes
                 // prepares the way it does everywhere else.
@@ -591,7 +638,7 @@ pub(super) fn guided(
                     step = 0;
                     continue;
                 }
-                for line in review_lines(paths, &migration) {
+                for line in review_lines(paths, &migration, entry) {
                     prompt.say(line)?;
                 }
                 if args.dry_run {
@@ -608,7 +655,7 @@ pub(super) fn guided(
                     Reply::Back => step = 0,
                     Reply::Value(false) => return Err(Canceled.into()),
                     Reply::Value(true) => {
-                        let outcome = apply(paths, &global, source, &migration)?;
+                        let outcome = apply(paths, &global, entry.source, &migration)?;
                         report(paths, &global, &migration, outcome)?;
                         return Ok(ExitCode::SUCCESS);
                     }

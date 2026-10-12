@@ -1262,6 +1262,16 @@ Chosen during step 8b:
   update at a step, so tests can press Ctrl+C mid-publish. Release builds
   never read it.
 
+Settled by the maintainer on 2026-10-12, during step 9:
+
+- **The same game in two Heroic configs.** When more than one Heroic
+  config (native and Flatpak) lists a GOG game at the same canonical
+  folder, it's one game: migration uses the native config, else the one
+  whose `installed.json` is newer, and the review says which. Listing it
+  shows it once. Configs listing the game in different folders still
+  refuse, naming both. Found during the visual check: a stale Flatpak
+  Heroic also listed RimWorld.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,

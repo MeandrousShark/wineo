@@ -17,7 +17,10 @@ use crate::gamescope::{Filter, Gamescope, GamescopeSetting, Scaler, Window};
 
 mod gog;
 
-pub use gog::{HeroicGogGame, HeroicGogListing};
+pub use gog::{
+    HeroicGogConflict, HeroicGogEntry, HeroicGogGame, HeroicGogGames, HeroicGogListing,
+    HeroicGogLookup, HeroicGogProblem, find_gog_game, gog_games,
+};
 
 const FLATPAK_ID: &str = "com.heroicgameslauncher.hgl";
 /// The unsupported settings that still matter to a native game. The rest are
