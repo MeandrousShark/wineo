@@ -301,7 +301,10 @@ fn check_with_no_gog_games_says_so() {
     assert_eq!(stdout(&out), "No GOG games to check.\n");
     let json = f.gog(&api, &["update", "--check", "--json"]);
     assert_success(&json);
-    assert_eq!(stdout(&json), "{\"environments\":[],\"errors\":[]}\n");
+    assert_eq!(
+        stdout(&json),
+        "{\"environments\":[],\"errors\":[],\"warnings\":[]}\n"
+    );
 }
 
 #[test]
@@ -361,4 +364,34 @@ fn names_complete_to_the_environments_that_record_a_gog_game() {
         !text.contains("rimmed") && !text.contains("plain"),
         "{text}"
     );
+}
+
+#[test]
+fn a_saved_copy_standing_in_gives_a_warning_in_text_and_json() {
+    let (f, api) = world();
+    assert_success(&f.gog(&api, &["update", "--check"]));
+    api.with(|config| {
+        config.product_status.insert(RIMWORLD, 500);
+    });
+
+    let out = f.gog(&api, &["update", "--check", "--json", "--refresh"]);
+    assert_success(&out);
+    let json: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let warnings = json["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    let warning = warnings[0].as_str().unwrap();
+    assert!(
+        warning.starts_with("Couldn't refresh GOG product details: "),
+        "{warning}"
+    );
+    assert!(
+        stderr(&out).contains(&format!("warning: {warning}")),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(json["environments"].as_array().unwrap().len(), 1);
+
+    let text = f.gog(&api, &["update", "--check", "--refresh"]);
+    assert_success(&text);
+    assert!(stderr(&text).contains("warning: Couldn't refresh GOG product details: "));
 }

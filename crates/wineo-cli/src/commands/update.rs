@@ -63,15 +63,20 @@ fn check(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         },
         None => update::check_all(&mut session, args.refresh)?,
     };
-    for status in &batch.statuses {
-        for warning in &status.warnings {
-            warn(warning);
-        }
+    let warnings: Vec<&String> = batch
+        .statuses
+        .iter()
+        .flat_map(|status| &status.warnings)
+        .collect();
+    // On stderr in both modes, and in the JSON for scripts.
+    for warning in &warnings {
+        warn(warning);
     }
     if args.json {
         super::json::print(&json!({
             "environments": batch.statuses.iter().map(status_json).collect::<Vec<_>>(),
             "errors": batch.errors.iter().map(error_json).collect::<Vec<_>>(),
+            "warnings": warnings,
         }))?;
     } else {
         print_table(&batch.statuses);

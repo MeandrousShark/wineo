@@ -53,9 +53,7 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     let account = Account::new();
     let mut session = account.session(paths)?;
     let owned = owned::load(&mut session, args.refresh)?;
-    if let Some(warning) = &owned.warning {
-        warn(warning);
-    }
+    let mut warnings: Vec<String> = owned.warning.iter().cloned().collect();
     // GOG games live in the host library, so a portable folder has none to
     // check.
     let batch = if paths.portable_root().is_none() {
@@ -64,11 +62,9 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         Batch::default()
     };
     for status in &batch.statuses {
-        for warning in &status.warnings {
-            warn(warning);
-        }
+        warnings.extend(status.warnings.iter().cloned());
     }
-    let in_heroic = heroic_ids(paths);
+    let in_heroic = heroic_ids(paths, &mut warnings);
     // Migrated is decided by what the environments record, so a game whose
     // update check failed is still listed as imported.
     let recorded = recorded_games(paths);
@@ -101,10 +97,15 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         })
         .collect();
 
+    // On stderr in both modes, and in the JSON for scripts.
+    for warning in &warnings {
+        warn(warning);
+    }
     if args.json {
         crate::commands::json::print(&json!({
             "games": rows.iter().map(game_json).collect::<Vec<_>>(),
             "errors": batch.errors.iter().map(error_json).collect::<Vec<_>>(),
+            "warnings": warnings,
         }))?;
     } else {
         print_table(&rows);
@@ -138,19 +139,19 @@ fn recorded_games(paths: &Paths) -> BTreeMap<u64, String> {
 
 /// The ids of the GOG games Heroic installed. A Heroic that can't be read
 /// only means none are marked.
-fn heroic_ids(paths: &Paths) -> BTreeSet<String> {
+fn heroic_ids(paths: &Paths, warnings: &mut Vec<String>) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
     let sources = match heroic_import::sources(paths, None) {
         Ok(sources) => sources,
         Err(error) => {
-            warn(format!("Couldn't read Heroic's games: {error:#}"));
+            warnings.push(format!("Couldn't read Heroic's games: {error:#}"));
             return ids;
         }
     };
     for source in sources {
         match source.gog_installed() {
             Ok(listing) => ids.extend(listing.games.into_iter().map(|game| game.id)),
-            Err(error) => warn(format!("Couldn't read Heroic's GOG games: {error:#}")),
+            Err(error) => warnings.push(format!("Couldn't read Heroic's GOG games: {error:#}")),
         }
     }
     ids

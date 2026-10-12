@@ -345,8 +345,8 @@ fn list_falls_back_to_the_saved_list_with_a_warning() {
     assert_eq!(api.owned_requests(), requests);
     assert!(stderr(&cached).is_empty());
 
-    // --refresh asks again, and a failed answer falls back with a warning
-    // that stays out of the JSON.
+    // --refresh asks again, and a failed answer falls back with a warning,
+    // which is on stderr and in the JSON.
     api.with(|config| config.owned_status = Some(500));
     let stale = f.gog(&api, &["import", "gog", "--list", "--json", "--refresh"]);
     assert_success(&stale);
@@ -358,6 +358,15 @@ fn list_falls_back_to_the_saved_list_with_a_warning() {
     let json: serde_json::Value = serde_json::from_str(&stdout(&stale)).unwrap();
     assert_eq!(json["games"].as_array().unwrap().len(), 3);
     assert_eq!(json["errors"], serde_json::json!([]));
+    let warnings = json["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .starts_with("Couldn't refresh owned GOG games: "),
+        "{warnings:?}"
+    );
     assert_no_secrets(&stderr(&stale));
 }
 
