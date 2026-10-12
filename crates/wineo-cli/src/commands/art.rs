@@ -758,6 +758,7 @@ fn source(source: Option<&Source>) -> String {
     match source {
         Some(Source::SteamGridDb(asset)) => format!("SteamGridDB {asset}"),
         Some(Source::Manual(original)) => format!("manual, from {original}"),
+        Some(Source::Gog(game)) => format!("GOG, game {game}"),
         None => "unrecorded".to_owned(),
     }
 }

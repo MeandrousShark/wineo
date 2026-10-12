@@ -254,6 +254,7 @@ fn the_production_client_refuses_plain_http_and_defaults_to_gog() {
         &production.endpoints().embed,
         &production.endpoints().api,
         &production.endpoints().content_system,
+        &production.endpoints().gameplay,
     ] {
         assert_eq!(url.scheme(), "https");
         assert!(url.host_str().unwrap().ends_with(".gog.com"));
@@ -731,5 +732,220 @@ fn no_error_from_any_endpoint_shows_a_secret() {
         for error in &errors {
             assert_clean(error);
         }
+    }
+}
+
+const USER: u64 = 48_628_349_957_132_247;
+
+fn sessions(client: &Client) -> Result<Option<u64>, Error> {
+    client.playtime(ACCESS, UserId::new(USER), 1094900565)
+}
+
+#[test]
+fn playtime_reads_the_total_minutes_with_the_token() {
+    let server = FakeGog::start(|_| reply(200, r#"{"time_sum": 1234, "extra": true}"#));
+    assert_eq!(sessions(&server.client()).unwrap(), Some(1234));
+    let request = &server.requests()[0];
+    assert_eq!(request.method, "GET");
+    assert_eq!(
+        request.path(),
+        format!("/games/1094900565/users/{USER}/sessions")
+    );
+    assert_eq!(
+        request.header("authorization"),
+        Some(format!("Bearer {ACCESS}").as_str())
+    );
+}
+
+#[test]
+fn playtime_of_zero_is_a_total_not_missing() {
+    let server = FakeGog::start(|_| reply(200, r#"{"time_sum": 0}"#));
+    assert_eq!(sessions(&server.client()).unwrap(), Some(0));
+}
+
+#[test]
+fn a_game_with_no_sessions_has_no_playtime() {
+    let server = FakeGog::start(|_| reply(404, "{}"));
+    assert_eq!(sessions(&server.client()).unwrap(), None);
+}
+
+#[test]
+fn a_playtime_answer_without_a_whole_total_is_malformed() {
+    for body in [
+        "{}",
+        r#"{"time_sum": null}"#,
+        r#"{"time_sum": -5}"#,
+        r#"{"time_sum": 1.5}"#,
+        r#"{"time_sum": "lots"}"#,
+        r#"{"time_sum": "123"}"#,
+        r#"{"time_sum": [1]}"#,
+        "[]",
+    ] {
+        let server = FakeGog::start(move |_| reply(200, body));
+        let error = sessions(&server.client()).unwrap_err();
+        assert_eq!(
+            (error.endpoint(), error.kind(), error.class()),
+            (Endpoint::Playtime, ErrorKind::Malformed, Class::Malformed),
+            "{body}"
+        );
+        assert_clean(&error);
+    }
+    let server = FakeGog::start(|_| reply(200, "{"));
+    assert_eq!(
+        sessions(&server.client()).unwrap_err().kind(),
+        ErrorKind::Json
+    );
+}
+
+#[test]
+fn playtime_failures_are_classified_and_name_no_secret() {
+    let cases: Vec<(u16, ErrorKind, Class)> = vec![
+        // The access token, which a session renews; not the saved login.
+        (401, ErrorKind::Unauthorized, Class::Other),
+        (403, ErrorKind::Status(403), Class::Other),
+        (429, ErrorKind::RateLimited, Class::Temporary),
+        (503, ErrorKind::Server(503), Class::Temporary),
+    ];
+    for (status, kind, class) in cases {
+        let server = FakeGog::start(move |_| reply(status, "{}"));
+        let error = sessions(&server.client()).unwrap_err();
+        assert_eq!((error.kind(), error.class()), (kind, class), "{status}");
+        assert_eq!(
+            error.to_string(),
+            format!("GOG playtime request failed: {kind}")
+        );
+        assert_clean(&error);
+        assert!(!format!("{error:?}").contains(&USER.to_string()));
+    }
+    let client = Client::with_base("wineo-test/1", &refused()).unwrap();
+    let error = sessions(&client).unwrap_err();
+    assert_eq!(error.class(), Class::Temporary);
+    assert_clean(&error);
+    assert!(!error.to_string().contains(&USER.to_string()));
+}
+
+fn art_body(id: u64) -> serde_json::Value {
+    json!({
+        "_links": {
+            "self": {"href": "https://api.gog.com/v2/games/1094900565?locale=en-US"},
+            "icon": {"href": "https://images.gog-statics.com/icon.png"},
+            "iconSquare": {"href": "https://images.gog-statics.com/square.png"},
+            "logo": {"href": "https://images.gog-statics.com/logo.png"},
+            "boxArtImage": {"href": "https://images.gog-statics.com/box.jpg"},
+            "backgroundImage": {"href": "https://images.gog-statics.com/bg.jpg"},
+            "galaxyBackgroundImage": {"href": "https://images.gog-statics.com/galaxy.jpg"},
+            "isRequiredByGames": [{"href": "https://api.gog.com/v2/games/1233017772"}],
+        },
+        "_embedded": {"product": {"id": id, "title": "RimWorld"}},
+    })
+}
+
+#[test]
+fn game_art_reads_every_link_without_a_token() {
+    let server = FakeGog::start(|_| reply(200, &art_body(1094900565).to_string()));
+    let art = server.client().game_art(1094900565).unwrap();
+    assert_eq!(
+        art,
+        GameArt {
+            box_art: Some("https://images.gog-statics.com/box.jpg".to_owned()),
+            background: Some("https://images.gog-statics.com/bg.jpg".to_owned()),
+            galaxy_background: Some("https://images.gog-statics.com/galaxy.jpg".to_owned()),
+            logo: Some("https://images.gog-statics.com/logo.png".to_owned()),
+            icon: Some("https://images.gog-statics.com/icon.png".to_owned()),
+            icon_square: Some("https://images.gog-statics.com/square.png".to_owned()),
+        }
+    );
+    assert!(!art.is_empty());
+    let request = &server.requests()[0];
+    assert_eq!(request.path(), "/v2/games/1094900565");
+    assert_eq!(request.header("authorization"), None);
+}
+
+#[test]
+fn game_art_links_that_are_missing_or_odd_are_none() {
+    let mut body = art_body(5);
+    let links = body["_links"].as_object_mut().unwrap();
+    links.remove("logo");
+    links.insert("icon".to_owned(), json!({}));
+    links.insert("iconSquare".to_owned(), json!({"href": 7}));
+    links.insert("boxArtImage".to_owned(), json!("https://not-a-link-object"));
+    let body = body.to_string();
+    let server = FakeGog::start(move |_| reply(200, &body));
+    let art = server.client().game_art(5).unwrap();
+    assert_eq!(
+        (art.logo, art.icon, art.icon_square, art.box_art),
+        (None, None, None, None)
+    );
+    assert!(art.background.is_some() && art.galaxy_background.is_some());
+
+    let server = FakeGog::start(|_| {
+        reply(
+            200,
+            &json!({"_links": {}, "_embedded": {"product": {"id": 5}}}).to_string(),
+        )
+    });
+    assert!(server.client().game_art(5).unwrap().is_empty());
+}
+
+#[test]
+fn game_art_refuses_links_that_are_not_https() {
+    let mut body = art_body(5);
+    let links = body["_links"].as_object_mut().unwrap();
+    for (name, href) in [
+        ("boxArtImage", "http://images.gog-statics.com/box.jpg"),
+        ("backgroundImage", "//images.gog-statics.com/bg.jpg"),
+        ("logo", "ftp://images.gog-statics.com/logo.png"),
+        ("iconSquare", "https://user:pw@images.gog-statics.com/s.png"),
+    ] {
+        links.insert(name.to_owned(), json!({ "href": href }));
+    }
+    let body = body.to_string();
+    let server = FakeGog::start(move |_| reply(200, &body));
+    let art = server.client().game_art(5).unwrap();
+    assert_eq!(
+        (art.box_art, art.background, art.logo, art.icon_square),
+        (None, None, None, None)
+    );
+    // Untouched links still come through.
+    assert_eq!(
+        art.galaxy_background.as_deref(),
+        Some("https://images.gog-statics.com/galaxy.jpg")
+    );
+}
+
+#[test]
+fn game_art_for_another_game_or_without_an_id_is_malformed() {
+    let wrong = art_body(6).to_string();
+    let mut bare = art_body(5);
+    bare.as_object_mut().unwrap().remove("_embedded");
+    let bare = bare.to_string();
+    let mut unlinked = art_body(5);
+    unlinked.as_object_mut().unwrap().remove("_links");
+    let unlinked = unlinked.to_string();
+    for body in [wrong, bare, unlinked, "[]".to_owned()] {
+        let server = FakeGog::start(move |_| reply(200, &body));
+        let error = server.client().game_art(5).unwrap_err();
+        assert_eq!(
+            (error.endpoint(), error.kind()),
+            (Endpoint::GameArt, ErrorKind::Malformed)
+        );
+    }
+}
+
+#[test]
+fn game_art_failures_are_classified_without_the_url() {
+    for (status, kind) in [
+        (404, ErrorKind::Status(404)),
+        (500, ErrorKind::Server(500)),
+        (429, ErrorKind::RateLimited),
+    ] {
+        let server = FakeGog::start(move |_| reply(status, "{}"));
+        let error = server.client().game_art(5).unwrap_err();
+        assert_eq!(error.kind(), kind);
+        assert_eq!(
+            error.to_string(),
+            format!("GOG artwork request failed: {kind}")
+        );
+        assert_clean(&error);
     }
 }

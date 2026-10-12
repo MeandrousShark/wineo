@@ -4,7 +4,8 @@ use std::time::Duration;
 use reqwest::Url;
 use serde_json::Value;
 
-use crate::auth::{self, AuthCode, CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, Tokens};
+use crate::art::{self, GameArt};
+use crate::auth::{self, AuthCode, CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, Tokens, UserId};
 use crate::error::{Endpoint, Error, ErrorKind};
 use crate::owned::{self, OwnedPage, OwnedProduct};
 use crate::product::{self, Builds, Product, ResolvedLink};
@@ -22,6 +23,7 @@ pub struct Endpoints {
     pub embed: Url,
     pub api: Url,
     pub content_system: Url,
+    pub gameplay: Url,
 }
 
 impl Endpoints {
@@ -32,6 +34,7 @@ impl Endpoints {
             embed: parse("https://embed.gog.com"),
             api: parse("https://api.gog.com"),
             content_system: parse("https://content-system.gog.com"),
+            gameplay: parse("https://gameplay.gog.com"),
         }
     }
 
@@ -42,7 +45,8 @@ impl Endpoints {
             auth: base.clone(),
             embed: base.clone(),
             api: base.clone(),
-            content_system: base,
+            content_system: base.clone(),
+            gameplay: base,
         })
     }
 }
@@ -216,7 +220,63 @@ impl Client {
         product::parse_builds(&json)
     }
 
+    /// How long an account has played a game, in minutes. None when GOG has
+    /// no sessions for it, which it signals with a 404. This only reads: GOG's
+    /// own clients post sessions to the same path, and wineo never does.
+    pub fn playtime(
+        &self,
+        access_token: &str,
+        user_id: UserId,
+        game_id: u64,
+    ) -> Result<Option<u64>, Error> {
+        let url = join(
+            &self.endpoints.gameplay,
+            &[
+                "games",
+                &game_id.to_string(),
+                "users",
+                &user_id.to_string(),
+                "sessions",
+            ],
+            Endpoint::Playtime,
+        )?;
+        // Not official documentation, so a missing or odd total is malformed
+        // rather than guessed at.
+        let Some(body) = self.fetch_json(Endpoint::Playtime, url, Some(access_token), true)? else {
+            return Ok(None);
+        };
+        // Minutes are a JSON integer. Unlike ids, a string isn't accepted.
+        body.get("time_sum")
+            .and_then(Value::as_u64)
+            .map(Some)
+            .ok_or_else(|| Error::new(Endpoint::Playtime, ErrorKind::Malformed))
+    }
+
+    /// A game's artwork links. Public, so no token is sent.
+    pub fn game_art(&self, id: u64) -> Result<GameArt, Error> {
+        let mut url = join(
+            &self.endpoints.api,
+            &["v2", "games", &id.to_string()],
+            Endpoint::GameArt,
+        )?;
+        url.query_pairs_mut().append_pair("locale", "en-US");
+        let json = self.get_json(Endpoint::GameArt, url, None)?;
+        art::parse_game_art(&json, id)
+    }
+
     fn get_json(&self, endpoint: Endpoint, url: Url, bearer: Option<&str>) -> Result<Value, Error> {
+        self.fetch_json(endpoint, url, bearer, false)?
+            .ok_or_else(|| Error::new(endpoint, ErrorKind::Status(404)))
+    }
+
+    /// Like `get_json`, except that a 404 is None when `missing_ok`.
+    fn fetch_json(
+        &self,
+        endpoint: Endpoint,
+        url: Url,
+        bearer: Option<&str>,
+        missing_ok: bool,
+    ) -> Result<Option<Value>, Error> {
         let fail = |kind| Error::new(endpoint, kind);
         let mut request = self.http.get(url);
         if let Some(token) = bearer {
@@ -224,6 +284,9 @@ impl Client {
         }
         let response = request.send().map_err(|error| fail(send_error(&error)))?;
         let status = response.status().as_u16();
+        if status == 404 && missing_ok {
+            return Ok(None);
+        }
         if status != 200 {
             // Only the token endpoint's 400 says anything useful in its body.
             let body = (endpoint == Endpoint::Token && status == 400)
@@ -232,7 +295,9 @@ impl Client {
             return Err(fail(status_kind(endpoint, status, body.as_deref())));
         }
         let body = self.read_body(response).map_err(fail)?;
-        serde_json::from_slice(&body).map_err(|_| fail(ErrorKind::Json))
+        serde_json::from_slice(&body)
+            .map(Some)
+            .map_err(|_| fail(ErrorKind::Json))
     }
 
     fn read_body(&self, response: reqwest::blocking::Response) -> Result<Vec<u8>, ErrorKind> {

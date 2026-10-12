@@ -306,6 +306,19 @@ before migrating isn't seen. `Changed` means Heroic's files, the game
 folder, or the environment changed since planning; plan again. Most
 wording is a placeholder until the CLI settles it.
 
+After a migration, `gog::extras::import(paths, session, &request) ->
+Report` adds GOG's playtime and art. With a session, the environment's
+imported playtime baseline becomes the larger of what it had and GOG's
+total, so running it again changes nothing; logged out, playtime is
+skipped with a note. Art fills only kinds the environment has none of,
+from GOG's own images (recorded with source `gog`), falling back to
+SteamGridDB for a kind GOG lacks when a key is set. `Request` names the
+environment, game id, title, the art kinds to fetch, a download transport,
+and the SteamGridDB key and language. Every GOG or network problem is a
+note in the `Report`; the call fails only for a portable root, an unknown
+environment, or one whose `gog_id` is another game, all checked before any
+request. Nothing is ever posted to GOG.
+
 ### GOG updates
 
 `gog::update` compares installed GOG games with what GOG offers now. It
