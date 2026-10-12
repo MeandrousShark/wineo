@@ -113,6 +113,34 @@ fn stale_game_lookup_cannot_replace_a_saved_match() {
     assert_eq!(page.game_label(true), "Picked");
 }
 
+/// GOG's art names its game, like `wineo art` does, instead of reading as
+/// set by hand.
+#[test]
+fn gog_art_is_labeled_with_its_game() {
+    let row = |source| RowData {
+        resolved: Some(Resolved {
+            origin: Origin::Environment,
+            found: art::Found {
+                path: PathBuf::from("art.png"),
+                format: art::Format::Png,
+                duplicates: Vec::new(),
+            },
+            source: Some(source),
+        }),
+        preview: None,
+        dimensions: Some((342, 482)),
+        preview_error: None,
+    };
+    assert_eq!(
+        source_label(&row(Source::Gog(1207658924))),
+        "GOG, game 1207658924, 342x482"
+    );
+    assert_eq!(
+        source_label(&row(Source::Manual("cover.png".into()))),
+        "Manual, 342x482"
+    );
+}
+
 #[test]
 fn manual_art_sets_environment_and_target_then_inherits_again() {
     let (root, paths, mut page) = fixture();

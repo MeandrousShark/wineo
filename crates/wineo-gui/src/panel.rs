@@ -208,6 +208,7 @@ pub(crate) fn play_enabled(card: &Card, operation_busy: bool, target: Option<&st
         && !card.busy
         && !card.active()
         && card.install_allows_play()
+        && !card.gog_blocks_play()
         && !operation_busy
         && target.is_some()
 }
@@ -215,6 +216,30 @@ pub(crate) fn play_enabled(card: &Card, operation_busy: bool, target: Option<&st
 /// Install hands off to Steam, so it only waits on another Steam request.
 pub(crate) fn install_enabled(card: &Card, request_busy: bool) -> bool {
     card.error.is_none() && !card.busy && !card.active() && card.installable() && !request_busy
+}
+
+impl App {
+    /// Whether Update or Finish update can start for `card` now.
+    pub(crate) fn gog_update_enabled(&self, card: &Card) -> bool {
+        card.error.is_none()
+            && !card.busy
+            && !card.active()
+            && self.operation.is_none()
+            && !self.management_busy()
+            && self.remove_reason(&card.name).is_none()
+    }
+
+    /// Whether the menu offers Update: a native GOG game the background
+    /// check found an update for, with nothing to finish first.
+    pub(crate) fn gog_update_action(&self, name: &str) -> bool {
+        self.gog_updates
+            .get(name)
+            .is_some_and(crate::gog_library::updatable)
+            && self
+                .cards
+                .iter()
+                .any(|card| card.name == name && card.gog.is_some() && !card.finish_update())
+    }
 }
 
 pub(crate) fn stop_enabled(card: &Card, operation_busy: bool) -> bool {
@@ -758,6 +783,14 @@ impl App {
                     Message::Install,
                     PANEL_INSTALL_ID,
                 )
+            } else if card.finish_update() {
+                panel_action_button(
+                    "Finish update",
+                    palette.primary,
+                    self.gog_update_enabled(card),
+                    Message::GogUpdate(card.name.clone()),
+                    PANEL_PLAY_ID,
+                )
             } else {
                 panel_action_button(
                     card.launch_button_label(),
@@ -837,6 +870,29 @@ impl App {
                 }
                 if let Some(warning) = card.install_warning() {
                     inner = inner.push(text(warning).size(14).color(palette.warning));
+                }
+            }
+            if let Some(note) = card.gog.as_ref().and_then(|gog| gog.blocked_note()) {
+                inner = inner.push(text(note).size(14).color(palette.warning));
+            }
+            if card.finish_update() {
+                inner = inner.push(
+                    text("Its last update was interrupted. Finish it before playing.")
+                        .size(14)
+                        .color(palette.warning),
+                );
+            } else if let Some(status) = self.gog_updates.get(&card.name) {
+                inner = inner.push(detail_row(
+                    "Update",
+                    crate::gog_library::state_label(status.state),
+                    palette,
+                ));
+                if let Some(reason) = &status.reason {
+                    inner = inner.push(
+                        text(crate::gog_library::reason_note(reason))
+                            .size(13)
+                            .color(palette.muted),
+                    );
                 }
             }
             inner = inner.push(detail_row("Playtime", &card.playtime, palette));
@@ -1003,9 +1059,19 @@ fn panel_action_button(
     id: &'static str,
 ) -> Element<'static, Message> {
     let content = ui::accent_control(label, color, enabled, message.clone())
-        .width(PANEL_ACTION_WIDTH)
+        .width(panel_action_width(label))
         .into();
     focus_button::control(content, enabled, id, message)
+}
+
+/// Play, Stop, and Log share one width; a longer label like Finish update
+/// grows its button to fit on one line instead of wrapping.
+fn panel_action_width(label: &str) -> f32 {
+    // The accent button's padding on both sides, and a pixel of slack so
+    // rounding never wraps the last letter.
+    const PADDING: f32 = 2.0 * 16.0 + 2.0;
+    let text = crate::tile_title::wrapped_size(label, f32::INFINITY, 14.0, iced::Font::DEFAULT);
+    PANEL_ACTION_WIDTH.max((text.width + PADDING).ceil())
 }
 
 fn panel_secondary_button(
@@ -1072,6 +1138,28 @@ pub(crate) fn action_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn primary_action_labels_fit_on_one_line() {
+        let one_line =
+            crate::tile_title::wrapped_size("Play", f32::INFINITY, 14.0, iced::Font::DEFAULT)
+                .height;
+        for label in ["Play", "Launch", "Install", "Finish update", "Force stop"] {
+            let mut button =
+                panel_action_button(label, Color::BLACK, true, Message::Play, PANEL_PLAY_ID);
+            let node = crate::layout_probe::layout(&mut button, iced::Size::new(420.0, 100.0));
+            // The room the label gets inside the laid out button's padding.
+            let room = node.bounds().width - 2.0 * 16.0;
+            let text = crate::tile_title::wrapped_size(label, room, 14.0, iced::Font::DEFAULT);
+            assert!(
+                text.height <= one_line + 0.5,
+                "{label} wraps in {room} px: {text:?}"
+            );
+        }
+        // Play keeps its look.
+        assert_eq!(panel_action_width("Play"), PANEL_ACTION_WIDTH);
+        assert!(panel_action_width("Finish update") > PANEL_ACTION_WIDTH);
+    }
     use std::collections::HashMap;
     use wineo_core::operation::Operation;
     use wineo_core::winetricks::Step;
@@ -1097,6 +1185,7 @@ mod tests {
             default_target: Some("game".into()),
             art: None,
             panel_art: HashMap::new(),
+            gog: None,
         }
     }
 

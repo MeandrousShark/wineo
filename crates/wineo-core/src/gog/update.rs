@@ -257,7 +257,8 @@ fn game_of(paths: &Paths, name: &str) -> Result<FolderState> {
 /// directory, and absolute arguments, Windows paths translated through the
 /// prefix's drives. Like a launch's, but for every target, since an update
 /// isn't launching any one of them. Nothing when the config can't be loaded.
-fn named_paths(paths: &Paths, name: &str) -> Vec<PathBuf> {
+/// Reads only, and takes no locks.
+pub fn named_paths(paths: &Paths, name: &str) -> Vec<PathBuf> {
     let Ok(environment) = Environment::load(paths, name) else {
         return Vec::new();
     };

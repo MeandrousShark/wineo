@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iced::futures::channel::mpsc::{UnboundedSender, unbounded};
+use iced::futures::channel::mpsc::unbounded;
 use iced::keyboard::{self, Key, key::Named};
 use iced::widget::operation::RelativeOffset;
 use iced::widget::{
@@ -997,7 +997,9 @@ impl Page {
         let work = Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    install_prerequisite(&paths, operation, &token, &sender, generation)
+                    install_prerequisite(&paths, operation, &token, &|line| {
+                        let _ = sender.unbounded_send(Event::Progress(generation, line));
+                    })
                 })
                 .await
                 .map_err(|e| e.to_string())?
@@ -3126,7 +3128,7 @@ fn prepare_game(
 
 /// Installed runners as the pickers show them, with the system wine first
 /// when it's wanted and there is one.
-fn runner_choices(
+pub(super) fn runner_choices(
     paths: &Paths,
     global: &GlobalConfig,
     system: bool,
@@ -3147,7 +3149,7 @@ fn runner_choices(
 
 /// What to do about a Windows game's runner, and the runner that starts out
 /// picked for it.
-fn suggest(
+pub(super) fn suggest(
     paths: &Paths,
     global: &GlobalConfig,
     runners: &Runners,
@@ -3208,7 +3210,7 @@ fn refresh(
 
 /// The review's runner line, naming the launcher when the build isn't
 /// wineo's, like `Runner: GE-Proton-latest (Heroic)`.
-fn runner_line(paths: &Paths, runner: &wineo_core::runner::Runner) -> String {
+pub(super) fn runner_line(paths: &Paths, runner: &wineo_core::runner::Runner) -> String {
     format!(
         "Runner: {}",
         runner_label::labeled(runner.selection(), runner_label::launcher(paths, runner))
@@ -3595,7 +3597,7 @@ fn display_control_escaped(value: &str) -> String {
 
 /// The review only calls out anti-cheat, once even when both EAC and
 /// BattlEye are on, since the game may not run without it.
-fn review_warnings(warnings: &[Warning]) -> Vec<&'static str> {
+pub(super) fn review_warnings(warnings: &[Warning]) -> Vec<&'static str> {
     if warnings.contains(&Warning::AntiCheatNotImported) {
         vec!["Heroic-managed anti-cheat runtime is not imported"]
     } else {
@@ -3603,7 +3605,7 @@ fn review_warnings(warnings: &[Warning]) -> Vec<&'static str> {
     }
 }
 
-fn playtime_note(playtime: &Playtime) -> Option<String> {
+pub(super) fn playtime_note(playtime: &Playtime) -> Option<String> {
     match playtime {
         Playtime::None | Playtime::Imported => None,
         Playtime::Unreadable(reason) => {
@@ -3616,13 +3618,13 @@ fn playtime_note(playtime: &Playtime) -> Option<String> {
 }
 
 #[derive(Clone)]
-enum Prerequisite {
+pub(super) enum Prerequisite {
     CopyRunner(RunnerCopy),
     Download(Provider, Option<String>),
 }
 
 impl Prerequisite {
-    fn label(&self) -> String {
+    pub(super) fn label(&self) -> String {
         match self {
             Self::CopyRunner(copy) => format!("Copying Heroic runner {}...", copy.name),
             Self::Download(provider, _) => format!("Downloading {provider}..."),
@@ -3630,12 +3632,11 @@ impl Prerequisite {
     }
 }
 
-fn install_prerequisite(
+pub(super) fn install_prerequisite(
     paths: &Paths,
     operation: Prerequisite,
     token: &Token,
-    sender: &UnboundedSender<Event>,
-    generation: u64,
+    report: &dyn Fn(String),
 ) -> Result<String, String> {
     let global = GlobalConfig::load(paths).map_err(|e| e.to_string())?;
     match operation {
@@ -3664,7 +3665,7 @@ fn install_prerequisite(
                                 format!("Finishing copy of {}", copy.name)
                             }
                         };
-                        let _ = sender.unbounded_send(Event::Progress(generation, line));
+                        report(line);
                     }
                 },
             )
@@ -3685,9 +3686,7 @@ fn install_prerequisite(
                 &release,
                 token,
                 PROGRESS_INTERVAL,
-                |line| {
-                    let _ = sender.unbounded_send(Event::Progress(generation, line));
-                },
+                report,
             )
             .map_err(|e| format!("{e:#}"))?;
             Ok(release.installed_name)

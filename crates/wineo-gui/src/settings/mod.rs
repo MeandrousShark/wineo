@@ -2,6 +2,7 @@
 
 mod form;
 mod global;
+pub(crate) mod gog;
 mod load;
 mod runner_picker;
 pub(crate) mod steam_key;
@@ -81,6 +82,8 @@ pub(crate) enum Event {
     SteamKeyRemoved(u64, u64, Option<u64>, Result<steam_key::Removed, String>),
     /// Where the Steam key row is, to scroll it into view.
     SteamKeyLocated(u64, crate::grid_motion::CardBounds),
+    /// The GOG login row.
+    Gog(gog::Event),
     /// An edit on one target's card.
     Target(String, TargetEdit),
     /// Opens or closes a target's card, which only changes the view.
@@ -528,6 +531,7 @@ pub(crate) struct Page {
     steam_key_busy_sequence: Option<u64>,
     steam_key_input_session: Option<u64>,
     steam_key: steam_key::Settings,
+    gog: gog::Settings,
     /// Scrolls to the Steam key row once the page loads.
     pub(crate) reveal_steam_key: bool,
     /// The add target form as it was sent to be checked.
@@ -547,6 +551,21 @@ pub(crate) struct SteamKeyWork {
 }
 
 impl SteamKeyWork {
+    #[cfg(test)]
+    pub(crate) fn pending(&self) -> bool {
+        self.pending.is_some()
+    }
+}
+
+/// The GOG login or logout the app owns, like `SteamKeyWork`.
+#[derive(Default)]
+pub(crate) struct GogWork {
+    sequence: u64,
+    pending: Option<(u64, gog::Busy)>,
+    late: Option<gog::Event>,
+}
+
+impl GogWork {
     #[cfg(test)]
     pub(crate) fn pending(&self) -> bool {
         self.pending.is_some()
@@ -612,6 +631,7 @@ impl Page {
             steam_key_busy_sequence: None,
             steam_key_input_session: None,
             steam_key: steam_key::Settings::default(),
+            gog: gog::Settings::default(),
             reveal_steam_key: false,
             resolving: None,
             open_add_after_load: false,
@@ -691,7 +711,19 @@ impl Page {
     }
     /// A key is being checked, saved, or removed, which spins the spinner.
     pub(crate) fn key_busy(&self) -> bool {
-        self.steamgriddb.busy.is_some() || self.steam_key.busy.is_some()
+        self.steamgriddb.busy.is_some() || self.steam_key.busy.is_some() || self.gog.busy.is_some()
+    }
+    fn refresh_gog(&mut self, paths: &Paths) -> Task<Message> {
+        if !self.global || !matches!(self.view, View::Global(_)) {
+            return Task::none();
+        }
+        self.gog.refresh(paths, self.generation)
+    }
+    fn gog_context(&self) -> gog::Context {
+        gog::Context {
+            generation: self.generation,
+            idle: self.global && !self.locked() && !self.loading(),
+        }
     }
     fn steam_key_idle(&self) -> bool {
         self.global && !self.locked() && !self.loading() && self.steam_key.busy.is_none()
@@ -1466,6 +1498,13 @@ impl Page {
                     }
                 }
             }
+            Event::Gog(event) => {
+                if !self.global {
+                    return Step::none();
+                }
+                let context = self.gog_context();
+                Step::task(self.gog.update(paths, context, event))
+            }
             Event::SteamKeySetOpen => {
                 if self.steam_key_idle() {
                     self.steam_key.input_open = true;
@@ -1798,6 +1837,7 @@ impl Page {
                         return Step::task(Task::batch([
                             self.refresh_steamgriddb(paths),
                             self.refresh_steam_key(paths),
+                            self.refresh_gog(paths),
                             reveal,
                         ]));
                     }
@@ -2152,6 +2192,19 @@ impl App {
             task = Task::batch([task, step.task]);
         }
         self.steam_key_work.sequence = self.steam_key_work.sequence.max(page.steam_key_sequence);
+        page.gog.sequence = self.gog_work.sequence;
+        if let Some((sequence, busy)) = self.gog_work.pending {
+            page.gog.busy = Some(busy);
+            page.gog.busy_sequence = Some(sequence);
+        }
+        if let Some(event) = self.gog_work.late.take()
+            && let Some(sequence) = event.operation()
+        {
+            page.gog.busy_sequence = Some(sequence);
+            let step = page.update(&self.paths, Event::Gog(event.rebind(page.generation)));
+            task = Task::batch([task, step.task]);
+        }
+        self.gog_work.sequence = self.gog_work.sequence.max(page.gog.sequence);
         if let Some(event) = self.steamgriddb_late_result.take() {
             if !page.steamgriddb_input_session_touched
                 && let Some(session) = event.steamgriddb_input_session()
@@ -2185,6 +2238,37 @@ impl App {
             && self.steam_key_work.pending.is_some()
         {
             return Task::none();
+        }
+        if let Event::Gog(gog_event) = &event {
+            if matches!(gog_event, gog::Event::Login | gog::Event::Logout)
+                && self.gog_work.pending.is_some()
+            {
+                return Task::none();
+            }
+            if let Some(sequence) = gog_event.operation() {
+                if self
+                    .gog_work
+                    .pending
+                    .is_some_and(|(pending, _)| pending == sequence)
+                {
+                    self.gog_work.pending = None;
+                }
+                let Event::Gog(gog_event) = event else {
+                    unreachable!()
+                };
+                return match self.settings.as_mut().filter(|page| page.is_global()) {
+                    Some(page) => {
+                        let event = Event::Gog(gog_event.rebind(page.generation));
+                        let step = page.update(&self.paths, event);
+                        self.gog_work.sequence = self.gog_work.sequence.max(page.gog.sequence);
+                        step.task
+                    }
+                    None => {
+                        self.gog_work.late = Some(gog_event);
+                        Task::none()
+                    }
+                };
+            }
         }
         if let Some(sequence) = event.steam_key_operation() {
             if self
@@ -2302,6 +2386,14 @@ impl App {
                 (page.steam_key_busy_sequence, page.steam_key.busy)
             {
                 self.steam_key_work.pending = Some((sequence, busy));
+            }
+            self.gog_work.sequence = self.gog_work.sequence.max(page.gog.sequence);
+            // Opening the login page ends with the page, so only logging
+            // in or out outlives it.
+            if let (Some(sequence), Some(busy @ (gog::Busy::LoggingIn | gog::Busy::LoggingOut))) =
+                (page.gog.busy_sequence, page.gog.busy)
+            {
+                self.gog_work.pending = Some((sequence, busy));
             }
         }
         if let Some(page) = &self.settings {
@@ -4340,6 +4432,92 @@ mod tests {
             reopen_global(&mut app, &paths);
             assert_steam_outcome(&app, &paths, ok);
         }
+    }
+
+    /// A GOG logout outlives the page that started it: its result shows
+    /// when the page opens again, and nothing else starts meanwhile.
+    #[test]
+    fn gog_logout_result_lands_after_leaving_and_returning() {
+        use crate::sidebar::Section;
+        let (_root, paths) = setup();
+        let mut app = open_global_app(&paths);
+        let _ = app.update(Message::Settings(Event::Gog(gog::Event::Logout)));
+        let page = app.settings.as_ref().unwrap();
+        assert_eq!(page.gog.busy, Some(gog::Busy::LoggingOut));
+        assert!(app.gog_work.pending());
+        let (generation, sequence) = (page.generation, page.gog.busy_sequence.unwrap());
+        let _ = app.update(Message::Section(Section::Trash));
+        assert!(app.settings.is_none());
+        reopen_global(&mut app, &paths);
+        let page = app.settings.as_ref().unwrap();
+        assert_eq!(page.gog.busy, Some(gog::Busy::LoggingOut));
+        let _ = app.update(Message::Settings(Event::Gog(gog::Event::LoginOpen)));
+        assert_eq!(
+            app.settings.as_ref().unwrap().gog.busy,
+            Some(gog::Busy::LoggingOut)
+        );
+        let _ = app.update(Message::Section(Section::Trash));
+        let _ = app.update(Message::Settings(Event::Gog(gog::Event::LoggedOut(
+            generation,
+            sequence,
+            None,
+            Ok(gog::LoggedOut {
+                status: gog::Status::LoggedOut,
+                result: "Removed the GOG login.".to_owned(),
+            }),
+        ))));
+        assert!(!app.gog_work.pending());
+        reopen_global(&mut app, &paths);
+        let page = app.settings.as_ref().unwrap();
+        assert_eq!(page.gog.busy, None);
+        let texts = view::gog_texts(&page.gog);
+        assert!(texts.contains(&"Removed the GOG login.".to_owned()));
+        assert!(texts.contains(&"Not logged in".to_owned()));
+    }
+
+    /// Like a Steam or SteamGridDB key being saved, a GOG login or logout,
+    /// and the startup update check, never hold the window open.
+    #[test]
+    fn gog_account_work_and_the_startup_check_never_hold_the_window_open() {
+        let (_root, paths) = setup();
+        let mut app = open_global_app(&paths);
+        let _ = app.update(Message::Settings(Event::Gog(gog::Event::Logout)));
+        assert!(app.gog_work.pending());
+        let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+        assert!(!app.close_prompt);
+
+        let mut app = App::boot(paths.clone()).0;
+        let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+        assert!(!app.close_prompt);
+    }
+
+    /// Logging in works from a portable session too: GOG games live in the
+    /// host library, but the login is the same.
+    #[test]
+    fn the_gog_section_shows_in_a_portable_session() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let paths = Paths::select(
+            move |key| (key == "HOME").then(|| std::ffi::OsString::from(&home)),
+            Some(&root.path().join("portable")),
+        )
+        .unwrap();
+        let mut app = open_global_app(&paths);
+        let _ = app.update(Message::Settings(Event::Gog(gog::Event::LoginOpen)));
+        assert_eq!(
+            app.settings.as_ref().unwrap().gog.busy,
+            Some(gog::Busy::Opening)
+        );
+        let mut view =
+            app.settings
+                .as_ref()
+                .unwrap()
+                .view(&paths, crate::theme::Palette::DARK, 0.0);
+        let _ = crate::layout_probe::layout(&mut view, iced::Size::new(900.0, 700.0));
+        assert!(
+            view::gog_texts(&app.settings.as_ref().unwrap().gog).contains(&"Log in".to_owned())
+        );
     }
 
     #[test]

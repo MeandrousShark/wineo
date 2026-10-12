@@ -93,6 +93,9 @@ pub(super) struct Card {
     pub(super) default_target: Option<String>,
     pub(super) art: Option<ArtFile>,
     pub(super) panel_art: HashMap<String, ArtPaths>,
+    /// GOG facts read from disk: whether it is a GOG game, and whether an
+    /// interrupted update stops it from launching.
+    pub(super) gog: Option<crate::gog_library::GogCard>,
 }
 
 impl Card {
@@ -143,6 +146,20 @@ impl Card {
         self.steam
             .as_ref()
             .is_none_or(|steam| matches!(steam.install.state, "installed" | "updating"))
+    }
+
+    /// Whether an interrupted GOG update stops this from launching: its own,
+    /// or another game's whose folder it runs from.
+    pub(super) fn gog_blocks_play(&self) -> bool {
+        self.gog
+            .as_ref()
+            .is_some_and(|gog| gog.unfinished || gog.blocked_by.is_some())
+    }
+
+    /// Finish update takes Play's place for the owner of a GOG game whose
+    /// update was interrupted.
+    pub(super) fn finish_update(&self) -> bool {
+        self.gog.as_ref().is_some_and(|gog| gog.unfinished)
     }
 
     pub(super) fn install_warning(&self) -> Option<&str> {
@@ -265,6 +282,7 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
             (name, (playtime, sessions, last))
         })
         .collect();
+    let gog = crate::gog_library::Folders::read(paths);
     let mut cards = Vec::new();
     for item in overview.environments {
         let steam = if let Some(report::KindReport::Proxied {
@@ -290,9 +308,11 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
         let mut default_target = None;
         let mut title = item.name.clone();
         let mut panel_art = HashMap::new();
+        let mut gog_card = None;
         let (error, art) = match Environment::load(paths, &item.name) {
             Ok(env) => {
                 kind = Some(CardKind::new(&env.config.kind));
+                gog_card = gog.card(paths, &env);
                 prefix = env.prefix(paths).ok();
                 targets = env.config.targets.keys().cloned().collect();
                 default_target = launch::default_target(&env).ok().map(str::to_owned);
@@ -357,6 +377,7 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
             targets,
             default_target,
             panel_art,
+            gog: gog_card,
         });
     }
     for error in overview.errors {
@@ -388,6 +409,7 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
             targets: Vec::new(),
             default_target: None,
             panel_art: HashMap::new(),
+            gog: None,
         });
     }
     cards.sort_by(|a, b| a.name.cmp(&b.name));
@@ -481,6 +503,7 @@ mod tests {
             default_target: None,
             art: None,
             panel_art: HashMap::new(),
+            gog: None,
         };
 
         assert_eq!(card(vec!["game"]).launch_button_label(), "Play");

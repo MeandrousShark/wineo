@@ -86,12 +86,22 @@ pub struct Report {
 
 /// Imports GOG's playtime (with a login) and artwork (without one) for the
 /// environment that runs `request.gog_id`. Read-only toward GOG.
+///
+/// `token` is checked before playtime, before each kind of art, and while
+/// GOG's images download. A cancel keeps what was already written and adds
+/// a note for each part it skipped.
 pub fn import(
     paths: &Paths,
     session: Option<&mut Session<'_>>,
     request: &Request<'_>,
+    token: &Token,
 ) -> Result<Report> {
-    run(paths, session, request, super::client_from_env())
+    run(paths, session, request, super::client_from_env(), token)
+}
+
+/// The note for a part a cancel skipped.
+fn canceled(what: &str) -> String {
+    format!("Skipped {what}: canceled.")
 }
 
 fn run(
@@ -99,6 +109,7 @@ fn run(
     session: Option<&mut Session<'_>>,
     request: &Request<'_>,
     client: Result<Client, wineo_gog::Error>,
+    token: &Token,
 ) -> Result<Report> {
     host_only(paths)?;
     let name = request.name;
@@ -122,13 +133,15 @@ fn run(
 
     let mut report = Report::default();
     match session {
-        Some(session) => playtime(paths, request, session, identity, &mut report),
+        Some(_) if token.is_canceled() => report.notes.push(canceled("GOG playtime")),
+        Some(session) => playtime(paths, request, session, identity, token, &mut report),
         None => report
             .notes
             .push("Skipped GOG playtime: not logged in to GOG.".to_owned()),
     }
     match client {
-        Ok(client) => artwork(paths, request, &client, identity, &mut report),
+        Ok(_) if token.is_canceled() => report.notes.push(canceled("GOG artwork")),
+        Ok(client) => artwork(paths, request, &client, identity, token, &mut report),
         Err(error) => report.notes.push(format!("Skipped GOG artwork: {error}.")),
     }
     Ok(report)
@@ -139,10 +152,18 @@ fn playtime(
     request: &Request<'_>,
     session: &mut Session<'_>,
     identity: EnvironmentIdentity,
+    token: &Token,
     report: &mut Report,
 ) {
     let (user, gog_id) = (session.user_id(), request.gog_id);
-    let minutes = match session.call(|client, token| client.playtime(token, user, gog_id)) {
+    let answer = session.call(|client, access| client.playtime(access, user, gog_id));
+    // GOG's answer can't be interrupted, so a cancel that came meanwhile is
+    // honored here, before anything is written.
+    if token.is_canceled() {
+        report.notes.push(canceled("GOG playtime"));
+        return;
+    }
+    let minutes = match answer {
         Ok(Some(minutes)) => minutes,
         Ok(None) => {
             report
@@ -166,8 +187,9 @@ fn playtime(
             .push("Couldn't import GOG playtime: the total is out of range.".to_owned());
         return;
     };
-    match raise_baseline(paths, request.name, gog_seconds, identity) {
+    match raise_baseline(paths, request.name, gog_seconds, identity, token) {
         Ok(Some(playtime)) => report.playtime = Some(playtime),
+        Err(_) if token.is_canceled() => report.notes.push(canceled("GOG playtime")),
         Ok(None) => report.notes.push(format!(
             "Skipped GOG playtime: {} changed while it was being fetched.",
             request.name
@@ -187,16 +209,29 @@ fn raise_baseline(
     name: &str,
     gog_seconds: i64,
     identity: EnvironmentIdentity,
+    token: &Token,
 ) -> crate::Result<Option<Playtime>> {
     // Held across the read and the append, so two runs can't each read a
     // small baseline and the smaller total be the one that lands last.
+    #[cfg(test)]
+    crate::art::test_hook("extras.lock");
     let _lock = Locks::new(paths).config(&paths.environment_config(name))?;
+    // A cancel that came while waiting for the lock still writes nothing.
+    if token.is_canceled() {
+        return Err(crate::Error::Canceled("playtime import"));
+    }
     if EnvironmentIdentity::read(paths, name) != Some(identity) {
         return Ok(None);
     }
     let existing = stats::read(&paths.stats_log(name))?.imported;
     let before_seconds = existing.map_or(0, |imported| imported.seconds);
     let after_seconds = before_seconds.max(gog_seconds);
+    #[cfg(test)]
+    crate::art::test_hook("extras.raise_baseline");
+    // The last check, right before the append.
+    if token.is_canceled() {
+        return Err(crate::Error::Canceled("playtime import"));
+    }
     if after_seconds > before_seconds {
         stats::set_imported(
             paths,
@@ -219,6 +254,7 @@ fn artwork(
     request: &Request<'_>,
     client: &Client,
     identity: EnvironmentIdentity,
+    token: &Token,
     report: &mut Report,
 ) {
     let name = request.name;
@@ -250,11 +286,18 @@ fn artwork(
     };
     let mut lacking = Vec::new();
     for kind in missing {
+        if token.is_canceled() {
+            report.notes.push(canceled(&format!("{kind} artwork")));
+            continue;
+        }
         let Some(url) = link(&links, kind) else {
             lacking.push(kind);
             continue;
         };
-        match store(paths, request, kind, url, identity) {
+        match store(paths, request, kind, url, identity, token) {
+            Err(_) if token.is_canceled() => {
+                report.notes.push(canceled(&format!("{kind} artwork")));
+            }
             Ok(true) => report.art.push(Filled {
                 kind,
                 source: Source::Gog(request.gog_id),
@@ -266,7 +309,7 @@ fn artwork(
                 .push(format!("Couldn't fetch GOG {kind} artwork: {error}")),
         }
     }
-    steamgriddb(paths, request, &lacking, identity, report);
+    steamgriddb(paths, request, &lacking, identity, token, report);
 }
 
 /// The link for a kind: the cover for the poster, the wider Galaxy
@@ -291,8 +334,13 @@ fn store(
     kind: Kind,
     url: &str,
     identity: EnvironmentIdentity,
+    token: &Token,
 ) -> Result<bool> {
-    let bytes = download_image(request.transport, url, |_, _| {}, &Token::new())?;
+    let bytes = download_image(request.transport, url, |_, _| {}, token)?;
+    // A cancel that came during the download writes nothing.
+    if token.is_canceled() {
+        anyhow::bail!("canceled");
+    }
     let Some(format) = art::detect(&bytes).filter(|format| kind.accepts(*format)) else {
         anyhow::bail!("it isn't a {} image", art::accepted(kind));
     };
@@ -305,7 +353,9 @@ fn store(
         format,
         Source::Gog(request.gog_id),
         false,
-        None,
+        // Checked again under the art lock, so a cancel that came while
+        // waiting for it publishes nothing.
+        Some(token),
         Some(identity),
     )?;
     Ok(stored.is_some())
@@ -318,6 +368,7 @@ fn steamgriddb(
     request: &Request<'_>,
     kinds: &[Kind],
     identity: EnvironmentIdentity,
+    token: &Token,
     report: &mut Report,
 ) {
     let (Some(key), false) = (request.steamgriddb_key, kinds.is_empty()) else {
@@ -344,8 +395,24 @@ fn steamgriddb(
                 note(format!("SteamGridDB has no game titled {title}."));
                 return;
             };
-            if let Err(error) = art::save_game_for(paths, name, game.id, Some(identity)) {
-                note(format!("Couldn't save the SteamGridDB game: {error}"));
+            // The search can't be interrupted, so a cancel that came
+            // meanwhile is honored before saving anything.
+            if token.is_canceled() {
+                for kind in kinds {
+                    note(canceled(&format!("{kind} artwork")));
+                }
+                return;
+            }
+            if let Err(error) =
+                art::save_game_for(paths, name, game.id, Some(identity), Some(token))
+            {
+                if token.is_canceled() {
+                    for kind in kinds {
+                        note(canceled(&format!("{kind} artwork")));
+                    }
+                } else {
+                    note(format!("Couldn't save the SteamGridDB game: {error}"));
+                }
                 return;
             }
             game.id
@@ -356,6 +423,10 @@ fn steamgriddb(
         }
     };
     for &kind in kinds {
+        if token.is_canceled() {
+            note(canceled(&format!("{kind} artwork")));
+            continue;
+        }
         match art_fetch::fetch_kind_for(
             paths,
             name,
@@ -366,7 +437,9 @@ fn steamgriddb(
             request.language,
             Mode::Fill,
             Some(identity),
+            token,
         ) {
+            Err(_) if token.is_canceled() => note(canceled(&format!("{kind} artwork"))),
             Ok(Fetched::Stored { asset, .. }) => report.art.push(Filled {
                 kind,
                 source: Source::SteamGridDb(asset),

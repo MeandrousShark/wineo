@@ -294,7 +294,7 @@ fn luminance(color: Color) -> f32 {
     0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
 }
 
-fn accent_ink(background: Color) -> Color {
+pub(crate) fn accent_ink(background: Color) -> Color {
     if luminance(background) > 0.179 {
         Color::BLACK
     } else {

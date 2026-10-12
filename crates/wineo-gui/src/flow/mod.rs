@@ -1,5 +1,7 @@
 pub(crate) mod artwork;
 mod clone;
+mod gog;
+mod gog_update;
 mod heroic;
 pub(crate) mod new;
 mod prefix;
@@ -49,6 +51,7 @@ pub(crate) enum Event {
     Prefix,
     Heroic,
     Steam,
+    Gog,
     Back,
     AfterSubmit,
     Create(Box<new::Event>),
@@ -56,6 +59,8 @@ pub(crate) enum Event {
     Copy(Box<clone::Event>),
     HeroicMessage(Box<heroic::Event>),
     SteamMessage(Box<steam::Event>),
+    GogMessage(Box<gog::Event>),
+    UpdateMessage(Box<gog_update::Event>),
 }
 
 pub(crate) enum Page {
@@ -65,6 +70,8 @@ pub(crate) enum Page {
     Clone(Box<clone::Page>),
     Heroic(Box<heroic::Page>),
     Steam(Box<steam::Page>),
+    Gog(Box<gog::Page>),
+    GogUpdate(Box<gog_update::Page>),
 }
 
 impl Page {
@@ -78,6 +85,23 @@ impl Page {
             Self::Clone(Box::new(page)),
             task.map(|event| Event::Copy(Box::new(event))),
         )
+    }
+
+    /// Updates `name`'s GOG game, or finishes its interrupted update.
+    pub(crate) fn gog_update(paths: Paths, name: String) -> (Self, Task<Event>) {
+        let (page, task) = gog_update::Page::new(paths, name);
+        (
+            Self::GogUpdate(Box::new(page)),
+            task.map(|event| Event::UpdateMessage(Box::new(event))),
+        )
+    }
+
+    /// The environment a GOG update just finished for, once.
+    pub(crate) fn take_updated(&mut self) -> Option<String> {
+        match self {
+            Self::GogUpdate(page) => page.take_updated(),
+            _ => None,
+        }
     }
 
     pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
@@ -122,6 +146,14 @@ impl Page {
                 *page = Self::Steam(Box::new(next));
                 task.map(|event| Event::SteamMessage(Box::new(event)))
             }
+            (page @ Self::Choose(_), Event::Gog) => {
+                let Self::Choose(paths) = page else {
+                    unreachable!()
+                };
+                let (next, task) = gog::Page::new(paths.clone());
+                *page = Self::Gog(Box::new(next));
+                task.map(|event| Event::GogMessage(Box::new(event)))
+            }
             (Self::New(page), Event::Create(event)) => page
                 .update_with_key_availability(*event, key_available)
                 .map(|event| Event::Create(Box::new(event))),
@@ -137,6 +169,12 @@ impl Page {
             (Self::Steam(page), Event::SteamMessage(event)) => page
                 .update(*event)
                 .map(|event| Event::SteamMessage(Box::new(event))),
+            (Self::Gog(page), Event::GogMessage(event)) => page
+                .update(*event)
+                .map(|event| Event::GogMessage(Box::new(event))),
+            (Self::GogUpdate(page), Event::UpdateMessage(event)) => page
+                .update(*event)
+                .map(|event| Event::UpdateMessage(Box::new(event))),
             (page, Event::Back) => page.back(),
             _ => Task::none(),
         }
@@ -147,6 +185,8 @@ impl Page {
         match self {
             Self::Heroic(page) => page.waiting(),
             Self::Steam(page) => page.spinning(),
+            Self::Gog(page) => page.waiting(),
+            Self::GogUpdate(page) => page.waiting(),
             _ => false,
         }
     }
@@ -179,6 +219,12 @@ impl Page {
             Self::Steam(page) => page
                 .view(palette, width, spin)
                 .map(|event| Event::SteamMessage(Box::new(event))),
+            Self::Gog(page) => page
+                .view(palette, spin)
+                .map(|event| Event::GogMessage(Box::new(event))),
+            Self::GogUpdate(page) => page
+                .view(palette, spin)
+                .map(|event| Event::UpdateMessage(Box::new(event))),
             Self::Choose(_) => container(
                 column![
                     secondary_button("Back", palette).on_press(Event::Back),
@@ -209,6 +255,8 @@ impl Page {
                                 palette,
                             )
                             .on_press(Event::Steam),
+                            choice("5 - Import from GOG", "GOG games Heroic installed", palette,)
+                                .on_press(Event::Gog),
                         ],
                         palette,
                     ),)
@@ -249,6 +297,8 @@ impl Page {
             Self::Clone(page) => page.busy(),
             Self::Heroic(page) => page.busy(),
             Self::Steam(page) => page.busy(),
+            Self::Gog(page) => page.busy(),
+            Self::GogUpdate(page) => page.busy(),
             Self::Choose(_) => false,
         }
     }
@@ -260,6 +310,8 @@ impl Page {
             Self::Clone(page) => page.cancel(force),
             Self::Heroic(page) => page.cancel(force),
             Self::Steam(page) => page.cancel(force),
+            Self::Gog(page) => page.cancel(force),
+            Self::GogUpdate(page) => page.cancel(force),
             Self::Choose(_) => {}
         }
     }
@@ -275,6 +327,12 @@ impl Page {
             Self::Steam(page) => page
                 .submit()
                 .map(|event| Event::SteamMessage(Box::new(event))),
+            Self::Gog(page) => page
+                .submit()
+                .map(|event| Event::GogMessage(Box::new(event))),
+            Self::GogUpdate(page) => page
+                .submit()
+                .map(|event| Event::UpdateMessage(Box::new(event))),
             Self::Choose(_) => self.update(Event::New),
         }
     }
@@ -290,6 +348,10 @@ impl Page {
             Self::Steam(page) => page
                 .back()
                 .map(|event| Event::SteamMessage(Box::new(event))),
+            Self::Gog(page) => page.back().map(|event| Event::GogMessage(Box::new(event))),
+            Self::GogUpdate(page) => page
+                .back()
+                .map(|event| Event::UpdateMessage(Box::new(event))),
             Self::Choose(_) => Task::none(),
         }
     }
@@ -301,6 +363,8 @@ impl Page {
             Self::Clone(page) => page.take_action(),
             Self::Heroic(page) => page.take_action(),
             Self::Steam(page) => page.take_action(),
+            Self::Gog(page) => page.take_action(),
+            Self::GogUpdate(page) => page.take_action(),
             Self::Choose(_) => None,
         }
     }

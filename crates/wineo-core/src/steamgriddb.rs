@@ -195,9 +195,21 @@ impl<'a> Api<'a> {
     /// Every image of `kind` for `game`, walking pages until one is empty, up
     /// to `MAX_PAGES`. An image seen on an earlier page is not repeated.
     pub fn images(&self, game: u64, kind: Kind, filters: Filters) -> anyhow::Result<Vec<Image>> {
+        self.images_with_cancel(game, kind, filters, &Token::new())
+    }
+
+    /// `images`, stopping between pages once `cancel` is canceled.
+    pub fn images_with_cancel(
+        &self,
+        game: u64,
+        kind: Kind,
+        filters: Filters,
+        cancel: &Token,
+    ) -> anyhow::Result<Vec<Image>> {
         let mut images: Vec<Image> = Vec::new();
         // Pages start at 0, as SteamGridDB's own Decky plugin requests them.
         for page in 0..MAX_PAGES {
+            check_download_cancel(cancel)?;
             let data = self.data(&Self::images_url(game, kind, page, filters))?;
             if data.is_empty() {
                 break;
@@ -1053,6 +1065,48 @@ mod tests {
         let ids: Vec<u64> = images.iter().map(|image| image.id).collect();
         assert_eq!(ids, [1, 2, 3]);
         assert_eq!(api.urls().len(), 3);
+    }
+
+    /// Cancels `token` once the first page has been asked for.
+    struct CancelAfterFirstPage<'a> {
+        inner: &'a FakeApi,
+        token: &'a Token,
+    }
+
+    impl Transport for CancelAfterFirstPage<'_> {
+        fn get(&self, url: &str) -> anyhow::Result<Box<dyn Read>> {
+            self.inner.get(url)
+        }
+
+        fn request(&self, url: &str, bearer: Option<&str>) -> anyhow::Result<Response> {
+            let response = self.inner.request(url, bearer);
+            self.token.cancel();
+            response
+        }
+    }
+
+    #[test]
+    fn a_cancel_stops_paging_between_pages() {
+        let api = FakeApi::default();
+        for page in 0..3 {
+            api.json(
+                Api::images_url(9, Kind::Hero, page, Filters::Ranked),
+                json!([image_json(u64::from(page) + 1)]),
+            );
+        }
+        let token = Token::new();
+        let transport = CancelAfterFirstPage {
+            inner: &api,
+            token: &token,
+        };
+        let error = Api::new(&transport, "k")
+            .images_with_cancel(9, Kind::Hero, Filters::Ranked, &token)
+            .unwrap_err();
+        assert!(
+            matches!(error.downcast_ref(), Some(crate::error::Error::Canceled(_))),
+            "{error:#}"
+        );
+        assert_eq!(api.urls().len(), 1, "no page after the cancel");
     }
 
     #[test]

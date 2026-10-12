@@ -81,15 +81,9 @@ impl Page {
             View::Form(editor) => {
                 editor_view(&self.name, editor, self.locked(), self.resolving(), palette)
             }
-            View::Global(editor) => global_view(
-                editor,
-                &self.steamgriddb,
-                &self.steam_key,
-                paths,
-                self.locked(),
-                spinner,
-                palette,
-            ),
+            View::Global(editor) => {
+                global_view(editor, self, paths, self.locked(), spinner, palette)
+            }
         };
         let scroll = scrollable(
             container(container(body).max_width(PAGE_WIDTH).width(Fill))
@@ -360,13 +354,13 @@ fn proxied_editor_view<'a>(
 
 fn global_view<'a>(
     editor: &'a global::Editor,
-    steamgriddb: &'a super::steamgriddb::Settings,
-    steam_key: &'a super::steam_key::Settings,
+    page: &'a Page,
     paths: &Paths,
     locked: bool,
     spinner: f32,
     palette: Palette,
 ) -> Element<'a, Message> {
+    let (steamgriddb, steam_key, gog) = (&page.steamgriddb, &page.steam_key, &page.gog);
     let draft = &editor.form.draft;
     let mut launch = column![].spacing(12);
     for key in Switch::ALL {
@@ -502,6 +496,7 @@ fn global_view<'a>(
             palette,
         ))
         .id(iced::widget::Id::new(STEAM_KEY_ID)),
+        section("GOG", gog_row(gog, locked, spinner, palette), palette),
         section(
             "Environment variables",
             env_rows(
@@ -746,6 +741,153 @@ fn key_row<'a>(row_data: KeyRow<'a>, spinner: f32, palette: Palette) -> Element<
                 action_button("Set key...", palette.primary, busy.is_none(), send(open)),
                 secondary_button("Remove key", palette)
                     .on_press_maybe(busy.is_none().then(|| send(remove))),
+            ]
+            .spacing(8)
+            .align_y(Center),
+        );
+    }
+    rows.into()
+}
+
+fn gog_send(event: super::gog::Event) -> Message {
+    send(Event::Gog(event))
+}
+
+/// Every piece of text the GOG row shows, in order. Never the pasted
+/// address, which only the secure input holds.
+#[cfg(test)]
+pub(super) fn gog_texts(settings: &super::gog::Settings) -> Vec<String> {
+    let mut texts = vec![
+        "Account".to_owned(),
+        status_or_checking(
+            settings.status.as_ref().map(super::gog::Status::label),
+            settings.status_error.is_some(),
+        ),
+    ];
+    texts.extend(settings.warning.clone());
+    texts.extend(
+        [&settings.status_error, &settings.result, &settings.error]
+            .into_iter()
+            .flatten()
+            .cloned(),
+    );
+    texts.extend(settings.busy.map(|busy| busy.label().to_owned()));
+    if settings.input_open {
+        texts.push("Log in to GOG in your browser. If it doesn't open, go to:".to_owned());
+        texts.extend(settings.login_url.clone());
+        texts.push("Then copy the address of the page you land on.".to_owned());
+        texts.extend(["Copy link", "Address", "Log in", "Cancel"].map(str::to_owned));
+    } else {
+        texts.extend(["Log in", "Log out"].map(str::to_owned));
+    }
+    texts
+}
+
+fn gog_row<'a>(
+    settings: &'a super::gog::Settings,
+    locked: bool,
+    spinner: f32,
+    palette: Palette,
+) -> Element<'a, Message> {
+    use super::gog::Event as GogEvent;
+    let status = status_or_checking(
+        settings.status.as_ref().map(super::gog::Status::label),
+        settings.status_error.is_some(),
+    );
+    let mut rows = column![setting_row(
+        "Account",
+        text(status).color(palette.foreground).into(),
+        None,
+        palette,
+    )]
+    .spacing(12);
+    if let Some(warning) = &settings.warning {
+        rows = rows.push(text(warning).size(13).color(palette.warning));
+    }
+    if let Some(error) = &settings.status_error {
+        rows = rows.push(text(error).size(13).color(palette.danger));
+    }
+    if let Some(result) = &settings.result {
+        rows = rows.push(text(result).size(13).color(palette.muted));
+    }
+    if let Some(error) = &settings.error {
+        rows = rows.push(text(error).size(13).color(palette.danger));
+    }
+    if let Some(busy) = settings.busy {
+        rows = rows.push(
+            row![
+                crate::spinner::spinner(palette, spinner, 16.0),
+                text(busy.label()).size(13).color(palette.muted),
+            ]
+            .spacing(8)
+            .align_y(Center),
+        );
+    }
+    let idle = settings.busy.is_none() && !locked;
+    if settings.input_open {
+        rows = rows.push(
+            text("Log in to GOG in your browser. If it doesn't open, go to:")
+                .size(13)
+                .color(palette.muted),
+        );
+        if let Some(url) = &settings.login_url {
+            rows = rows.push(
+                row![
+                    text(url).size(13).color(palette.foreground).width(Fill),
+                    secondary_button("Copy link", palette).on_press(gog_send(GogEvent::CopyLink)),
+                ]
+                .spacing(8)
+                .align_y(Center),
+            );
+        }
+        rows = rows.push(
+            text("Then copy the address of the page you land on.")
+                .size(13)
+                .color(palette.muted),
+        );
+        let field = text_input("Address", settings.input.as_str())
+            .secure(true)
+            .on_input_maybe(idle.then_some(|value| {
+                gog_send(GogEvent::LoginText(super::steamgriddb::Secret::new(value)))
+            }))
+            .on_submit_maybe(
+                (idle && !settings.input.as_str().trim().is_empty())
+                    .then(|| gog_send(GogEvent::Login)),
+            )
+            .width(Fill)
+            .padding([6, 10])
+            .style(move |_, status| input_style(palette, status));
+        rows = rows.push(
+            row![
+                field,
+                action_button(
+                    "Log in",
+                    palette.primary,
+                    idle && !settings.input.as_str().trim().is_empty(),
+                    gog_send(GogEvent::Login),
+                ),
+                secondary_button("Cancel", palette).on_press_maybe(
+                    settings
+                        .busy
+                        .is_none()
+                        .then(|| gog_send(GogEvent::LoginCancel))
+                ),
+            ]
+            .spacing(8)
+            .align_y(Center),
+        );
+    } else {
+        rows = rows.push(
+            row![
+                action_button(
+                    "Log in",
+                    palette.primary,
+                    idle,
+                    gog_send(GogEvent::LoginOpen)
+                ),
+                secondary_button("Log out", palette).on_press_maybe(
+                    (idle && settings.logged_in()).then(|| gog_send(GogEvent::Logout))
+                ),
             ]
             .spacing(8)
             .align_y(Center),
