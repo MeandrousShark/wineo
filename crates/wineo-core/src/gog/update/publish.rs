@@ -490,6 +490,10 @@ impl<'a> Publisher<'a> {
             Err(Errno::NOTEMPTY | Errno::EXIST) => return Ok(false),
             Err(error) => return Err(error).with_context(|| format!("failed to remove {path}")),
         }
+        // Nothing is left of it to sync; its parent holds the change now.
+        let inside = format!("{path}/");
+        self.changed
+            .retain(|dir| dir != path && !dir.starts_with(&inside));
         self.changed.insert(parent_of(path).to_owned());
         failpoint("update.delete.after")?;
         Ok(true)

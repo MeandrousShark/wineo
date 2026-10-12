@@ -1495,3 +1495,35 @@ fn failed_and_unavailable_products_are_carried_over_without_downloading() {
             .all(|entry| entry.product == RIMWORLD)
     );
 }
+
+#[test]
+fn an_obsolete_folder_and_one_that_becomes_a_file_are_removed() {
+    let fx = Fixture::new();
+    fx.offer(
+        RIMWORLD,
+        "RimWorld",
+        "1",
+        &[
+            file("start.sh", "s"),
+            file("old/readme", "old"),
+            file("docs/deep/readme", "docs"),
+        ],
+    );
+    fx.migrated(&[(RIMWORLD, Some("0"))]);
+    fx.update();
+    fx.offer(
+        RIMWORLD,
+        "RimWorld",
+        "2",
+        &[file("start.sh", "s"), file("docs", "docs is a file")],
+    );
+    let updated = fx.update();
+    assert!(updated.saved.is_empty() && updated.kept.is_empty());
+    assert_eq!(
+        fx.tree(),
+        BTreeMap::from([
+            ("docs".to_owned(), "644 docs is a file".to_owned()),
+            ("start.sh".to_owned(), "644 s".to_owned()),
+        ])
+    );
+}
