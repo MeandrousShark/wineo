@@ -33,6 +33,38 @@ fn game(id: u64) -> String {
     id.to_string()
 }
 
+/// The desktop entries wineo wrote under the fixture's data folder.
+fn desktop_entries(f: &Fixture) -> Vec<String> {
+    let dir = f.root.path().join("data/applications");
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn a_new_environment_gets_desktop_entries_and_a_portable_root_refuses_the_game() {
+    let f = fixture();
+    f.heroic_rimworld();
+    let portable = f.root.path().join("portable");
+    let refused = f
+        .wineo_at_home()
+        .arg("--portable")
+        .arg(&portable)
+        .args(["import", "gog", "--game", &game(RIMWORLD), "--yes"])
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(desktop_entries(&f).is_empty());
+
+    assert_success(&import(&f, &["--game", &game(RIMWORLD), "--yes"]));
+    assert_eq!(desktop_entries(&f), ["wineo-rimworld-game.desktop"]);
+}
+
 #[test]
 fn a_native_game_becomes_an_environment_and_nothing_of_heroics_changes() {
     let f = fixture();
@@ -110,6 +142,8 @@ fn a_game_with_an_environment_attaches_to_it_and_keeps_its_settings() {
         f.gog_state(&folder).unwrap().owner.as_deref(),
         Some("my-rimworld")
     );
+    // An environment that was already there keeps its own desktop setting.
+    assert!(desktop_entries(&f).is_empty(), "{:?}", desktop_entries(&f));
 }
 
 #[test]

@@ -158,7 +158,14 @@ fn prepare(
             plan.set_runner_dependencies(chosen.dependencies);
         }
     }
+    // A new environment gets desktop entries like a Heroic import's, except
+    // in a portable root. An attached one keeps its own setting.
+    let desktop = paths.portable_root().is_none();
+    if let Some(plan) = migration.native_plan_mut() {
+        plan.set_desktop_enabled(desktop);
+    }
     if let Some(plan) = migration.game_plan_mut() {
+        plan.set_desktop_enabled(desktop);
         match ask {
             Some(prompt) => ensure_components_available(paths, global, plan, prompt)?,
             None => plan.check_builds(paths, global)?,
