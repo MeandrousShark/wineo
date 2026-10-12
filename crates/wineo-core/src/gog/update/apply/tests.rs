@@ -25,9 +25,48 @@ const IDEOLOGY: u64 = 1827857764;
 const USER: u64 = 1001;
 const SCRIPT: &[u8] = b"#!/bin/bash\n# a stand-in for GOG's split file script\n";
 
+/// Called at each step of `remove_packages`.
+type CleanupHook = Box<dyn FnMut(&'static str)>;
+
 thread_local! {
     static FREE: Cell<Option<u64>> = const { Cell::new(None) };
     static BEFORE_JOURNAL: RefCell<Option<Box<dyn FnMut()>>> = const { RefCell::new(None) };
+    static CLEANUP: RefCell<Option<CleanupHook>> = const { RefCell::new(None) };
+}
+
+/// Runs a test's hook at a step of removing packages after an update.
+pub(in crate::gog::update) fn cleanup_step(step: &'static str) {
+    CLEANUP.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook(step);
+        }
+    });
+}
+
+/// Runs `remove_packages` on another thread, which reports each step on
+/// `steps` and waits for a word on the returned sender before carrying on.
+fn cleanup_in_steps<'scope>(
+    scope: &'scope std::thread::Scope<'scope, '_>,
+    paths: Paths,
+    product: u64,
+    steps: std::sync::mpsc::Sender<&'static str>,
+) -> (
+    std::sync::mpsc::Sender<()>,
+    std::thread::ScopedJoinHandle<'scope, Vec<String>>,
+) {
+    let (go, wait) = std::sync::mpsc::channel::<()>();
+    let handle = scope.spawn(move || {
+        CLEANUP.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |step| {
+                steps.send(step).unwrap();
+                wait.recv().unwrap();
+            }))
+        });
+        let mut warnings = Vec::new();
+        remove_packages(&paths, Path::new("/elsewhere"), &[product], &mut warnings);
+        warnings
+    });
+    (go, handle)
 }
 
 /// Runs a test's hook once, right before an update writes its journal.
@@ -1765,6 +1804,30 @@ fn an_update_pins_its_packages_until_its_journal_names_them() {
     assert_eq!(cached(&fx, RIMWORLD), 1);
 }
 
+fn update_journal(fx: &Fixture) {
+    let mut state = fx.state();
+    state.journal = Some(Journal {
+        operation: "op".to_owned(),
+        kind: JournalKind::Update,
+        target: Target {
+            gog_id: RIMWORLD,
+            platform: Platform::Linux,
+            language: "en-US".to_owned(),
+            track: Track::Installer,
+            products: Vec::new(),
+        },
+        packages: vec![Package {
+            product: RIMWORLD,
+            download_id: "installer_linux_en".to_owned(),
+            file_id: "en3installer0".to_owned(),
+            size: 1,
+            md5: None,
+        }],
+        attempted: Vec::new(),
+    });
+    fx.save(&state);
+}
+
 #[test]
 fn cleanup_keeps_packages_a_journal_names_while_it_waits() {
     let fx = installed_v1();
@@ -1776,42 +1839,44 @@ fn cleanup_keeps_packages_a_journal_names_while_it_waits() {
     assert_eq!(cached(&fx, RIMWORLD), 1);
 
     // Another update holds them from verifying until its journal is
-    // written, while this one's cleanup runs.
+    // written, while this one's cleanup tries to remove them.
     let cache = DownloadCache::new(fx.paths.gog_download_cache());
     let pin = cache.pin(RIMWORLD, &|| false).unwrap();
     std::thread::scope(|scope| {
-        let paths = fx.paths.clone();
-        let cleanup = scope.spawn(move || {
-            let mut warnings = Vec::new();
-            remove_packages(&paths, Path::new("/elsewhere"), &[RIMWORLD], &mut warnings);
-            warnings
-        });
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let mut state = fx.state();
-        state.journal = Some(Journal {
-            operation: "op".to_owned(),
-            kind: JournalKind::Update,
-            target: Target {
-                gog_id: RIMWORLD,
-                platform: Platform::Linux,
-                language: "en-US".to_owned(),
-                track: Track::Installer,
-                products: Vec::new(),
-            },
-            packages: vec![Package {
-                product: RIMWORLD,
-                download_id: "installer_linux_en".to_owned(),
-                file_id: "en3installer0".to_owned(),
-                size: 1,
-                md5: None,
-            }],
-            attempted: Vec::new(),
-        });
-        fx.save(&state);
+        let (steps, step) = std::sync::mpsc::channel();
+        let (go, cleanup) = cleanup_in_steps(scope, fx.paths.clone(), RIMWORLD, steps);
+        assert_eq!(step.recv().unwrap(), "pinning");
+        go.send(()).unwrap();
+        update_journal(&fx);
         drop(pin);
+        assert_eq!(step.recv().unwrap(), "decided");
+        go.send(()).unwrap();
         assert!(cleanup.join().unwrap().is_empty());
     });
     assert_eq!(cached(&fx, RIMWORLD), 1);
+}
+
+#[test]
+fn cleanup_decides_and_removes_without_letting_an_update_pin_in_between() {
+    let fx = installed_v1();
+    ready_for_v2(&fx);
+    set_failpoint(Some("update.journal.before"));
+    fx.update_err();
+    let cache = DownloadCache::new(fx.paths.gog_download_cache());
+    std::thread::scope(|scope| {
+        let (steps, step) = std::sync::mpsc::channel();
+        let (go, cleanup) = cleanup_in_steps(scope, fx.paths.clone(), RIMWORLD, steps);
+        assert_eq!(step.recv().unwrap(), "pinning");
+        go.send(()).unwrap();
+        // Nothing named the packages when cleanup looked, and until it has
+        // removed them no update can pin them to write a journal.
+        assert_eq!(step.recv().unwrap(), "decided");
+        let error = cache.pin(RIMWORLD, &|| true).unwrap_err();
+        assert_eq!(error.kind(), wineo_gog::ErrorKind::Canceled);
+        go.send(()).unwrap();
+        assert!(cleanup.join().unwrap().is_empty());
+    });
+    assert_eq!(cached(&fx, RIMWORLD), 0);
 }
 
 #[test]

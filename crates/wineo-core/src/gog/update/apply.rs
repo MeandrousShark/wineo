@@ -1021,6 +1021,8 @@ fn remove_packages(paths: &Paths, folder: &Path, products: &[u64], warnings: &mu
     products.sort_unstable();
     products.dedup();
     for product in products {
+        #[cfg(test)]
+        tests::cleanup_step("pinning");
         let pin = match cache.pin(product, &|| false) {
             Ok(pin) => pin,
             Err(error) => {
@@ -1030,7 +1032,10 @@ fn remove_packages(paths: &Paths, folder: &Path, products: &[u64], warnings: &mu
                 continue;
             }
         };
-        match named_by_journal(paths, folder, product) {
+        let named = named_by_journal(paths, folder, product);
+        #[cfg(test)]
+        tests::cleanup_step("decided");
+        match named {
             Ok(true) => {}
             Ok(false) => {
                 if let Err(error) = pin.remove() {
