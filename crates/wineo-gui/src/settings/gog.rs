@@ -429,13 +429,19 @@ fn open_browser(client: &Client, url: &str) {
     if client.endpoints() != &Endpoints::production() {
         return;
     }
-    // Waited on, so the child is reaped rather than left a zombie.
-    let _ = std::process::Command::new("xdg-open")
+    // xdg-open can run the browser itself and not return until it closes,
+    // so it's waited on elsewhere: reaped, but the address shows now.
+    if let Ok(mut child) = std::process::Command::new("xdg-open")
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .spawn()
+    {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
 }
 
 fn login_task(
