@@ -306,6 +306,43 @@ before migrating isn't seen. `Changed` means Heroic's files, the game
 folder, or the environment changed since planning; plan again. Most
 wording is a placeholder until the CLI settles it.
 
+### GOG updates
+
+`gog::update` compares installed GOG games with what GOG offers now. It
+needs a logged-in `account::Session`, works only in the host root, and
+reads product details through `gog::product::load`, so they're cached for
+an hour unless `refresh` is set.
+
+- `check(&mut session, name, refresh) -> Status` checks one environment.
+  `check_all(&mut session, refresh) -> Batch` checks every environment
+  that records a `gog_id`, sorted by name, and collects per-game problems
+  in `errors` (`GameError`: environment, id, message) instead of stopping.
+  It fails as a whole only for a portable root or an unreadable folder
+  directory.
+- A `Status` has the environment, game id, title, folder, platform, track,
+  language, `installed` and `available` (versions, or builds on the Galaxy
+  track), `state` (`UpToDate`, `Available`, `OnGog`, `CantCompare`, whose
+  `as_str()` is the JSON `update` value), `applicable` (true only for a
+  native game with an update), `reason`, `unfinished` (a journal is
+  present, so the game needs finishing before it launches), `warnings`,
+  and `dlc` (`DlcStatus` per DLC, with `Unknown` for a migrated DLC whose
+  version Heroic never recorded).
+- Status comes from the last committed state even when a journal is
+  present. A Galaxy-tracked game whose `goggame-<id>.info` shows a newer
+  build from another tool has that build recorded, under the folder's
+  state lock and only if nothing changed meanwhile, with a warning. That
+  is the only write a check makes.
+- `UpdateError::NotTracked` and `Unloadable` refuse an environment with no
+  `gog_id` or a config that can't be read. A lost or unreadable state file
+  is an error naming it.
+
+A folder in use refuses an update or migration with `FolderError::InUse`,
+which names the environments running from it (`rimworld-copy is running
+from this game folder. Stop it before updating rimworld.`). Launches leave
+a record naming their environment beside the folder's in-use lock for as
+long as they hold it. When none can be named, the refusal says `Something
+is running from rimworld's game folder. Stop it first.`
+
 ## Not in core yet
 
 - `StopOutcome` carries ready-made message strings rather than typed
