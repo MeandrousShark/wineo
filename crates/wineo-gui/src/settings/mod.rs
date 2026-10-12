@@ -4475,6 +4475,22 @@ mod tests {
         assert!(texts.contains(&"Not logged in".to_owned()));
     }
 
+    /// Like a Steam or SteamGridDB key being saved, a GOG login or logout,
+    /// and the startup update check, never hold the window open.
+    #[test]
+    fn gog_account_work_and_the_startup_check_never_hold_the_window_open() {
+        let (_root, paths) = setup();
+        let mut app = open_global_app(&paths);
+        let _ = app.update(Message::Settings(Event::Gog(gog::Event::Logout)));
+        assert!(app.gog_work.pending());
+        let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+        assert!(!app.close_prompt);
+
+        let mut app = App::boot(paths.clone()).0;
+        let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+        assert!(!app.close_prompt);
+    }
+
     /// Logging in works from a portable session too: GOG games live in the
     /// host library, but the login is the same.
     #[test]

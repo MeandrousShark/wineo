@@ -1531,6 +1531,57 @@ mod tests {
         assert!(page.token.as_ref().unwrap().is_canceled());
     }
 
+    /// Like Heroic import: reading and checking games is dropped, not
+    /// waited on, when the page moves on; copying a runner or downloading a
+    /// build is work, which Cancel stops and closing the window asks about.
+    #[test]
+    fn checking_is_dropped_on_back_and_prerequisites_cancel_like_heroic() {
+        let mut fx = Fixture::new();
+        fx.native(RIMWORLD, "RimWorld", &[]);
+        let mut page = fx.page();
+        let _ = page.update(Event::Pick(0));
+        assert!(
+            page.waiting() && !page.busy(),
+            "checking isn't work to wait for"
+        );
+        let generation = page.generation;
+        let _ = page.update(Event::Back);
+        assert!(page.status.is_empty());
+        let _ = page.update(Event::Prepared(
+            generation,
+            Ok(Box::new(fx.prepared(RIMWORLD))),
+        ));
+        assert_eq!(page.step, Step::Games, "a dropped check doesn't reopen");
+        assert!(page.prepared.is_none());
+
+        let _ = page.update(Event::KeepEditing);
+        let _ = page.update(Event::Pick(0));
+        let generation = page.generation;
+        let _ = page.update(Event::Prepared(
+            generation,
+            Ok(Box::new(fx.prepared(RIMWORLD))),
+        ));
+        let _ = page.update(Event::DownloadRunner);
+        assert_eq!(page.step, Step::Working);
+        assert!(page.busy());
+        let mut app = crate::App::boot(fx.paths.clone()).0;
+        app.flow = Some(super::super::Page::Gog(Box::new(page)));
+        let _ = app.update(crate::Message::Window(iced::window::Event::CloseRequested));
+        assert!(app.close_prompt);
+        let _ = app.update(crate::Message::CancelAndClose);
+        let Some(super::super::Page::Gog(page)) = &mut app.flow else {
+            panic!("the page stays until the download stops");
+        };
+        assert!(page.token.as_ref().unwrap().is_canceled());
+        let generation = page.generation;
+        let _ = page.update(Event::PrerequisiteFinished(
+            generation,
+            Err("Canceled".to_owned()),
+        ));
+        assert!(!page.busy());
+        assert_eq!(page.step, Step::Review);
+    }
+
     #[test]
     fn leaving_after_picking_a_game_asks_first() {
         let mut fx = Fixture::new();
