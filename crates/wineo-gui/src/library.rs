@@ -273,10 +273,7 @@ pub(super) fn load_library(paths: &Paths) -> anyhow::Result<Vec<Card>> {
         {
             Some(SteamDetails {
                 install: install.clone(),
-                proton: [app_id.to_ascii_lowercase(), "0".to_owned()]
-                    .into_iter()
-                    .find_map(|key| tools.get(&key).filter(|name| !name.is_empty()))
-                    .cloned(),
+                proton: steam::compat_tool_in(&tools, app_id),
                 size: overview
                     .steam
                     .as_ref()
