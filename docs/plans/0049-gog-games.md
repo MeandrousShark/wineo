@@ -1013,6 +1013,15 @@ Chosen during step 5:
 - **Split pieces** must still be the files staging wrote (same inode and
   size) when they're joined, so nothing swapped in between gets copied in.
 
+Settled by the maintainer on 2026-10-11, after step 5's review:
+
+- **Tampering by other programs** with the staging folder while wineo
+  works (moving it, rewriting a piece in place) is out of scope. The
+  piece checks catch wineo's own mistakes and stray files, not a hostile
+  process running as the same user.
+- **Nested split lists**, where a joined file is itself a piece of
+  another, keep being refused as "used twice".
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,

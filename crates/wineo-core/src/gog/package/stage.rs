@@ -375,8 +375,9 @@ struct Piece<'a> {
 /// Opens a staged piece, refusing it unless it's still the regular file
 /// staging wrote (same device and inode) at its declared size. That catches
 /// a piece replaced by anything else, including a hard link elsewhere, but
-/// not one rewritten in place at the same size. Nonblocking, so a FIFO put
-/// there can't hang the open.
+/// not one rewritten in place at the same size. Other programs tampering
+/// with staging are out of scope (plan 0049), so this is a cheap check, not
+/// a defense. Nonblocking, so a FIFO put there can't hang the open.
 fn open_piece(root: &OwnedFd, piece: &str, declared: u64, identity: (u64, u64)) -> Result<File> {
     let changed = || invalid(format!("{piece} changed while staging"));
     let (dir, leaf) = open_parent(root, piece)?;
