@@ -92,7 +92,7 @@ pub enum DlcState {
 impl DlcState {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::UpToDate => "up_to_date",
+            Self::UpToDate => "none",
             Self::Available => "available",
             Self::Unknown => "unknown",
             Self::CantCompare => "cant_compare",

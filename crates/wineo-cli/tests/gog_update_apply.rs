@@ -765,3 +765,21 @@ fn all_with_something_to_confirm_needs_yes_without_a_terminal() {
     assert_eq!(stdout(&out), "");
     assert!(!folder.join("Data/core.txt").exists());
 }
+
+#[test]
+fn an_up_to_date_dlc_says_none_in_json_like_a_game_does() {
+    let (f, api, _) = world();
+    assert_success(&f.gog(&api, &["update", "rimworld", "--yes"]));
+    let out = f.gog(&api, &["update", "--check", "rimworld", "--json"]);
+    assert_success(&out);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let game = &json["environments"][0];
+    assert_eq!(game["update"], "none");
+    let states: Vec<&str> = game["dlc"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|dlc| dlc["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(states, ["none", "none"]);
+}
