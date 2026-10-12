@@ -150,6 +150,76 @@ pub(crate) fn reason_note(reason: &Reason) -> String {
     }
 }
 
+/// Checks every GOG game for updates, once after start. Logged out, or in a
+/// portable session, there is nothing to check. Changes nothing a user
+/// didn't ask for beyond what `check_all` records itself.
+pub(crate) fn check_task(paths: Paths) -> iced::Task<crate::Message> {
+    if paths.portable_root().is_some() {
+        return iced::Task::none();
+    }
+    iced::Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let keyring = wineo_core::secret_service::SecretServiceKeyring::for_spec(
+                    &wineo_core::gog::account::KEY_SPEC,
+                );
+                let client =
+                    wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
+                check_with(&paths, &keyring, client)
+            })
+            .await
+            .map_err(|error| error.to_string())?
+        },
+        crate::Message::GogChecked,
+    )
+}
+
+/// What the background check found, or None when logged out.
+pub(crate) fn check_with(
+    paths: &Paths,
+    keyring: &dyn wineo_core::key_store::Keyring,
+    client: wineo_core::gog::api::Client,
+) -> Result<Option<wineo_core::gog::update::Batch>, String> {
+    let Some(mut session) = wineo_core::gog::account::Session::open(paths, keyring, client)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    wineo_core::gog::update::check_all(&mut session, false)
+        .map(Some)
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// Lands the background check: statuses mark cards, and problems are only
+/// logged, since nobody asked for the check.
+pub(crate) fn checked(
+    app: &mut crate::App,
+    result: Result<Option<wineo_core::gog::update::Batch>, String>,
+) {
+    match result {
+        Ok(Some(batch)) => {
+            for error in &batch.errors {
+                let subject = match (&error.environment, error.id) {
+                    (Some(name), _) => name.clone(),
+                    (None, Some(id)) => id.to_string(),
+                    (None, None) => "A GOG game folder".to_owned(),
+                };
+                eprintln!(
+                    "wineo-gui: couldn't check {subject} for GOG updates: {}",
+                    error.message
+                );
+            }
+            app.gog_updates = batch
+                .statuses
+                .into_iter()
+                .map(|status| (status.environment.clone(), status))
+                .collect();
+        }
+        Ok(None) => {}
+        Err(error) => eprintln!("wineo-gui: couldn't check for GOG updates: {error}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
@@ -350,5 +420,56 @@ mod tests {
             let mut view = app.panel(card);
             let _ = crate::layout_probe::layout(&mut view, iced::Size::new(420.0, 800.0));
         }
+    }
+
+    #[test]
+    fn the_background_check_marks_cards_and_stays_quiet_on_failure() {
+        use crate::gog_fake::{Server, native_product, product_server, reply, save_login};
+        use crate::settings::steam_key::tests::TestKeyring;
+
+        let (root, paths) = setup();
+        native_game(&paths, root.path(), "rimworld", RIMWORLD, "1.0", false);
+        let keyring = TestKeyring(std::cell::RefCell::new(None));
+        let server = product_server(vec![native_product(RIMWORLD, "RimWorld", "1.1")]);
+        assert_eq!(check_with(&paths, &keyring, server.client()).unwrap(), None);
+        assert!(server.requests().is_empty(), "logged out asks GOG nothing");
+
+        save_login(&paths, &keyring);
+        let batch = check_with(&paths, &keyring, server.client()).unwrap();
+        let mut app = app();
+        let mut rimworld = card("rimworld", State::Inactive, 0);
+        rimworld.gog = gog_card(false, None);
+        app.cards = vec![rimworld];
+        checked(&mut app, Ok(batch));
+        let status = &app.gog_updates["rimworld"];
+        assert_eq!(status.state, UpdateState::Available);
+        assert_eq!(
+            badge(app.cards[0].gog.as_ref(), Some(status)),
+            Some(Badge::UpdateAvailable)
+        );
+        assert!(app.gog_update_action("rimworld"));
+
+        // GOG failing is a log line, never an error in the app. A fresh home,
+        // since the details just fetched are cached for an hour.
+        let (root, paths) = setup();
+        native_game(&paths, root.path(), "rimworld", RIMWORLD, "1.0", false);
+        save_login(&paths, &keyring);
+        let down = Server::start(|_| reply(503, "{}"));
+        let failed = check_with(&paths, &keyring, down.client());
+        let mut app = crate::tests::app();
+        match failed {
+            Ok(batch) => {
+                let batch = batch.unwrap();
+                assert!(batch.statuses.is_empty());
+                assert_eq!(batch.errors.len(), 1);
+                checked(&mut app, Ok(Some(batch)));
+            }
+            Err(error) => checked(&mut app, Err(error)),
+        }
+        checked(&mut app, Err("no network".to_owned()));
+        assert!(app.gog_updates.is_empty());
+        assert!(app.error.is_none());
+        assert!(app.panel_error.is_none());
+        assert!(app.flow.is_none());
     }
 }

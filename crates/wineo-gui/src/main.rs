@@ -265,6 +265,7 @@ pub(crate) enum Message {
     CloneEnvironment(String),
     /// Updates a GOG game, or finishes its interrupted update.
     GogUpdate(String),
+    GogChecked(Result<Option<wineo_core::gog::update::Batch>, String>),
     Context(String),
     PointerMoved(iced::Point),
     OverlayInput,
@@ -399,6 +400,7 @@ impl App {
         })
         .discard();
         let key_presence = settings::key_presence_task(app.paths.clone(), app.steamgriddb_sequence);
+        let gog_check = gog_library::check_task(app.paths.clone());
         (
             app,
             Task::batch([
@@ -406,6 +408,7 @@ impl App {
                 badge,
                 prune,
                 key_presence,
+                gog_check,
                 iced::system::theme().map(Message::ThemeChanged),
             ]),
         )
@@ -1160,6 +1163,10 @@ impl App {
                 iced::advanced::widget::operate(
                     iced::advanced::widget::operation::focusable::unfocus(),
                 )
+            }
+            Message::GogChecked(result) => {
+                gog_library::checked(self, result);
+                Task::none()
             }
             Message::GogUpdate(name) => {
                 let enabled = self
