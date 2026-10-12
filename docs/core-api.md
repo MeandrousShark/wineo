@@ -279,6 +279,13 @@ as "Proton runner, needs --runner", and a GUI shows its own.
 `gog::migrate` moves a GOG game Heroic installed into wineo. It works only
 in the host root, needs no GOG login, and never edits Heroic's files.
 
+- `heroic::gog_games(&sources)` lists the GOG games every discovered Heroic
+  config installed, once each: configs that list a game in the same
+  canonical folder collapse to one entry (`HeroicGogEntry`, with
+  `also_listed_by`), preferring native over Flatpak, then the newer
+  `installed.json`. A game listed in different folders is a
+  `HeroicGogConflict` instead, left out of the games. `find_gog_game`
+  looks one up by id with the same rules.
 - `HeroicSource::gog_installed()` lists Heroic's installed GOG games
   (`HeroicGogGame`: id, title, platform, folder, version, language, build,
   and DLC), with unusable entries as `issues`. `gog_game(id)` returns one,
