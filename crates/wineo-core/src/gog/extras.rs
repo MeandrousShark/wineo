@@ -102,18 +102,22 @@ fn run(
 ) -> Result<Report> {
     host_only(paths)?;
     let name = request.name;
-    let environment = Environment::load(paths, name)?;
-    if environment.config.gog_id.as_deref() != Some(request.gog_id.to_string().as_str()) {
-        return Err(ExtrasError::OtherGame {
-            name: name.to_owned(),
-            gog_id: request.gog_id,
+    // One snapshot under the config lock, so the game that is checked and the
+    // identity that later writes are held to are the same environment.
+    let identity = {
+        let _lock = Locks::new(paths).config(&paths.environment_config(name))?;
+        let environment = Environment::load(paths, name)?;
+        if environment.config.gog_id.as_deref() != Some(request.gog_id.to_string().as_str()) {
+            return Err(ExtrasError::OtherGame {
+                name: name.to_owned(),
+                gog_id: request.gog_id,
+            }
+            .into());
         }
-        .into());
-    }
-    // Writes below only land on this config, not one that replaced it while
-    // GOG was answering.
-    let Some(identity) = EnvironmentIdentity::read(paths, name) else {
-        return Err(crate::Error::UnknownEnvironment(name.to_owned()).into());
+        // Writes below only land on this config, not one that replaced it
+        // while GOG was answering.
+        EnvironmentIdentity::read(paths, name)
+            .ok_or_else(|| crate::Error::UnknownEnvironment(name.to_owned()))?
     };
 
     let mut report = Report::default();
