@@ -1278,6 +1278,29 @@ Settled by the maintainer on 2026-10-12, during step 9:
   arrives, within the client's timeouts. Review findings narrower than
   this are recorded as limits rather than fixed.
 
+Chosen during step 9:
+
+- **Settings** reads the saved login without asking GOG when it opens.
+  The login URL has a **Copy link** button, since the page's text can't be
+  selected. Logging in and out, and the startup update check, run off the
+  window like the Steam and SteamGridDB keys: closing the app doesn't wait
+  for them.
+- **Import from GOG** uses list rows, not posters, since Heroic's GOG
+  records carry no art. The review has no name field or desktop entry
+  switch; new environments get desktop entries outside portable roots.
+- **Finish update** replaces Play in the panel, and Enter does nothing on
+  such a game. The menus offer **Update** only for a native game with an
+  update and nothing to finish. A blocked clone is found by reading which
+  folder its targets' paths fall in, without taking locks, since the
+  library refreshes every two seconds and a lock there would make updates
+  think the clone is running.
+- **Badges** are small pills at the poster's top left, primary for Update
+  available and warning for Finish update. After an update the app clears
+  that game's badge itself; a startup check that lands after it can bring a
+  stale badge back until restart, and pressing Update then just replans.
+- **Logged out,** an update that can't finish from saved packages says
+  `Log in to GOG first, in Settings.` There's no `--reinstall` in the app.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,
@@ -1361,3 +1384,88 @@ interrupting an update and finishing it; and logging out.
   GOG games in portable roots, and using Heroic's native file list.
 - Epic stays a backlog row.
 - wineo never edits Heroic's metadata.
+
+## Acceptance checklist
+
+This one uses your real wineo config, since RimWorld should attach to the
+`rimworld` environment you already have. It changes real things on purpose:
+`rimworld` gains `gog_id`, a `disco` environment is created on Heroic's
+prefix, and steps 8 to 10 rebuild RimWorld's files in `~/Games/RimWorld`
+from GOG's current packages (your `mods-1.5` stays). If you want a way
+back, copy the game folder first, for example
+`cp -a --reflink=auto ~/Games/RimWorld ~/Games/RimWorld.before-0049`.
+Logging in saves a real GOG login in your keyring; step 15 removes it.
+
+1. `wineo import gog --list` logged out: `Log in to GOG first: wineo import
+   gog --login.` and exit 1.
+2. `wineo import gog --login`: your browser opens GOG's login page and the
+   terminal prints its address. Log in, paste the address you land on (it
+   isn't shown as you paste): `Logged in to GOG as account N.`
+3. `wineo import gog --list`: your owned games, with RimWorld and Disco
+   Elysium as `in Heroic`, each listed once even though your old Flatpak
+   Heroic lists RimWorld too.
+4. `wineo import gog --game 1094900565 --dry-run`: the review attaches to
+   `rimworld` (an existing environment), shows the folder, `installer`,
+   `1.6.4871 rev588`, three DLC, and a `heroic` row naming your native
+   Heroic (your old Flatpak one lists RimWorld too), then
+   `Dry run, nothing was migrated.` `wineo config rimworld` has no
+   `gog_id` yet.
+5. `wineo import gog --game 1094900565`, confirm: `Migrated RimWorld as
+   rimworld.`, a line about GOG playtime if GOG has any, and `Added GOG
+   art: ...` only for kinds `rimworld` didn't have. `wineo config
+   rimworld` now has `gog_id = "1094900565"`, and `ls
+   ~/Games/RimWorld/mods-1.5` is unchanged. Running the same command again
+   says `Already migrated. rimworld owns ~/Games/RimWorld.`
+6. `wineo update --check`: `rimworld` with its version and state (`up to
+   date` unless GOG has shipped a newer RimWorld), and its DLC as `version
+   unknown`. `wineo update --check --json` has the same, with `"update"`
+   and the DLC `"state": "unknown"`.
+7. `wineo update rimworld --reinstall --dry-run`: the review shows each
+   product as `(rebuilt)` or `unknown -> VERSION`, the download size, and
+   an unpacked estimate, then `Dry run, nothing was updated.`
+8. `wineo update rimworld --reinstall`, confirm: download and unpack
+   progress, then `Reinstalled rimworld.` and the lists of files it
+   overwrote (a game Heroic installed has no record yet, so files that
+   differ are listed). `mods-1.5` is still there, and `wineo start
+   rimworld` starts the game with your mods. `wineo update --check` now
+   shows each DLC's version.
+9. `wineo update rimworld --reinstall --yes`, and press Ctrl+C once
+   `Publishing` shows (if it's too quick, press it during the download
+   instead and note which): exit 130 with `Update interrupted.` and how to
+   finish it. `wineo start rimworld` refuses: `rimworld's game folder is
+   mid-update. Finish it with wineo update rimworld.`
+10. `wineo update rimworld`: it finishes from the packages already
+    downloaded, without downloading again, and `wineo start rimworld`
+    works.
+11. `wineo import gog --game 1771589310`: the review creates `disco` on
+    Heroic's prefix (kept where it is), `galaxy` track, and asks for a
+    runner like Heroic import. After migrating, `wineo update --check`
+    shows `disco` as `up to date` or `update on GOG`, `wineo update disco`
+    says `Updating Galaxy builds comes in a later release.`, and `wineo
+    start disco` launches the game.
+12. `wineo clone rimworld rimworld-copy`, start `rimworld-copy`, and while
+    the game runs, `wineo update rimworld --reinstall --yes` in another
+    terminal: it downloads, then refuses with `rimworld-copy is running
+    from this game folder. Stop it before updating rimworld.` Quit the
+    game and run it again: it finishes without downloading again. Remove
+    the clone.
+13. In the app: **Settings**, **GOG** says you're logged in. **Add**,
+    **Import from GOG** lists RimWorld and Disco once each, both marked
+    migrated. RimWorld's and Disco's panels show an **Update** status row,
+    and Disco's says Galaxy builds come in a later release. On the **Art**
+    page, art GOG added says `GOG, game ...`.
+14. Repeat step 9 to leave RimWorld mid-update, then look at the app:
+    RimWorld's card has a **Finish update** badge, its panel has **Finish
+    update** instead of Play (on one line), and a clone's panel says which
+    game to finish. Press **Finish update**: the review, progress, and
+    result pages, then Play is back.
+15. `wineo import gog --logout`: `Removed the GOG login.` and the owned
+    list. `wineo update --check` says to log in. In the app, **Settings**,
+    **GOG** shows **Log in**; log in there (the address field hides what
+    you paste) and out again.
+16. Shrink the app's window and check the GOG settings row, the Import
+    from GOG review (Disco's runner choice), and the Update pages in light
+    and dark themes if you use both.
+
+Afterwards, remove RimWorld and Disco from Heroic's library without
+deleting their files, so Heroic and wineo don't both update them.

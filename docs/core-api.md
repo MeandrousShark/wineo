@@ -312,8 +312,8 @@ A game started another way (from Heroic, a clone, or another environment)
 before migrating isn't seen. `Changed` carries which one changed since planning (`Changed::Heroic`,
 `Folder`, or `Environment`); plan again.
 
-After a migration, `gog::extras::import(paths, session, &request) ->
-Report` adds GOG's playtime and art. With a session, the environment's
+After a migration, `gog::extras::import(paths, session, &request, &token)
+-> Report` adds GOG's playtime and art. With a session, the environment's
 imported playtime baseline becomes the larger of what it had and GOG's
 total, so running it again changes nothing; logged out, playtime is
 skipped with a note. Art fills only kinds the environment has none of,
@@ -323,7 +323,9 @@ environment, game id, title, the art kinds to fetch, a download transport,
 and the SteamGridDB key and language. Every GOG or network problem is a
 note in the `Report`; the call fails only for a portable root, an unknown
 environment, or one whose `gog_id` is another game, all checked before any
-request. Nothing is ever posted to GOG.
+request. Nothing is ever posted to GOG. A cancel is checked right before
+each write, under its lock, and keeps what was already done, with a note
+for each part it skipped.
 
 ### GOG updates
 
@@ -358,7 +360,10 @@ an hour unless `refresh` is set.
   restore's config and state writes) is found through its targets' paths
   by `folder::game_folder`, the same lookup launches use, and reported
   normally without claiming it. Two such folders refuse with
-  `FolderError::SeveralFolders`.
+  `FolderError::SeveralFolders`. `update::named_paths` gives the paths an
+  environment's targets name, which a frontend can pass to
+  `folder::folder_holding` to see, without locks, whether another game's
+  unfinished update blocks it.
 
 Updating a native game, reinstalling it, or finishing an interrupted one
 goes through `gog::update::plan` and `apply`:

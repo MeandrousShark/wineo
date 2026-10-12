@@ -121,6 +121,22 @@ so wineo doesn't. A running game is refused: `Stop NAME before
 uninstalling it.` The panel's hero and logo art are dimmed for a game that
 isn't installed, like its card.
 
+A [GOG game](gog.md) shows an **Update** row in its panel: **Up to date**,
+**Update available**, **Update on GOG**, or **Can't compare**, with a line
+for Windows games saying their updates come in a later release. Native games
+with an update get an **Update available** badge on their poster and
+**Update** in the Actions and right-click menus. **Update** opens a page with
+the same review as `wineo update NAME` (versions, download size, and the
+unpacked estimate), then download, verify, unpack, and publish progress,
+then what changed and the lists of your files it moved aside, kept, or
+overwrote. Planning and updating both count as work for Back, Cancel, and
+closing the window. A game whose last update was interrupted has a **Finish
+update** badge and button in place of Play, and another environment running
+from its folder can't play and says which game to finish. Once after the
+app starts, when you're logged in to GOG and not in a portable folder, it
+checks your GOG games for updates in the background; a failure only goes to
+the terminal.
+
 Games keep running after you close the app, the same as games started with
 `wineo start`. Reopen it to see or stop them.
 
@@ -385,7 +401,7 @@ as applicable, with warnings and missing prerequisites below. Long paths
 remain complete, and Back/Create stay outside the scrolling summary.
 
 **Add** opens a compact overlay for **New environment**, **Import prefix**,
-**Import from Heroic**, or **Import from Steam**, keeping the library visible behind it. The same
+**Import from Heroic**, **Import from Steam**, or **Import from GOG**, keeping the library visible behind it. The same
 choices are available when the library is empty. Back preserves entries;
 leaving an initial draft returns to Add choices and asks before discarding
 edits.
@@ -438,6 +454,23 @@ each game with its source, `game` tag, and Steam's cached art, and the
 finish page counts the results like `wineo import steam --all`: `Imported 1
 of 2 games.` In a portable folder it refuses: `Steam games can't be imported
 into a portable folder.`
+
+**Import from GOG** lists the GOG games Heroic installed, to move into
+wineo like `wineo import gog` (see [GOG games](gog.md)). Games already moved
+say `Already migrated as NAME.`, and entries Heroic can't describe, or a
+game two Heroic configs put in different folders, show as issues instead of
+disappearing. A game both a native and a Flatpak Heroic list in one folder
+shows once. Picking one opens a review: the environment it attaches to or
+creates, the folder, track, version, language, DLC, and for a new Windows
+environment the prefix (Heroic's, kept where it is) and a runner choice
+with the same copy and download offers as Heroic import. When another
+Heroic config also listed the game, a **Heroic** row says which one was
+used. **Migrate** moves it, then adds GOG's playtime and art like the CLI,
+whose problems are warnings that never undo the move. Back, the leave
+prompt, Cancel, and closing the window during work behave like Heroic
+import; a cancel after the move keeps it and skips what's left of the
+playtime and art. In a portable folder the page says GOG games live in the
+host library.
 
 New and import flows show clickable poster, icon, hero, and logo previews.
 New environment previews the game's page: the hero is a banner across the
@@ -568,6 +601,14 @@ the saved key. See [The SteamGridDB key](art.md#the-steamgriddb-key).
 saved, and shows where to get a key: <https://steamcommunity.com/dev/apikey>. With
 `WINEO_STEAM_KEY` set, it says that overrides the saved key.
 
+**GOG** shows which account is logged in. **Log in** opens GOG's login page
+in your browser and shows its address with **Copy link**, then a masked
+**Address** field for the address of the page you land on, like `wineo
+import gog --login`; what you paste is never shown or logged. **Log out**
+removes the login and that account's owned-games list. Both run outside
+the Save bar, and their result shows if you leave and come back. The
+section works in a portable folder too.
+
 ## Keyboard
 
 | Key | Does |
@@ -608,7 +649,7 @@ In an Add, import, or clone flow:
 | Key | Does |
 |---|---|
 | Ctrl+Enter | Activate the page's primary action |
-| 1, 2, 3 (Add choices) | Choose New, prefix import, or Heroic import |
+| 1 to 5 (Add choices) | Choose New, prefix import, Heroic, Steam, or GOG import |
 | Arrow keys, Space (Heroic games) | Move between posters and toggle one |
 | Ctrl+A, Enter (Heroic games) | Select every eligible game, import the selection |
 | Tab, Shift+Tab | Move between controls |
