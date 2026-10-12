@@ -26,7 +26,7 @@ mod fake;
 pub use auth::{
     AuthCode, CLIENT_ID, PasteError, REDIRECT_URI, Secret, Tokens, UserId, login_url, parse_paste,
 };
-pub use cache::{CachedFile, DownloadCache, Package};
+pub use cache::{CachedFile, DownloadCache, Package, Pin};
 pub use client::{Client, Endpoints};
 pub use download::{Downloaded, Verification};
 pub use error::{Class, Endpoint, Error, ErrorKind};

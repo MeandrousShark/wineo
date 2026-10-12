@@ -27,6 +27,14 @@ const SCRIPT: &[u8] = b"#!/bin/bash\n# a stand-in for GOG's split file script\n"
 
 thread_local! {
     static FREE: Cell<Option<u64>> = const { Cell::new(None) };
+    static BEFORE_JOURNAL: RefCell<Option<Box<dyn FnMut()>>> = const { RefCell::new(None) };
+}
+
+/// Runs a test's hook once, right before an update writes its journal.
+pub(in crate::gog::update) fn before_journal() {
+    if let Some(mut hook) = BEFORE_JOURNAL.with(|hook| hook.borrow_mut().take()) {
+        hook();
+    }
 }
 
 pub(in crate::gog::update) fn known_scripts() -> Vec<[u8; 32]> {
@@ -1691,4 +1699,102 @@ fn a_migrated_games_first_rebuild_lists_files_that_differed() {
     assert_eq!(updated.overwritten, ["Data/core.dat"]);
     assert!(updated.saved.is_empty());
     assert_eq!(fx.read("Data/core.dat"), "core v2");
+}
+
+fn cached(fx: &Fixture, product: u64) -> usize {
+    DownloadCache::new(fx.paths.gog_download_cache())
+        .files(product)
+        .unwrap()
+        .len()
+}
+
+#[test]
+fn an_update_pins_its_packages_until_its_journal_names_them() {
+    let fx = installed_v1();
+    ready_for_v2(&fx);
+    let paths = fx.paths.clone();
+    let checked = std::rc::Rc::new(Cell::new(false));
+    let seen = std::rc::Rc::clone(&checked);
+    BEFORE_JOURNAL.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            let cache = DownloadCache::new(paths.gog_download_cache());
+            for product in [RIMWORLD, ROYALTY] {
+                let error = cache.pin(product, &|| true).unwrap_err();
+                assert_eq!(error.kind(), wineo_gog::ErrorKind::Canceled);
+            }
+            seen.set(true);
+        }))
+    });
+    set_failpoint(Some("update.journal.after"));
+    fx.update_err();
+    assert!(checked.get());
+    // Once the journal names them, they're free again, and kept.
+    let cache = DownloadCache::new(fx.paths.gog_download_cache());
+    drop(cache.pin(RIMWORLD, &|| true).unwrap());
+    assert_eq!(cached(&fx, RIMWORLD), 1);
+}
+
+#[test]
+fn cleanup_keeps_packages_a_journal_names_while_it_waits() {
+    let fx = installed_v1();
+    ready_for_v2(&fx);
+    // An update stopped before its journal: its packages are cached and
+    // nothing names them yet.
+    set_failpoint(Some("update.journal.before"));
+    fx.update_err();
+    assert_eq!(cached(&fx, RIMWORLD), 1);
+
+    // Another update holds them from verifying until its journal is
+    // written, while this one's cleanup runs.
+    let cache = DownloadCache::new(fx.paths.gog_download_cache());
+    let pin = cache.pin(RIMWORLD, &|| false).unwrap();
+    std::thread::scope(|scope| {
+        let paths = fx.paths.clone();
+        let cleanup = scope.spawn(move || {
+            let mut warnings = Vec::new();
+            remove_packages(&paths, Path::new("/elsewhere"), &[RIMWORLD], &mut warnings);
+            warnings
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut state = fx.state();
+        state.journal = Some(Journal {
+            operation: "op".to_owned(),
+            kind: JournalKind::Update,
+            target: Target {
+                gog_id: RIMWORLD,
+                platform: Platform::Linux,
+                language: "en-US".to_owned(),
+                track: Track::Installer,
+                products: Vec::new(),
+            },
+            packages: vec![Package {
+                product: RIMWORLD,
+                download_id: "installer_linux_en".to_owned(),
+                file_id: "en3installer0".to_owned(),
+                size: 1,
+                md5: None,
+            }],
+            attempted: Vec::new(),
+        });
+        fx.save(&state);
+        drop(pin);
+        assert!(cleanup.join().unwrap().is_empty());
+    });
+    assert_eq!(cached(&fx, RIMWORLD), 1);
+}
+
+#[test]
+fn cleanup_keeps_packages_while_a_state_cant_be_read() {
+    let fx = installed_v1();
+    ready_for_v2(&fx);
+    set_failpoint(Some("update.journal.before"));
+    fx.update_err();
+    fs::write(fx.paths.gog_folders_dir().join("broken.toml"), "not [ toml").unwrap();
+    let mut warnings = Vec::new();
+    remove_packages(&fx.paths, &fx.folder, &[RIMWORLD], &mut warnings);
+    assert_eq!(cached(&fx, RIMWORLD), 1);
+    assert!(
+        warnings[0].starts_with("Kept the downloaded GOG packages: "),
+        "{warnings:?}"
+    );
 }

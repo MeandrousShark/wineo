@@ -1107,6 +1107,30 @@ fn removing_a_product_waits_for_its_download() {
 }
 
 #[test]
+fn a_pin_holds_a_products_files_until_it_removes_them_or_lets_go() {
+    let gog = Gog::one();
+    gog.get(&gog.package("en1installer0")).unwrap();
+    let pin = gog.cache.pin(PRODUCT, &|| false).unwrap();
+    assert!(
+        pin.complete(&gog.package("en1installer0"), None, &|| false)
+            .unwrap()
+            .is_some()
+    );
+    // Nobody else removes or downloads meanwhile.
+    let error = gog.cache.remove_product(PRODUCT, &|| true).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Canceled);
+    assert!(gog.folder().join(SETUP).exists());
+    drop(pin);
+    assert!(gog.folder().join(SETUP).exists());
+
+    let pin = gog.cache.pin(PRODUCT, &|| false).unwrap();
+    pin.remove().unwrap();
+    assert_eq!(gog.product_entries(), [".lock"]);
+    // Removing let go of the lock.
+    drop(gog.cache.pin(PRODUCT, &|| true).unwrap());
+}
+
+#[test]
 fn canceling_a_wait_for_the_lock_leaves_the_holder_alone() {
     let gog = Gog::one();
     let first = gog

@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use wineo_gog::{DownloadCache, Verification};
+use wineo_gog::{DownloadCache, Pin, Verification};
 
 use super::publish::{self, PublishProgress, Publisher, Report, SavedAside};
 use super::{UpdateError, UpdateState, installer_version, matching_installer, status_of};
@@ -644,6 +644,8 @@ fn run(
     // lock and the game can still be played meanwhile.
     let mut warnings = pending.warnings.clone();
     let fetched = fetch(paths, session, pending, token, progress, &mut warnings)?;
+    let cache = DownloadCache::new(paths.gog_download_cache());
+    let (pins, fetched) = pin_packages(&cache, pending, fetched, token, progress)?;
     let mut opened = Vec::new();
     for (file, path) in &fetched {
         let package = open_package(path)
@@ -718,8 +720,12 @@ fn run(
     };
     state.journal = Some(journal.clone());
     failpoint("update.journal.before")?;
+    #[cfg(test)]
+    tests::before_journal();
     lock.write(&state)?;
     *journaled = true;
+    // The journal names the packages now, which keeps them cached.
+    drop(pins);
     failpoint("update.journal.after")?;
 
     let mut staged = Vec::new();
@@ -832,8 +838,8 @@ fn operation_id() -> String {
     )
 }
 
-/// Every package downloaded, or found in the cache when finishing offline,
-/// with where it is.
+/// Every package downloaded, with the checksum it was verified against, or
+/// the journal's packages when finishing offline.
 fn fetch(
     paths: &Paths,
     session: Option<&mut Session>,
@@ -841,28 +847,12 @@ fn fetch(
     token: &Token,
     progress: &RefCell<impl FnMut(Progress)>,
     warnings: &mut Vec<String>,
-) -> Result<Vec<(PlannedFile, PathBuf)>> {
+) -> Result<Vec<PlannedFile>> {
     let cache = DownloadCache::new(paths.gog_download_cache());
     let mut fetched = Vec::new();
+    // Finishing offline uses what the journal names, checked once pinned.
     if pending.offline {
-        for file in &pending.files {
-            (progress.borrow_mut())(Progress::Verify {
-                product: file.product,
-            });
-            let package = Package {
-                product: file.product,
-                download_id: file.download_id.clone(),
-                file_id: file.file_id.clone(),
-                size: file.size,
-                md5: file.md5.clone(),
-            };
-            let path =
-                verify_cached(&cache, &package, token)?.ok_or_else(|| UpdateError::Changed {
-                    name: pending.environment.clone(),
-                })?;
-            fetched.push((file.clone(), path));
-        }
-        return Ok(fetched);
+        return Ok(pending.files.clone());
     }
     let session = session.ok_or(AccountError::LoggedOut)?;
     for file in &pending.files {
@@ -914,13 +904,10 @@ fn fetch(
                 None
             }
         };
-        fetched.push((
-            PlannedFile {
-                md5,
-                ..file.clone()
-            },
-            downloaded.path,
-        ));
+        fetched.push(PlannedFile {
+            md5,
+            ..file.clone()
+        });
     }
     Ok(fetched)
 }
@@ -932,6 +919,62 @@ fn check_space(paths: &Paths, folder: &Path, packages: &[&package::Package]) -> 
         return Ok(());
     }
     package::check_space(paths, folder, packages)
+}
+
+/// A package and where it is in the cache.
+type Located = (PlannedFile, PathBuf);
+
+/// Pins every product's cached files, in id order, and checks each package
+/// is still there and whole, returning where it is. The pins keep another
+/// update's cleanup from removing them until the journal naming them is
+/// written.
+fn pin_packages<'a>(
+    cache: &'a DownloadCache,
+    pending: &Pending,
+    files: Vec<PlannedFile>,
+    token: &Token,
+    progress: &RefCell<impl FnMut(Progress)>,
+) -> Result<(Vec<Pin<'a>>, Vec<Located>)> {
+    let cancel = || token.is_canceled();
+    let canceled = |error: wineo_gog::Error| -> anyhow::Error {
+        if error.kind() == wineo_gog::ErrorKind::Canceled {
+            UpdateError::Canceled { journal: false }.into()
+        } else {
+            error.into()
+        }
+    };
+    let mut products: Vec<u64> = files.iter().map(|file| file.product).collect();
+    products.sort_unstable();
+    products.dedup();
+    let mut pins = Vec::new();
+    for product in products {
+        pins.push(cache.pin(product, &cancel).map_err(canceled)?);
+    }
+    let mut found = Vec::new();
+    for file in files {
+        (progress.borrow_mut())(Progress::Verify {
+            product: file.product,
+        });
+        let pin = pins
+            .iter()
+            .find(|pin| pin.product_id() == file.product)
+            .expect("every product is pinned");
+        let lookup = wineo_gog::Package {
+            product_id: file.product,
+            download_id: &file.download_id,
+            file_id: &file.file_id,
+            size: file.size,
+            siblings: &[],
+        };
+        let path = pin
+            .complete(&lookup, file.md5.as_deref(), &cancel)
+            .map_err(canceled)?
+            .ok_or_else(|| UpdateError::Changed {
+                name: pending.environment.clone(),
+            })?;
+        found.push((file, path));
+    }
+    Ok((pins, found))
 }
 
 fn open_package(path: &Path) -> Result<package::Package> {
@@ -968,33 +1011,55 @@ fn package_entries(package: &package::Package) -> Vec<(String, EntryType)> {
 }
 
 /// Deletes the used packages from the download cache, unless another
-/// folder's journal still names one of them. A failure is only a warning,
-/// since the update is done.
+/// folder's journal names them or a state that can't be read might. Each
+/// product is pinned while it's decided and removed, and an update pins its
+/// packages until its journal names them, so one being written meanwhile is
+/// always seen. A failure is only a warning, since the update is done.
 fn remove_packages(paths: &Paths, folder: &Path, products: &[u64], warnings: &mut Vec<String>) {
     let cache = DownloadCache::new(paths.gog_download_cache());
-    let named: Vec<u64> = match folder::list(paths) {
-        Ok(states) => states
-            .into_iter()
-            .filter_map(|(_, state)| state.ok())
-            .filter(|state| state.folder != folder)
-            .filter_map(|state| state.journal)
-            .flat_map(|journal| journal.packages.into_iter().map(|package| package.product))
-            .collect(),
-        Err(error) => {
-            warnings.push(format!("Kept the downloaded GOG packages: {error:#}"));
-            return;
-        }
-    };
+    let mut products = products.to_vec();
+    products.sort_unstable();
+    products.dedup();
     for product in products {
-        if named.contains(product) {
-            continue;
-        }
-        if let Err(error) = cache.remove_product(*product, &|| false) {
-            warnings.push(format!(
-                "Couldn't remove the downloaded GOG packages: {error}"
-            ));
+        let pin = match cache.pin(product, &|| false) {
+            Ok(pin) => pin,
+            Err(error) => {
+                warnings.push(format!(
+                    "Couldn't remove the downloaded GOG packages: {error}"
+                ));
+                continue;
+            }
+        };
+        match named_by_journal(paths, folder, product) {
+            Ok(true) => {}
+            Ok(false) => {
+                if let Err(error) = pin.remove() {
+                    warnings.push(format!(
+                        "Couldn't remove the downloaded GOG packages: {error}"
+                    ));
+                }
+            }
+            Err(error) => {
+                warnings.push(format!("Kept the downloaded GOG packages: {error:#}"));
+            }
         }
     }
+}
+
+/// Whether another folder's journal names a package of `product`. A state
+/// that can't be read is an error, since it could.
+fn named_by_journal(paths: &Paths, folder: &Path, product: u64) -> Result<bool> {
+    for (_, state) in folder::list(paths)? {
+        let state = state?;
+        if state.folder != folder
+            && state
+                .journal
+                .is_some_and(|journal| journal.packages.iter().any(|p| p.product == product))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
