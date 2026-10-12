@@ -452,15 +452,16 @@ enum Verdict {
     Cant(String),
 }
 
-/// Compares a product's installed version with GOG's `os` installer for the
-/// recorded language. `entry` is GOG's details for it, if it lists any.
-fn compare_one(
+/// GOG's `os` installer of a product for the recorded language: the one
+/// GOG spells the same way, else the one for its primary subtag (`en-US`
+/// matches `en`). `entry` is GOG's details for the product, if it lists
+/// any. Anything else, none or more than one, is why it can't be told.
+fn matching_installer<'a>(
     os: &str,
     label: &str,
     language: &str,
-    entry: Option<&wineo_gog::Product>,
-    installed: Option<&str>,
-) -> (Verdict, Option<String>) {
+    entry: Option<&'a wineo_gog::Product>,
+) -> Result<&'a wineo_gog::Download, String> {
     let shown = if os == "linux" { "Linux" } else { "Windows" };
     let candidates: Vec<&wineo_gog::Download> = entry
         .map(|entry| {
@@ -471,7 +472,6 @@ fn compare_one(
                 .collect()
         })
         .unwrap_or_default();
-    // The recorded language as GOG spells it, else its primary subtag.
     let exact: Vec<_> = candidates
         .iter()
         .copied()
@@ -487,30 +487,42 @@ fn compare_one(
     } else {
         exact
     };
-    let installer = match matching.as_slice() {
-        [] => {
-            return (
-                Verdict::Cant(format!("{label} has no {shown} installer in {language}.")),
-                None,
-            );
-        }
-        [only] => *only,
-        _ => {
-            return (
-                Verdict::Cant(format!(
-                    "{label} has more than one {shown} installer in {language}."
-                )),
-                None,
-            );
-        }
-    };
-    let Some(available) = installer.version.clone() else {
-        return (
-            Verdict::Cant(format!(
-                "GOG lists no version for {label}'s {shown} installer."
-            )),
-            None,
-        );
+    match matching.as_slice() {
+        [] => Err(format!("{label} has no {shown} installer in {language}.")),
+        [only] => Ok(*only),
+        _ => Err(format!(
+            "{label} has more than one {shown} installer in {language}."
+        )),
+    }
+}
+
+/// The version GOG lists for an installer, or why there's none.
+fn installer_version(
+    os: &str,
+    label: &str,
+    installer: &wineo_gog::Download,
+) -> Result<String, String> {
+    let shown = if os == "linux" { "Linux" } else { "Windows" };
+    installer
+        .version
+        .clone()
+        .ok_or_else(|| format!("GOG lists no version for {label}'s {shown} installer."))
+}
+
+/// Compares a product's installed version with GOG's `os` installer for the
+/// recorded language. `entry` is GOG's details for it, if it lists any.
+fn compare_one(
+    os: &str,
+    label: &str,
+    language: &str,
+    entry: Option<&wineo_gog::Product>,
+    installed: Option<&str>,
+) -> (Verdict, Option<String>) {
+    let available = match matching_installer(os, label, language, entry)
+        .and_then(|installer| installer_version(os, label, installer))
+    {
+        Ok(available) => available,
+        Err(why) => return (Verdict::Cant(why), None),
     };
     let verdict = match installed {
         None => Verdict::InstalledUnknown,
