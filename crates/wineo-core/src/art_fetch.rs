@@ -51,6 +51,24 @@ pub fn fetch_kind(
     language: &str,
     mode: Mode,
 ) -> Result<Fetched> {
+    fetch_kind_for(paths, env, target, kind, api, game, language, mode, None)
+}
+
+/// Like `fetch_kind`, except that nothing is written unless the environment
+/// is still the one `expected_identity` was read from. The check is made
+/// under the art lock, after the download.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn fetch_kind_for(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    api: &Api,
+    game: u64,
+    language: &str,
+    mode: Mode,
+    expected_identity: Option<EnvironmentIdentity>,
+) -> Result<Fetched> {
     art::check_spot(paths, env, target)?;
     if mode == Mode::Fill
         && let Some(skipped) = existing(paths, env, target, kind)?
@@ -62,7 +80,16 @@ pub fn fetch_kind(
         Choice::NoneFound => return Ok(Fetched::NoneFound),
         Choice::AssetNotFound => return Ok(Fetched::AssetNotFound),
     };
-    publish(paths, env, target, kind, &image, mode)
+    publish_with_cancel(
+        paths,
+        env,
+        target,
+        kind,
+        &image,
+        mode,
+        None,
+        expected_identity,
+    )
 }
 
 /// Fetches SteamGridDB art for missing kinds, using Steam's app ID to find the

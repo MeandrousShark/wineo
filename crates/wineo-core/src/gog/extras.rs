@@ -262,7 +262,7 @@ fn artwork(
                 .push(format!("Couldn't fetch GOG {kind} artwork: {error}")),
         }
     }
-    steamgriddb(paths, request, &lacking, report);
+    steamgriddb(paths, request, &lacking, identity, report);
 }
 
 /// The link for a kind: the cover for the poster, the wider Galaxy
@@ -309,7 +309,13 @@ fn store(
 
 /// Fills kinds GOG has no image for from SteamGridDB, in the game the
 /// environment already has saved, or the one titled exactly like this game.
-fn steamgriddb(paths: &Paths, request: &Request<'_>, kinds: &[Kind], report: &mut Report) {
+fn steamgriddb(
+    paths: &Paths,
+    request: &Request<'_>,
+    kinds: &[Kind],
+    identity: EnvironmentIdentity,
+    report: &mut Report,
+) {
     let (Some(key), false) = (request.steamgriddb_key, kinds.is_empty()) else {
         return;
     };
@@ -334,7 +340,7 @@ fn steamgriddb(paths: &Paths, request: &Request<'_>, kinds: &[Kind], report: &mu
                 note(format!("SteamGridDB has no game titled {title}."));
                 return;
             };
-            if let Err(error) = art::save_game(paths, name, game.id) {
+            if let Err(error) = art::save_game_for(paths, name, game.id, Some(identity)) {
                 note(format!("Couldn't save the SteamGridDB game: {error}"));
                 return;
             }
@@ -346,7 +352,7 @@ fn steamgriddb(paths: &Paths, request: &Request<'_>, kinds: &[Kind], report: &mu
         }
     };
     for &kind in kinds {
-        match art_fetch::fetch_kind(
+        match art_fetch::fetch_kind_for(
             paths,
             name,
             None,
@@ -355,6 +361,7 @@ fn steamgriddb(paths: &Paths, request: &Request<'_>, kinds: &[Kind], report: &mu
             game,
             request.language,
             Mode::Fill,
+            Some(identity),
         ) {
             Ok(Fetched::Stored { asset, .. }) => report.art.push(Filled {
                 kind,

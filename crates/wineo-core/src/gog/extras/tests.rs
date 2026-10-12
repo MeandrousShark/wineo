@@ -871,3 +871,122 @@ fn formats_gog_serves_are_stored_under_their_real_extension() {
     );
     assert!(fixture.art_file("grid.png").exists() && !fixture.art_file("grid.jpg").exists());
 }
+
+/// Runs `hook` when `when` is requested, as another command replacing the
+/// environment would at that moment.
+struct Hooked<'a> {
+    inner: &'a FakeApi,
+    when: String,
+    hook: Box<dyn Fn() + 'a>,
+}
+
+impl crate::download::Transport for Hooked<'_> {
+    fn get(&self, url: &str) -> anyhow::Result<Box<dyn std::io::Read>> {
+        self.inner.get(url)
+    }
+
+    fn request(
+        &self,
+        url: &str,
+        bearer: Option<&str>,
+    ) -> anyhow::Result<crate::download::Response> {
+        self.request_with_length(url, bearer)
+            .map(|(response, _)| response)
+    }
+
+    fn request_with_length(
+        &self,
+        url: &str,
+        bearer: Option<&str>,
+    ) -> anyhow::Result<(crate::download::Response, Option<u64>)> {
+        if url.contains(&self.when) {
+            (self.hook)();
+        }
+        self.inner.request_with_length(url, bearer)
+    }
+}
+
+/// Puts a different game's config in place of the environment's, as a new
+/// file so it has another identity.
+fn replace_environment(fixture: &Fixture) {
+    let config = fixture.paths.environment_config("rimworld");
+    let next = config.with_extension("next");
+    fs::write(
+        &next,
+        "schema_version = 1\nkind = \"native\"\ngog_id = \"999\"\n[targets.game]\nexe = \"/bin/true\"\ndefault = true\n",
+    )
+    .unwrap();
+    fs::rename(&next, &config).unwrap();
+}
+
+#[test]
+fn an_environment_replaced_during_the_steamgriddb_search_is_left_alone() {
+    let fixture = Fixture::new();
+    let server = Scripted::start(gog(None, art_body(&["logo"])));
+    let inner = images();
+    inner.json(
+        format!("{}/search/autocomplete/RimWorld", steamgriddb::API),
+        json!([{"id": 7, "name": "RimWorld"}]),
+    );
+    serve(&inner, Kind::Logo, 41, PNG);
+    let transport = Hooked {
+        inner: &inner,
+        when: "/search/autocomplete/".to_owned(),
+        hook: Box::new(|| replace_environment(&fixture)),
+    };
+    let request = Request {
+        name: "rimworld",
+        gog_id: GAME,
+        title: "RimWorld",
+        kinds: &Kind::ALL,
+        transport: &transport,
+        steamgriddb_key: Some("sgdb-key"),
+        language: "en",
+    };
+    let report = run(&fixture.paths, None, &request, Ok(client_at(&server.base))).unwrap();
+    assert_eq!(report.art.len(), 3, "{:?}", report.art);
+    assert!(!report.art.iter().any(|filled| filled.kind == Kind::Logo));
+    assert_eq!(art::saved_game(&fixture.paths, "rimworld").unwrap(), None);
+    assert!(!fixture.art_file("logo.png").exists());
+    assert!(
+        art_notes(&report)
+            .iter()
+            .any(|note| note.starts_with("Couldn't save the SteamGridDB game")),
+        "{:?}",
+        report.notes
+    );
+}
+
+#[test]
+fn an_environment_replaced_during_the_steamgriddb_download_is_left_alone() {
+    let fixture = Fixture::new();
+    art::save_game(&fixture.paths, "rimworld", 7).unwrap();
+    let server = Scripted::start(gog(None, art_body(&["logo"])));
+    let inner = images();
+    serve(&inner, Kind::Logo, 41, PNG);
+    let transport = Hooked {
+        inner: &inner,
+        when: "https://cdn.example/41".to_owned(),
+        hook: Box::new(|| replace_environment(&fixture)),
+    };
+    let request = Request {
+        name: "rimworld",
+        gog_id: GAME,
+        title: "RimWorld",
+        kinds: &Kind::ALL,
+        transport: &transport,
+        steamgriddb_key: Some("sgdb-key"),
+        language: "en",
+    };
+    let report = run(&fixture.paths, None, &request, Ok(client_at(&server.base))).unwrap();
+    assert_eq!(report.art.len(), 3, "{:?}", report.art);
+    assert!(!fixture.art_file("logo.png").exists());
+    assert_eq!(fixture.art_config().record(None, Kind::Logo), None);
+    assert!(
+        art_notes(&report)
+            .iter()
+            .any(|note| note.starts_with("Couldn't fetch logo artwork from SteamGridDB")),
+        "{:?}",
+        report.notes
+    );
+}
