@@ -823,6 +823,55 @@ fn an_environment_that_tracks_no_game_is_refused() {
 }
 
 #[test]
+fn a_config_that_cant_be_parsed_is_refused_not_taken_for_untracked() {
+    let fx = Fixture::new();
+    let state = fx.native(vec![installed(RIMWORLD, Some("1"))]);
+    fs::write(fx.paths.environment_config("rimworld"), "gog_id = [").unwrap();
+    let error = fx.check("rimworld").unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<UpdateError>(),
+        Some(UpdateError::Unloadable { name, .. }) if name == "rimworld"
+    ));
+    assert!(
+        error
+            .to_string()
+            .starts_with("rimworld can't be checked: its config can't be read ("),
+        "{error}"
+    );
+
+    // A gog_id that isn't text is no better.
+    fs::write(fx.paths.environment_config("rimworld"), "gog_id = 5\n").unwrap();
+    assert!(matches!(
+        fx.check("rimworld")
+            .unwrap_err()
+            .downcast_ref::<UpdateError>(),
+        Some(UpdateError::Unloadable { .. })
+    ));
+    assert_eq!(fx.state(&state), state);
+}
+
+#[test]
+fn a_batch_reports_an_owner_whose_config_cant_be_parsed() {
+    let mut fx = Fixture::new();
+    fx.products
+        .insert(RIMWORLD, product(RIMWORLD, "RimWorld", linux("1"), vec![]));
+    fx.native(vec![installed(RIMWORLD, Some("1"))]);
+    fs::write(fx.paths.environment_config("rimworld"), "gog_id = [").unwrap();
+    let batch = fx.with(|session| check_all(session, true)).unwrap();
+    assert!(batch.statuses.is_empty());
+    assert_eq!(batch.errors.len(), 1);
+    assert_eq!(batch.errors[0].environment.as_deref(), Some("rimworld"));
+    assert_eq!(batch.errors[0].id, Some(RIMWORLD));
+    assert!(
+        batch.errors[0]
+            .message
+            .starts_with("rimworld can't be checked: its config can't be read ("),
+        "{:?}",
+        batch.errors[0]
+    );
+}
+
+#[test]
 fn details_that_cant_be_fetched_fail_the_game() {
     let fx = Fixture::new();
     fx.native(vec![installed(RIMWORLD, Some("1"))]);

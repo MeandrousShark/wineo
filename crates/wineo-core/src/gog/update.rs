@@ -19,7 +19,7 @@ use super::account::Session;
 use super::folder::{
     self, Committed, FolderError, FolderLock, FolderState, Platform, Product, ProductStatus, Track,
 };
-use super::migrate::{host_only, id_text, recorded_gog_id};
+use super::migrate::{host_only, id_text};
 use super::product;
 use crate::environment::Environment;
 use crate::paths::Paths;
@@ -161,6 +161,10 @@ pub struct Batch {
 pub enum UpdateError {
     #[error("{name} doesn't track a GOG game.")]
     NotTracked { name: String },
+    /// A config that can't be read as TOML could be recording a game, so it
+    /// isn't taken for one that doesn't.
+    #[error("{name} can't be checked: its config can't be read ({detail}).")]
+    Unloadable { name: String, detail: String },
 }
 
 /// Checks the GOG game environment `name` runs. Needs a login for Galaxy
@@ -175,7 +179,7 @@ pub fn check(session: &mut Session, name: &str, refresh: bool) -> Result<Status>
     let paths = session.paths().clone();
     host_only(&paths)?;
     Environment::ensure_exists(&paths, name)?;
-    let gog_id = recorded_gog_id(&paths, name).ok_or_else(|| UpdateError::NotTracked {
+    let gog_id = recorded_gog_id(&paths, name)?.ok_or_else(|| UpdateError::NotTracked {
         name: name.to_owned(),
     })?;
     let state = folder::find(&paths, name, &gog_id)?.ok_or_else(|| FolderError::StateMissing {
@@ -207,10 +211,19 @@ pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
         let Some(owner) = state.owner.clone() else {
             continue;
         };
-        if !recorded_gog_id(&paths, &owner).is_some_and(|recorded| state.is_game(&recorded)) {
-            continue;
-        }
         let id = state.gog_id();
+        match recorded_gog_id(&paths, &owner) {
+            Ok(Some(recorded)) if state.is_game(&recorded) => {}
+            Ok(_) => continue,
+            Err(error) => {
+                batch.errors.push(GameError {
+                    environment: Some(owner),
+                    id,
+                    message: error.to_string(),
+                });
+                continue;
+            }
+        }
         match status_of(session, &paths, &owner, state, refresh) {
             Ok(status) => batch.statuses.push(status),
             Err(error) => batch.errors.push(GameError {
@@ -227,6 +240,30 @@ pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
         .errors
         .sort_by(|a, b| a.environment.cmp(&b.environment));
     Ok(batch)
+}
+
+/// The `gog_id` an environment's config records, read as plain TOML. None
+/// when the config is gone or records none.
+fn recorded_gog_id(paths: &Paths, name: &str) -> Result<Option<String>, UpdateError> {
+    let unloadable = |detail: String| UpdateError::Unloadable {
+        name: name.to_owned(),
+        detail,
+    };
+    let text = match fs::read_to_string(paths.environment_config(name)) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(unloadable(error.to_string())),
+    };
+    let doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|error: toml_edit::TomlError| unloadable(error.message().to_owned()))?;
+    match doc.get("gog_id") {
+        None => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(|id| Some(id.to_owned()))
+            .ok_or_else(|| unloadable("gog_id isn't text".to_owned())),
+    }
 }
 
 /// What a state says is installed. A first install still in flight has

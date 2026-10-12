@@ -1018,7 +1018,7 @@ fn resolved(prefixes: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// The `gog_id` a config records, read as plain TOML.
-pub(super) fn recorded_gog_id(paths: &Paths, name: &str) -> Option<String> {
+fn recorded_gog_id(paths: &Paths, name: &str) -> Option<String> {
     fs::read_to_string(paths.environment_config(name))
         .ok()?
         .parse::<toml_edit::DocumentMut>()
