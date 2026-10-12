@@ -501,12 +501,35 @@ pub(crate) fn publish_fetched_with_cancel(
     cancel: Option<&Token>,
     expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Option<Stored>> {
-    let Downloaded {
-        asset,
-        bytes,
-        format,
-    } = image;
-    let (asset, format) = (*asset, *format);
+    publish_source(
+        paths,
+        env,
+        target,
+        kind,
+        &image.bytes,
+        image.format,
+        Source::SteamGridDb(image.asset),
+        replace,
+        cancel,
+        expected_identity,
+    )
+}
+
+/// Publishes `bytes`, already identified as `format`, as `kind` recorded
+/// with `source`. Otherwise as `publish_fetched`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn publish_source(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    bytes: &[u8],
+    format: Format,
+    source: Source,
+    replace: bool,
+    cancel: Option<&Token>,
+    expected_identity: Option<EnvironmentIdentity>,
+) -> Result<Option<Stored>> {
     let art_dir = paths.art_dir(env);
     let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
     if cancel.is_some_and(Token::is_canceled) {
@@ -549,14 +572,7 @@ pub(crate) fn publish_fetched_with_cancel(
     published
         .map_err(|err| err.error)
         .context(|| format!("cannot publish without replacing {}", path.display()))?;
-    art.set(
-        target,
-        kind,
-        Record {
-            format,
-            source: Source::SteamGridDb(asset),
-        },
-    )?;
+    art.set(target, kind, Record { format, source })?;
     art.save()?;
     let mut removed = Vec::new();
     for file in old.into_iter().filter(|file| *file != path) {
@@ -1131,6 +1147,8 @@ pub enum Source {
     SteamGridDb(u64),
     /// Set by hand from a file with this name.
     Manual(String),
+    /// GOG's own artwork for the game with this ID.
+    Gog(u64),
 }
 
 /// What `art.toml` says about one kind.
@@ -1255,6 +1273,7 @@ impl ArtFile {
                 Value::from(self.integer(kind.as_str(), *asset)?),
             ),
             Source::Manual(original) => ("manual", Value::from(original.as_str())),
+            Source::Gog(game) => ("gog", Value::from(self.integer(kind.as_str(), *game)?)),
         };
         let mut parent = self.doc.as_table_mut();
         if let Some(target) = target {
@@ -1266,7 +1285,7 @@ impl ArtFile {
         as_table(table);
         let table = table.as_table_mut().expect("just made a table");
         crate::edit::store_value(table, "file", Value::from(kind.file_name(record.format)));
-        for key in ["steamgriddb", "manual"] {
+        for key in ["steamgriddb", "manual", "gog"] {
             if key != source.0 {
                 table.remove(key);
             }
@@ -1405,6 +1424,7 @@ struct RawRecord {
     file: String,
     steamgriddb: Option<u64>,
     manual: Option<String>,
+    gog: Option<u64>,
 }
 
 impl RawArt {
@@ -1462,12 +1482,13 @@ impl RawKinds {
                         .collect();
                     format!("`{key}.file` must be one of {}", names.join(", "))
                 })?;
-            let source = match (raw.steamgriddb, raw.manual) {
-                (Some(asset), None) => Source::SteamGridDb(asset),
-                (None, Some(original)) => Source::Manual(original),
+            let source = match (raw.steamgriddb, raw.manual, raw.gog) {
+                (Some(asset), None, None) => Source::SteamGridDb(asset),
+                (None, Some(original), None) => Source::Manual(original),
+                (None, None, Some(game)) => Source::Gog(game),
                 _ => {
                     return Err(format!(
-                        "`{key}` needs exactly one of `steamgriddb` and `manual`"
+                        "`{key}` needs exactly one of `steamgriddb`, `manual`, and `gog`"
                     ));
                 }
             };
@@ -1912,10 +1933,43 @@ manual = \"logo.png\"
     }
 
     #[test]
+    fn a_gog_source_is_read_written_and_replaces_the_others() {
+        let text = "[grid]\nfile = \"grid.jpg\"\ngog = 1094900565\n";
+        let config = ArtConfig::parse(Path::new("art.toml"), text).unwrap();
+        assert_eq!(
+            config.record(None, Kind::Grid).map(|record| &record.source),
+            Some(&Source::Gog(1_094_900_565))
+        );
+
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join(ART_FILE),
+            "[grid]\nfile = \"grid.jpg\"\nmanual = \"a.jpg\"\n",
+        )
+        .unwrap();
+        let mut file = ArtFile::open(root.path()).unwrap();
+        let record = Record {
+            format: Format::Jpeg,
+            source: Source::Gog(7),
+        };
+        file.set(None, Kind::Grid, record.clone()).unwrap();
+        file.save().unwrap();
+        let written = fs::read_to_string(root.path().join(ART_FILE)).unwrap();
+        assert!(
+            written.contains("gog = 7") && !written.contains("manual"),
+            "{written}"
+        );
+        let reread = ArtConfig::load(root.path()).unwrap();
+        assert_eq!(reread.record(None, Kind::Grid), Some(&record));
+    }
+
+    #[test]
     fn a_kind_needs_exactly_one_source_and_a_valid_file() {
         for text in [
             "[icon]\nfile = \"icon.png\"\n",
             "[icon]\nfile = \"icon.png\"\nsteamgriddb = 1\nmanual = \"a\"\n",
+            "[icon]\nfile = \"icon.png\"\ngog = 1\nmanual = \"a\"\n",
+            "[icon]\nfile = \"icon.png\"\ngog = 1\nsteamgriddb = 1\n",
             "[targets.server.hero]\nfile = \"hero.png\"\n",
             "[icon]\nfile = \"icon.webp\"\nmanual = \"a\"\n",
             "[icon]\nfile = \"grid.png\"\nmanual = \"a\"\n",
