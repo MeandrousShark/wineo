@@ -221,55 +221,10 @@ impl<'a> Api<'a> {
     pub fn download_with_progress(
         &self,
         url: &str,
-        mut progress: impl FnMut(u64, Option<u64>),
+        progress: impl FnMut(u64, Option<u64>),
         cancel: &Token,
     ) -> anyhow::Result<Vec<u8>> {
-        Self::check_download_cancel(cancel)?;
-        let (response, total) = self.transport.request_with_length(url, None)?;
-        if response.status != 200 {
-            bail!("the download answered with status {}", response.status);
-        }
-        if total.is_some_and(|length| length > MAX_BYTES) {
-            bail!("{url} is larger than 32 MiB");
-        }
-        let mut body = response.body;
-        let mut bytes = Vec::new();
-        let mut buffer = [0; 64 * 1024];
-        loop {
-            Self::check_download_cancel(cancel)?;
-            let remaining = MAX_BYTES + 1 - bytes.len() as u64;
-            let count = loop {
-                match body
-                    .by_ref()
-                    .take(remaining.min(buffer.len() as u64))
-                    .read(&mut buffer)
-                {
-                    Err(err) if err.kind() == io::ErrorKind::Interrupted => {
-                        Self::check_download_cancel(cancel)?;
-                    }
-                    result => {
-                        break result.map_err(|err| anyhow!("failed to download {url}: {err}"))?;
-                    }
-                }
-            };
-            if count == 0 {
-                Self::check_download_cancel(cancel)?;
-                break;
-            }
-            bytes.extend_from_slice(&buffer[..count]);
-            if bytes.len() as u64 > MAX_BYTES {
-                bail!("{url} is larger than 32 MiB");
-            }
-            progress(bytes.len() as u64, total);
-        }
-        Ok(bytes)
-    }
-
-    fn check_download_cancel(cancel: &Token) -> anyhow::Result<()> {
-        if cancel.is_canceled() {
-            return Err(crate::error::Error::Canceled("download").into());
-        }
-        Ok(())
+        download_image(self.transport, url, progress, cancel)
     }
 
     /// The `data` array of an API answer.
@@ -300,6 +255,62 @@ impl<'a> Api<'a> {
         }
         Ok(answer)
     }
+}
+
+/// Downloads an image through `transport`, abandoning it past the art size
+/// cap. No key is sent, since images come from a CDN rather than an API.
+pub(crate) fn download_image(
+    transport: &dyn Transport,
+    url: &str,
+    mut progress: impl FnMut(u64, Option<u64>),
+    cancel: &Token,
+) -> anyhow::Result<Vec<u8>> {
+    check_download_cancel(cancel)?;
+    let (response, total) = transport.request_with_length(url, None)?;
+    if response.status != 200 {
+        bail!("the download answered with status {}", response.status);
+    }
+    if total.is_some_and(|length| length > MAX_BYTES) {
+        bail!("{url} is larger than 32 MiB");
+    }
+    let mut body = response.body;
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        check_download_cancel(cancel)?;
+        let remaining = MAX_BYTES + 1 - bytes.len() as u64;
+        let count = loop {
+            match body
+                .by_ref()
+                .take(remaining.min(buffer.len() as u64))
+                .read(&mut buffer)
+            {
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+                    check_download_cancel(cancel)?;
+                }
+                result => {
+                    break result.map_err(|err| anyhow!("failed to download {url}: {err}"))?;
+                }
+            }
+        };
+        if count == 0 {
+            check_download_cancel(cancel)?;
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+        if bytes.len() as u64 > MAX_BYTES {
+            bail!("{url} is larger than 32 MiB");
+        }
+        progress(bytes.len() as u64, total);
+    }
+    Ok(bytes)
+}
+
+fn check_download_cancel(cancel: &Token) -> anyhow::Result<()> {
+    if cancel.is_canceled() {
+        return Err(crate::error::Error::Canceled("download").into());
+    }
+    Ok(())
 }
 
 fn game(value: &Value) -> Option<Game> {

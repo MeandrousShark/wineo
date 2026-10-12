@@ -38,6 +38,24 @@ pub(crate) fn https_url(value: &Value) -> Option<String> {
     (!rest.is_empty() && !rest.starts_with('/')).then(|| format!("https://{rest}"))
 }
 
+/// A URL that is already HTTPS. Unlike `https_url`, plain HTTP and
+/// protocol-relative addresses are refused rather than upgraded, for links
+/// that are fetched as they are.
+pub(crate) fn strict_https_url(value: &Value) -> Option<String> {
+    let text = value.as_str()?.trim();
+    // The URL parser reads `https:///host` as `https://host`, which isn't
+    // what was written.
+    if text.strip_prefix("https://")?.starts_with('/') {
+        return None;
+    }
+    let url = reqwest::Url::parse(text).ok()?;
+    (url.scheme() == "https"
+        && url.host_str().is_some_and(|host| !host.is_empty())
+        && url.username().is_empty()
+        && url.password().is_none())
+    .then(|| url.into())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -51,6 +69,25 @@ mod tests {
         for bad in [json!(-1), json!(1.5), json!(""), json!("1a"), json!(null)] {
             assert_eq!(id(&bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn strict_urls_must_already_be_https() {
+        let ok = "https://images.gog-statics.com/a.jpg";
+        assert_eq!(strict_https_url(&json!(ok)).as_deref(), Some(ok));
+        for bad in [
+            "http://images.gog-statics.com/a.jpg",
+            "//images.gog-statics.com/a.jpg",
+            "ftp://images.gog-statics.com/a.jpg",
+            "https://user:pass@images.gog-statics.com/a.jpg",
+            "https:///a.jpg",
+            "javascript:alert(1)",
+            "/relative",
+            "",
+        ] {
+            assert_eq!(strict_https_url(&json!(bad)), None, "{bad}");
+        }
+        assert_eq!(strict_https_url(&json!(7)), None);
     }
 
     #[test]
