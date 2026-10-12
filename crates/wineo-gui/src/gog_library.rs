@@ -2,11 +2,10 @@
 //! interrupted update to finish, or a clone it blocks), and what the
 //! background check says GOG offers.
 
-use wineo_core::config::{GlobalConfig, Kind};
+use wineo_core::config::Kind;
 use wineo_core::environment::Environment;
-use wineo_core::gog::folder::{self, FolderError, FolderState};
-use wineo_core::gog::update::{Reason, Status, UpdateState};
-use wineo_core::launch::{self, Overrides};
+use wineo_core::gog::folder::{self, FolderState};
+use wineo_core::gog::update::{self, Reason, Status, UpdateState};
 use wineo_core::paths::Paths;
 
 /// What a card knows about GOG without asking GOG.
@@ -35,9 +34,8 @@ pub(crate) fn blocked_note(owner: &str) -> String {
 /// The GOG folder states, read once per library load.
 pub(crate) struct Folders {
     states: Vec<FolderState>,
-    /// Loaded only when a journal exists, since only then can a clone be
-    /// blocked.
-    global: Option<GlobalConfig>,
+    /// Whether any has a journal, since only then can a clone be blocked.
+    journal: bool,
 }
 
 impl Folders {
@@ -54,10 +52,7 @@ impl Folders {
                 Vec::new()
             };
         let journal = states.iter().any(|state| state.journal.is_some());
-        Self {
-            global: journal.then(|| GlobalConfig::load(paths).ok()).flatten(),
-            states,
-        }
+        Self { states, journal }
     }
 
     /// What `env`'s card shows about GOG, None for one that has nothing to do
@@ -74,10 +69,9 @@ impl Folders {
                     && state.journal.is_some()
             })
         });
-        let blocked_by = match &self.global {
-            Some(global) if !unfinished => blocking_owner(paths, global, env),
-            _ => None,
-        };
+        let blocked_by = (self.journal && !unfinished)
+            .then(|| blocking_owner(paths, env))
+            .flatten();
         (gog_id.is_some() || blocked_by.is_some()).then_some(GogCard {
             gog_id,
             unfinished,
@@ -86,15 +80,19 @@ impl Folders {
     }
 }
 
-/// The owner whose interrupted update stops `env` from launching, found the
-/// way a launch would refuse it. Anything else a launch would refuse is left
-/// for Play to report.
-fn blocking_owner(paths: &Paths, global: &GlobalConfig, env: &Environment) -> Option<String> {
-    let error = launch::precheck(paths, global, env, &Overrides::default()).err()?;
-    match error.downcast_ref::<FolderError>() {
-        Some(FolderError::MidUpdate { name }) if *name != env.name => Some(name.clone()),
-        _ => None,
-    }
+/// The owner whose interrupted update stops `env` from launching: the owner
+/// of a folder with a journal that one of its targets runs from. Read
+/// without locks, unlike a launch's check, since this runs every refresh and
+/// a held in-use lock, even briefly, could make an update refuse. Anything
+/// else a launch would refuse is left for Play to report.
+fn blocking_owner(paths: &Paths, env: &Environment) -> Option<String> {
+    update::named_paths(paths, &env.name)
+        .iter()
+        .filter_map(|path| folder::folder_holding(paths, path).ok().flatten())
+        .find_map(|state| {
+            state.journal.as_ref()?;
+            state.owner.filter(|owner| *owner != env.name)
+        })
 }
 
 /// The badge on a card's poster.
@@ -268,6 +266,11 @@ mod tests {
             "rimworld's game folder is mid-update. Use Finish update on rimworld."
         );
         assert_eq!(card_of(&paths, "notes"), None);
+        // Reading cards takes no in-use lock and leaves no holder record, so
+        // it can never make an update refuse.
+        let key = folder::key(&folder);
+        assert!(!paths.gog_folder_in_use_lock(&key).exists());
+        assert!(!paths.gog_folder_holders(&key).exists());
     }
 
     #[test]

@@ -438,15 +438,26 @@ pub(crate) fn apply_with(
 ) -> Result<Updated, Failure> {
     let mut session = Session::open(paths, keyring, client)
         .map_err(|error| Failure::Failed(error.to_string()))?;
+    let logged_out = session.is_none();
     let mut reporter = Reporter::new(pending);
     update::apply(paths, session.as_mut(), pending, token, |step| {
         if let Some(line) = reporter.line(&step) {
             say(line);
         }
     })
-    .map_err(|error| match error.downcast_ref::<UpdateError>() {
-        Some(UpdateError::Canceled { journal }) => Failure::Canceled { journal: *journal },
-        _ => Failure::Failed(format!("{error:#}")),
+    .map_err(|error| {
+        if let Some(UpdateError::Canceled { journal }) = error.downcast_ref::<UpdateError>() {
+            return Failure::Canceled { journal: *journal };
+        }
+        if logged_out
+            && matches!(
+                error.downcast_ref::<AccountError>(),
+                Some(AccountError::LoggedOut)
+            )
+        {
+            return Failure::Failed(LOGGED_OUT.to_owned());
+        }
+        Failure::Failed(format!("{error:#}"))
     })
 }
 
@@ -875,6 +886,23 @@ mod tests {
             assert_eq!(page.error.as_deref(), Some(message));
             assert_eq!(page.take_updated(), None);
         }
+    }
+
+    #[test]
+    fn closing_the_window_while_updating_asks_first_then_cancels() {
+        let (_root, paths, pending) = planned();
+        let mut page = page_with(pending, paths.clone());
+        let _ = page.update(Event::Update);
+        let mut app = crate::App::boot(paths).0;
+        app.flow = Some(super::super::Page::GogUpdate(Box::new(page)));
+        let _ = app.update(crate::Message::Window(iced::window::Event::CloseRequested));
+        assert!(app.close_prompt);
+        let _ = app.update(crate::Message::CancelAndClose);
+        assert!(app.closing);
+        let Some(super::super::Page::GogUpdate(page)) = &app.flow else {
+            panic!("the page stays until its work ends");
+        };
+        assert!(page.token.as_ref().unwrap().is_canceled());
     }
 
     #[test]
