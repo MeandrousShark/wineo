@@ -139,6 +139,30 @@ impl HeroicSource {
         self.store_fingerprint(&game.id, Store::Gog { info })
     }
 
+    /// The prefixes Heroic's `winePrefix` for `game` may mean, read without
+    /// resolving its runner, so an environment already using it can be found
+    /// even when that runner is unusable. A Proton prefix's `pfx` folder
+    /// stands for its parent, which inspection only decides once the runner
+    /// is known, so both are given then. Empty when Heroic names none.
+    pub(crate) fn gog_prefixes(&self, game: &HeroicGogGame) -> Result<Vec<PathBuf>> {
+        let global = self.global_settings()?;
+        let (effective, _) = self.effective_settings(&game.id, &global)?;
+        let Some(prefix) = effective
+            .get("winePrefix")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(Vec::new());
+        };
+        let prefix = self.expand_path(prefix).0;
+        let mut prefixes = vec![prefix.clone()];
+        let proton = super::normalize_heroic_prefix(prefix, super::HeroicRunnerKind::Proton);
+        if !prefixes.contains(&proton) {
+            prefixes.push(proton);
+        }
+        Ok(prefixes)
+    }
+
     /// Heroic's settings for the Windows GOG game `game`, launching `exe`.
     /// `info` is the game folder's info file, which a later apply rechecks
     /// along with Heroic's files.

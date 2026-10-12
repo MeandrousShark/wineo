@@ -105,8 +105,9 @@ pub struct Migration {
     gog_id: u64,
     folder: PathBuf,
     launch: Launch,
-    /// Heroic's prefix for a Windows game, when its settings name one.
-    prefix: Option<PathBuf>,
+    /// What Heroic's prefix for a Windows game may be, read without its
+    /// runner. Empty when its settings name none.
+    prefixes: Vec<PathBuf>,
     committed: Committed,
     state: StateChange,
     fingerprint: InputFingerprint,
@@ -305,13 +306,15 @@ pub fn plan(paths: &Paths, source: &HeroicSource, gog_id: &str) -> Result<Plan> 
             Some(source.inspect_gog_native(&game, &launch.exe, &launch.info)),
         ),
     };
-    let prefix = windows
-        .as_ref()
-        .and_then(|imported| imported.as_ref().ok())
-        .map(|imported| imported.prefix.clone());
+    // Matching needs only the prefix, so a runner Heroic can't resolve
+    // still lets an existing environment be found.
+    let prefixes = match game.platform {
+        Platform::Windows => source.gog_prefixes(&game)?,
+        Platform::Linux => Vec::new(),
+    };
     let fingerprint = source.gog_fingerprint(&game, &launch.info)?;
 
-    let found = match_environment(paths, &game, &launch.exe, prefix.as_deref())?;
+    let found = match_environment(paths, &game, &launch.exe, &prefixes)?;
     let target = match found {
         Found::Existing { name, gog_id: has } => {
             if has.is_some()
@@ -362,7 +365,7 @@ pub fn plan(paths: &Paths, source: &HeroicSource, gog_id: &str) -> Result<Plan> 
         gog_id: id,
         folder,
         launch,
-        prefix,
+        prefixes,
         committed,
         state,
         fingerprint,
@@ -410,7 +413,7 @@ pub fn apply(
 
 impl Migration {
     fn rematch(&self, paths: &Paths) -> Result<Found> {
-        match_environment(paths, &self.game, &self.launch.exe, self.prefix.as_deref())
+        match_environment(paths, &self.game, &self.launch.exe, &self.prefixes)
     }
 
     /// The state a first adoption writes.
@@ -886,10 +889,13 @@ fn match_environment(
     paths: &Paths,
     game: &HeroicGogGame,
     exe: &Path,
-    prefix: Option<&Path>,
+    prefixes: &[PathBuf],
 ) -> Result<Found> {
     let exe = paths::resolve(exe);
-    let prefix = prefix.map(paths::resolve);
+    let prefixes: Vec<PathBuf> = prefixes
+        .iter()
+        .map(|prefix| paths::resolve(prefix))
+        .collect();
     let mut by_id = Vec::new();
     let mut by_paths = Vec::new();
     for name in environment::names(paths)? {
@@ -898,7 +904,7 @@ fn match_environment(
         };
         if environment.config.gog_id.as_deref() == Some(game.id.as_str()) {
             by_id.push(name);
-        } else if runs(paths, &environment, game.platform, &exe, prefix.as_deref()) {
+        } else if runs(paths, &environment, game.platform, &exe, &prefixes) {
             by_paths.push((name, environment.config.gog_id.clone()));
         }
     }
@@ -935,13 +941,13 @@ fn match_environment(
 }
 
 /// Whether `environment`'s default target runs `exe`, and for a Windows
-/// game, in `prefix`.
+/// game, in one of `prefixes`.
 fn runs(
     paths: &Paths,
     environment: &Environment,
     platform: Platform,
     exe: &Path,
-    prefix: Option<&Path>,
+    prefixes: &[PathBuf],
 ) -> bool {
     let Ok((_, target)) = launch::resolve_target(environment, None) else {
         return false;
@@ -957,12 +963,12 @@ fn runs(
     match platform {
         Platform::Linux => environment.config.is_native(),
         // Without Heroic's prefix nothing can be matched this way.
-        Platform::Windows => prefix.is_some_and(|prefix| {
+        Platform::Windows => {
             !environment.config.is_native()
                 && environment
                     .prefix(paths)
-                    .is_ok_and(|own| paths::resolve(&own) == prefix)
-        }),
+                    .is_ok_and(|own| prefixes.contains(&paths::resolve(&own)))
+        }
     }
 }
 

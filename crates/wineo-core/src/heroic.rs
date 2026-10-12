@@ -315,21 +315,7 @@ impl HeroicSource {
         store: Store<'_>,
     ) -> Result<HeroicNativeImport> {
         let game_path = self.game_config_path(game_id);
-        let game_root = read_optional_json(&game_path)?.unwrap_or(Value::Object(Map::new()));
-        if !supported_schema_root(&game_root) {
-            return Err(invalid_json(
-                &game_path,
-                format!(
-                    "unsupported Heroic game config version {}",
-                    schema_version(&game_root).unwrap_or_default()
-                ),
-            ));
-        }
-        let overrides = game_settings(&game_root, game_id).unwrap_or_default();
-        let mut effective = global.clone();
-        for (key, value) in &overrides {
-            effective.insert(key.clone(), value.clone());
-        }
+        let (effective, overrides) = self.effective_settings(game_id, global)?;
         let mut review = SettingsReview::default();
         let mut issues = Vec::new();
         if game_kind(entry) != HeroicGameKind::Native || platform(entry) != Some("linux") {
@@ -494,25 +480,20 @@ impl HeroicSource {
         }
     }
 
-    fn inspect_entry(
+    /// The game's settings over the global ones, and the game's own.
+    fn effective_settings(
         &self,
         game_id: &str,
-        entry: &Map<String, Value>,
         global: &Map<String, Value>,
-        store: Store<'_>,
-    ) -> Result<HeroicImport> {
+    ) -> Result<(Map<String, Value>, Map<String, Value>)> {
         let game_path = self.game_config_path(game_id);
-        let game_root = match read_optional_json(&game_path)? {
-            Some(root) => root,
-            None => Value::Object(Map::new()),
-        };
-        let version = schema_version(&game_root);
+        let game_root = read_optional_json(&game_path)?.unwrap_or(Value::Object(Map::new()));
         if !supported_schema_root(&game_root) {
             return Err(invalid_json(
                 &game_path,
                 format!(
                     "unsupported Heroic game config version {}",
-                    version.unwrap_or_default()
+                    schema_version(&game_root).unwrap_or_default()
                 ),
             ));
         }
@@ -521,6 +502,18 @@ impl HeroicSource {
         for (key, value) in &overrides {
             effective.insert(key.clone(), value.clone());
         }
+        Ok((effective, overrides))
+    }
+
+    fn inspect_entry(
+        &self,
+        game_id: &str,
+        entry: &Map<String, Value>,
+        global: &Map<String, Value>,
+        store: Store<'_>,
+    ) -> Result<HeroicImport> {
+        let game_path = self.game_config_path(game_id);
+        let (effective, overrides) = self.effective_settings(game_id, global)?;
         let mut review = SettingsReview::default();
         let mut issues = Vec::new();
         let kind = game_kind(entry);

@@ -1165,3 +1165,40 @@ fn an_install_path_leading_elsewhere_since_planning_is_refused() {
     assert!(!fx.config("rimworld").contains("gog_id"));
     heroic.assert_unchanged();
 }
+
+#[test]
+fn a_windows_environment_is_found_even_when_heroic_s_runner_is_unusable() {
+    let mut fx = Fixture::new();
+    let folder = fx.disco();
+    let settings = fx.heroic().join(format!("GamesConfig/{DISCO}.json"));
+    let text = fs::read_to_string(&settings).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    value[DISCO]["wineVersion"] = serde_json::json!("unusable");
+    fs::write(&settings, value.to_string()).unwrap();
+    fs::write(fx.heroic().join("config.json"), "{}").unwrap();
+
+    // A new environment needs the runner.
+    assert!(fx.plan(DISCO).is_err());
+
+    fx.environment(
+        "disco",
+        &format!(
+            "schema_version = 1\nrunner = \"fake\"\narch = \"win64\"\nprefix = \"{}\"\n\n[targets.disco]\nexe = \"{}\"\ndefault = true\n",
+            fx.path("Prefixes/Disco").display(),
+            folder.join("Disco Elysium.exe").display()
+        ),
+    );
+    let heroic = fx.heroic_files();
+    let migration = fx.migration(DISCO);
+    assert!(matches!(
+        migration.target(),
+        Target::Existing { name, .. } if name == "disco"
+    ));
+    fx.migrated(&migration);
+    assert!(
+        fx.config("disco")
+            .contains(&format!("gog_id = \"{DISCO}\""))
+    );
+    assert_eq!(fx.state(&folder).unwrap().owner.as_deref(), Some("disco"));
+    heroic.assert_unchanged();
+}
