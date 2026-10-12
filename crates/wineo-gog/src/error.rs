@@ -10,6 +10,10 @@ pub enum Endpoint {
     Product,
     Link,
     Builds,
+    /// A game's total playtime from the gameplay service.
+    Playtime,
+    /// A game's artwork links.
+    GameArt,
     /// Fetching an installer file from GOG's download servers.
     Download,
     /// Fetching an installer file's published checksum.
@@ -27,6 +31,8 @@ impl fmt::Display for Endpoint {
             Self::Product => "GOG product request",
             Self::Link => "GOG download link request",
             Self::Builds => "GOG build list request",
+            Self::Playtime => "GOG playtime request",
+            Self::GameArt => "GOG artwork request",
             Self::Download => "GOG file download",
             Self::Checksum => "GOG checksum request",
             Self::Cache => "GOG download cache",

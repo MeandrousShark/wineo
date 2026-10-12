@@ -1,6 +1,6 @@
 //! A blocking client for GOG's web APIs: login, the owned list, product
-//! details, installer links, Galaxy build lists, and installer downloads
-//! into a cache. It knows tokens, URLs, and folders, never wineo's
+//! details, installer links, Galaxy build lists, playtime, artwork links, and
+//! installer downloads into a cache. It knows tokens, URLs, and folders, never wineo's
 //! environments, prefixes, configs, or runners.
 //!
 //! Tokens, authorization codes, the client secret, and pasted redirect
@@ -10,6 +10,7 @@
 //! formatted. Types that hold a secret redact it in `Debug` and have no
 //! `Display`.
 
+mod art;
 mod auth;
 mod cache;
 mod checksum;
@@ -23,6 +24,7 @@ mod product;
 #[cfg(test)]
 mod fake;
 
+pub use art::GameArt;
 pub use auth::{
     AuthCode, CLIENT_ID, PasteError, REDIRECT_URI, Secret, Tokens, UserId, login_url, parse_paste,
 };
