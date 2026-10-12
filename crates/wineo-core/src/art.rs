@@ -531,6 +531,8 @@ pub(crate) fn publish_source(
     expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Option<Stored>> {
     let art_dir = paths.art_dir(env);
+    #[cfg(test)]
+    test_hook("art.lock");
     let _guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
     if cancel.is_some_and(Token::is_canceled) {
         return Err(Error::Canceled("download"));
@@ -564,6 +566,13 @@ pub(crate) fn publish_source(
     staged.write_all(bytes).context(context)?;
     staged.as_file().sync_all().context(context)?;
     fs::set_permissions(staged.path(), fs::Permissions::from_mode(0o644)).context(context)?;
+    #[cfg(test)]
+    test_hook("art.publish");
+    // The last check, right before publishing: once the file is in place,
+    // its record is saved too, so the two never disagree.
+    if cancel.is_some_and(Token::is_canceled) {
+        return Err(Error::Canceled("download"));
+    }
     let published = if old.contains(&path) {
         staged.persist(&path).map(drop)
     } else {
@@ -614,9 +623,42 @@ pub(crate) fn save_game_for(
     Environment::ensure_exists(paths, env)?;
     check_environment_identity(paths, env, expected_identity)?;
     let mut art = ArtFile::open(&art_dir)?;
+    #[cfg(test)]
+    test_hook("art.save_game");
+    if cancel.is_some_and(Token::is_canceled) {
+        return Err(Error::Canceled("SteamGridDB game"));
+    }
     art.set_game(Some(game))?;
     art.save()?;
     Ok(())
+}
+
+/// Runs the test hook set for `at` on this thread, once. Tests use it to
+/// cancel in the gap just before a write.
+#[cfg(test)]
+pub(crate) fn test_hook(at: &str) {
+    let hook = TEST_HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
+        let index = hooks.iter().position(|(point, _)| *point == at)?;
+        Some(hooks.remove(index).1)
+    });
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
+type TestHooks = std::cell::RefCell<Vec<(&'static str, Box<dyn FnOnce()>)>>;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_HOOKS: TestHooks = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Sets a test hook for `at` on this thread.
+#[cfg(test)]
+pub(crate) fn on_test_hook(at: &'static str, hook: impl FnOnce() + 'static) {
+    TEST_HOOKS.with(|hooks| hooks.borrow_mut().push((at, Box::new(hook))));
 }
 
 /// What `remove` took away.

@@ -213,6 +213,8 @@ fn raise_baseline(
 ) -> crate::Result<Option<Playtime>> {
     // Held across the read and the append, so two runs can't each read a
     // small baseline and the smaller total be the one that lands last.
+    #[cfg(test)]
+    crate::art::test_hook("extras.lock");
     let _lock = Locks::new(paths).config(&paths.environment_config(name))?;
     // A cancel that came while waiting for the lock still writes nothing.
     if token.is_canceled() {
@@ -224,6 +226,12 @@ fn raise_baseline(
     let existing = stats::read(&paths.stats_log(name))?.imported;
     let before_seconds = existing.map_or(0, |imported| imported.seconds);
     let after_seconds = before_seconds.max(gog_seconds);
+    #[cfg(test)]
+    crate::art::test_hook("extras.raise_baseline");
+    // The last check, right before the append.
+    if token.is_canceled() {
+        return Err(crate::Error::Canceled("playtime import"));
+    }
     if after_seconds > before_seconds {
         stats::set_imported(
             paths,

@@ -1288,57 +1288,58 @@ fn a_cancel_while_gog_answers_with_playtime_writes_none() {
     );
 }
 
+/// Holds the config lock at `path` on another thread from the moment this
+/// returns. Once `about_to_lock` fires, as the import is about to wait for
+/// it, the holder cancels `token` and lets go.
+fn hold_lock_until_canceled(
+    paths: &Paths,
+    path: std::path::PathBuf,
+    token: &Token,
+) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+    use std::sync::mpsc;
+    let (paths, token) = (paths.clone(), token.clone());
+    let (about_to_lock, waiting) = mpsc::channel::<()>();
+    let (taken_tx, taken) = mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let _lock = Locks::new(&paths).config(&path).unwrap();
+        taken_tx.send(()).unwrap();
+        waiting.recv().unwrap();
+        token.cancel();
+    });
+    taken.recv().unwrap();
+    (about_to_lock, holder)
+}
+
 #[test]
 fn a_cancel_while_waiting_for_the_config_lock_writes_no_playtime() {
-    use std::sync::mpsc;
     let fixture = Fixture::new();
     fixture.login();
     let token = Token::new();
-    let (locked_tx, locked) = mpsc::channel::<()>();
-    let (release, release_rx) = mpsc::channel::<()>();
-    let held = std::sync::Mutex::new(Some((locked_tx, release_rx)));
-    let config = fixture.paths.environment_config("rimworld");
+    let server = Scripted::start(gog(Some(120), art_body(&[])));
+    let mut session = fixture.session(&server.base);
+    // The identity read takes the config lock too, so the holder starts once
+    // GOG has answered, just before the import locks to write.
     let paths = fixture.paths.clone();
-    let inner = gog(Some(120), art_body(&[]));
-    let server = Scripted::start(move |line| {
-        if line.contains("/sessions")
-            && let Some((locked_tx, release_rx)) = held.lock().unwrap().take()
-        {
-            // Someone else takes the config lock before GOG answers, so the
-            // import has to wait for it.
-            let (paths, config) = (paths.clone(), config.clone());
-            let (taken_tx, taken) = mpsc::channel();
-            std::thread::spawn(move || {
-                let _lock = Locks::new(&paths).config(&config).unwrap();
-                taken_tx.send(()).unwrap();
-                let _ = release_rx.recv();
-            });
-            taken.recv().unwrap();
-            locked_tx.send(()).unwrap();
-        }
-        inner(line)
+    let config = fixture.paths.environment_config("rimworld");
+    let canceling = token.clone();
+    let held = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let slot = std::rc::Rc::clone(&held);
+    crate::art::on_test_hook("extras.lock", move || {
+        let (about_to_lock, holder) = hold_lock_until_canceled(&paths, config, &canceling);
+        about_to_lock.send(()).unwrap();
+        *slot.borrow_mut() = Some(holder);
     });
-    let report = std::thread::scope(|scope| {
-        let worker = scope.spawn(|| {
-            let mut session = fixture.session(&server.base);
-            run(
-                &fixture.paths,
-                Some(&mut session),
-                &request(&images(), &[], None),
-                Ok(client_at(&server.base)),
-                &token,
-            )
-        });
-        locked
-            .recv_timeout(std::time::Duration::from_secs(30))
-            .expect("GOG was asked for playtime");
-        // Give it time to reach the lock, then cancel while it waits.
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        token.cancel();
-        release.send(()).unwrap();
-        worker.join().unwrap()
-    })
+    let report = run(
+        &fixture.paths,
+        Some(&mut session),
+        &request(&images(), &[], None),
+        Ok(client_at(&server.base)),
+        &token,
+    )
     .unwrap();
+    held.borrow_mut().take().unwrap().join().unwrap();
+    assert!(token.is_canceled());
     assert_eq!(report.playtime, None);
     assert!(fixture.imported().is_none(), "nothing was written");
     assert!(
@@ -1352,46 +1353,129 @@ fn a_cancel_while_waiting_for_the_config_lock_writes_no_playtime() {
 
 #[test]
 fn a_cancel_while_waiting_for_the_art_lock_publishes_nothing() {
-    use std::sync::mpsc;
     let fixture = Fixture::new();
     let server = Scripted::start(gog(None, art_body(&[])));
-    let inner = images();
     let token = Token::new();
-    let art_lock = fixture.paths.art_dir("rimworld").join(art::ART_FILE);
     let (paths, canceling) = (fixture.paths.clone(), token.clone());
-    let holder = std::sync::Mutex::new(None);
-    let transport = Hooked {
-        inner: &inner,
-        when: "box.jpg".to_owned(),
-        hook: Box::new(|| {
-            // Someone else holds the art lock when the image arrives, and
-            // Cancel is pressed while the import waits for it.
-            let (paths, art_lock, canceling) = (paths.clone(), art_lock.clone(), canceling.clone());
-            let (taken_tx, taken) = mpsc::channel();
-            *holder.lock().unwrap() = Some(std::thread::spawn(move || {
-                std::fs::create_dir_all(art_lock.parent().unwrap()).unwrap();
-                let _lock = Locks::new(&paths).config(&art_lock).unwrap();
-                taken_tx.send(()).unwrap();
-                std::thread::sleep(std::time::Duration::from_millis(150));
-                canceling.cancel();
-            }));
-            taken.recv().unwrap();
-        }),
-    };
+    let art_lock = fixture.paths.art_dir("rimworld").join(art::ART_FILE);
+    let held = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let slot = std::rc::Rc::clone(&held);
+    // Someone else holds the art lock when the image arrives, and Cancel is
+    // pressed as the import starts waiting for it.
+    crate::art::on_test_hook("art.lock", move || {
+        let (about_to_lock, holder) = hold_lock_until_canceled(&paths, art_lock, &canceling);
+        about_to_lock.send(()).unwrap();
+        *slot.borrow_mut() = Some(holder);
+    });
     let report = run(
         &fixture.paths,
         None,
-        &request(&transport, &[Kind::Grid], None),
+        &request(&images(), &[Kind::Grid], None),
         Ok(client_at(&server.base)),
         &token,
     )
     .unwrap();
-    holder.lock().unwrap().take().unwrap().join().unwrap();
+    held.borrow_mut().take().unwrap().join().unwrap();
     assert!(token.is_canceled());
     assert!(report.art.is_empty(), "{:?}", report.art);
     assert_eq!(fixture.art_config().record(None, Kind::Grid), None);
     assert!(
         art_notes(&report).contains(&"Skipped grid artwork: canceled."),
+        "{:?}",
+        report.notes
+    );
+}
+
+#[test]
+fn a_cancel_after_reading_the_baseline_appends_nothing() {
+    let fixture = Fixture::new();
+    fixture.login();
+    let server = Scripted::start(gog(Some(120), art_body(&[])));
+    let mut session = fixture.session(&server.base);
+    let token = Token::new();
+    let canceling = token.clone();
+    crate::art::on_test_hook("extras.raise_baseline", move || canceling.cancel());
+    let report = run(
+        &fixture.paths,
+        Some(&mut session),
+        &request(&images(), &[], None),
+        Ok(client_at(&server.base)),
+        &token,
+    )
+    .unwrap();
+    assert!(token.is_canceled(), "the hook ran");
+    assert_eq!(report.playtime, None);
+    assert!(fixture.imported().is_none(), "nothing was appended");
+    assert_eq!(
+        report.notes,
+        [
+            "Skipped GOG playtime: canceled.",
+            "Skipped GOG artwork: canceled."
+        ]
+    );
+}
+
+#[test]
+fn a_cancel_after_staging_an_image_publishes_nothing() {
+    let fixture = Fixture::new();
+    let server = Scripted::start(gog(None, art_body(&[])));
+    let token = Token::new();
+    let canceling = token.clone();
+    crate::art::on_test_hook("art.publish", move || canceling.cancel());
+    let report = run(
+        &fixture.paths,
+        None,
+        &request(&images(), &[Kind::Grid], None),
+        Ok(client_at(&server.base)),
+        &token,
+    )
+    .unwrap();
+    assert!(token.is_canceled(), "the hook ran");
+    assert!(report.art.is_empty(), "{:?}", report.art);
+    assert_eq!(fixture.art_config().record(None, Kind::Grid), None);
+    // Neither the image nor its staged copy is left behind.
+    let left: Vec<_> = fs::read_dir(fixture.paths.art_dir("rimworld"))
+        .map(|entries| {
+            entries
+                .map(|entry| entry.unwrap().file_name())
+                .filter(|name| name != art::ART_FILE)
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(left.is_empty(), "{left:?}");
+    assert!(
+        art_notes(&report).contains(&"Skipped grid artwork: canceled."),
+        "{:?}",
+        report.notes
+    );
+}
+
+#[test]
+fn a_cancel_before_saving_the_steamgriddb_game_saves_nothing() {
+    let fixture = Fixture::new();
+    let server = Scripted::start(gog(None, art_body(&["logo"])));
+    let inner = images();
+    inner.json(
+        format!("{}/search/autocomplete/RimWorld", steamgriddb::API),
+        json!([{"id": 7, "name": "RimWorld"}]),
+    );
+    serve(&inner, Kind::Logo, 41, PNG);
+    let token = Token::new();
+    let canceling = token.clone();
+    crate::art::on_test_hook("art.save_game", move || canceling.cancel());
+    let report = run(
+        &fixture.paths,
+        None,
+        &request(&inner, &[Kind::Logo], Some("sgdb-key")),
+        Ok(client_at(&server.base)),
+        &token,
+    )
+    .unwrap();
+    assert!(token.is_canceled(), "the hook ran");
+    assert_eq!(art::saved_game(&fixture.paths, "rimworld").unwrap(), None);
+    assert_eq!(fixture.art_config().record(None, Kind::Logo), None);
+    assert!(
+        art_notes(&report).contains(&"Skipped logo artwork: canceled."),
         "{:?}",
         report.notes
     );
