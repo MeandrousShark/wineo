@@ -819,7 +819,10 @@ fn windows_launch(folder: &Path, info: PathBuf, root: &Value) -> Result<Launch> 
         .and_then(Value::as_str)
         .filter(|path| !path.is_empty())
         .ok_or_else(|| bad("it has no path".to_owned()))?;
-    let exe = inside(folder, path).ok_or_else(|| bad(format!("{path} is outside the game")))?;
+    // The folder itself is a working directory, but not a program.
+    let exe = inside(folder, path)
+        .filter(|exe| exe != folder)
+        .ok_or_else(|| bad(format!("{path} isn't a program in the game")))?;
     let cwd = match task
         .get("workingDir")
         .and_then(Value::as_str)
@@ -848,7 +851,8 @@ fn windows_launch(folder: &Path, info: PathBuf, root: &Value) -> Result<Launch> 
 }
 
 /// A play task path, which is relative to the folder and may use
-/// backslashes, as a path inside it. None for one that leads out.
+/// backslashes, as a path in it, the folder itself included. None for one
+/// that leads out.
 fn inside(folder: &Path, raw: &str) -> Option<PathBuf> {
     let normal = raw.replace('\\', "/");
     let relative = Path::new(&normal);
@@ -860,7 +864,7 @@ fn inside(folder: &Path, raw: &str) -> Option<PathBuf> {
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
         }
     }
-    (path != folder).then_some(path)
+    Some(path)
 }
 
 /// Adds the play task to what Heroic's settings give: its working

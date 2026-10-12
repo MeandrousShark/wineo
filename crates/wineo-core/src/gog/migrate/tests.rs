@@ -649,6 +649,21 @@ fn play_tasks_have_to_stay_inside_the_folder() {
         migrate_error(fx.plan(DISCO)),
         MigrateError::BadPlayTask { .. }
     ));
+    // The folder itself isn't a program.
+    for exe in [".", "./", ".\\\\"] {
+        fs::write(
+            &info,
+            text.replace("\"Disco Elysium.exe\"", &format!("\"{exe}\"")),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                migrate_error(fx.plan(DISCO)),
+                MigrateError::BadPlayTask { .. }
+            ),
+            "{exe}"
+        );
+    }
     fs::write(&info, format!(r#"{{"gameId":"{DISCO}","playTasks":[]}}"#)).unwrap();
     assert!(matches!(
         migrate_error(fx.plan(DISCO)),
@@ -1249,4 +1264,36 @@ fn a_config_recording_the_game_that_cannot_be_loaded_is_refused_by_name() {
     ));
     assert!(fx.state(&folder).is_none());
     heroic.assert_unchanged();
+}
+
+#[test]
+fn the_game_folder_itself_is_a_working_directory() {
+    for dir in [".", "./", ".\\\\"] {
+        let mut fx = Fixture::new();
+        let folder = fx.disco();
+        let info = folder.join(format!("goggame-{DISCO}.info"));
+        let text = fs::read_to_string(&info).unwrap();
+        fs::write(&info, text.replace("\"bin\"", &format!("\"{dir}\""))).unwrap();
+        // An existing environment attaches.
+        fx.environment(
+            "disco",
+            &format!(
+                "schema_version = 1\nrunner = \"fake\"\narch = \"win64\"\nprefix = \"{}\"\n\n[targets.disco]\nexe = \"{}\"\ndefault = true\n",
+                fx.path("Prefixes/Disco").display(),
+                folder.join("Disco Elysium.exe").display()
+            ),
+        );
+        let migration = fx.migration(DISCO);
+        assert_eq!(
+            migration.launch.cwd.as_deref(),
+            Some(folder.as_path()),
+            "{dir}"
+        );
+        assert!(matches!(
+            migration.target(),
+            Target::Existing { name, .. } if name == "disco"
+        ));
+        fx.migrated(&migration);
+        assert_eq!(fx.state(&folder).unwrap().owner.as_deref(), Some("disco"));
+    }
 }
