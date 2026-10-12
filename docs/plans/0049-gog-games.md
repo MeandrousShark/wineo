@@ -980,6 +980,19 @@ Settled by the maintainer on 2026-10-11, after step 4's seventh review:
   older than this step and shared with `start` and the installer, so it's
   a backlog row, not a step 4 fix.
 
+Settled by the maintainer on 2026-10-11, before step 5:
+
+- **Staging folders** go inside the game folder, at its top level, named
+  `.wineo-<operation id>-stage-<product id>`. They're on the same
+  filesystem, so publishing can rename instead of copy, the parent folder
+  doesn't have to be writable, and recovery's `.wineo-<id>-*` cleanup
+  already covers them.
+- **Recognizing `postinst.sh`** is by exact bytes: its SHA-256 must be on
+  wineo's list of known GOG scripts, which starts with RimWorld's. A new
+  variant is refused until it's added.
+- **The space refusal** reads `Not enough space: needs 2.1 GiB, 1.4 GiB
+  free on ~/Games.`
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,
