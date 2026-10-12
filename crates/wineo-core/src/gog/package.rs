@@ -551,7 +551,7 @@ pub fn check_space(paths: &Paths, folder: &Path, packages: &[&Package]) -> Resul
     Ok(())
 }
 
-fn check_space_with(
+pub(crate) fn check_space_with(
     paths: &Paths,
     folder: &Path,
     needed: SpaceNeeded,

@@ -166,6 +166,41 @@ pub enum UpdateError {
     /// isn't taken for one that doesn't.
     #[error("{name} can't be checked: its config can't be read ({detail}).")]
     Unloadable { name: String, detail: String },
+    #[error(
+        "Updating {name} comes in a later wineo release (plan 0050): wineo can't update Windows GOG games installed from GOG's offline installers yet."
+    )]
+    WindowsInstaller { name: String },
+    #[error(
+        "Updating {name} comes in a later wineo release (plan 0051): wineo can't install GOG Galaxy builds yet."
+    )]
+    Galaxy { name: String },
+    /// A journal of plan 0050's kinds, `install` or `repair`.
+    #[error(
+        "{name}'s game folder has an unfinished GOG {kind}, which a later wineo release finishes."
+    )]
+    LaterRelease { name: String, kind: &'static str },
+    #[error("{name} can't be updated: {why}")]
+    CantCompare { name: String, why: String },
+    /// An installed product has no package to rebuild it from.
+    #[error("{name} can't be updated: {why}")]
+    NoInstaller { name: String, why: String },
+    #[error(
+        "{path} from GOG product {product} is inside {parent}, which GOG product {other} ships as a file or symlink."
+    )]
+    Layers {
+        path: String,
+        product: u64,
+        parent: String,
+        other: u64,
+    },
+    #[error("{name} is running. Stop it before updating.")]
+    Running { name: String },
+    #[error("{name}'s GOG game changed since the update was planned; plan it again.")]
+    Changed { name: String },
+    /// `journal` says whether the update had started changing the folder,
+    /// which leaves it to finish with `wineo update`.
+    #[error("Canceled.")]
+    Canceled { journal: bool },
 }
 
 /// Checks the GOG game environment `name` runs. Needs a login for Galaxy
@@ -180,14 +215,61 @@ pub fn check(session: &mut Session, name: &str, refresh: bool) -> Result<Status>
     let paths = session.paths().clone();
     host_only(&paths)?;
     Environment::ensure_exists(&paths, name)?;
-    let gog_id = recorded_gog_id(&paths, name)?.ok_or_else(|| UpdateError::NotTracked {
-        name: name.to_owned(),
-    })?;
-    let state = folder::find(&paths, name, &gog_id)?.ok_or_else(|| FolderError::StateMissing {
-        name: name.to_owned(),
-        gog_id,
-    })?;
+    let state = game_of(&paths, name)?;
     status_of(session, &paths, name, state, refresh)
+}
+
+/// `name`'s game folder: the one it owns, else an ownerless one of its game
+/// that its targets run from, found the way a launch finds it. Reads only;
+/// an ownerless folder comes back unclaimed.
+fn game_of(paths: &Paths, name: &str) -> Result<FolderState> {
+    let gog_id = recorded_gog_id(paths, name)?.ok_or_else(|| UpdateError::NotTracked {
+        name: name.to_owned(),
+    })?;
+    folder::game_folder(paths, name, &gog_id, &named_paths(paths, name))?.ok_or_else(|| {
+        FolderError::StateMissing {
+            name: name.to_owned(),
+            gog_id,
+        }
+        .into()
+    })
+}
+
+/// The host paths `name`'s targets name: each one's program, working
+/// directory, and absolute arguments, Windows paths translated through the
+/// prefix's drives. Like a launch's, but for every target, since an update
+/// isn't launching any one of them. Nothing when the config can't be loaded.
+fn named_paths(paths: &Paths, name: &str) -> Vec<PathBuf> {
+    let Ok(environment) = Environment::load(paths, name) else {
+        return Vec::new();
+    };
+    // The runner isn't resolved, so both places Wine's drives can be.
+    let prefixes: Vec<PathBuf> = environment
+        .prefix(paths)
+        .map(|prefix| vec![prefix.join("pfx"), prefix])
+        .unwrap_or_default();
+    let mut named = Vec::new();
+    let mut add = |value: &str| {
+        if crate::winpath::is_windows_path(value) {
+            for prefix in &prefixes {
+                named.extend(crate::winpath::to_unix_lenient(prefix, value));
+            }
+        } else if let Ok(Some(path)) = paths.resolve_stored(value) {
+            named.push(path);
+        }
+    };
+    for target in environment.config.targets.values() {
+        add(&target.exe);
+        if let Some(cwd) = &target.cwd {
+            add(cwd);
+        }
+        for arg in &target.args {
+            if crate::winpath::is_windows_path(arg) || Path::new(arg).is_absolute() {
+                add(arg);
+            }
+        }
+    }
+    named
 }
 
 /// Checks every game folder an environment owns whose `gog_id` matches.
@@ -250,7 +332,22 @@ pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
         let Ok(Some(gog_id)) = recorded_gog_id(&paths, &name) else {
             continue;
         };
-        let message = match folder::find(&paths, &name, &gog_id) {
+        let message = match folder::game_folder(&paths, &name, &gog_id, &named_paths(&paths, &name))
+        {
+            // An ownerless folder its targets run from, which its next
+            // update or launch claims. Only read here.
+            Ok(Some(state)) if state.owner.is_none() => {
+                let id = state.gog_id();
+                match status_of(session, &paths, &name, state, refresh) {
+                    Ok(status) => batch.statuses.push(status),
+                    Err(error) => batch.errors.push(GameError {
+                        environment: Some(name),
+                        id,
+                        message: format!("{error:#}"),
+                    }),
+                }
+                continue;
+            }
             Ok(Some(_)) => continue,
             Ok(None) => FolderError::StateMissing {
                 name: name.clone(),
@@ -368,6 +465,8 @@ fn status_of(
     if installed.platform == Platform::Windows
         && installed.track == Track::Galaxy
         && !unfinished
+        // A folder no environment has claimed yet is only read.
+        && state.owner.is_some()
         && let Some(adopted) = adopt_build(paths, &state)?
     {
         if adopted.recorded {
@@ -847,6 +946,12 @@ fn info_build(folder: &Path, gog_id: u64) -> Option<String> {
     }
     Some(id_text(root.get("buildId")?)).filter(|build| !build.is_empty())
 }
+
+mod apply;
+mod publish;
+
+pub use apply::{Options, Pending, Plan, PlannedProduct, Progress, Updated, apply, plan};
+pub use publish::SavedAside;
 
 #[cfg(test)]
 mod tests;
