@@ -1,4 +1,5 @@
-//! Read-only inspection of Heroic sideloaded game data.
+//! Read-only inspection of Heroic sideloaded game data, and of the GOG
+//! games Heroic installed.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -13,6 +14,10 @@ use sha2::{Digest, Sha256};
 use crate::config::{Hooks, HooksSetting};
 use crate::error::{Error, Result};
 use crate::gamescope::{Filter, Gamescope, GamescopeSetting, Scaler, Window};
+
+mod gog;
+
+pub use gog::{HeroicGogGame, HeroicGogListing};
 
 const FLATPAK_ID: &str = "com.heroicgameslauncher.hgl";
 /// The unsupported settings that still matter to a native game. The rest are
@@ -232,7 +237,7 @@ impl HeroicSource {
                 ));
             }
             if candidate.issues.is_empty() && candidate.kind == HeroicGameKind::Native {
-                match self.inspect_native_entry(raw_id, entry, &global) {
+                match self.inspect_native_entry(raw_id, entry, &global, Store::Sideload) {
                     Ok(import) => {
                         candidate.executable = Some(import.exe.clone());
                         candidate.issues = import.issues.clone();
@@ -243,7 +248,7 @@ impl HeroicSource {
                     )),
                 }
             } else if candidate.issues.is_empty() {
-                match self.inspect_entry(raw_id, entry, &global) {
+                match self.inspect_entry(raw_id, entry, &global, Store::Sideload) {
                     Ok(import) => {
                         candidate.prefix = Some(import.prefix.clone());
                         candidate.runner = Some(import.runner.clone());
@@ -277,7 +282,7 @@ impl HeroicSource {
             .find(|entry| string_field(entry, &["app_name", "id"]) == Some(game_id))
             .ok_or_else(|| missing_file(&library_path, "game id is not in sideload library"))?;
         let global = self.global_settings()?;
-        self.inspect_entry(game_id, entry, &global)
+        self.inspect_entry(game_id, entry, &global, Store::Sideload)
     }
 
     /// Inspects a native sideloaded game, which imports as a native
@@ -299,7 +304,7 @@ impl HeroicSource {
             .find(|entry| string_field(entry, &["app_name", "id"]) == Some(game_id))
             .ok_or_else(|| missing_file(&library_path, "game id is not in sideload library"))?;
         let global = self.global_settings()?;
-        self.inspect_native_entry(game_id, entry, &global)
+        self.inspect_native_entry(game_id, entry, &global, Store::Sideload)
     }
 
     fn inspect_native_entry(
@@ -307,23 +312,10 @@ impl HeroicSource {
         game_id: &str,
         entry: &Map<String, Value>,
         global: &Map<String, Value>,
+        store: Store<'_>,
     ) -> Result<HeroicNativeImport> {
         let game_path = self.game_config_path(game_id);
-        let game_root = read_optional_json(&game_path)?.unwrap_or(Value::Object(Map::new()));
-        if !supported_schema_root(&game_root) {
-            return Err(invalid_json(
-                &game_path,
-                format!(
-                    "unsupported Heroic game config version {}",
-                    schema_version(&game_root).unwrap_or_default()
-                ),
-            ));
-        }
-        let overrides = game_settings(&game_root, game_id).unwrap_or_default();
-        let mut effective = global.clone();
-        for (key, value) in &overrides {
-            effective.insert(key.clone(), value.clone());
-        }
+        let (effective, overrides) = self.effective_settings(game_id, global)?;
         let mut review = SettingsReview::default();
         let mut issues = Vec::new();
         if game_kind(entry) != HeroicGameKind::Native || platform(entry) != Some("linux") {
@@ -332,7 +324,7 @@ impl HeroicSource {
                 "only Linux native games import as native environments",
             ));
         }
-        if string_field(entry, &["runner"]) != Some("sideload") {
+        if store == Store::Sideload && string_field(entry, &["runner"]) != Some("sideload") {
             issues.push(HeroicIssue::unsupported(
                 Some("runner".to_owned()),
                 "only manually added sideloaded games can be imported",
@@ -420,7 +412,7 @@ impl HeroicSource {
             gamescope,
             hooks,
             issues,
-            fingerprint: self.fingerprint(game_id)?,
+            fingerprint: self.store_fingerprint(game_id, store)?,
             settings_review: review,
         })
     }
@@ -455,65 +447,53 @@ impl HeroicSource {
                 "invalid game id",
             ));
         }
-        let paths = [
+        fingerprint_files([
             self.config_path(),
             self.library_path(),
             self.game_config_path(game_id),
-        ];
-        let mut files = Vec::new();
-        let mut hasher = Sha256::new();
-        for path in paths {
-            let (digest, size) = match fs::read(&path) {
-                Ok(bytes) => {
-                    let mut file_hasher = Sha256::new();
-                    file_hasher.update(&bytes);
-                    (
-                        Some(hex_digest(file_hasher.finalize())),
-                        Some(bytes.len() as u64),
-                    )
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => (None, None),
-                Err(error) => {
-                    return Err(Error::Io {
-                        context: format!("failed to read {}", path.display()),
-                        source: error,
-                    });
-                }
-            };
-            hasher.update(path.to_string_lossy().as_bytes());
-            hasher.update([0]);
-            hasher.update(digest.as_deref().unwrap_or("missing").as_bytes());
-            hasher.update([0]);
-            files.push(InputFileFingerprint { path, digest, size });
-        }
-        Ok(InputFingerprint {
-            digest: hex_digest(hasher.finalize()),
-            files,
-        })
+        ])
     }
 
+    /// Whether the files `expected` was taken from still hold what they did.
+    /// It rereads the files `expected` names, so it holds for a GOG game's
+    /// fingerprint as well as a sideload's.
     pub fn unchanged(&self, game_id: &str, expected: &InputFingerprint) -> Result<bool> {
-        Ok(self.fingerprint(game_id)?.digest == expected.digest)
+        if !valid_game_id(game_id) {
+            return Err(invalid_json(
+                &self.game_config_path(game_id),
+                "invalid game id",
+            ));
+        }
+        let files = expected.files.iter().map(|file| file.path.clone());
+        Ok(fingerprint_files(files)?.digest == expected.digest)
     }
 
-    fn inspect_entry(
+    fn store_fingerprint(&self, game_id: &str, store: Store<'_>) -> Result<InputFingerprint> {
+        match store {
+            Store::Sideload => self.fingerprint(game_id),
+            Store::Gog { info } => fingerprint_files([
+                self.config_path(),
+                self.gog_installed_path(),
+                self.game_config_path(game_id),
+                info.to_owned(),
+            ]),
+        }
+    }
+
+    /// The game's settings over the global ones, and the game's own.
+    fn effective_settings(
         &self,
         game_id: &str,
-        entry: &Map<String, Value>,
         global: &Map<String, Value>,
-    ) -> Result<HeroicImport> {
+    ) -> Result<(Map<String, Value>, Map<String, Value>)> {
         let game_path = self.game_config_path(game_id);
-        let game_root = match read_optional_json(&game_path)? {
-            Some(root) => root,
-            None => Value::Object(Map::new()),
-        };
-        let version = schema_version(&game_root);
+        let game_root = read_optional_json(&game_path)?.unwrap_or(Value::Object(Map::new()));
         if !supported_schema_root(&game_root) {
             return Err(invalid_json(
                 &game_path,
                 format!(
                     "unsupported Heroic game config version {}",
-                    version.unwrap_or_default()
+                    schema_version(&game_root).unwrap_or_default()
                 ),
             ));
         }
@@ -522,6 +502,18 @@ impl HeroicSource {
         for (key, value) in &overrides {
             effective.insert(key.clone(), value.clone());
         }
+        Ok((effective, overrides))
+    }
+
+    fn inspect_entry(
+        &self,
+        game_id: &str,
+        entry: &Map<String, Value>,
+        global: &Map<String, Value>,
+        store: Store<'_>,
+    ) -> Result<HeroicImport> {
+        let game_path = self.game_config_path(game_id);
+        let (effective, overrides) = self.effective_settings(game_id, global)?;
         let mut review = SettingsReview::default();
         let mut issues = Vec::new();
         let kind = game_kind(entry);
@@ -531,7 +523,7 @@ impl HeroicSource {
                 "only Windows sideloads can be imported",
             ));
         }
-        if string_field(entry, &["runner"]) != Some("sideload") {
+        if store == Store::Sideload && string_field(entry, &["runner"]) != Some("sideload") {
             issues.push(HeroicIssue::unsupported(
                 Some("runner".to_owned()),
                 "only manually added sideloaded games can be imported",
@@ -755,7 +747,7 @@ impl HeroicSource {
             vkd3d: None,
             issues,
             external_dependencies,
-            fingerprint: self.fingerprint(game_id)?,
+            fingerprint: self.store_fingerprint(game_id, store)?,
             settings_review: review,
         })
     }
@@ -1022,12 +1014,58 @@ pub fn parse_launcher_args(value: &str) -> std::result::Result<Vec<String>, Stri
     crate::heroic_args::parse(value)
 }
 
+/// Which of Heroic's stores a game is inspected from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Store<'a> {
+    Sideload,
+    /// A GOG game, with the game folder's own info file, whose id was
+    /// checked against Heroic's.
+    Gog {
+        info: &'a Path,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrefixLayout {
     Wine,
     Proton,
     Both,
     Invalid,
+}
+
+/// A digest over each file's path and contents, a missing file counting as
+/// one.
+fn fingerprint_files(paths: impl IntoIterator<Item = PathBuf>) -> Result<InputFingerprint> {
+    let mut files = Vec::new();
+    let mut hasher = Sha256::new();
+    for path in paths {
+        let (digest, size) = match fs::read(&path) {
+            Ok(bytes) => {
+                let mut file_hasher = Sha256::new();
+                file_hasher.update(&bytes);
+                (
+                    Some(hex_digest(file_hasher.finalize())),
+                    Some(bytes.len() as u64),
+                )
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (None, None),
+            Err(error) => {
+                return Err(Error::Io {
+                    context: format!("failed to read {}", path.display()),
+                    source: error,
+                });
+            }
+        };
+        hasher.update(path.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        hasher.update(digest.as_deref().unwrap_or("missing").as_bytes());
+        hasher.update([0]);
+        files.push(InputFileFingerprint { path, digest, size });
+    }
+    Ok(InputFingerprint {
+        digest: hex_digest(hasher.finalize()),
+        files,
+    })
 }
 
 fn review_item(field: impl Into<String>, detail: impl Into<String>) -> ReviewItem {

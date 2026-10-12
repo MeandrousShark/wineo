@@ -111,6 +111,8 @@ pub struct ImportedSettings {
     pub vkd3d: Option<String>,
     /// The Heroic game id, recorded only by a Heroic import.
     pub heroic_id: Option<String>,
+    /// The GOG game id, recorded only by migrating a GOG game from Heroic.
+    pub gog_id: Option<String>,
 }
 
 /// Events emitted while checking and copying a prefix or runner tree.
@@ -1475,6 +1477,9 @@ fn finish_config(mut doc: DocumentMut, settings: Option<&ImportedSettings>) -> R
         if let Some(heroic_id) = &settings.heroic_id {
             doc["heroic_id"] = value(heroic_id);
         }
+        if let Some(gog_id) = &settings.gog_id {
+            doc["gog_id"] = value(gog_id);
+        }
         if !settings.env.is_empty() {
             let mut table = Table::new();
             for (key, env_value) in &settings.env {
@@ -1549,7 +1554,24 @@ pub(crate) fn write_config_once(path: &Path, contents: &str) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("config has no parent: {}", path.display()))?;
+    // On first use the directories themselves are new, and each one's entry
+    // in its parent has to be on disk too, or the config could vanish with
+    // them after a power loss.
+    let mut missing = Vec::new();
+    let mut current = parent;
+    while !current.exists() {
+        missing.push(current.to_owned());
+        match current.parent() {
+            Some(up) => current = up,
+            None => break,
+        }
+    }
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    for dir in missing.iter().rev() {
+        if let Some(up) = dir.parent() {
+            sync_config_dir(up)?;
+        }
+    }
     let staging = tempfile::NamedTempFile::new_in(parent).with_context(|| {
         format!(
             "failed to create a config staging file in {}",
@@ -1560,14 +1582,33 @@ pub(crate) fn write_config_once(path: &Path, contents: &str) -> Result<()> {
     staging.as_file().write_all(contents.as_bytes())?;
     staging.as_file().sync_all()?;
     match fs::hard_link(&staging_path, path) {
-        Ok(()) => Ok(()),
+        Ok(()) => {}
         Err(err) => {
             if err.kind() == io::ErrorKind::AlreadyExists {
                 bail!("environment config already exists: {}", path.display());
             }
-            Err(err).with_context(|| format!("failed to register {}", path.display()))
+            return Err(err).with_context(|| format!("failed to register {}", path.display()));
         }
     }
+    // The new name has to be on disk before anything that relies on the
+    // environment existing, like a GOG folder state naming it, is written.
+    // The staging name goes first, so a power loss can't leave it behind.
+    drop(staging);
+    sync_config_dir(parent)
+}
+
+fn sync_config_dir(dir: &Path) -> Result<()> {
+    #[cfg(test)]
+    SYNCED_DIRS.with(|synced| synced.borrow_mut().push(dir.to_owned()));
+    File::open(dir)
+        .and_then(|dir| dir.sync_all())
+        .with_context(|| format!("failed to sync {}", dir.display()))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Every directory `write_config_once` synced on this thread, in order.
+    static SYNCED_DIRS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Copy an existing runner tree into a wineo runner root without replacing an
@@ -2994,5 +3035,56 @@ mod tests {
                 0
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod config_once_tests {
+    use super::*;
+
+    #[test]
+    fn a_new_config_is_synced_into_its_directory_with_no_staging_left() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("environments");
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("game.toml");
+        SYNCED_DIRS.with(|synced| synced.borrow_mut().clear());
+        write_config_once(&path, "kind = \"native\"\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "kind = \"native\"\n");
+        assert_eq!(
+            SYNCED_DIRS.with(|synced| synced.borrow().clone()),
+            [dir.as_path()]
+        );
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["game.toml"]);
+
+        // A config that's already there is neither replaced nor synced for.
+        // The directories exist by now, so only the new name's directory
+        // would have been synced above.
+        SYNCED_DIRS.with(|synced| synced.borrow_mut().clear());
+        assert!(write_config_once(&path, "other").is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "kind = \"native\"\n");
+        assert!(SYNCED_DIRS.with(|synced| synced.borrow().is_empty()));
+    }
+    #[test]
+    fn a_fresh_config_root_syncs_every_directory_it_creates() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("config/wineo/environments");
+        SYNCED_DIRS.with(|synced| synced.borrow_mut().clear());
+        write_config_once(&dir.join("game.toml"), "kind = \"native\"\n").unwrap();
+        // Each new directory's parent, from the one that already existed
+        // down, then the directory the config was linked into.
+        assert_eq!(
+            SYNCED_DIRS.with(|synced| synced.borrow().clone()),
+            [
+                root.path().to_owned(),
+                root.path().join("config"),
+                root.path().join("config/wineo"),
+                dir,
+            ]
+        );
     }
 }

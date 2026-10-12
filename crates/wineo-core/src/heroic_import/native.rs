@@ -27,6 +27,8 @@ pub struct NativePlan {
     name: String,
     desktop: DesktopEntry,
     cwd: Option<PathBuf>,
+    /// Set only when migrating a GOG game.
+    gog_id: Option<String>,
 }
 
 /// Inspects the native game `id` and plans it, named `name` or else a name
@@ -53,6 +55,7 @@ impl NativePlan {
             name,
             desktop,
             cwd: None,
+            gog_id: None,
         }
     }
 
@@ -72,6 +75,15 @@ impl NativePlan {
 
     pub fn desktop(&self) -> &DesktopEntry {
         &self.desktop
+    }
+
+    /// The GOG game the environment is created for, when migrating one.
+    pub fn gog_id(&self) -> Option<&str> {
+        self.gog_id.as_deref()
+    }
+
+    pub(crate) fn set_gog_id(&mut self, gog_id: &str) {
+        self.gog_id = Some(gog_id.to_owned());
     }
 
     /// Refuses a game whose stored settings can't be parsed, like its launcher
@@ -221,6 +233,7 @@ impl NativePlan {
             gamescope: imported.gamescope.clone(),
             hooks: imported.hooks.clone(),
             heroic_id: Some(imported.id.clone()),
+            gog_id: self.gog_id.clone(),
             ..ImportedSettings::default()
         }
     }

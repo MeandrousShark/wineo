@@ -245,6 +245,12 @@ impl Paths {
             .join(format!("gog-folder-{key}.lock"))
     }
 
+    /// Held while a migration adopts a GOG game folder, so two adoptions
+    /// can't both pass the overlap check. Host-wide, like the folders.
+    pub fn gog_adoption_lock(&self) -> PathBuf {
+        self.host_state.join(".locks").join("gog-adoption.lock")
+    }
+
     /// A GOG game folder's in-use lock, which launches hold for their whole
     /// run. Host-wide like the state lock.
     pub fn gog_folder_in_use_lock(&self, key: &str) -> PathBuf {

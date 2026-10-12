@@ -8,8 +8,9 @@
 //! shared by a launch for its whole run and taken exclusively, without
 //! waiting, by update and migration.
 //!
-//! Lock order: an environment's operation lock, then in-use locks in key
-//! order, then state locks in key order, then config locks.
+//! Lock order: the adoption lock (migration only), an environment's
+//! operation lock, then in-use locks in key order, then state locks in key
+//! order, then config locks.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -439,58 +440,14 @@ impl FolderLock {
         cancel: &dyn Fn() -> bool,
     ) -> Result<Self> {
         check_folder(folder)?;
-        let path = paths.gog_folder_lock(&key(folder));
-        let dir = path.parent().expect("a lock has a parent");
-        fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
-        let operation = if exclusive {
-            FlockOperation::NonBlockingLockExclusive
-        } else {
-            FlockOperation::NonBlockingLockShared
-        };
-        loop {
-            let file = OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .mode(0o600)
-                .open(&path)
-                .with_context(|| format!("failed to open {}", path.display()))?;
-            loop {
-                match flock(&file, operation) {
-                    Ok(()) => break,
-                    Err(Errno::WOULDBLOCK) => {
-                        if cancel() {
-                            return Err(FolderError::Canceled.into());
-                        }
-                        thread::sleep(LOCK_RETRY);
-                    }
-                    Err(Errno::INTR) => {}
-                    Err(error) => {
-                        return Err(io::Error::from(error))
-                            .with_context(|| format!("failed to lock {}", path.display()));
-                    }
-                }
-            }
-            // wineo never deletes lock files, but a hand cleanup might, which
-            // would leave this lock on a file nobody else sees.
-            let held = file.metadata()?;
-            match fs::metadata(&path) {
-                Ok(now) if now.dev() == held.dev() && now.ino() == held.ino() => {
-                    return Ok(Self {
-                        file,
-                        folder: folder.to_owned(),
-                        state: state_path(paths, folder),
-                        dir: paths.gog_folders_dir(),
-                        exclusive,
-                    });
-                }
-                Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-            drop(file);
-        }
+        let file = lock_file(&paths.gog_folder_lock(&key(folder)), exclusive, cancel)?;
+        Ok(Self {
+            file,
+            folder: folder.to_owned(),
+            state: state_path(paths, folder),
+            dir: paths.gog_folders_dir(),
+            exclusive,
+        })
     }
 
     pub fn folder(&self) -> &Path {
@@ -609,6 +566,76 @@ impl Drop for FolderLock {
     }
 }
 
+/// Opens and flocks `path`, polling so `cancel` still works.
+fn lock_file(path: &Path, exclusive: bool, cancel: &dyn Fn() -> bool) -> Result<File> {
+    let dir = path.parent().expect("a lock has a parent");
+    fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    let operation = if exclusive {
+        FlockOperation::NonBlockingLockExclusive
+    } else {
+        FlockOperation::NonBlockingLockShared
+    };
+    loop {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
+        loop {
+            match flock(&file, operation) {
+                Ok(()) => break,
+                Err(Errno::WOULDBLOCK) => {
+                    if cancel() {
+                        return Err(FolderError::Canceled.into());
+                    }
+                    thread::sleep(LOCK_RETRY);
+                }
+                Err(Errno::INTR) => {}
+                Err(error) => {
+                    return Err(io::Error::from(error))
+                        .with_context(|| format!("failed to lock {}", path.display()));
+                }
+            }
+        }
+        // wineo never deletes lock files, but a hand cleanup might, which
+        // would leave this lock on a file nobody else sees.
+        let held = file.metadata()?;
+        match fs::metadata(path) {
+            Ok(now) if now.dev() == held.dev() && now.ino() == held.ino() => return Ok(file),
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        drop(file);
+    }
+}
+
+/// Held by a migration from before it checks for overlapping folders until
+/// it has written the state of the folder it adopts, so two adoptions of
+/// nested folders can't both pass. Only migrations take it, and before any
+/// other lock.
+pub struct AdoptionLock {
+    file: File,
+}
+
+impl AdoptionLock {
+    /// Waits for the lock, polling so `cancel` still works.
+    pub fn acquire(paths: &Paths, cancel: &dyn Fn() -> bool) -> Result<Self> {
+        let file = lock_file(&paths.gog_adoption_lock(), true, cancel)?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for AdoptionLock {
+    fn drop(&mut self) {
+        // A forked child must not extend this holder's lifetime.
+        let _ = flock(&self.file, FlockOperation::Unlock);
+    }
+}
+
 fn read_file(path: &Path) -> Result<Option<FolderState>> {
     match fs::read_to_string(path) {
         Ok(text) => FolderState::parse(&text).map(Some).map_err(|error| {
@@ -661,6 +688,24 @@ pub fn list(paths: &Paths) -> Result<Vec<(PathBuf, Result<FolderState>)>> {
 
 fn readable(paths: &Paths) -> Result<Vec<FolderState>> {
     list(paths)?.into_iter().map(|(_, state)| state).collect()
+}
+
+/// A folder's state read without its lock, so the answer can be stale. For
+/// planning, which mustn't leave lock files behind.
+pub fn peek(paths: &Paths, folder: &Path) -> Result<Option<FolderState>> {
+    check_folder(folder)?;
+    let Some(state) = read_file(&state_path(paths, folder))? else {
+        return Ok(None);
+    };
+    if state.folder != folder {
+        bail!(
+            "{} names {}, not {}",
+            state_path(paths, folder).display(),
+            state.folder.display(),
+            folder.display()
+        );
+    }
+    Ok(Some(state))
 }
 
 /// Every folder whose state names `name` as owner, whatever its game.

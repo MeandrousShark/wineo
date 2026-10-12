@@ -1,8 +1,10 @@
 //! GOG accounts and libraries, on top of the `wineo-gog` client: where the
-//! login is kept, how it is renewed, and the cached owned list.
+//! login is kept, how it is renewed, the cached owned list, and migrating
+//! the games Heroic installed.
 
 pub mod account;
 pub mod folder;
+pub mod migrate;
 pub mod owned;
 pub mod package;
 pub mod product;
