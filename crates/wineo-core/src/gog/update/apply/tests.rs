@@ -480,6 +480,8 @@ fn base_v1() -> Vec<Item> {
         file("docs/readme.txt", "readme"),
         file("shared.txt", "base shared"),
         Item::Split("Data/big.dat", b"big v1 big v1 big v1".to_vec()),
+        file("old/deep/readme", "an obsolete folder"),
+        file("kept/readme", "dropped from a folder you use"),
     ]
 }
 
@@ -526,6 +528,7 @@ fn ready_for_v2(fx: &Fixture) {
     fx.write("Data/core.dat", "my edit");
     fx.write("Data/old2.dat", "my old2");
     fx.write("Data/new.dat", "mine");
+    fx.write("kept/user.txt", "mine too");
 }
 
 fn expected_v2() -> BTreeMap<String, String> {
@@ -543,6 +546,8 @@ fn expected_v2() -> BTreeMap<String, String> {
         ("docs", "/"),
         ("docs/readme.txt", "644 readme"),
         ("gameinfo", "644 RimWorld\n2.0\n"),
+        ("kept", "/"),
+        ("kept/user.txt", "644 mine too"),
         ("lib", "644 lib is a file now"),
         ("mods-1.5", "/"),
         ("mods-1.5/mod.txt", "644 my mod"),
@@ -713,18 +718,58 @@ fn a_same_version_reinstall_repairs_changed_and_missing_files() {
     assert_eq!(fx.downloads(), downloads + 2);
 }
 
+/// Every path a folder's state records: committed winning entries and the
+/// journal's `attempted`.
+fn recorded_paths(state: &FolderState) -> Vec<String> {
+    let committed = state.committed.iter().flat_map(|c| &c.files);
+    let attempted = state.journal.iter().flat_map(|j| &j.attempted);
+    committed
+        .map(|entry| entry.path.clone())
+        .chain(attempted.map(|entry| entry.path.clone()))
+        .collect()
+}
+
+/// Checks that the run that committed synced, before its commit, every
+/// folder that still exists and holds a path recorded before or after it,
+/// which covers every folder any attempt changed.
+fn assert_synced(fx: &Fixture, before: &FolderState, syncs: &[String]) {
+    let commit = syncs
+        .iter()
+        .position(|event| event == "commit")
+        .unwrap_or_else(|| panic!("no commit in {syncs:?}"));
+    let mut paths = recorded_paths(before);
+    paths.extend(recorded_paths(&fx.state()));
+    for path in paths {
+        let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
+        let dir = fx.folder.join(parent);
+        if !fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir()) {
+            continue;
+        }
+        let at = syncs
+            .iter()
+            .position(|event| *event == format!("dir:{parent}"));
+        assert!(
+            at.is_some_and(|at| at < commit),
+            "{parent:?} wasn't synced before the commit: {syncs:?}"
+        );
+    }
+}
+
 /// Runs the v1 to v2 update with a crash at the `skip`th pass of `point`,
-/// then recovers, possibly crashing at `again` first. Returns false once the
-/// point is never reached.
+/// then recovers, first crashing recovery at `again` when given. Returns
+/// false once the point is never reached.
 fn crash_and_recover(point: &'static str, skip: usize, again: Option<&'static str>) -> bool {
     let fx = installed_v1();
     ready_for_v2(&fx);
+    let installed = fx.state();
     set_failpoint_nth(point, skip);
+    take_syncs();
     let result = fx.try_update(Options::default());
     if failpoint_armed() {
         set_failpoint(None);
         result.unwrap();
         assert_finished_v2(&fx);
+        assert_synced(&fx, &installed, &take_syncs());
         return false;
     }
     let error = result.unwrap_err();
@@ -732,31 +777,46 @@ fn crash_and_recover(point: &'static str, skip: usize, again: Option<&'static st
         format!("{error:#}").contains("injected"),
         "{point}#{skip}: {error:#}"
     );
-    if let Some(again) = again
-        && fx.state().journal.is_some()
-    {
+    if let Some(again) = again {
+        assert!(fx.state().journal.is_some(), "{point}#{skip}");
         set_failpoint(Some(again));
         let pending = fx.pending(true, Options::default());
         assert!(pending.is_recovery());
-        let _ = fx.apply_with(true, &pending, &Token::new(), |_| {});
-        set_failpoint(None);
+        let error = fx
+            .apply_with(true, &pending, &Token::new(), |_| {})
+            .unwrap_err();
+        assert!(!failpoint_armed(), "recovery never reached {again}");
+        assert!(
+            format!("{error:#}").contains("injected"),
+            "{again}: {error:#}"
+        );
+        assert!(fx.state().journal.is_some(), "{again}");
     }
-    let state = fx.state();
-    if state.journal.is_none()
-        && state.committed.unwrap().products[0].version.as_deref() != Some("2.0")
+    let before = fx.state();
+    take_syncs();
+    if before.journal.is_none()
+        && before.committed.as_ref().unwrap().products[0]
+            .version
+            .as_deref()
+            != Some("2.0")
     {
         // Stopped before the journal: nothing changed, so it's simply run
         // again.
         fx.update();
-    } else if state.journal.is_some() {
+    } else if before.journal.is_some() {
         let pending = fx.pending(true, Options::default());
         assert!(pending.is_recovery(), "{point}#{skip}");
         assert_eq!(pending.kind(), JournalKind::Update);
         fx.apply_with(true, &pending, &Token::new(), |_| {})
             .unwrap_or_else(|error| panic!("{point}#{skip}: {error:#}"));
     }
+    let syncs = take_syncs();
     assert_finished_v2(&fx);
     assert!(fx.temporaries().is_empty(), "{point}#{skip}");
+    if syncs.iter().any(|event| event == "commit") {
+        assert_synced(&fx, &installed, &syncs);
+        assert_synced(&fx, &before, &syncs);
+    }
     true
 }
 
@@ -790,17 +850,23 @@ fn a_crash_at_any_write_is_finished_by_recovery() {
 
 #[test]
 fn a_recovery_that_crashes_is_recovered_again() {
+    // The first attempt stops after one deletion, so recovery still has
+    // deletions, publishing, and the commit ahead of it.
     for again in [
         "update.journal.before",
         "update.journal.after",
         "update.attempted.after",
-        "update.publish.after",
+        "update.delete.before",
         "update.delete.after",
+        "update.save.after",
+        "update.publish.after",
         "update.commit.before",
+        "write.before_rename",
     ] {
-        for skip in [0, 5] {
-            crash_and_recover("update.publish.after", skip, Some(again));
-        }
+        crash_and_recover("update.delete.after", 0, Some(again));
+    }
+    for again in ["update.publish.after", "update.commit.before"] {
+        crash_and_recover("update.publish.after", 5, Some(again));
     }
 }
 
