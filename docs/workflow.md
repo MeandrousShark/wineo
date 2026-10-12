@@ -45,6 +45,8 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
 - Some tests are load-sensitive flakes; rerun a failure alone before blaming
   the change. Snapshot and reflink tests need a reflink-capable checkout, so
   put test worktrees on the same filesystem as the repo, not tmpfs.
+- Worktrees go in `../.worktrees/wineo/<branch>` (beside the repo, hidden),
+  not directly in the parent folder.
 
 ## Acceptance
 
