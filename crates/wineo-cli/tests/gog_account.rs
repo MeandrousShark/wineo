@@ -308,8 +308,27 @@ fn list_marks_a_game_whose_details_cant_be_fetched() {
             .contains("GOG product request failed"),
         "{errors:?}"
     );
-    // The games that were checked still print.
+    // The games that were checked still print, and the one that couldn't be
+    // checked is still the migrated one.
     assert_eq!(json["games"].as_array().unwrap().len(), 3);
+    let rimworld = json["games"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|game| game["id"] == RIMWORLD.to_string())
+        .unwrap();
+    assert_eq!(rimworld["state"], "imported");
+    assert_eq!(rimworld["environment"], "rimworld");
+    assert_eq!(rimworld["update"], serde_json::Value::Null);
+
+    let text = f.gog(&api, &["import", "gog", "--list"]);
+    assert_eq!(text.status.code(), Some(1));
+    let text = stdout(&text);
+    let row = text.lines().find(|line| line.contains("RimWorld")).unwrap();
+    assert!(
+        row.contains("imported") && row.contains("rimworld"),
+        "{text}"
+    );
 }
 
 #[test]
