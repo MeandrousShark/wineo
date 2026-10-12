@@ -1022,6 +1022,16 @@ Settled by the maintainer on 2026-10-11, after step 5's review:
 - **Nested split lists**, where a joined file is itself a piece of
   another, keep being refused as "used twice".
 
+Settled by the maintainer on 2026-10-11, before step 6:
+
+- **Migrating a running game.** A folder only gets an in-use lock once
+  it's a GOG folder, so a game started before migration holds none, and a
+  later update couldn't see it. Migration refuses while the environment it
+  attaches to is running: `rimworld is running. Stop it before migrating.`
+  It holds that environment's operation lock while it checks and writes,
+  so no launch starts in between. A game started some other way (Heroic,
+  a clone, a hand-made environment) isn't seen, and the docs say so.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,
