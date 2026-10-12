@@ -397,7 +397,7 @@ fn a_single_game_asks_before_migrating() {
     command.args(["import", "gog", "--game", "1094900565"]);
     let mut pty = Pty::spawn(command);
     pty.expect("Migrate RimWorld (1094900565)");
-    pty.expect("Press Enter to migrate it, Esc to go back, Ctrl+C to cancel.");
+    pty.expect("Press Enter to migrate it, Esc or Ctrl+C to cancel.");
     pty.expect("Migrate it?");
     assert!(
         f.gog_state(&folder).is_none(),

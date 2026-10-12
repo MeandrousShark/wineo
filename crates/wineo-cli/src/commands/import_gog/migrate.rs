@@ -316,8 +316,10 @@ fn report(
     }
 }
 
+/// The question for a game named on the command line, where there is no
+/// earlier question to go back to.
 fn confirm(prompt: &mut Ask) -> anyhow::Result<()> {
-    prompt.say("Press Enter to migrate it, Esc to go back, Ctrl+C to cancel.")?;
+    prompt.say("Press Enter to migrate it, Esc or Ctrl+C to cancel.")?;
     match prompt.confirm("Migrate it?", true)? {
         Reply::Value(true) => Ok(()),
         _ => Err(Canceled.into()),
