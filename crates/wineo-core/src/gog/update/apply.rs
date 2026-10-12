@@ -7,11 +7,11 @@
 //! journal, stage every product, layer them, write the journal again with
 //! every entry it is about to write, publish, clean up, sync, and commit.
 //!
-//! Lock order: the owner's operation lock, the folder's in-use lock (held
-//! from before downloading to the end, so nothing launches from the folder
-//! meanwhile), then the folder's state lock, held from the first journal
-//! write to the commit. Downloads happen before the state lock, so no
-//! reader waits on one.
+//! Downloading and checking the packages holds no lock, so the game can
+//! still be played meanwhile. Then, in lock order: the owner's operation
+//! lock, the folder's in-use lock (refusing while anything runs from the
+//! folder, with the packages left cached), and the state lock, held from the
+//! recheck through the first journal write to the commit.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -640,39 +640,10 @@ fn run(
         name: name.to_owned(),
     };
 
-    let _operation = lock_operation(paths, name)?;
-    // The config can change without the operation lock.
-    let gog_id = super::recorded_gog_id(paths, name)?;
-    if gog_id.as_deref().and_then(|id| id.parse().ok()) != pending.seen.gog_id {
-        return Err(changed().into());
-    }
-    let _in_use = folder::lock_for_update(paths, folder, name)?;
-    let mut seen = pending.seen.clone();
-    let claimed = seen.owner.is_none();
-    {
-        let lock = FolderLock::exclusive(paths, folder, &cancel)?;
-        let state = lock.read()?.ok_or_else(changed)?;
-        let now = Seen::of(&state);
-        let unowned = |seen: &Seen| Seen {
-            owner: None,
-            ..seen.clone()
-        };
-        if unowned(&now) != unowned(&seen) {
-            return Err(changed().into());
-        }
-        if claimed {
-            // Claimed like a launch does: written only while still unowned,
-            // and refused when another environment got there first.
-            lock.reclaim(name)?;
-            seen.owner = Some(name.to_owned());
-        } else if now.owner != seen.owner {
-            return Err(changed().into());
-        }
-    }
-
+    // Downloading and checking the packages changes nothing, so it holds no
+    // lock and the game can still be played meanwhile.
     let mut warnings = pending.warnings.clone();
     let fetched = fetch(paths, session, pending, token, progress, &mut warnings)?;
-
     let mut opened = Vec::new();
     for (file, path) in &fetched {
         let package = open_package(path)
@@ -693,9 +664,30 @@ fn run(
             .collect::<Vec<_>>(),
     )?;
 
+    let _operation = lock_operation(paths, name)?;
+    // The config can change without the operation lock.
+    let gog_id = super::recorded_gog_id(paths, name)?;
+    if gog_id.as_deref().and_then(|id| id.parse().ok()) != pending.seen.gog_id {
+        return Err(changed().into());
+    }
+    // Refused like before downloading would have been; the packages stay
+    // cached for the next run.
+    let _in_use = folder::lock_for_update(paths, folder, name)?;
     let lock = FolderLock::exclusive(paths, folder, &cancel)?;
     let mut state = lock.read()?.ok_or_else(changed)?;
-    if Seen::of(&state) != seen {
+    let unowned = |seen: &Seen| Seen {
+        owner: None,
+        ..seen.clone()
+    };
+    if unowned(&Seen::of(&state)) != unowned(&pending.seen) {
+        return Err(changed().into());
+    }
+    let claimed = pending.seen.owner.is_none();
+    if claimed {
+        // Claimed like a launch does: written only while still unowned, and
+        // refused when another environment got there first.
+        state = lock.reclaim(name)?;
+    } else if state.owner != pending.seen.owner {
         return Err(changed().into());
     }
     let root = package::open_folder(folder)?;

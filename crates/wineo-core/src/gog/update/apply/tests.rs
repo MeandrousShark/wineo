@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Cursor, Write};
@@ -1229,7 +1229,6 @@ fn a_clone_running_from_the_folder_refuses_the_update() {
     let pending = fx.pending(true, Options::default());
     let lock = InUseLock::new(&fx.paths, &fx.folder).unwrap();
     let held = lock.try_shared("rimworld-copy").unwrap().unwrap();
-    let downloads = fx.downloads();
     let error = fx
         .apply_with(true, &pending, &Token::new(), |_| {})
         .unwrap_err();
@@ -1237,9 +1236,46 @@ fn a_clone_running_from_the_folder_refuses_the_update() {
         error.to_string(),
         "rimworld-copy is running from this game folder. Stop it before updating rimworld."
     );
-    assert_eq!(fx.downloads(), downloads);
     assert!(fx.state().journal.is_none());
     drop(held);
+}
+
+#[test]
+fn a_clone_launched_while_downloading_runs_and_the_packages_wait_for_it() {
+    let fx = installed_v1();
+    ready_for_v2(&fx);
+    let before = (fx.state(), fx.tree());
+    let pending = fx.pending(true, Options::default());
+    let lock = InUseLock::new(&fx.paths, &fx.folder).unwrap();
+    let held = RefCell::new(None);
+    let error = fx
+        .apply_with(true, &pending, &Token::new(), |event| {
+            if matches!(event, Progress::Download { .. }) && held.borrow().is_none() {
+                // Downloading holds no lock, so the launch isn't refused.
+                *held.borrow_mut() = Some(lock.try_shared("rimworld-copy").unwrap().unwrap());
+            }
+        })
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "rimworld-copy is running from this game folder. Stop it before updating rimworld."
+    );
+    assert_eq!((fx.state(), fx.tree()), before);
+    let cache = DownloadCache::new(fx.paths.gog_download_cache());
+    assert!(
+        cache
+            .files(RIMWORLD)
+            .unwrap()
+            .iter()
+            .all(|file| file.complete)
+    );
+    assert!(!cache.files(ROYALTY).unwrap().is_empty());
+
+    drop(held);
+    let downloads = fx.downloads();
+    fx.update();
+    assert_eq!(fx.downloads(), downloads);
+    assert_finished_v2(&fx);
 }
 
 #[test]
