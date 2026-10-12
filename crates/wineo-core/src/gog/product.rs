@@ -37,11 +37,24 @@ struct Cache {
 /// otherwise, or with `refresh`, they are fetched and cached. A failed fetch
 /// falls back to the old cache with a warning.
 pub fn load(paths: &Paths, client: &Client, id: u64, refresh: bool) -> Result<Details, LoadError> {
+    load_with(paths, client, id, refresh, true)
+}
+
+/// Like `load`, but with `save` off nothing is written: fetched details are
+/// used and not cached, for a dry run.
+pub fn load_with(
+    paths: &Paths,
+    client: &Client,
+    id: u64,
+    refresh: bool,
+    save: bool,
+) -> Result<Details, LoadError> {
     load_at(
         paths,
         client,
         id,
         refresh,
+        save,
         jiff::Timestamp::now().as_second(),
     )
 }
@@ -51,6 +64,7 @@ fn load_at(
     client: &Client,
     id: u64,
     refresh: bool,
+    save: bool,
     now: i64,
 ) -> Result<Details, LoadError> {
     let path = paths.gog_product_cache(id);
@@ -72,9 +86,13 @@ fn load_at(
                 fetched_at: now,
                 product,
             };
-            let warning = write_cache(&path, &cache)
-                .err()
-                .map(|reason| format!("Couldn't save GOG product details: {reason}"));
+            let warning = if save {
+                write_cache(&path, &cache)
+                    .err()
+                    .map(|reason| format!("Couldn't save GOG product details: {reason}"))
+            } else {
+                None
+            };
             Ok(Details {
                 product: cache.product,
                 warning,

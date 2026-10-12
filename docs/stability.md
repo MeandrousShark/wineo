@@ -35,6 +35,7 @@ match the docs.
   when each one is set.
 - **Keyring items.** Keys are stored with `service=wineo` and
   `account=steamgriddb` or `account=steam`, so other tools can find them.
+  The GOG login (`account=gog`) is wineo's own and not promised.
 
 ## Not promised
 
@@ -48,7 +49,8 @@ match the docs.
 - **Shell completion output.** It follows the CLI, which is stable.
 - **Files wineo manages for itself.** Run records, locks, and logs in the
   state directory, GOG folder states in the data directory, caches like
-  `steam-owned-<steamid>.json`, temporary
+  `steam-owned-<steamid>.json` and the GOG lists, details, and downloads,
+  temporary
   files, the desktop entries wineo writes, and the on-disk layout of
   snapshots and the trash. Use the commands to work with them.
 - **Test-only variables,** like `WINEO_TEST_*`.

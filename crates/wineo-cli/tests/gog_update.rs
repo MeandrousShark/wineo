@@ -309,26 +309,6 @@ fn check_with_no_gog_games_says_so() {
 }
 
 #[test]
-fn applying_updates_isnt_available_yet() {
-    let (f, api) = world();
-    for args in [
-        &["update", "rimworld"][..],
-        &["update", "--all"],
-        &["update", "--reinstall", "rimworld"],
-        &["update"],
-    ] {
-        let out = f.gog(&api, args);
-        assert_eq!(out.status.code(), Some(2), "{args:?}");
-        assert!(
-            stderr(&out).contains("error: wineo update NAME isn't available yet."),
-            "{}",
-            stderr(&out)
-        );
-        assert_eq!(stdout(&out), "");
-    }
-}
-
-#[test]
 fn the_command_line_rejects_what_cant_go_together() {
     let f = Fixture::new();
     for args in [

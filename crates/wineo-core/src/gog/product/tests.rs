@@ -30,7 +30,7 @@ fn run(
     now: i64,
 ) -> (Server, Result<Details, LoadError>) {
     let server = Server::start(replies);
-    let result = load_at(paths, &client(&server), id, refresh, now);
+    let result = load_at(paths, &client(&server), id, refresh, true, now);
     (server, result)
 }
 
@@ -134,4 +134,14 @@ fn a_cache_that_cannot_be_written_is_a_warning() {
             .unwrap()
             .starts_with("Couldn't save GOG product details: ")
     );
+}
+
+#[test]
+fn details_loaded_without_saving_leave_no_cache() {
+    let (_root, paths) = setup();
+    let server = Server::start(vec![details(ID, "RimWorld")]);
+    let loaded = load_at(&paths, &client(&server), ID, false, false, T).unwrap();
+    assert_eq!(loaded.product.title, "RimWorld");
+    assert_eq!(loaded.warning, None);
+    assert!(!paths.gog_product_cache(ID).exists());
 }

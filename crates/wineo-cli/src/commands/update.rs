@@ -1,6 +1,5 @@
-//! `wineo update`: what GOG offers for the games wineo manages. Only
-//! `--check` does anything so far; the rest of the command line is settled
-//! now so applying updates can fill it in.
+//! `wineo update`: what GOG offers for the games wineo manages, and
+//! applying it to native games.
 
 use std::process::ExitCode;
 
@@ -11,12 +10,12 @@ use wineo_core::paths::Paths;
 
 use super::gog_support::{
     Account, dlc_json, dlc_notes, error_json, error_subject, reason_json, reason_note, track_label,
-    update_label, usage_error, warn,
+    update_label, warn,
 };
 use super::table::render_columns;
 
-// Applying updates reads the flags that checking doesn't.
-#[allow(dead_code)]
+mod apply;
+
 #[derive(clap::Args)]
 pub struct Args {
     /// Environment to check or update
@@ -29,7 +28,7 @@ pub struct Args {
     #[arg(long)]
     check: bool,
     /// Rebuild a game from GOG's current files even when nothing changed
-    #[arg(long, conflicts_with = "check")]
+    #[arg(long, conflicts_with_all = ["check", "all"])]
     reinstall: bool,
     /// Fetch GOG's game details again instead of using the saved copy
     #[arg(long)]
@@ -46,10 +45,11 @@ pub struct Args {
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
-    if !args.check {
-        return Ok(usage_error("wineo update NAME isn't available yet."));
+    if args.check {
+        check(paths, &args)
+    } else {
+        apply::run(paths, &args)
     }
-    check(paths, &args)
 }
 
 fn check(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {

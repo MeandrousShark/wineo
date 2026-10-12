@@ -1484,9 +1484,18 @@ fn windows(fx: &Fixture, track: Track) {
 }
 
 #[test]
-fn windows_games_refuse_naming_the_plan_that_updates_them() {
+fn windows_games_refuse_saying_updates_come_later() {
     let fx = Fixture::new();
-    for (track, plan) in [(Track::Installer, "0050"), (Track::Galaxy, "0051")] {
+    for (track, said) in [
+        (
+            Track::Installer,
+            "Updating Windows installer games comes in a later release.",
+        ),
+        (
+            Track::Galaxy,
+            "Updating Galaxy builds comes in a later release.",
+        ),
+    ] {
         windows(&fx, track);
         let before = fx.state();
         for reinstall in [false, true] {
@@ -1499,7 +1508,7 @@ fn windows_games_refuse_naming_the_plan_that_updates_them() {
                     },
                 )
                 .unwrap_err();
-            assert!(error.to_string().contains(plan), "{error}");
+            assert_eq!(error.to_string(), said);
         }
         assert_eq!(fx.state(), before);
     }
@@ -1526,7 +1535,7 @@ fn a_journal_from_a_later_release_is_left_alone() {
     let error = fx.plan_with(true, Options::default()).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "rimworld's game folder has an unfinished GOG repair, which a later wineo release finishes."
+        "rimworld has an unfinished GOG repair, and finishing it comes in a later release."
     );
     assert_eq!(fx.state(), state);
 }
@@ -1910,7 +1919,42 @@ fn cleanup_keeps_packages_while_a_state_cant_be_read() {
     remove_packages(&fx.paths, &fx.folder, &[RIMWORLD], &mut warnings);
     assert_eq!(cached(&fx, RIMWORLD), 1);
     assert!(
-        warnings[0].starts_with("Kept the downloaded GOG packages: "),
+        warnings[0]
+            .starts_with("Kept the downloaded GOG packages in case another game needs them: "),
         "{warnings:?}"
     );
+}
+
+#[test]
+fn the_changed_message_names_the_command_to_run() {
+    let error = UpdateError::Changed {
+        name: "rimworld".to_owned(),
+    };
+    assert_eq!(
+        error.to_string(),
+        "rimworld's GOG game changed while updating; run wineo update rimworld again."
+    );
+}
+
+#[test]
+fn a_read_only_plan_with_refresh_reviews_what_gog_offers_now() {
+    let fx = installed_v1();
+    let cache = fx.paths.gog_product_cache(RIMWORLD);
+    let cached = fs::read(&cache).unwrap();
+    ready_for_v2(&fx);
+    let pending = fx.pending(
+        true,
+        Options {
+            read_only: true,
+            ..Options::default()
+        },
+    );
+    let versions: Vec<_> = pending
+        .products()
+        .iter()
+        .map(|p| p.version.clone())
+        .collect();
+    assert_eq!(versions, [Some("2.0".to_owned()), Some("2.0".to_owned())]);
+    // Nothing was cached for the next run either.
+    assert_eq!(fs::read(&cache).unwrap(), cached);
 }

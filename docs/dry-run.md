@@ -74,6 +74,12 @@ another; it changes nothing else. `import gog --all --dry-run` reports a
 game that would fail as `TITLE: would fail: REASON` and exits 1, like
 `import heroic --all`.
 
+`update NAME --dry-run` and `update --all --dry-run` print the review the
+real update would show and download nothing. They don't cache GOG's
+details or record a build another tool installed, and `--refresh` still
+asks GOG for current details. Saving a renewed GOG login is the only write.
+`update --all --dry-run` reports a game that would fail and exits 1.
+
 ## Art
 
 With `--art`, a dry run searches SteamGridDB the way the real run would,

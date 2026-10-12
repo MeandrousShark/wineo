@@ -176,7 +176,7 @@ In both, `update` is `available`, `none`, `galaxy` (an update on GOG that
 a later release applies), or `cant_compare`. `applicable` says whether this
 wineo can apply it, and `reason` says why not: `windows_installer`,
 `galaxy`, or a sentence when the versions can't be compared. A DLC's
-`state` is `up_to_date`, `available`, `unknown` (a migrated DLC whose version
+`state` is `none` (up to date), `available`, `unknown` (a migrated DLC whose version
 Heroic never recorded), `cant_compare`, `failed`, or `unavailable`. GOG ids
 are strings.
 

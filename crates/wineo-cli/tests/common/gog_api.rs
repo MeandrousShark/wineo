@@ -40,6 +40,15 @@ pub struct Config {
     pub product_status: BTreeMap<u64, u16>,
     /// Windows build lists by product id.
     pub builds: BTreeMap<u64, Value>,
+    /// Package files to download, by file name.
+    pub files: BTreeMap<String, Vec<u8>>,
+    /// Total playtime in minutes by game id. A game not listed has none (404).
+    pub playtime: BTreeMap<u64, u64>,
+    /// Artwork links by game id, as `_links` holds them. A game not listed
+    /// is a 404.
+    pub art: BTreeMap<u64, Value>,
+    /// File names whose downloads GOG publishes no checksum for.
+    pub no_checksum: BTreeSet<String>,
     renewals: u32,
 }
 
@@ -62,6 +71,10 @@ impl Default for Config {
             products: BTreeMap::new(),
             product_status: BTreeMap::new(),
             builds: BTreeMap::new(),
+            files: BTreeMap::new(),
+            no_checksum: BTreeSet::new(),
+            playtime: BTreeMap::new(),
+            art: BTreeMap::new(),
             renewals: 0,
         }
     }
@@ -153,6 +166,14 @@ pub fn builds(items: &[(&str, Option<&str>)]) -> Value {
     })
 }
 
+fn md5_hex(bytes: &[u8]) -> String {
+    use md5::Digest as _;
+    md5::Md5::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 fn reply(status: u16, body: &str) -> String {
     format!(
         "HTTP/1.1 {status} Reply\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -183,11 +204,83 @@ fn unauthorized() -> String {
     reply(401, "{}")
 }
 
-fn answer(config: &mut Config, target: &str, bearer: Option<&str>) -> String {
+/// Answers a request with the bytes to send back. File downloads aren't
+/// text, so they are served here and everything else by `answer`.
+fn respond(config: &mut Config, base: &str, target: &str, bearer: Option<&str>) -> Vec<u8> {
+    let path = target.split('?').next().unwrap_or_default();
+    if let Some(name) = path.strip_prefix("/files/") {
+        return match config.files.get(name) {
+            Some(bytes) => {
+                let mut response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                )
+                .into_bytes();
+                response.extend(bytes);
+                response
+            }
+            None => reply(404, "{}").into_bytes(),
+        };
+    }
+    answer(config, base, target, bearer).into_bytes()
+}
+
+fn answer(config: &mut Config, base: &str, target: &str, bearer: Option<&str>) -> String {
     let path = target.split('?').next().unwrap_or_default();
     let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     let signed_in = bearer.is_some_and(|token| config.access.contains(token));
     match segments.as_slice() {
+        ["downlink", name] => {
+            if !signed_in {
+                return unauthorized();
+            }
+            if !config.files.contains_key(*name) {
+                return reply(404, "{}");
+            }
+            let checksum =
+                (!config.no_checksum.contains(*name)).then(|| format!("{base}/sums/{name}"));
+            reply(
+                200,
+                &json!({"downlink": format!("{base}/files/{name}"), "checksum": checksum})
+                    .to_string(),
+            )
+        }
+        ["games", id, "users", _user, "sessions"] => {
+            if !signed_in {
+                return unauthorized();
+            }
+            match id
+                .parse::<u64>()
+                .ok()
+                .and_then(|id| config.playtime.get(&id))
+            {
+                Some(minutes) => reply(200, &json!({"time_sum": minutes}).to_string()),
+                None => reply(404, "{}"),
+            }
+        }
+        ["v2", "games", id] => {
+            let Ok(id) = id.parse::<u64>() else {
+                return reply(404, "{}");
+            };
+            match config.art.get(&id) {
+                Some(links) => reply(
+                    200,
+                    &json!({"_embedded": {"product": {"id": id}}, "_links": links}).to_string(),
+                ),
+                None => reply(404, "{}"),
+            }
+        }
+        ["sums", name] => match config.files.get(*name) {
+            Some(bytes) => reply(
+                200,
+                &format!(
+                    r#"<file name="{name}" md5="{}" total_size="{}"/>"#,
+                    md5_hex(bytes),
+                    bytes.len()
+                ),
+            ),
+            None => reply(404, "{}"),
+        },
         ["token"] => {
             if let Some(status) = config.token_status {
                 return reply(status, "{}");
@@ -285,6 +378,7 @@ impl GogApi {
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let (config, requests, stop) = (config.clone(), requests.clone(), stop.clone());
+            let base = base.clone();
             thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     let Ok((mut stream, _)) = listener.accept() else {
@@ -308,8 +402,9 @@ impl GogApi {
                     requests.lock().unwrap().push(line.clone());
                     let target = line.split(' ').nth(1).unwrap_or("/");
                     let token = bearer(&text);
-                    let response = answer(&mut config.lock().unwrap(), target, token.as_deref());
-                    let _ = stream.write_all(response.as_bytes());
+                    let response =
+                        respond(&mut config.lock().unwrap(), &base, target, token.as_deref());
+                    let _ = stream.write_all(&response);
                 }
             })
         };
@@ -367,6 +462,40 @@ impl GogApi {
     /// The request lines seen so far, like `GET /path?query HTTP/1.1`.
     pub fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
+    }
+
+    /// Puts a Linux installer for `id` on offer, serving `bytes` as its one
+    /// file, and returns its entry for a product's details.
+    pub fn linux_package(&self, id: u64, language: &str, version: &str, bytes: &[u8]) -> Value {
+        let name = format!(
+            "game_{id}_{}.sh",
+            version.replace(|char: char| !char.is_ascii_alphanumeric(), "_")
+        );
+        self.with(|config| {
+            config.files.insert(name.clone(), bytes.to_vec());
+        });
+        json!({
+            "id": format!("installer_linux_{language}"),
+            "name": "Installer",
+            "os": "linux",
+            "language": language,
+            "language_full": language,
+            "version": version,
+            "total_size": bytes.len(),
+            "files": [{
+                "id": format!("{language}3installer0"),
+                "size": bytes.len(),
+                "downlink": format!("{}/downlink/{name}", self.base),
+            }],
+        })
+    }
+
+    /// How many package files were downloaded.
+    pub fn downloads(&self) -> usize {
+        self.requests()
+            .iter()
+            .filter(|line| line.starts_with("GET /files/"))
+            .count()
     }
 
     /// How many requests went to the owned list.

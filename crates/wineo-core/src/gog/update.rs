@@ -92,7 +92,7 @@ pub enum DlcState {
 impl DlcState {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::UpToDate => "up_to_date",
+            Self::UpToDate => "none",
             Self::Available => "available",
             Self::Unknown => "unknown",
             Self::CantCompare => "cant_compare",
@@ -167,18 +167,13 @@ pub enum UpdateError {
     /// isn't taken for one that doesn't.
     #[error("{name} can't be checked: its config can't be read ({detail}).")]
     Unloadable { name: String, detail: String },
-    #[error(
-        "Updating {name} comes in a later wineo release (plan 0050): wineo can't update Windows GOG games installed from GOG's offline installers yet."
-    )]
+    /// The same sentence `update --check` gives for these games.
+    #[error("Updating Windows installer games comes in a later release.")]
     WindowsInstaller { name: String },
-    #[error(
-        "Updating {name} comes in a later wineo release (plan 0051): wineo can't install GOG Galaxy builds yet."
-    )]
+    #[error("Updating Galaxy builds comes in a later release.")]
     Galaxy { name: String },
     /// A journal of plan 0050's kinds, `install` or `repair`.
-    #[error(
-        "{name}'s game folder has an unfinished GOG {kind}, which a later wineo release finishes."
-    )]
+    #[error("{name} has an unfinished GOG {kind}, and finishing it comes in a later release.")]
     LaterRelease { name: String, kind: &'static str },
     #[error("{name} can't be updated: {why}")]
     CantCompare { name: String, why: String },
@@ -186,7 +181,7 @@ pub enum UpdateError {
     #[error("{name} can't be updated: {why}")]
     NoInstaller { name: String, why: String },
     #[error(
-        "{path} from GOG product {product} is inside {parent}, which GOG product {other} ships as a file or symlink."
+        "{path} from GOG product {product} can't go inside {parent}, which GOG product {other} ships as a file or symlink."
     )]
     Layers {
         path: String,
@@ -196,12 +191,22 @@ pub enum UpdateError {
     },
     #[error("{name} is running. Stop it before updating.")]
     Running { name: String },
-    #[error("{name}'s GOG game changed since the update was planned; plan it again.")]
+    #[error("{name}'s GOG game changed while updating; run wineo update {name} again.")]
     Changed { name: String },
     /// `journal` says whether the update had started changing the folder,
     /// which leaves it to finish with `wineo update`.
     #[error("Canceled.")]
     Canceled { journal: bool },
+}
+
+/// What a check does, besides comparing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Check {
+    /// Fetch GOG's product details again instead of using a cached copy.
+    pub refresh: bool,
+    /// Write nothing: product details aren't cached, and a build another tool
+    /// installed is used without being recorded. For a dry run.
+    pub read_only: bool,
 }
 
 /// Checks the GOG game environment `name` runs. Needs a login for Galaxy
@@ -213,11 +218,23 @@ pub enum UpdateError {
 /// `FolderError::StateMissing` when it has no state file or
 /// `FolderError::Unreadable` when its state can't be read.
 pub fn check(session: &mut Session, name: &str, refresh: bool) -> Result<Status> {
+    check_with(
+        session,
+        name,
+        Check {
+            refresh,
+            read_only: false,
+        },
+    )
+}
+
+/// `check` with the choices in `how`.
+pub fn check_with(session: &mut Session, name: &str, how: Check) -> Result<Status> {
     let paths = session.paths().clone();
     host_only(&paths)?;
     Environment::ensure_exists(&paths, name)?;
     let state = game_of(&paths, name)?;
-    status_of(session, &paths, name, state, refresh)
+    status_of(session, &paths, name, state, how)
 }
 
 /// `name`'s game folder: the one it owns, else an ownerless one of its game
@@ -279,6 +296,17 @@ pub fn named_paths(paths: &Paths, name: &str) -> Vec<PathBuf> {
 /// without claiming it. Other ownerless folders are skipped. A game that can't be checked is reported
 /// in `errors` and the rest carry on.
 pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
+    check_all_with(
+        session,
+        Check {
+            refresh,
+            read_only: false,
+        },
+    )
+}
+
+/// `check_all` with the choices in `how`.
+pub fn check_all_with(session: &mut Session, how: Check) -> Result<Batch> {
     let paths = session.paths().clone();
     host_only(&paths)?;
     let mut batch = Batch::default();
@@ -315,7 +343,7 @@ pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
                 continue;
             }
         }
-        match status_of(session, &paths, &owner, state, refresh) {
+        match status_of(session, &paths, &owner, state, how) {
             Ok(status) => batch.statuses.push(status),
             Err(error) => batch.errors.push(GameError {
                 environment: Some(owner),
@@ -341,7 +369,7 @@ pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
             // update or launch claims. Only read here.
             Ok(Some(state)) if state.owner.is_none() => {
                 let id = state.gog_id();
-                match status_of(session, &paths, &name, state, refresh) {
+                match status_of(session, &paths, &name, state, how) {
                     Ok(status) => batch.statuses.push(status),
                     Err(error) => batch.errors.push(GameError {
                         environment: Some(name),
@@ -458,10 +486,16 @@ fn status_of(
     paths: &Paths,
     name: &str,
     state: FolderState,
-    refresh: bool,
+    how: Check,
 ) -> Result<Status> {
     let mut installed = Installed::of(name, &state)?;
-    let details = product::load(paths, session.client(), installed.gog_id, refresh)?;
+    let details = product::load_with(
+        paths,
+        session.client(),
+        installed.gog_id,
+        how.refresh,
+        !how.read_only,
+    )?;
     let mut warnings: Vec<String> = details.warning.into_iter().collect();
     let unfinished = state.journal.is_some();
 
@@ -470,7 +504,11 @@ fn status_of(
         && !unfinished
         // A folder no environment has claimed yet is only read.
         && state.owner.is_some()
-        && let Some(adopted) = adopt_build(paths, &state)?
+        && let Some(adopted) = if how.read_only {
+            seen_build(&state)
+        } else {
+            adopt_build(paths, &state)?
+        }
     {
         if adopted.recorded {
             warnings.push(format!(
@@ -929,6 +967,28 @@ fn adopt_build(paths: &Paths, state: &FolderState) -> Result<Option<Adopted>> {
         committed,
         recorded: true,
     }))
+}
+
+/// What `adopt_build` would use, without the lock and without writing: the
+/// committed state with the build `goggame-<id>.info` names.
+fn seen_build(state: &FolderState) -> Option<Adopted> {
+    let (Some(committed), None) = (&state.committed, &state.journal) else {
+        return None;
+    };
+    let build = info_build(&state.folder, committed.gog_id)?;
+    if base_build(committed) == Some(build.as_str()) {
+        return None;
+    }
+    let mut committed = committed.clone();
+    committed
+        .products
+        .iter_mut()
+        .find(|product| product.id == committed.gog_id)?
+        .build = Some(build);
+    Some(Adopted {
+        committed,
+        recorded: false,
+    })
 }
 
 fn base_build(committed: &Committed) -> Option<&str> {
