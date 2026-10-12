@@ -721,8 +721,9 @@ Written for the answers above.
   anything changes: `This GOG package has a setup script wineo doesn't
   support.`
 - **Space.** After downloading and before changing anything, wineo sums the
-  zip's unpacked sizes for every package, plus the staging copies and the
-  assembled split files, and refuses with the sizes when the filesystem is
+  zip's unpacked sizes for every package plus the assembled split files
+  (staging shares the folder's filesystem, so it's moved, not copied, into
+  place), and refuses with the sizes when the filesystem is
   short. Before downloading it shows the download size and an unpacked
   estimate labeled as one.
 
@@ -992,6 +993,9 @@ Settled by the maintainer on 2026-10-11, before step 5:
   variant is refused until it's added.
 - **The space refusal** reads `Not enough space: needs 2.1 GiB, 1.4 GiB
   free on ~/Games.`
+- **Space needed** is the packages' unpacked sizes plus the assembled split
+  files. Staging shares the game folder's filesystem and publishing moves
+  staged files into place, so the staging copies no longer count twice.
 
 ## Implementation sequence
 
