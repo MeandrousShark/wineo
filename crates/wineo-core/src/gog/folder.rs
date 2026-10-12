@@ -33,7 +33,7 @@ mod in_use;
 mod protect;
 
 pub use in_use::{InUseGuard, InUseLock, lock_for_migration, lock_for_update};
-pub use protect::{folder_holding, precheck, protect};
+pub use protect::{folder_holding, game_folder, precheck, protect};
 
 /// The state file format. A file with any other version is refused.
 pub const VERSION: u32 = 1;
@@ -414,6 +414,13 @@ pub enum FolderError {
         holders: Vec<String>,
         action: InUseAction,
     },
+    /// More than one ownerless folder of an environment's game is among the
+    /// paths it names, so which one is its own can't be told.
+    #[error(
+        "More than one game folder could be {name}'s: {}.",
+        .folders.iter().map(|folder| folder.display().to_string()).collect::<Vec<_>>().join(", ")
+    )]
+    SeveralFolders { name: String, folders: Vec<PathBuf> },
     /// A state file that would cover a launched path can't be read.
     #[error("The GOG state for {folder} can't be checked: {detail}.")]
     UnreadableFolder { folder: PathBuf, detail: String },

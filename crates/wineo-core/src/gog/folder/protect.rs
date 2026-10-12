@@ -44,29 +44,16 @@ impl<'a> Touched<'a> {
         // A portable root holds no GOG games, so a `gog_id` there names
         // nothing it could own, and only the paths it touches count.
         let gog_id = gog_id.filter(|_| paths.portable_root().is_none());
-        let mut claim = false;
-        let own = match gog_id {
-            None => None,
-            Some(gog_id) => match find(paths, name, gog_id)? {
-                Some(state) => Some(state),
+        let (own, claim) = match gog_id {
+            None => (None, false),
+            Some(gog_id) => match own_folder(paths, name, gog_id, &matched)? {
+                Some((state, claim)) => (Some(state), claim),
                 None => {
-                    let game = matched
-                        .iter()
-                        .find(|state| state.is_game(gog_id))
-                        .ok_or_else(|| FolderError::StateMissing {
-                            name: name.to_owned(),
-                            gog_id: gog_id.to_owned(),
-                        })?;
-                    // Another environment of the same game got here first.
-                    if let Some(owner) = &game.owner {
-                        return Err(FolderError::OwnedByOther {
-                            folder: game.folder.clone(),
-                            owner: owner.clone(),
-                        }
-                        .into());
+                    return Err(FolderError::StateMissing {
+                        name: name.to_owned(),
+                        gog_id: gog_id.to_owned(),
                     }
-                    claim = true;
-                    Some(game.clone())
+                    .into());
                 }
             },
         };
@@ -174,6 +161,72 @@ pub fn protect(
         found.check(folder, state)?;
     }
     Ok(guards)
+}
+
+/// An environment's game folder: the one whose state names it as owner and
+/// has its `gog_id`, else an ownerless one of its game among `matched`, the
+/// states of the folders it names, which it may claim (the bool). None when
+/// there is neither, a lost state. More than one ownerless candidate is
+/// refused, and so is a folder of its game another environment owns.
+fn own_folder(
+    paths: &Paths,
+    name: &str,
+    gog_id: &str,
+    matched: &[FolderState],
+) -> Result<Option<(FolderState, bool)>> {
+    if let Some(state) = find(paths, name, gog_id)? {
+        return Ok(Some((state, false)));
+    }
+    let mut games: Vec<&FolderState> = Vec::new();
+    for state in matched.iter().filter(|state| state.is_game(gog_id)) {
+        if !games.iter().any(|seen| seen.folder == state.folder) {
+            games.push(state);
+        }
+    }
+    let ownerless: Vec<&FolderState> = games
+        .iter()
+        .copied()
+        .filter(|state| state.owner.is_none())
+        .collect();
+    match ownerless.as_slice() {
+        [one] => Ok(Some(((*one).clone(), true))),
+        [] => match games.first() {
+            Some(taken) => Err(FolderError::OwnedByOther {
+                folder: taken.folder.clone(),
+                owner: taken.owner.clone().unwrap_or_default(),
+            }
+            .into()),
+            None => Ok(None),
+        },
+        many => Err(FolderError::SeveralFolders {
+            name: name.to_owned(),
+            folders: many.iter().map(|state| state.folder.clone()).collect(),
+        }
+        .into()),
+    }
+}
+
+/// `name`'s game folder, found the way a launch finds it from `touched`,
+/// the host paths its targets name, without claiming or locking anything.
+/// An ownerless folder of its game comes back with no owner, for the
+/// caller to claim under the state lock or only read.
+pub fn game_folder(
+    paths: &Paths,
+    name: &str,
+    gog_id: &str,
+    touched: &[PathBuf],
+) -> Result<Option<FolderState>> {
+    // Its own folder first, so a broken state it owns is reported as its.
+    if let Some(state) = find(paths, name, gog_id)? {
+        return Ok(Some(state));
+    }
+    let mut matched = Vec::new();
+    for path in touched.iter().filter(|path| path.is_absolute()) {
+        if let Some(state) = folder_holding(paths, path)? {
+            matched.push(state);
+        }
+    }
+    Ok(own_folder(paths, name, gog_id, &matched)?.map(|(state, _)| state))
 }
 
 /// Finds the folders a launch touches and takes their in-use locks. They're
