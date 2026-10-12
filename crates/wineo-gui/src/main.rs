@@ -1036,6 +1036,7 @@ impl App {
                                 "2" => flow::Event::Prefix,
                                 "3" => flow::Event::Heroic,
                                 "4" => flow::Event::Steam,
+                                "5" => flow::Event::Gog,
                                 _ => return Task::none(),
                             };
                             self.flow_update(self.flow_generation, event)
