@@ -834,3 +834,49 @@ fn heroics_that_list_a_game_in_different_folders_refuse_naming_both() {
     );
     before.assert_unchanged(f.root.path());
 }
+
+#[test]
+fn a_windows_game_both_heroics_list_takes_the_native_prefix_and_settings() {
+    let f = fixture();
+    f.install_proton("GE-Proton10-4");
+    let folder = f.heroic_disco(proton("GE-Proton10-4"));
+    fs::write(
+        f.heroic().join(format!("GamesConfig/{DISCO}.json")),
+        json!({ DISCO.to_string(): {
+            "winePrefix": f.root.path().join("Prefixes/Disco"),
+            "wineVersion": proton("GE-Proton10-4"),
+            "launcherArgs": "--from native",
+            "enviromentOptions": [{"key": "FROM_HEROIC", "value": "native"}],
+        } })
+        .to_string(),
+    )
+    .unwrap();
+    let flatpak_prefix = f.flatpak_lists_disco(&folder, proton("GE-Proton10-4"));
+    let flatpak = Snapshot::capture(&f.heroic_flatpak()).unwrap();
+    let flatpak_prefix_before = Snapshot::capture(&flatpak_prefix).unwrap();
+
+    let out = import(&f, &["--game", &game(DISCO), "--yes"]);
+    assert_success(&out);
+    let text = stdout(&out);
+    for line in [
+        "  heroic       native (~/config/heroic), also listed by Flatpak Heroic",
+        "  prefix       ~/Prefixes/Disco (Heroic's, kept where it is)",
+        "Migrated Disco Elysium as disco-elysium.",
+    ] {
+        assert!(
+            text.lines().any(|l| l == line),
+            "missing {line:?} in:\n{text}"
+        );
+    }
+    let config = f.created_config("disco-elysium");
+    assert!(config.contains("prefix = \"~/Prefixes/Disco\""), "{config}");
+    assert!(config.contains("FROM_HEROIC = \"native\""), "{config}");
+    assert!(
+        config.contains(r#"args = ["--from", "native"]"#),
+        "{config}"
+    );
+    assert!(!config.contains("flatpak"), "{config}");
+    assert!(!config.contains("FlatpakDisco"), "{config}");
+    flatpak.assert_unchanged(&f.heroic_flatpak());
+    flatpak_prefix_before.assert_unchanged(&flatpak_prefix);
+}

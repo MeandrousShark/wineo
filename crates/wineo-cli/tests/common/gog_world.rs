@@ -118,6 +118,45 @@ impl Fixture {
         .unwrap();
     }
 
+    /// A Flatpak Heroic that also lists Disco Elysium at `folder`, with a
+    /// prefix and settings of its own, so a migration that read it would
+    /// show. Returns the prefix.
+    pub fn flatpak_lists_disco(&self, folder: &Path, runner: Value) -> PathBuf {
+        let heroic = self.heroic_flatpak();
+        fs::create_dir_all(heroic.join("GamesConfig")).unwrap();
+        fs::create_dir_all(heroic.join("gog_store")).unwrap();
+        fs::write(heroic.join("config.json"), r#"{"defaultSettings":{}}"#).unwrap();
+        let prefix = self.root.path().join("Prefixes/FlatpakDisco");
+        fs::create_dir_all(prefix.join("pfx/drive_c")).unwrap();
+        fs::write(
+            prefix.join("pfx/system.reg"),
+            "WINE REGISTRY Version 2\n#arch=win64\n",
+        )
+        .unwrap();
+        fs::write(
+            heroic.join(format!("GamesConfig/{DISCO}.json")),
+            json!({ DISCO.to_string(): {
+                "winePrefix": prefix, "wineVersion": runner,
+                "launcherArgs": "--from flatpak",
+                "enviromentOptions": [{"key": "FROM_HEROIC", "value": "flatpak"}],
+            } })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            heroic.join("gog_store/installed.json"),
+            json!({"installed": [{
+                "platform": "windows", "executable": "", "install_path": folder,
+                "install_size": "9.57 GiB", "is_dlc": false, "version": "WINkay16062026_memfix",
+                "appName": DISCO.to_string(), "installedDLCs": [], "language": "en-US",
+                "versionEtag": "", "buildId": "59781086834418085", "pinnedVersion": false,
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        prefix
+    }
+
     fn installed_path(&self) -> PathBuf {
         self.heroic().join("gog_store/installed.json")
     }
