@@ -1083,6 +1083,21 @@ Settled by the maintainer on 2026-10-12, before step 7:
   can't be named falls back to `Something is running from rimworld's game
   folder. Stop it first.`
 
+Settled by the maintainer on 2026-10-12, during step 7b:
+
+- **Downloading holds no locks.** An update downloads and verifies its
+  packages first, changing nothing, so the game can still be played. Only
+  then does it take the environment's operation lock, the in-use lock, and
+  the state lock, and check everything again. If something is running from
+  the folder by then, it refuses as usual, and the packages stay cached so
+  running it again doesn't download them twice.
+- **A migrated game's first rebuild** has no recorded winning files, so a
+  file at a path a product ships isn't known to be yours. Like question
+  15, it's overwritten, and listed when its content differed from the new
+  file, rather than saved aside.
+- **No real-GOG `--ignored` update test.** The acceptance run updating
+  RimWorld covers it, and the fake server covers the download paths.
+
 Chosen during step 7a:
 
 - **Wording.** Several holders read `rimworld-copy and rimworld-2 are
