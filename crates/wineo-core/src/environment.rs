@@ -55,6 +55,17 @@ pub struct HeroicIdSnapshot {
     inode: u64,
 }
 
+/// What `Environment::record_gog_id` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GogIdRecord {
+    Written,
+    /// The config already had it, so nothing was written.
+    AlreadySet,
+    /// The config isn't the one the game was matched to any more, so nothing
+    /// was written.
+    Changed,
+}
+
 /// Options for creating an environment. Anything unset falls back to the global defaults.
 #[derive(Debug, Default)]
 pub struct NewEnvironment {
@@ -499,8 +510,16 @@ impl Environment {
     /// Writes `gog_id` onto an environment's config, keeping the rest of the
     /// file unchanged, and syncs it so it's on disk before the game folder's
     /// state names the environment. Only migration calls this, holding the
-    /// environment's operation lock. Returns whether it wrote anything.
-    pub fn record_gog_id(paths: &Paths, name: &str, gog_id: &str) -> Result<bool> {
+    /// environment's operation lock. Not every edit takes that lock, so
+    /// `still_matches` is asked again under the config lock whether the
+    /// config is still the one the game was matched to, and nothing is
+    /// written when it isn't.
+    pub fn record_gog_id(
+        paths: &Paths,
+        name: &str,
+        gog_id: &str,
+        still_matches: &dyn Fn(&Environment) -> bool,
+    ) -> Result<GogIdRecord> {
         check_name(name)?;
         crate::snapshot::check_recovery_marker(paths, name)?;
         let path = paths.environment_config(name);
@@ -512,9 +531,16 @@ impl Environment {
             }
             Err(err) => return Err(err).context(|| format!("failed to read {}", path.display())),
         };
-        let config = EnvironmentConfig::parse(&path, &text)?;
-        match config.gog_id.as_deref() {
-            Some(current) if current == gog_id => return Ok(false),
+        let environment = Self {
+            name: name.to_owned(),
+            path: path.clone(),
+            config: EnvironmentConfig::parse(&path, &text)?,
+        };
+        if !still_matches(&environment) {
+            return Ok(GogIdRecord::Changed);
+        }
+        match environment.config.gog_id.as_deref() {
+            Some(current) if current == gog_id => return Ok(GogIdRecord::AlreadySet),
             Some(_) => {
                 return Err(Error::ConfigInvalid {
                     path,
@@ -538,7 +564,7 @@ impl Environment {
             .and_then(|()| fs::File::open(dir))
             .and_then(|dir| dir.sync_all())
             .context(|| format!("failed to sync {}", path.display()))?;
-        Ok(true)
+        Ok(GogIdRecord::Written)
     }
 }
 

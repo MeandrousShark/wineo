@@ -23,7 +23,7 @@ use super::folder::{
 };
 use crate::cancel::Token;
 use crate::config::{Arch, GlobalConfig};
-use crate::environment::{self, Environment};
+use crate::environment::{self, Environment, GogIdRecord};
 use crate::heroic::{HeroicGogGame, HeroicImport, HeroicSource, InputFingerprint};
 use crate::heroic_import::{self, GamePlan, NativePlan, Options, Registered, default_name};
 use crate::import::ImportProgress;
@@ -480,7 +480,28 @@ fn attach(
     // The config first: a crash before the state is written leaves an
     // environment whose state is lost, which refuses to launch until it's
     // migrated again, never a state naming an owner that doesn't know it.
-    let recorded_gog_id = Environment::record_gog_id(paths, name, &game.id)?;
+    #[cfg(test)]
+    tests::before_record();
+    // What the match rested on, checked again under the config lock, since
+    // a target edit doesn't take the operation lock.
+    let still_matches = |environment: &Environment| {
+        if has_gog_id {
+            environment.config.gog_id.as_deref() == Some(game.id.as_str())
+        } else {
+            runs(
+                paths,
+                environment,
+                game.platform,
+                &paths::resolve(&migration.launch.exe),
+                &resolved(&migration.prefixes),
+            )
+        }
+    };
+    let recorded_gog_id = match Environment::record_gog_id(paths, name, &game.id, &still_matches)? {
+        GogIdRecord::Written => true,
+        GogIdRecord::AlreadySet => false,
+        GogIdRecord::Changed => return Err(MigrateError::Changed.into()),
+    };
     write_state(&lock, migration, state, name)?;
     Ok(Outcome::Migrated(Migrated {
         environment: name.to_owned(),
@@ -903,10 +924,7 @@ fn match_environment(
     prefixes: &[PathBuf],
 ) -> Result<Found> {
     let exe = paths::resolve(exe);
-    let prefixes: Vec<PathBuf> = prefixes
-        .iter()
-        .map(|prefix| paths::resolve(prefix))
-        .collect();
+    let prefixes = resolved(prefixes);
     let mut by_id = Vec::new();
     let mut by_paths = Vec::new();
     let mut unloadable = Vec::new();
@@ -969,6 +987,13 @@ fn match_environment(
         }
         _ => Err(ambiguous(by_paths.into_iter().map(|(name, _)| name).collect()).into()),
     }
+}
+
+fn resolved(prefixes: &[PathBuf]) -> Vec<PathBuf> {
+    prefixes
+        .iter()
+        .map(|prefix| paths::resolve(prefix))
+        .collect()
 }
 
 /// The `gog_id` a config records, read as plain TOML.

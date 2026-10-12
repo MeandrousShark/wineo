@@ -12,21 +12,42 @@ use crate::gog::folder::{
 };
 use crate::test_snapshot::{SnapshotEntry, assert_unchanged, snapshot_tree};
 
+type Hook = Box<dyn FnOnce()>;
+
 thread_local! {
-    static AFTER_CREATE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
-        std::cell::RefCell::new(None);
+    static HOOKS: std::cell::RefCell<Vec<(&'static str, Hook)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Runs the hook set on this thread, once, between creating a new
-/// environment and the locked pass that writes its state.
-pub(super) fn after_create() {
-    if let Some(hook) = AFTER_CREATE.with(|hook| hook.borrow_mut().take()) {
+/// Runs the hook set on this thread for `at`, once.
+fn run_hook(at: &str) {
+    let hook = HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
+        let index = hooks.iter().position(|(point, _)| *point == at)?;
+        Some(hooks.remove(index).1)
+    });
+    if let Some(hook) = hook {
         hook();
     }
 }
 
+fn on(at: &'static str, hook: impl FnOnce() + 'static) {
+    HOOKS.with(|hooks| hooks.borrow_mut().push((at, Box::new(hook))));
+}
+
+/// Between creating a new environment and the locked pass that writes its
+/// state.
+pub(super) fn after_create() {
+    run_hook("after_create");
+}
+
+/// Under the folder's locks, just before `gog_id` is recorded.
+pub(super) fn before_record() {
+    run_hook("before_record");
+}
+
 fn on_create(hook: impl FnOnce() + 'static) {
-    AFTER_CREATE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    on("after_create", hook);
 }
 
 const RIMWORLD: &str = "1094900565";
@@ -1296,4 +1317,62 @@ fn the_game_folder_itself_is_a_working_directory() {
         fx.migrated(&migration);
         assert_eq!(fx.state(&folder).unwrap().owner.as_deref(), Some("disco"));
     }
+}
+
+#[test]
+fn a_target_edited_after_matching_is_not_attached() {
+    let mut fx = Fixture::new();
+    let folder = fx.rimworld();
+    fx.native("rimworld", &folder.join("start.sh"), "");
+    let heroic = fx.heroic_files();
+    let migration = fx.migration(RIMWORLD);
+    let paths = fx.paths.clone();
+    let other = fx.path("unrelated.sh");
+    fs::write(&other, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&other, fs::Permissions::from_mode(0o755)).unwrap();
+    // A target edit doesn't take the operation lock, so it can land after
+    // matching, while migration holds the folder's locks.
+    on("before_record", move || {
+        let exe = other.display().to_string();
+        crate::settings::apply(
+            &paths,
+            crate::settings::ConfigFile::Environment("rimworld"),
+            &[("targets.game.exe", exe.as_str())],
+            &[],
+        )
+        .unwrap();
+    });
+    assert!(matches!(
+        migrate_error(fx.apply(&migration)),
+        MigrateError::Changed
+    ));
+    let config = fx.config("rimworld");
+    assert!(config.contains("unrelated.sh"), "{config}");
+    assert!(!config.contains("gog_id"));
+    assert!(fx.state(&folder).is_none());
+
+    // An id match is checked by its id: unsetting it meanwhile stops it.
+    let mut fx = Fixture::new();
+    let folder = fx.rimworld();
+    fx.native(
+        "tracked",
+        &fx.path("elsewhere/run.sh"),
+        &format!("gog_id = \"{RIMWORLD}\"\n"),
+    );
+    let migration = fx.migration(RIMWORLD);
+    let config = fx.paths.environment_config("tracked");
+    on("before_record", move || {
+        let text = fs::read_to_string(&config).unwrap();
+        fs::write(
+            &config,
+            text.replace(&format!("gog_id = \"{RIMWORLD}\"\n"), ""),
+        )
+        .unwrap();
+    });
+    assert!(matches!(
+        migrate_error(fx.apply(&migration)),
+        MigrateError::Changed
+    ));
+    assert!(fx.state(&folder).is_none());
+    heroic.assert_unchanged();
 }
