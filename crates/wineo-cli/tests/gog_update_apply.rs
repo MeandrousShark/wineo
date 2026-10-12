@@ -177,7 +177,7 @@ fn an_up_to_date_game_says_so_without_asking_or_downloading() {
 fn an_update_without_a_terminal_needs_yes() {
     let (f, api, folder) = world();
     let out = f.gog(&api, &["update", "rimworld"]);
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(
         stderr(&out).contains("error: Updating without a terminal needs --yes."),
         "{}",
@@ -756,7 +756,7 @@ fn all_with_something_to_confirm_needs_yes_without_a_terminal() {
     let (f, api, folder) = world();
     f.galaxy_game_with_update(&api);
     let out = f.gog(&api, &["update", "--all"]);
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(
         stderr(&out).contains("error: Updating without a terminal needs --yes."),
         "{}",

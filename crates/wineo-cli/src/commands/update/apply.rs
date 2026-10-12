@@ -145,7 +145,7 @@ fn one(paths: &Paths, args: &Args, name: &str) -> anyhow::Result<ExitCode> {
     };
     let asking = !args.yes && !args.dry_run;
     if asking && !prompt::interactive() {
-        return Ok(usage_error(NEEDS_YES));
+        anyhow::bail!(NEEDS_YES);
     }
     print_review(paths, &pending);
     if args.dry_run {
@@ -224,7 +224,7 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     // Only something to confirm needs a terminal, so a library with nothing
     // to update is fine without one.
     if asking && !ready.is_empty() && !prompt::interactive() {
-        return Ok(usage_error(NEEDS_YES));
+        anyhow::bail!(NEEDS_YES);
     }
     for line in &skipped {
         println!("{line}");

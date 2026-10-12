@@ -15,7 +15,7 @@ use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 
 use super::Args;
-use crate::commands::gog_support::{usage_error, warn};
+use crate::commands::gog_support::warn;
 use crate::commands::import::{ReturnToSourceMenu, check_review};
 use crate::commands::import_heroic::{
     ChosenRunner, ensure_components_available, finish_registered, pick_runner, report_playtime,
@@ -380,7 +380,7 @@ pub(super) fn one(paths: &Paths, args: &Args, id: &str, verbose: bool) -> anyhow
     };
     let asking = !args.yes && !args.dry_run;
     if asking && !prompt::interactive() {
-        return Ok(usage_error(NEEDS_YES));
+        anyhow::bail!(NEEDS_YES);
     }
     let mut prompt = if asking { Some(terminal()?) } else { None };
     prepare(paths, &global, &mut migration, prompt.as_mut(), verbose)?;
@@ -401,7 +401,7 @@ pub(super) fn all(paths: &Paths, args: &Args, verbose: bool) -> anyhow::Result<E
     host_only(paths)?;
     let asking = !args.yes && !args.dry_run;
     if asking && !prompt::interactive() {
-        return Ok(usage_error(NEEDS_YES));
+        anyhow::bail!(NEEDS_YES);
     }
     let global = GlobalConfig::load(paths)?;
     let heroic = Heroic::load(paths)?;

@@ -226,7 +226,7 @@ fn migrating_without_a_terminal_needs_yes() {
     let before = Snapshot::capture(f.root.path()).unwrap();
     for args in [&["--game", "1094900565"][..], &["--all"]] {
         let out = import(&f, args);
-        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
         assert!(
             stderr(&out).contains("error: Migrating without a terminal needs --yes."),
             "{}",
