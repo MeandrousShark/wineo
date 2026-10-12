@@ -1124,6 +1124,37 @@ Settled by the maintainer on 2026-10-12, during step 7b:
 - **No real-GOG `--ignored` update test.** The acceptance run updating
   RimWorld covers it, and the fake server covers the download paths.
 
+Chosen during step 7b:
+
+- **Claiming at update.** An environment's ownerless folder is found
+  through its targets' programs, working directories, and absolute
+  arguments, like a launch finds it, and claimed under the state lock
+  after the download. Two ownerless folders of the game refuse, naming
+  both; a launch now refuses that case too instead of claiming the first.
+  Status checks use the same lookup without claiming.
+- **What a rebuild does with folders.** A tracked folder becoming a file is
+  replaced only when it's empty after old files are removed; otherwise
+  it's saved aside with what's in it. A tracked folder the new version
+  drops is removed only when empty, and kept otherwise. Modes of existing
+  folders aren't changed.
+- **`--reinstall`** skips the status check, so it rebuilds a migrated game
+  whose installed version is unknown. It still refuses when an installer is
+  missing. A Linux installer listed as more than one file is refused.
+- **The unpacked estimate** equals the download size, since GOG publishes
+  no unpacked size before downloading.
+- **Cached packages** are pinned (the cache's per-product lock) from
+  verification until the journal naming them is durable, and cleanup scans
+  journals and removes under the same pin, so it never removes packages
+  another update is about to name. A state file it can't read keeps them.
+  Pins come before the operation, in-use, and state locks.
+- **Durability of moved folders.** Before a folder is saved aside, every
+  folder inside it that any attempt may have changed is synced, deepest
+  first, then the folder itself, so nothing pending moves with it. Before
+  committing, the folder of every recorded path that still exists is
+  synced, which covers changes an earlier, crashed attempt made.
+- **Staging folders** left by a failure or cancel stay until recovery
+  removes them, along with the operation's other `.wineo-<op>-*` files.
+
 ## Implementation sequence
 
 1. Create `wineo-gog` with the GOG client: login URL, code exchange,

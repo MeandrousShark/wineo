@@ -335,6 +335,40 @@ an hour unless `refresh` is set.
 - `UpdateError::NotTracked` and `Unloadable` refuse an environment with no
   `gog_id` or a config that can't be read. A lost or unreadable state file
   is an error naming it.
+- An environment whose game folder has no owner (a crash between a trash
+  restore's config and state writes) is found through its targets' paths
+  by `folder::game_folder`, the same lookup launches use, and reported
+  normally without claiming it. Two such folders refuse with
+  `FolderError::SeveralFolders`.
+
+Updating a native game, reinstalling it, or finishing an interrupted one
+goes through `gog::update::plan` and `apply`:
+
+- `plan(paths, session, name, Options { reinstall, refresh }, &token) ->
+  Plan` reads only. It returns `UpToDate` or `Update(Pending)`, which says
+  what will happen (`kind`, `is_recovery`, `is_offline`, `claims` for an
+  ownerless folder), each product's installed and new version
+  (`products()`), the download size, and an unpacked estimate (labeled as
+  one: GOG publishes no unpacked size). A folder with a journal is always
+  `Update`, finishing the journal's own kind. `session` may be None only
+  for recovery whose cached packages all verify.
+- `apply(paths, session, &pending, &token, progress) -> Updated` downloads
+  and verifies every package holding no lock, so the game can be played
+  meanwhile, then takes the owner's operation lock, the in-use lock, and
+  the state lock, rechecks the plan, writes the journal, stages, publishes,
+  syncs, and commits. `Progress` reports download, verify, stage, and
+  publish steps. `Updated` lists what was saved aside (your files at new
+  paths, as `.wineo-saved`), kept (old files you changed), and overwritten
+  (shipped files you changed, and on a migrated game's first rebuild, any
+  file that differed from the new one).
+- Windows games refuse (`UpdateError::WindowsInstaller` names plan 0050,
+  `Galaxy` plan 0051), as do `install` and `repair` journals from later
+  releases (`LaterRelease`). `Running` means the environment is running,
+  `Changed` that the folder changed since planning, and
+  `Canceled { journal }` says whether a journal was left for recovery.
+  Wording is placeholder until the CLI settles it.
+- Downloaded packages live in `Paths::gog_download_cache()` and are removed
+  after the commit unless another folder's journal still names them.
 
 A folder in use refuses an update or migration with `FolderError::InUse`,
 which names the environments running from it (`rimworld-copy is running
