@@ -918,6 +918,10 @@ fn a_running_environment_or_a_folder_in_use_is_refused() {
         .try_lock()
         .unwrap()
         .unwrap();
+    // A run also holds the operation lock shared for as long as it lasts.
+    let claim = Locks::new(&fx.paths)
+        .acquire(Operation::Launch, "rimworld", &[])
+        .unwrap();
     for error in [
         fx.plan(RIMWORLD).unwrap_err(),
         fx.apply(&migration).unwrap_err(),
@@ -927,6 +931,22 @@ fn a_running_environment_or_a_folder_in_use_is_refused() {
             "rimworld is running. Stop it before migrating."
         );
     }
+    drop(run);
+    let error = fx.apply(&migration).unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<MigrateError>(),
+        Some(MigrateError::Running { name }) if name == "rimworld"
+    ));
+    drop(claim);
+    // The run lock alone, between a launch's steps, is refused the same way.
+    let run = Runtime::new(&fx.paths, "rimworld")
+        .try_lock()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fx.apply(&migration).unwrap_err().to_string(),
+        "rimworld is running. Stop it before migrating."
+    );
     drop(run);
 
     let canonical = folder::canonical(&folder).unwrap();
@@ -1012,6 +1032,7 @@ fn a_change_after_planning_is_refused() {
     let mut fx = Fixture::new();
     let folder = fx.rimworld();
     fx.native("rimworld", &folder.join("start.sh"), "");
+    let heroic = fx.heroic_files();
     let migration = fx.migration(RIMWORLD);
     fs::write(
         folder.join("gameinfo"),
@@ -1023,10 +1044,11 @@ fn a_change_after_planning_is_refused() {
         MigrateError::Changed
     ));
     assert!(!fx.config("rimworld").contains("gog_id"));
+    heroic.assert_unchanged();
 }
 
 #[test]
-fn an_environment_owning_another_folder_for_the_game_is_refused() {
+fn an_environment_owning_another_folder_for_the_game_is_already_migrated() {
     let mut fx = Fixture::new();
     let folder = fx.rimworld();
     let before = fx.native(
@@ -1043,9 +1065,10 @@ fn an_environment_owning_another_folder_for_the_game_is_refused() {
     state.committed = Some(fx.rimworld_committed(1094900565));
     fx.write_state(&state);
     let heroic = fx.heroic_files();
+    // The outcome names the folder it owns, which isn't Heroic's.
     assert!(matches!(
-        migrate_error(fx.plan(RIMWORLD)),
-        MigrateError::OtherFolder { other_folder, .. } if other_folder == state.folder
+        fx.plan(RIMWORLD).unwrap(),
+        Plan::AlreadyMigrated { environment, folder } if environment == "rimworld" && folder == state.folder
     ));
     assert_eq!(fx.config("rimworld"), before);
     assert!(fx.state(&folder).is_none());

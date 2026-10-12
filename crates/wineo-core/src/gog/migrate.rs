@@ -28,7 +28,7 @@ use crate::heroic::{HeroicGogGame, HeroicImport, HeroicSource, InputFingerprint}
 use crate::heroic_import::{self, GamePlan, NativePlan, Options, Registered, default_name};
 use crate::import::ImportProgress;
 use crate::launch;
-use crate::operation::{Locks, Operation};
+use crate::operation::{Guard, Locks, Operation};
 use crate::paths::{self, Paths};
 use crate::runtime::Runtime;
 
@@ -62,13 +62,6 @@ pub enum MigrateError {
         name: String,
         gog_id: String,
         other: String,
-    },
-    #[error("{name} already has GOG game {gog_id} in {other_folder}, not {folder}.")]
-    OtherFolder {
-        name: String,
-        gog_id: String,
-        folder: PathBuf,
-        other_folder: PathBuf,
     },
     #[error("{folder} holds the state of GOG game {other}, not {gog_id}.")]
     StateOtherGame {
@@ -322,7 +315,7 @@ pub fn plan(paths: &Paths, source: &HeroicSource, gog_id: &str) -> Result<Plan> 
     let target = match found {
         Found::Existing { name, gog_id: has } => {
             if has.is_some()
-                && let Some(state) = already(paths, &name, &game, &folder)?
+                && let Some(state) = already(paths, &name, &game)?
             {
                 return Ok(Plan::AlreadyMigrated {
                     environment: name,
@@ -432,7 +425,7 @@ fn attach(
     cancel: &dyn Fn() -> bool,
 ) -> Result<Outcome> {
     let game = &migration.game;
-    let _operation = Locks::new(paths).acquire(Operation::Migrate, name, &[])?;
+    let _operation = lock_operation(paths, name)?;
     // Again under the operation lock, so the config can't change and no
     // launch can start from here on.
     let has_gog_id = match migration.rematch(paths)? {
@@ -442,7 +435,7 @@ fn attach(
         } if found == name => gog_id.is_some(),
         _ => return Err(MigrateError::Changed.into()),
     };
-    if has_gog_id && let Some(state) = already(paths, name, game, &migration.folder)? {
+    if has_gog_id && let Some(state) = already(paths, name, game)? {
         return Ok(Outcome::AlreadyMigrated {
             environment: name.to_owned(),
             folder: state.folder,
@@ -524,7 +517,7 @@ fn create(
         _ => return Err(MigrateError::NeedsRunner.into()),
     };
 
-    let _operation = Locks::new(paths).acquire(Operation::Migrate, &name, &[])?;
+    let _operation = lock_operation(paths, &name)?;
     let _in_use = folder::lock_for_update(paths, &migration.folder, &name)?;
     let lock = FolderLock::exclusive(paths, &migration.folder, cancel)?;
     let state = decide(
@@ -544,6 +537,21 @@ fn create(
         recorded_gog_id: false,
         registered: Some(registered),
     }))
+}
+
+/// Takes `name`'s operation lock. A run holds it shared for as long as the
+/// game runs, so that refusal is the running one.
+fn lock_operation(paths: &Paths, name: &str) -> Result<Guard> {
+    match Locks::new(paths).acquire(Operation::Migrate, name, &[]) {
+        Err(crate::Error::Busy {
+            holder: Some(Operation::Launch),
+            ..
+        }) => Err(MigrateError::Running {
+            name: name.to_owned(),
+        }
+        .into()),
+        result => Ok(result?),
+    }
 }
 
 fn write_state(
@@ -599,27 +607,10 @@ fn decide(
     }
 }
 
-/// The folder `name` already owns for the game. One that isn't Heroic's
-/// folder is refused, since adopting Heroic's too would give it two.
-fn already(
-    paths: &Paths,
-    name: &str,
-    game: &HeroicGogGame,
-    folder: &Path,
-) -> Result<Option<FolderState>> {
-    let Some(state) = folder::find(paths, name, &game.id)? else {
-        return Ok(None);
-    };
-    if state.folder != folder {
-        return Err(MigrateError::OtherFolder {
-            name: name.to_owned(),
-            gog_id: game.id.clone(),
-            folder: folder.to_owned(),
-            other_folder: state.folder,
-        }
-        .into());
-    }
-    Ok(Some(state))
+/// The folder `name` already owns for the game, which may not be
+/// Heroic's.
+fn already(paths: &Paths, name: &str, game: &HeroicGogGame) -> Result<Option<FolderState>> {
+    folder::find(paths, name, &game.id)
 }
 
 /// Heroic's install folder, canonical. It has to exist.
