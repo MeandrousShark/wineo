@@ -977,6 +977,51 @@ mod tests {
     }
 
     #[test]
+    fn canceling_during_a_download_changes_nothing() {
+        let (root, paths) = setup();
+        let folder = native_game(&paths, root.path(), "rimworld", RIMWORLD, "1.0", false);
+        let keyring = keyring();
+        save_login(&paths, &keyring);
+        let server = product_server(vec![native_product(RIMWORLD, "RimWorld", "1.1")]);
+        let Planned::Update(pending) =
+            plan_with(&paths, &keyring, server.client(), "rimworld", &Token::new()).unwrap()
+        else {
+            panic!("expected an update");
+        };
+        let before = wineo_core::gog::folder::peek(&paths, &folder).unwrap();
+        let token = Token::new();
+        let mut said = Vec::new();
+        let failure = apply_with(
+            &paths,
+            &keyring,
+            server.client(),
+            &pending,
+            &token,
+            |line| {
+                if line.starts_with("Downloading") {
+                    token.cancel();
+                }
+                said.push(line);
+            },
+        )
+        .unwrap_err();
+        assert_eq!(failure, Failure::Canceled { journal: false }, "{said:?}");
+        assert_eq!(failure.message("rimworld"), "Update canceled.");
+        assert!(said[0].starts_with("Downloading RimWorld"), "{said:?}");
+        assert!(
+            server
+                .requests()
+                .iter()
+                .any(|line| line.contains("/files/")),
+            "the download had started"
+        );
+        assert_eq!(
+            wineo_core::gog::folder::peek(&paths, &folder).unwrap(),
+            before
+        );
+    }
+
+    #[test]
     fn progress_lines_read_like_the_cli_and_are_paced() {
         let (_root, _paths, pending) = planned();
         let mut reporter = Reporter::new(&pending);
