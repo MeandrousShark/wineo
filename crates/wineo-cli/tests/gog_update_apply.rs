@@ -783,3 +783,26 @@ fn an_up_to_date_dlc_says_none_in_json_like_a_game_does() {
         .collect();
     assert_eq!(states, ["none", "none"]);
 }
+
+#[test]
+fn a_refreshed_dry_run_reviews_the_new_version_though_an_older_copy_is_cached() {
+    let (f, api, _) = world();
+    // Caches the details at V2.
+    assert_success(&f.gog(&api, &["update", "--check", "rimworld"]));
+    let newer = "1.6.5000 rev700";
+    offer(&api, newer);
+    let before = tree(f.root.path(), &[]);
+    for args in [
+        &["update", "rimworld", "--dry-run", "--refresh"][..],
+        &["update", "--all", "--dry-run", "--refresh"],
+    ] {
+        let out = f.gog(&api, args);
+        assert_success(&out);
+        let text = stdout(&out);
+        assert!(
+            text.contains(&format!("RimWorld  {V1} -> {newer}")),
+            "{args:?}: {text}"
+        );
+        assert_same_tree(&before, &tree(f.root.path(), &[]));
+    }
+}

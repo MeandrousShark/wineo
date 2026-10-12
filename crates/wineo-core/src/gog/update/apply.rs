@@ -348,8 +348,10 @@ pub fn plan(
                 .into());
             }
         }
-        // Just fetched, so the cached details are current.
-        refresh = false;
+        // Just fetched and cached, so the cached details are current. A
+        // read-only plan cached nothing, so it fetches again rather than
+        // reuse an older copy that is still fresh.
+        refresh = refresh && options.read_only;
     }
     let resolved = resolve(
         paths,

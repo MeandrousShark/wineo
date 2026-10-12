@@ -1935,3 +1935,26 @@ fn the_changed_message_names_the_command_to_run() {
         "rimworld's GOG game changed while updating; run wineo update rimworld again."
     );
 }
+
+#[test]
+fn a_read_only_plan_with_refresh_reviews_what_gog_offers_now() {
+    let fx = installed_v1();
+    let cache = fx.paths.gog_product_cache(RIMWORLD);
+    let cached = fs::read(&cache).unwrap();
+    ready_for_v2(&fx);
+    let pending = fx.pending(
+        true,
+        Options {
+            read_only: true,
+            ..Options::default()
+        },
+    );
+    let versions: Vec<_> = pending
+        .products()
+        .iter()
+        .map(|p| p.version.clone())
+        .collect();
+    assert_eq!(versions, [Some("2.0".to_owned()), Some("2.0".to_owned())]);
+    // Nothing was cached for the next run either.
+    assert_eq!(fs::read(&cache).unwrap(), cached);
+}
