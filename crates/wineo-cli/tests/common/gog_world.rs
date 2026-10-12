@@ -2,6 +2,7 @@
 //! GOG games, to drive `import gog` and `update` against the fake GOG.
 
 use std::fs;
+use std::io::{Cursor, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -11,6 +12,48 @@ use wineo_core::gog::folder::{
 };
 
 use super::Fixture;
+
+/// One entry in a fixture package, under `data/noarch/`.
+pub enum Item<'a> {
+    File(&'a str, &'a str),
+    Exe(&'a str, &'a str),
+    Link(&'a str, &'a str),
+}
+
+/// A native package like GOG's `.sh`: a shell header, a MojoSetup stand-in,
+/// and a zip of the game files. It has no setup script, since wineo only
+/// runs the ones it knows.
+pub fn gog_package(items: &[Item]) -> Vec<u8> {
+    use zip::write::SimpleFileOptions;
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = |mode: u32| {
+        SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .unix_permissions(mode)
+    };
+    for item in items {
+        match item {
+            Item::File(path, content) | Item::Exe(path, content) => {
+                let mode = if matches!(item, Item::Exe(..)) {
+                    0o755
+                } else {
+                    0o644
+                };
+                zip.start_file(format!("data/noarch/{path}"), options(mode))
+                    .unwrap();
+                zip.write_all(content.as_bytes()).unwrap();
+            }
+            Item::Link(path, target) => zip
+                .add_symlink(format!("data/noarch/{path}"), *target, options(0o777))
+                .unwrap(),
+        }
+    }
+    let zipped = zip.finish().unwrap().into_inner();
+    let mut bytes = b"#!/bin/sh\n# Makeself stand-in\nexit 0\n".to_vec();
+    bytes.extend(b"MOJOSETUP".repeat(50));
+    bytes.extend(zipped);
+    bytes
+}
 
 pub const RIMWORLD: u64 = 1094900565;
 pub const DISCO: u64 = 1771589310;
@@ -186,5 +229,65 @@ impl Fixture {
             .unwrap()
             .write(&state)
             .unwrap();
+    }
+
+    /// A second native game `name` that owns its own folder, installed at
+    /// `version`, for batches.
+    pub fn native_game(&self, name: &str, gog_id: u64, version: &str) -> PathBuf {
+        let folder = self.root.path().join("Games").join(name);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("start.sh"), "#!/bin/sh\n").unwrap();
+        self.gog_environment(name, &folder, gog_id, version, &[]);
+        folder
+    }
+
+    /// Disco Elysium as a Windows game from Galaxy whose latest build is
+    /// newer than the one installed, which wineo can check but not update.
+    pub fn galaxy_game_with_update(&self, api: &super::gog_api::GogApi) {
+        let folder = self.heroic_disco(json!({"type": "wine", "name": "System", "bin": "wine"}));
+        fs::write(
+            self.config_dir().join("environments/disco.toml"),
+            format!(
+                "gog_id = \"{DISCO}\"\nrunner = \"wine\"\nprefix = \"{}\"\n\n[targets.game]\nexe = \"{}\"\n",
+                self.root.path().join("Prefixes/Disco").display(),
+                folder.join("Disco Elysium.exe").display()
+            ),
+        )
+        .unwrap();
+        let state = FolderState {
+            committed: Some(Committed {
+                gog_id: DISCO,
+                platform: Platform::Windows,
+                language: "en-US".to_owned(),
+                track: Track::Galaxy,
+                products: vec![Product {
+                    id: DISCO,
+                    version: None,
+                    build: Some("59781086834418085".to_owned()),
+                    status: ProductStatus::Installed,
+                }],
+                files: Vec::new(),
+            }),
+            ..FolderState::new(fs::canonicalize(&folder).unwrap(), Some("disco".to_owned()))
+        };
+        FolderLock::exclusive(&self.paths(), &state.folder, &|| false)
+            .unwrap()
+            .write(&state)
+            .unwrap();
+        api.with(|config| {
+            config.products.insert(
+                DISCO,
+                super::gog_api::product(
+                    DISCO,
+                    "Disco Elysium",
+                    &[super::gog_api::installer("windows", "en-US", "1")],
+                    &[],
+                ),
+            );
+            config.builds.insert(
+                DISCO,
+                super::gog_api::builds(&[("59781086834418086", None), ("59781086834418085", None)]),
+            );
+        });
     }
 }
