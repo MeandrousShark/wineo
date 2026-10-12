@@ -111,6 +111,8 @@ pub struct ImportedSettings {
     pub vkd3d: Option<String>,
     /// The Heroic game id, recorded only by a Heroic import.
     pub heroic_id: Option<String>,
+    /// The GOG game id, recorded only by migrating a GOG game from Heroic.
+    pub gog_id: Option<String>,
 }
 
 /// Events emitted while checking and copying a prefix or runner tree.
@@ -1474,6 +1476,9 @@ fn finish_config(mut doc: DocumentMut, settings: Option<&ImportedSettings>) -> R
         }
         if let Some(heroic_id) = &settings.heroic_id {
             doc["heroic_id"] = value(heroic_id);
+        }
+        if let Some(gog_id) = &settings.gog_id {
+            doc["gog_id"] = value(gog_id);
         }
         if !settings.env.is_empty() {
             let mut table = Table::new();
