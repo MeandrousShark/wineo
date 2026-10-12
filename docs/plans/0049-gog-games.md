@@ -1271,6 +1271,12 @@ Settled by the maintainer on 2026-10-12, during step 9:
   shows it once. Configs listing the game in different folders still
   refuse, naming both. Found during the visual check: a stale Flatpak
   Heroic also listed RimWorld.
+- **Where canceling stops.** A cancel is honored at checkpoints: each
+  write's last check sits immediately before it, under its lock, and once
+  that check passes the write completes. A request already sent to GOG or
+  SteamGridDB isn't interrupted; the cancel takes effect when its answer
+  arrives, within the client's timeouts. Review findings narrower than
+  this are recorded as limits rather than fixed.
 
 ## Implementation sequence
 
