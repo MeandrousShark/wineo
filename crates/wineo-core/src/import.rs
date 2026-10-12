@@ -1554,7 +1554,24 @@ pub(crate) fn write_config_once(path: &Path, contents: &str) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("config has no parent: {}", path.display()))?;
+    // On first use the directories themselves are new, and each one's entry
+    // in its parent has to be on disk too, or the config could vanish with
+    // them after a power loss.
+    let mut missing = Vec::new();
+    let mut current = parent;
+    while !current.exists() {
+        missing.push(current.to_owned());
+        match current.parent() {
+            Some(up) => current = up,
+            None => break,
+        }
+    }
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    for dir in missing.iter().rev() {
+        if let Some(up) = dir.parent() {
+            sync_config_dir(up)?;
+        }
+    }
     let staging = tempfile::NamedTempFile::new_in(parent).with_context(|| {
         format!(
             "failed to create a config staging file in {}",
@@ -1590,7 +1607,7 @@ fn sync_config_dir(dir: &Path) -> Result<()> {
 
 #[cfg(test)]
 thread_local! {
-    /// Every directory `write_config_once` synced on this thread.
+    /// Every directory `write_config_once` synced on this thread, in order.
     static SYNCED_DIRS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -3029,6 +3046,7 @@ mod config_once_tests {
     fn a_new_config_is_synced_into_its_directory_with_no_staging_left() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("environments");
+        fs::create_dir(&dir).unwrap();
         let path = dir.join("game.toml");
         SYNCED_DIRS.with(|synced| synced.borrow_mut().clear());
         write_config_once(&path, "kind = \"native\"\n").unwrap();
@@ -3044,9 +3062,29 @@ mod config_once_tests {
         assert_eq!(names, ["game.toml"]);
 
         // A config that's already there is neither replaced nor synced for.
+        // The directories exist by now, so only the new name's directory
+        // would have been synced above.
         SYNCED_DIRS.with(|synced| synced.borrow_mut().clear());
         assert!(write_config_once(&path, "other").is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), "kind = \"native\"\n");
         assert!(SYNCED_DIRS.with(|synced| synced.borrow().is_empty()));
+    }
+    #[test]
+    fn a_fresh_config_root_syncs_every_directory_it_creates() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("config/wineo/environments");
+        SYNCED_DIRS.with(|synced| synced.borrow_mut().clear());
+        write_config_once(&dir.join("game.toml"), "kind = \"native\"\n").unwrap();
+        // Each new directory's parent, from the one that already existed
+        // down, then the directory the config was linked into.
+        assert_eq!(
+            SYNCED_DIRS.with(|synced| synced.borrow().clone()),
+            [
+                root.path().to_owned(),
+                root.path().join("config"),
+                root.path().join("config/wineo"),
+                dir,
+            ]
+        );
     }
 }
