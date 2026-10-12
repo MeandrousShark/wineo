@@ -105,6 +105,8 @@ struct Copier<'a, F> {
     done: u64,
     total: u64,
     buffer: Vec<u8>,
+    /// Bytes copied since the last cancel check, across files and pieces.
+    since_check: u64,
 }
 
 impl<F: FnMut(StageProgress)> Copier<'_, F> {
@@ -119,7 +121,6 @@ impl<F: FnMut(StageProgress)> Copier<'_, F> {
     ) -> Result<(u64, String)> {
         let mut hasher = Md5::new();
         let mut written = 0u64;
-        let mut since_check = 0u64;
         loop {
             let read = match from.read(&mut self.buffer) {
                 Ok(read) => read,
@@ -145,9 +146,9 @@ impl<F: FnMut(StageProgress)> Copier<'_, F> {
                 done: self.done,
                 total: self.total,
             });
-            since_check += read as u64;
-            if since_check >= CANCEL_EVERY {
-                since_check = 0;
+            self.since_check += read as u64;
+            if self.since_check >= CANCEL_EVERY {
+                self.since_check = 0;
                 self.check_cancel()?;
             }
         }
@@ -190,8 +191,10 @@ pub fn stage(
         cancel,
         progress,
         done: 0,
+        // Opening checked that this sum fits.
         total: package.unpacked_size() + package.assembled_size(),
         buffer: vec![0; BUFFER],
+        since_check: 0,
     };
     let mut staged = Vec::new();
 
@@ -261,7 +264,15 @@ pub fn stage(
             .iter()
             .find(|staged| staged.path == split.path)
             .map_or(0o644, |staged| staged.mode);
-        let (size, md5) = assemble(&root, split, operation, number, mode, &mut copier)?;
+        let pieces = split
+            .pieces
+            .iter()
+            .map(|piece| {
+                let size = package.file_size(piece).expect("pieces are files");
+                (piece.as_str(), size)
+            })
+            .collect::<Vec<_>>();
+        let (size, md5) = assemble(&root, split, &pieces, operation, number, mode, &mut copier)?;
         staged.retain(|staged| staged.path != split.path && !split.pieces.contains(&staged.path));
         staged.push(WinningEntry {
             size: Some(size),
@@ -277,6 +288,8 @@ pub fn stage(
         .and_then(|dir| dir.sync_all())
         .with_context(|| format!("failed to sync {}", folder.display()))?;
 
+    // A cancel during the last copy or the syncs still counts.
+    copier.check_cancel()?;
     staged.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(staged)
 }
@@ -298,6 +311,7 @@ fn winning(path: &str, kind: EntryType, mode: u32, product: u64) -> WinningEntry
 fn assemble<F: FnMut(StageProgress)>(
     root: &OwnedFd,
     split: &Split,
+    pieces: &[(&str, u64)],
     operation: &str,
     number: usize,
     mode: u32,
@@ -309,22 +323,18 @@ fn assemble<F: FnMut(StageProgress)>(
         .with_context(|| format!("failed to assemble {} in staging", split.path))?;
     let mut hasher = Md5::new();
     let mut size = 0;
-    for piece in &split.pieces {
-        let (piece_dir, piece_leaf) = open_parent(root, piece)?;
-        let fd = rustix::fs::openat(
-            &piece_dir,
-            piece_leaf,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .with_context(|| format!("failed to open {piece} in staging"))?;
+    for &(piece, declared) in pieces {
+        let file = open_piece(root, piece, declared)?;
         let mut tee = Tee {
-            inner: File::from(fd),
+            inner: file.take(declared),
             hasher: &mut hasher,
         };
         let (written, _) = copier
-            .copy(piece, &mut tee, &mut output, u64::MAX)
+            .copy(piece, &mut tee, &mut output, declared)
             .with_context(|| format!("failed to assemble {}", split.path))?;
+        if written != declared {
+            return Err(invalid(format!("{piece} changed while staging")).into());
+        }
         size += written;
     }
     output
@@ -340,10 +350,38 @@ fn assemble<F: FnMut(StageProgress)>(
     Ok((size, lowercase_hex(hasher)))
 }
 
+/// Opens a staged piece, refusing anything that replaced or changed it
+/// since it was written. Nonblocking, so a FIFO put there can't hang the
+/// open.
+fn open_piece(root: &OwnedFd, piece: &str, declared: u64) -> Result<File> {
+    let changed = || invalid(format!("{piece} changed while staging"));
+    let (dir, leaf) = open_parent(root, piece)?;
+    let fd = match rustix::fs::openat(
+        &dir,
+        leaf,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(Errno::LOOP | Errno::NOENT) => return Err(changed().into()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to open {piece} in staging"));
+        }
+    };
+    let stat =
+        rustix::fs::fstat(&fd).with_context(|| format!("failed to check {piece} in staging"))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+        || u64::try_from(stat.st_size).ok() != Some(declared)
+    {
+        return Err(changed().into());
+    }
+    Ok(File::from(fd))
+}
+
 /// Hashes what passes through, so an assembled file's MD5 covers every
 /// piece in order.
 struct Tee<'a> {
-    inner: File,
+    inner: std::io::Take<File>,
     hasher: &'a mut Md5,
 }
 

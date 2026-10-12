@@ -106,6 +106,8 @@ pub struct Package {
     /// Sorted by path, so parents come before their children.
     entries: Vec<Entry>,
     splits: Vec<Split>,
+    unpacked: u64,
+    assembled: u64,
 }
 
 impl Package {
@@ -119,17 +121,32 @@ impl Package {
 
     /// The sum of every game file's declared size, split pieces included.
     pub fn unpacked_size(&self) -> u64 {
-        self.entries
-            .iter()
-            .filter(|entry| entry.kind == EntryType::File)
-            .map(|entry| entry.size)
-            .sum()
+        self.unpacked
     }
 
     /// The extra space assembled split files take while their pieces exist.
     pub fn assembled_size(&self) -> u64 {
-        self.splits.iter().map(|split| split.size).sum()
+        self.assembled
     }
+
+    /// The declared size of a file entry.
+    fn file_size(&self, path: &str) -> Option<u64> {
+        self.entries
+            .binary_search_by(|entry| entry.path.as_str().cmp(path))
+            .ok()
+            .map(|index| &self.entries[index])
+            .filter(|entry| entry.kind == EntryType::File)
+            .map(|entry| entry.size)
+    }
+}
+
+/// Sums sizes, refusing a total that doesn't fit, since a lying ZIP64 size
+/// could otherwise wrap around to something small.
+fn checked_sum(sizes: impl IntoIterator<Item = u64>) -> Result<u64, PackageError> {
+    sizes.into_iter().try_fold(0u64, |sum, size| {
+        sum.checked_add(size)
+            .ok_or_else(|| invalid("its sizes are too large"))
+    })
 }
 
 /// Reads and validates a native package. Nothing is written.
@@ -234,10 +251,21 @@ pub(crate) fn open_with(path: &Path, known: &[[u8; 32]]) -> Result<Package> {
         }
     };
 
+    let unpacked = checked_sum(
+        entries
+            .values()
+            .filter(|entry| entry.kind == EntryType::File)
+            .map(|entry| entry.size),
+    )?;
+    let assembled = checked_sum(splits.iter().map(|split| split.size))?;
+    // Staging counts both in one progress total.
+    checked_sum([unpacked, assembled])?;
     Ok(Package {
         archive,
         entries: entries.into_values().collect(),
         splits,
+        unpacked,
+        assembled,
     })
 }
 
@@ -463,7 +491,7 @@ fn split_files(
                 return Err(invalid(format!("{} isn't a file", entry.path)).into());
             }
             pieces.push(entry.path.clone());
-            size += entry.size;
+            size = checked_sum([size, entry.size])?;
         }
         if pieces.is_empty() {
             return Err(invalid(format!("{path} has no pieces")).into());
@@ -504,13 +532,13 @@ impl SpaceNeeded {
     }
 }
 
-pub fn space_needed(packages: &[&Package]) -> SpaceNeeded {
-    packages
-        .iter()
-        .fold(SpaceNeeded::default(), |sum, package| SpaceNeeded {
-            unpacked: sum.unpacked.saturating_add(package.unpacked_size()),
-            assembled: sum.assembled.saturating_add(package.assembled_size()),
-        })
+pub fn space_needed(packages: &[&Package]) -> Result<SpaceNeeded, PackageError> {
+    let needed = SpaceNeeded {
+        unpacked: checked_sum(packages.iter().map(|package| package.unpacked_size()))?,
+        assembled: checked_sum(packages.iter().map(|package| package.assembled_size()))?,
+    };
+    checked_sum([needed.unpacked, needed.assembled])?;
+    Ok(needed)
 }
 
 /// Refuses when the game folder's filesystem can't hold the packages.
@@ -518,7 +546,7 @@ pub fn check_space(paths: &Paths, folder: &Path, packages: &[&Package]) -> Resul
     let stat = rustix::fs::statvfs(folder)
         .with_context(|| format!("failed to check free space on {}", folder.display()))?;
     let free = stat.f_bavail.saturating_mul(stat.f_frsize);
-    check_space_with(paths, folder, space_needed(packages), free)?;
+    check_space_with(paths, folder, space_needed(packages)?, free)?;
     Ok(())
 }
 

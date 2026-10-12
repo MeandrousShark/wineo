@@ -636,7 +636,7 @@ fn space_needed_sums_unpacked_and_assembled_sizes() {
     let list = b"game/big.bin\nother\n";
     let split = open_bytes(temp.path(), &split_package(list)).unwrap();
     let split_files = (SCRIPT.len() + list.len()) as u64 + 5 + 6 + 7 + 4 + 4;
-    let needed = space_needed(&[&plain, &split]);
+    let needed = space_needed(&[&plain, &split]).unwrap();
     assert_eq!(
         needed,
         SpaceNeeded {
@@ -686,4 +686,172 @@ fn the_shipped_script_list_holds_rimworlds() {
         hex,
         "6f91f1bb9bdcc33da5ec5a6279b5e727146ebf2eb83ef9d1b206364a69829756"
     );
+}
+
+/// A ZIP64 package whose entries declare these uncompressed sizes in the
+/// central directory, whatever they really hold.
+fn zip64_declaring(sizes: &[u64]) -> Vec<u8> {
+    let names: Vec<String> = (0..sizes.len())
+        .map(|n| format!("data/noarch/big{n}"))
+        .collect();
+    let mut bytes = installer(|zip| {
+        for name in &names {
+            zip.start_file(name.as_str(), options(0o644).large_file(true))
+                .unwrap();
+            zip.write_all(b"abc").unwrap();
+        }
+    });
+    for (name, size) in names.iter().zip(sizes) {
+        let name = name.as_bytes();
+        let at = bytes.windows(name.len()).rposition(|w| w == name).unwrap();
+        assert_eq!(&bytes[at - 46..at - 42], &[0x50, 0x4b, 0x01, 0x02]);
+        // The ZIP64 extra field follows the name: id 1, length, then the
+        // uncompressed size.
+        let extra = at + name.len();
+        assert_eq!(&bytes[extra..extra + 2], &[0x01, 0x00]);
+        bytes[extra + 4..extra + 12].copy_from_slice(&size.to_le_bytes());
+    }
+    bytes
+}
+
+#[test]
+fn sizes_that_overflow_are_refused() {
+    let detail = refusal(zip64_declaring(&[u64::MAX, 3]));
+    assert!(detail.contains("its sizes are too large"), "{detail}");
+
+    let temp = tempfile::tempdir().unwrap();
+    let half = 1 << 63;
+    let one = open_bytes(temp.path(), &zip64_declaring(&[half])).unwrap();
+    assert_eq!(one.unpacked_size(), half);
+    let two = open_bytes(temp.path(), &zip64_declaring(&[half])).unwrap();
+    let error = space_needed(&[&one, &two]).unwrap_err();
+    assert!(matches!(error, PackageError::Invalid(_)), "{error}");
+    let folder = temp.path().join("game");
+    fs::create_dir(&folder).unwrap();
+    let paths = Paths::from_lookup(|key| (key == "HOME").then(|| temp.path().into())).unwrap();
+    check_space(&paths, &folder, &[&one, &two]).unwrap_err();
+    // One alone is far more than any disk.
+    let error = check_space(&paths, &folder, &[&one]).unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref::<PackageError>(),
+            Some(PackageError::NoSpace { .. })
+        ),
+        "{error:#}"
+    );
+}
+
+/// What a tampering test does to a staged piece just before assembly.
+#[derive(Debug, Clone, Copy)]
+enum Tamper {
+    Grow,
+    Shrink,
+    Fifo,
+    Symlink,
+    Folder,
+}
+
+fn tamper(piece: &Path, how: Tamper) {
+    match how {
+        Tamper::Grow => {
+            let mut file = fs::OpenOptions::new().append(true).open(piece).unwrap();
+            file.write_all(b"extra").unwrap();
+        }
+        Tamper::Shrink => fs::write(piece, b"s").unwrap(),
+        Tamper::Fifo => {
+            fs::remove_file(piece).unwrap();
+            rustix::fs::mknodat(
+                rustix::fs::CWD,
+                piece,
+                rustix::fs::FileType::Fifo,
+                rustix::fs::Mode::from_raw_mode(0o644),
+                0,
+            )
+            .unwrap();
+        }
+        Tamper::Symlink => {
+            fs::remove_file(piece).unwrap();
+            symlink("big.bin.split01", piece).unwrap();
+        }
+        Tamper::Folder => {
+            fs::remove_file(piece).unwrap();
+            fs::create_dir(piece).unwrap();
+        }
+    }
+}
+
+#[test]
+fn pieces_changed_before_assembly_are_refused() {
+    for how in [
+        Tamper::Grow,
+        Tamper::Shrink,
+        Tamper::Fifo,
+        Tamper::Symlink,
+        Tamper::Folder,
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut package = open_bytes(temp.path(), &split_package(b"game/big.bin")).unwrap();
+        let unpacked = package.unpacked_size();
+        let folder = temp.path().join("game");
+        fs::create_dir(&folder).unwrap();
+        let piece = folder
+            .join(staging_name("op1", 1))
+            .join("game/big.bin.split02");
+        let mut done = false;
+        let error = stage(
+            &mut package,
+            &folder,
+            "op1",
+            1,
+            &cancel::Token::new(),
+            |progress| {
+                // Every file is written and assembly hasn't started.
+                if progress.done == unpacked && !done {
+                    done = true;
+                    tamper(&piece, how);
+                }
+            },
+        )
+        .unwrap_err();
+        match error.downcast_ref::<PackageError>() {
+            Some(PackageError::Invalid(detail)) => {
+                assert!(
+                    detail.contains("changed while staging"),
+                    "{how:?}: {detail}"
+                )
+            }
+            other => panic!("{how:?}: expected a refusal, got {other:?}: {error:#}"),
+        }
+    }
+}
+
+#[test]
+fn canceling_during_or_after_assembly_is_honored() {
+    // Once during assembly, and once on the very last progress event.
+    for during in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut package = open_bytes(temp.path(), &split_package(b"game/big.bin")).unwrap();
+        let unpacked = package.unpacked_size();
+        let folder = temp.path().join("game");
+        fs::create_dir(&folder).unwrap();
+        let token = cancel::Token::new();
+        let error = stage(&mut package, &folder, "op1", 1, &token, |progress| {
+            let now = if during {
+                progress.done > unpacked
+            } else {
+                progress.done == progress.total
+            };
+            if now {
+                token.cancel();
+            }
+        })
+        .unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<PackageError>(),
+                Some(PackageError::Canceled)
+            ),
+            "{error:#}"
+        );
+    }
 }
