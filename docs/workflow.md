@@ -75,6 +75,11 @@ only adds what it doesn't say. If the two disagree, `AGENTS.md` wins.
   open questions and acceptance items in "Waiting on you", and raw ideas in
   "Ideas". Only the primary session writes to it, and the repo stays the
   source of truth. An idea joins the roadmap as a `features.md` row.
+  - Move a card with the `task_bucket_update` action (project 4, kanban
+    view 16, bucket ids: Ideas 15, To-Do 12, Doing 13, Waiting on you 16,
+    Done 14). Updating a task's `bucket_id` echoes it back but doesn't move
+    the card. Moving into Done marks the task done; creating a task with a
+    bucket does place it. Read the board back to confirm a move.
 - When asking them to pick between options for how something looks or feels
   to use (CLI syntax, config shape, layout), show the same scenarios in every
   option side by side first, with a recommendation.
