@@ -283,6 +283,7 @@ fn check_refuses_a_portable_folder() {
         .args(["update", "--check"])
         .output()
         .unwrap();
+    let out = common::gog_api::checked(out);
     assert_eq!(out.status.code(), Some(1));
     assert!(
         stderr(&out).contains("GOG games live in the host library. Run this without --portable."),

@@ -142,10 +142,12 @@ impl Fixture {
 
     /// Runs wineo at home against a fake GOG.
     pub fn gog(&self, api: &gog_api::GogApi, args: &[&str]) -> Output {
-        self.gog_command(api)
-            .args(args)
-            .output()
-            .expect("wineo should start")
+        gog_api::checked(
+            self.gog_command(api)
+                .args(args)
+                .output()
+                .expect("wineo should start"),
+        )
     }
 
     pub fn run_at_home(&self, args: &[&str]) -> Output {

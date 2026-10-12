@@ -75,6 +75,22 @@ pub struct GogApi {
     thread: Option<JoinHandle<()>>,
 }
 
+/// Fails, naming only the stream, when a command's output holds one of the
+/// fake GOG's secrets. Run before anything prints the output.
+#[track_caller]
+pub fn checked(output: std::process::Output) -> std::process::Output {
+    for (stream, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
+        let text = String::from_utf8_lossy(bytes);
+        assert!(
+            !["SECRET", "GoodCode"]
+                .iter()
+                .any(|secret| text.contains(secret)),
+            "a secret showed up on {stream}"
+        );
+    }
+    output
+}
+
 /// The address GOG's login ends on, with `code` in it.
 pub fn success_address(code: &str) -> String {
     format!("https://embed.gog.com/on_login_success?origin=client&code={code}")

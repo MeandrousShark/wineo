@@ -6,18 +6,21 @@ mod common;
 use std::fs;
 use std::process::Stdio;
 
-use common::gog_api::{CODE, GogApi, USER, installer, owned_game, product, success_address};
+use common::gog_api::{self, CODE, GogApi, USER, installer, owned_game, product, success_address};
 use common::gog_world::{DISCO, RIMWORLD, RIMWORLD_DLC};
-use common::pty::Pty;
+use common::pty::{Pty, Seen};
 use common::{Fixture, assert_success, stderr, stdout};
 
-fn login(f: &Fixture, api: &GogApi, address: &str) -> (std::process::ExitStatus, String) {
+fn login(f: &Fixture, api: &GogApi, address: &str) -> (std::process::ExitStatus, Seen) {
     let mut command = f.gog_command(api);
     command.args(["import", "gog", "--login"]);
     let mut pty = Pty::spawn(command);
     pty.expect("Address: ");
     pty.send(address);
-    pty.finish()
+    let (status, output) = pty.finish();
+    // Before anything gets to print it.
+    assert_no_secrets("the terminal", output.raw());
+    (status, output)
 }
 
 /// Logs in with the right code.
@@ -79,7 +82,7 @@ fn login_saves_the_login_and_prints_no_secret() {
     );
     // The address was typed at a prompt that doesn't echo, and nothing
     // printed it back.
-    assert_no_secrets("the terminal", &output);
+    assert_no_secrets("the terminal", output.raw());
 
     // The saved login works for the next command, which renews it.
     api.with(|config| config.owned = vec![owned_game(777, "Hades", true, true)]);
@@ -96,7 +99,7 @@ fn a_bare_code_is_accepted_too() {
     let api = GogApi::start();
     let (status, output) = login(&f, &api, CODE);
     assert!(status.success(), "{output}");
-    assert_no_secrets("the terminal", &output);
+    assert_no_secrets("the terminal", output.raw());
 }
 
 #[test]
@@ -111,7 +114,7 @@ fn a_bad_address_is_refused_without_echoing_it() {
         let (status, output) = login(&f, &api, pasted);
         assert_eq!(status.code(), Some(1), "{output}");
         assert!(output.contains("error: "), "{output}");
-        assert_no_secrets("the terminal", &output);
+        assert_no_secrets("the terminal", output.raw());
         assert!(!output.contains("evil"), "{output}");
     }
     // Nothing reached GOG, and nothing was saved.
@@ -131,7 +134,7 @@ fn a_login_gog_refuses_is_not_saved() {
         output.contains("GOG didn't accept that login. Log in again and paste the new address."),
         "{output}"
     );
-    assert_no_secrets("the terminal", &output);
+    assert_no_secrets("the terminal", output.raw());
     let listed = f.gog(&api, &["import", "gog", "--list"]);
     assert!(
         stderr(&listed).contains("Log in to GOG first"),
@@ -145,7 +148,7 @@ fn a_login_gog_refuses_is_not_saved() {
     let (status, output) = login(&f, &api, &success_address(CODE));
     assert_eq!(status.code(), Some(1), "{output}");
     assert!(output.contains("GOG answered with status 503"), "{output}");
-    assert_no_secrets("the terminal", &output);
+    assert_no_secrets("the terminal", output.raw());
 }
 
 #[test]
@@ -158,6 +161,7 @@ fn logging_in_needs_a_terminal() {
         .stdin(Stdio::piped())
         .output()
         .unwrap();
+    let output = gog_api::checked(output);
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("Logging in to GOG needs a terminal."));
     assert!(api.requests().is_empty());
@@ -385,6 +389,7 @@ fn list_works_in_a_portable_folder() {
         .args(["import", "gog", "--list", "--json"])
         .output()
         .unwrap();
+    let out = gog_api::checked(out);
     assert_success(&out);
     let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
     assert_eq!(json["games"].as_array().unwrap().len(), 3);
@@ -410,6 +415,7 @@ fn logout_and_login_work_in_a_portable_folder() {
         .args(["import", "gog", "--logout"])
         .output()
         .unwrap();
+    let out = gog_api::checked(out);
     assert_success(&out);
     assert!(stdout(&out).contains("Removed the GOG login."));
 }
@@ -643,7 +649,7 @@ fn logging_in_works_in_a_portable_folder() {
     let (status, output) = pty.finish();
     assert!(status.success(), "{output}");
     assert!(output.contains("Logged in to GOG as account"), "{output}");
-    assert_no_secrets("the terminal", &output);
+    assert_no_secrets("the terminal", output.raw());
     // The login is the host's, so it shows without --portable too.
     assert_success(&f.gog(&api, &["import", "gog", "--list"]));
 }

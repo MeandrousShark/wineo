@@ -1,9 +1,11 @@
 //! wineo on the far side of a pseudo-terminal, for commands that need a
 //! terminal to read from, like the GOG login.
 
+use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -33,7 +35,10 @@ impl Pty {
             .custom_flags(OFlags::NOCTTY.bits() as i32)
             .open(name.to_str().unwrap())
             .unwrap();
+        // Its own process group, so the whole group can be killed if the
+        // test gives up on it.
         command
+            .process_group(0)
             .stdin(slave.try_clone().unwrap())
             .stdout(slave.try_clone().unwrap())
             .stderr(slave);
@@ -68,7 +73,12 @@ impl Pty {
     /// Waits for `text` to show up after whatever was expected last.
     #[track_caller]
     pub fn expect(&mut self, text: &str) {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        self.expect_within(text, Duration::from_secs(20));
+    }
+
+    #[track_caller]
+    pub fn expect_within(&mut self, text: &str, limit: Duration) {
+        let deadline = Instant::now() + limit;
         loop {
             {
                 let seen = strip_escapes(&self.seen.lock().unwrap());
@@ -79,7 +89,7 @@ impl Pty {
                 assert!(
                     Instant::now() < deadline,
                     "timed out waiting for {text:?} in:\n{}",
-                    &seen[self.cursor..]
+                    redact(&seen[self.cursor..])
                 );
             }
             thread::sleep(Duration::from_millis(20));
@@ -98,19 +108,24 @@ impl Pty {
         self.master.write_all(b"\x03").unwrap();
     }
 
-    /// Waits for wineo to exit. The status, and everything it printed.
-    pub fn finish(mut self) -> (ExitStatus, String) {
-        // A command stuck at a question fails the test instead of hanging it.
-        let deadline = Instant::now() + Duration::from_secs(20);
+    /// Waits up to 20 seconds for wineo to exit. The status, and everything
+    /// it printed.
+    pub fn finish(self) -> (ExitStatus, Seen) {
+        self.finish_within(Duration::from_secs(20))
+    }
+
+    /// A command still running when time runs out fails the test instead of
+    /// hanging it, and is killed.
+    pub fn finish_within(mut self, limit: Duration) -> (ExitStatus, Seen) {
+        let deadline = Instant::now() + limit;
         let status = loop {
             if let Some(status) = self.child.try_wait().unwrap() {
                 break status;
             }
             if Instant::now() > deadline {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
+                self.kill();
                 let seen = strip_escapes(&self.seen.lock().unwrap());
-                panic!("wineo didn't exit; it had printed:\n{seen}");
+                panic!("wineo didn't exit; it had printed:\n{}", redact(&seen));
             }
             thread::sleep(Duration::from_millis(20));
         };
@@ -118,8 +133,77 @@ impl Pty {
             let _ = reader.join();
         }
         let seen = strip_escapes(&self.seen.lock().unwrap());
-        (status, seen)
+        (status, Seen(seen))
     }
+
+    /// The process id of the command.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Kills the command's whole process group and reaps it.
+    fn kill(&mut self) {
+        if self.child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        let group = format!("-{}", self.child.id());
+        let _ = Command::new("kill").args(["-KILL", "--", &group]).status();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for Pty {
+    /// A test that panics, or drops the terminal early, leaves nothing
+    /// running behind it.
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// What a command printed to its terminal. It may hold secrets a test is
+/// checking for, so printing it, in an assertion message or anywhere else,
+/// hides them; `raw` is for the check itself.
+pub struct Seen(String);
+
+impl Seen {
+    pub fn contains(&self, text: &str) -> bool {
+        self.0.contains(text)
+    }
+
+    pub fn raw(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Seen {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&redact(&self.0))
+    }
+}
+
+impl fmt::Debug for Seen {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{:?}", redact(&self.0))
+    }
+}
+
+/// Hides every word that looks like one of the fake GOG's secrets, or like
+/// what the tests paste.
+pub fn redact(text: &str) -> String {
+    text.split_inclusive(char::is_whitespace)
+        .map(|word| {
+            if ["SECRET", "GoodCode"]
+                .iter()
+                .any(|secret| word.contains(secret))
+            {
+                let tail = &word[word.trim_end().len()..];
+                format!("<redacted>{tail}")
+            } else {
+                word.to_owned()
+            }
+        })
+        .collect()
 }
 
 /// The output without the escape sequences a line editor redraws with.
