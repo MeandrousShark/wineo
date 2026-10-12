@@ -395,3 +395,26 @@ fn a_saved_copy_standing_in_gives_a_warning_in_text_and_json() {
     assert_success(&text);
     assert!(stderr(&text).contains("warning: Couldn't refresh GOG product details: "));
 }
+
+#[test]
+fn an_interrupted_update_is_pointed_out() {
+    let (f, api) = world();
+    let folder = f.root.path().join("Games/Mid");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        f.config_dir().join("environments/mid.toml"),
+        format!(
+            "kind = \"native\"\ngog_id = \"{RIMWORLD}\"\n\n[targets.game]\nexe = \"{}\"\n",
+            folder.join("start.sh").display()
+        ),
+    )
+    .unwrap();
+    f.gog_folder(&folder, Some("mid"), RIMWORLD, true);
+    let out = f.gog(&api, &["update", "--check", "mid"]);
+    assert_success(&out);
+    assert!(
+        stdout(&out).contains("\n  Finish the interrupted update with: wineo update mid\n"),
+        "{}",
+        stdout(&out)
+    );
+}

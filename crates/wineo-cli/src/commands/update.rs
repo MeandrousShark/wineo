@@ -131,7 +131,7 @@ fn print_table(statuses: &[Status]) {
         }
         if status.unfinished {
             println!(
-                "  An update is unfinished. Finish it with: wineo update {}",
+                "  Finish the interrupted update with: wineo update {}",
                 status.environment
             );
         }

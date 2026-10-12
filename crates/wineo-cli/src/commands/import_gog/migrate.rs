@@ -39,7 +39,7 @@ fn host_only(paths: &Paths) -> anyhow::Result<()> {
 }
 
 fn not_installed(id: &str) -> String {
-    format!("Heroic hasn't installed GOG game {id}. Installing games comes in a later release.")
+    format!("Heroic doesn't have GOG game {id}, and installing games comes in a later release.")
 }
 
 /// Every Heroic configuration found, in the places Heroic keeps one.
@@ -319,7 +319,7 @@ fn report(
             );
             if matches!(migrated.state, StateChange::Reclaim { journal: true }) {
                 println!(
-                    "An interrupted update was kept. Finish it with: wineo update {}",
+                    "Finish the interrupted update with: wineo update {}",
                     migrated.environment
                 );
             }

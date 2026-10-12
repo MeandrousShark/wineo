@@ -82,8 +82,35 @@ pub enum MigrateError {
     /// A new Windows environment's plan copies the prefix.
     #[error("A migrated game keeps Heroic's prefix where it is.")]
     PrefixCopied,
-    #[error("Something changed while migrating. Try again.")]
-    Changed,
+    #[error("{0} changed while migrating. Run it again.")]
+    Changed(Changed),
+}
+
+/// What changed between planning a migration and applying it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Changed {
+    /// Heroic's records or the game's own files.
+    Heroic,
+    /// Where Heroic's install path leads.
+    Folder,
+    /// The environment the game attaches to or creates. None when the
+    /// migration hadn't settled on one.
+    Environment(Option<String>),
+}
+
+impl std::fmt::Display for Changed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Heroic => formatter.write_str("Heroic's files"),
+            Self::Folder => formatter.write_str("The game folder"),
+            Self::Environment(Some(name)) => formatter.write_str(name),
+            Self::Environment(None) => formatter.write_str("The environment"),
+        }
+    }
+}
+
+fn changed(what: Changed) -> anyhow::Error {
+    MigrateError::Changed(what).into()
 }
 
 /// What migrating one game would do.
@@ -292,7 +319,7 @@ pub fn plan(paths: &Paths, source: &HeroicSource, gog_id: &str) -> Result<Plan> 
     // bytes. Heroic's entry is read again for the same reason.
     let fingerprint = source.gog_fingerprint(&listed, &info_path(&folder, &listed))?;
     let Some(game) = source.gog_game(gog_id)?.filter(|game| *game == listed) else {
-        return Err(MigrateError::Changed.into());
+        return Err(changed(Changed::Heroic));
     };
     let id: u64 = game
         .id
@@ -327,7 +354,7 @@ pub fn plan(paths: &Paths, source: &HeroicSource, gog_id: &str) -> Result<Plan> 
     #[cfg(test)]
     tests::after_reading();
     if !source.unchanged(&game.id, &fingerprint)? {
-        return Err(MigrateError::Changed.into());
+        return Err(changed(Changed::Heroic));
     }
 
     let found = match_environment(paths, &game, &launch.exe, &prefixes)?;
@@ -404,7 +431,7 @@ pub fn apply(
     let cancel = || token.is_canceled();
     let _adoption = AdoptionLock::acquire(paths, &cancel)?;
     if !source.unchanged(&migration.game.id, &migration.fingerprint)? {
-        return Err(MigrateError::Changed.into());
+        return Err(changed(Changed::Heroic));
     }
     // The same install path can lead somewhere else by now, through a
     // symlink retargeted since planning.
@@ -413,7 +440,7 @@ pub fn apply(
         None => None,
     };
     if folder.as_deref() != Some(migration.folder.as_path()) {
-        return Err(MigrateError::Changed.into());
+        return Err(changed(Changed::Folder));
     }
     let found = migration.rematch(paths)?;
     match (&migration.target, found) {
@@ -423,7 +450,9 @@ pub fn apply(
         (Target::Windows { .. } | Target::Native(_), Found::New) => {
             create(paths, global, source, migration, token, progress, &cancel)
         }
-        _ => Err(MigrateError::Changed.into()),
+        _ => Err(changed(Changed::Environment(
+            migration.environment().map(str::to_owned),
+        ))),
     }
 }
 
@@ -461,7 +490,7 @@ fn attach(
             name: found,
             gog_id,
         } if found == name => gog_id.is_some(),
-        _ => return Err(MigrateError::Changed.into()),
+        _ => return Err(changed(Changed::Environment(Some(name.to_owned())))),
     };
     if has_gog_id && let Some(state) = already(paths, name, game)? {
         return Ok(Outcome::AlreadyMigrated {
@@ -509,7 +538,9 @@ fn attach(
     let recorded_gog_id = match Environment::record_gog_id(paths, name, &game.id, &still_matches)? {
         GogIdRecord::Written => true,
         GogIdRecord::AlreadySet => false,
-        GogIdRecord::Changed => return Err(MigrateError::Changed.into()),
+        GogIdRecord::Changed => {
+            return Err(changed(Changed::Environment(Some(name.to_owned()))));
+        }
     };
     write_state(&lock, migration, state, name)?;
     Ok(Outcome::Migrated(Migrated {
@@ -576,7 +607,7 @@ fn create(
     match Environment::load(paths, &name) {
         Ok(environment) if environment.config.gog_id.as_deref() == Some(&migration.game.id) => {}
         Ok(_) | Err(crate::Error::UnknownEnvironment(_)) => {
-            return Err(MigrateError::Changed.into());
+            return Err(changed(Changed::Environment(Some(name.clone()))));
         }
         Err(error) => return Err(error.into()),
     }
