@@ -55,6 +55,8 @@ pub enum Operation {
     Trash,
     /// Attaching a GOG game migrated from Heroic.
     Migrate,
+    /// Updating, reinstalling, or finishing an update of a GOG game.
+    Update,
     /// Running a launch hook.
     Hook(Phase),
 }
@@ -100,6 +102,7 @@ impl Operation {
             Operation::Copy => "copy",
             Operation::Trash => "trash",
             Operation::Migrate => "migrate",
+            Operation::Update => "update",
             Operation::Hook(Phase::Before) => "hook-before",
             Operation::Hook(Phase::After) => "hook-after",
         }
@@ -118,6 +121,7 @@ impl Operation {
             Operation::Copy,
             Operation::Trash,
             Operation::Migrate,
+            Operation::Update,
             Operation::Hook(Phase::Before),
             Operation::Hook(Phase::After),
         ]
@@ -145,6 +149,7 @@ impl Operation {
             Operation::Copy => "it is being copied to a portable folder",
             Operation::Trash => "its trash entry is being changed",
             Operation::Migrate => "a GOG game is being migrated to it",
+            Operation::Update => "its GOG game is being updated",
             Operation::Hook(Phase::Before) => "running its before hook",
             Operation::Hook(Phase::After) => "running its after hook",
         }
@@ -797,6 +802,7 @@ mod tests {
             Operation::Copy,
             Operation::Trash,
             Operation::Migrate,
+            Operation::Update,
             Operation::Hook(Phase::Before),
             Operation::Hook(Phase::After),
         ] {
