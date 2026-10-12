@@ -129,11 +129,16 @@ impl Fixture {
     /// ones `external_dir` names.
     pub fn wineo_at_home(&self) -> Command {
         let mut command = self.wineo();
-        // A closed port, so nothing a GOG test runs can reach the real GOG.
-        // Not in `wineo`, since wine programs would inherit it.
+        command.env("HOME", self.root.path());
         command
-            .env("HOME", self.root.path())
-            .env("WINEO_TEST_GOG_API", "http://127.0.0.1:9");
+    }
+
+    /// `wineo_at_home` with GOG pointed at a closed port, for commands that
+    /// may reach GOG but need no answer. Only these commands get the
+    /// variable: programs wineo launches inherit it.
+    pub fn gog_offline_command(&self) -> Command {
+        let mut command = self.wineo_at_home();
+        command.env("WINEO_TEST_GOG_API", "http://127.0.0.1:9");
         command
     }
 

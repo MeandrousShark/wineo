@@ -3,6 +3,8 @@
 
 mod common;
 
+use std::os::unix::fs::PermissionsExt;
+
 use common::gog_api::{CODE, GogApi, success_address};
 use common::gog_world::RIMWORLD;
 use common::pty::Pty;
@@ -113,4 +115,41 @@ fn a_dry_run_asks_gog_for_nothing() {
     assert_success(&out);
     assert!(!stdout(&out).contains("playtime"), "{}", stdout(&out));
     assert!(!asked_for_extras(&api), "{:?}", api.requests());
+}
+
+#[test]
+fn programs_launched_through_the_fixture_dont_see_the_gog_override() {
+    let f = Fixture::new();
+    let dir = f.root.path().join("games");
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("probe.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintenv WINEO_TEST_GOG_API > \"$0.out\"\nexit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let config = f.config_dir().join("environments/probe.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        config,
+        format!(
+            "kind = \"native\"\n\n[targets.game]\nexe = \"{}\"\n",
+            script.display()
+        ),
+    )
+    .unwrap();
+    let out_file = dir.join("probe.sh.out");
+    type Launch<'a> = Box<dyn Fn() -> std::process::Output + 'a>;
+    let launches: [Launch<'_>; 3] = [
+        Box::new(|| f.run(&["run", "probe"])),
+        Box::new(|| f.run_at_home(&["run", "probe"])),
+        Box::new(|| f.wineo_at_home().args(["run", "probe"]).output().unwrap()),
+    ];
+    for launch in launches {
+        let output = launch();
+        assert_success(&output);
+        assert_eq!(std::fs::read_to_string(&out_file).unwrap(), "");
+        std::fs::remove_file(&out_file).unwrap();
+    }
 }
