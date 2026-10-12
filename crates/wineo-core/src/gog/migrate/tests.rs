@@ -12,6 +12,23 @@ use crate::gog::folder::{
 };
 use crate::test_snapshot::{SnapshotEntry, assert_unchanged, snapshot_tree};
 
+thread_local! {
+    static AFTER_CREATE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+/// Runs the hook set on this thread, once, between creating a new
+/// environment and the locked pass that writes its state.
+pub(super) fn after_create() {
+    if let Some(hook) = AFTER_CREATE.with(|hook| hook.borrow_mut().take()) {
+        hook();
+    }
+}
+
+fn on_create(hook: impl FnOnce() + 'static) {
+    AFTER_CREATE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
 const RIMWORLD: &str = "1094900565";
 const DISCO: &str = "1771589310";
 const RIMWORLD_DLC: [u64; 3] = [1233017772, 1827857764, 1865538500];
@@ -1073,4 +1090,48 @@ fn an_environment_owning_another_folder_for_the_game_is_already_migrated() {
     assert_eq!(fx.config("rimworld"), before);
     assert!(fx.state(&folder).is_none());
     heroic.assert_unchanged();
+}
+
+#[test]
+fn a_new_environment_removed_or_changed_before_its_state_is_written_gets_none() {
+    for change in ["rm", "unset", "recreate"] {
+        let mut fx = Fixture::new();
+        let folder = fx.rimworld();
+        let heroic = fx.heroic_files();
+        let migration = fx.migration(RIMWORLD);
+        let paths = fx.paths.clone();
+        let start = folder.join("start.sh");
+        on_create(move || {
+            let config = paths.environment_config("rimworld");
+            match change {
+                "rm" => fs::remove_file(&config).unwrap(),
+                "unset" => {
+                    crate::settings::apply(
+                        &paths,
+                        crate::settings::ConfigFile::Environment("rimworld"),
+                        &[],
+                        &["gog_id"],
+                    )
+                    .unwrap();
+                }
+                _ => {
+                    fs::remove_file(&config).unwrap();
+                    fs::write(
+                        &config,
+                        format!(
+                            "kind = \"native\"\n\n[targets.game]\nexe = \"{}\"\n",
+                            start.display()
+                        ),
+                    )
+                    .unwrap();
+                }
+            }
+        });
+        assert!(
+            matches!(migrate_error(fx.apply(&migration)), MigrateError::Changed),
+            "{change}"
+        );
+        assert!(fx.state(&folder).is_none(), "{change}");
+        heroic.assert_unchanged();
+    }
 }

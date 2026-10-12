@@ -517,7 +517,20 @@ fn create(
         _ => return Err(MigrateError::NeedsRunner.into()),
     };
 
+    #[cfg(test)]
+    tests::after_create();
+
     let _operation = lock_operation(paths, &name)?;
+    // Creating let go of the operation lock, so the environment may have
+    // been removed, recreated, or stopped tracking the game since. A state
+    // must only name an owner whose config knows it.
+    match Environment::load(paths, &name) {
+        Ok(environment) if environment.config.gog_id.as_deref() == Some(&migration.game.id) => {}
+        Ok(_) | Err(crate::Error::UnknownEnvironment(_)) => {
+            return Err(MigrateError::Changed.into());
+        }
+        Err(error) => return Err(error.into()),
+    }
     let _in_use = folder::lock_for_update(paths, &migration.folder, &name)?;
     let lock = FolderLock::exclusive(paths, &migration.folder, cancel)?;
     let state = decide(
