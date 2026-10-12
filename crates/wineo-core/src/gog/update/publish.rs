@@ -114,9 +114,11 @@ impl<'a> Publisher<'a> {
     }
 
     /// Runs the three passes. `new` is the rebuilt game's winning entries,
-    /// sorted by path. A game with no committed winning entries, a migrated
-    /// one's first rebuild, has nothing to tell its files from yours, so a
-    /// file there of the same type is overwritten rather than saved aside.
+    /// sorted by path, and `earlier` what earlier attempts of the operation
+    /// wrote. A game with no committed winning entries, a migrated one's
+    /// first rebuild, has nothing to tell its files from yours, so a file
+    /// there of the same type is overwritten rather than saved aside, and
+    /// listed when it differed from the new one.
     pub(super) fn publish(
         &mut self,
         new: &[WinningEntry],
@@ -264,7 +266,14 @@ impl<'a> Publisher<'a> {
                     let ours = records
                         .iter()
                         .any(|r| r.kind == EntryType::File && hash.is_some() && r.content == hash);
-                    if same || ours || migrated {
+                    if same || ours {
+                        continue;
+                    }
+                    // Nothing recorded tells a migrated game's files from
+                    // yours, so it's overwritten like a shipped file and
+                    // listed since it differed.
+                    if migrated {
+                        self.report.overwritten.push(path.to_owned());
                         continue;
                     }
                     self.save_aside(&dir, leaf, path)?;
@@ -285,7 +294,11 @@ impl<'a> Publisher<'a> {
                     let ours = records.iter().any(|r| {
                         r.kind == EntryType::Symlink && r.content.as_deref() == Some(target)
                     });
-                    if same || ours || migrated {
+                    if same || ours {
+                        continue;
+                    }
+                    if migrated {
+                        self.report.overwritten.push(path.to_owned());
                         continue;
                     }
                     self.save_aside(&dir, leaf, path)?;

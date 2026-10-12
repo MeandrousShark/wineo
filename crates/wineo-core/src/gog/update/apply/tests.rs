@@ -1130,7 +1130,10 @@ fn a_migrated_games_first_update_records_everything_and_keeps_your_files() {
     fx.offer(ROYALTY, "Royalty", "2.0", &royalty_v2());
     let updated = fx.update();
     assert!(updated.saved.is_empty() && updated.kept.is_empty());
-    assert!(updated.overwritten.is_empty());
+    assert_eq!(
+        updated.overwritten,
+        ["Data/Royalty/r.dat", "Data/core.dat", "start.sh"]
+    );
     let tree = fx.tree();
     assert_eq!(tree["Data/core.dat"], "644 core v2");
     assert_eq!(tree["Data/Royalty/r.dat"], "644 royalty v2");
@@ -1562,5 +1565,28 @@ fn a_changed_shipped_file_is_listed_even_when_it_matches_the_new_one() {
     fx.write("Data/core.dat", "core v2");
     let updated = fx.update();
     assert_eq!(updated.overwritten, ["Data/core.dat"]);
+    assert_eq!(fx.read("Data/core.dat"), "core v2");
+}
+
+#[test]
+fn a_migrated_games_first_rebuild_lists_files_that_differed() {
+    let fx = Fixture::new();
+    fx.write("start.sh", "s");
+    fx.write("Data/core.dat", "core v1");
+    fx.write("Data/same.dat", "same");
+    fx.migrated(&[(RIMWORLD, Some("1"))]);
+    fx.offer(
+        RIMWORLD,
+        "RimWorld",
+        "2",
+        &[
+            file("start.sh", "s"),
+            file("Data/core.dat", "core v2"),
+            file("Data/same.dat", "same"),
+        ],
+    );
+    let updated = fx.update();
+    assert_eq!(updated.overwritten, ["Data/core.dat"]);
+    assert!(updated.saved.is_empty());
     assert_eq!(fx.read("Data/core.dat"), "core v2");
 }
