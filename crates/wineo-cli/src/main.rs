@@ -94,6 +94,8 @@ enum Command {
     Download(commands::download::Args),
     /// Copy or adopt a prefix, with optional Heroic launch settings
     Import(commands::import::Args),
+    /// Check GOG for updates to the games wineo manages
+    Update(commands::update::Args),
     /// List installed DXVK builds
     Dxvk(commands::builds::Args),
     /// List installed vkd3d-proton builds
@@ -196,6 +198,7 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Stop(args) => commands::stop::run(&paths, args),
         Command::Restart(args) => commands::restart::run(&paths, args),
         Command::Import(args) => commands::import::run(&paths, args, verbose),
+        Command::Update(args) => commands::update::run(&paths, args),
         Command::Download(args) => commands::download::run(&paths, args, verbose),
         Command::Runners(args) => commands::runners::run(&paths, args),
         Command::Dxvk(args) => commands::builds::run(&paths, Component::Dxvk, args),

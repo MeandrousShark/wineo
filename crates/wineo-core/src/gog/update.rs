@@ -277,7 +277,7 @@ pub fn check_all(session: &mut Session, refresh: bool) -> Result<Batch> {
 
 /// The `gog_id` an environment's config records, read as plain TOML. None
 /// when the config is gone or records none.
-fn recorded_gog_id(paths: &Paths, name: &str) -> Result<Option<String>, UpdateError> {
+pub fn recorded_gog_id(paths: &Paths, name: &str) -> Result<Option<String>, UpdateError> {
     let unloadable = |detail: String| UpdateError::Unloadable {
         name: name.to_owned(),
         detail,

@@ -661,7 +661,7 @@ fn apply_plan_with_cancellation(
 }
 
 /// Says what went wrong with carrying over Heroic's playtime, if anything.
-fn report_playtime(playtime: &Playtime) {
+pub(super) fn report_playtime(playtime: &Playtime) {
     match playtime {
         Playtime::None | Playtime::Imported => {}
         Playtime::Unreadable(reason) => {
@@ -674,7 +674,7 @@ fn report_playtime(playtime: &Playtime) {
 }
 
 /// Writes the desktop entries for a registered import, and says what changed.
-fn finish_registered(
+pub(super) fn finish_registered(
     paths: &Paths,
     global: &GlobalConfig,
     registered: &Registered,
@@ -1629,13 +1629,13 @@ fn edit_art<I: Input, W: Write>(
 
 /// The runner picked for a game, and what copying Heroic's runner left linked
 /// outside wineo.
-struct ChosenRunner {
-    name: String,
-    dependencies: Vec<ExternalDependency>,
+pub(super) struct ChosenRunner {
+    pub(super) name: String,
+    pub(super) dependencies: Vec<ExternalDependency>,
 }
 
 impl ChosenRunner {
-    fn named(name: String) -> Self {
+    pub(super) fn named(name: String) -> Self {
         Self {
             name,
             dependencies: Vec::new(),
@@ -1644,7 +1644,7 @@ impl ChosenRunner {
 }
 
 /// Asks about the game's runner, or takes the `selected` one when it's there.
-fn pick_runner<I: Input, W: Write>(
+pub(super) fn pick_runner<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
     imported: &HeroicImport,
@@ -1758,7 +1758,7 @@ fn copy_heroic_runner<I: Input, W: Write>(
 /// import, the same way guided `new` does, one component at a time until
 /// everything resolves or a person declines. Declining leaves the usual
 /// error, so this changes nothing about what ends up refused.
-fn ensure_components_available<I: Input, W: Write>(
+pub(super) fn ensure_components_available<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
     plan: &GamePlan,
