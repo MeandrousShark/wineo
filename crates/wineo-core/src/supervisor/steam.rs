@@ -161,11 +161,13 @@ impl Supervisor {
             return Some(false);
         }
         // A wakeup that isn't a stop must not hide one queued behind it, so
-        // the whole queue is read. A force outranks an earlier stop.
+        // the whole queue is read. A second stop is the escalation to a
+        // force, which would otherwise be swallowed here.
         let mut stop = None;
         for event in received.into_iter().chain(self.events.try_iter()) {
             match event {
                 Event::Force => return Some(true),
+                Event::Stop if stop.is_some() => return Some(true),
                 Event::Stop => stop = Some(false),
                 _ => {}
             }
@@ -417,6 +419,19 @@ mod tests {
         assert!(matches!(received, Event::ReaperExited));
         assert_eq!(supervisor.stop_request(Some(received)), Some(false));
         assert_eq!(supervisor.stop_request(None), None);
+    }
+
+    #[test]
+    fn a_second_queued_stop_is_a_force() {
+        let token = Token::new();
+        let supervisor = Supervisor::with_token(&token);
+        supervisor.sender.send(Event::Stop).unwrap();
+        supervisor.sender.send(Event::Pulse).unwrap();
+        supervisor.sender.send(Event::Stop).unwrap();
+        assert_eq!(supervisor.stop_request(None), Some(true));
+        supervisor.sender.send(Event::Pulse).unwrap();
+        supervisor.sender.send(Event::Stop).unwrap();
+        assert_eq!(supervisor.stop_request(Some(Event::Stop)), Some(true));
     }
 
     #[test]
