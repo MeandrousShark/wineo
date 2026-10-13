@@ -206,7 +206,7 @@ impl App {
         }
         let selected = self.section_selected(section);
         button(label)
-            .on_press_maybe((!blocked).then_some(Message::Section(section)))
+            .on_press_maybe((!blocked).then_some(Message::SectionClicked(section)))
             .width(Fill)
             .padding([10, 8])
             .style(move |_, status| {

@@ -47,6 +47,20 @@ impl Palette {
             Self::DARK
         }
     }
+    /// Every color at `alpha` times its opacity.
+    pub(super) fn faded(self, alpha: f32) -> Self {
+        Self {
+            background: self.background.scale_alpha(alpha),
+            surface: self.surface.scale_alpha(alpha),
+            border: self.border.scale_alpha(alpha),
+            foreground: self.foreground.scale_alpha(alpha),
+            muted: self.muted.scale_alpha(alpha),
+            primary: self.primary.scale_alpha(alpha),
+            success: self.success.scale_alpha(alpha),
+            warning: self.warning.scale_alpha(alpha),
+            danger: self.danger.scale_alpha(alpha),
+        }
+    }
     pub(super) fn theme(self) -> Theme {
         Theme::custom(
             "wineo",
