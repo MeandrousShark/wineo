@@ -2471,6 +2471,7 @@ pub(crate) fn key_presence_task(paths: Paths, sequence: u64) -> Task<Message> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::ffi::OsString;
     use std::fs;
     use std::path::Path;
@@ -3622,10 +3623,8 @@ mod tests {
     }
 
     fn executable(path: &Path) {
-        use std::os::unix::fs::PermissionsExt;
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(path, "#!/bin/sh\n");
     }
 
     #[test]

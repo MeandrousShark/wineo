@@ -3696,9 +3696,9 @@ pub(super) fn install_prerequisite(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::ffi::OsString;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     use tempfile::tempdir;
 
@@ -3717,8 +3717,7 @@ mod tests {
         fs::create_dir_all(heroic.join("store")).unwrap();
         let exe = root.join("games/original");
         fs::create_dir_all(exe.parent().unwrap()).unwrap();
-        fs::write(&exe, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&exe, "#!/bin/sh\n");
         fs::write(
             heroic.join("sideload_apps/library.json"),
             format!(
@@ -3746,8 +3745,7 @@ mod tests {
         let global = GlobalConfig::load(&paths).unwrap();
         let listing = heroic_import::listing(&paths, &global, &source).unwrap();
         let new_exe = root.path().join("games/changed");
-        fs::write(&new_exe, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(&new_exe, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&new_exe, "#!/bin/sh\n");
         let before = fs::read(source.config_dir().join("GamesConfig/dusk.json")).unwrap();
         let review = plan_review(
             &paths,
@@ -3969,8 +3967,7 @@ mod tests {
         ] {
             let exe = root.join("games").join(id);
             fs::create_dir_all(exe.parent().unwrap()).unwrap();
-            fs::write(&exe, "#!/bin/sh\n").unwrap();
-            fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&exe, "#!/bin/sh\n");
             fs::write(
                 heroic.join(format!("GamesConfig/{id}.json")),
                 format!(r#"{{"{id}":{{}}}}"#),
@@ -5104,8 +5101,7 @@ mod tests {
         for program in ["proton", "files/bin/wine", "files/bin/wineserver"] {
             let file = dir.join(program);
             fs::create_dir_all(file.parent().unwrap()).unwrap();
-            fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
-            fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&file, "#!/bin/sh\nexit 0\n");
         }
     }
 
@@ -5123,8 +5119,7 @@ mod tests {
         fake_proton(&dawn_proton);
         let native = root.join("games/noon");
         fs::create_dir_all(native.parent().unwrap()).unwrap();
-        fs::write(&native, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(&native, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&native, "#!/bin/sh\n");
         let prefix = root.join("prefix");
         fs::create_dir_all(prefix.join("pfx/drive_c")).unwrap();
         fs::write(

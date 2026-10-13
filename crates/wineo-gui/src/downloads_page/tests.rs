@@ -1,8 +1,8 @@
 use super::*;
+use crate::test_script::write_script;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Cursor, Read, Write};
-use std::os::unix::fs::PermissionsExt;
 
 use iced::event::Status;
 use sha2::{Digest, Sha256};
@@ -47,8 +47,7 @@ fn runner(paths: &Paths, name: &str, proton: bool) {
     for program in programs {
         let file = dir.join(program);
         fs::create_dir_all(file.parent().unwrap()).unwrap();
-        fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&file, "#!/bin/sh\nexit 0\n");
     }
 }
 

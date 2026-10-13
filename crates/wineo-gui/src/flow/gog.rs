@@ -1164,9 +1164,10 @@ fn duration(seconds: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::ffi::OsString;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+
     use std::path::PathBuf;
 
     use wineo_core::gog::extras::{Filled, Playtime};
@@ -1241,8 +1242,7 @@ mod tests {
             )
             .unwrap();
             let start = dir.join("start.sh");
-            fs::write(&start, "#!/bin/sh\n").unwrap();
-            fs::set_permissions(&start, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&start, "#!/bin/sh\n");
             self.install(serde_json::json!({
                 "platform": "linux", "executable": "", "install_path": dir,
                 "install_size": "5.03 GiB", "is_dlc": false, "version": "1.6.4871 rev588",
