@@ -101,6 +101,8 @@ struct PlannedFile {
     label: String,
     download_id: String,
     file_id: String,
+    /// GOG's listed size, rounded to whole MiB, until it's downloaded or
+    /// read from a journal, then the exact size.
     size: u64,
     /// The checksum a journal recorded, for a recovery from the cache.
     md5: Option<String>,
@@ -979,7 +981,10 @@ fn fetch(
                 None
             }
         };
+        // The journal records the exact size, which finding the package in
+        // the cache again checks.
         fetched.push(PlannedFile {
+            size: downloaded.size,
             md5,
             ..file.clone()
         });
