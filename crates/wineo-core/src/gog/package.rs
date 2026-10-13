@@ -6,7 +6,7 @@
 //! where publishing can later rename the files into place.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -542,13 +542,33 @@ pub fn space_needed(packages: &[&Package]) -> Result<SpaceNeeded, PackageError> 
     Ok(needed)
 }
 
-/// Refuses when the game folder's filesystem can't hold the packages.
+/// Refuses when the game folder's filesystem can't hold the packages. A
+/// folder a fresh install hasn't created yet is judged by its nearest
+/// existing parent.
 pub fn check_space(paths: &Paths, folder: &Path, packages: &[&Package]) -> Result<()> {
-    let stat = rustix::fs::statvfs(folder)
-        .with_context(|| format!("failed to check free space on {}", folder.display()))?;
-    let free = stat.f_bavail.saturating_mul(stat.f_frsize);
-    check_space_with(paths, folder, space_needed(packages)?, free)?;
+    check_space_with(paths, folder, space_needed(packages)?, free_space(folder)?)?;
     Ok(())
+}
+
+/// The space free to unprivileged users on the filesystem `path` is on, or
+/// would be on once created.
+pub fn free_space(path: &Path) -> Result<u64> {
+    let probe = existing(path);
+    let stat = rustix::fs::statvfs(probe)
+        .with_context(|| format!("failed to check free space on {}", probe.display()))?;
+    Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
+}
+
+/// `path`, or its nearest parent that exists.
+pub fn existing(path: &Path) -> &Path {
+    let mut current = path;
+    while fs::symlink_metadata(current).is_err() {
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => break,
+        }
+    }
+    current
 }
 
 pub(crate) fn check_space_with(

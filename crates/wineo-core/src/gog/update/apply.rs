@@ -96,18 +96,18 @@ pub struct PlannedProduct {
 
 /// One GOG file the rebuild uses.
 #[derive(Debug, Clone)]
-struct PlannedFile {
-    product: u64,
-    label: String,
-    download_id: String,
-    file_id: String,
+pub(super) struct PlannedFile {
+    pub(super) product: u64,
+    pub(super) label: String,
+    pub(super) download_id: String,
+    pub(super) file_id: String,
     /// GOG's listed size, rounded to whole MiB, until it's downloaded or
     /// read from a journal, then the exact size.
-    size: u64,
+    pub(super) size: u64,
     /// The checksum a journal recorded, for a recovery from the cache.
-    md5: Option<String>,
+    pub(super) md5: Option<String>,
     /// GOG's listing, to download from. None when finishing from the cache.
-    download: Option<wineo_gog::Download>,
+    pub(super) download: Option<wineo_gog::Download>,
 }
 
 /// What the folder's state was when planned, compared again under the
@@ -693,7 +693,7 @@ pub fn apply(
     }
 }
 
-fn is_cancel(error: &anyhow::Error) -> bool {
+pub(super) fn is_cancel(error: &anyhow::Error) -> bool {
     matches!(error.downcast_ref(), Some(UpdateError::Canceled { .. }))
         || matches!(error.downcast_ref(), Some(FolderError::Canceled))
         || matches!(error.downcast_ref(), Some(PackageError::Canceled))
@@ -722,26 +722,14 @@ fn run(
     let mut warnings = pending.warnings.clone();
     let fetched = fetch(paths, session, pending, token, progress, &mut warnings)?;
     let cache = DownloadCache::new(paths.gog_download_cache());
-    let (pins, fetched) = pin_packages(&cache, pending, fetched, token, progress)?;
+    let (pins, fetched) = pin_packages(&cache, name, fetched, token, progress)?;
     let mut opened = Vec::new();
     for (file, path) in &fetched {
         let package = open_package(path)
             .with_context(|| format!("failed to open {}'s package", file.label))?;
         opened.push((file.product, package));
     }
-    let layers: Vec<(u64, Vec<(String, EntryType)>)> = opened
-        .iter()
-        .map(|(product, package)| (*product, package_entries(package)))
-        .collect();
-    publish::check_layers(&layers)?;
-    check_space(
-        paths,
-        folder,
-        &opened
-            .iter()
-            .map(|(_, package)| package)
-            .collect::<Vec<_>>(),
-    )?;
+    check_fit(paths, folder, &opened)?;
 
     let _operation = lock_operation(paths, name)?;
     // The config can change without the operation lock.
@@ -769,6 +757,101 @@ fn run(
     } else if state.owner != pending.seen.owner {
         return Err(changed().into());
     }
+
+    let report = rebuild(
+        paths,
+        lock,
+        state,
+        Work {
+            kind: pending.kind,
+            target: &pending.target,
+        },
+        Packages {
+            pins,
+            fetched,
+            opened,
+        },
+        token,
+        progress,
+        journaled,
+        &mut warnings,
+    )?;
+    Ok(Updated {
+        environment: name.to_owned(),
+        folder: folder.to_owned(),
+        kind: pending.kind,
+        recovered: pending.recovery,
+        claimed,
+        products: pending.target.products.clone(),
+        saved: report.saved,
+        kept: report.kept,
+        overwritten: report.overwritten,
+        warnings,
+    })
+}
+
+/// What a rebuild commits: its journal's kind and target.
+pub(super) struct Work<'a> {
+    pub(super) kind: JournalKind,
+    pub(super) target: &'a Target,
+}
+
+/// A rebuild's packages: pinned until its journal names them, where each is
+/// in the cache, and each one opened, in product order.
+pub(super) struct Packages<'a> {
+    pub(super) pins: Vec<Pin<'a>>,
+    pub(super) fetched: Vec<Located>,
+    pub(super) opened: Vec<(u64, package::Package)>,
+}
+
+/// Refuses packages that can't be layered into one tree or don't fit on the
+/// game folder's filesystem, before anything changes.
+pub(super) fn check_fit(
+    paths: &Paths,
+    folder: &Path,
+    opened: &[(u64, package::Package)],
+) -> Result<()> {
+    let layers: Vec<(u64, Vec<(String, EntryType)>)> = opened
+        .iter()
+        .map(|(product, package)| (*product, package_entries(package)))
+        .collect();
+    publish::check_layers(&layers)?;
+    check_space(
+        paths,
+        folder,
+        &opened
+            .iter()
+            .map(|(_, package)| package)
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// The part of every native rebuild done under the folder's state lock, which
+/// `lock` is: writes the journal, stages and layers every product, writes the
+/// journal again with every entry it is about to write, publishes, cleans up,
+/// syncs, and commits. `state` is the folder's state as it stands under the
+/// lock, or as a fresh install writes it first. A journal already in it is
+/// finished: its temporaries go first, and its operation and `attempted`
+/// carry on. The packages are removed from the cache afterwards.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn rebuild(
+    paths: &Paths,
+    lock: FolderLock,
+    mut state: FolderState,
+    work: Work,
+    packages: Packages,
+    token: &Token,
+    progress: &RefCell<impl FnMut(Progress)>,
+    journaled: &mut bool,
+    warnings: &mut Vec<String>,
+) -> Result<Report> {
+    let folder = lock.folder().to_owned();
+    let folder = folder.as_path();
+    let Packages {
+        pins,
+        fetched,
+        mut opened,
+    } = packages;
     let root = package::open_folder(folder)?;
     let (operation, attempted) = match &state.journal {
         Some(journal) => {
@@ -781,8 +864,8 @@ fn run(
     };
     let mut journal = Journal {
         operation: operation.clone(),
-        kind: pending.kind,
-        target: pending.target.clone(),
+        kind: work.kind,
+        target: work.target.clone(),
         packages: fetched
             .iter()
             .map(|(file, _)| Package {
@@ -858,7 +941,7 @@ fn run(
     publisher.finish(&products)?;
     let report: Report = publisher.into_report();
 
-    let target = &pending.target;
+    let target = work.target;
     let committed = Committed {
         gog_id: target.gog_id,
         platform: target.platform,
@@ -873,25 +956,13 @@ fn run(
     failpoint("update.commit.after")?;
     drop(lock);
 
-    remove_packages(paths, folder, &products, &mut warnings);
-
-    Ok(Updated {
-        environment: name.to_owned(),
-        folder: folder.to_owned(),
-        kind: pending.kind,
-        recovered: pending.recovery,
-        claimed,
-        products: target.products.clone(),
-        saved: report.saved,
-        kept: report.kept,
-        overwritten: report.overwritten,
-        warnings,
-    })
+    remove_packages(paths, folder, &products, warnings);
+    Ok(report)
 }
 
 /// Takes `name`'s operation lock. A run holds it shared for as long as the
 /// game runs, so that refusal is the running one.
-fn lock_operation(paths: &Paths, name: &str) -> Result<Guard> {
+pub(super) fn lock_operation(paths: &Paths, name: &str) -> Result<Guard> {
     match Locks::new(paths).acquire(Operation::Update, name, &[]) {
         Err(crate::Error::Busy {
             holder: Some(Operation::Launch),
@@ -906,7 +977,7 @@ fn lock_operation(paths: &Paths, name: &str) -> Result<Guard> {
 
 /// A new operation id: letters, digits, and dashes, unique enough that two
 /// operations on one folder never share one.
-fn operation_id() -> String {
+pub(super) fn operation_id() -> String {
     let now = jiff::Timestamp::now();
     format!(
         "{}-{:x}",
@@ -925,92 +996,119 @@ fn fetch(
     progress: &RefCell<impl FnMut(Progress)>,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<PlannedFile>> {
-    let cache = DownloadCache::new(paths.gog_download_cache());
-    let mut fetched = Vec::new();
     // Finishing offline uses what the journal names, checked once pinned.
     if pending.offline {
         return Ok(pending.files.clone());
     }
     let session = session.ok_or(AccountError::LoggedOut)?;
+    let cache = DownloadCache::new(paths.gog_download_cache());
+    let mut fetched = Vec::new();
     for file in &pending.files {
-        let download = file
-            .download
-            .as_ref()
-            .expect("an online plan lists GOG's downloads");
-        let gog_file = download
-            .files
-            .iter()
-            .find(|gog_file| gog_file.id == file.file_id)
-            .expect("planned from this listing");
-        let package = wineo_gog::Package::of(file.product, download, gog_file);
-        let report = |done: u64, total: u64| {
-            (progress.borrow_mut())(Progress::Download {
-                product: file.product,
-                file_id: file.file_id.clone(),
-                done,
-                total,
-            })
-        };
-        let downloaded = session
-            .call(|client, access| {
-                client.download(
-                    access,
-                    &cache,
-                    &package,
-                    &gog_file.downlink,
-                    &|| token.is_canceled(),
-                    &report,
-                )
-            })
-            .map_err(|error| match error {
-                CallError::Account(error) => anyhow::Error::from(error),
-                CallError::Request(error) if error.kind() == wineo_gog::ErrorKind::Canceled => {
-                    UpdateError::Canceled { journal: false }.into()
-                }
-                CallError::Request(error) => {
-                    anyhow::Error::from(error).context(format!("Couldn't download {}", file.label))
-                }
-            })?;
-        let md5 = match downloaded.verification {
-            Verification::Md5(md5) => Some(md5),
-            Verification::SizeOnly => {
-                warnings.push(format!(
-                    "GOG publishes no checksum for {}'s package, so only its size was checked.",
-                    file.label
-                ));
-                None
-            }
-        };
-        // The journal records the exact size, which finding the package in
-        // the cache again checks.
-        fetched.push(PlannedFile {
-            size: downloaded.size,
-            md5,
-            ..file.clone()
-        });
+        fetched.push(download(session, &cache, file, token, progress, warnings)?);
     }
     Ok(fetched)
 }
 
-fn check_space(paths: &Paths, folder: &Path, packages: &[&package::Package]) -> Result<()> {
+/// Downloads one planned file, or finds it already in the cache, and returns
+/// it with its exact size and the checksum it was verified against.
+pub(super) fn download(
+    session: &mut Session,
+    cache: &DownloadCache,
+    file: &PlannedFile,
+    token: &Token,
+    progress: &RefCell<impl FnMut(Progress)>,
+    warnings: &mut Vec<String>,
+) -> Result<PlannedFile> {
+    let download = file
+        .download
+        .as_ref()
+        .expect("an online plan lists GOG's downloads");
+    let gog_file = download
+        .files
+        .iter()
+        .find(|gog_file| gog_file.id == file.file_id)
+        .expect("planned from this listing");
+    let package = wineo_gog::Package::of(file.product, download, gog_file);
+    let report = |done: u64, total: u64| {
+        (progress.borrow_mut())(Progress::Download {
+            product: file.product,
+            file_id: file.file_id.clone(),
+            done,
+            total,
+        })
+    };
+    let downloaded = session
+        .call(|client, access| {
+            client.download(
+                access,
+                cache,
+                &package,
+                &gog_file.downlink,
+                &|| token.is_canceled(),
+                &report,
+            )
+        })
+        .map_err(|error| match error {
+            CallError::Account(error) => anyhow::Error::from(error),
+            CallError::Request(error) if error.kind() == wineo_gog::ErrorKind::Canceled => {
+                UpdateError::Canceled { journal: false }.into()
+            }
+            CallError::Request(error) => {
+                anyhow::Error::from(error).context(format!("Couldn't download {}", file.label))
+            }
+        })?;
+    let md5 = match downloaded.verification {
+        Verification::Md5(md5) => Some(md5),
+        Verification::SizeOnly => {
+            warnings.push(format!(
+                "GOG publishes no checksum for {}'s package, so only its size was checked.",
+                file.label
+            ));
+            None
+        }
+    };
+    // The journal records the exact size, which finding the package in the
+    // cache again checks.
+    Ok(PlannedFile {
+        size: downloaded.size,
+        md5,
+        ..file.clone()
+    })
+}
+
+pub(super) fn check_space(
+    paths: &Paths,
+    folder: &Path,
+    packages: &[&package::Package],
+) -> Result<()> {
+    package::check_space_with(
+        paths,
+        folder,
+        package::space_needed(packages)?,
+        free_space(folder)?,
+    )?;
+    Ok(())
+}
+
+/// The space free on `folder`'s filesystem, or what a test says it is.
+pub(super) fn free_space(folder: &Path) -> Result<u64> {
     #[cfg(test)]
     if let Some(free) = tests::free_space() {
-        package::check_space_with(paths, folder, package::space_needed(packages)?, free)?;
-        return Ok(());
+        return Ok(free);
     }
-    package::check_space(paths, folder, packages)
+    package::free_space(folder)
 }
 
 /// A package and where it is in the cache.
-type Located = (PlannedFile, PathBuf);
+pub(super) type Located = (PlannedFile, PathBuf);
 
 /// Pins every product's cached files, in id order, and checks each package
 /// is still there and whole, returning where it is. The pins keep another
 /// update's cleanup from removing them until the journal naming them is
 /// written.
-fn pin_packages<'a>(
+pub(super) fn pin_packages<'a>(
     cache: &'a DownloadCache,
-    pending: &Pending,
+    name: &str,
     files: Vec<PlannedFile>,
     token: &Token,
     progress: &RefCell<impl FnMut(Progress)>,
@@ -1050,14 +1148,14 @@ fn pin_packages<'a>(
             .complete(&lookup, file.md5.as_deref(), &cancel)
             .map_err(canceled)?
             .ok_or_else(|| UpdateError::Changed {
-                name: pending.environment.clone(),
+                name: name.to_owned(),
             })?;
         found.push((file, path));
     }
     Ok((pins, found))
 }
 
-fn open_package(path: &Path) -> Result<package::Package> {
+pub(super) fn open_package(path: &Path) -> Result<package::Package> {
     #[cfg(test)]
     {
         let mut known = package::KNOWN_POSTINST.to_vec();

@@ -8,9 +8,9 @@
 //! shared by a launch for its whole run and taken exclusively, without
 //! waiting, by update and migration.
 //!
-//! Lock order: the adoption lock (migration only), an environment's
-//! operation lock, then in-use locks in key order, then state locks in key
-//! order, then config locks.
+//! Lock order: the adoption lock (migrations and fresh installs), an
+//! environment's operation lock, then in-use locks in key order, then state
+//! locks in key order, then config locks.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -657,10 +657,10 @@ fn lock_file(path: &Path, exclusive: bool, cancel: &dyn Fn() -> bool) -> Result<
     }
 }
 
-/// Held by a migration from before it checks for overlapping folders until
-/// it has written the state of the folder it adopts, so two adoptions of
-/// nested folders can't both pass. Only migrations take it, and before any
-/// other lock.
+/// Held by a migration or a fresh install from before it checks for
+/// overlapping folders until it has written the state of the folder it
+/// adopts or creates, so two of them in nested folders can't both pass.
+/// Only they take it, and before any other lock.
 pub struct AdoptionLock {
     file: File,
 }
@@ -1075,7 +1075,7 @@ fn remove_stale_temps(dir: &Path, key: &str) -> Result<()> {
 }
 
 /// Creates `dir` and any missing parents, syncing each new entry's parent.
-fn create_dir_durable(dir: &Path) -> Result<()> {
+pub(crate) fn create_dir_durable(dir: &Path) -> Result<()> {
     let mut missing = Vec::new();
     let mut current = dir;
     while !current.exists() {
