@@ -296,7 +296,7 @@ impl App {
         (self.window_size.width - 40.0).clamp(280.0, widest)
     }
     pub(crate) fn view(&self) -> Element<'_, Message> {
-        crate::shortcuts::capture_with_undo(
+        let content = crate::shortcuts::capture_with_undo(
             self.sidebar_view(),
             Message::Section,
             (self.toast.is_some()
@@ -309,7 +309,8 @@ impl App {
                 && self.art_page.is_none()
                 && !self.close_prompt)
                 .then_some(Message::Undo),
-        )
+        );
+        crate::menu_anchor::track(content, Message::MenuAnchor)
     }
 
     fn sidebar_view(&self) -> Element<'_, Message> {

@@ -24,6 +24,7 @@ mod keys;
 mod layout_probe;
 mod library;
 mod logview;
+mod menu_anchor;
 mod panel;
 mod panel_motion;
 mod picker;
@@ -164,7 +165,6 @@ pub(crate) struct App {
     flow: Option<flow::Page>,
     flow_generation: u64,
     action_menu: Option<String>,
-    pointer: iced::Point,
     action_menu_position: iced::Point,
     window_size: iced::Size,
     close_prompt: bool,
@@ -280,7 +280,8 @@ pub(crate) enum Message {
     GogUpdate(String),
     GogChecked(Result<Option<wineo_core::gog::update::Batch>, String>),
     Context(String),
-    PointerMoved(iced::Point),
+    /// Where the cursor was when an input that can open the action menu arrived.
+    MenuAnchor(iced::Point),
     OverlayInput,
     ContextSettings(String),
     CloseMenu,
@@ -389,7 +390,6 @@ impl App {
             flow: None,
             flow_generation: 0,
             action_menu: None,
-            pointer: iced::Point::ORIGIN,
             action_menu_position: iced::Point::ORIGIN,
             window_size: iced::Size::new(1200.0, 800.0),
             close_prompt: false,
@@ -1283,7 +1283,6 @@ impl App {
                 ])
             }
             Message::Context(name) => {
-                self.action_menu_position = self.pointer;
                 self.action_menu = if self.action_menu.as_deref() == Some(&name) {
                     None
                 } else {
@@ -1291,8 +1290,8 @@ impl App {
                 };
                 Task::none()
             }
-            Message::PointerMoved(position) => {
-                self.pointer = position;
+            Message::MenuAnchor(position) => {
+                self.action_menu_position = position;
                 Task::none()
             }
             Message::OverlayInput => Task::none(),
@@ -1886,9 +1885,6 @@ pub(crate) fn event_message(event: iced::Event, status: iced::event::Status) -> 
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
             Some(Message::Key(key, modifiers, status))
-        }
-        iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
-            Some(Message::PointerMoved(position))
         }
         // Ignored regardless of status: a text input or button that saw the
         // click must not turn Back into a captured key that pages skip.
