@@ -282,6 +282,43 @@ pub fn plan(
         environment::check_new_name(paths, name)?;
     }
 
+    // The environment's own unfinished install is carried on from its
+    // journal, which needs neither GOG nor its details when every package
+    // it names is still cached.
+    let mut checked_cache = None;
+    if let Some(pending) = own_pending(paths, request)? {
+        if exists && super::recorded_gog_id(paths, name)? != Some(request.gog_id.to_string()) {
+            environment::check_new_name(paths, name)?;
+        }
+        let journal = pending
+            .journal
+            .as_ref()
+            .expect("a pending install has a journal");
+        let cached = apply::cached(paths, journal, token)?;
+        if let Some(files) = cached {
+            let folder = folder::check_fresh_install(paths, &pending.folder, name)?;
+            check_pending(paths, name, &folder)?;
+            let title = names::product_names(&folder)
+                .remove(&request.gog_id)
+                .unwrap_or_else(|| format!("GOG game {}", request.gog_id));
+            return resumed(
+                paths,
+                session,
+                request,
+                Some(files),
+                Resumed {
+                    title,
+                    folder,
+                    requested,
+                    has_config: exists,
+                    seen: pending,
+                    warnings: Vec::new(),
+                },
+            );
+        }
+        checked_cache = Some(pending.folder);
+    }
+
     let details = product::load_with(
         paths,
         session.client(),
@@ -338,11 +375,21 @@ pub fn plan(
 
     if resume {
         let seen = seen.expect("a resumed install has a state");
+        let journal = seen
+            .journal
+            .as_ref()
+            .expect("a resumed install has a journal");
+        // Already found not all cached, unless that was another folder.
+        let cached = if checked_cache.as_deref() == Some(folder.as_path()) {
+            None
+        } else {
+            apply::cached(paths, journal, token)?
+        };
         return resumed(
             paths,
             session,
             request,
-            token,
+            cached,
             Resumed {
                 title,
                 folder,
@@ -458,6 +505,29 @@ fn check_pending(paths: &Paths, name: &str, folder: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The state of the environment's own unfinished install of this game, in
+/// the folder `request.dir` names when it names one.
+fn own_pending(paths: &Paths, request: &Request) -> Result<Option<FolderState>> {
+    let wanted = match &request.dir {
+        Some(dir) => match std::fs::canonicalize(dir) {
+            Ok(dir) => Some(dir),
+            // Not there, so not the pending install's folder.
+            Err(_) => return Ok(None),
+        },
+        None => None,
+    };
+    Ok(folder::owned_by(paths, &request.name, true)?
+        .into_iter()
+        .find(|state| {
+            state.gog_id() == Some(request.gog_id)
+                && state
+                    .journal
+                    .as_ref()
+                    .is_some_and(|journal| journal.kind == JournalKind::Install)
+                && wanted.as_ref().is_none_or(|dir| *dir == state.folder)
+        }))
+}
+
 /// What planning found before it saw that the install is resumed.
 struct Resumed {
     title: String,
@@ -477,7 +547,7 @@ fn resumed(
     paths: &Paths,
     session: &mut Session,
     request: &Request,
-    token: &Token,
+    cached: Option<Vec<PlannedFile>>,
     found: Resumed,
 ) -> Result<Plan> {
     let Resumed {
@@ -493,7 +563,7 @@ fn resumed(
         .clone()
         .expect("a resumed install has a journal");
     let names = names::product_names(&folder);
-    let (target, files, offline) = match apply::cached(paths, &journal, token)? {
+    let (target, files, offline) = match cached {
         Some(files) => (journal.target.clone(), files, true),
         None => {
             let resolved = apply::resolve(

@@ -495,6 +495,8 @@ pub(super) fn cached(
     Ok(Some(files))
 }
 
+/// Checks one of a journal's packages in the cache. Only a journal's packages
+/// are checked this way, so a cancel here leaves that journal.
 fn verify_cached(
     cache: &DownloadCache,
     package: &Package,
@@ -510,7 +512,7 @@ fn verify_cached(
     match cache.complete(&lookup, package.md5.as_deref(), &|| token.is_canceled()) {
         Ok(found) => Ok(found),
         Err(error) if error.kind() == wineo_gog::ErrorKind::Canceled => {
-            Err(UpdateError::Canceled { journal: false }.into())
+            Err(UpdateError::Canceled { journal: true }.into())
         }
         Err(error) => Err(error.into()),
     }

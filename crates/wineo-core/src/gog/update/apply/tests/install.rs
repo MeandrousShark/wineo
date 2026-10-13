@@ -1125,3 +1125,97 @@ fn canceling_a_resumed_install_before_it_writes_says_the_journal_remains() {
     fx.finish(true);
     assert_installed(&fx);
 }
+
+#[test]
+fn installing_again_needs_neither_gog_nor_its_details_when_the_packages_are_cached() {
+    for corrupt in [false, true] {
+        let fx = interrupted_after_ideology();
+        let details = fx.paths.gog_product_cache(RIMWORLD);
+        if corrupt {
+            fs::write(&details, "{").unwrap();
+        } else {
+            fs::remove_file(&details).unwrap();
+        }
+        let mut offline = Session::open(&fx.paths, &*fx.keyring, client_at("http://127.0.0.1:9"))
+            .unwrap()
+            .unwrap();
+        let plan = install::plan(&fx.paths, &mut offline, &request(), &Token::new()).unwrap();
+        assert!(plan.resumes());
+        assert_eq!(plan.download_size(), 0);
+        install::apply(&fx.paths, &mut offline, &plan, &Token::new(), |_| {}).unwrap();
+        assert_installed(&fx);
+    }
+}
+
+#[test]
+fn canceling_while_planning_checks_the_journals_packages_says_the_journal_remains() {
+    let fx = interrupted_after_ideology();
+    let token = Token::new();
+    token.cancel();
+    let error = install::plan(&fx.paths, &mut fx.session(), &request(), &token).unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref(),
+            Some(UpdateError::Canceled { journal: true })
+        ),
+        "{error:#}"
+    );
+
+    // Once the environment exists, `wineo update` plans it the same way.
+    let fx = offered();
+    set_failpoint_nth("update.publish.before", 3);
+    fx.install_err();
+    let error = plan(&fx.paths, None, "rimworld", Options::default(), &token).unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref(),
+            Some(UpdateError::Canceled { journal: true })
+        ),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn installing_again_with_part_of_the_cache_gone_fetches_only_what_is_missing() {
+    let fx = interrupted_after_ideology();
+    DownloadCache::new(fx.paths.gog_download_cache())
+        .remove_product(ROYALTY, &|| false)
+        .unwrap();
+    let downloads = fx.downloads();
+    let plan = fx.install_plan(&request()).unwrap();
+    assert!(plan.resumes());
+    assert!(plan.download_size() > 0);
+    fx.install_with(&plan, &Token::new(), |_| {}).unwrap();
+    assert_eq!(fx.downloads(), downloads + 1);
+    assert_installed(&fx);
+}
+
+#[test]
+fn a_resumed_install_finishes_dlc_the_account_no_longer_owns() {
+    for cached in [true, false] {
+        let fx = interrupted_after_ideology();
+        if !cached {
+            fx.clear_cache();
+        }
+        fx.owns(&[RIMWORLD]);
+        let plan = fx.install_plan(&request()).unwrap();
+        assert_eq!(plan.products().len(), 3, "cached: {cached}");
+        fx.install_with(&plan, &Token::new(), |_| {}).unwrap();
+        assert_installed(&fx);
+    }
+}
+
+#[test]
+fn a_dlc_failing_to_download_when_resuming_keeps_the_journal() {
+    let fx = interrupted_after_ideology();
+    let before = fx.state();
+    fx.clear_cache();
+    fx.fail_download(ROYALTY);
+    let error = fx.try_install().unwrap_err();
+    assert!(
+        format!("{error:#}").contains("Couldn't download Royalty (1233017772)"),
+        "{error:#}"
+    );
+    assert_eq!(fx.state(), before);
+    assert!(fx.launch_refusal().is_some());
+}
