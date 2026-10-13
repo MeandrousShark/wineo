@@ -240,6 +240,11 @@ Shipped in 0.31.1.
   page is open the scan also watches its files and saved game, and a failed
   SteamGridDB name lookup retries with backoff (4 s to 64 s).
 
+- The Steam `/proc` sweep reads each process's command line first and only
+  runs the full identity checks for Steam launches, and the system time zone
+  loads only when a time is shown: `wineo list` 16.8 ms to 7.2 ms, `status`
+  16.4 ms to 6.9 ms (merged after 0.31.1).
+
 Limits accepted in review:
 
 - A spinner inside a scrollable that is itself scrolled out of an outer
