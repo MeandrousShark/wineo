@@ -213,6 +213,8 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if result.is_err() {
                 app.trash_page.cancel_review();
             }
+            app.shown.show_badge(app.trash_badge.clone());
+            app.shown.show_trash(result.clone(), jiff::Timestamp::now());
             app.trash_page.snapshot = Some(result);
             Task::none()
         }

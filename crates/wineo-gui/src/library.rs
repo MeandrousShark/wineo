@@ -15,7 +15,7 @@ use wineo_core::{stats, steam, time};
 
 use crate::theme::Palette;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct ArtPaths {
     pub(super) hero: Option<ArtFile>,
     pub(super) logo: Option<ArtFile>,
@@ -64,14 +64,14 @@ impl CardKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct SteamDetails {
     pub(super) install: report::InstallReport,
     pub(super) proton: Option<String>,
     pub(super) size: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct Card {
     pub(super) name: String,
     /// None when the config can't be read.
