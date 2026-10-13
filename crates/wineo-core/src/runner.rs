@@ -18,8 +18,9 @@ use crate::external_runners::Source;
 const UMU: &str = "umu-run";
 /// How often `wait_settled` first checks whether a Proton process group is gone.
 const GROUP_POLL: Duration = Duration::from_millis(100);
-/// Where the check settles when a group outlives its launcher, since a whole
-/// game session can pass that way.
+/// Where the supervised wait settles when a group outlives its launcher, since
+/// a whole game session can pass that way. Bounded and cleanup waits keep
+/// `GROUP_POLL`, because a deadline can fall between two slow checks.
 const GROUP_POLL_MAX: Duration = Duration::from_secs(1);
 /// How long a killed group that lost its leader first gets to finish exiting.
 /// Long enough for killed members to become zombies, and too short to wait
@@ -678,16 +679,12 @@ fn wait_for_group(group: Option<u32>) -> Result<()> {
             "no process group was recorded to check".to_owned(),
         ));
     };
-    let mut poll = GROUP_POLL;
     loop {
         match test_kill_process_group(pid) {
             Err(Errno::SRCH) => return Ok(()),
             // Something in the group belongs to someone else, which still
             // means the group is not gone.
-            Ok(()) | Err(Errno::PERM) => {
-                std::thread::sleep(poll);
-                poll = backed_off(poll);
-            }
+            Ok(()) | Err(Errno::PERM) => std::thread::sleep(GROUP_POLL),
             Err(err) => {
                 return Err(io::Error::from(err))
                     .context(|| format!("failed to check process group {pid:?}"));
@@ -728,7 +725,8 @@ pub fn wait_for_recorded_group(
         ));
     };
     let identified = boot_id.is_some() && leader_start.is_some();
-    wait_for_owned_group(group, identified, || {
+    // Callers bound this with a timeout, so it keeps a steady cadence.
+    wait_for_owned_group(group, identified, GROUP_POLL, || {
         crate::process::group_ownership(Some(group), boot_id, leader_start)
     })
 }
@@ -743,14 +741,16 @@ pub(crate) fn wait_for_live_group(
             "no complete process identity was recorded".to_owned(),
         ));
     };
-    wait_for_owned_group(group, true, || {
+    // The supervised wait can last a whole game session.
+    wait_for_owned_group(group, true, GROUP_POLL_MAX, || {
         crate::process::live_group_ownership(group, boot_id, leader_start)
     })
 }
 
-/// The next wait after `poll`, doubling up to `GROUP_POLL_MAX`.
-fn backed_off(poll: Duration) -> Duration {
-    (poll * 2).min(GROUP_POLL_MAX)
+/// The next wait after `poll`, doubling up to `max`. A `max` of `GROUP_POLL`
+/// keeps the cadence fixed.
+fn backed_off(poll: Duration, max: Duration) -> Duration {
+    (poll * 2).min(max)
 }
 
 /// Polls until an owned group has nothing live left. A killed group can lose
@@ -759,6 +759,7 @@ fn backed_off(poll: Duration) -> Duration {
 fn wait_for_owned_group(
     group: u32,
     identified: bool,
+    max_poll: Duration,
     ownership: impl Fn() -> crate::process::GroupOwnership,
 ) -> Result<()> {
     let leaderless_deadline = Instant::now() + LEADERLESS_GRACE;
@@ -771,7 +772,7 @@ fn wait_for_owned_group(
                     Some(false) => return Ok(()),
                     Some(true) => {
                         std::thread::sleep(poll);
-                        poll = backed_off(poll);
+                        poll = backed_off(poll, max_poll);
                     }
                     None => {
                         return Err(Error::Unsettled(
@@ -881,13 +882,18 @@ mod tests {
 
     #[test]
     fn group_polling_backs_off_to_the_cap() {
-        let mut poll = GROUP_POLL;
-        let mut seen = Vec::new();
-        for _ in 0..6 {
-            seen.push(poll.as_millis());
-            poll = backed_off(poll);
-        }
-        assert_eq!(seen, [100, 200, 400, 800, 1000, 1000]);
+        let sequence = |max| {
+            let mut poll = GROUP_POLL;
+            let mut seen = Vec::new();
+            for _ in 0..6 {
+                seen.push(poll.as_millis());
+                poll = backed_off(poll, max);
+            }
+            seen
+        };
+        assert_eq!(sequence(GROUP_POLL_MAX), [100, 200, 400, 800, 1000, 1000]);
+        // Bounded and cleanup waits pass GROUP_POLL and never slow down.
+        assert_eq!(sequence(GROUP_POLL), [100; 6]);
     }
 
     #[test]
