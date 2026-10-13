@@ -1,11 +1,10 @@
 use jiff::Timestamp;
-use jiff::tz::TimeZone;
 use wineo_core::operation::Operation;
 use wineo_core::report::{KindReport, Overview};
 use wineo_core::runtime::{State, Status};
 use wineo_core::view::{CollectionError, CollectionOutput, StatusOutput};
 
-use wineo_core::time::{clock, relative};
+use wineo_core::time::{Zone, clock, relative};
 
 /// One line of `wineo status` or `wineo list`: name, state, target, and time.
 pub struct Row {
@@ -29,7 +28,7 @@ impl Row {
         unresolved: bool,
         tags: &[String],
         now: Timestamp,
-        tz: &TimeZone,
+        tz: &dyn Zone,
     ) -> Self {
         let state = match busy {
             Some(operation @ Operation::Hook(_)) => operation.describe(),
@@ -94,7 +93,7 @@ impl Gathered {
     }
 }
 
-pub fn format_overview(overview: Overview, now: Timestamp, tz: &TimeZone) -> Gathered {
+pub fn format_overview(overview: Overview, now: Timestamp, tz: &dyn Zone) -> Gathered {
     let rows = overview
         .environments
         .iter()
@@ -135,7 +134,7 @@ pub fn format_overview(overview: Overview, now: Timestamp, tz: &TimeZone) -> Gat
     Gathered { rows, errors }
 }
 
-fn time_column(status: &Status, now: Timestamp, tz: &TimeZone) -> String {
+fn time_column(status: &Status, now: Timestamp, tz: &dyn Zone) -> String {
     let Some(run) = &status.run else {
         return String::new();
     };
@@ -196,6 +195,7 @@ pub fn render_columns<const N: usize>(rows: &[[String; N]]) -> Vec<String> {
 mod tests {
     use std::collections::BTreeMap;
 
+    use jiff::tz::TimeZone;
     use wineo_core::runtime::{RunMode, RunState, RunStatus};
 
     use super::*;
