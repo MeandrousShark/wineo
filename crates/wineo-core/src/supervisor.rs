@@ -60,6 +60,8 @@ enum Event {
     Heartbeat,
     /// The token changed, or something else worth rechecking happened.
     Pulse,
+    /// The Steam process being watched exited.
+    ReaperExited,
 }
 
 /// How long the run waits between events before it counts as a heartbeat.
@@ -370,7 +372,7 @@ impl Supervisor {
                 }
             };
             match event {
-                Event::Pulse => continue,
+                Event::Pulse | Event::ReaperExited => continue,
                 Event::Heartbeat => watched(Watched::Notice(Notice::Heartbeat)),
                 Event::Exited(status) => {
                     observed_exit = true;
