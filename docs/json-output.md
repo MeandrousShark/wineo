@@ -215,7 +215,9 @@ when the versions can't be compared. (`windows_installer` was used before
 wineo could update Windows installer games, and may still appear from older
 releases.) A DLC's
 `state` is `none` (up to date), `available`, `unknown` (a migrated DLC whose version
-Heroic never recorded), `cant_compare`, `failed`, or `unavailable`, and its
+Heroic never recorded), `cant_compare`, `failed`, `unavailable`, or
+`not_installed` (owned and offered, but not installed yet: bought since, or
+newly offered for the platform; `wineo update` installs it), and its
 `title` is `null` when GOG's details don't list it. GOG ids are strings.
 
 A game that can't be checked goes in `errors` with its `name` (the
