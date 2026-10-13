@@ -505,7 +505,7 @@ fn an_installed_dlc_gog_no_longer_offers_makes_the_game_cant_compare() {
     let status = fx.status("rimworld");
     assert_eq!(
         cant_compare(&status),
-        "Royalty has no Linux installer in en-US."
+        "Royalty [1233017772] has no Linux installer in en-US."
     );
     assert_eq!(dlc_state(&status, ROYALTY), DlcState::CantCompare);
     assert_eq!(dlc_state(&status, IDEOLOGY), DlcState::CantCompare);
@@ -518,9 +518,23 @@ fn an_installed_dlc_gog_no_longer_offers_makes_the_game_cant_compare() {
     let status = fx.status("rimworld");
     assert_eq!(
         cant_compare(&status),
-        "DLC 1827857764 has no Linux installer in en-US."
+        "DLC [1827857764] has no Linux installer in en-US."
     );
     assert_eq!(fx.state(&state), state);
+
+    // The folder's own name stands in when GOG's details don't list it.
+    let game = state.folder.join("game");
+    fs::create_dir_all(&game).unwrap();
+    fs::write(
+        game.join(format!("goggame-{IDEOLOGY}.info")),
+        format!(r#"{{"gameId":"{IDEOLOGY}","name":"RimWorld - Ideology"}}"#),
+    )
+    .unwrap();
+    let status = fx.status("rimworld");
+    assert_eq!(
+        cant_compare(&status),
+        "Ideology [1827857764] has no Linux installer in en-US."
+    );
 }
 
 #[test]

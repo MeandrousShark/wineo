@@ -3,34 +3,40 @@
 //! here reads a name to decide anything, and nothing is written.
 
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use serde_json::Value;
 
 use super::migrate::id_text;
 
+/// Bigger than any real `goggame-*.info`; a larger file isn't one.
+const MAX_INFO_BYTES: u64 = 64 * 1024;
+
 /// The names of a folder's products, by id, from the `goggame-<id>.info`
 /// files GOG installs ship in the folder or in its `game/` directory. A file
-/// counts only when its `gameId` is the id in its own name, and anything
-/// unreadable or invalid is skipped, since a missing name only costs a label.
-/// When both places name a product, the folder itself wins.
+/// counts only when it is a small regular file and its `gameId` is the id in
+/// its own name, and anything else is skipped, since a missing name only
+/// costs a label. When both places name a product, the folder itself wins.
 pub fn product_names(folder: &Path) -> HashMap<u64, String> {
     let mut names = HashMap::new();
     for dir in [folder.to_owned(), folder.join("game")] {
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
-        let mut files: Vec<_> = entries.filter_map(|entry| entry.ok()).collect();
-        // A stable pick if two files somehow claim one id.
-        files.sort_by_key(|entry| entry.file_name());
-        for entry in files {
+        for entry in entries.filter_map(|entry| entry.ok()) {
             let file_name = entry.file_name();
+            // The id has to be written the way a number prints, so one id
+            // never has two files in a directory.
             let Some(id) = file_name
                 .to_str()
                 .and_then(|name| name.strip_prefix("goggame-"))
                 .and_then(|name| name.strip_suffix(".info"))
-                .and_then(|id| id.parse::<u64>().ok())
+                .and_then(|text| Some((text, text.parse::<u64>().ok()?)))
+                .filter(|(text, id)| *text == id.to_string())
+                .map(|(_, id)| id)
             else {
                 continue;
             };
@@ -45,9 +51,31 @@ pub fn product_names(folder: &Path) -> HashMap<u64, String> {
     names
 }
 
+/// Reads one info file without ever waiting on it: a FIFO or a device named
+/// like one would block the open or the read forever.
 fn read_name(path: &Path, id: u64) -> Option<String> {
-    let text = fs::read_to_string(path).ok()?;
-    let root: Value = serde_json::from_str(&text).ok()?;
+    let metadata = fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_INFO_BYTES {
+        return None;
+    }
+    // The file can change after the check, so the open doesn't wait either
+    // and the read is capped again.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC).bits() as i32)
+        .open(path)
+        .ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    File::take(file, MAX_INFO_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_INFO_BYTES {
+        return None;
+    }
+    let root: Value = serde_json::from_slice(&bytes).ok()?;
     if id_text(root.get("gameId")?) != id.to_string() {
         return None;
     }

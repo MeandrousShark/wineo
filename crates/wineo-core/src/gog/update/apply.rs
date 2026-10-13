@@ -14,13 +14,14 @@
 //! recheck through the first journal write to the commit.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use wineo_gog::{DownloadCache, Pin, Verification};
 
 use super::publish::{self, PublishProgress, Publisher, Report, SavedAside};
-use super::{Check, UpdateError, UpdateState, installer_version, matching_installer, status_of};
+use super::{Check, UpdateError, UpdateState, installer_version, matching_installer, status_with};
 use crate::cancel::Token;
 use crate::environment::Environment;
 use crate::gog::account::{AccountError, CallError, Session};
@@ -270,6 +271,8 @@ pub fn plan(
     let state = super::game_of(paths, name)?;
     let seen = Seen::of(&state);
     let folder = state.folder.clone();
+    // Read once for the review and for every message that names a DLC.
+    let names = names::product_names(&folder);
 
     if let Some(journal) = &state.journal {
         match journal.kind {
@@ -284,7 +287,6 @@ pub fn plan(
         }
         native_only(name, journal.target.platform, journal.target.track)?;
         if let Some(files) = cached(paths, journal, token)? {
-            let names = names::product_names(&folder);
             let products = journal
                 .target
                 .products
@@ -322,8 +324,11 @@ pub fn plan(
             session,
             name,
             &state,
-            &journal.target.language,
-            &journal.target.products,
+            Wanted {
+                language: &journal.target.language,
+                products: &journal.target.products,
+                names: &names,
+            },
             Check {
                 refresh: options.refresh,
                 read_only: options.read_only,
@@ -346,7 +351,7 @@ pub fn plan(
     let session = session.ok_or(AccountError::LoggedOut)?;
     let mut refresh = options.refresh;
     if !options.reinstall {
-        let status = status_of(
+        let status = status_with(
             session,
             paths,
             name,
@@ -355,6 +360,7 @@ pub fn plan(
                 refresh: options.refresh,
                 read_only: options.read_only,
             },
+            &names,
         )?;
         match status.state {
             UpdateState::UpToDate => {
@@ -385,8 +391,11 @@ pub fn plan(
         session,
         name,
         &state,
-        &committed.language,
-        &committed.products,
+        Wanted {
+            language: &committed.language,
+            products: &committed.products,
+            names: &names,
+        },
         Check {
             refresh,
             read_only: options.read_only,
@@ -531,6 +540,14 @@ impl Resolved {
     }
 }
 
+/// What a rebuild is planned for: the language, the products to carry, and
+/// the folder's names for labeling them.
+struct Wanted<'a> {
+    language: &'a str,
+    products: &'a [Product],
+    names: &'a HashMap<u64, String>,
+}
+
 /// Every installed product's current Linux installer for `language`, in
 /// order. Failed and unavailable products are carried over unchanged. Any
 /// installed product GOG no longer offers refuses the whole rebuild.
@@ -539,10 +556,14 @@ fn resolve(
     session: &mut Session,
     name: &str,
     state: &FolderState,
-    language: &str,
-    products: &[Product],
+    want: Wanted,
     how: Check,
 ) -> Result<Resolved> {
+    let Wanted {
+        language,
+        products,
+        names,
+    } = want;
     let gog_id = state
         .gog_id()
         .ok_or_else(|| anyhow::anyhow!("{name}'s GOG state names no game"))?;
@@ -558,7 +579,6 @@ fn resolve(
     {
         return Err(refuse("The base game isn't installed.".to_owned()).into());
     }
-    let names = names::product_names(&state.folder);
     let mut target = Vec::new();
     let mut planned = Vec::new();
     let mut files = Vec::new();
@@ -585,13 +605,18 @@ fn resolve(
             });
             continue;
         }
-        let label = title.clone().unwrap_or_else(|| {
-            if product.id == gog_id {
-                format!("GOG game {}", product.id)
-            } else {
-                format!("DLC {}", product.id)
-            }
-        });
+        let label = if product.id == gog_id {
+            title
+                .clone()
+                .unwrap_or_else(|| format!("GOG game {}", product.id))
+        } else {
+            let name = names.get(&product.id).map(String::as_str);
+            names::dlc_label(
+                &details.product.title,
+                product.id,
+                title.as_deref().or(name),
+            )
+        };
         let installer = matching_installer("linux", &label, language, entry).map_err(refuse)?;
         let version = installer_version("linux", &label, installer).map_err(refuse)?;
         let [file] = installer.files.as_slice() else {

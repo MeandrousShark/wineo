@@ -1271,7 +1271,7 @@ fn a_package_no_longer_offered_is_refused_before_any_change() {
         .unwrap_err();
     assert_eq!(
         error.to_string(),
-        "rimworld can't be updated: Royalty has no Linux installer in en-US."
+        "rimworld can't be updated: Royalty [1233017772] has no Linux installer in en-US."
     );
     assert_eq!((fx.state(), fx.tree()), before);
 }
@@ -1577,7 +1577,9 @@ fn a_package_without_a_checksum_is_checked_by_size_with_a_warning() {
     let updated = fx.update();
     assert_eq!(
         updated.warnings,
-        ["GOG publishes no checksum for Royalty's package, so only its size was checked."]
+        [
+            "GOG publishes no checksum for Royalty [1233017772]'s package, so only its size was checked."
+        ]
     );
     assert_finished_v2(&fx);
 }

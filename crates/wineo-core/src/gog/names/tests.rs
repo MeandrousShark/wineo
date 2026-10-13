@@ -145,3 +145,77 @@ fn a_label_without_a_name_says_dlc() {
     assert_eq!(dlc_label("RimWorld", 9, None), "DLC [9]");
     assert_eq!(dlc_label("RimWorld", 9, Some("  ")), "DLC [9]");
 }
+
+fn mkfifo(path: &Path) {
+    let status = std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn a_fifo_named_like_an_info_file_is_skipped_without_waiting() {
+    let root = tempfile::tempdir().unwrap();
+    mkfifo(&root.path().join("goggame-1.info"));
+    let game = root.path().join("game");
+    fs::create_dir(&game).unwrap();
+    mkfifo(&game.join("goggame-2.info"));
+    std::os::unix::fs::symlink(
+        root.path().join("goggame-1.info"),
+        game.join("goggame-3.info"),
+    )
+    .unwrap();
+    write(
+        root.path(),
+        "goggame-4.info",
+        r#"{"gameId":"4","name":"Four"}"#,
+    );
+    let names = product_names(root.path());
+    assert_eq!(names.len(), 1);
+    assert_eq!(names[&4], "Four");
+}
+
+#[test]
+fn a_symlink_to_a_regular_info_file_still_counts() {
+    let root = tempfile::tempdir().unwrap();
+    write(root.path(), "real.json", r#"{"gameId":"5","name":"Five"}"#);
+    std::os::unix::fs::symlink(
+        root.path().join("real.json"),
+        root.path().join("goggame-5.info"),
+    )
+    .unwrap();
+    assert_eq!(product_names(root.path())[&5], "Five");
+}
+
+#[test]
+fn an_oversized_info_file_is_skipped() {
+    let root = tempfile::tempdir().unwrap();
+    let padding = " ".repeat(MAX_INFO_BYTES as usize);
+    write(
+        root.path(),
+        "goggame-1.info",
+        &format!(r#"{{"gameId":"1","name":"Big"}}{padding}"#),
+    );
+    // Just inside the cap still reads.
+    let padding = " ".repeat(MAX_INFO_BYTES as usize - 28);
+    write(
+        root.path(),
+        "goggame-2.info",
+        &format!(r#"{{"gameId":"2","name":"Ok"}}{padding}"#),
+    );
+    let names = product_names(root.path());
+    assert!(!names.contains_key(&1));
+    assert_eq!(names[&2], "Ok");
+}
+
+#[test]
+fn an_id_written_with_leading_zeros_is_not_the_files_id() {
+    let root = tempfile::tempdir().unwrap();
+    write(
+        root.path(),
+        "goggame-01.info",
+        r#"{"gameId":"1","name":"One"}"#,
+    );
+    assert!(product_names(root.path()).is_empty());
+}
