@@ -12,12 +12,15 @@ use crate::desktop;
 use crate::environment::{Environment, NewEnvironment};
 use crate::error::Error;
 use crate::install::{self, Wanted};
-use crate::installer::Output;
+use crate::installer::{self, Installer, Output};
+use crate::launch::Launch;
 use crate::operation::{Guard, Locks, Operation};
 use crate::paths::Paths;
 use crate::prefix::PrefixEvent;
 use crate::runner::Runner;
 use crate::runners::Runners;
+use crate::runtime::Runtime;
+use crate::supervisor::Watched;
 use crate::targets::{self, Batch, Spec, Written};
 use crate::templates::{Template, Templates};
 
@@ -153,8 +156,8 @@ pub enum TargetOutcome {
     ExeNotFound,
 }
 
-/// The create lock stays held until this value is dropped. Pass `guard` to
-/// `Installer::prepare_with_runner` to keep the prefix locked through install.
+/// The create lock stays held until this value is dropped. `create_and_install`
+/// hands `guard` to the installer, so the prefix stays locked through install.
 pub struct Created {
     pub global: GlobalConfig,
     pub environment: Environment,
@@ -421,6 +424,160 @@ pub fn apply(
         guard,
         _build_guard: build_guard,
     })
+}
+
+/// What runs in a new environment once it exists.
+#[derive(Debug, Clone, Copy)]
+pub enum Step<'a> {
+    /// A Windows program, without arguments, supervised until everything it
+    /// started has exited. It has a token of its own, since the CLI listens
+    /// for Ctrl+C separately while creating and while installing.
+    Installer {
+        program: &'a str,
+        output: Output<'a>,
+        token: &'a crate::cancel::Token,
+    },
+}
+
+/// What a frontend does around `create_and_install`. Hooks run under the
+/// create lock, which the install step keeps, so nothing can start in the
+/// environment in between. `Stop` is the caller's own reason to end early.
+pub trait Hooks {
+    type Stop;
+
+    /// Creation progress, as `run` reports it.
+    fn event(&mut self, event: CreateEvent);
+
+    /// Runs once the environment exists, before the install step. A stop
+    /// keeps the environment and skips the step.
+    fn created(&mut self, _created: &Created) -> Result<(), Self::Stop> {
+        Ok(())
+    }
+
+    /// Runs once the installer holds the prefix, right before it starts.
+    fn ready(&mut self, _launch: &Launch) -> Result<(), Self::Stop> {
+        Ok(())
+    }
+
+    /// The installer's supervision notices.
+    fn watched(&mut self, _watched: Watched) {}
+}
+
+/// How the install step ended. The environment is kept either way.
+#[derive(Debug)]
+pub enum Stepped<S> {
+    /// No step was asked for.
+    None,
+    /// A hook stopped before the step started.
+    Stopped(S),
+    /// The installer could not be prepared, so nothing ran.
+    NotPrepared(crate::error::Error),
+    /// The installer ran, or failed to start. `resolved` is whether nothing
+    /// it may have left running is recorded against the environment.
+    Ran {
+        outcome: crate::Result<installer::Outcome>,
+        resolved: bool,
+    },
+}
+
+/// A created environment and how its install step went. The create lock is
+/// already released.
+pub struct Installed<S> {
+    pub global: GlobalConfig,
+    pub environment: Environment,
+    pub runner: Runner,
+    pub prefix: PathBuf,
+    pub created_prefix: bool,
+    pub target: TargetOutcome,
+    pub step: Stepped<S>,
+    _build_guard: Option<build_lock::Guard>,
+}
+
+/// Creates an environment, building or adopting its prefix, then runs `step`
+/// in it under the same lock. Creation failing or being canceled leaves
+/// nothing behind, like `run`. Once the config is saved the environment is
+/// kept however the step ends, and the caller reports how to recover.
+pub fn create_and_install<H: Hooks>(
+    paths: &Paths,
+    request: CreateRequest,
+    step: Option<Step>,
+    token: &crate::cancel::Token,
+    hooks: &mut H,
+) -> anyhow::Result<Installed<H::Stop>> {
+    let created = run(paths, request, token, |event| hooks.event(event))?;
+    let stopped = hooks.created(&created);
+    let Created {
+        global,
+        environment,
+        runner,
+        prefix,
+        created_prefix,
+        target,
+        guard,
+        _build_guard,
+    } = created;
+    let step = match (stopped, step) {
+        (Err(stop), _) => Stepped::Stopped(stop),
+        (Ok(()), None) => Stepped::None,
+        (
+            Ok(()),
+            Some(Step::Installer {
+                program,
+                output,
+                token,
+            }),
+        ) => install(
+            paths,
+            &global,
+            &environment.name,
+            &runner,
+            guard,
+            program,
+            output,
+            token,
+            hooks,
+        ),
+    };
+    Ok(Installed {
+        global,
+        environment,
+        runner,
+        prefix,
+        created_prefix,
+        target,
+        step,
+        _build_guard,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install<H: Hooks>(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    runner: &Runner,
+    guard: Guard,
+    program: &str,
+    output: Output,
+    token: &crate::cancel::Token,
+    hooks: &mut H,
+) -> Stepped<H::Stop> {
+    let installer =
+        match Installer::prepare_with_runner(guard, paths, global, name, program, runner) {
+            Ok(installer) => installer,
+            Err(err) => return Stepped::NotPrepared(err),
+        };
+    if let Err(stop) = hooks.ready(installer.launch()) {
+        return Stepped::Stopped(stop);
+    }
+    let outcome = installer.run(
+        token,
+        std::time::Duration::from_secs(global.stop_timeout.into()),
+        output,
+        |watched| hooks.watched(watched),
+    );
+    let resolved = Runtime::new(paths, name).check_resolved(name).is_ok();
+    Stepped::Ran { outcome, resolved }
 }
 
 fn add_default_target(
@@ -1091,5 +1248,228 @@ mod tests {
             .unwrap();
         assert_eq!(hooks.before.as_deref(), Some("mount /mnt/games"));
         assert_eq!(hooks.after.as_deref(), Some("sync"));
+    }
+
+    /// Records what `create_and_install` reports, and cancels `token` once
+    /// `cancel_at` is reported.
+    struct Recorder {
+        events: Vec<&'static str>,
+        token: Token,
+        cancel_at: &'static str,
+    }
+
+    impl Recorder {
+        fn new(token: &Token, cancel_at: &'static str) -> Self {
+            Self {
+                events: Vec::new(),
+                token: token.clone(),
+                cancel_at,
+            }
+        }
+
+        fn record(&mut self, event: &'static str) {
+            self.events.push(event);
+            if event == self.cancel_at {
+                self.token.cancel();
+            }
+        }
+    }
+
+    impl Hooks for Recorder {
+        type Stop = ();
+
+        fn event(&mut self, event: CreateEvent) {
+            self.record(match event {
+                CreateEvent::BuildingPrefix { .. } => "building",
+                CreateEvent::Saved => "saved",
+                CreateEvent::Registered { .. } => "registered",
+                CreateEvent::Components(_) => "components",
+                CreateEvent::Desktop(_) => "desktop",
+                CreateEvent::TemplateComponentsOmitted { .. } => "omitted",
+            });
+        }
+
+        fn created(&mut self, _created: &Created) -> Result<(), ()> {
+            self.record("created");
+            Ok(())
+        }
+
+        fn ready(&mut self, _launch: &Launch) -> Result<(), ()> {
+            self.record("ready");
+            Ok(())
+        }
+
+        fn watched(&mut self, watched: Watched) {
+            if matches!(watched, Watched::Exited(_)) {
+                self.record("exited");
+            }
+        }
+    }
+
+    /// A runner whose `wineboot --init` builds a prefix and whose run of
+    /// `setup.exe` does `installer`.
+    fn installing_runner(paths: &Paths, installer: &str) {
+        fake_runner(paths, "fake");
+        let wine = GlobalConfig::default()
+            .runner_root(paths)
+            .unwrap()
+            .join("fake/bin/wine");
+        crate::test_script::write_script(
+            &wine,
+            &format!(
+                "#!/bin/sh\n\
+                 case \"$*\" in\n\
+                 'wineboot --init') echo 'WINE REGISTRY Version 2' > \"$WINEPREFIX/system.reg\" ;;\n\
+                 'wineboot --end-session') touch \"$WINEPREFIX/stopped\" ;;\n\
+                 *setup.exe*) {installer} ;;\n\
+                 esac\n"
+            ),
+        );
+    }
+
+    fn create_and_install_with(
+        root: &Path,
+        installer: &str,
+        token: &Token,
+        cancel_at: &'static str,
+    ) -> (Paths, anyhow::Result<Installed<()>>, Vec<&'static str>) {
+        let paths = paths(root);
+        installing_runner(&paths, installer);
+        let setup = root.join("setup.exe");
+        fs::write(&setup, "").unwrap();
+        let mut recorder = Recorder::new(token, cancel_at);
+        let log = root.join("install.log");
+        let step = Step::Installer {
+            program: setup.to_str().unwrap(),
+            output: Output::Log(&log),
+            token,
+        };
+        let result = create_and_install(&paths, request("game"), Some(step), token, &mut recorder);
+        (paths, result, recorder.events)
+    }
+
+    fn prefix_dir(paths: &Paths) -> PathBuf {
+        GlobalConfig::default()
+            .prefix_root(paths)
+            .unwrap()
+            .join("game")
+    }
+
+    #[test]
+    fn create_and_install_runs_the_installer_under_the_create_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, result, events) = create_and_install_with(
+            root.path(),
+            "touch \"$WINEPREFIX/installed\"",
+            &Token::new(),
+            "",
+        );
+        let installed = result.unwrap();
+        assert_eq!(
+            events,
+            [
+                "building",
+                "saved",
+                "registered",
+                "created",
+                "ready",
+                "exited"
+            ]
+        );
+        assert!(matches!(
+            installed.step,
+            Stepped::Ran {
+                outcome: Ok(installer::Outcome::Finished { exit_code: Some(0) }),
+                resolved: true,
+            }
+        ));
+        assert!(prefix_dir(&paths).join("installed").exists());
+        assert!(paths.environment_config("game").exists());
+        assert!(
+            Runtime::new(&paths, "game")
+                .read_operation()
+                .unwrap()
+                .is_none()
+        );
+        // The create lock went to the installer, which has let go of it.
+        assert!(
+            Locks::new(&paths)
+                .acquire(Operation::Create, "game", &[&installed.prefix])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn create_and_install_keeps_the_environment_after_a_failed_installer() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, result, _) = create_and_install_with(root.path(), "exit 3", &Token::new(), "");
+        let installed = result.unwrap();
+        assert!(matches!(
+            installed.step,
+            Stepped::Ran {
+                outcome: Ok(installer::Outcome::Finished { exit_code: Some(3) }),
+                resolved: true,
+            }
+        ));
+        assert!(paths.environment_config("game").exists());
+        assert!(prefix_dir(&paths).join("system.reg").exists());
+    }
+
+    #[test]
+    fn create_and_install_canceled_while_building_leaves_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, result, events) = create_and_install_with(
+            root.path(),
+            "touch \"$WINEPREFIX/installed\"",
+            &Token::new(),
+            "building",
+        );
+        assert!(matches!(
+            result.err().unwrap().downcast_ref::<Error>(),
+            Some(Error::Canceled(_))
+        ));
+        assert_eq!(events, ["building"]);
+        assert!(!paths.environment_config("game").exists());
+        assert!(!prefix_dir(&paths).exists());
+    }
+
+    #[test]
+    fn create_and_install_canceled_during_the_installer_keeps_the_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let installer = "touch \"$WINEPREFIX/started\"\n\
+                         while [ ! -e \"$WINEPREFIX/stopped\" ]; do sleep 0.02; done";
+        let started = prefix_dir(&paths(root.path())).join("started");
+        let token = Token::new();
+        let request = token.clone();
+        let canceler = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !started.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            request.cancel();
+        });
+        let (paths, result, events) = create_and_install_with(root.path(), installer, &token, "");
+        canceler.join().unwrap();
+        let installed = result.unwrap();
+        assert!(events.contains(&"ready"), "{events:?}");
+        assert!(prefix_dir(&paths).join("started").exists());
+        assert!(
+            matches!(
+                installed.step,
+                Stepped::Ran {
+                    outcome: Ok(installer::Outcome::Canceled { .. }),
+                    resolved: true,
+                }
+            ),
+            "{:?}",
+            installed.step
+        );
+        assert!(paths.environment_config("game").exists());
+        assert!(
+            Runtime::new(&paths, "game")
+                .read_operation()
+                .unwrap()
+                .is_none()
+        );
     }
 }
