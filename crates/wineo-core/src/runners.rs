@@ -541,7 +541,8 @@ fn removable(paths: &Paths, name: &str) -> Result<(PathBuf, crate::build_lock::G
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
+    use crate::test_script::{write_executable, write_script};
+
     use std::os::unix::fs::symlink;
 
     use super::*;
@@ -556,9 +557,8 @@ mod tests {
         for (path, executable) in files {
             let path = dir.join(path);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, "#!/bin/sh\n").unwrap();
             let mode = if *executable { 0o755 } else { 0o644 };
-            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            write_executable(&path, "#!/bin/sh\n", mode);
         }
     }
 
@@ -722,8 +722,7 @@ mod tests {
         for name in ["wine", "wineserver"] {
             let path = concrete.join("bin").join(name);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, "#!/bin/sh\n").unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\n");
         }
         fs::create_dir_all(root.path().join("runners")).unwrap();
         symlink(&concrete, root.path().join("runners/current")).unwrap();

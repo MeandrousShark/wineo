@@ -2720,6 +2720,7 @@ pub fn recover_noting(paths: &Paths, id: &str) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::ffi::OsString;
 
     use super::*;
@@ -3123,8 +3124,6 @@ mod tests {
 
     #[test]
     fn canceling_removal_during_the_wine_wait_leaves_everything_untouched() {
-        use std::os::unix::fs::PermissionsExt;
-
         let f = Fixture::new();
         let prefix = f.wine("game");
         f.config(
@@ -3144,8 +3143,7 @@ mod tests {
             ),
         ] {
             let path = bin.join(program);
-            fs::write(&path, script).unwrap();
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, script);
         }
         let global = f.paths.global_config();
         let files = [
@@ -4589,9 +4587,7 @@ mod tests {
     fn an_unrelated_desktop_shortcut_is_not_overwritten_on_restore() {
         let f = Fixture::new();
         let exe = f._root.path().join("game.sh");
-        fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&exe, "#!/bin/sh\nexit 0\n");
         f.config(
             "game",
             &format!(

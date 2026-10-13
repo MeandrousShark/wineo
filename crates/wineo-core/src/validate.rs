@@ -1887,8 +1887,9 @@ fn rewrite_desktop(paths: &Paths, name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::ffi::OsString;
-    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::os::unix::fs::symlink;
 
     use jiff::Timestamp;
 
@@ -2260,8 +2261,7 @@ mod tests {
     }
 
     fn executable(path: &Path, content: &str) {
-        fs::write(path, content).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(path, content);
     }
 
     fn codes(report: &Report) -> Vec<Code> {

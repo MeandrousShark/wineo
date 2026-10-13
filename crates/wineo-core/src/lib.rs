@@ -52,7 +52,10 @@ pub mod supervisor;
 pub mod target_path;
 pub mod targets;
 pub mod templates;
+// Shared with the other crates and the integration tests, which include the
+// same file.
 #[cfg(test)]
+#[path = "../tests/common/test_script.rs"]
 pub(crate) mod test_script;
 #[cfg(test)]
 pub(crate) mod test_snapshot;

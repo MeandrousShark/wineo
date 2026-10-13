@@ -1854,6 +1854,7 @@ fn remove_quotes(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::fs;
     use std::path::Path;
 
@@ -2008,7 +2009,6 @@ mod tests {
 
     #[test]
     fn a_quoted_heroic_script_path_runs_that_script() {
-        use std::os::unix::fs::PermissionsExt;
         use std::process::Command;
 
         let root = tempfile::tempdir().unwrap();
@@ -2016,12 +2016,10 @@ mod tests {
             .path()
             .join("script with 'quote' $dollar;`tick`\nnext line.sh");
         let marker = root.path().join("marker");
-        fs::write(
+        write_script(
             &script,
             format!("#!/bin/sh\nprintf 'ran' > '{}'\n", marker.display()),
-        )
-        .unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        );
 
         let status = Command::new("sh")
             .arg("-c")

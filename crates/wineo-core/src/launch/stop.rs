@@ -449,13 +449,13 @@ mod tests {
         fs::create_dir_all(&bin).unwrap();
         let release = root.path().join("release");
         let settled = root.path().join("settled");
-        write_script(&bin.join("wine"), "#!/bin/sh\nexit 0\n");
+        write_script(bin.join("wine"), "#!/bin/sh\nexit 0\n");
         // `-w` only returns once the test releases it, so cleanup can only come
         // back early through its settle bound. Giving up after about 10 s keeps
         // a broken bound from hanging the test.
         write_script(
-            &bin.join("wineserver"),
-            &format!(
+            bin.join("wineserver"),
+            format!(
                 "#!/bin/sh\nif [ \"$1\" = \"-w\" ]; then\n  i=0\n  while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.02; i=$((i + 1)); done\n  touch '{}'\nfi\nexit 0\n",
                 release.display(),
                 settled.display()

@@ -1256,7 +1256,8 @@ fn merge(
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
+    use crate::test_script::{write_executable, write_script};
+
     use std::os::unix::fs::symlink;
 
     use super::*;
@@ -1304,8 +1305,7 @@ mod tests {
         fs::create_dir_all(&wine_dir).unwrap();
         for name in ["wine", "wineserver"] {
             let path = wine_dir.join(name);
-            fs::write(&path, "#!/bin/sh\n").unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\n");
         }
 
         let config_text = format!(
@@ -1615,8 +1615,7 @@ mod tests {
 
     fn script(path: &Path, mode: u32) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        write_executable(path, "#!/bin/sh\n", mode);
     }
 
     fn native_launch(paths: &Paths, exe: &str) -> Result<Launch> {

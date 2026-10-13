@@ -847,9 +847,9 @@ pub fn start(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::ffi::OsString;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     use super::*;
 
@@ -935,8 +935,7 @@ mod tests {
         fs::create_dir_all(&runner_bin).unwrap();
         for name in ["wine", "wineserver"] {
             let path = runner_bin.join(name);
-            fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&path, "#!/bin/sh\nexit 0\n");
         }
         let prefix = paths.default_prefix_root().join("app");
         fs::create_dir_all(prefix.join("drive_c")).unwrap();
@@ -1155,12 +1154,10 @@ mod tests {
             ).unwrap();
             let exe = root.path().join("supervisor");
             if let Some(reply) = reply {
-                fs::write(
+                write_script(
                     &exe,
                     format!("#!/bin/sh\ncat >/dev/null\nprintf '{reply}\\n'\n"),
-                )
-                .unwrap();
-                fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+                );
             }
             assert!(
                 start(
@@ -1201,12 +1198,10 @@ mod tests {
             ("already-running", StartOutcome::AlreadyRunning),
         ] {
             let exe = root.path().join("supervisor");
-            fs::write(
+            write_script(
                 &exe,
                 format!("#!/bin/sh\ncat >/dev/null\nprintf '{reply}\\n'\n"),
-            )
-            .unwrap();
-            fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+            );
             let mut events = Vec::new();
             let outcome = start(
                 &paths,

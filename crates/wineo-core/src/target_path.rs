@@ -98,9 +98,10 @@ fn config_path(paths: &Paths, wine_prefix: Option<&Path>, unix: &Path) -> String
 
 #[cfg(test)]
 mod tests {
+    use crate::test_script::write_script;
     use std::ffi::OsString;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+
     use std::os::unix::fs::symlink;
 
     use super::*;
@@ -147,8 +148,7 @@ mod tests {
         let bin = root.path().join("bin");
         fs::create_dir_all(&bin).unwrap();
         let exe = bin.join("tool");
-        fs::write(&exe, "").unwrap();
-        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&exe, "");
         let env = BTreeMap::from([("PATH".to_owned(), bin.display().to_string())]);
         assert_eq!(
             native_exe(&paths, "native", &env, "tool"),
