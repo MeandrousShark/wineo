@@ -201,8 +201,15 @@ pub fn reaper_alive(reaper: &Reaper) -> bool {
 /// A pidfd can watch a process wineo did not spawn; waitid cannot.
 pub fn pidfd_exited(pidfd: &OwnedFd) -> io::Result<bool> {
     let mut descriptors = [PollFd::new(pidfd, PollFlags::IN)];
-    poll(&mut descriptors, Some(&Timespec::default()))?;
-    Ok(!descriptors[0].revents().is_empty())
+    // poll is never restarted after a signal handler runs, even with a zero
+    // timeout, so a Ctrl+C mid-scan would otherwise surface as an error.
+    loop {
+        match poll(&mut descriptors, Some(&Timespec::default())) {
+            Ok(_) => return Ok(!descriptors[0].revents().is_empty()),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 /// Stop only processes descended from the verified reaper. New members get

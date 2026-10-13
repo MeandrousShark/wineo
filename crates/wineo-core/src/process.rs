@@ -406,8 +406,15 @@ fn denied(err: &io::Error) -> bool {
 
 fn pidfd_exited(pidfd: &OwnedFd) -> io::Result<bool> {
     let mut descriptors = [PollFd::new(pidfd, PollFlags::IN)];
-    poll(&mut descriptors, Some(&Timespec::default()))?;
-    Ok(!descriptors[0].revents().is_empty())
+    // poll is never restarted after a signal handler runs, even with a zero
+    // timeout, so a Ctrl+C mid-scan would otherwise surface as an error.
+    loop {
+        match poll(&mut descriptors, Some(&Timespec::default())) {
+            Ok(_) => return Ok(!descriptors[0].revents().is_empty()),
+            Err(Errno::INTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 fn open_group_members(group: u32) -> Result<Vec<(u32, u64, OwnedFd)>, ()> {
