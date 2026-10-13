@@ -1872,6 +1872,9 @@ fn failed_and_unavailable_products_are_carried_over_without_downloading() {
     products[1].status = ProductStatus::Failed;
     products[2].status = ProductStatus::Unavailable;
     fx.save(&state);
+    // Plan 0050's 19A retries DLC GOG still offers, so carrying over needs it withdrawn.
+    fx.withdraw(ROYALTY);
+    fx.withdraw(IDEOLOGY);
     let pending = fx.pending(true, Options::default());
     assert_eq!(pending.products()[1].download_size, 0);
     fx.apply_with(true, &pending, &Token::new(), |_| {})

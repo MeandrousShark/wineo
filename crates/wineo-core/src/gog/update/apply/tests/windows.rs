@@ -1737,3 +1737,26 @@ fn an_update_adding_a_windows_dlc_interrupted_is_finished_by_update() {
         assert_settled(&fx);
     }
 }
+
+#[test]
+fn a_windows_reinstall_also_installs_newly_owned_dlc() {
+    let fx = installed_windows();
+    offer_ideology(&fx);
+    fx.owns_ids(&[RIMWORLD, DLC, IDEOLOGY]);
+    let updated = fx.reinstall();
+    assert_eq!(updated.kind, JournalKind::Reinstall);
+    assert_eq!(
+        ran_since_install(&fx),
+        [
+            setup(RIMWORLD, "1.0"),
+            setup(DLC, "1.0"),
+            setup(IDEOLOGY, "1.0")
+        ]
+    );
+    assert_eq!(
+        versions(&fx),
+        [(RIMWORLD, v("1.0")), (DLC, v("1.0")), (IDEOLOGY, v("1.0"))]
+    );
+    assert_eq!(fx.read("Data/Ideology/i.dat"), "ideology v1");
+    assert_settled(&fx);
+}
