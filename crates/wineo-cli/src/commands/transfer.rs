@@ -1,8 +1,5 @@
 use std::collections::BTreeSet;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
 use signal_hook::iterator::exfiltrator::raw::WithRawSiginfo;
@@ -75,7 +72,6 @@ pub struct Cancellation {
     pub token: Token,
     signals: Handle,
     thread: Option<JoinHandle<()>>,
-    stop: Arc<AtomicBool>,
 }
 
 impl Cancellation {
@@ -109,15 +105,13 @@ impl Cancellation {
         }
         let handle = signals.handle();
         let listener = token.clone();
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = stop.clone();
         let thread = thread::spawn(move || {
             let mut waiting = announce;
-            while !thread_stop.load(Ordering::Relaxed) {
+            loop {
                 // Only SIGINT counts every delivery; other signals keep their
                 // original once-per-batch behavior.
                 let mut seen = BTreeSet::new();
-                for received in signals.pending() {
+                for received in signals.wait() {
                     let signal = received.si_signo;
                     if signal != SIGINT && !seen.insert(signal) {
                         continue;
@@ -137,14 +131,16 @@ impl Cancellation {
                         listener.cancel();
                     }
                 }
-                thread::sleep(Duration::from_millis(20));
+                // Drop closes the handle, which wakes `wait` with an empty batch.
+                if signals.is_closed() {
+                    return;
+                }
             }
         });
         Ok(Self {
             token,
             signals: handle,
             thread: Some(thread),
-            stop,
         })
     }
 
@@ -183,7 +179,6 @@ fn say(message: &str) {
 
 impl Drop for Cancellation {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
         self.signals.close();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
