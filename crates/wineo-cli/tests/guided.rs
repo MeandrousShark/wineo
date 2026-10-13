@@ -1170,6 +1170,61 @@ fn guided_new_runs_the_installer_then_picks_what_it_installed() {
 }
 
 #[test]
+fn guided_new_offers_what_a_failed_installer_left() {
+    let f = Fixture::new();
+    let installer = f.root.path().join("fail-game.exe");
+    fs::write(&installer, b"").unwrap();
+    let mut pty = f.new_guided(&[]);
+    plain_answers(&mut pty, "game", "1");
+    pty.expect("Installer: ");
+    pty.send(installer.to_str().unwrap());
+    pty.expect("Create it? ");
+    pty.send("");
+    pty.expect("Created game.");
+    pty.expect("The installer exited with code 3.");
+    pty.expect("Its output is in ");
+    pty.expect("  1) Game");
+    pty.expect("Add which, like 1 3: ");
+    pty.send("1");
+    pty.expect("Choice: ");
+    pty.send("");
+    pty.expect("Save these changes?");
+    pty.expect("Choice: ");
+    pty.send("");
+    pty.expect("Saved game.");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(
+        !output.contains("Continue with `wineo setup game`"),
+        "{output}"
+    );
+    assert!(f.config("game").contains(r"exe = 'C:\Games\Game\Game.exe'"));
+}
+
+#[test]
+fn guided_new_skips_the_programs_after_a_canceled_installer() {
+    let f = Fixture::new();
+    let installer = f.root.path().join("slow-setup.exe");
+    fs::write(&installer, b"").unwrap();
+    let mut pty = f.new_guided(&[]);
+    plain_answers(&mut pty, "game", "1");
+    pty.expect("Installer: ");
+    pty.send(installer.to_str().unwrap());
+    pty.expect("Create it? ");
+    pty.send("");
+    pty.expect("Running it now. Ctrl+C asks it to close.");
+    let pids = f.root.path().join("data/wineo/prefixes/game/fake-pids");
+    wait_for("the installer to start", || pids.exists());
+    pty.interrupt();
+    pty.expect("The installer was canceled.");
+    pty.expect("Kept game. Continue with `wineo setup game`.");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(!output.contains("Add which"), "{output}");
+    assert!(f.registered("game"));
+}
+
+#[test]
 fn guided_new_reports_recovery_when_the_installer_disappears_after_creation() {
     let f = Fixture::new();
     let installer = f.root.path().join("installer.exe");

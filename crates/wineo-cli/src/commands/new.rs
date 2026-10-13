@@ -1,19 +1,20 @@
 use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use anyhow::bail;
+use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GlobalConfig};
-use wineo_core::create::{self, CreateEvent, CreateRequest, ExeCheck, TargetOutcome};
+use wineo_core::create::{
+    self, AfterInstall, CreateEvent, CreateRequest, ExeCheck, Hooks, Step, Stepped, TargetOutcome,
+};
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
-use wineo_core::installer::{Installer, Outcome, Output};
-use wineo_core::launch;
+use wineo_core::installer::{Outcome, Output};
+use wineo_core::launch::{self, Launch};
 use wineo_core::paths::Paths;
 use wineo_core::prefix;
 use wineo_core::programs::Listing;
-use wineo_core::runtime::Runtime;
 use wineo_core::supervisor::{Notice, Watched};
 
 use super::art::{Access, AutoFetch, KeyCheck, Pick};
@@ -105,75 +106,32 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     if let Some(installer) = &args.install_exe {
         launch::check_program_path(paths, installer)?;
     }
-    let mut cancellation = Some(Cancellation::new()?);
-    let token = cancellation.as_ref().unwrap().token.clone();
-    let created = match create::run(
+    let install_token = Token::new();
+    let step = args.install_exe.as_deref().map(|program| Step::Installer {
+        program,
+        output: Output::Inherit,
+        token: &install_token,
+    });
+    let mut hooks = WineHooks {
         paths,
-        CreateRequest {
-            name,
-            dir: args.dir,
-            runner: args.runner,
-            arch: args.arch,
-            template_name: args.template,
-            exe: args.exe.clone(),
-            desktop: args.desktop,
-            ..Default::default()
-        },
-        &token,
-        |event| match event {
-            CreateEvent::TemplateComponentsOmitted { runner } => eprintln!(
-                "{runner} bundles its own DXVK and vkd3d-proton, so the template's are left out"
-            ),
-            CreateEvent::BuildingPrefix { dir, runner } => {
-                let dir = paths
-                    .contract(&dir)
-                    .unwrap_or_else(|_| dir.display().to_string());
-                if runner.is_proton() {
-                    eprintln!(
-                        "Creating a Proton prefix in {dir}. The first umu run also downloads the Steam Linux Runtime, which takes a while"
-                    );
-                } else {
-                    eprintln!("Creating a wine prefix in {dir}, this takes a few seconds");
-                }
-            }
-            CreateEvent::Saved => drop(cancellation.take()),
-            CreateEvent::Registered {
-                name,
-                stored_prefix,
-                created_prefix,
-                target,
-            } => {
-                if target != TargetOutcome::ExeNotFound {
-                    println!(
-                        "{}",
-                        created_message(
-                            &name,
-                            &stored_prefix,
-                            created_prefix,
-                            paths,
-                            target == TargetOutcome::Added
-                        )
-                    );
-                }
-            }
-            CreateEvent::Components(changes) => {
-                for change in changes {
-                    eprintln!(
-                        "{}",
-                        components::describe(&change, args.name.as_deref().unwrap())
-                    );
-                }
-            }
-            CreateEvent::Desktop(changes) => {
-                for change in changes {
-                    eprintln!(
-                        "{}",
-                        desktop::describe(&change, args.name.as_deref().unwrap())
-                    );
-                }
-            }
-        },
-    ) {
+        exe: args.exe.as_deref(),
+        name: &name,
+        art: args.art,
+        cancellation: Some(Cancellation::new()?),
+        install_token: install_token.clone(),
+    };
+    let token = hooks.cancellation.as_ref().unwrap().token.clone();
+    let request = CreateRequest {
+        name: name.clone(),
+        dir: args.dir,
+        runner: args.runner,
+        arch: args.arch,
+        template_name: args.template,
+        exe: args.exe.clone(),
+        desktop: args.desktop,
+        ..Default::default()
+    };
+    let created = match create::create_and_install(paths, request, step, &token, &mut hooks) {
         Ok(created) => created,
         Err(err)
             if err
@@ -185,84 +143,32 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
         Err(err) => return Err(err),
     };
-    drop(cancellation);
-    let create::Created {
-        global,
-        environment,
-        runner,
-        prefix,
-        target,
-        guard,
-        ..
-    } = created;
-    if target == TargetOutcome::ExeNotFound {
-        if let Some(exe) = &args.exe {
-            eprintln!(
-                "Created environment {}, but {exe} was not found. Add a target with: wineo setup {}",
-                environment.name, environment.name
-            );
+    let name = &created.environment.name;
+    let (outcome, resolved) = match created.step {
+        Stepped::Stopped(code) => return code,
+        Stepped::None => {
+            if args.exe.is_none() {
+                println!("Add a target with: wineo set {name} targets.<target>.exe=<path>");
+            }
+            return Ok(ExitCode::SUCCESS);
         }
-        return Ok(ExitCode::FAILURE);
-    }
-    // Before the installer, so the pick list isn't left waiting behind it.
-    if args.art && fetch_art(paths, &global, &environment.name).is_err() {
-        let name = &environment.name;
-        eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
-        return Ok(ExitCode::from(CANCELED));
-    }
-
-    let Some(program) = &args.install_exe else {
-        if args.exe.is_none() {
-            println!(
-                "Add a target with: wineo set {} targets.<target>.exe=<path>",
-                environment.name
-            );
-        }
-        return Ok(ExitCode::SUCCESS);
-    };
-    let installer = match Installer::prepare_with_runner(
-        guard,
-        paths,
-        &global,
-        &environment.name,
-        program,
-        &runner,
-    ) {
-        Ok(installer) => installer,
-        Err(err) => {
+        Stepped::NotPrepared(err) => {
             note(&format!("error: {:#}", anyhow::Error::from(err)));
-            note(&setup::recovery_message(paths, &environment.name));
+            note(&setup::recovery_message(paths, name));
             return Ok(ExitCode::FAILURE);
         }
+        Stepped::Ran { outcome, resolved } => (outcome, resolved),
     };
-    let name = &environment.name;
-    let cancellation = Cancellation::new()?;
-    let outcome = match installer.run(
-        &cancellation.token,
-        Duration::from_secs(global.stop_timeout.into()),
-        Output::Inherit,
-        |watched| match watched {
-            Watched::Notice(Notice::Stopping) => {
-                note("Canceling the installer, press Ctrl+C again to force it");
-            }
-            Watched::Notice(Notice::Killing) => {
-                note("Killing everything the installer left running");
-            }
-            Watched::Notice(Notice::Warning(err)) => {
-                note(&format!("warning: {:#}", anyhow::Error::from(err)));
-            }
-            Watched::Notice(Notice::Heartbeat) => {}
-            Watched::Exited(_) => {}
-        },
-    ) {
+
+    let next = create::after_install(&outcome, resolved);
+    let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(err) => {
             note(&format!("error: {:#}", anyhow::Error::from(err)));
-            note(&setup::recovery_message(paths, &environment.name));
+            note(&setup::recovery_message(paths, name));
             return Ok(ExitCode::FAILURE);
         }
     };
-
     match outcome {
         Outcome::Finished { exit_code } => {
             let code = exit_code.unwrap_or(1);
@@ -271,7 +177,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 Some(code) => eprintln!("The installer exited with code {code}."),
                 None => eprintln!("The installer's exit code could not be collected"),
             }
-            if Runtime::new(paths, name).check_resolved(name).is_err() {
+            if next != AfterInstall::Programs {
                 note("The installer finished, but cleanup is unresolved.");
                 note(&setup::recovery_message(paths, name));
                 return Ok(ExitCode::FAILURE);
@@ -279,7 +185,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             if exit_code != Some(0) {
                 note(&setup::recovery_message(paths, name));
             }
-            match installed(&prefix) {
+            match installed(&created.prefix) {
                 Some(listing) => programs::report(name, &listing, false),
                 None => println!("Add a target with: wineo set {name} targets.<target>.exe=<path>"),
             }
@@ -306,6 +212,112 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             }
             note(&setup::recovery_message(paths, name));
             Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// The terminal side of creating a Wine environment, and of its installer.
+struct WineHooks<'a> {
+    paths: &'a Paths,
+    exe: Option<&'a str>,
+    name: &'a str,
+    art: bool,
+    /// Listens for Ctrl+C until the config is saved.
+    cancellation: Option<Cancellation>,
+    install_token: Token,
+}
+
+impl Hooks for WineHooks<'_> {
+    /// Ends `new` with this result.
+    type Stop = anyhow::Result<ExitCode>;
+
+    fn event(&mut self, event: CreateEvent) {
+        let paths = self.paths;
+        match event {
+            CreateEvent::TemplateComponentsOmitted { runner } => eprintln!(
+                "{runner} bundles its own DXVK and vkd3d-proton, so the template's are left out"
+            ),
+            CreateEvent::BuildingPrefix { dir, runner } => {
+                let dir = paths
+                    .contract(&dir)
+                    .unwrap_or_else(|_| dir.display().to_string());
+                if runner.is_proton() {
+                    eprintln!(
+                        "Creating a Proton prefix in {dir}. The first umu run also downloads the Steam Linux Runtime, which takes a while"
+                    );
+                } else {
+                    eprintln!("Creating a wine prefix in {dir}, this takes a few seconds");
+                }
+            }
+            CreateEvent::Saved => drop(self.cancellation.take()),
+            CreateEvent::Registered {
+                name,
+                stored_prefix,
+                created_prefix,
+                target,
+            } => {
+                if target != TargetOutcome::ExeNotFound {
+                    println!(
+                        "{}",
+                        created_message(
+                            &name,
+                            &stored_prefix,
+                            created_prefix,
+                            paths,
+                            target == TargetOutcome::Added
+                        )
+                    );
+                }
+            }
+            CreateEvent::Components(changes) => {
+                for change in changes {
+                    eprintln!("{}", components::describe(&change, self.name));
+                }
+            }
+            CreateEvent::Desktop(changes) => {
+                for change in changes {
+                    eprintln!("{}", desktop::describe(&change, self.name));
+                }
+            }
+        }
+    }
+
+    fn created(&mut self, created: &create::Created) -> Result<(), Self::Stop> {
+        let name = &created.environment.name;
+        if created.target == TargetOutcome::ExeNotFound {
+            if let Some(exe) = self.exe {
+                eprintln!(
+                    "Created environment {name}, but {exe} was not found. Add a target with: wineo setup {name}"
+                );
+            }
+            return Err(Ok(ExitCode::FAILURE));
+        }
+        // Before the installer, so the pick list isn't left waiting behind it.
+        if self.art && fetch_art(self.paths, &created.global, name).is_err() {
+            eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
+            return Err(Ok(ExitCode::from(CANCELED)));
+        }
+        Ok(())
+    }
+
+    fn ready(&mut self, _launch: &Launch) -> Result<(), Self::Stop> {
+        self.cancellation = Some(Cancellation::with_token(&self.install_token).map_err(Err)?);
+        Ok(())
+    }
+
+    fn watched(&mut self, watched: Watched) {
+        match watched {
+            Watched::Notice(Notice::Stopping) => {
+                note("Canceling the installer, press Ctrl+C again to force it");
+            }
+            Watched::Notice(Notice::Killing) => {
+                note("Killing everything the installer left running");
+            }
+            Watched::Notice(Notice::Warning(err)) => {
+                note(&format!("warning: {:#}", anyhow::Error::from(err)));
+            }
+            Watched::Notice(Notice::Heartbeat) => {}
+            Watched::Exited(_) => {}
         }
     }
 }
