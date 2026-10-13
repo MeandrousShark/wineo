@@ -292,6 +292,22 @@ Step 4's choices (2026-10-13, provisional while the maintainer was away):
 - **`update --all` skips Windows games without a graphical session**, with
   a note, and finishes interrupted Windows updates like native ones.
 
+Step 5's choices (2026-10-13, provisional while the maintainer was away):
+
+- **`--reinstall` also installs newly owned DLC** and retries failed or
+  unavailable ones, like a plain update.
+- **A newly owned DLC with no installer** for the platform is listed
+  `unavailable` and doesn't make an update available by itself.
+- **A `failed` DLC that GOG no longer offers** stays `failed` and doesn't
+  make an update available.
+- **A game that can't be compared still refuses to update**, even with
+  newly owned DLC listed.
+- **New DLC state `not_installed`** in `update --check` and `import gog
+  --list` JSON: owned and offered, but not installed yet (a new purchase, or
+  a formerly unavailable DLC GOG now offers).
+- **0049's carry-over of failed and unavailable DLC** now applies only to
+  DLC wineo can't install; those GOG still offers are retried, per 19A.
+
 Carried from 0049's acceptance (2026-10-12):
 
 - Sizes GOG lists are rounded to whole MiB, so they're estimates; a file's
