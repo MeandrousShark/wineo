@@ -201,6 +201,7 @@ impl Page {
         !self.status.is_empty()
     }
 
+    #[cfg(test)]
     pub(crate) fn spinning(&self) -> bool {
         self.waiting() || self.owned_loading
     }
@@ -669,7 +670,7 @@ impl Page {
         heroic::grid_scroll(GRID_ID, header, rows.into(), palette)
     }
 
-    pub(crate) fn view(&self, palette: Palette, width: f32, spin: f32) -> Element<'_, Event> {
+    pub(crate) fn view(&self, palette: Palette, width: f32) -> Element<'_, Event> {
         let title = match self.step {
             Step::Games => "Choose Steam games",
             Step::Details => "Import details",
@@ -683,7 +684,7 @@ impl Page {
         if !self.status.is_empty() {
             body = body.push(
                 row![
-                    crate::spinner::spinner(palette, spin, 16.0),
+                    crate::spinner::spinner(palette, 16.0),
                     text(&self.status).color(palette.muted)
                 ]
                 .spacing(8)
@@ -704,7 +705,7 @@ impl Page {
                     if self.owned_loading {
                         body = body.push(
                             row![
-                                crate::spinner::spinner(palette, spin, 16.0),
+                                crate::spinner::spinner(palette, 16.0),
                                 text("Getting owned games...").size(12).color(palette.muted)
                             ]
                             .spacing(8)
@@ -1367,7 +1368,7 @@ mod tests {
             ] {
                 page.step = step;
                 page.token = (step == Step::Working).then(Token::new);
-                let mut view = page.view(Palette::DARK, width, 0.0);
+                let mut view = page.view(Palette::DARK, width);
                 let probe = probe(&mut view, iced::Size::new(width, height));
                 let node = &probe.node;
                 let spilled = probe.outside(inset);
@@ -1399,7 +1400,7 @@ mod tests {
                 iced::Point::new(24.0, 24.0),
                 iced::Size::new(width - 48.0, height - 48.0),
             );
-            let mut view = page.view(Palette::DARK, width, 0.0);
+            let mut view = page.view(Palette::DARK, width);
             let probe = probe(&mut view, iced::Size::new(width, height));
             assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
             let (viewport, content) = probe.scrollables[0];

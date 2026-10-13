@@ -24,6 +24,7 @@ mod keys;
 mod layout_probe;
 mod library;
 mod logview;
+mod menu_anchor;
 mod panel;
 mod panel_motion;
 mod picker;
@@ -129,8 +130,6 @@ pub(crate) struct App {
     log_generation: u64,
     /// True while the log view shows install.log rather than output.log.
     pub(crate) log_install: bool,
-    pub(crate) spinner_angle: f32,
-    spinner_start: Instant,
     settings: Option<settings::Page>,
     settings_generation: u64,
     steamgriddb_sequence: u64,
@@ -164,7 +163,8 @@ pub(crate) struct App {
     flow: Option<flow::Page>,
     flow_generation: u64,
     action_menu: Option<String>,
-    pointer: iced::Point,
+    /// The cursor at the last input that could open the action menu.
+    menu_anchor: iced::Point,
     action_menu_position: iced::Point,
     window_size: iced::Size,
     close_prompt: bool,
@@ -250,7 +250,6 @@ pub(crate) enum Message {
     ScrollIdle,
     Window(window::Event),
     ThemeChanged(iced::theme::Mode),
-    SpinnerTick(Instant),
     PanelTick(u64, Instant),
     GridTick(u64, Instant),
     Key(keyboard::Key, keyboard::Modifiers, iced::event::Status),
@@ -280,7 +279,9 @@ pub(crate) enum Message {
     GogUpdate(String),
     GogChecked(Result<Option<wineo_core::gog::update::Batch>, String>),
     Context(String),
-    PointerMoved(iced::Point),
+    /// Where the cursor was when an input that can open the action menu arrived.
+    MenuAnchor(iced::Point),
+    ForceStopDue,
     OverlayInput,
     ContextSettings(String),
     CloseMenu,
@@ -356,8 +357,6 @@ impl App {
             log_token: None,
             log_generation: 0,
             log_install: false,
-            spinner_angle: 0.0,
-            spinner_start: Instant::now(),
             settings: None,
             settings_generation: 0,
             steamgriddb_sequence: 1,
@@ -389,7 +388,7 @@ impl App {
             flow: None,
             flow_generation: 0,
             action_menu: None,
-            pointer: iced::Point::ORIGIN,
+            menu_anchor: iced::Point::ORIGIN,
             action_menu_position: iced::Point::ORIGIN,
             window_size: iced::Size::new(1200.0, 800.0),
             close_prompt: false,
@@ -468,6 +467,8 @@ impl App {
             || self.settings.as_ref().is_some_and(|page| page.saving)
     }
 
+    // Only tests ask now: spinners animate themselves while drawn.
+    #[cfg(test)]
     fn spinning(&self) -> bool {
         self.filesystem_busy()
             || self.tools_busy()
@@ -512,12 +513,6 @@ impl App {
         } else {
             Subscription::none()
         };
-        // Every message rebuilds the view, so an always-on tick keeps the app busy while idle.
-        let spinner = if self.spinning() {
-            window::frames().map(Message::SpinnerTick)
-        } else {
-            Subscription::none()
-        };
         let panel_motion = if !self.panel_hidden() && self.panel_motion.active() {
             let generation = self.panel_motion.generation();
             window::frames()
@@ -546,7 +541,6 @@ impl App {
             iced::system::theme_changes().map(Message::ThemeChanged),
             window::events().map(|(_, event)| Message::Window(event)),
             iced::event::listen_with(|event, status, _| event_message(event, status)),
-            spinner,
             panel_motion,
             grid_motion,
             collapse,
@@ -1040,12 +1034,6 @@ impl App {
                 self.palette = Palette::from_mode(mode);
                 Task::none()
             }
-            Message::SpinnerTick(now) => {
-                if self.spinning() {
-                    self.spinner_angle = spinner::angle(self.spinner_start, now);
-                }
-                Task::none()
-            }
             Message::PanelTick(generation, now) => {
                 if self.section == sidebar::Section::Library {
                     self.panel_motion.tick(generation, now);
@@ -1283,7 +1271,7 @@ impl App {
                 ])
             }
             Message::Context(name) => {
-                self.action_menu_position = self.pointer;
+                self.action_menu_position = self.menu_anchor;
                 self.action_menu = if self.action_menu.as_deref() == Some(&name) {
                     None
                 } else {
@@ -1291,8 +1279,9 @@ impl App {
                 };
                 Task::none()
             }
-            Message::PointerMoved(position) => {
-                self.pointer = position;
+            Message::ForceStopDue => Task::none(),
+            Message::MenuAnchor(position) => {
+                self.menu_anchor = position;
                 Task::none()
             }
             Message::OverlayInput => Task::none(),
@@ -1887,9 +1876,6 @@ pub(crate) fn event_message(event: iced::Event, status: iced::event::Status) -> 
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
             Some(Message::Key(key, modifiers, status))
         }
-        iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
-            Some(Message::PointerMoved(position))
-        }
         // Ignored regardless of status: a text input or button that saw the
         // click must not turn Back into a captured key that pages skip.
         iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Back)) => {
@@ -2376,6 +2362,20 @@ mod tests {
         app.close_prompt = false;
         tree.diff(app.view().as_widget());
         assert_eq!(scroll_state(&tree, tag), Some(state));
+    }
+
+    #[test]
+    fn an_open_action_menu_stays_put_until_the_next_context() {
+        let mut app = app();
+        app.cards = vec![card("game", State::Inactive, 0)];
+        let first = iced::Point::new(30.0, 40.0);
+        let _ = app.update(Message::MenuAnchor(first));
+        let _ = app.update(Message::Context("game".into()));
+        assert_eq!(app.action_menu_position, first);
+        // Releasing the menu's own scrollbar publishes a new anchor.
+        let _ = app.update(Message::MenuAnchor(iced::Point::new(300.0, 400.0)));
+        assert_eq!(app.action_menu.as_deref(), Some("game"));
+        assert_eq!(app.action_menu_position, first);
     }
 
     #[test]
@@ -3537,6 +3537,22 @@ mod tests {
 
         let _ = app.update(Message::StopFinished("game".into(), Ok(Vec::new())));
         assert!(app.operation.is_none());
+    }
+
+    #[test]
+    fn stop_wakes_the_app_when_force_stop_becomes_available() {
+        let mut app = selected_app(State::Running);
+        // The stop worker plus a one-shot wakeup at the deadline.
+        assert_eq!(app.update(Message::Stop).units(), 2);
+        let at = Instant::now() + Duration::from_millis(30);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let message = runtime.block_on(crate::panel::force_stop_due(at));
+        assert!(matches!(message, Message::ForceStopDue));
+        assert!(Instant::now() >= at);
+        let _ = app.update(message);
     }
 
     #[test]

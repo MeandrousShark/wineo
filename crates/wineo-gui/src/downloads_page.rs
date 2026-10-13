@@ -571,7 +571,7 @@ impl App {
         if let Some(status) = &page.status {
             feedback = feedback.push(
                 row![
-                    spinner::spinner(palette, self.spinner_angle, 16.0),
+                    spinner::spinner(palette, 16.0),
                     text(status).width(Fill),
                     secondary_button("Cancel", palette).on_press(message(Event::Cancel))
                 ]

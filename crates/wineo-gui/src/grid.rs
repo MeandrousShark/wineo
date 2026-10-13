@@ -296,7 +296,7 @@ impl App {
         (self.window_size.width - 40.0).clamp(280.0, widest)
     }
     pub(crate) fn view(&self) -> Element<'_, Message> {
-        crate::shortcuts::capture_with_undo(
+        let content = crate::shortcuts::capture_with_undo(
             self.sidebar_view(),
             Message::Section,
             (self.toast.is_some()
@@ -309,7 +309,8 @@ impl App {
                 && self.art_page.is_none()
                 && !self.close_prompt)
                 .then_some(Message::Undo),
-        )
+        );
+        crate::menu_anchor::track(content, Message::MenuAnchor)
     }
 
     fn sidebar_view(&self) -> Element<'_, Message> {
@@ -395,13 +396,8 @@ impl App {
             };
             let width = self.flow_width();
             let dialog = container(
-                flow.view_with_key_availability(
-                    palette,
-                    width,
-                    self.spinner_angle,
-                    self.steamgriddb_available,
-                )
-                .map(move |event| Message::Flow(generation, event)),
+                flow.view_with_key_availability(palette, width, self.steamgriddb_available)
+                    .map(move |event| Message::Flow(generation, event)),
             )
             .width(width)
             .height((self.window_size.height - 40.0).clamp(240.0, height))
@@ -710,7 +706,7 @@ impl App {
                 .map(move |event| Message::ArtPage(name.clone(), generation, event));
         }
         if let Some(page) = &self.settings {
-            return page.view(&self.paths, palette, self.spinner_angle);
+            return page.view(&self.paths, palette);
         }
         let mut page = column![
             self.top_bar(),

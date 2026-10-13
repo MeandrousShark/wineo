@@ -371,7 +371,7 @@ impl Page {
             .is_some_and(|pending| pending.kind() == JournalKind::Install)
     }
 
-    pub(crate) fn view(&self, palette: Palette, spin: f32) -> Element<'_, Event> {
+    pub(crate) fn view(&self, palette: Palette) -> Element<'_, Event> {
         let title = match (self.step, self.pending.as_deref()) {
             (Step::Planning, _) => format!("Update {}", self.name),
             (_, Some(pending)) => format!("{} {}", action(pending), self.name),
@@ -388,7 +388,7 @@ impl Page {
         if !self.status.is_empty() {
             body = body.push(
                 row![
-                    crate::spinner::spinner(palette, spin, 16.0),
+                    crate::spinner::spinner(palette, 16.0),
                     text(&self.status).color(palette.muted)
                 ]
                 .spacing(8)
@@ -1112,7 +1112,7 @@ mod tests {
                 iced::Point::new(24.0, 24.0),
                 iced::Size::new(width - 48.0, height - 48.0),
             );
-            let mut view = page.view(Palette::DARK, 0.0);
+            let mut view = page.view(Palette::DARK);
             let probe = crate::layout_probe::probe(&mut view, iced::Size::new(width, height));
             assert!(probe.outside(inset).is_empty(), "{width}x{height}");
         }
@@ -1401,7 +1401,7 @@ mod tests {
                 iced::Point::new(24.0, 24.0),
                 iced::Size::new(width - 48.0, height - 48.0),
             );
-            let mut view = page.view(Palette::DARK, 0.0);
+            let mut view = page.view(Palette::DARK);
             let probe = crate::layout_probe::probe(&mut view, iced::Size::new(width, height));
             assert!(probe.outside(inset).is_empty(), "{width}x{height}");
         }

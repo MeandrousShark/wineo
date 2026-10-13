@@ -404,9 +404,9 @@ impl Page {
         self.waiting() && matches!(self.step, Step::Games | Step::Details | Step::Review)
     }
 
-    fn working<'a>(&'a self, palette: Palette, spin: f32) -> Element<'a, Event> {
+    fn working<'a>(&'a self, palette: Palette) -> Element<'a, Event> {
         row![
-            crate::spinner::spinner(palette, spin, 16.0),
+            crate::spinner::spinner(palette, 16.0),
             text(&self.status).color(palette.muted)
         ]
         .spacing(8)
@@ -1920,7 +1920,6 @@ impl Page {
         &self,
         palette: Palette,
         width: f32,
-        spin: f32,
         key_available: bool,
     ) -> Element<'_, Event> {
         let mut body = column![].spacing(14).width(Fill);
@@ -1937,7 +1936,7 @@ impl Page {
         };
         body = body.push(text(title).size(26).color(palette.foreground));
         if self.waiting() && !self.status_by_action() {
-            body = body.push(self.working(palette, spin));
+            body = body.push(self.working(palette));
         } else if !self.status.is_empty() && !self.status_by_action() {
             body = body.push(text(&self.status).color(palette.muted));
         }
@@ -1999,7 +1998,7 @@ impl Page {
                     .spacing(12)
                     .align_y(Center);
                     if self.status_by_action() {
-                        row_actions = row_actions.push(self.working(palette, spin));
+                        row_actions = row_actions.push(self.working(palette));
                     }
                     // A narrow dialog would squeeze the last control away.
                     actions = Some(row_actions.wrap().vertical_spacing(8).into());
@@ -2202,7 +2201,7 @@ impl Page {
                 .spacing(12)
                 .align_y(Center);
                 if self.status_by_action() {
-                    next = next.push(self.working(palette, spin));
+                    next = next.push(self.working(palette));
                 }
                 actions = Some(next.wrap().vertical_spacing(8).into());
             }
@@ -2441,7 +2440,7 @@ impl Page {
                         .spacing(12)
                         .align_y(Center);
                     if self.status_by_action() {
-                        import = import.push(self.working(palette, spin));
+                        import = import.push(self.working(palette));
                     }
                     actions = Some(import.wrap().vertical_spacing(8).into());
                 }
@@ -4270,8 +4269,7 @@ mod tests {
                 };
                 for &leave_prompt in prompts {
                     page.leave_prompt = leave_prompt;
-                    let mut view =
-                        page.view_with_key_availability(Palette::DARK, width, 0.0, false);
+                    let mut view = page.view_with_key_availability(Palette::DARK, width, false);
                     let probe = probe(&mut view, iced::Size::new(width, height));
                     let node = &probe.node;
                     let spilled = probe.outside(inset);
@@ -4297,7 +4295,7 @@ mod tests {
                 iced::Point::new(24.0, 24.0),
                 iced::Size::new(width - 48.0, height - 48.0),
             );
-            let mut view = page.view_with_key_availability(Palette::DARK, width, 0.0, false);
+            let mut view = page.view_with_key_availability(Palette::DARK, width, false);
             let probe = probe(&mut view, iced::Size::new(width, height));
             assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
             let (viewport, content) = probe.scrollables[0];
@@ -4394,7 +4392,7 @@ mod tests {
                     .find(|(name, _)| name == label)
                     .expect("staged page");
                 tweak(page);
-                let mut view = page.view_with_key_availability(Palette::DARK, width, 0.0, false);
+                let mut view = page.view_with_key_availability(Palette::DARK, width, false);
                 let probe = probe(&mut view, iced::Size::new(width, height));
                 let what = format!("{label} #{case} at {width}x{height}");
                 assert_eq!(probe.scrollables.len(), 1, "{what}: one scrolling region");
@@ -4423,7 +4421,7 @@ mod tests {
         let rows = page.listing.as_ref().unwrap().candidates.len();
         // One column, so each game is its own row.
         for height in [700.0, 300.0] {
-            let view = page.view_with_key_availability(Palette::DARK, 280.0, 0.0, false);
+            let view = page.view_with_key_availability(Palette::DARK, 280.0, false);
             let mut laid = lay_out(view, iced::Size::new(280.0, height));
             let viewport = bounds_at(&laid.node, &[0, 1, 0]);
             for row in [rows - 1, 2, 0, 3, 1] {
@@ -4503,7 +4501,7 @@ mod tests {
                 iced::Point::new(24.0, 24.0),
                 iced::Size::new(width - 48.0, height - 48.0),
             );
-            let mut view = page.view_with_key_availability(Palette::DARK, width, 0.0, false);
+            let mut view = page.view_with_key_availability(Palette::DARK, width, false);
             let probe = probe(&mut view, iced::Size::new(width, height));
             assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
             let spilled = probe.outside(inset);
@@ -4880,7 +4878,7 @@ mod tests {
     }
 
     #[test]
-    fn inspecting_a_game_shows_the_spinner_by_the_import_button_until_its_reply() {
+    fn inspecting_a_game_waits_by_the_import_button_until_its_reply() {
         let root = tempdir().unwrap();
         let mut page = grid_page(root.path());
         let listing = page.listing.clone().unwrap();

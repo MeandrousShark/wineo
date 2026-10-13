@@ -182,16 +182,16 @@ impl App {
                 .checkup_change()
                 .is_some_and(|change| change.scope == crate::checkup::Scope::Global)
         {
-            label = label.push(crate::spinner::spinner(palette, self.spinner_angle, 12.0));
+            label = label.push(crate::spinner::spinner(palette, 12.0));
         }
         if section == Section::Downloads
             && matches!(self.change, Some(crate::removal::Change::Downloads(_)))
         {
-            label = label.push(crate::spinner::spinner(palette, self.spinner_angle, 12.0));
+            label = label.push(crate::spinner::spinner(palette, 12.0));
         }
         if section == Section::Trash {
             if matches!(self.change, Some(crate::removal::Change::Trash(_))) {
-                label = label.push(crate::spinner::spinner(palette, self.spinner_angle, 12.0));
+                label = label.push(crate::spinner::spinner(palette, 12.0));
             }
             if let Some(count) = self.trash_badge.count {
                 label = label.push(text(count).size(12).color(palette.muted));

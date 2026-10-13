@@ -714,6 +714,7 @@ impl Page {
         steam_key::status_task(paths.clone(), self.generation, sequence)
     }
     /// A key is being checked, saved, or removed, which spins the spinner.
+    #[cfg(test)]
     pub(crate) fn key_busy(&self) -> bool {
         self.steamgriddb.busy.is_some() || self.steam_key.busy.is_some() || self.gog.busy.is_some()
     }
@@ -2987,7 +2988,7 @@ mod tests {
         assert_eq!(global_editor(&page).form.draft.games_root, "/mnt/games");
         assert!(global_editor(&page).form.problem().is_none());
         for size in [iced::Size::new(900.0, 700.0), iced::Size::new(360.0, 280.0)] {
-            let mut view = page.view(&paths, crate::theme::Palette::DARK, 0.0);
+            let mut view = page.view(&paths, crate::theme::Palette::DARK);
             let _ = crate::layout_probe::layout(&mut view, size);
         }
         let edits = global_editor(&page).form.edits();
@@ -4679,11 +4680,11 @@ mod tests {
             app.settings.as_ref().unwrap().gog.busy,
             Some(gog::Busy::Opening)
         );
-        let mut view =
-            app.settings
-                .as_ref()
-                .unwrap()
-                .view(&paths, crate::theme::Palette::DARK, 0.0);
+        let mut view = app
+            .settings
+            .as_ref()
+            .unwrap()
+            .view(&paths, crate::theme::Palette::DARK);
         let _ = crate::layout_probe::layout(&mut view, iced::Size::new(900.0, 700.0));
         assert!(
             view::gog_texts(&app.settings.as_ref().unwrap().gog).contains(&"Log in".to_owned())
@@ -4738,7 +4739,7 @@ mod tests {
     }
 
     #[test]
-    fn key_work_spins_the_spinner_only_while_it_runs() {
+    fn key_work_is_busy_only_while_it_runs() {
         let (_root, paths) = setup();
         let mut app = open_global_app(&paths);
         assert!(!app.spinning());

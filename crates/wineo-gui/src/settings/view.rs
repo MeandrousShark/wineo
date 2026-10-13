@@ -40,12 +40,7 @@ fn semibold() -> Font {
 }
 
 impl Page {
-    pub(crate) fn view(
-        &self,
-        paths: &Paths,
-        palette: Palette,
-        spinner: f32,
-    ) -> Element<'_, Message> {
+    pub(crate) fn view(&self, paths: &Paths, palette: Palette) -> Element<'_, Message> {
         // Global settings is a sidebar section, so the sidebar is its way out.
         let back = (!self.is_global()).then(|| {
             secondary_button("Back", palette)
@@ -82,9 +77,7 @@ impl Page {
             View::Form(editor) => {
                 editor_view(&self.name, editor, self.locked(), self.resolving(), palette)
             }
-            View::Global(editor) => {
-                global_view(editor, self, paths, self.locked(), spinner, palette)
-            }
+            View::Global(editor) => global_view(editor, self, paths, self.locked(), palette),
         };
         let scroll = scrollable(
             container(container(body).max_width(PAGE_WIDTH).width(Fill))
@@ -101,9 +94,7 @@ impl Page {
             wheel::scale(scroll, WHEEL_STEP_SCALE)
         ];
         if matches!(self.view, View::Form(_) | View::Global(_)) {
-            page = page
-                .push(divider(palette))
-                .push(self.save_bar(palette, spinner));
+            page = page.push(divider(palette)).push(self.save_bar(palette));
         }
         let base = container(page)
             .width(Fill)
@@ -115,7 +106,7 @@ impl Page {
             base.into()
         }
     }
-    fn save_bar(&self, palette: Palette, spinner: f32) -> Element<'_, Message> {
+    fn save_bar(&self, palette: Palette) -> Element<'_, Message> {
         let mut bar = column![].spacing(6);
         if let Some(warning) = self.global_warning() {
             bar = bar.push(text(warning).size(13).color(palette.warning));
@@ -148,7 +139,7 @@ impl Page {
         .align_y(Center);
         actions = actions.push(Space::new().width(Fill));
         if self.saving {
-            actions = actions.push(crate::spinner::spinner(palette, spinner, 16.0));
+            actions = actions.push(crate::spinner::spinner(palette, 16.0));
             actions = actions.push(text("Saving...").size(14).color(palette.muted));
         }
         let revert_enabled = !self.saving && (self.is_dirty() || self.changed_on_disk);
@@ -358,7 +349,6 @@ fn global_view<'a>(
     page: &'a Page,
     paths: &Paths,
     locked: bool,
-    spinner: f32,
     palette: Palette,
 ) -> Element<'a, Message> {
     let (steamgriddb, steam_key, gog) = (&page.steamgriddb, &page.steam_key, &page.gog);
@@ -488,12 +478,12 @@ fn global_view<'a>(
         section("Art to fetch", art.into(), palette),
         section(
             "SteamGridDB",
-            key_row(steamgriddb_row(steamgriddb, paths), spinner, palette),
+            key_row(steamgriddb_row(steamgriddb, paths), palette),
             palette,
         ),
         container(section(
             "Steam Web API",
-            key_row(steam_key_row(steam_key, paths), spinner, palette),
+            key_row(steam_key_row(steam_key, paths), palette),
             palette,
         ))
         .id(iced::widget::Id::new(STEAM_KEY_ID)),
@@ -501,7 +491,7 @@ fn global_view<'a>(
             "GOG",
             column![
                 gog_install_rows(editor, paths, locked, palette),
-                gog_row(gog, locked, spinner, palette)
+                gog_row(gog, locked, palette)
             ]
             .spacing(12)
             .into(),
@@ -690,7 +680,7 @@ impl KeyRow<'_> {
     }
 }
 
-fn key_row<'a>(row_data: KeyRow<'a>, spinner: f32, palette: Palette) -> Element<'a, Message> {
+fn key_row<'a>(row_data: KeyRow<'a>, palette: Palette) -> Element<'a, Message> {
     let busy_label = row_data.busy_label();
     let KeyRow {
         status,
@@ -736,7 +726,7 @@ fn key_row<'a>(row_data: KeyRow<'a>, spinner: f32, palette: Palette) -> Element<
     if let Some(label) = busy_label {
         rows = rows.push(
             row![
-                crate::spinner::spinner(palette, spinner, 16.0),
+                crate::spinner::spinner(palette, 16.0),
                 text(label).size(13).color(palette.muted),
             ]
             .spacing(8)
@@ -897,7 +887,6 @@ fn gog_install_rows<'a>(
 fn gog_row<'a>(
     settings: &'a super::gog::Settings,
     locked: bool,
-    spinner: f32,
     palette: Palette,
 ) -> Element<'a, Message> {
     use super::gog::Event as GogEvent;
@@ -927,7 +916,7 @@ fn gog_row<'a>(
     if let Some(busy) = settings.busy {
         rows = rows.push(
             row![
-                crate::spinner::spinner(palette, spinner, 16.0),
+                crate::spinner::spinner(palette, 16.0),
                 text(busy.label()).size(13).color(palette.muted),
             ]
             .spacing(8)
