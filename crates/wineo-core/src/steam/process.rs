@@ -56,6 +56,9 @@ pub fn reapers_by_app(
     install: &Install,
     app_ids: &[String],
 ) -> io::Result<HashMap<String, Vec<Reaper>>> {
+    if app_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
     let boot_id = current_boot_id()?;
     scan_reapers(&Proc, proc_pids()?, install, app_ids, &boot_id)
 }
