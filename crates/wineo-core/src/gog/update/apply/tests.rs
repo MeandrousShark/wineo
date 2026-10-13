@@ -180,6 +180,8 @@ struct Offer {
     checksum: bool,
     /// GOG's code for the installer's language.
     language: &'static str,
+    /// More languages GOG offers the same package in.
+    also: Vec<&'static str>,
 }
 
 #[derive(Default)]
@@ -203,15 +205,17 @@ impl Gog {
 
     fn json(&self, id: u64, base: &str) -> serde_json::Value {
         let offer = &self.offers[&id];
+        let languages = std::iter::once(offer.language).chain(offer.also.iter().copied());
         let installers: Vec<serde_json::Value> = offer
             .bytes
             .iter()
-            .map(|bytes| {
+            .flat_map(|bytes| languages.clone().map(move |language| (bytes, language)))
+            .map(|(bytes, language)| {
                 let name = Self::name(id, &offer.version);
                 serde_json::json!({
-                    "id": format!("installer_linux_{}", offer.language),
+                    "id": format!("installer_linux_{language}"),
                     "os": "linux",
-                    "language": offer.language,
+                    "language": language,
                     "version": offer.version,
                     "total_size": listed(bytes.len()),
                     "files": [{
@@ -386,6 +390,7 @@ impl Fixture {
                 bytes: Some(package(items)),
                 checksum: true,
                 language: "en",
+                also: Vec::new(),
             },
         );
         if id != RIMWORLD && !gog.dlc.contains(&id) {

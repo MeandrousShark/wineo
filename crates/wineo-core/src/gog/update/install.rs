@@ -27,10 +27,10 @@ use anyhow::{Context, Result};
 use wineo_gog::DownloadCache;
 
 use super::apply::{
-    Packages, PlannedFile, Progress, Work, check_fit, download, free_space, is_cancel,
-    lock_operation, open_package, operation_id, pin_packages, rebuild,
+    self, Packages, PlannedFile, Progress, Wanted, Work, check_fit, download, free_space,
+    is_cancel, lock_operation, open_package, operation_id, pin_packages, rebuild,
 };
-use super::{SavedAside, UpdateError};
+use super::{Check, SavedAside, UpdateError};
 use crate::cancel::Token;
 use crate::config::{GlobalConfig, Target as TargetConfig};
 use crate::environment;
@@ -61,6 +61,11 @@ pub enum InstallError {
     /// The environment or folder isn't what the plan saw any more.
     #[error("{what} changed since the install was planned; plan it again.")]
     Changed { what: String },
+    /// The name's own install stopped in another folder.
+    #[error(
+        "{name}'s install in {folder} didn't finish. Install it again there, or remove it first."
+    )]
+    PendingElsewhere { name: String, folder: PathBuf },
 }
 
 /// What to install, and where.
@@ -118,6 +123,12 @@ pub struct Plan {
     /// Whether the environment's config exists, which a resumed install's
     /// may not yet.
     has_config: bool,
+    /// A resumed install's target: its journal's, or the same products
+    /// resolved again from GOG's current packages.
+    resumed_target: Option<Target>,
+    /// Whether a resumed install finishes from the packages its journal
+    /// names, already in the download cache.
+    offline: bool,
     products: Vec<Planned>,
     files: Vec<PlannedFile>,
     /// The folder's state when planned: none, or the resumed install's.
@@ -178,6 +189,9 @@ impl Plan {
     /// What has to be downloaded at most, from the sizes GOG lists, which
     /// are rounded to whole MiB. Files already cached aren't fetched again.
     pub fn download_size(&self) -> u64 {
+        if self.offline {
+            return 0;
+        }
         self.files.iter().map(|file| file.size).sum()
     }
 
@@ -185,7 +199,7 @@ impl Plan {
     /// known once the packages are downloaded: their size, since GOG's Linux
     /// packages are barely compressed.
     pub fn installed_estimate(&self) -> u64 {
-        self.download_size()
+        self.files.iter().map(|file| file.size).sum()
     }
 
     pub fn warnings(&self) -> &[String] {
@@ -194,6 +208,9 @@ impl Plan {
 
     /// What the install commits if every package installs.
     fn target(&self) -> Target {
+        if let Some(target) = &self.resumed_target {
+            return target.clone();
+        }
         Target {
             gog_id: self.gog_id,
             platform: Platform::Linux,
@@ -248,7 +265,12 @@ pub struct Installed {
 /// game's environment with its own interrupted install in the folder), for
 /// a folder that overlaps another game's or isn't empty, and for a game
 /// with no Linux installer in the language or English.
-pub fn plan(paths: &Paths, session: &mut Session, request: &Request) -> Result<Plan> {
+pub fn plan(
+    paths: &Paths,
+    session: &mut Session,
+    request: &Request,
+    token: &Token,
+) -> Result<Plan> {
     host_only(paths)?;
     let global = GlobalConfig::load(paths)?;
     let requested = request
@@ -297,6 +319,7 @@ pub fn plan(paths: &Paths, session: &mut Session, request: &Request) -> Result<P
     if exists && !resume {
         environment::check_new_name(paths, name)?;
     }
+    check_pending(paths, name, &folder)?;
     if let Some(state) = &seen
         && !resume
     {
@@ -313,6 +336,24 @@ pub fn plan(paths: &Paths, session: &mut Session, request: &Request) -> Result<P
             _ => folder::FolderError::Tracked { folder },
         }
         .into());
+    }
+
+    if resume {
+        let seen = seen.expect("a resumed install has a state");
+        return resumed(
+            paths,
+            session,
+            request,
+            token,
+            Resumed {
+                title,
+                folder,
+                requested,
+                has_config: exists,
+                seen,
+                warnings,
+            },
+        );
     }
 
     let mut products = Vec::new();
@@ -359,13 +400,14 @@ pub fn plan(paths: &Paths, session: &mut Session, request: &Request) -> Result<P
             .map(|entry| entry.title.clone())
             .filter(|title| !title.is_empty());
         let label = names::dlc_label(&title, id, dlc_title.as_deref());
+        // In the game's own language, which may already be English.
         let picked = match entry {
-            Some(entry) => pick(entry, &label, &code),
+            Some(entry) => pick(entry, &label, &language),
             None => Err(format!("GOG lists no details for {label}.")),
         };
         match picked {
             Ok(picked) => {
-                let note = (picked.language != code).then(|| {
+                let note = (picked.language != language).then(|| {
                     format!(
                         "{label} has no Linux installer in {requested}, so it installs in English."
                     )
@@ -394,9 +436,124 @@ pub fn plan(paths: &Paths, session: &mut Session, request: &Request) -> Result<P
         desktop: request.desktop,
         resume,
         has_config: exists,
+        resumed_target: None,
+        offline: false,
         products,
         files,
         seen,
+        warnings,
+    })
+}
+
+/// Refuses a name whose install stopped in another folder before its config
+/// was written: a state there still names it as owner.
+fn check_pending(paths: &Paths, name: &str, folder: &Path) -> Result<()> {
+    for state in folder::owned_by(paths, name, true)? {
+        if state.folder != folder {
+            return Err(InstallError::PendingElsewhere {
+                name: name.to_owned(),
+                folder: state.folder,
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// What planning found before it saw that the install is resumed.
+struct Resumed {
+    title: String,
+    folder: PathBuf,
+    requested: String,
+    has_config: bool,
+    seen: FolderState,
+    warnings: Vec<String>,
+}
+
+/// Plans carrying on the environment's own interrupted install, as `wineo
+/// update` finishes one: from the exact packages its journal names when
+/// they are all in the cache and verify, else from GOG's current packages
+/// for the same products. The products it records are never fewer, since
+/// some of them may already be in the folder.
+fn resumed(
+    paths: &Paths,
+    session: &mut Session,
+    request: &Request,
+    token: &Token,
+    found: Resumed,
+) -> Result<Plan> {
+    let Resumed {
+        title,
+        folder,
+        requested,
+        has_config,
+        seen,
+        mut warnings,
+    } = found;
+    let journal = seen
+        .journal
+        .clone()
+        .expect("a resumed install has a journal");
+    let names = names::product_names(&folder);
+    let (target, files, offline) = match apply::cached(paths, &journal, token)? {
+        Some(files) => (journal.target.clone(), files, true),
+        None => {
+            let resolved = apply::resolve(
+                paths,
+                session,
+                &request.name,
+                &seen,
+                Wanted {
+                    language: &journal.target.language,
+                    products: &journal.target.products,
+                    names: &names,
+                },
+                Check {
+                    refresh: request.refresh,
+                    read_only: request.read_only,
+                },
+            )?;
+            warnings.extend(resolved.warnings);
+            (resolved.target, resolved.files, false)
+        }
+    };
+    let products = target
+        .products
+        .iter()
+        .map(|product| Planned {
+            id: product.id,
+            title: (product.id == target.gog_id).then(|| title.clone()),
+            version: product.version.clone(),
+            language: (product.status == ProductStatus::Installed).then(|| {
+                product
+                    .language
+                    .clone()
+                    .unwrap_or_else(|| target.language.clone())
+            }),
+            status: product.status,
+            note: None,
+            download_size: files
+                .iter()
+                .filter(|file| file.product == product.id)
+                .map(|file| file.size)
+                .sum(),
+        })
+        .collect();
+    Ok(Plan {
+        environment: request.name.clone(),
+        gog_id: request.gog_id,
+        title,
+        folder,
+        requested,
+        language: target.language.clone(),
+        desktop: request.desktop,
+        resume: true,
+        has_config,
+        resumed_target: Some(target),
+        offline,
+        products,
+        files,
+        seen: Some(seen),
         warnings,
     })
 }
@@ -513,7 +670,8 @@ pub fn apply(
     progress: impl FnMut(Progress),
 ) -> Result<Installed> {
     host_only(paths)?;
-    let mut journaled = false;
+    // A resumed install's journal is there from the start.
+    let mut journaled = plan.resume;
     let progress = RefCell::new(progress);
     match run(paths, session, plan, token, &progress, &mut journaled) {
         Err(error) if token.is_canceled() && is_cancel(&error) => {
@@ -548,9 +706,16 @@ fn run(
     let mut fetched = Vec::new();
     let mut failed = BTreeMap::new();
     for file in &plan.files {
+        // Finishing from the journal's packages: checked once pinned.
+        if file.download.is_none() {
+            fetched.push(file.clone());
+            continue;
+        }
         match download(session, &cache, file, token, progress, &mut warnings) {
             Ok(file) => fetched.push(file),
-            Err(error) if file.product == plan.gog_id || !dlc_can_fail(&error) => {
+            // A resumed install may already have a DLC's files in the
+            // folder, so none of its products can drop out.
+            Err(error) if plan.resume || file.product == plan.gog_id || !dlc_can_fail(&error) => {
                 return Err(error);
             }
             Err(error) => {
@@ -567,7 +732,7 @@ fn run(
                 opened.push((file.product, package));
                 kept.push((file, path));
             }
-            Err(error) if file.product == plan.gog_id || is_cancel(&error) => {
+            Err(error) if plan.resume || file.product == plan.gog_id || is_cancel(&error) => {
                 return Err(error.context(format!("failed to open {}'s package", file.label)));
             }
             Err(error) => {
@@ -613,6 +778,7 @@ fn run(
     } else {
         environment::check_new_name(paths, name)?;
     }
+    check_pending(paths, name, folder)?;
     if folder::check_fresh_install(paths, folder, name)? != folder {
         return Err(changed(&folder.display().to_string()).into());
     }

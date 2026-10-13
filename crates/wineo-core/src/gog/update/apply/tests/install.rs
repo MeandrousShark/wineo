@@ -38,7 +38,7 @@ impl Fixture {
     }
 
     fn install_plan(&self, request: &Request) -> Result<install::Plan> {
-        install::plan(&self.paths, &mut self.session(), request)
+        install::plan(&self.paths, &mut self.session(), request, &Token::new())
     }
 
     fn install_with(
@@ -915,7 +915,7 @@ fn a_portable_root_is_refused() {
     let mut session = Session::open(&portable, &*fx.keyring, client_at(&fx.server.base))
         .unwrap()
         .unwrap();
-    let error = install::plan(&portable, &mut session, &request()).unwrap_err();
+    let error = install::plan(&portable, &mut session, &request(), &Token::new()).unwrap_err();
     assert_eq!(
         error.to_string(),
         "GOG games live in the host library. Run this without --portable."
@@ -930,13 +930,198 @@ fn a_dry_run_plan_writes_nothing_but_a_renewed_login() {
         read_only: true,
         ..request()
     };
-    install::plan(&fx.paths, &mut session, &dry).unwrap();
+    install::plan(&fx.paths, &mut session, &dry, &Token::new()).unwrap();
     let before = crate::test_snapshot::snapshot_tree(fx.root.path());
-    install::plan(&fx.paths, &mut session, &dry).unwrap();
+    install::plan(&fx.paths, &mut session, &dry, &Token::new()).unwrap();
     crate::test_snapshot::assert_unchanged(
         &before,
         &crate::test_snapshot::snapshot_tree(fx.root.path()),
     );
     assert!(!fx.paths.gog_product_cache(RIMWORLD).exists());
     assert!(!fx.paths.gog_owned_cache(USER).exists());
+}
+
+/// An install stopped once Ideology's files are published, partway through
+/// the rest.
+fn interrupted_after_ideology() -> Fixture {
+    let fx = offered();
+    // Data, Data/Ideology, Data/Ideology/i.dat, then the fourth stops it.
+    set_failpoint_nth("update.publish.before", 3);
+    fx.install_err();
+    assert_eq!(fx.read("Data/Ideology/i.dat"), "ideology v1");
+    fx
+}
+
+#[test]
+fn installing_again_finishes_from_the_journals_packages_without_dropping_dlc() {
+    let fx = interrupted_after_ideology();
+    let journal = fx.state().journal.unwrap();
+    // Which DLC are owned can't be told now, which mustn't matter.
+    fx.gog.lock().unwrap().owned_ids_fail = true;
+    let downloads = fx.downloads();
+    let plan = fx.install_plan(&request()).unwrap();
+    assert!(plan.resumes());
+    assert_eq!(plan.download_size(), 0);
+    assert_eq!(
+        plan.products().iter().map(|p| p.id).collect::<Vec<_>>(),
+        [RIMWORLD, ROYALTY, IDEOLOGY]
+    );
+    fx.install_with(&plan, &Token::new(), |_| {}).unwrap();
+    assert_eq!(fx.downloads(), downloads);
+    assert_installed(&fx);
+    let committed = fx.state().committed.unwrap();
+    assert_eq!(committed.products, journal.target.products);
+}
+
+#[test]
+fn installing_again_with_the_packages_gone_resolves_the_same_products() {
+    let fx = interrupted_after_ideology();
+    fx.clear_cache();
+    fx.gog.lock().unwrap().owned_ids_fail = true;
+    let plan = fx.install_plan(&request()).unwrap();
+    assert!(plan.resumes());
+    assert_eq!(plan.products().len(), 3);
+    assert!(plan.download_size() > 0);
+    fx.install_with(&plan, &Token::new(), |_| {}).unwrap();
+    assert_installed(&fx);
+
+    // A product GOG no longer offers refuses, rather than dropping out.
+    let fx = interrupted_after_ideology();
+    fx.clear_cache();
+    fx.withdraw(IDEOLOGY);
+    let error = fx.install_plan(&request()).unwrap_err();
+    assert!(
+        matches!(error.downcast_ref(), Some(UpdateError::NoInstaller { .. })),
+        "{error:#}"
+    );
+    assert!(fx.state().journal.is_some());
+}
+
+#[test]
+fn a_pending_install_keeps_its_name_from_another_folder() {
+    let fx = offered();
+    set_failpoint(Some("install.state.after"));
+    fx.install_err();
+    let elsewhere = fx.root.path().join("Elsewhere");
+    let message = format!(
+        "rimworld's install in {} didn't finish. Install it again there, or remove it first.",
+        fx.folder.display()
+    );
+    let error = fx
+        .install_plan(&Request {
+            dir: Some(elsewhere.clone()),
+            ..request()
+        })
+        .unwrap_err();
+    assert_eq!(error.to_string(), message);
+    assert!(!elsewhere.exists());
+
+    // And again under the locks, for one that appears after planning.
+    let fx = offered();
+    let elsewhere = fs::canonicalize(fx.root.path()).unwrap().join("Elsewhere");
+    let plan = fx
+        .install_plan(&Request {
+            dir: Some(elsewhere.clone()),
+            ..request()
+        })
+        .unwrap();
+    let paths = fx.paths.clone();
+    let folder = fx.folder.clone();
+    BEFORE_CREATE.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            fs::create_dir_all(&folder).unwrap();
+            FolderLock::exclusive(&paths, &folder, &|| false)
+                .unwrap()
+                .write(&FolderState::new(
+                    folder.clone(),
+                    Some("rimworld".to_owned()),
+                ))
+                .unwrap();
+        }))
+    });
+    let error = fx.install_with(&plan, &Token::new(), |_| {}).unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref(),
+            Some(InstallError::PendingElsewhere { .. })
+        ),
+        "{error:#}"
+    );
+    assert!(!elsewhere.exists());
+    assert!(!fx.paths.environment_config("rimworld").exists());
+}
+
+#[test]
+fn dlc_follow_the_language_the_game_installs_in() {
+    let fx = offered();
+    fx.language(ROYALTY, "fr");
+    fx.gog
+        .lock()
+        .unwrap()
+        .offers
+        .get_mut(&ROYALTY)
+        .unwrap()
+        .also
+        .push("en");
+    // French asked for, but the game itself only comes in English.
+    let plan = fx
+        .install_plan(&Request {
+            language: Some("fr-FR".to_owned()),
+            ..request()
+        })
+        .unwrap();
+    assert_eq!(plan.language(), "en");
+    let royalty = &plan.products()[1];
+    assert_eq!(royalty.language.as_deref(), Some("en"));
+    assert_eq!(royalty.note, None);
+    fx.install_with(&plan, &Token::new(), |_| {}).unwrap();
+    let committed = fx.state().committed.unwrap();
+    assert!(
+        committed
+            .products
+            .iter()
+            .all(|product| product.language.is_none())
+    );
+}
+
+#[test]
+fn canceling_a_resumed_install_before_it_writes_says_the_journal_remains() {
+    let fx = interrupted_after_ideology();
+    fx.clear_cache();
+    let plan = fx.install_plan(&request()).unwrap();
+    let token = Token::new();
+    let error = fx
+        .install_with(&plan, &token, |progress| {
+            if matches!(progress, Progress::Download { .. }) {
+                token.cancel();
+            }
+        })
+        .unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref(),
+            Some(UpdateError::Canceled { journal: true })
+        ),
+        "{error:#}"
+    );
+
+    // `wineo update` finishing it says the same.
+    let pending = fx.pending(true, Options::default());
+    let token = Token::new();
+    let error = fx
+        .apply_with(true, &pending, &token, |progress| {
+            if matches!(progress, Progress::Download { .. }) {
+                token.cancel();
+            }
+        })
+        .unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref(),
+            Some(UpdateError::Canceled { journal: true })
+        ),
+        "{error:#}"
+    );
+    fx.finish(true);
+    assert_installed(&fx);
 }

@@ -452,7 +452,11 @@ fn installed_version(state: &FolderState, id: u64) -> Option<String> {
 
 /// The packages a journal names, when every one is in the download cache
 /// and matches its recorded size and checksum.
-fn cached(paths: &Paths, journal: &Journal, token: &Token) -> Result<Option<Vec<PlannedFile>>> {
+pub(super) fn cached(
+    paths: &Paths,
+    journal: &Journal,
+    token: &Token,
+) -> Result<Option<Vec<PlannedFile>>> {
     let installed: Vec<u64> = journal
         .target
         .products
@@ -513,11 +517,11 @@ fn verify_cached(
 }
 
 /// A target and its packages, resolved from GOG's current details.
-struct Resolved {
-    target: Target,
-    products: Vec<PlannedProduct>,
-    files: Vec<PlannedFile>,
-    warnings: Vec<String>,
+pub(super) struct Resolved {
+    pub(super) target: Target,
+    pub(super) products: Vec<PlannedProduct>,
+    pub(super) files: Vec<PlannedFile>,
+    pub(super) warnings: Vec<String>,
 }
 
 impl Resolved {
@@ -546,16 +550,16 @@ impl Resolved {
 
 /// What a rebuild is planned for: the language, the products to carry, and
 /// the folder's names for labeling them.
-struct Wanted<'a> {
-    language: &'a str,
-    products: &'a [Product],
-    names: &'a HashMap<u64, String>,
+pub(super) struct Wanted<'a> {
+    pub(super) language: &'a str,
+    pub(super) products: &'a [Product],
+    pub(super) names: &'a HashMap<u64, String>,
 }
 
 /// Every installed product's current Linux installer for `language`, in
 /// order. Failed and unavailable products are carried over unchanged. Any
 /// installed product GOG no longer offers refuses the whole rebuild.
-fn resolve(
+pub(super) fn resolve(
     paths: &Paths,
     session: &mut Session,
     name: &str,
@@ -687,7 +691,8 @@ pub fn apply(
     progress: impl FnMut(Progress),
 ) -> Result<Updated> {
     host_only(paths)?;
-    let mut journaled = false;
+    // A recovery's journal is there from the start.
+    let mut journaled = pending.recovery;
     let progress = RefCell::new(progress);
     let result = run(paths, session, pending, token, &progress, &mut journaled);
     match result {
