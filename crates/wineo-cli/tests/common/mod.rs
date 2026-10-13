@@ -486,9 +486,17 @@ impl Fixture {
     /// the state alone doesn't mean `status` or the log has caught up.
     pub fn wait_for_run_end(&self, name: &str, status: &str) {
         let wanted = format!("status = \"{status}\"");
-        wait_for("the run to end", || {
-            self.state(name).contains(&wanted) && !self.runtime(name).is_running().unwrap()
-        });
+        let deadline = Instant::now() + WAIT_LIMIT;
+        while !(self.state(name).contains(&wanted) && !self.runtime(name).is_running().unwrap()) {
+            // A run that ended some other way never matches, so show how it ended.
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the run to end with {status}\nstate:\n{}\nlog:\n{}",
+                self.state(name),
+                self.log(name)
+            );
+            thread::sleep(WAIT_POLL);
+        }
     }
 
     pub fn log(&self, name: &str) -> String {
@@ -603,11 +611,14 @@ pub fn assert_success(output: &Output) {
     assert!(output.status.success(), "{}", stderr(output));
 }
 
+const WAIT_LIMIT: Duration = Duration::from_secs(20);
+const WAIT_POLL: Duration = Duration::from_millis(50);
+
 pub fn wait_for(what: &str, mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + WAIT_LIMIT;
     while !condition() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(WAIT_POLL);
     }
 }
 
