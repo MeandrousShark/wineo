@@ -1,6 +1,8 @@
-//! Updating a native GOG game, or finishing an interrupted update, like
+//! Updating a GOG game, or finishing an interrupted update or install, like
 //! `wineo update NAME`: a review of what changes, the update with progress
-//! and cancel, then what changed and which of your files it touched.
+//! and cancel, then what changed and which of your files it touched. A
+//! Windows installer that never started is offered once as its own setup
+//! window.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -12,6 +14,7 @@ use wineo_core::cancel::Token;
 use wineo_core::gog::account::{AccountError, Session};
 use wineo_core::gog::api::Client;
 use wineo_core::gog::folder::JournalKind;
+use wineo_core::gog::update::windows::SetupError;
 use wineo_core::gog::update::{self, Options, Pending, Plan, Progress, UpdateError, Updated};
 use wineo_core::key_store::Keyring;
 use wineo_core::paths::Paths;
@@ -35,6 +38,9 @@ enum Step {
     Planning,
     Review,
     Working,
+    /// Asking whether to run an installer that never started as its own
+    /// setup window.
+    Question,
     Finished,
 }
 
@@ -53,17 +59,33 @@ pub(crate) enum Failure {
     Canceled {
         journal: bool,
     },
+    /// The game's Windows installer never started on a first attempt, and
+    /// running it as its own setup window may get further. `message` says
+    /// what happened, for when that's declined.
+    NotStarted {
+        label: String,
+        message: String,
+    },
     Failed(String),
 }
 
 impl Failure {
+    #[cfg(test)]
     fn message(&self, name: &str) -> String {
+        self.message_for(name, false)
+    }
+
+    /// What the page says, naming an interrupted install as one.
+    fn message_for(&self, name: &str, install: bool) -> String {
         match self {
+            Self::Canceled { journal: true } if install => {
+                format!("Install interrupted. Use Finish install on {name} to finish it.")
+            }
             Self::Canceled { journal: true } => {
                 format!("Update interrupted. Use Finish update on {name} to finish it.")
             }
             Self::Canceled { journal: false } => CANCELED.to_owned(),
-            Self::Failed(error) => error.clone(),
+            Self::NotStarted { message, .. } | Self::Failed(message) => message.clone(),
         }
     }
 }
@@ -73,6 +95,8 @@ pub(crate) enum Event {
     Back,
     Planned(u64, Result<Planned, String>),
     Update,
+    /// The answer to the setup window question.
+    SetupWindow(bool),
     Cancel,
     Force,
     Progress(u64, String),
@@ -94,6 +118,11 @@ pub(crate) struct Page {
     status: String,
     error: Option<String>,
     note: Option<String>,
+    /// The installer the setup window question is about.
+    question: Option<Failure>,
+    /// Set while planning again to run the setup window, which then starts
+    /// without another review.
+    wizard: bool,
     action: Option<Action>,
 }
 
@@ -111,6 +140,8 @@ impl Page {
             status: String::new(),
             error: None,
             note: None,
+            question: None,
+            wizard: false,
             action: None,
         };
         let task = page.plan();
@@ -154,6 +185,7 @@ impl Page {
     pub(crate) fn submit(&mut self) -> Task<Event> {
         match self.step {
             Step::Review => self.start(),
+            Step::Question => self.update(Event::SetupWindow(true)),
             Step::Finished => self.update(Event::BackToLibrary),
             Step::Planning | Step::Working => Task::none(),
         }
@@ -185,12 +217,16 @@ impl Page {
         // closing the window asks first.
         let token = Token::new();
         self.token = Some(token.clone());
+        let options = Options {
+            wizard: self.wizard,
+            ..Options::default()
+        };
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
                     let client =
                         wineo_core::gog::client_from_env().map_err(|error| error.to_string())?;
-                    plan_with(&paths, &keyring(), client, &name, &token)
+                    plan_with_options(&paths, &keyring(), client, &name, options, &token)
                 })
                 .await
                 .map_err(|error| error.to_string())?
@@ -247,12 +283,36 @@ impl Page {
                     Ok(Planned::Update(pending)) => {
                         self.pending = Some(pending);
                         self.step = Step::Review;
+                        // The setup window was asked for, so it runs now.
+                        if std::mem::take(&mut self.wizard) {
+                            return self.start();
+                        }
                     }
-                    Err(error) => self.error = Some(error),
+                    Err(error) => {
+                        if self.wizard {
+                            self.step = Step::Finished;
+                        }
+                        self.wizard = false;
+                        self.error = Some(error);
+                    }
                 }
                 Task::none()
             }
             Event::Update if self.step == Step::Review => self.start(),
+            Event::SetupWindow(run) if self.step == Step::Question => {
+                let Some(question) = self.question.take() else {
+                    return Task::none();
+                };
+                if run {
+                    self.wizard = true;
+                    self.error = None;
+                    return self.plan();
+                }
+                let install = self.installs();
+                self.error = Some(question.message_for(&self.name, install));
+                self.step = Step::Finished;
+                Task::none()
+            }
             Event::Cancel if matches!(self.step, Step::Planning | Step::Working) => {
                 self.cancel(false);
                 Task::none()
@@ -278,7 +338,21 @@ impl Page {
                         self.done = Some(self.name.clone());
                         self.updated = Some(updated);
                     }
-                    Err(failure) => self.error = Some(failure.message(&self.name)),
+                    // Asked once: a setup window that also never starts is
+                    // only reported.
+                    Err(failure @ Failure::NotStarted { .. })
+                        if self
+                            .pending
+                            .as_ref()
+                            .is_some_and(|pending| !pending.wizard()) =>
+                    {
+                        self.question = Some(failure);
+                        self.step = Step::Question;
+                    }
+                    Err(failure) => {
+                        let install = self.installs();
+                        self.error = Some(failure.message_for(&self.name, install));
+                    }
                 }
                 Task::none()
             }
@@ -288,6 +362,13 @@ impl Page {
             }
             _ => Task::none(),
         }
+    }
+
+    /// Whether this finishes an interrupted install rather than updating.
+    fn installs(&self) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|pending| pending.kind() == JournalKind::Install)
     }
 
     pub(crate) fn view(&self, palette: Palette, spin: f32) -> Element<'_, Event> {
@@ -319,6 +400,9 @@ impl Page {
         }
         if let Some(note) = &self.note {
             body = body.push(text(note));
+        }
+        if let Some(Failure::NotStarted { label, .. }) = &self.question {
+            body = body.push(text(setup_window_question(label)));
         }
         match (self.step, &self.pending, &self.updated) {
             (Step::Review | Step::Working, Some(pending), _) => {
@@ -384,6 +468,7 @@ impl Page {
                 };
                 secondary_button(label, palette).on_press(event).into()
             }),
+            Step::Question => Some(setup_window_buttons(palette, Event::SetupWindow)),
             Step::Finished => Some(
                 secondary_button("Back to library", palette)
                     .on_press(Event::BackToLibrary)
@@ -405,10 +490,32 @@ fn keyring() -> SecretServiceKeyring {
     SecretServiceKeyring::for_spec(&wineo_core::gog::account::KEY_SPEC)
 }
 
+/// The question offered when a Windows installer never started.
+pub(crate) fn setup_window_question(label: &str) -> String {
+    format!("{label}'s installer didn't start. Run its own setup window?")
+}
+
+/// The answers to `setup_window_question`, the forward one accented.
+pub(crate) fn setup_window_buttons<'a, E: Clone + 'a>(
+    palette: Palette,
+    answer: impl Fn(bool) -> E,
+) -> Element<'a, E> {
+    row![
+        secondary_button("No", palette).on_press(answer(false)),
+        accent_base("Run setup window", palette.primary).on_press(answer(true)),
+    ]
+    .spacing(12)
+    .align_y(Center)
+    .wrap()
+    .vertical_spacing(8)
+    .into()
+}
+
 /// Plans updating `name`. Logged out, a game whose interrupted update has
 /// its packages saved can still finish; anything else needs the login.
 /// GOG's answers can't be interrupted, so a cancel takes effect once they
 /// arrive, and the plan is then dropped.
+#[cfg(test)]
 pub(crate) fn plan_with(
     paths: &Paths,
     keyring: &dyn Keyring,
@@ -416,9 +523,22 @@ pub(crate) fn plan_with(
     name: &str,
     token: &Token,
 ) -> Result<Planned, String> {
+    plan_with_options(paths, keyring, client, name, Options::default(), token)
+}
+
+/// `plan_with`, with `options` saying whether a Windows installer runs as
+/// its own setup window.
+pub(crate) fn plan_with_options(
+    paths: &Paths,
+    keyring: &dyn Keyring,
+    client: Client,
+    name: &str,
+    options: Options,
+    token: &Token,
+) -> Result<Planned, String> {
     let mut session = Session::open(paths, keyring, client).map_err(|error| error.to_string())?;
     let logged_out = session.is_none();
-    let planned = update::plan(paths, session.as_mut(), name, Options::default(), token);
+    let planned = update::plan(paths, session.as_mut(), name, options, token);
     if token.is_canceled() {
         return Err(CANCELED.to_owned());
     }
@@ -461,6 +581,9 @@ pub(crate) fn apply_with(
         if let Some(UpdateError::Canceled { journal }) = error.downcast_ref::<UpdateError>() {
             return Failure::Canceled { journal: *journal };
         }
+        if let Some(failure) = setup_failure(&error, pending) {
+            return failure;
+        }
         if logged_out
             && matches!(
                 error.downcast_ref::<AccountError>(),
@@ -473,11 +596,51 @@ pub(crate) fn apply_with(
     })
 }
 
+/// How a Windows installer that stopped on its own left things, like
+/// `wineo update` says it. An installer that never started on a first
+/// attempt changed nothing, since the update drops its journal then;
+/// finishing one keeps it.
+fn setup_failure(error: &anyhow::Error, pending: &Pending) -> Option<Failure> {
+    let name = pending.environment();
+    let recovery = pending.is_recovery();
+    let finish = if pending.kind() == JournalKind::Install {
+        format!("Use Finish install on {name} to finish it.")
+    } else {
+        format!("Use Finish update on {name} to finish it.")
+    };
+    match error.downcast_ref::<SetupError>()? {
+        SetupError::Canceled { .. } if recovery => Some(Failure::Canceled { journal: true }),
+        SetupError::Canceled { .. } => Some(Failure::Canceled { journal: false }),
+        SetupError::NotStarted {
+            label,
+            code,
+            wizard,
+            ..
+        } => {
+            let message = if recovery {
+                format!("{label}'s installer never started (exit code {code}). {finish}")
+            } else {
+                format!("{label}'s installer never started (exit code {code}), so nothing changed.")
+            };
+            Some(if *wizard {
+                Failure::NotStarted {
+                    label: label.clone(),
+                    message,
+                }
+            } else {
+                Failure::Failed(message)
+            })
+        }
+        _ => None,
+    }
+}
+
 /// How the review and the result name what is being done.
 fn action(pending: &Pending) -> &'static str {
     match (pending.kind(), pending.is_recovery()) {
         (JournalKind::Reinstall, false) => "Reinstall",
         (JournalKind::Reinstall, true) => "Finish the interrupted reinstall of",
+        (JournalKind::Install, true) => "Finish the interrupted install of",
         (_, true) => "Finish the interrupted update of",
         (_, false) => "Update",
     }
@@ -542,6 +705,7 @@ pub(crate) fn result_lines(pending: &Pending, updated: &Updated) -> Vec<String> 
     let mut lines = vec![match (pending.kind(), pending.is_recovery()) {
         (JournalKind::Reinstall, false) => format!("Reinstalled {name}."),
         (JournalKind::Reinstall, true) => format!("Finished the interrupted reinstall of {name}."),
+        (JournalKind::Install, true) => format!("Finished the interrupted install of {name}."),
         (_, true) => format!("Finished the interrupted update of {name}."),
         (_, false) => format!("Updated {name}."),
     }];
@@ -598,7 +762,7 @@ pub(crate) fn result_lists(updated: &Updated) -> Vec<(&'static str, Vec<String>)
 
 /// Turns progress into status lines like the CLI's, one per stage and the
 /// rest paced.
-struct Reporter {
+pub(super) struct Reporter {
     labels: HashMap<u64, String>,
     last: Option<Instant>,
     file: Option<(u64, String)>,
@@ -609,8 +773,8 @@ struct Reporter {
 
 impl Reporter {
     fn new(pending: &Pending) -> Self {
-        Self {
-            labels: pending
+        Self::with_labels(
+            pending
                 .products()
                 .iter()
                 .map(|product| {
@@ -620,6 +784,13 @@ impl Reporter {
                     )
                 })
                 .collect(),
+        )
+    }
+
+    /// Names each product, by id, the way the review does.
+    pub(super) fn with_labels(labels: HashMap<u64, String>) -> Self {
+        Self {
+            labels,
             last: None,
             file: None,
             verified: HashSet::new(),
@@ -645,7 +816,7 @@ impl Reporter {
         Some(line)
     }
 
-    fn line(&mut self, step: &Progress) -> Option<String> {
+    pub(super) fn line(&mut self, step: &Progress) -> Option<String> {
         match step {
             Progress::Download {
                 product,

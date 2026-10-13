@@ -783,9 +783,9 @@ impl App {
                     Message::Install,
                     PANEL_INSTALL_ID,
                 )
-            } else if card.finish_update() {
+            } else if let Some(gog) = card.gog.as_ref().filter(|_| card.finish_update()) {
                 panel_action_button(
-                    "Finish update",
+                    gog.finish_label(),
                     palette.primary,
                     self.gog_update_enabled(card),
                     Message::GogUpdate(card.name.clone()),
@@ -875,11 +875,15 @@ impl App {
             if let Some(note) = card.gog.as_ref().and_then(|gog| gog.blocked_note()) {
                 inner = inner.push(text(note).size(14).color(palette.warning));
             }
-            if card.finish_update() {
+            if let Some(gog) = card.gog.as_ref().filter(|_| card.finish_update()) {
                 inner = inner.push(
-                    text("Its last update was interrupted. Finish it before playing.")
-                        .size(14)
-                        .color(palette.warning),
+                    text(if gog.install {
+                        "Its install was interrupted. Finish it before playing."
+                    } else {
+                        "Its last update was interrupted. Finish it before playing."
+                    })
+                    .size(14)
+                    .color(palette.warning),
                 );
             } else if let Some(status) = self.gog_updates.get(&card.name) {
                 inner = inner.push(detail_row(
@@ -1144,7 +1148,14 @@ mod tests {
         let one_line =
             crate::tile_title::wrapped_size("Play", f32::INFINITY, 14.0, iced::Font::DEFAULT)
                 .height;
-        for label in ["Play", "Launch", "Install", "Finish update", "Force stop"] {
+        for label in [
+            "Play",
+            "Launch",
+            "Install",
+            "Finish update",
+            "Finish install",
+            "Force stop",
+        ] {
             let mut button =
                 panel_action_button(label, Color::BLACK, true, Message::Play, PANEL_PLAY_ID);
             let node = crate::layout_probe::layout(&mut button, iced::Size::new(420.0, 100.0));

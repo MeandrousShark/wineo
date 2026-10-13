@@ -188,7 +188,8 @@ impl App {
         {
             let color = match badge {
                 crate::gog_library::Badge::UpdateAvailable => palette.primary,
-                crate::gog_library::Badge::FinishUpdate => palette.warning,
+                crate::gog_library::Badge::FinishUpdate
+                | crate::gog_library::Badge::FinishInstall => palette.warning,
             };
             let pill = container(text(badge.label()).size(11).color(ui::accent_ink(color)))
                 .padding([2, 8])
