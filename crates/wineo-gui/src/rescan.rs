@@ -3,6 +3,7 @@
 //! result differs from what the app shows.
 
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -35,8 +36,8 @@ struct Shown {
 
 type ArtSnapshot = Result<art_page::Snapshot, String>;
 
-/// Bumped on every write, so a scan read before an explicit reload landed
-/// can't replace that reload's newer result.
+/// Bumped on every write and when an explicit reload starts, so a scan read
+/// before that reload started can't replace its result.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Revisions {
     library: u64,
@@ -44,12 +45,45 @@ pub(crate) struct Revisions {
     art: u64,
 }
 
+// The bound on in-flight work: at most one periodic blocking scan runs at a
+// time, across subscription restarts, and every explicit reload makes scans
+// read before it started stale.
 #[derive(Clone, Default)]
-pub(crate) struct Watch(Arc<Mutex<Shown>>);
+pub(crate) struct Watch(Arc<Inner>);
+
+#[derive(Default)]
+struct Inner {
+    shown: Mutex<Shown>,
+    scanning: AtomicBool,
+}
+
+/// Held by the one running scan, released when its read finishes even if
+/// the stream that started it is gone.
+pub(crate) struct ScanGuard(Watch);
+
+impl Drop for ScanGuard {
+    fn drop(&mut self) {
+        self.0.0.scanning.store(false, Ordering::Release);
+    }
+}
 
 impl Watch {
     fn shown(&self) -> std::sync::MutexGuard<'_, Shown> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.shown.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// None while an earlier scan is still reading, so a tick skips rather
+    /// than queues.
+    pub(crate) fn begin_scan(&self) -> Option<ScanGuard> {
+        (!self.0.scanning.swap(true, Ordering::AcqRel)).then(|| ScanGuard(self.clone()))
+    }
+
+    pub(crate) fn reloading_library(&self) {
+        self.shown().revisions.library += 1;
+    }
+
+    pub(crate) fn reloading_trash(&self) {
+        self.shown().revisions.trash += 1;
     }
 
     pub(crate) fn revisions(&self) -> Revisions {
@@ -205,9 +239,14 @@ pub(crate) fn stream(rescan: &Rescan) -> impl Stream<Item = Message> + use<> {
         use iced::futures::SinkExt;
         loop {
             tokio::time::sleep(INTERVAL).await;
+            let Some(guard) = watch.begin_scan() else {
+                continue;
+            };
             let (paths, reader, art_page) = (paths.clone(), watch.clone(), art_page.clone());
             let Ok(scan) = tokio::task::spawn_blocking(move || {
-                read(&paths, &reader, trash_page, art_page.as_deref())
+                let scan = read(&paths, &reader, trash_page, art_page.as_deref());
+                drop(guard);
+                scan
             })
             .await
             else {
@@ -497,6 +536,58 @@ mod tests {
         let next = app.shown.changes(rescan(&app, false), now()).unwrap();
         let _ = app.update(Message::Rescanned(Box::new(next)));
         assert_eq!(names(&app), ["game", "later", "new"]);
+    }
+
+    #[test]
+    fn any_explicit_reload_makes_earlier_scans_stale_when_it_starts() {
+        let (_root, mut app) = shown(&["game"]);
+        native(&app.paths, "new");
+        let stale = app.shown.changes(rescan(&app, false), now()).unwrap();
+        // Like an Art save, which reloads without marking `refreshing`.
+        let _ = app.reload_library();
+        assert!(!app.refreshing);
+        let _ = app.update(Message::Rescanned(Box::new(stale)));
+        assert_eq!(names(&app), ["game"], "the scan predates the reload");
+
+        let (_root, mut app) = shown(&["game", "old"]);
+        trash::remove(&app.paths, "old", false).unwrap();
+        let stale = app.shown.changes(rescan(&app, false), now()).unwrap();
+        let _ = app.reload_badge();
+        app.trash_refreshing = false;
+        let _ = app.update(Message::Rescanned(Box::new(stale)));
+        assert_eq!(app.trash_badge.count, Some(0));
+        let stale = app.shown.changes(rescan(&app, false), now()).unwrap();
+        let _ = app.reload_trash_page();
+        app.trash_refreshing = false;
+        let _ = app.update(Message::Rescanned(Box::new(stale)));
+        assert_eq!(app.trash_badge.count, Some(0));
+    }
+
+    #[test]
+    fn only_one_scan_reads_at_a_time_and_a_busy_tick_skips() {
+        let (_root, app) = shown(&["game"]);
+        let guard = app.shown.begin_scan().unwrap();
+        assert!(app.shown.begin_scan().is_none());
+        let rescan = Rescan {
+            paths: app.paths.clone(),
+            watch: app.shown.clone(),
+            trash_page: false,
+            art_page: None,
+        };
+        paused(async {
+            let mut stream = Box::pin(stream(&rescan));
+            native(&app.paths, "new");
+            let skipped = tokio::time::timeout(INTERVAL * 3, stream.next()).await;
+            assert!(skipped.is_err(), "ticks skip while another read runs");
+            // The read finishing elsewhere, as a dropped stream's would.
+            std::thread::spawn(move || drop(guard)).join().unwrap();
+            let message = tokio::time::timeout(INTERVAL * 2, stream.next())
+                .await
+                .expect("the next tick scans again")
+                .unwrap();
+            assert!(matches!(message, Message::Rescanned(_)));
+        });
+        assert!(app.shown.begin_scan().is_some(), "released after the read");
     }
 
     fn art_app() -> (tempfile::TempDir, App) {

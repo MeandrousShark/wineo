@@ -456,6 +456,7 @@ impl App {
     }
     fn reload_library(&mut self) -> Task<Message> {
         self.library_generation = self.library_generation.wrapping_add(1);
+        self.shown.reloading_library();
         let generation = self.library_generation;
         Self::load(self.paths.clone()).map(move |message| match message {
             Message::Loaded(result) => Message::LibraryReloaded(generation, result),
@@ -465,6 +466,7 @@ impl App {
 
     fn reload_badge(&mut self) -> Task<Message> {
         self.trash_generation = self.trash_generation.wrapping_add(1);
+        self.shown.reloading_trash();
         let generation = self.trash_generation;
         Self::load_trash_badge(self.paths.clone()).map(move |message| match message {
             Message::TrashBadgeLoaded(badge) => Message::TrashReloaded(generation, badge),
@@ -1519,6 +1521,8 @@ impl App {
             }
             let generation = self.flow_generation;
             let paths = self.paths.clone();
+            // An explicit library reload like `reload_library`.
+            self.shown.reloading_library();
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {

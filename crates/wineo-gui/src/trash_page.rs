@@ -448,6 +448,7 @@ pub(crate) fn prefix_note(paths: &Paths, entry: &Entry) -> Option<String> {
 impl App {
     pub(crate) fn reload_trash_page(&mut self) -> Task<Message> {
         self.trash_generation = self.trash_generation.wrapping_add(1);
+        self.shown.reloading_trash();
         self.trash_refreshing = true;
         self.trash_page.loading = true;
         trash_work::load(self.trash_generation, self.paths.clone())
