@@ -67,8 +67,8 @@ Migrate RimWorld (1094900565)
   dlc          Royalty (1233017772)
                Ideology (1827857764)
                Biotech (1865538500)
-Migrate it?
-Press Enter to migrate it, Esc or Ctrl+C to cancel.
+Esc or Ctrl+C to cancel.
+Migrate it? [Y/n]:
 Migrated RimWorld as rimworld.
 Remove it from Heroic's library, without deleting its files, so both don't update it.
 ```

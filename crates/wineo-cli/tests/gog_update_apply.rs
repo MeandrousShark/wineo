@@ -239,13 +239,14 @@ fn the_review_is_confirmed_at_a_terminal() {
     command.args(["update", "rimworld"]);
     let mut pty = Pty::spawn(command);
     pty.expect("Update rimworld");
-    pty.expect("Press Enter to update it, Esc or Ctrl+C to cancel.");
-    pty.expect("Update it?");
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.expect("Update it? [Y/n]: ");
     assert_eq!(api.downloads(), 0);
     pty.send("");
     let (status, output) = pty.finish();
     assert!(status.success(), "{output}");
     assert!(output.contains("Updated rimworld."), "{output}");
+    assert_eq!(output.raw().matches("to cancel.").count(), 1, "{output}");
     assert_eq!(read(&folder, "Data/core.txt"), format!("core {V2}"));
 }
 

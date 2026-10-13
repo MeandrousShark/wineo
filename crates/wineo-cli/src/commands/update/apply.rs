@@ -306,12 +306,12 @@ fn terminal() -> anyhow::Result<Ask> {
 }
 
 fn confirm(prompt: &mut Ask, pending: &Pending) -> anyhow::Result<()> {
-    let (hint, question) = match (pending.kind(), pending.is_recovery()) {
-        (_, true) => ("finish it", "Finish it?"),
-        (JournalKind::Reinstall, false) => ("reinstall it", "Reinstall it?"),
-        _ => ("update it", "Update it?"),
+    let question = match (pending.kind(), pending.is_recovery()) {
+        (_, true) => "Finish it?",
+        (JournalKind::Reinstall, false) => "Reinstall it?",
+        _ => "Update it?",
     };
-    prompt.say(format!("Press Enter to {hint}, Esc or Ctrl+C to cancel."))?;
+    prompt.confirm_hint(false)?;
     match prompt.confirm(question, true)? {
         Reply::Value(true) => Ok(()),
         _ => Err(Canceled.into()),

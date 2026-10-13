@@ -1316,6 +1316,10 @@ Changed during acceptance, at the maintainer's request (2026-10-12):
   embedded login window as a backlog row.
 - **DLC IDs take parentheses,** like a game's `RimWorld (1094900565)` and
   every other `Title (ID)` in wineo. The first round used brackets.
+- **Confirms show their keys once.** A migrate or update confirm prints one
+  keys line, then `Migrate it? [Y/n]:`, instead of a `Press Enter to ...` line
+  plus the confirm's own `Esc or Ctrl+C to cancel.` Other prompts are a
+  backlog row.
 
 ## Implementation sequence
 

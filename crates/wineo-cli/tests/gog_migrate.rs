@@ -453,8 +453,8 @@ fn a_single_game_asks_before_migrating() {
     command.args(["import", "gog", "--game", "1094900565"]);
     let mut pty = Pty::spawn(command);
     pty.expect("Migrate RimWorld (1094900565)");
-    pty.expect("Press Enter to migrate it, Esc or Ctrl+C to cancel.");
-    pty.expect("Migrate it?");
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.expect("Migrate it? [Y/n]: ");
     assert!(
         f.gog_state(&folder).is_none(),
         "nothing is written before the answer"
@@ -470,6 +470,7 @@ fn a_single_game_asks_before_migrating() {
         f.gog_state(&folder).unwrap().owner.as_deref(),
         Some("rimworld")
     );
+    assert_eq!(output.raw().matches("to cancel.").count(), 1, "{output}");
 }
 
 #[test]
@@ -656,7 +657,8 @@ fn declining_the_runner_copy_and_canceling_leaves_no_runner_behind() {
     pty.expect("Which runner?");
     pty.expect("Runner: ");
     pty.send("1");
-    pty.expect("Migrate it?");
+    pty.expect("Ctrl+C to cancel.");
+    pty.expect("Migrate it? [Y/n]: ");
     pty.ctrl_c();
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(130), "{output}");

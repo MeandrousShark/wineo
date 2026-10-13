@@ -575,6 +575,15 @@ impl<I: Input, W: Write> Prompt<I, W> {
     }
 
     /// Yes or no.
+    /// Only the first question prints its own keys, so a review that ends in
+    /// a later `confirm` calls this first to show them once.
+    pub fn confirm_hint(&mut self, back: bool) -> io::Result<()> {
+        if self.first_question {
+            return Ok(());
+        }
+        self.say(self.key_hint(back))
+    }
+
     pub fn confirm(&mut self, label: &str, default: bool) -> anyhow::Result<Reply<bool>> {
         if self.first_question {
             self.say(self.key_hint(false))?;
@@ -966,6 +975,22 @@ mod tests {
         let output = String::from_utf8_lossy(p.output());
         assert!(output.contains("Esc or Ctrl+C to cancel."));
         assert!(!output.contains("Esc to go back"));
+    }
+
+    #[test]
+    fn a_confirm_shows_its_keys_once_whether_or_not_it_comes_first() {
+        let mut p = prompt(&[""]).with_first_question(true);
+        p.confirm_hint(false).unwrap();
+        assert_eq!(p.confirm("Go?", true).unwrap(), Reply::Value(true));
+        assert_eq!(printed(&p), "Esc or Ctrl+C to cancel.\nGo? [Y/n]: ");
+
+        let mut p = prompt(&[""]);
+        p.confirm_hint(true).unwrap();
+        assert_eq!(p.confirm("Go?", true).unwrap(), Reply::Value(true));
+        assert_eq!(
+            printed(&p),
+            "Esc to go back, Ctrl+C to cancel.\nGo? [Y/n]: "
+        );
     }
 
     #[test]

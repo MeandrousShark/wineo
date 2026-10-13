@@ -396,7 +396,7 @@ fn report(
 /// The question for a game named on the command line, where there is no
 /// earlier question to go back to.
 fn confirm(prompt: &mut Ask) -> anyhow::Result<()> {
-    prompt.say("Press Enter to migrate it, Esc or Ctrl+C to cancel.")?;
+    prompt.confirm_hint(false)?;
     match prompt.confirm("Migrate it?", true)? {
         Reply::Value(true) => Ok(()),
         _ => Err(Canceled.into()),
@@ -645,7 +645,7 @@ pub(super) fn guided(
                 let answer = if args.yes {
                     Reply::Value(true)
                 } else {
-                    prompt.say("Press Enter to migrate it, Esc to go back, Ctrl+C to cancel.")?;
+                    prompt.confirm_hint(true)?;
                     prompt.confirm("Migrate it?", true)?
                 };
                 match answer {
