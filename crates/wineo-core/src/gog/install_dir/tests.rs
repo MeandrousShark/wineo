@@ -38,6 +38,26 @@ fn direction_and_format_characters_are_removed() {
         "ABCDE"
     );
     assert!(safe_folder_name("\u{202e}\u{200b}").is_err());
+    for invisible in [
+        "\u{600}",
+        "\u{6dd}",
+        "\u{110bd}",
+        "\u{13430}",
+        "\u{1bca0}\u{1bca3}",
+        "\u{1d173}",
+        "\u{e0001}\u{e0020}\u{e007f}",
+    ] {
+        assert!(safe_folder_name(invisible).is_err(), "{invisible:?}");
+        assert_eq!(
+            safe_folder_name(&format!("Game{invisible}")).unwrap(),
+            "Game"
+        );
+    }
+    // Just outside the ranges.
+    assert_eq!(
+        safe_folder_name("\u{e0000}\u{e0080}").unwrap(),
+        "\u{e0000}\u{e0080}"
+    );
     // Other Unicode stays, the fullwidth slash included.
     let kept = "Caf\u{e9} \u{ff0f} \u{4e2d}\u{6587}";
     assert_eq!(safe_folder_name(kept).unwrap(), kept);
