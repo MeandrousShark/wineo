@@ -1820,6 +1820,7 @@ fn copy_runner_with_review(
         );
     }
     publish(&staging_path, &destination)?;
+    sync_filesystem(&destination)?;
     Ok(RunnerCopyReceipt {
         path: destination.clone(),
         name: name.to_owned(),
