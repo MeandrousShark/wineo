@@ -173,7 +173,8 @@ argument errors keep their normal stderr output.
 
 `platforms` holds `windows`, `mac`, and `linux`, the ones GOG sells the
 game for. `state` is `not_installed`, `heroic` (installed by Heroic, not
-migrated yet), or `imported`. Only an imported game has `environment`,
+migrated yet), `imported` (migrated from Heroic), or `installed` (installed
+by wineo). Only an imported or installed game has `environment`,
 `track` (`installer` or `galaxy`), `version`, `update`, and `dlc`; the rest
 have `null`, `false` for `applicable`, and an empty `dlc`. An imported game
 whose update check failed, or any game in a [portable folder](portable.md),
